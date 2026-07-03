@@ -16,9 +16,11 @@ extern "C" {
 
 #define SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_ROUTE_OUTPUT 0x00000001u
 #define SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_DETERMINISTIC_FC2_FINALIZE 0x00000002u
+#define SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_ROUTE_SLICE_OUTPUT 0x00000004u
 #define SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_REQUIRED_FLAGS \
     (SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_ROUTE_OUTPUT | \
-     SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_DETERMINISTIC_FC2_FINALIZE)
+     SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_DETERMINISTIC_FC2_FINALIZE | \
+     SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_ROUTE_SLICE_OUTPUT)
 
 typedef struct SparkGlm52Sm121B12xGeneratedKernelBucket
 {
@@ -32,8 +34,8 @@ typedef struct SparkGlm52Sm121B12xGeneratedKernelBucket
     uint32_t max_active_clusters;
     uint32_t static_mma_tile_m;
     uint32_t static_mma_tile_n;
+    uint32_t route_output_slice_count;
     uint32_t reserved0;
-    uint32_t reserved1;
     uint64_t qualified_average_microseconds;
     uint64_t qualified_p95_microseconds;
 } SparkGlm52Sm121B12xGeneratedKernelBucket;

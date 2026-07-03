@@ -96,6 +96,7 @@ from flashinfer.cute_dsl.fp4_common import (
     st_global_u64,
     st_global_v4_u32,
     scatter_add_v4_bf16x2,
+    store_v4_bf16x2,
 )
 from flashinfer.gemm.kernels.dense_blockscaled_gemm_sm120_b12x import (
     Sm120B12xBlockScaledDenseGemmKernel as DenseGemmKernel,
@@ -963,7 +964,9 @@ class MoEDynamicKernel:
             expert_tile_base[flat_tid] = Int32(0)
 
         if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
-            scatter_total_u32 = total_pairs * cols_u32
+            scatter_total_u32 = (
+                total_pairs * Int32(self.output_tile_count_n) * cols_u32
+            )
         else:
             scatter_total_u32 = num_tokens * cols_u32
         scatter_vecs = scatter_total_u32 // Int32(4)
@@ -2523,19 +2526,40 @@ class MoEDynamicKernel:
                                         epi_buffer,
                                     ]
                                 )
-                                scatter_add_v4_bf16x2(
-                                    get_ptr_as_int64(
-                                        scatter_output, tok * scatter_N + global_col
-                                    ),
-                                    wv * sc_v0,
-                                    wv * sc_v1,
-                                    wv * sc_v2,
-                                    wv * sc_v3,
-                                    wv * sc_v4,
-                                    wv * sc_v5,
-                                    wv * sc_v6,
-                                    wv * sc_v7,
-                                )
+                                if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+                                    route_slice_row = (
+                                        tok * Int32(self.output_tile_count_n)
+                                        + task_slice_begin_idx
+                                        + slice_idx
+                                    )
+                                    store_v4_bf16x2(
+                                        get_ptr_as_int64(
+                                            scatter_output,
+                                            route_slice_row * scatter_N + global_col,
+                                        ),
+                                        wv * sc_v0,
+                                        wv * sc_v1,
+                                        wv * sc_v2,
+                                        wv * sc_v3,
+                                        wv * sc_v4,
+                                        wv * sc_v5,
+                                        wv * sc_v6,
+                                        wv * sc_v7,
+                                    )
+                                else:
+                                    scatter_add_v4_bf16x2(
+                                        get_ptr_as_int64(
+                                            scatter_output, tok * scatter_N + global_col
+                                        ),
+                                        wv * sc_v0,
+                                        wv * sc_v1,
+                                        wv * sc_v2,
+                                        wv * sc_v3,
+                                        wv * sc_v4,
+                                        wv * sc_v5,
+                                        wv * sc_v6,
+                                        wv * sc_v7,
+                                    )
                                 vec_idx += Int32(self.num_threads_per_warp)
 
                             # Post-scatter barrier: needed to ensure all warps

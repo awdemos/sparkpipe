@@ -58,6 +58,15 @@ def _sparkpipe_b12x_deterministic_route_output_enabled() -> bool:
     return os.environ.get("SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT", "0") == "1"
 
 
+def _sparkpipe_b12x_deterministic_route_output_row_count(
+    token_count: int,
+    top_k: int,
+    intermediate_size: int,
+) -> int:
+    route_output_slice_count = max(1, (intermediate_size + 127) // 128)
+    return token_count * top_k * route_output_slice_count
+
+
 @supported_compute_capability([120, 121])
 @flashinfer_api(trace=b12x_fused_moe_trace)
 def b12x_fused_moe(
@@ -187,7 +196,11 @@ def b12x_fused_moe(
             )
         output_row_count = num_tokens
         if _sparkpipe_b12x_deterministic_route_output_enabled():
-            output_row_count = num_tokens * top_k
+            output_row_count = _sparkpipe_b12x_deterministic_route_output_row_count(
+                num_tokens,
+                top_k,
+                w2_weight.shape[2] * 2,
+            )
         output = torch.empty(
             (output_row_count, hidden_size),
             dtype=output_dtype,
@@ -444,8 +457,15 @@ class B12xMoEWrapper:
 
         # Allocated after arch-specific buffers to preserve memory layout
         # that the autotuner's CUDA graph profiling is sensitive to.
+        output_row_count = self.max_num_tokens * self.top_k
+        if _sparkpipe_b12x_deterministic_route_output_enabled():
+            output_row_count = _sparkpipe_b12x_deterministic_route_output_row_count(
+                self.max_num_tokens,
+                self.top_k,
+                self.intermediate_size,
+            )
         self._moe_output = torch.empty(
-            (self.max_num_tokens * self.top_k, self.hidden_size),
+            (output_row_count, self.hidden_size),
             dtype=self.output_dtype,
             device=self.device,
         )
@@ -508,7 +528,11 @@ class B12xMoEWrapper:
         if self.use_cuda_graph:
             output_row_count = num_tokens
             if _sparkpipe_b12x_deterministic_route_output_enabled():
-                output_row_count = num_tokens * self.top_k
+                output_row_count = _sparkpipe_b12x_deterministic_route_output_row_count(
+                    num_tokens,
+                    self.top_k,
+                    self.intermediate_size,
+                )
             moe_output = self._moe_output[:output_row_count]
         else:
             if _is_cuda_graph_capturing():
@@ -518,7 +542,11 @@ class B12xMoEWrapper:
                 )
             output_row_count = num_tokens
             if _sparkpipe_b12x_deterministic_route_output_enabled():
-                output_row_count = num_tokens * self.top_k
+                output_row_count = _sparkpipe_b12x_deterministic_route_output_row_count(
+                    num_tokens,
+                    self.top_k,
+                    self.intermediate_size,
+                )
             moe_output = torch.empty(
                 (output_row_count, self.hidden_size),
                 dtype=self.output_dtype,
