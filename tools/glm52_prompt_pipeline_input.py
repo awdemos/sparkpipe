@@ -120,7 +120,7 @@ def ceil_divide(value: int, divisor: int) -> int:
 
 def build_prefill_chunks(token_ids: List[int], chunk_tokens: int) -> List[Dict[str, Any]]:
     chunks: List[Dict[str, Any]] = []
-    prefill_token_count = max(len(token_ids) - 1, 0)
+    prefill_token_count = len(token_ids)
     offset = 0
     chunk_index = 0
     while offset < prefill_token_count:
@@ -160,7 +160,7 @@ def write_artifacts(args: argparse.Namespace, token_ids: List[int], tokenizer_ki
     pipeline_output_dir = Path(args.pipeline_output_dir) if args.pipeline_output_dir is not None else output_dir / "pipeline_run"
     prefill_chunk_tokens = validate_prefill_chunk_tokens(args.prefill_chunk_tokens)
     prefill_chunks = build_prefill_chunks(token_ids, prefill_chunk_tokens)
-    prefill_token_count = max(len(token_ids) - 1, 0)
+    prefill_token_count = len(token_ids)
     payload: Dict[str, Any] = {
         "schema": SCHEMA,
         "model_dir": str(model_dir),
@@ -177,6 +177,7 @@ def write_artifacts(args: argparse.Namespace, token_ids: List[int], tokenizer_ki
         "prefill_chunk_count": len(prefill_chunks),
         "prefill_chunk_tokens": prefill_chunk_tokens,
         "prefill_block_tokens": PREFILL_BLOCK_TOKENS,
+        "tail_window_decode_input_token_id": bootstrap_token,
         "prefill_context": "last four prompt tokens feed the current validation context",
         "pipeline_semantics": "tail-window prompt prefill plus current-token decode for the local validation pipeline",
     }
@@ -186,8 +187,9 @@ def write_artifacts(args: argparse.Namespace, token_ids: List[int], tokenizer_ki
         "tokenizer": tokenizer_kind,
         "prompt_token_count": len(token_ids),
         "prefill_token_count": prefill_token_count,
-        "decode_input_token_id": bootstrap_token,
-        "decode_input_token_offset": len(token_ids) - 1,
+        "first_decode_step": "after full prompt prefill",
+        "tail_window_decode_input_token_id": bootstrap_token,
+        "tail_window_decode_input_token_offset": len(token_ids) - 1,
         "prefill_chunk_tokens": prefill_chunk_tokens,
         "prefill_block_tokens": PREFILL_BLOCK_TOKENS,
         "prefill_chunk_count": len(prefill_chunks),
@@ -281,7 +283,7 @@ def main(argv: List[str]) -> int:
         print(f"glm52_prefill_token_ids_file={artifacts['token_txt']}")
         print(f"glm52_prefill_plan_file={artifacts['prefill_plan_json']}")
         print(f"glm52_prefill_chunks_file={artifacts['prefill_chunks_jsonl']}")
-        print(f"glm52_prefill_token_count={max(len(token_ids) - 1, 0)}")
+        print(f"glm52_prefill_token_count={len(token_ids)}")
         print(f"glm52_prefill_chunk_count={len(build_prefill_chunks(token_ids, validate_prefill_chunk_tokens(args.prefill_chunk_tokens)))}")
         print("glm52_prompt_pipeline_semantics=tail_window_prompt_prefill_validation_context")
         if args.run_pipeline:

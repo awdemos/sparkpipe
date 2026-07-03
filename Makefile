@@ -76,7 +76,8 @@ LIBRARIES := $(COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY)
 TOOL_NAMES := \
     sparkpipe_module_publish \
     sparkpipe_model_compile \
-    sparkpipe_driver_inspect
+    sparkpipe_driver_inspect \
+    sparkpipe_glm52_prefill_dryrun
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -176,6 +177,9 @@ build/sparkpipe_model_compile: tools/sparkpipe_model_compile.c $(COMPILER_LIBRAR
 build/sparkpipe_driver_inspect: tools/sparkpipe_driver_inspect.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_glm52_prefill_dryrun: tools/sparkpipe_glm52_prefill_dryrun.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_SUPPORT_OBJECT): tests/test_support.c tests/test_support.h $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -MMD -MP -c tests/test_support.c -o $@
 
@@ -251,7 +255,7 @@ build/test_orchestrator: tests/test_orchestrator.c $(TEST_SUPPORT_OBJECT) $(TEST
 build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decode_stage_firmware.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h tests/fixtures/glm52_resident_decode_stage_fake_backend.h $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE) $(TEST_SUPPORT_OBJECT) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Itests/fixtures -Imodules/glm52_resident_decode_stage/include $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-test: $(TEST_BINARIES)
+test: $(TEST_BINARIES) build/sparkpipe_glm52_prefill_dryrun
 	@set -e; \
 	for test_binary in $(TEST_BINARIES); do \
 		echo "RUN $$test_binary"; \
