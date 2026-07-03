@@ -205,6 +205,7 @@ def write_artifacts(args: argparse.Namespace, token_ids: List[int], tokenizer_ki
     prompt_txt.write_text(prompt_text, encoding="utf-8")
     write_env_file(env_path, {
         "GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID": str(bootstrap_token),
+        "GLM52_LOCAL_PIPELINE_MAX_PREFILL_TOKENS": str(prefill_chunk_tokens),
         "GLM52_LOCAL_PIPELINE_OUTPUT_DIR": str(pipeline_output_dir),
         "GLM52_PREFILL_CHUNKS_FILE": str(prefill_chunks_jsonl),
         "GLM52_PREFILL_PLAN_FILE": str(prefill_plan_json),
@@ -235,6 +236,8 @@ def run_pipeline(args: argparse.Namespace, artifacts: Dict[str, Path], bootstrap
         raise PromptInputFailure(f"missing pipeline script: {script}")
     env = os.environ.copy()
     env["GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID"] = str(bootstrap_token)
+    env["GLM52_LOCAL_PIPELINE_MAX_PREFILL_TOKENS"] = str(
+        json.loads(artifacts["token_json"].read_text(encoding="utf-8"))["prefill_chunk_tokens"])
     env["GLM52_LOCAL_PIPELINE_OUTPUT_DIR"] = str(artifacts["pipeline_output_dir"])
     env["GLM52_PREFILL_CHUNKS_FILE"] = str(artifacts["prefill_chunks_jsonl"])
     env["GLM52_PREFILL_PLAN_FILE"] = str(artifacts["prefill_plan_json"])

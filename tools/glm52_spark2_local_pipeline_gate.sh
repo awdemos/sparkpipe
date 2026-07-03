@@ -18,6 +18,10 @@ DIRECT_RUNNER_DIR="${GLM52_LOCAL_PIPELINE_RUNNER_DIR:-$OUTPUT_DIR/runner}"
 DIRECT_RUNNER="$DIRECT_RUNNER_DIR/glm52_resident_decode_stage_runner"
 MODULE_ARCHIVE="${GLM52_LOCAL_PIPELINE_MODULE_ARCHIVE:-$ROOT/build/modules/glm52_resident_decode_stage/libglm52_resident_decode_stage.a}"
 FORCE_RUNNER_REBUILD="${GLM52_LOCAL_PIPELINE_FORCE_RUNNER_REBUILD:-0}"
+PREFILL_TOKEN_IDS_FILE="${GLM52_PREFILL_TOKEN_IDS_FILE:-}"
+PREFILL_MAX_TOKENS="${GLM52_LOCAL_PIPELINE_MAX_PREFILL_TOKENS:-256}"
+PREFILL_SCHEDULE_TSV="$OUTPUT_DIR/prefill_schedule.tsv"
+PREFILL_ONLY="${GLM52_LOCAL_PIPELINE_PREFILL_ONLY:-0}"
 
 case "$MODEL_DIR" in
 	/mnt/mac/*|/Volumes/*)
@@ -171,6 +175,38 @@ record_stage_summary()
 		"${total_us:-}" "${maximum_us:-}" "${token:-}" \
 		"${prompt_prefill:-}" "${prompt_source_tokens:-}" "$log_path" >>"$SUMMARY_TSV"
 	return 0
+}
+
+run_prefill_schedule()
+{
+	local final_kind
+	local prefill_step_count
+	local prefill_token_count
+	if [ -z "$PREFILL_TOKEN_IDS_FILE" ]; then
+		return 0
+	fi
+	if [ ! -s "$PREFILL_TOKEN_IDS_FILE" ]; then
+		echo "missing GLM52 prefill token ids file: $PREFILL_TOKEN_IDS_FILE" >&2
+		exit 18
+	fi
+	make -C "$ROOT" build/sparkpipe_glm52_prefill_dryrun
+	if ! "$ROOT/build/sparkpipe_glm52_prefill_dryrun" \
+		--tokens "$PREFILL_TOKEN_IDS_FILE" \
+		--max-prefill-tokens "$PREFILL_MAX_TOKENS" \
+		>"$PREFILL_SCHEDULE_TSV"; then
+		echo "GLM52 prefill scheduler dry-run failed: $PREFILL_TOKEN_IDS_FILE" >&2
+		exit 19
+	fi
+	final_kind="$(tail -1 "$PREFILL_SCHEDULE_TSV" | awk -F '\t' '{print $2}')"
+	if [ "$final_kind" != "decode_ready" ]; then
+		echo "GLM52 prefill schedule did not reach decode_ready: $PREFILL_SCHEDULE_TSV" >&2
+		exit 20
+	fi
+	prefill_step_count="$(awk -F '\t' 'NR > 1 && $2 == "prefill" { count += 1 } END { print count + 0 }' "$PREFILL_SCHEDULE_TSV")"
+	prefill_token_count="$(awk -F '\t' 'NR > 1 && $2 == "prefill" { tokens += $4 } END { print tokens + 0 }' "$PREFILL_SCHEDULE_TSV")"
+	echo "glm52_local_pipeline_prefill_schedule=$PREFILL_SCHEDULE_TSV"
+	echo "glm52_local_pipeline_prefill_steps=$prefill_step_count"
+	echo "glm52_local_pipeline_prefill_tokens=$prefill_token_count"
 }
 
 required_cuda_link_args()
@@ -445,6 +481,11 @@ echo "glm52_local_pipeline_model_dir=$MODEL_DIR"
 echo "glm52_local_pipeline_output_dir=$OUTPUT_DIR"
 echo "glm52_local_pipeline_input_token=$INPUT_TOKEN_ID"
 echo "glm52_local_pipeline_resume=$RESUME"
+run_prefill_schedule
+if [ "$PREFILL_ONLY" != "0" ]; then
+	echo "glm52_local_pipeline_prefill_only=1"
+	exit 0
+fi
 run_pipeline_once "run1"
 final_line="$(tail -1 "$SUMMARY_TSV")"
 final_token="$(printf "%s" "$final_line" | awk -F '\t' '{print $8}')"
