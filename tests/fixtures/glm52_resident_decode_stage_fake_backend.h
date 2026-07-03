@@ -19,7 +19,9 @@ typedef struct SparkGlm52ResidentDecodeStageFakeStream
     uint32_t last_bulk_prefill_layer_count;
     uint32_t last_runtime_kv_block_token_count;
     uint32_t last_runtime_kv_lane_count;
+    uint32_t last_dspark_hidden_tap_frame_context_active;
     const void *last_runtime_kv_block_table;
+    const void *last_dspark_hidden_tap_frame_context;
     const void *last_runtime_kv_physical_block_indices;
     void (*pending_completion_function)(void *completion_context);
     void *pending_completion_context;

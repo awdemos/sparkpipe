@@ -5200,7 +5200,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchMoeRouterForB12x(
     return SPARK_STATUS_OK;
 }
 
-
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchValidatedFlashInferB12xMoe(
     const SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan *b12x_moe_dispatch_plan,
     const SparkGlm52ResidentDecodeStageB12xMoePlan *b12x_plan,
@@ -5251,7 +5250,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchValidatedFlashInferB12xMoe
     arguments.hidden_dimension = b12x_plan->hidden_dimension;
     arguments.intermediate_dimension = b12x_plan->intermediate_dimension;
     arguments.argument_flags =
-        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS;
+        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS |
+        SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_DETERMINISTIC_FC2_FINALIZE;
     arguments.hidden_bf16 = pipeline_slot->post_attention_normalized_hidden_bf16;
     arguments.topk_ids_i32 = (int32_t *)pipeline_slot->moe_topk_expert_ids;
     arguments.topk_weights_fp32 = pipeline_slot->moe_topk_weights;
@@ -5697,6 +5697,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchStageSlicePlan(
             active_sequence_count,
             final_token_stage,
             runtime_kv_block_table,
+            0,
             (void *)cuda_stream);
     }
     if (status != SPARK_STATUS_OK)
@@ -8442,12 +8443,16 @@ SparkGlm52ResidentDecodeStageGetCudaSlotState(
     return &node_context->cuda_pipeline_slot_states[pipeline_slot_index];
 }
 
+static bool SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context);
+
 static uint64_t SparkGlm52ResidentDecodeStageComputeStageSliceGraphSignature(
     const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t final_token_stage,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table)
+    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *layer_node_context;
     SparkGlm52ResidentDecodeStagePipelineSlot runtime_pipeline_slot;
@@ -8469,6 +8474,34 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeStageSliceGraphSignature(
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
         signature,
         final_token_stage);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(
+            frame_context)
+            ? 1u
+            : 0u);
+    if (SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(
+            frame_context))
+    {
+        uint32_t tap_index;
+
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            SparkGlm52ResidentDecodeStagePointerGraphSignature(
+                frame_context->dspark_hidden_tap_plan));
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            frame_context->dspark_hidden_tap_lane_stride_bytes);
+        for (tap_index = 0u;
+             tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+             ++tap_index)
+        {
+            signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+                signature,
+                SparkGlm52ResidentDecodeStagePointerGraphSignature(
+                    frame_context->dspark_hidden_tap_output_bf16[tap_index]));
+        }
+    }
     for (layer_offset = 0u; layer_offset < layer_count; ++layer_offset)
     {
         layer_node_context = layer_node_contexts[layer_offset];
@@ -8728,6 +8761,100 @@ static const void *SparkGlm52ResidentDecodeStageGetLayerHiddenOutput(
         return pipeline_slot->post_attention_hidden_bf16;
     }
     return pipeline_slot->layer_output_hidden_bf16;
+}
+
+static bool SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context)
+{
+    return frame_context != 0 &&
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS) != 0u;
+}
+
+static bool SparkGlm52ResidentDecodeStageFindDsparkTapIndexForLayer(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    uint32_t target_layer_index,
+    uint32_t *tap_index_out)
+{
+    uint32_t tap_index;
+
+    if (!SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(
+            frame_context) ||
+        frame_context->dspark_hidden_tap_plan == 0 ||
+        tap_index_out == 0)
+    {
+        return false;
+    }
+    for (tap_index = 0u;
+         tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+         ++tap_index)
+    {
+        if (frame_context->dspark_hidden_tap_plan->tap_stages[
+                tap_index].target_layer_index == target_layer_index)
+        {
+            *tap_index_out = tap_index;
+            return true;
+        }
+    }
+    return false;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeCaptureDsparkHiddenTap(
+    const SparkGlm52ResidentDecodeStageExactStageSlicePlan *exact_stage_slice_plan,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    const SparkGlm52ResidentDecodeStageNodeContext *layer_node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *layer_pipeline_slot,
+    uint32_t target_layer_index,
+    uint32_t active_sequence_count,
+    cudaStream_t cuda_stream)
+{
+    const void *hidden_output_bf16;
+    void *tap_output_bf16;
+    uint64_t hidden_row_bytes;
+    uint32_t tap_index;
+
+    if (!SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(
+            frame_context))
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (exact_stage_slice_plan == 0 ||
+        layer_node_context == 0 ||
+        layer_pipeline_slot == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (!SparkGlm52ResidentDecodeStageFindDsparkTapIndexForLayer(
+            frame_context,
+            target_layer_index,
+            &tap_index))
+    {
+        return SPARK_STATUS_OK;
+    }
+    hidden_output_bf16 = SparkGlm52ResidentDecodeStageGetLayerHiddenOutput(
+        layer_node_context,
+        layer_pipeline_slot);
+    tap_output_bf16 = frame_context->dspark_hidden_tap_output_bf16[tap_index];
+    hidden_row_bytes = (uint64_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2ull;
+    if (hidden_output_bf16 == 0 ||
+        tap_output_bf16 == 0 ||
+        frame_context->dspark_hidden_tap_lane_stride_bytes < hidden_row_bytes)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (cudaMemcpy2DAsync(
+            tap_output_bf16,
+            (size_t)frame_context->dspark_hidden_tap_lane_stride_bytes,
+            hidden_output_bf16,
+            (size_t)hidden_row_bytes,
+            (size_t)hidden_row_bytes,
+            (size_t)active_sequence_count,
+            cudaMemcpyDeviceToDevice,
+            cuda_stream) != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
 }
 
 static uint32_t SparkGlm52ResidentDecodeStageStageSlicePlanIsExactPp13(
@@ -9017,7 +9144,8 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeExactPp13StageSliceGraphSign
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t final_token_stage,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table)
+    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context)
 {
     uint64_t signature;
 
@@ -9026,7 +9154,8 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeExactPp13StageSliceGraphSign
         layer_count,
         pipeline_slot_index,
         final_token_stage,
-        runtime_kv_block_table);
+        runtime_kv_block_table,
+        frame_context);
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
         signature,
         0x5050313345584143ull);
@@ -9106,6 +9235,7 @@ typedef SparkStatus (*SparkGlm52ResidentDecodeStageBuiltinExactPp13StageSliceLau
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *first_cuda_slot_state,
     cudaStream_t cuda_stream);
 
@@ -9125,6 +9255,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageLayer
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *first_cuda_slot_state,
     cudaStream_t cuda_stream,
     uint32_t layer_offset)
@@ -9200,7 +9331,18 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageLayer
             layer_offset,
             (int)status);
     }
-    return status;
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52ResidentDecodeStageMaybeCaptureDsparkHiddenTap(
+        exact_stage_slice_plan,
+        frame_context,
+        effective_node_context,
+        effective_pipeline_slot,
+        exact_stage_slice_plan->first_layer_index + layer_offset,
+        active_sequence_count,
+        cuda_stream);
 }
 
 template <uint32_t StageIndex, uint32_t BatchBucket, uint32_t FinalTokenStage>
@@ -9211,6 +9353,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageSlice
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *first_cuda_slot_state,
     cudaStream_t cuda_stream)
 {
@@ -9235,6 +9378,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageSlice
         active_sequence_count,
         final_token_stage,
         runtime_kv_block_table,
+        frame_context,
         first_cuda_slot_state,
         cuda_stream,
         0u);
@@ -9249,6 +9393,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageSlice
         active_sequence_count,
         final_token_stage,
         runtime_kv_block_table,
+        frame_context,
         first_cuda_slot_state,
         cuda_stream,
         1u);
@@ -9263,6 +9408,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageSlice
         active_sequence_count,
         final_token_stage,
         runtime_kv_block_table,
+        frame_context,
         first_cuda_slot_state,
         cuda_stream,
         2u);
@@ -9277,6 +9423,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageSlice
         active_sequence_count,
         final_token_stage,
         runtime_kv_block_table,
+        frame_context,
         first_cuda_slot_state,
         cuda_stream,
         3u);
@@ -9291,6 +9438,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageSlice
         active_sequence_count,
         final_token_stage,
         runtime_kv_block_table,
+        frame_context,
         first_cuda_slot_state,
         cuda_stream,
         4u);
@@ -9305,6 +9453,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageSlice
         active_sequence_count,
         final_token_stage,
         runtime_kv_block_table,
+        frame_context,
         first_cuda_slot_state,
         cuda_stream,
         5u);
@@ -9372,6 +9521,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchBuiltinExactPp13StageSl
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *first_cuda_slot_state,
     cudaStream_t cuda_stream,
     bool *plan_was_launched)
@@ -9409,6 +9559,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchBuiltinExactPp13StageSl
                 active_sequence_count,
                 final_token_stage,
                 runtime_kv_block_table,
+                frame_context,
                 first_cuda_slot_state,
                 cuda_stream);
             if (status != SPARK_STATUS_OK)
@@ -9431,6 +9582,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchExactPp13StageSlicePlan
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     cudaStream_t cuda_stream,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *first_cuda_slot_state,
     bool *plan_was_launched)
@@ -9463,9 +9615,15 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchExactPp13StageSlicePlan
             active_sequence_count,
             final_token_stage,
             runtime_kv_block_table,
+            frame_context,
             first_cuda_slot_state,
             cuda_stream,
             plan_was_launched);
+    }
+    if (SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(
+            frame_context))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
     effective_layer_node_contexts = layer_node_contexts;
@@ -9513,6 +9671,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchExactPp13StageSliceBody(
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *first_cuda_slot_state,
     cudaStream_t cuda_stream)
 {
@@ -9572,6 +9731,18 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchExactPp13StageSliceBody(
         {
             return status;
         }
+        status = SparkGlm52ResidentDecodeStageMaybeCaptureDsparkHiddenTap(
+            exact_stage_slice_plan,
+            frame_context,
+            effective_node_context,
+            layer_pipeline_slot,
+            exact_stage_slice_plan->first_layer_index + layer_offset,
+            active_sequence_count,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
     }
     return SPARK_STATUS_OK;
 }
@@ -9584,6 +9755,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     void *cuda_stream)
 {
     const SparkGlm52ResidentDecodeStageExactStageSlicePlan *exact_stage_slice_plan;
@@ -9632,7 +9804,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
             layer_count,
             pipeline_slot_index,
             final_token_stage,
-            runtime_kv_block_table);
+            runtime_kv_block_table,
+            frame_context);
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
         first_cuda_slot_state != 0 &&
@@ -9719,6 +9892,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         active_sequence_count,
         final_token_stage,
         runtime_kv_block_table,
+        frame_context,
         typed_cuda_stream,
         first_cuda_slot_state,
         &exact_stage_slice_plan_was_launched);
@@ -9751,6 +9925,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
             active_sequence_count,
             final_token_stage,
             runtime_kv_block_table,
+            frame_context,
             first_cuda_slot_state,
             typed_cuda_stream);
         if (status != SPARK_STATUS_OK)
@@ -9803,6 +9978,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     void *cuda_stream)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
@@ -9854,6 +10030,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
             active_sequence_count,
             final_token_stage,
             runtime_kv_block_table,
+            frame_context,
             cuda_stream);
         if (getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
         {
@@ -9863,6 +10040,11 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
                 (int)status);
         }
         return status;
+    }
+    if (SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(
+            frame_context))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
     stage_slice_plan_was_launched = false;
@@ -9895,7 +10077,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
             layer_count,
             pipeline_slot_index,
             final_token_stage,
-            runtime_kv_block_table);
+            runtime_kv_block_table,
+            frame_context);
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
         first_cuda_slot_state != 0 &&

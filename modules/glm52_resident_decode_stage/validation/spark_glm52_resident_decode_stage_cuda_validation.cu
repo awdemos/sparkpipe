@@ -3381,7 +3381,8 @@ static bool SparkValidationBindRequiredLinearPlans(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
     cudaStream_t cuda_stream,
-    uint32_t required_plan_mask)
+    uint32_t required_plan_mask,
+    uint32_t use_quantized_attention_plans)
 {
     SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo create_info;
     SparkStatus status;
@@ -3472,9 +3473,13 @@ static bool SparkValidationBindRequiredLinearPlans(
     create_info.raw_query_a_weight_bf16 =
         buffers->raw_query_a_weight_bf16;
     create_info.raw_query_a_weight_fp8_e4m3 =
-        buffers->raw_query_a_weight_fp8_e4m3;
+        use_quantized_attention_plans != 0u
+            ? buffers->raw_query_a_weight_fp8_e4m3
+            : 0;
     create_info.raw_query_a_weight_scale_inv_f32 =
-        buffers->raw_query_a_weight_scale_inv_f32;
+        use_quantized_attention_plans != 0u
+            ? buffers->raw_query_a_weight_scale_inv_f32
+            : 0;
     create_info.raw_query_a_output_bf16 =
         buffers->raw_query_a_bf16;
     create_info.raw_query_b_input_bf16 =
@@ -3482,17 +3487,25 @@ static bool SparkValidationBindRequiredLinearPlans(
     create_info.raw_query_b_weight_bf16 =
         buffers->raw_query_b_weight_bf16;
     create_info.raw_query_b_weight_fp8_e4m3 =
-        buffers->raw_query_b_weight_fp8_e4m3;
+        use_quantized_attention_plans != 0u
+            ? buffers->raw_query_b_weight_fp8_e4m3
+            : 0;
     create_info.raw_query_b_weight_scale_inv_f32 =
-        buffers->raw_query_b_weight_scale_inv_f32;
+        use_quantized_attention_plans != 0u
+            ? buffers->raw_query_b_weight_scale_inv_f32
+            : 0;
     create_info.raw_query_b_output_bf16 =
         buffers->raw_query_b_bf16;
     create_info.raw_kv_a_weight_bf16 =
         buffers->raw_kv_a_weight_bf16;
     create_info.raw_kv_a_weight_fp8_e4m3 =
-        buffers->raw_kv_a_weight_fp8_e4m3;
+        use_quantized_attention_plans != 0u
+            ? buffers->raw_kv_a_weight_fp8_e4m3
+            : 0;
     create_info.raw_kv_a_weight_scale_inv_f32 =
-        buffers->raw_kv_a_weight_scale_inv_f32;
+        use_quantized_attention_plans != 0u
+            ? buffers->raw_kv_a_weight_scale_inv_f32
+            : 0;
     create_info.raw_kv_a_output_bf16 =
         buffers->raw_kv_a_bf16;
     create_info.raw_kv_b_input_bf16 =
@@ -3500,9 +3513,13 @@ static bool SparkValidationBindRequiredLinearPlans(
     create_info.raw_kv_b_weight_bf16 =
         buffers->raw_kv_b_weight_bf16;
     create_info.raw_kv_b_weight_fp8_e4m3 =
-        buffers->raw_kv_b_weight_fp8_e4m3;
+        use_quantized_attention_plans != 0u
+            ? buffers->raw_kv_b_weight_fp8_e4m3
+            : 0;
     create_info.raw_kv_b_weight_scale_inv_f32 =
-        buffers->raw_kv_b_weight_scale_inv_f32;
+        use_quantized_attention_plans != 0u
+            ? buffers->raw_kv_b_weight_scale_inv_f32
+            : 0;
     create_info.raw_kv_b_output_bf16 =
         buffers->raw_kv_b_bf16;
     create_info.attention_output_input_bf16 =
@@ -3510,9 +3527,13 @@ static bool SparkValidationBindRequiredLinearPlans(
     create_info.attention_output_weight_bf16 =
         buffers->attention_output_weight_bf16;
     create_info.attention_output_weight_fp8_e4m3 =
-        buffers->attention_output_weight_fp8_e4m3;
+        use_quantized_attention_plans != 0u
+            ? buffers->attention_output_weight_fp8_e4m3
+            : 0;
     create_info.attention_output_weight_scale_inv_f32 =
-        buffers->attention_output_weight_scale_inv_f32;
+        use_quantized_attention_plans != 0u
+            ? buffers->attention_output_weight_scale_inv_f32
+            : 0;
     create_info.attention_output_bf16 =
         buffers->attention_projected_hidden_bf16;
     create_info.restricted_logits_input_bf16 =
@@ -7444,7 +7465,8 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
             buffers,
             node_context,
             cuda_stream,
-            required_linear_plan_mask))
+            required_linear_plan_mask,
+            1u))
     {
         return false;
     }
@@ -7506,6 +7528,7 @@ static bool SparkValidationRunExactPp13StageSliceSubmit(
         0u,
         SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT,
         final_token_stage,
+        0,
         0,
         &completion);
     if (status != SPARK_STATUS_OK)
@@ -8472,7 +8495,9 @@ int main(int argc, char **argv)
             &buffers,
             &node_context,
             cuda_stream,
-            required_linear_plan_mask))
+            required_linear_plan_mask,
+            (check_layer0_reference != 0u ||
+             check_layer0_full_reference != 0u) ? 0u : 1u))
     {
         return 2;
     }

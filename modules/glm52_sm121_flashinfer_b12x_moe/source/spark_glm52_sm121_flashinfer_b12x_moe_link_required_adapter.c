@@ -120,7 +120,12 @@ static SparkStatus SparkGlm52Sm121FlashInferB12xMoeValidateArguments(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((arguments->argument_flags &
-            ~SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS) != 0u)
+            ~SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_KNOWN_FLAGS) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((arguments->argument_flags &
+            SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_DETERMINISTIC_FC2_FINALIZE) == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

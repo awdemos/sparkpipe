@@ -107,6 +107,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
@@ -166,6 +167,13 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     fake_stream->last_stage_slice_layer_count = layer_count;
     fake_stream->last_stage_slice_final_token_stage = final_token_stage;
     fake_stream->last_stage_slice_plan = stage_slice_plan;
+    fake_stream->last_dspark_hidden_tap_frame_context_active =
+        frame_context != 0 &&
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS) != 0u
+            ? 1u
+            : 0u;
+    fake_stream->last_dspark_hidden_tap_frame_context = frame_context;
     SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
         fake_stream,
         runtime_kv_block_table);

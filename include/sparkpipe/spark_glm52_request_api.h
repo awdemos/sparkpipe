@@ -4,6 +4,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
+#include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_glm52_scheduler.h"
 #include "sparkpipe/spark_status.h"
 
@@ -44,6 +45,7 @@ extern "C" {
 #define SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING 0x00000008u
 #define SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ASYNC_JIT_KV_PREFETCH 0x00000010u
 #define SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION 0x00000020u
+#define SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE 0x00000040u
 #define SPARK_GLM52_REQUEST_API_CONFIGURATION_DEFAULT_FLAGS \
     (SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_JIT_KV_PREFETCH | \
      SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING | \
@@ -52,11 +54,14 @@ extern "C" {
      SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION)
 #define SPARK_GLM52_REQUEST_API_CONFIGURATION_KNOWN_FLAGS \
     (SPARK_GLM52_REQUEST_API_CONFIGURATION_DEFAULT_FLAGS | \
-     SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ASYNC_JIT_KV_PREFETCH)
+     SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ASYNC_JIT_KV_PREFETCH | \
+     SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE)
 
 #define SPARK_GLM52_REQUEST_API_REQUEST_FLAG_REALTIME 0x00000001u
+#define SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION 0x00000002u
 #define SPARK_GLM52_REQUEST_API_REQUEST_FLAG_KNOWN_FLAGS \
-    SPARK_GLM52_REQUEST_API_REQUEST_FLAG_REALTIME
+    (SPARK_GLM52_REQUEST_API_REQUEST_FLAG_REALTIME | \
+     SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION)
 
 #define SPARK_GLM52_REQUEST_API_STATE_FREE 0u
 #define SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL 1u
@@ -66,11 +71,14 @@ extern "C" {
 #define SPARK_GLM52_REQUEST_API_STATE_COMPLETED 5u
 #define SPARK_GLM52_REQUEST_API_STATE_CANCELLED 6u
 #define SPARK_GLM52_REQUEST_API_STATE_WAITING_PREFIX_COHORT 7u
+#define SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY 8u
+#define SPARK_GLM52_REQUEST_API_STATE_RUNNING_SPECULATIVE_VERIFY 9u
 
 #define SPARK_GLM52_REQUEST_API_DISPATCH_KIND_NONE 0u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL 1u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH 2u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH 3u
+#define SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH 4u
 
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_JIT_PREFETCHED_KV 0x00000001u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_PRIORITY_PREEMPTED_QUEUE 0x00000002u
@@ -78,6 +86,9 @@ extern "C" {
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_JIT_PREFETCH_PENDING 0x00000008u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_PREFILL_BATCH 0x00000010u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_PREFIX_FAMILY_SELECTED 0x00000020u
+#define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE 0x00000040u
+#define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY 0x00000080u
+#define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_CONFIDENCE_TRUNCATED 0x00000100u
 
 #define SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY 8u
 
@@ -183,6 +194,7 @@ typedef struct SparkGlm52RequestApiConfiguration
     void *kv_prefetch_context;
     SparkGlm52RequestApiKvPrefetchStartFunction kv_prefetch_start_function;
     SparkGlm52RequestApiKvPrefetchPollFunction kv_prefetch_poll_function;
+    SparkGlm52DsparkSpeculator *dspark_speculator;
 } SparkGlm52RequestApiConfiguration;
 
 typedef struct SparkGlm52RequestApiDispatch
@@ -207,6 +219,20 @@ typedef struct SparkGlm52RequestApiDispatch
     SparkGlm52SchedulerPrefillBatchDecision prefill_batch_decision;
     SparkGlm52SchedulerBatchDecision decode_batch_decision;
     SparkGlm52KvCachePrefetchPlan kv_prefetch_plan;
+    uint32_t speculative_token_count;
+    uint32_t speculative_max_committed_token_count;
+    uint32_t speculative_committed_token_counts[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+    uint32_t speculative_accepted_token_counts[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+    uint32_t speculative_fallback_token_ids[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+    uint32_t speculative_draft_token_ids[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT][
+            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+    uint32_t speculative_confidence_milli[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT][
+            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
 } SparkGlm52RequestApiDispatch;
 
 typedef struct SparkGlm52RequestApi
@@ -249,6 +275,13 @@ typedef struct SparkGlm52RequestApi
     void *kv_prefetch_context;
     SparkGlm52RequestApiKvPrefetchStartFunction kv_prefetch_start_function;
     SparkGlm52RequestApiKvPrefetchPollFunction kv_prefetch_poll_function;
+    SparkGlm52DsparkSpeculator *dspark_speculator;
+    uint64_t dspark_tap_capture_dispatch_count;
+    uint64_t dspark_draft_ready_count;
+    uint64_t dspark_verify_dispatch_count;
+    uint64_t dspark_accepted_draft_token_count;
+    uint64_t dspark_committed_token_count;
+    uint64_t dspark_rejected_token_count;
     SparkGlm52RequestApiPendingPrefetch pending_prefetches[
         SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY];
 } SparkGlm52RequestApi;
@@ -277,6 +310,13 @@ SparkStatus SparkGlm52RequestApiDispatchJitKvPrefetch(
 SparkStatus SparkGlm52RequestApiScheduleNext(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiDispatch *dispatch);
+
+SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiDispatch *dispatch,
+    const uint32_t *verifier_token_ids,
+    uint32_t lane_stride,
+    uint32_t verifier_token_count);
 
 SparkStatus SparkGlm52RequestApiCompleteDispatch(
     SparkGlm52RequestApi *api,

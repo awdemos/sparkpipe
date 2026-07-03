@@ -109,6 +109,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
@@ -152,6 +153,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         active_sequence_count,
         final_token_stage,
         runtime_kv_block_table,
+        frame_context,
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {

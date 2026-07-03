@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include <cuda_runtime_api.h>
+#include <cuda_bf16.h>
 
 extern "C" SparkStatus SparkFlashInferB12xCompiledMoeCreate(
     const SparkGlm52Sm121FlashInferB12xMoeRecipe *recipe,
@@ -139,6 +140,7 @@ static void SparkGlm52B12xReleaseGeneratedWorkspace(
     SparkGlm52B12xCudaFree(workspace->task_slice_count_i32);
     SparkGlm52B12xCudaFree(workspace->task_valid_rows_i32);
     SparkGlm52B12xCudaFree(workspace->tile_write_count_i32);
+    SparkGlm52B12xCudaFree(workspace->route_output_bf16);
     memset(workspace, 0, sizeof(*workspace));
 }
 
@@ -938,6 +940,10 @@ static SparkStatus SparkGlm52B12xAllocateDynamicWorkspace(
         sizeof(int32_t));
 }
 
+static SparkStatus SparkGlm52B12xAllocateDeterministicFinalizeWorkspace(
+    SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
+    const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket);
+
 static SparkStatus SparkGlm52B12xAllocateGeneratedWorkspace(
     SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
     const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket)
@@ -970,6 +976,12 @@ static SparkStatus SparkGlm52B12xAllocateGeneratedWorkspace(
         status = SPARK_STATUS_INVALID_ARGUMENT;
     }
 
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52B12xAllocateDeterministicFinalizeWorkspace(
+            workspace,
+            bucket);
+    }
     if (status != SPARK_STATUS_OK)
     {
         SparkGlm52B12xReleaseGeneratedWorkspace(workspace);
@@ -992,6 +1004,123 @@ static SparkStatus SparkGlm52B12xMemsetAsyncIfPresent(
     return SparkGlm52B12xCudaToSparkStatus(cuda_status);
 }
 
+static SparkStatus SparkGlm52B12xAllocateDeterministicFinalizeWorkspace(
+    SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
+    const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket)
+{
+    SparkStatus status;
+    size_t output_element_count;
+
+    if (workspace == 0 || bucket == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52B12xCheckedMultiplySize(
+        (size_t)bucket->max_rows,
+        (size_t)SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_HIDDEN_DIMENSION,
+        &output_element_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52B12xAllocateDeviceArray(
+        &workspace->route_output_bf16,
+        output_element_count,
+        sizeof(uint16_t));
+}
+
+__global__ void SparkGlm52B12xDeterministicFc2FinalizeKernel(
+    const uint16_t *route_output_bf16,
+    uint16_t *output_bf16,
+    uint32_t token_count,
+    uint32_t top_k,
+    uint32_t hidden_dimension)
+{
+    uint64_t element_index;
+    uint64_t element_stride;
+    uint64_t total_elements;
+
+    element_index =
+        ((uint64_t)blockIdx.x * (uint64_t)blockDim.x) +
+        (uint64_t)threadIdx.x;
+    element_stride = (uint64_t)gridDim.x * (uint64_t)blockDim.x;
+    total_elements = (uint64_t)token_count * (uint64_t)hidden_dimension;
+
+    while (element_index < total_elements)
+    {
+        uint32_t token_index;
+        uint32_t hidden_index;
+        uint32_t route_index;
+        float sum;
+
+        token_index = (uint32_t)(element_index / (uint64_t)hidden_dimension);
+        hidden_index = (uint32_t)(element_index -
+            ((uint64_t)token_index * (uint64_t)hidden_dimension));
+        sum = 0.0f;
+        for (route_index = 0u; route_index < top_k; ++route_index)
+        {
+            uint64_t route_row;
+            uint64_t route_offset;
+            __nv_bfloat16 route_value;
+
+            route_row =
+                ((uint64_t)token_index * (uint64_t)top_k) +
+                (uint64_t)route_index;
+            route_offset =
+                (route_row * (uint64_t)hidden_dimension) +
+                (uint64_t)hidden_index;
+            route_value = *reinterpret_cast<const __nv_bfloat16 *>(
+                route_output_bf16 + route_offset);
+            sum += __bfloat162float(route_value);
+        }
+        *reinterpret_cast<__nv_bfloat16 *>(output_bf16 + element_index) =
+            __float2bfloat16_rn(sum);
+        element_index += element_stride;
+    }
+}
+
+static SparkStatus SparkGlm52B12xLaunchDeterministicFc2Finalize(
+    const SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
+    const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments)
+{
+    cudaStream_t cuda_stream;
+    uint32_t block_count;
+    uint64_t total_elements;
+
+    if (workspace == 0 || arguments == 0 ||
+        workspace->route_output_bf16 == 0 || arguments->output_bf16 == 0 ||
+        arguments->cuda_stream == 0 || arguments->token_count == 0u ||
+        arguments->top_k == 0u || arguments->hidden_dimension == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    total_elements =
+        (uint64_t)arguments->token_count *
+        (uint64_t)arguments->hidden_dimension;
+    block_count = (uint32_t)((total_elements + 255u) / 256u);
+    if (block_count == 0u)
+    {
+        block_count = 1u;
+    }
+    if (block_count > 2048u)
+    {
+        block_count = 2048u;
+    }
+    cuda_stream = (cudaStream_t)arguments->cuda_stream;
+    SparkGlm52B12xDeterministicFc2FinalizeKernel<<<
+        block_count,
+        256u,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)workspace->route_output_bf16,
+        (uint16_t *)arguments->output_bf16,
+        arguments->token_count,
+        arguments->top_k,
+        arguments->hidden_dimension);
+    return SparkGlm52B12xCudaToSparkStatus(cudaGetLastError());
+}
+
 static SparkStatus SparkGlm52B12xResetLaunchState(
     SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
     const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket,
@@ -1004,6 +1133,7 @@ static SparkStatus SparkGlm52B12xResetLaunchState(
     SparkStatus status;
 
     if (workspace == 0 || bucket == 0 || arguments == 0 ||
+        workspace->route_output_bf16 == 0 ||
         arguments->output_bf16 == 0 || arguments->cuda_stream == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1122,12 +1252,18 @@ static SparkStatus SparkGlm52B12xResetLaunchState(
         return status;
     status = SparkGlm52B12xCheckedMultiplySize(
         (size_t)arguments->token_count,
+        (size_t)arguments->top_k,
+        &output_element_count);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = SparkGlm52B12xCheckedMultiplySize(
+        output_element_count,
         (size_t)arguments->hidden_dimension,
         &output_element_count);
     if (status != SPARK_STATUS_OK)
         return status;
     return SparkGlm52B12xMemsetAsyncIfPresent(
-        arguments->output_bf16,
+        workspace->route_output_bf16,
         output_element_count * sizeof(uint16_t),
         cuda_stream);
 }
@@ -1146,7 +1282,10 @@ static SparkStatus SparkGlm52B12xValidateRecipeAgainstGeneratedManifest(
     if (manifest->abi_version !=
         SPARK_GLM52_SM121_B12X_GENERATED_KERNEL_TABLE_ABI_VERSION ||
         manifest->bucket_count == 0u ||
-        manifest->buckets == 0)
+        manifest->buckets == 0 ||
+        (manifest->manifest_flags &
+            SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_REQUIRED_FLAGS) !=
+            SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_REQUIRED_FLAGS)
     {
         return SPARK_STATUS_ABI_MISMATCH;
     }
@@ -1329,13 +1468,21 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
     generated_arguments.w2_weight_fp4_static_view = arguments->w2_weight_fp4_static_view;
     generated_arguments.w2_scale_static_storage_ue4m3 = arguments->w2_scale_static_storage_ue4m3;
     generated_arguments.w2_alpha_fp32_by_expert = arguments->w2_alpha_fp32_by_expert;
-    generated_arguments.output_bf16 = arguments->output_bf16;
+    generated_arguments.output_bf16 =
+        state->workspaces[bucket_index].route_output_bf16;
     generated_arguments.user_workspace = arguments->workspace;
     generated_arguments.user_workspace_bytes = arguments->workspace_bytes;
     generated_arguments.generated_workspace = &state->workspaces[bucket_index];
     generated_arguments.cuda_stream = arguments->cuda_stream;
 
-    return SparkGlm52Sm121B12xGeneratedLaunch(bucket, &generated_arguments);
+    status = SparkGlm52Sm121B12xGeneratedLaunch(bucket, &generated_arguments);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52B12xLaunchDeterministicFc2Finalize(
+        &state->workspaces[bucket_index],
+        arguments);
 }
 
 extern "C" void SparkFlashInferB12xCompiledMoeDestroy(void *state_pointer)

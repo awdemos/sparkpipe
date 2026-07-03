@@ -14,6 +14,12 @@ extern "C" {
 #define SPARK_GLM52_SM121_B12X_BACKEND_KIND_STATIC 2u
 #define SPARK_GLM52_SM121_B12X_BACKEND_KIND_DYNAMIC 3u
 
+#define SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_ROUTE_OUTPUT 0x00000001u
+#define SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_DETERMINISTIC_FC2_FINALIZE 0x00000002u
+#define SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_REQUIRED_FLAGS \
+    (SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_ROUTE_OUTPUT | \
+     SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_DETERMINISTIC_FC2_FINALIZE)
+
 typedef struct SparkGlm52Sm121B12xGeneratedKernelBucket
 {
     uint32_t abi_version;
@@ -65,6 +71,7 @@ typedef struct SparkGlm52Sm121B12xGeneratedWorkspace
     void *task_slice_count_i32;
     void *task_valid_rows_i32;
     void *tile_write_count_i32;
+    void *route_output_bf16;
 } SparkGlm52Sm121B12xGeneratedWorkspace;
 
 typedef struct SparkGlm52Sm121B12xGeneratedLaunchArguments
@@ -98,6 +105,8 @@ typedef struct SparkGlm52Sm121B12xGeneratedManifest
 {
     uint32_t abi_version;
     uint32_t bucket_count;
+    uint32_t manifest_flags;
+    uint32_t reserved0;
     uint32_t hidden_dimension;
     uint32_t intermediate_dimension;
     uint32_t expert_count;
