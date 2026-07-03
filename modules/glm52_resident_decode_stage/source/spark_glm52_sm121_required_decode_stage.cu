@@ -5245,14 +5245,15 @@ static SparkStatus SparkGlm52ResidentDecodeStageGetB12xDeterministicWorkspace(
     return SPARK_STATUS_OK;
 }
 
-static int SparkGlm52ResidentDecodeStageB12xFastAtomicFinalizeForced(void)
+static int SparkGlm52ResidentDecodeStageB12xSingleRouteFinalizeExperimentEnabled(void)
 {
-    const char *fast_atomic_text;
+    const char *experiment_text;
 
-    fast_atomic_text = getenv("SPARK_GLM52_B12X_FAST_ATOMIC_FINALIZE");
-    return fast_atomic_text != 0 &&
-        fast_atomic_text[0] != '\0' &&
-        strcmp(fast_atomic_text, "0") != 0;
+    experiment_text =
+        getenv("SPARK_GLM52_B12X_SINGLE_ROUTE_FINALIZE_EXPERIMENT");
+    return experiment_text != 0 &&
+        experiment_text[0] != '\0' &&
+        strcmp(experiment_text, "0") != 0;
 }
 
 static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
@@ -5469,7 +5470,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchValidatedFlashInferB12xMoe
     }
 
     if (active_sequence_count == 1u &&
-        !SparkGlm52ResidentDecodeStageB12xFastAtomicFinalizeForced() &&
+        SparkGlm52ResidentDecodeStageB12xSingleRouteFinalizeExperimentEnabled() &&
         SparkGlm52ResidentDecodeStageGetB12xDeterministicWorkspace(
             b12x_plan,
             &deterministic_topk_ids,
