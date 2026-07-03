@@ -15,24 +15,28 @@ def main() -> None:
         "python3",
         str(root / "tools" / "glm52_prompt_pipeline_input.py"),
         "--token-ids",
-        "101,202,303",
+        "101,202,303,404",
         "--output-dir",
         str(output_dir),
         "--pipeline-output-dir",
         str(output_dir / "pipeline"),
     ]
     completed = subprocess.run(command, cwd=str(root), text=True, capture_output=True, check=True)
-    assert "glm52_prompt_bootstrap_token=303" in completed.stdout
+    assert "glm52_prompt_bootstrap_token=404" in completed.stdout
+    assert "glm52_prompt_pipeline_semantics=tail_window_prompt_prefill_validation_context" in completed.stdout
     token_json = output_dir / "prompt_tokens.json"
+    token_txt = output_dir / "prompt_tokens.txt"
     env_file = output_dir / "pipeline_env.sh"
     payload = json.loads(token_json.read_text(encoding="utf-8"))
     assert payload["schema"] == "sparkpipe.glm52.prompt_pipeline_input.v1"
-    assert payload["token_ids"] == [101, 202, 303]
-    assert payload["bootstrap_token_id"] == 303
-    assert payload["pipeline_semantics"] == "single-token bootstrap only; no prompt KV prefill context yet"
+    assert payload["token_ids"] == [101, 202, 303, 404]
+    assert payload["bootstrap_token_id"] == 404
+    assert payload["prefill_token_ids_file"] == str(token_txt)
+    assert payload["pipeline_semantics"] == "tail-window prompt prefill plus current-token decode for the local validation pipeline"
     env_text = env_file.read_text(encoding="utf-8")
-    assert "GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID=303" in env_text
-    assert "GLM52_PROMPT_TOKEN_COUNT=3" in env_text
+    assert "GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID=404" in env_text
+    assert "GLM52_PREFILL_TOKEN_IDS_FILE=" in env_text
+    assert "GLM52_PROMPT_TOKEN_COUNT=4" in env_text
 
 
 if __name__ == "__main__":
