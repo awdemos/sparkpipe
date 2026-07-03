@@ -13,7 +13,11 @@ def require_contains(path: str, needle: str) -> None:
 def main() -> int:
     require_contains(
         "modules/glm52_sm121_b12x_compiled_backend/include/sparkpipe/spark_glm52_sm121_b12x_generated_kernel_table.h",
-        "SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_REQUIRED_FLAGS",
+        "SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_FLAG_ROUTE_SLICE_OUTPUT",
+    )
+    require_contains(
+        "modules/glm52_sm121_b12x_compiled_backend/include/sparkpipe/spark_glm52_sm121_b12x_generated_kernel_table.h",
+        "route_output_slice_count",
     )
     require_contains(
         "modules/glm52_sm121_b12x_compiled_backend/source/spark_flashinfer_b12x_compiled_moe_backend.cu",
@@ -21,31 +25,63 @@ def main() -> int:
     )
     require_contains(
         "modules/glm52_sm121_b12x_compiled_backend/source/spark_flashinfer_b12x_compiled_moe_backend.cu",
+        "route_row * (uint64_t)route_output_slice_count",
+    )
+    require_contains(
+        "modules/glm52_sm121_b12x_compiled_backend/source/spark_flashinfer_b12x_compiled_moe_backend.cu",
         "generated_arguments.output_bf16 =\n        state->workspaces[bucket_index].route_output_bf16;",
     )
     require_contains(
+        "third_party/flashinfer/flashinfer/cute_dsl/fp4_common.py",
+        "def store_bf16x2",
+    )
+    require_contains(
+        "third_party/flashinfer/flashinfer/cute_dsl/fp4_common.py",
+        "st.global.b32 [$0], packed;",
+    )
+    require_contains(
+        "third_party/flashinfer/flashinfer/cute_dsl/fp4_common.py",
+        "def store_v4_bf16x2",
+    )
+    require_contains(
+        "third_party/flashinfer/flashinfer/cute_dsl/fp4_common.py",
+        "st.global.v4.b32 [$0], {p0, p1, p2, p3};",
+    )
+    require_contains(
         "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_static_kernel.py",
-        "st_global_i32(get_ptr_as_int64(token_map, map_idx), pair_idx)",
+        "scatter_total = total_pairs * Int32(self.output_tile_count_n) * cols",
+    )
+    require_contains(
+        "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_static_kernel.py",
+        "route_slice_row = (",
     )
     require_contains(
         "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_micro_kernel.py",
-        "unique_tok = local_expert_idx",
+        "scatter_total = total_pairs * Int32(self.output_tile_count_n) * cols",
+    )
+    require_contains(
+        "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_micro_kernel.py",
+        "route_slice_row = (",
     )
     require_contains(
         "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_dynamic_kernel.py",
-        "get_ptr_as_int64(token_map, phys_row), pair_idx",
+        "scatter_total_u32 = (",
+    )
+    require_contains(
+        "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_dynamic_kernel.py",
+        "route_slice_row = (",
     )
     require_contains(
         "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_dispatch.py",
-        "deterministic_route_output",
+        "routed_rows * route_output_slice_count",
     )
     require_contains(
-        "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/blackwell_sm12x/moe_dispatch.py",
-        "scatter_rows = routed_rows if _sparkpipe_b12x_deterministic_route_output_enabled() else m",
+        "third_party/flashinfer/flashinfer/fused_moe/cute_dsl/b12x_moe.py",
+        "_sparkpipe_b12x_deterministic_route_output_row_count",
     )
     require_contains(
         "tools/glm52_b12x_aot_compile.py",
-        "SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT",
+        "route_slice_output",
     )
     require_contains(
         "tools/glm52_b12x_aot_compile.py",

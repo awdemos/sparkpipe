@@ -113,6 +113,7 @@ def make_inputs(torch_module: Any, token_count: int) -> Dict[str, Any]:
     expert_count = REQUIRED_SHAPE["expert_count"]
     top_k = REQUIRED_SHAPE["top_k"]
     hidden_dimension = REQUIRED_SHAPE["hidden_dimension"]
+    intermediate_dimension = REQUIRED_SHAPE["intermediate_dimension"]
     hidden = torch_module.empty(
         (token_count, hidden_dimension),
         device="cuda",
@@ -131,8 +132,9 @@ def make_inputs(torch_module: Any, token_count: int) -> Dict[str, Any]:
         device="cuda",
         dtype=torch_module.float32,
     )
+    route_output_slice_count = ceil_div(intermediate_dimension, 128)
     output = torch_module.empty(
-        (token_count * top_k, hidden_dimension),
+        (token_count * top_k * route_output_slice_count, hidden_dimension),
         device="cuda",
         dtype=torch_module.bfloat16,
     )
@@ -331,12 +333,24 @@ def bucket_geometry(kind: str, token_count: int) -> Dict[str, int]:
             "max_rows": geometry["max_rows"],
             "physical_tile_capacity": geometry["physical_tile_capacity"],
             "task_capacity": geometry["task_capacity"],
+            "static_mma_tile_m": 128,
+            "static_mma_tile_n": 128,
+            "route_output_slice_count": ceil_div(
+                REQUIRED_SHAPE["intermediate_dimension"],
+                128,
+            ),
         }
     return {
         "routed_rows_capacity": routed_rows,
         "max_rows": routed_rows,
         "physical_tile_capacity": 0,
         "task_capacity": 0,
+        "static_mma_tile_m": 128,
+        "static_mma_tile_n": 128,
+        "route_output_slice_count": ceil_div(
+            REQUIRED_SHAPE["intermediate_dimension"],
+            128,
+        ),
     }
 
 
@@ -417,7 +431,7 @@ def generate_launch_table_source(manifest: Dict[str, Any], exported: Dict[str, D
             f"SPARK_GLM52_SM121_B12X_BACKEND_KIND_{bucket['backend_kind'].upper()}, {bucket['routed_rows_capacity']}u, "
             f"{bucket['max_rows']}u, {bucket['physical_tile_capacity']}u, {bucket['task_capacity']}u, "
             f"{bucket['max_active_clusters']}u, {bucket['static_mma_tile_m']}u, {bucket['static_mma_tile_n']}u, "
-            "0u, 0u, "
+            f"{bucket['route_output_slice_count']}u, 0u, "
             f"{int(bucket.get('avg_us', 0))}u, {int(bucket.get('p95_us', 0))}u"
             "}"
         )
@@ -613,6 +627,8 @@ def generate_static_launch_function(c_name: str, function_name: str, token_count
     experts = REQUIRED_SHAPE["expert_count"]
     top_k = REQUIRED_SHAPE["top_k"]
     routed_rows = token_count * top_k
+    route_output_slice_count = ceil_div(intermediate, 128)
+    route_slice_rows = routed_rows * route_output_slice_count
     w1_rows = 2 * intermediate
     rows_pad_k = align_up(max_rows, 128)
     cols_pad_k = align_up(hidden // 16, 4)
@@ -629,7 +645,7 @@ static SparkStatus {c_name}(
     TVMFFIAny call_arguments[25];
     int64_t hidden_shape[2] = {{{token_count}, {hidden}}};
     int64_t hidden_strides[2] = {{{hidden}, 1}};
-    int64_t route_hidden_shape[2] = {{{routed_rows}, {hidden}}};
+    int64_t route_hidden_shape[2] = {{{route_slice_rows}, {hidden}}};
     int64_t route_hidden_strides[2] = {{{hidden}, 1}};
     int64_t routed_shape[1] = {{{routed_rows}}};
     int64_t routed_strides[1] = {{1}};
@@ -813,8 +829,12 @@ def build_manifest(exported: Dict[str, Dict[str, Any]], bucket_results: List[Dic
             "backend_kind": exported_kind,
             "function_name": function_name,
             "max_active_clusters": int(result.get("max_active_clusters", 0)),
-            "static_mma_tile_m": 0,
-            "static_mma_tile_n": 0,
+            "static_mma_tile_m": 128,
+            "static_mma_tile_n": 128,
+            "route_output_slice_count": ceil_div(
+                REQUIRED_SHAPE["intermediate_dimension"],
+                128,
+            ),
             "avg_us": int(round(float(result.get("avg_us", 0.0)))),
             "p95_us": int(round(float(result.get("p95_us", 0.0)))),
         }
@@ -830,6 +850,7 @@ def build_manifest(exported: Dict[str, Dict[str, Any]], bucket_results: List[Dic
         "runtime_backend_selection": "forbidden",
         "deterministic_fc2_finalize": True,
         "route_scatter_output": True,
+        "route_slice_output": True,
         "shape": REQUIRED_SHAPE,
         "maximum_token_count": max(int(bucket["token_upper_bound"]) for bucket in buckets),
         "buckets": buckets,

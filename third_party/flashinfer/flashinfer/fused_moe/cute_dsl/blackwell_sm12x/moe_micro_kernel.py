@@ -124,6 +124,7 @@ from flashinfer.cute_dsl.fp4_common import (
     st_shared_u8,
     st_global_u64,
     scatter_add_bf16x2,
+    store_bf16x2,
 )
 from flashinfer.gemm.kernels.dense_blockscaled_gemm_sm120_b12x import (
     Sm120B12xBlockScaledDenseGemmKernel as DenseGemmKernel,
@@ -1018,7 +1019,7 @@ class MoEMicroKernel:
                 row_counts[i] = Int32(0)
                 i += flat_stride
         if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
-            scatter_total = total_pairs * cols
+            scatter_total = total_pairs * Int32(self.output_tile_count_n) * cols
         else:
             scatter_total = num_tokens * cols
         j = flat_tid
@@ -2118,6 +2119,8 @@ class MoEMicroKernel:
                             tRS_sD[(None, None, None, epi_buffer)],
                         )
                         cute.arch.fence_proxy("async.shared", space="cta")
+                        if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+                            self.epilog_sync_barrier.arrive_and_wait()
                         # No cross-warp barrier needed before scatter:
                         # StMatrix is warp-local, and each warp only reads
                         # its own 64x64 quadrant of sC below.
@@ -2175,13 +2178,27 @@ class MoEMicroKernel:
                                     epi_buffer,
                                 ]
                             )
-                            scatter_add_bf16x2(
-                                get_ptr_as_int64(
-                                    scatter_output, tok * scatter_N + global_col
-                                ),
-                                wv * sc_v0,
-                                wv * sc_v1,
-                            )
+                            if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+                                route_slice_row = (
+                                    tok * Int32(self.output_tile_count_n)
+                                    + intermediate_slice
+                                )
+                                store_bf16x2(
+                                    get_ptr_as_int64(
+                                        scatter_output,
+                                        route_slice_row * scatter_N + global_col,
+                                    ),
+                                    wv * sc_v0,
+                                    wv * sc_v1,
+                                )
+                            else:
+                                scatter_add_bf16x2(
+                                    get_ptr_as_int64(
+                                        scatter_output, tok * scatter_N + global_col
+                                    ),
+                                    wv * sc_v0,
+                                    wv * sc_v1,
+                                )
                             pair_idx += Int32(self.num_threads_per_warp)
 
                         # Post-scatter barrier: needed to ensure all warps

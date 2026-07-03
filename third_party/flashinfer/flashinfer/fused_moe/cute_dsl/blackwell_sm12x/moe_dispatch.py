@@ -57,6 +57,15 @@ _SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT_ENV = "SPARKPIPE_B12X_DETERMINISTIC_R
 def _sparkpipe_b12x_deterministic_route_output_enabled() -> bool:
     return os.environ.get(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT_ENV, "0") == "1"
 
+
+def _sparkpipe_b12x_route_output_slice_count(
+    intermediate_size: int,
+    mma_tile_n: int,
+) -> int:
+    if mma_tile_n <= 0:
+        raise ValueError("mma_tile_n must be positive")
+    return max(1, (intermediate_size + mma_tile_n - 1) // mma_tile_n)
+
 # Micro kernel cutover thresholds (routed pairs)
 _MICRO_COMPACT_CUTOVER_PAIRS = 20
 _MICRO_COMPACT_CUTOVER_PAIRS_MULTI_TOPK = 40
@@ -519,10 +528,18 @@ def _get_static_kernel(
 
     # Select tile size based on actual routed rows
     routed_rows = m * num_topk
-    scatter_rows = routed_rows if _sparkpipe_b12x_deterministic_route_output_enabled() else m
     mma_tiler_mn = (128, 128)
     if activation_precision == "fp4" and num_topk > 1:
         mma_tiler_mn = _select_moe_mma_tiler_mn(routed_rows, n)
+    route_output_slice_count = _sparkpipe_b12x_route_output_slice_count(
+        n,
+        mma_tiler_mn[1],
+    )
+    scatter_rows = (
+        routed_rows * route_output_slice_count
+        if _sparkpipe_b12x_deterministic_route_output_enabled()
+        else m
+    )
 
     cache_key = (
         "static",
@@ -758,8 +775,16 @@ def _get_micro_kernel(
 
     # Micro always selects tile from routed rows (not just for multi-topk)
     routed_rows = m * num_topk
-    scatter_rows = routed_rows if _sparkpipe_b12x_deterministic_route_output_enabled() else m
     mma_tiler_mn = _select_moe_mma_tiler_mn(routed_rows, n)
+    route_output_slice_count = _sparkpipe_b12x_route_output_slice_count(
+        n,
+        mma_tiler_mn[1],
+    )
+    scatter_rows = (
+        routed_rows * route_output_slice_count
+        if _sparkpipe_b12x_deterministic_route_output_enabled()
+        else m
+    )
 
     cache_key = (
         "micro",

@@ -61,7 +61,9 @@ endif
 
 archive: require_sm121a $(MODULE_ARCHIVE)
 
-cold_archive: clean archive
+cold_archive:
+	$(MAKE) clean
+	$(MAKE) archive
 
 require_sm121a:
 	@test "$(CUDA_ARCH)" = "sm_121a" || \

@@ -1771,6 +1771,32 @@ def threadfence(*, loc=None, ip=None):
 
 
 @dsl_user_op
+def store_bf16x2(addr: Int64, val0_f32, val1_f32, *, loc=None, ip=None):
+    """Deterministically store two f32 values as one packed BF16x2 word.
+
+    This is used by Sparkpipe's deterministic B12x route-slice-output mode.
+    Unlike scatter_add_bf16x2, it does not perform a reduction and therefore
+    cannot introduce nondeterministic FC2 slice accumulation.  The caller must
+    address a unique route/slice/output-column row.
+    """
+    llvm.inline_asm(
+        None,
+        [
+            Int64(addr).ir_value(loc=loc, ip=ip),
+            val0_f32.ir_value(loc=loc, ip=ip),
+            val1_f32.ir_value(loc=loc, ip=ip),
+        ],
+        "{ .reg .b32 packed;"
+        " cvt.rn.satfinite.bf16x2.f32 packed, $2, $1;"
+        " st.global.b32 [$0], packed; }",
+        "l,f,f",
+        has_side_effects=True,
+        is_align_stack=False,
+        asm_dialect=llvm.AsmDialect.AD_ATT,
+    )
+
+
+@dsl_user_op
 def scatter_add_bf16x2(addr: Int64, val0_f32, val1_f32, *, loc=None, ip=None):
     """BF16x2 atomic reduction add to global memory.
 
@@ -1791,6 +1817,44 @@ def scatter_add_bf16x2(addr: Int64, val0_f32, val1_f32, *, loc=None, ip=None):
         has_side_effects=True,
         is_align_stack=False,
         asm_dialect=llvm.AsmDialect.AD_ATT,
+    )
+
+
+@dsl_user_op
+def store_v4_bf16x2(
+    addr: Int64, v0, v1, v2, v3, v4, v5, v6, v7, *, loc=None, ip=None
+):
+    """Deterministic vectorized store of 8 BF16 values.
+
+    The address must be 16-byte aligned by the caller. The B12x dynamic
+    route-output epilogue writes columns in groups of eight, so this replaces
+    the legacy atomic vector reduction when each route row is unique.
+    """
+    llvm.inline_asm(
+        None,
+        [
+            Int64(addr).ir_value(loc=loc, ip=ip),
+            v0.ir_value(loc=loc, ip=ip),
+            v1.ir_value(loc=loc, ip=ip),
+            v2.ir_value(loc=loc, ip=ip),
+            v3.ir_value(loc=loc, ip=ip),
+            v4.ir_value(loc=loc, ip=ip),
+            v5.ir_value(loc=loc, ip=ip),
+            v6.ir_value(loc=loc, ip=ip),
+            v7.ir_value(loc=loc, ip=ip),
+        ],
+        "{ .reg .b32 p0,p1,p2,p3;"
+        " cvt.rn.satfinite.bf16x2.f32 p0, $2, $1;"
+        " cvt.rn.satfinite.bf16x2.f32 p1, $4, $3;"
+        " cvt.rn.satfinite.bf16x2.f32 p2, $6, $5;"
+        " cvt.rn.satfinite.bf16x2.f32 p3, $8, $7;"
+        " st.global.v4.b32 [$0], {p0, p1, p2, p3}; }",
+        "l,f,f,f,f,f,f,f,f",
+        has_side_effects=True,
+        is_align_stack=False,
+        asm_dialect=llvm.AsmDialect.AD_ATT,
+        loc=loc,
+        ip=ip,
     )
 
 
