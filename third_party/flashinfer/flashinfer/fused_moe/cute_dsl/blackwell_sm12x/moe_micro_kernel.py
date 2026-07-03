@@ -84,6 +84,7 @@ from __future__ import annotations
 
 from typing import Tuple
 
+import os
 import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
@@ -102,6 +103,8 @@ from cutlass.cutlass_dsl import (
 )
 from cutlass._mlir.dialects import llvm
 from cutlass.cute.nvgpu import cpasync
+
+_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT = os.environ.get("SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT", "0") == "1"
 
 from flashinfer.cute_dsl.utils import (
     sm120_make_smem_layout_sfa,
@@ -1014,7 +1017,10 @@ class MoEMicroKernel:
             while i < num_experts:
                 row_counts[i] = Int32(0)
                 i += flat_stride
-        scatter_total = num_tokens * cols
+        if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+            scatter_total = total_pairs * cols
+        else:
+            scatter_total = num_tokens * cols
         j = flat_tid
         while j < scatter_total:
             scatter_output[j // cols, j % cols] = cutlass.BFloat16(0.0)
@@ -1057,7 +1063,10 @@ class MoEMicroKernel:
                         Int32(1),
                     )
                     map_idx = local_expert_id * max_rows + row
-                    st_global_i32(get_ptr_as_int64(token_map, map_idx), token_idx)
+                    if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+                        st_global_i32(get_ptr_as_int64(token_map, map_idx), pair_idx)
+                    else:
+                        st_global_i32(get_ptr_as_int64(token_map, map_idx), token_idx)
                     st_global_f32(get_ptr_as_int64(token_weights, map_idx), weight)
                     _st_shared_i32(ctrl_base_addr + Int32(0), local_expert_id)
                     _st_shared_i32(ctrl_base_addr + Int32(4), row)
@@ -1556,7 +1565,10 @@ class MoEMicroKernel:
                 unique_tok = Int32(0)
                 unique_wv = cutlass.Float32(0.0)
                 if cutlass.const_expr(self.single_token):
-                    unique_tok = local_expert_idx // num_topk
+                    if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+                        unique_tok = local_expert_idx
+                    else:
+                        unique_tok = local_expert_idx // num_topk
                     unique_wv = topk_weights[local_expert_idx].to(cutlass.Float32)
 
                 epi_rest_m = self.tile_shape_mnk[0] // self.epi_tile[0]

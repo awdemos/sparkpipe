@@ -51,6 +51,11 @@ _FORCE_MOE_W4A16_ENV = "FLASHINFER_B12X_FORCE_MOE_W4A16"
 _MICRO_SHARE_INPUT_ACROSS_EXPERTS = (
     os.environ.get("FLASHINFER_B12X_MICRO_SHARE_INPUT", "1") != "0"
 )
+_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT_ENV = "SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT"
+
+
+def _sparkpipe_b12x_deterministic_route_output_enabled() -> bool:
+    return os.environ.get(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT_ENV, "0") == "1"
 
 # Micro kernel cutover thresholds (routed pairs)
 _MICRO_COMPACT_CUTOVER_PAIRS = 20
@@ -514,12 +519,16 @@ def _get_static_kernel(
 
     # Select tile size based on actual routed rows
     routed_rows = m * num_topk
+    scatter_rows = routed_rows if _sparkpipe_b12x_deterministic_route_output_enabled() else m
     mma_tiler_mn = (128, 128)
     if activation_precision == "fp4" and num_topk > 1:
         mma_tiler_mn = _select_moe_mma_tiler_mn(routed_rows, n)
 
     cache_key = (
         "static",
+        "deterministic_route_output"
+        if _sparkpipe_b12x_deterministic_route_output_enabled()
+        else "direct_scatter_output",
         activation_precision,
         state_E,
         weight_E,
@@ -665,7 +674,7 @@ def _get_static_kernel(
     )
     scatter_fake = cute.runtime.make_fake_compact_tensor(
         a_dtype,
-        (m, k),
+        (scatter_rows, k),
         stride_order=(1, 0),
         assumed_align=16,
     )
@@ -749,10 +758,14 @@ def _get_micro_kernel(
 
     # Micro always selects tile from routed rows (not just for multi-topk)
     routed_rows = m * num_topk
+    scatter_rows = routed_rows if _sparkpipe_b12x_deterministic_route_output_enabled() else m
     mma_tiler_mn = _select_moe_mma_tiler_mn(routed_rows, n)
 
     cache_key = (
         "micro",
+        "deterministic_route_output"
+        if _sparkpipe_b12x_deterministic_route_output_enabled()
+        else "direct_scatter_output",
         state_E,
         weight_E,
         m,
@@ -901,7 +914,7 @@ def _get_micro_kernel(
     )
     scatter_fake = cute.runtime.make_fake_compact_tensor(
         a_dtype,
-        (m, k),
+        (scatter_rows, k),
         stride_order=(1, 0),
         assumed_align=16,
     )
@@ -1527,6 +1540,9 @@ def _get_dynamic_kernel(
 
     cache_key = (
         "dynamic",
+        "deterministic_route_output"
+        if _sparkpipe_b12x_deterministic_route_output_enabled()
+        else "direct_scatter_output",
         activation_precision,
         E,
         k,

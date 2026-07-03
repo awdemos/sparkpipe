@@ -50,6 +50,7 @@ from __future__ import annotations
 
 from typing import Tuple
 
+import os
 import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
@@ -70,6 +71,8 @@ from cutlass.cutlass_dsl import (
 )
 from cutlass._mlir.dialects import llvm
 from cutlass.cute.nvgpu import cpasync
+
+_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT = os.environ.get("SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT", "0") == "1"
 
 from flashinfer.cute_dsl.utils import (
     sm120_make_smem_layout_sfa,
@@ -959,7 +962,10 @@ class MoEDynamicKernel:
         if flat_tid < num_experts + Int32(1):
             expert_tile_base[flat_tid] = Int32(0)
 
-        scatter_total_u32 = num_tokens * cols_u32
+        if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+            scatter_total_u32 = total_pairs * cols_u32
+        else:
+            scatter_total_u32 = num_tokens * cols_u32
         scatter_vecs = scatter_total_u32 // Int32(4)
         zero_u32 = Uint32(0)
         zv = flat_tid
@@ -1104,9 +1110,14 @@ class MoEDynamicKernel:
                                 phys_row = phys_tile * Int32(
                                     self.tile_shape_mnk[0]
                                 ) + row % Int32(self.tile_shape_mnk[0])
-                                st_global_i32(
-                                    get_ptr_as_int64(token_map, phys_row), token_idx
-                                )
+                                if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+                                    st_global_i32(
+                                        get_ptr_as_int64(token_map, phys_row), pair_idx
+                                    )
+                                else:
+                                    st_global_i32(
+                                        get_ptr_as_int64(token_map, phys_row), token_idx
+                                    )
                                 st_global_f32(
                                     get_ptr_as_int64(token_weights, phys_row), weight
                                 )
@@ -1312,9 +1323,14 @@ class MoEDynamicKernel:
                                 phys_row = phys_tile * Int32(
                                     self.tile_shape_mnk[0]
                                 ) + row % Int32(self.tile_shape_mnk[0])
-                                st_global_i32(
-                                    get_ptr_as_int64(token_map, phys_row), token_idx
-                                )
+                                if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+                                    st_global_i32(
+                                        get_ptr_as_int64(token_map, phys_row), pair_idx
+                                    )
+                                else:
+                                    st_global_i32(
+                                        get_ptr_as_int64(token_map, phys_row), token_idx
+                                    )
                                 st_global_f32(
                                     get_ptr_as_int64(token_weights, phys_row), weight
                                 )

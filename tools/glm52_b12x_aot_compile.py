@@ -132,7 +132,7 @@ def make_inputs(torch_module: Any, token_count: int) -> Dict[str, Any]:
         dtype=torch_module.float32,
     )
     output = torch_module.empty(
-        (token_count, hidden_dimension),
+        (token_count * top_k, hidden_dimension),
         device="cuda",
         dtype=torch_module.bfloat16,
     )
@@ -264,9 +264,9 @@ def export_compiled_objects(dispatch_module: Any, objects_directory: Path) -> Di
             compiled = value[0]
             token_count: Optional[int] = None
             if kind == "static":
-                token_count = int(key[4])
+                token_count = int(key[5])
             elif kind == "micro":
-                token_count = int(key[3])
+                token_count = int(key[4])
             name = kernel_function_name(kind, token_count)
             object_path = objects_directory / f"{name}.o"
             if not hasattr(compiled, "export_to_c"):
@@ -454,12 +454,6 @@ typedef int (*SparkGlm52B12xTvmFunction)(
     int32_t,
     TVMFFIAny *);
 
-extern "C" int TVMFFIEnvSetStream(
-    int32_t device_type,
-    int32_t device_id,
-    void *stream,
-    void **previous_stream);
-
 static const SparkGlm52Sm121B12xGeneratedKernelBucket
     SparkGlm52B12xGeneratedBuckets[] = {{
 {',\n'.join(bucket_initializers)}
@@ -469,6 +463,8 @@ const SparkGlm52Sm121B12xGeneratedManifest
     SparkGlm52Sm121B12xGeneratedManifestInstance = {{
         SPARK_GLM52_SM121_B12X_GENERATED_KERNEL_TABLE_ABI_VERSION,
         {len(buckets)}u,
+        SPARK_GLM52_SM121_B12X_GENERATED_MANIFEST_REQUIRED_FLAGS,
+        0u,
         {REQUIRED_SHAPE['hidden_dimension']}u,
         {REQUIRED_SHAPE['intermediate_dimension']}u,
         {REQUIRED_SHAPE['expert_count']}u,
@@ -545,20 +541,14 @@ static SparkStatus SparkGlm52B12xInvoke(
     SparkGlm52B12xTvmFunction function,
     const char *function_name,
     const TVMFFIAny *arguments,
-    int32_t argument_count,
-    void *cuda_stream)
+    int32_t argument_count)
 {{
     TVMFFIAny result;
-    void *previous_stream;
     int status;
 
     memset(&result, 0, sizeof(result));
     result.type_index = kTVMFFINone;
-    if (TVMFFIEnvSetStream(kDLCUDA, 0, cuda_stream, &previous_stream) != 0)
-        return SPARK_STATUS_INTERNAL_ERROR;
     status = function(0, arguments, argument_count, &result);
-    if (TVMFFIEnvSetStream(kDLCUDA, 0, previous_stream, 0) != 0)
-        return SPARK_STATUS_INTERNAL_ERROR;
     if (status != 0)
     {{
         fprintf(
@@ -639,6 +629,8 @@ static SparkStatus {c_name}(
     TVMFFIAny call_arguments[25];
     int64_t hidden_shape[2] = {{{token_count}, {hidden}}};
     int64_t hidden_strides[2] = {{{hidden}, 1}};
+    int64_t route_hidden_shape[2] = {{{routed_rows}, {hidden}}};
+    int64_t route_hidden_strides[2] = {{{hidden}, 1}};
     int64_t routed_shape[1] = {{{routed_rows}}};
     int64_t routed_strides[1] = {{1}};
     int64_t packed_a_shape[3] = {{{max_rows}, {hidden // 2}, {experts}}};
@@ -681,7 +673,7 @@ static SparkStatus {c_name}(
     SparkGlm52B12xFillTensor(&tensors[14], (void *)arguments->w1_alpha_fp32_by_expert, float32_type, 1, expert_shape, expert_strides);
     SparkGlm52B12xFillTensor(&tensors[15], (void *)arguments->w2_alpha_fp32_by_expert, float32_type, 1, expert_shape, expert_strides);
     SparkGlm52B12xFillTensor(&tensors[16], (void *)arguments->fc2_input_scale_fp32_by_expert, float32_type, 1, expert_shape, expert_strides);
-    SparkGlm52B12xFillTensor(&tensors[17], arguments->output_bf16, bf16_type, 2, hidden_shape, hidden_strides);
+    SparkGlm52B12xFillTensor(&tensors[17], arguments->output_bf16, bf16_type, 2, route_hidden_shape, route_hidden_strides);
     SparkGlm52B12xFillTensor(&tensors[18], arguments->generated_workspace->token_map_i32, int32_type, 2, token_map_shape, token_map_strides);
     SparkGlm52B12xFillTensor(&tensors[19], arguments->generated_workspace->token_weights_fp32, float32_type, 2, token_map_shape, token_map_strides);
 
@@ -711,7 +703,7 @@ static SparkStatus {c_name}(
     call_arguments[23] = SparkGlm52B12xTensorArgument(&tensors[19]);
     call_arguments[24] = SparkGlm52B12xPointerArgument(arguments->cuda_stream);
 
-    return SparkGlm52B12xInvoke(__tvm_ffi_{function_name}, "{function_name}", call_arguments, 25, arguments->cuda_stream);
+    return SparkGlm52B12xInvoke(__tvm_ffi_{function_name}, "{function_name}", call_arguments, 25);
 }}
 '''
 
@@ -836,6 +828,8 @@ def build_manifest(exported: Dict[str, Dict[str, Any]], bucket_results: List[Dic
         "compile_time_languages": ["python", "torch", "flashinfer", "cutlass_cute_dsl"],
         "fallback_allowed": False,
         "runtime_backend_selection": "forbidden",
+        "deterministic_fc2_finalize": True,
+        "route_scatter_output": True,
         "shape": REQUIRED_SHAPE,
         "maximum_token_count": max(int(bucket["token_upper_bound"]) for bucket in buckets),
         "buckets": buckets,
@@ -891,6 +885,7 @@ def main() -> int:
             str(maximum_routed_rows),
         )
     os.environ.setdefault("CUDA_MODULE_LOADING", "LAZY")
+    os.environ["SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT"] = "1"
 
     import torch
     from flashinfer.fused_moe.cute_dsl.b12x_moe import B12xMoEWrapper

@@ -82,6 +82,7 @@ from __future__ import annotations
 
 from typing import Tuple
 
+import os
 import cuda.bindings.driver as cuda
 import cutlass
 import cutlass.cute as cute
@@ -100,6 +101,8 @@ from cutlass.cutlass_dsl import (
 )
 from cutlass._mlir.dialects import llvm
 from cutlass.cute.nvgpu import cpasync
+
+_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT = os.environ.get("SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT", "0") == "1"
 
 from flashinfer.cute_dsl.utils import (
     sm120_make_smem_layout_sfa,
@@ -983,7 +986,10 @@ class MoEStaticKernel:
             i += flat_stride
         if flat_tid == Int32(0):
             active_expert_count[Int32(0)] = Int32(0)
-        scatter_total = num_tokens * cols
+        if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+            scatter_total = total_pairs * cols
+        else:
+            scatter_total = num_tokens * cols
         j = flat_tid
         while j < scatter_total:
             scatter_output[j // cols, j % cols] = cutlass.BFloat16(0.0)
@@ -1037,7 +1043,10 @@ class MoEStaticKernel:
                     Int32(1),
                 )
                 map_idx = local_expert_id * max_rows + row
-                st_global_i32(get_ptr_as_int64(token_map, map_idx), token_idx)
+                if cutlass.const_expr(_SPARKPIPE_B12X_DETERMINISTIC_ROUTE_OUTPUT):
+                    st_global_i32(get_ptr_as_int64(token_map, map_idx), pair_idx)
+                else:
+                    st_global_i32(get_ptr_as_int64(token_map, map_idx), token_idx)
                 st_global_f32(get_ptr_as_int64(token_weights, map_idx), weight)
                 _st_shared_i32(ctrl_base_addr + Int32(0), local_expert_id)
                 _st_shared_i32(ctrl_base_addr + Int32(4), row)
