@@ -1254,6 +1254,8 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
     const int32_t *launch_topk_ids;
     SparkStatus status;
     uint32_t bucket_index;
+    const char *sync_after_launch_text;
+    cudaError_t cuda_status;
 
     if (state_pointer == 0 || arguments == 0)
     {
@@ -1335,7 +1337,22 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
     generated_arguments.generated_workspace = &state->workspaces[bucket_index];
     generated_arguments.cuda_stream = arguments->cuda_stream;
 
-    return SparkGlm52Sm121B12xGeneratedLaunch(bucket, &generated_arguments);
+    status = SparkGlm52Sm121B12xGeneratedLaunch(bucket, &generated_arguments);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    sync_after_launch_text =
+        getenv("SPARK_GLM52_B12X_SYNC_AFTER_GENERATED_LAUNCH");
+    if (sync_after_launch_text != 0 &&
+        sync_after_launch_text[0] != '\0' &&
+        strcmp(sync_after_launch_text, "0") != 0)
+    {
+        cuda_status = cudaStreamSynchronize(
+            (cudaStream_t)arguments->cuda_stream);
+        return SparkGlm52B12xCudaToSparkStatus(cuda_status);
+    }
+    return SPARK_STATUS_OK;
 }
 
 extern "C" void SparkFlashInferB12xCompiledMoeDestroy(void *state_pointer)
