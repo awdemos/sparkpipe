@@ -9,6 +9,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define SPARK_GLM52_B12X_PLAN_WORKSPACE_ALIGNMENT 256ull
+
 static SparkStatus SparkGlm52B12xPlanCudaToSparkStatus(
     cudaError_t cuda_status)
 {
@@ -55,6 +57,13 @@ static SparkStatus SparkGlm52B12xPlanCheckedMultiplyU64(
     }
     *product_out = left * right;
     return SPARK_STATUS_OK;
+}
+
+static uint64_t SparkGlm52B12xPlanAlignUpU64(
+    uint64_t value,
+    uint64_t alignment)
+{
+    return (value + alignment - 1ull) & ~(alignment - 1ull);
 }
 
 static SparkStatus SparkGlm52B12xPlanReadExact(
@@ -429,6 +438,119 @@ static SparkStatus SparkGlm52B12xPlanLoadRegionToDevice(
     return status;
 }
 
+static SparkStatus SparkGlm52B12xPlanDeterministicWorkspaceBytes(
+    const SparkGlm52ResidentDecodeStageB12xMoePackHeader *header,
+    uint64_t *workspace_bytes_out)
+{
+    uint64_t route_count;
+    uint64_t ids_bytes;
+    uint64_t weights_bytes;
+    uint64_t output_elements;
+    uint64_t output_bytes;
+    uint64_t workspace_bytes;
+    SparkStatus status;
+
+    if (header == 0 || workspace_bytes_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    route_count = (uint64_t)header->top_k;
+    status = SparkGlm52B12xPlanCheckedMultiplyU64(
+        route_count,
+        (uint64_t)sizeof(int32_t),
+        &ids_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52B12xPlanCheckedMultiplyU64(
+        route_count,
+        (uint64_t)sizeof(float),
+        &weights_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52B12xPlanCheckedMultiplyU64(
+        route_count,
+        (uint64_t)header->hidden_dimension,
+        &output_elements);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52B12xPlanCheckedMultiplyU64(
+        output_elements,
+        (uint64_t)sizeof(uint16_t),
+        &output_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    ids_bytes = SparkGlm52B12xPlanAlignUpU64(
+        ids_bytes,
+        SPARK_GLM52_B12X_PLAN_WORKSPACE_ALIGNMENT);
+    weights_bytes = SparkGlm52B12xPlanAlignUpU64(
+        weights_bytes,
+        SPARK_GLM52_B12X_PLAN_WORKSPACE_ALIGNMENT);
+    output_bytes = SparkGlm52B12xPlanAlignUpU64(
+        output_bytes,
+        SPARK_GLM52_B12X_PLAN_WORKSPACE_ALIGNMENT);
+    status = SparkGlm52B12xPlanCheckedAddU64(
+        ids_bytes,
+        weights_bytes,
+        &workspace_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52B12xPlanCheckedAddU64(
+        workspace_bytes,
+        output_bytes,
+        &workspace_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    *workspace_bytes_out = workspace_bytes;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52B12xPlanAllocateDeterministicWorkspace(
+    SparkGlm52ResidentDecodeStageB12xMoeResidentBinding *binding,
+    const SparkGlm52ResidentDecodeStageB12xMoePackHeader *header)
+{
+    uint64_t workspace_bytes;
+    cudaError_t cuda_status;
+    SparkStatus status;
+
+    if (binding == 0 || header == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52B12xPlanDeterministicWorkspaceBytes(
+        header,
+        &workspace_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (workspace_bytes > (uint64_t)((size_t)-1))
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    cuda_status = cudaMalloc(&binding->plan.workspace, (size_t)workspace_bytes);
+    status = SparkGlm52B12xPlanCudaToSparkStatus(cuda_status);
+    if (status != SPARK_STATUS_OK)
+    {
+        binding->plan.workspace = 0;
+        binding->plan.workspace_bytes = 0u;
+        return status;
+    }
+    binding->plan.workspace_bytes = workspace_bytes;
+    return SPARK_STATUS_OK;
+}
+
 static void SparkGlm52B12xPlanFreeDevicePointer(
     void **device_pointer_cell)
 {
@@ -626,6 +748,12 @@ SparkStatus SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFil
             binding,
             &header,
             create_info->maximum_active_sequence_count);
+        status = SparkGlm52B12xPlanAllocateDeterministicWorkspace(
+            binding,
+            &header);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
         status = SparkGlm52Sm121FlashInferB12xMoeCreate(
             &binding->plan.recipe,
             &binding->state_cell);
@@ -657,5 +785,7 @@ void SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy(
     SparkGlm52B12xPlanFreeDevicePointer(&binding->w2_weight_fp4_static_view);
     SparkGlm52B12xPlanFreeDevicePointer(&binding->w2_scale_static_storage_ue4m3);
     SparkGlm52B12xPlanFreeDevicePointer(&binding->w2_alpha_fp32_by_expert);
+    SparkGlm52B12xPlanFreeDevicePointer(&binding->plan.workspace);
+    binding->plan.workspace_bytes = 0u;
     memset(binding, 0, sizeof(*binding));
 }

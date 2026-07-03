@@ -39,6 +39,7 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS 32u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_DETERMINISTIC_WORKSPACE_ALIGNMENT 256ull
 
 #ifndef SPARK_GLM52_REQUIRED_SYMBOL_REFERENCE
 #if defined(__GNUC__) || defined(__clang__)
@@ -5200,6 +5201,239 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchMoeRouterForB12x(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52ResidentDecodeStageGetB12xDeterministicWorkspace(
+    const SparkGlm52ResidentDecodeStageB12xMoePlan *b12x_plan,
+    int32_t **topk_ids_i32_out,
+    float **topk_weights_fp32_out,
+    uint16_t **route_outputs_bf16_out)
+{
+    uint8_t *workspace_bytes;
+    uint64_t topk_id_bytes;
+    uint64_t topk_weight_bytes;
+    uint64_t route_output_bytes;
+    uint64_t required_bytes;
+
+    if (b12x_plan == 0 || topk_ids_i32_out == 0 ||
+        topk_weights_fp32_out == 0 || route_outputs_bf16_out == 0 ||
+        b12x_plan->workspace == 0 || b12x_plan->top_k == 0u ||
+        b12x_plan->hidden_dimension == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    topk_id_bytes = SparkGlm52ResidentDecodeStageAlignUpU64(
+        (uint64_t)b12x_plan->top_k * (uint64_t)sizeof(int32_t),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_DETERMINISTIC_WORKSPACE_ALIGNMENT);
+    topk_weight_bytes = SparkGlm52ResidentDecodeStageAlignUpU64(
+        (uint64_t)b12x_plan->top_k * (uint64_t)sizeof(float),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_DETERMINISTIC_WORKSPACE_ALIGNMENT);
+    route_output_bytes = SparkGlm52ResidentDecodeStageAlignUpU64(
+        (uint64_t)b12x_plan->top_k *
+            (uint64_t)b12x_plan->hidden_dimension *
+            (uint64_t)sizeof(uint16_t),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_DETERMINISTIC_WORKSPACE_ALIGNMENT);
+    required_bytes = topk_id_bytes + topk_weight_bytes + route_output_bytes;
+    if (required_bytes > b12x_plan->workspace_bytes)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+
+    workspace_bytes = (uint8_t *)b12x_plan->workspace;
+    *topk_ids_i32_out = (int32_t *)workspace_bytes;
+    *topk_weights_fp32_out = (float *)(workspace_bytes + topk_id_bytes);
+    *route_outputs_bf16_out =
+        (uint16_t *)(workspace_bytes + topk_id_bytes + topk_weight_bytes);
+    return SPARK_STATUS_OK;
+}
+
+static int SparkGlm52ResidentDecodeStageB12xFastAtomicFinalizeForced(void)
+{
+    const char *fast_atomic_text;
+
+    fast_atomic_text = getenv("SPARK_GLM52_B12X_FAST_ATOMIC_FINALIZE");
+    return fast_atomic_text != 0 &&
+        fast_atomic_text[0] != '\0' &&
+        strcmp(fast_atomic_text, "0") != 0;
+}
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
+void SparkGlm52ResidentDecodeStageB12xBuildSingleRouteTopKKernel(
+    const uint32_t *__restrict__ source_topk_ids,
+    const float *__restrict__ source_topk_weights,
+    int32_t *__restrict__ masked_topk_ids,
+    float *__restrict__ masked_topk_weights,
+    uint32_t top_k,
+    uint32_t selected_route_index)
+{
+    uint32_t route_index;
+
+    route_index = threadIdx.x;
+    if (source_topk_ids == 0 || source_topk_weights == 0 ||
+        masked_topk_ids == 0 || masked_topk_weights == 0 ||
+        route_index >= top_k)
+    {
+        return;
+    }
+    masked_topk_ids[route_index] = (int32_t)source_topk_ids[route_index];
+    masked_topk_weights[route_index] = route_index == selected_route_index
+        ? source_topk_weights[route_index]
+        : 0.0f;
+}
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
+void SparkGlm52ResidentDecodeStageB12xCombineSingleRouteOutputsKernel(
+    const uint16_t *__restrict__ route_outputs_bf16,
+    uint16_t *__restrict__ output_bf16,
+    uint32_t top_k,
+    uint32_t hidden_dimension)
+{
+    uint64_t hidden_index;
+
+    hidden_index =
+        ((uint64_t)blockIdx.x * (uint64_t)blockDim.x) +
+        (uint64_t)threadIdx.x;
+    while (hidden_index < (uint64_t)hidden_dimension)
+    {
+        float output_value;
+        uint32_t route_index;
+
+        output_value = 0.0f;
+        for (route_index = 0u; route_index < top_k; ++route_index)
+        {
+            uint64_t route_offset;
+
+            route_offset =
+                ((uint64_t)route_index * (uint64_t)hidden_dimension) +
+                hidden_index;
+            output_value += SparkGlm52ResidentDecodeStageBf16ToFloat(
+                route_outputs_bf16[route_offset]);
+        }
+        output_bf16[hidden_index] =
+            SparkGlm52ResidentDecodeStageFloatToBf16(output_value);
+        hidden_index += (uint64_t)gridDim.x * (uint64_t)blockDim.x;
+    }
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchDeterministicB12xMoe(
+    const SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan *b12x_moe_dispatch_plan,
+    const SparkGlm52ResidentDecodeStageB12xMoePlan *b12x_plan,
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    cudaStream_t cuda_stream)
+{
+    SparkGlm52Sm121FlashInferB12xMoeArguments arguments;
+    int32_t *masked_topk_ids;
+    float *masked_topk_weights;
+    uint16_t *route_outputs_bf16;
+    uint64_t hidden_element_count;
+    SparkStatus status;
+    uint32_t route_index;
+
+    (void)b12x_moe_dispatch_plan;
+    if (b12x_plan == 0 || node_context == 0 || pipeline_slot == 0 ||
+        cuda_stream == 0 || b12x_plan->state_cell == 0 ||
+        *(b12x_plan->state_cell) == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52ResidentDecodeStageGetB12xDeterministicWorkspace(
+        b12x_plan,
+        &masked_topk_ids,
+        &masked_topk_weights,
+        &route_outputs_bf16);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchMoeRouterForB12x(
+        node_context,
+        pipeline_slot,
+        cuda_stream,
+        1u);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+
+    for (route_index = 0u; route_index < b12x_plan->top_k; ++route_index)
+    {
+        SparkGlm52ResidentDecodeStageB12xBuildSingleRouteTopKKernel<<<
+            1u,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            pipeline_slot->moe_topk_expert_ids,
+            pipeline_slot->moe_topk_weights,
+            masked_topk_ids,
+            masked_topk_weights,
+            b12x_plan->top_k,
+            route_index);
+
+        memset(&arguments, 0, sizeof(arguments));
+        arguments.abi_version =
+            SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ABI_VERSION;
+        arguments.token_count = 1u;
+        arguments.maximum_token_count = b12x_plan->maximum_token_count;
+        arguments.expert_count = b12x_plan->expert_count;
+        arguments.top_k = b12x_plan->top_k;
+        arguments.hidden_dimension = b12x_plan->hidden_dimension;
+        arguments.intermediate_dimension = b12x_plan->intermediate_dimension;
+        arguments.hidden_bf16 =
+            pipeline_slot->post_attention_normalized_hidden_bf16;
+        arguments.topk_ids_i32 = masked_topk_ids;
+        arguments.topk_weights_fp32 = masked_topk_weights;
+        arguments.w1_weight_fp4_static_view =
+            b12x_plan->w1_weight_fp4_static_view;
+        arguments.w1_scale_static_storage_ue4m3 =
+            b12x_plan->w1_scale_static_storage_ue4m3;
+        arguments.w1_alpha_fp32_by_expert =
+            b12x_plan->w1_alpha_fp32_by_expert;
+        arguments.fc2_input_scale_fp32_by_expert =
+            b12x_plan->fc2_input_scale_fp32_by_expert;
+        arguments.w2_weight_fp4_static_view =
+            b12x_plan->w2_weight_fp4_static_view;
+        arguments.w2_scale_static_storage_ue4m3 =
+            b12x_plan->w2_scale_static_storage_ue4m3;
+        arguments.w2_alpha_fp32_by_expert =
+            b12x_plan->w2_alpha_fp32_by_expert;
+        arguments.output_bf16 =
+            route_outputs_bf16 +
+            ((uint64_t)route_index * (uint64_t)b12x_plan->hidden_dimension);
+        arguments.cuda_stream = (void *)cuda_stream;
+
+        status = SparkGlm52Sm121FlashInferB12xMoeLaunch(
+            *(b12x_plan->state_cell),
+            &arguments);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+
+    SparkGlm52ResidentDecodeStageB12xCombineSingleRouteOutputsKernel<<<
+        SparkGlm52ResidentDecodeStageElementBlockCount(
+            (uint64_t)b12x_plan->hidden_dimension),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        route_outputs_bf16,
+        (uint16_t *)pipeline_slot->moe_route_output_bf16,
+        b12x_plan->top_k,
+        b12x_plan->hidden_dimension);
+
+    hidden_element_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    SparkGlm52ResidentDecodeStageResidualKernel<<<
+        SparkGlm52ResidentDecodeStageElementBlockCount(hidden_element_count),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)pipeline_slot->post_attention_hidden_bf16,
+        (const uint16_t *)pipeline_slot->moe_route_output_bf16,
+        (uint16_t *)pipeline_slot->layer_output_hidden_bf16,
+        1u);
+    return SPARK_STATUS_OK;
+}
+
 
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchValidatedFlashInferB12xMoe(
     const SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan *b12x_moe_dispatch_plan,
@@ -5210,6 +5444,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchValidatedFlashInferB12xMoe
     cudaStream_t cuda_stream)
 {
     SparkGlm52Sm121FlashInferB12xMoeArguments arguments;
+    int32_t *deterministic_topk_ids;
+    float *deterministic_topk_weights;
+    uint16_t *deterministic_route_outputs;
     uint64_t hidden_element_count;
     SparkStatus status;
 
@@ -5229,6 +5466,25 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchValidatedFlashInferB12xMoe
         active_sequence_count > b12x_moe_dispatch_plan->maximum_active_sequence_count)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+
+    if (active_sequence_count == 1u &&
+        !SparkGlm52ResidentDecodeStageB12xFastAtomicFinalizeForced() &&
+        SparkGlm52ResidentDecodeStageGetB12xDeterministicWorkspace(
+            b12x_plan,
+            &deterministic_topk_ids,
+            &deterministic_topk_weights,
+            &deterministic_route_outputs) == SPARK_STATUS_OK)
+    {
+        (void)deterministic_topk_ids;
+        (void)deterministic_topk_weights;
+        (void)deterministic_route_outputs;
+        return SparkGlm52ResidentDecodeStageLaunchDeterministicB12xMoe(
+            b12x_moe_dispatch_plan,
+            b12x_plan,
+            node_context,
+            pipeline_slot,
+            cuda_stream);
     }
 
     status = SparkGlm52ResidentDecodeStageLaunchMoeRouterLogitsForB12x(
@@ -5271,8 +5527,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchValidatedFlashInferB12xMoe
         b12x_plan->w2_scale_static_storage_ue4m3;
     arguments.w2_alpha_fp32_by_expert = b12x_plan->w2_alpha_fp32_by_expert;
     arguments.output_bf16 = pipeline_slot->moe_route_output_bf16;
-    arguments.workspace = b12x_plan->workspace;
-    arguments.workspace_bytes = b12x_plan->workspace_bytes;
+    arguments.workspace = 0;
+    arguments.workspace_bytes = 0u;
     arguments.cuda_stream = (void *)cuda_stream;
 
     status = SparkGlm52Sm121FlashInferB12xMoeLaunch(
