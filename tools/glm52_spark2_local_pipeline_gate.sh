@@ -41,7 +41,7 @@ fi
 
 mkdir -p "$OUTPUT_DIR"
 SUMMARY_TSV="$OUTPUT_DIR/local_pipeline_summary.tsv"
-printf "stage\tmode\tfirst_layer\tlayer_count\tpack_dir\ttotal_us\tmaximum_us\ttoken\tlog\n" >"$SUMMARY_TSV"
+printf "stage\tmode\tfirst_layer\tlayer_count\tpack_dir\ttotal_us\tmaximum_us\ttoken\tprompt_prefill\tprompt_source_tokens\tlog\n" >"$SUMMARY_TSV"
 
 layers_csv()
 {
@@ -155,6 +155,8 @@ record_stage_summary()
 	local total_us
 	local maximum_us
 	local token
+	local prompt_prefill
+	local prompt_source_tokens
 	pass_line="$(stage_pass_line "$log_path")"
 	if [ -z "$pass_line" ]; then
 		return 1
@@ -162,9 +164,12 @@ record_stage_summary()
 	total_us="$(extract_field "total_us" "$pass_line")"
 	maximum_us="$(extract_field "maximum_us" "$pass_line")"
 	token="$(extract_field "restricted_token" "$pass_line")"
-	printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+	prompt_prefill="$(extract_field "prompt_prefill" "$pass_line")"
+	prompt_source_tokens="$(extract_field "prompt_source_tokens" "$pass_line")"
+	printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
 		"${first}:${count}" "$mode" "$first" "$count" "$pack_dir" \
-		"${total_us:-}" "${maximum_us:-}" "${token:-}" "$log_path" >>"$SUMMARY_TSV"
+		"${total_us:-}" "${maximum_us:-}" "${token:-}" \
+		"${prompt_prefill:-}" "${prompt_source_tokens:-}" "$log_path" >>"$SUMMARY_TSV"
 	return 0
 }
 

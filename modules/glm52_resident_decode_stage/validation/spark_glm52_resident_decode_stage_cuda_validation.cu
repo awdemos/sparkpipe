@@ -129,6 +129,14 @@ typedef struct SparkValidationPrefillKvBf16Fixture
     uint32_t ready;
 } SparkValidationPrefillKvBf16Fixture;
 
+typedef struct SparkValidationPromptTokenWindow
+{
+    uint32_t token_ids[SPARK_VALIDATION_CONTEXT_LENGTH];
+    uint32_t token_count;
+    uint32_t source_token_count;
+    uint32_t ready;
+} SparkValidationPromptTokenWindow;
+
 typedef struct SparkValidationLayer3RouterBf16Fixture
 {
     uint64_t copied_bytes;
@@ -3845,19 +3853,147 @@ static bool SparkValidationRunOnce(
     return true;
 }
 
+static bool SparkValidationPromptTokenDelimiter(int32_t character)
+{
+    return character == ',' ||
+        character == ' ' ||
+        character == '\n' ||
+        character == '\r' ||
+        character == '\t';
+}
+
+static bool SparkValidationPromptTokenPush(
+    SparkValidationPromptTokenWindow *prompt_tokens,
+    uint64_t token_id)
+{
+    uint32_t index;
+
+    if (token_id >= 154880ull)
+    {
+        return false;
+    }
+    if (prompt_tokens->token_count < SPARK_VALIDATION_CONTEXT_LENGTH)
+    {
+        prompt_tokens->token_ids[prompt_tokens->token_count] =
+            (uint32_t)token_id;
+        prompt_tokens->token_count += 1u;
+    }
+    else
+    {
+        for (index = 1u; index < SPARK_VALIDATION_CONTEXT_LENGTH; ++index)
+        {
+            prompt_tokens->token_ids[index - 1u] =
+                prompt_tokens->token_ids[index];
+        }
+        prompt_tokens->token_ids[SPARK_VALIDATION_CONTEXT_LENGTH - 1u] =
+            (uint32_t)token_id;
+    }
+    prompt_tokens->source_token_count += 1u;
+    return true;
+}
+
+static bool SparkValidationReadPromptTokenWindow(
+    const char *path,
+    SparkValidationPromptTokenWindow *prompt_tokens)
+{
+    FILE *file;
+    uint64_t token_id;
+    uint32_t has_digit;
+    int32_t character;
+
+    memset(prompt_tokens, 0, sizeof(*prompt_tokens));
+    file = fopen(path, "rb");
+    if (file == 0)
+    {
+        fprintf(stderr, "unable to open GLM52_PREFILL_TOKEN_IDS_FILE: %s\n", path);
+        return false;
+    }
+    token_id = 0u;
+    has_digit = 0u;
+    while ((character = fgetc(file)) != EOF)
+    {
+        if (character >= '0' && character <= '9')
+        {
+            token_id = ((token_id * 10ull) + (uint64_t)(character - '0'));
+            has_digit = 1u;
+        }
+        else if (SparkValidationPromptTokenDelimiter(character))
+        {
+            if (has_digit != 0u)
+            {
+                if (!SparkValidationPromptTokenPush(prompt_tokens, token_id))
+                {
+                    fclose(file);
+                    fprintf(stderr, "invalid prompt token id in %s\n", path);
+                    return false;
+                }
+                token_id = 0u;
+                has_digit = 0u;
+            }
+        }
+        else
+        {
+            fclose(file);
+            fprintf(stderr, "invalid character in GLM52_PREFILL_TOKEN_IDS_FILE: %s\n", path);
+            return false;
+        }
+    }
+    if (has_digit != 0u &&
+        !SparkValidationPromptTokenPush(prompt_tokens, token_id))
+    {
+        fclose(file);
+        fprintf(stderr, "invalid trailing prompt token id in %s\n", path);
+        return false;
+    }
+    fclose(file);
+    if (prompt_tokens->source_token_count < SPARK_VALIDATION_CONTEXT_LENGTH)
+    {
+        fprintf(stderr, "GLM52_PREFILL_TOKEN_IDS_FILE needs at least %u tokens for this validation context: %s\n", SPARK_VALIDATION_CONTEXT_LENGTH, path);
+        return false;
+    }
+    prompt_tokens->ready = 1u;
+    fprintf(stderr, "prompt_token_window_ready=1 path=%s source_tokens=%u context_tokens=%u,%u,%u,%u\n",
+        path,
+        prompt_tokens->source_token_count,
+        prompt_tokens->token_ids[0],
+        prompt_tokens->token_ids[1],
+        prompt_tokens->token_ids[2],
+        prompt_tokens->token_ids[3]);
+    return true;
+}
+
+static uint32_t SparkValidationResolveContextToken(
+    const SparkValidationPromptTokenWindow *prompt_tokens,
+    uint32_t input_token_id,
+    uint32_t context_index)
+{
+    if (prompt_tokens != 0 && prompt_tokens->ready != 0u)
+    {
+        return prompt_tokens->token_ids[context_index];
+    }
+    if (context_index + 1u == SPARK_VALIDATION_CONTEXT_LENGTH)
+    {
+        return input_token_id;
+    }
+    return input_token_id - (SPARK_VALIDATION_CONTEXT_LENGTH - 1u) +
+        context_index;
+}
+
 static bool SparkValidationRunPrefillKvBf16Fixture(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
     cudaStream_t cuda_stream,
     const char *model_directory,
     uint32_t input_token_id,
+    const SparkValidationPromptTokenWindow *prompt_tokens,
     SparkValidationPrefillKvBf16Fixture *fixture)
 {
     uint32_t prefill_index;
 
     memset(fixture, 0, sizeof(*fixture));
-    fixture->first_token_id =
-        input_token_id - (SPARK_VALIDATION_CONTEXT_LENGTH - 1u);
+    fixture->first_token_id = prompt_tokens != 0 && prompt_tokens->ready != 0u
+        ? prompt_tokens->token_ids[0]
+        : input_token_id - (SPARK_VALIDATION_CONTEXT_LENGTH - 1u);
     fixture->token_count = SPARK_VALIDATION_CONTEXT_LENGTH - 1u;
     for (prefill_index = 0u; prefill_index < fixture->token_count; ++prefill_index)
     {
@@ -3867,7 +4003,9 @@ static bool SparkValidationRunPrefillKvBf16Fixture(
         uint32_t slot_mapping;
         uint32_t context_length;
 
-        token_id = fixture->first_token_id + prefill_index;
+        token_id = prompt_tokens != 0 && prompt_tokens->ready != 0u
+            ? prompt_tokens->token_ids[prefill_index]
+            : fixture->first_token_id + prefill_index;
         position = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET + prefill_index;
         slot_mapping = SPARK_VALIDATION_REMAP_CACHE_SLOT0 + prefill_index;
         context_length = prefill_index + 1u;
@@ -3890,7 +4028,9 @@ static bool SparkValidationRunPrefillKvBf16Fixture(
     }
     if (!SparkValidationCopyInputEmbeddingBf16Row(
             model_directory,
-            input_token_id,
+            prompt_tokens != 0 && prompt_tokens->ready != 0u
+                ? prompt_tokens->token_ids[SPARK_VALIDATION_CONTEXT_LENGTH - 1u]
+                : input_token_id,
             buffers->input_hidden_bf16,
             &fixture->copied_bytes) ||
         !SparkValidationSetDecodeScalars(
@@ -6501,6 +6641,7 @@ static bool SparkValidationRunChainedDenseLayers(
     const char *driver_path,
     const char *model_directory,
     uint32_t input_token_id,
+    const SparkValidationPromptTokenWindow *prompt_tokens,
     SparkValidationRealLmHeadFixture *real_lm_head,
     uint32_t current_token_only,
     uint32_t check_current_outputs,
@@ -6529,9 +6670,10 @@ static bool SparkValidationRunChainedDenseLayers(
             uint32_t slot_mapping;
             uint32_t context_length;
 
-            token_id = input_token_id -
-                (SPARK_VALIDATION_CONTEXT_LENGTH - 1u) +
-                prefill_index;
+            token_id = SparkValidationResolveContextToken(
+                prompt_tokens,
+                input_token_id,
+                prefill_index);
             position = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET + prefill_index;
             slot_mapping = SPARK_VALIDATION_REMAP_CACHE_SLOT0 + prefill_index;
             context_length = prefill_index + 1u;
@@ -6567,7 +6709,10 @@ static bool SparkValidationRunChainedDenseLayers(
     }
     if (!SparkValidationCopyInputEmbeddingBf16Row(
             model_directory,
-            input_token_id,
+            SparkValidationResolveContextToken(
+                prompt_tokens,
+                input_token_id,
+                SPARK_VALIDATION_CONTEXT_LENGTH - 1u),
             buffers->input_hidden_bf16,
             &copied_bytes))
         return false;
@@ -6932,6 +7077,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
     const char *driver_path,
     const char *model_directory,
     uint32_t input_token_id,
+    const SparkValidationPromptTokenWindow *prompt_tokens,
     SparkValidationRealLmHeadFixture *real_lm_head,
     SparkValidationLayer3RoutedExpertNvfp4Fixture *layer3_routed_expert,
     uint32_t first_routed_layer_index,
@@ -6977,9 +7123,10 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
             uint32_t slot_mapping;
             uint32_t context_length;
 
-            token_id = input_token_id -
-                (SPARK_VALIDATION_CONTEXT_LENGTH - 1u) +
-                prefill_index;
+            token_id = SparkValidationResolveContextToken(
+                prompt_tokens,
+                input_token_id,
+                prefill_index);
             position = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET + prefill_index;
             slot_mapping = SPARK_VALIDATION_REMAP_CACHE_SLOT0 + prefill_index;
             context_length = prefill_index + 1u;
@@ -7043,7 +7190,10 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
     }
     if (!SparkValidationCopyInputEmbeddingBf16Row(
             model_directory,
-            input_token_id,
+            SparkValidationResolveContextToken(
+                prompt_tokens,
+                input_token_id,
+                SPARK_VALIDATION_CONTEXT_LENGTH - 1u),
             buffers->input_hidden_bf16,
             &copied_bytes))
         return false;
@@ -7804,6 +7954,7 @@ int main(int argc, char **argv)
     SparkValidationInputEmbeddingBf16Fixture input_embedding;
     SparkValidationFinalNormBf16Fixture final_norm;
     SparkValidationPrefillKvBf16Fixture prefill_kv;
+    SparkValidationPromptTokenWindow prompt_tokens;
     SparkValidationLayer3RouterBf16Fixture layer3_router;
     SparkValidationLayer3SharedExpertBf16Fixture layer3_shared_expert;
     SparkValidationLayer3RoutedExpertNvfp4Fixture layer3_routed_expert;
@@ -7814,6 +7965,7 @@ int main(int argc, char **argv)
     const char *input_token_text;
     const char *dense_layer_index_text;
     const char *prefill_kv_text;
+    const char *prefill_token_ids_path;
     const char *check_layer0_reference_text;
     const char *check_layer0_full_reference_text;
     const char *chain_dense_layers_text;
@@ -7884,6 +8036,7 @@ int main(int argc, char **argv)
     memset(&input_embedding, 0, sizeof(input_embedding));
     memset(&final_norm, 0, sizeof(final_norm));
     memset(&prefill_kv, 0, sizeof(prefill_kv));
+    memset(&prompt_tokens, 0, sizeof(prompt_tokens));
     memset(&layer3_router, 0, sizeof(layer3_router));
     memset(&layer3_shared_expert, 0, sizeof(layer3_shared_expert));
     memset(&layer3_routed_expert, 0, sizeof(layer3_routed_expert));
@@ -7893,6 +8046,7 @@ int main(int argc, char **argv)
     input_token_text = getenv("GLM52_INPUT_TOKEN_ID");
     dense_layer_index_text = getenv("GLM52_DENSE_LAYER_INDEX");
     prefill_kv_text = getenv("GLM52_PREFILL_KV_FROM_EMBEDDINGS");
+    prefill_token_ids_path = getenv("GLM52_PREFILL_TOKEN_IDS_FILE");
     check_layer0_reference_text = getenv("GLM52_CHECK_LAYER0_REFERENCE");
     check_layer0_full_reference_text =
         getenv("GLM52_CHECK_LAYER0_FULL_REFERENCE");
@@ -8072,6 +8226,24 @@ int main(int argc, char **argv)
             return 2;
         }
         input_token_id = (uint32_t)parsed_token_id;
+    }
+    if (prefill_token_ids_path != 0 &&
+        prefill_token_ids_path[0] != '\0' &&
+        !SparkValidationReadPromptTokenWindow(
+            prefill_token_ids_path,
+            &prompt_tokens))
+    {
+        return 2;
+    }
+    if (prompt_tokens.ready != 0u &&
+        use_input_embedding != 0u &&
+        input_token_id !=
+            prompt_tokens.token_ids[SPARK_VALIDATION_CONTEXT_LENGTH - 1u])
+    {
+        fprintf(stderr, "GLM52_INPUT_TOKEN_ID does not match prompt current token input=%u current=%u\n",
+            input_token_id,
+            prompt_tokens.token_ids[SPARK_VALIDATION_CONTEXT_LENGTH - 1u]);
+        return 2;
     }
     if (dense_layer_index_text != 0 && dense_layer_index_text[0] != '\0')
     {
@@ -8285,18 +8457,21 @@ int main(int argc, char **argv)
         return 2;
     }
     if (use_prefill_kv != 0u &&
+        prompt_tokens.ready == 0u &&
         input_token_id < SPARK_VALIDATION_CONTEXT_LENGTH - 1u)
     {
         fprintf(stderr, "GLM52_INPUT_TOKEN_ID is too small for prefill fixture\n");
         return 2;
     }
     if (use_dense_chain != 0u &&
+        prompt_tokens.ready == 0u &&
         input_token_id < SPARK_VALIDATION_CONTEXT_LENGTH - 1u)
     {
         fprintf(stderr, "GLM52_INPUT_TOKEN_ID is too small for dense chain fixture\n");
         return 2;
     }
     if (use_dense_chain_layer3_routed_expert_topk != 0u &&
+        prompt_tokens.ready == 0u &&
         input_token_id < SPARK_VALIDATION_CONTEXT_LENGTH - 1u)
     {
         fprintf(stderr, "GLM52_INPUT_TOKEN_ID is too small for dense+layer3 fixture\n");
@@ -8516,6 +8691,7 @@ int main(int argc, char **argv)
             cuda_stream,
             model_directory,
             input_token_id,
+            &prompt_tokens,
             &prefill_kv))
     {
         return 2;
@@ -8678,6 +8854,7 @@ int main(int argc, char **argv)
                 argv[2],
                 model_directory,
                 input_token_id,
+                &prompt_tokens,
                 &real_lm_head,
                 &layer3_routed_expert,
                 routed_chain_first_layer_index,
@@ -8717,7 +8894,7 @@ int main(int argc, char **argv)
                 return 1;
             }
             printf(
-                "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_prefix_routed_pipeline=1 intermediate_stage=1 production_b12x=1 dense_chain_layers=%u first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_output_hidden=%s input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+                "glm52_resident_decode_stage orchestrator validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_prefix_routed_pipeline=1 intermediate_stage=1 production_b12x=1 dense_chain_layers=%u first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_output_hidden=%s input_embedding_token=%u prompt_prefill=%u prompt_source_tokens=%u prompt_context_tokens=%u,%u,%u,%u layer3_selected_expert=%u layer3_bound_experts=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
                 SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT,
                 routed_chain_first_layer_index,
                 routed_chain_layer_count,
@@ -8727,6 +8904,12 @@ int main(int argc, char **argv)
                 maximum_stage_microseconds,
                 pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
                 input_token_id,
+                prompt_tokens.ready,
+                prompt_tokens.source_token_count,
+                prompt_tokens.token_ids[0],
+                prompt_tokens.token_ids[1],
+                prompt_tokens.token_ids[2],
+                prompt_tokens.token_ids[3],
                 layer3_routed_expert.selected_expert_id,
                 layer3_routed_expert.bound_expert_count,
                 (unsigned long long)cuda_slot_state.launch_chain_count,
@@ -8873,6 +9056,7 @@ int main(int argc, char **argv)
                     argv[2],
                     model_directory,
                     input_token_id,
+                    &prompt_tokens,
                     &real_lm_head,
                     dense_chain_current_token_only,
                     production_timing == 0u,
@@ -9095,6 +9279,7 @@ int main(int argc, char **argv)
                 0,
                 model_directory,
                 input_token_id,
+                &prompt_tokens,
                 &real_lm_head,
                 &layer3_routed_expert,
                 routed_chain_first_layer_index,
@@ -9133,7 +9318,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_prefix_routed_pipeline=1 intermediate_stage=1 production_b12x=1 dense_chain_layers=%u first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_output_hidden=%s input_embedding_token=%u layer3_selected_expert=%u layer3_bound_experts=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage validation passed fixture=remapped_nonzero_context4_h4_d8_r4 dense_prefix_routed_pipeline=1 intermediate_stage=1 production_b12x=1 dense_chain_layers=%u first_routed_layer=%u routed_chain_layers=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_output_hidden=%s input_embedding_token=%u prompt_prefill=%u prompt_source_tokens=%u prompt_context_tokens=%u,%u,%u,%u layer3_selected_expert=%u layer3_bound_experts=%u launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT,
             routed_chain_first_layer_index,
             routed_chain_layer_count,
@@ -9143,6 +9328,12 @@ int main(int argc, char **argv)
             maximum_stage_microseconds,
             pipeline_output_hidden_path != 0 ? pipeline_output_hidden_path : "",
             input_token_id,
+            prompt_tokens.ready,
+            prompt_tokens.source_token_count,
+            prompt_tokens.token_ids[0],
+            prompt_tokens.token_ids[1],
+            prompt_tokens.token_ids[2],
+            prompt_tokens.token_ids[3],
             layer3_routed_expert.selected_expert_id,
             layer3_routed_expert.bound_expert_count,
             (unsigned long long)cuda_slot_state.launch_chain_count,
@@ -9289,6 +9480,7 @@ int main(int argc, char **argv)
                 0,
                 model_directory,
                 input_token_id,
+                &prompt_tokens,
                 &real_lm_head,
                 dense_chain_current_token_only,
                 production_timing == 0u,

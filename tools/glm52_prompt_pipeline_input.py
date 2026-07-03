@@ -125,7 +125,9 @@ def write_artifacts(args: argparse.Namespace, token_ids: List[int], tokenizer_ki
         "token_ids": token_ids,
         "bootstrap_token_id": bootstrap_token,
         "bootstrap_policy": args.bootstrap_token,
-        "pipeline_semantics": "single-token bootstrap only; no prompt KV prefill context yet",
+        "prefill_token_ids_file": str(token_txt),
+        "prefill_context": "last four prompt tokens feed the current validation context",
+        "pipeline_semantics": "tail-window prompt prefill plus current-token decode for the local validation pipeline",
     }
     token_json.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     token_txt.write_text("\n".join(str(token_id) for token_id in token_ids) + "\n", encoding="utf-8")
@@ -133,7 +135,8 @@ def write_artifacts(args: argparse.Namespace, token_ids: List[int], tokenizer_ki
     write_env_file(env_path, {
         "GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID": str(bootstrap_token),
         "GLM52_LOCAL_PIPELINE_OUTPUT_DIR": str(pipeline_output_dir),
-        "GLM52_PROMPT_BOOTSTRAP_MODE": "last_or_first_prompt_token_without_prefill_kv",
+        "GLM52_PREFILL_TOKEN_IDS_FILE": str(token_txt),
+        "GLM52_PROMPT_BOOTSTRAP_MODE": "tail_window_prompt_prefill_validation_context",
         "GLM52_PROMPT_TOKEN_ARTIFACT": str(token_json),
         "GLM52_PROMPT_TOKEN_COUNT": str(len(token_ids)),
     })
@@ -156,6 +159,7 @@ def run_pipeline(args: argparse.Namespace, artifacts: Dict[str, Path], bootstrap
     env = os.environ.copy()
     env["GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID"] = str(bootstrap_token)
     env["GLM52_LOCAL_PIPELINE_OUTPUT_DIR"] = str(artifacts["pipeline_output_dir"])
+    env["GLM52_PREFILL_TOKEN_IDS_FILE"] = str(artifacts["token_txt"])
     env["GLM52_PROMPT_TOKEN_ARTIFACT"] = str(artifacts["token_json"])
     env["GLM52_PROMPT_TOKEN_COUNT"] = str(len(json.loads(artifacts["token_json"].read_text(encoding="utf-8"))["token_ids"]))
     return subprocess.run([str(script)], cwd=str(root), env=env, check=False).returncode
@@ -184,6 +188,8 @@ def main(argv: List[str]) -> int:
         args = parse_args(argv)
         model_dir = Path(args.model_dir)
         token_ids, tokenizer_kind = tokenize_prompt(args, model_dir)
+        if args.run_pipeline and len(token_ids) < 4:
+            raise PromptInputFailure("pipeline prefill mode needs at least four prompt tokens")
         bootstrap_token = choose_bootstrap_token(token_ids, args.bootstrap_token)
         artifacts = write_artifacts(args, token_ids, tokenizer_kind, bootstrap_token, model_dir)
         print(f"glm52_prompt_tokenizer={tokenizer_kind}")
@@ -191,7 +197,8 @@ def main(argv: List[str]) -> int:
         print(f"glm52_prompt_bootstrap_token={bootstrap_token}")
         print(f"glm52_prompt_tokens_json={artifacts['token_json']}")
         print(f"glm52_prompt_pipeline_env={artifacts['env']}")
-        print("glm52_prompt_pipeline_semantics=single_token_bootstrap_no_prefill_kv")
+        print(f"glm52_prefill_token_ids_file={artifacts['token_txt']}")
+        print("glm52_prompt_pipeline_semantics=tail_window_prompt_prefill_validation_context")
         if args.run_pipeline:
             return run_pipeline(args, artifacts, bootstrap_token)
         return 0
