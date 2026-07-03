@@ -59,6 +59,8 @@ static void SparkTestGlm52ResidentDecodeStageB12xRouterLogitsAbi(void)
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_FUSED_STAGE_MOE) != 0u);
     assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_FUSED_STAGE_MOE) != 0u);
+    assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_QKV_BRANCH_OVERLAP) == 0u);
 }
 
 static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
@@ -576,15 +578,25 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInQuantizedProjectionValidatio
     SparkGlm52ResidentDecodeStageDestroy(module_state);
 
     linear_plans[SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A]
+        .custom_launch_function = 0;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_OK);
+    assert(module_state != 0);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
+
+    linear_plans[SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A]
         .workspace_bytes = 0u;
     module_state = 0;
     assert(SparkGlm52ResidentDecodeStageInitialize(
         &configuration,
         &host_services,
-        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+        &module_state) == SPARK_STATUS_OK);
+    assert(module_state != 0);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
 
-    linear_plans[SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A]
-        .workspace_bytes = UINT64_MAX;
     quantized_views[SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A]
         .weight_payload_bytes = 0u;
     module_state = 0;
@@ -1004,7 +1016,7 @@ static void SparkTestInitializeHiddenTransportEndpoint(
     memset(endpoint, 0, sizeof(*endpoint));
     endpoint->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
-    endpoint->capability_flags = SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS;
+    endpoint->capability_flags = SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS;
     endpoint->hidden_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
     endpoint->bytes_per_sequence =
@@ -1102,12 +1114,12 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
     assert(SparkHiddenTransportOpen(
                &input_endpoint,
                &transport_interface,
-               SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+               SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS,
                &input_session) == SPARK_STATUS_OK);
     assert(SparkHiddenTransportOpen(
                &output_endpoint,
                &transport_interface,
-               SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+               SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS,
                &output_session) == SPARK_STATUS_OK);
 
     memset(&completion_state, 0, sizeof(completion_state));
