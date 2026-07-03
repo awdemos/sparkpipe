@@ -49,24 +49,26 @@ def test_tail_window_artifacts(root: Path) -> None:
     assert payload["prefill_token_ids_file"] == str(token_txt)
     assert payload["prefill_plan_file"] == str(prefill_plan_json)
     assert payload["prefill_chunks_file"] == str(prefill_chunks_jsonl)
-    assert payload["prefill_token_count"] == 3
+    assert payload["prefill_token_count"] == 4
     assert payload["prefill_chunk_count"] == 1
+    assert payload["tail_window_decode_input_token_id"] == 404
     assert payload["pipeline_semantics"] == "tail-window prompt prefill plus current-token decode for the local validation pipeline"
     assert prefill_plan["schema"] == "sparkpipe.glm52.prompt_prefill_plan.v1"
-    assert prefill_plan["decode_input_token_id"] == 404
-    assert prefill_plan["decode_input_token_offset"] == 3
-    assert prefill_plan["prefill_token_count"] == 3
+    assert prefill_plan["first_decode_step"] == "after full prompt prefill"
+    assert prefill_plan["tail_window_decode_input_token_id"] == 404
+    assert prefill_plan["tail_window_decode_input_token_offset"] == 3
+    assert prefill_plan["prefill_token_count"] == 4
     assert prefill_plan["prefill_chunk_count"] == 1
     assert chunks[0]["token_offset"] == 0
-    assert chunks[0]["token_count"] == 3
-    assert chunks[0]["token_ids"] == [101, 202, 303]
+    assert chunks[0]["token_count"] == 4
+    assert chunks[0]["token_ids"] == [101, 202, 303, 404]
     assert chunks[0]["final_prefill_chunk"] is True
     env_text = env_file.read_text(encoding="utf-8")
     assert "GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID=404" in env_text
     assert "GLM52_PREFILL_TOKEN_IDS_FILE=" in env_text
     assert "GLM52_PREFILL_PLAN_FILE=" in env_text
     assert "GLM52_PREFILL_CHUNKS_FILE=" in env_text
-    assert "GLM52_PROMPT_PREFILL_TOKEN_COUNT=3" in env_text
+    assert "GLM52_PROMPT_PREFILL_TOKEN_COUNT=4" in env_text
     assert "GLM52_PROMPT_PREFILL_CHUNK_COUNT=1" in env_text
 
 
@@ -84,17 +86,48 @@ def test_long_prompt_prefill_chunks(root: Path) -> None:
     prefill_chunks_jsonl = output_dir / "prefill_chunks.jsonl"
     prefill_plan = json.loads(prefill_plan_json.read_text(encoding="utf-8"))
     chunks = [json.loads(line) for line in prefill_chunks_jsonl.read_text(encoding="utf-8").splitlines()]
-    assert prefill_plan["prefill_token_count"] == 40
+    assert prefill_plan["prefill_token_count"] == 41
     assert prefill_plan["prefill_chunk_tokens"] == 16
     assert prefill_plan["prefill_chunk_count"] == 3
-    assert prefill_plan["decode_input_token_id"] == 1040
-    assert [chunk["token_count"] for chunk in chunks] == [16, 16, 8]
+    assert prefill_plan["tail_window_decode_input_token_id"] == 1040
+    assert [chunk["token_count"] for chunk in chunks] == [16, 16, 9]
     assert [chunk["token_offset"] for chunk in chunks] == [0, 16, 32]
     assert chunks[0]["token_ids"][0] == 1000
     assert chunks[1]["token_ids"][0] == 1016
-    assert chunks[2]["token_ids"] == list(range(1032, 1040))
+    assert chunks[2]["token_ids"] == list(range(1032, 1041))
     assert chunks[0]["final_prefill_chunk"] is False
     assert chunks[2]["final_prefill_chunk"] is True
+
+
+def test_c_prefill_dryrun_when_built(root: Path) -> None:
+    output_dir = root / "build" / "test_glm52_prompt_pipeline_input_dryrun"
+    dryrun_binary = root / "build" / "sparkpipe_glm52_prefill_dryrun"
+    token_ids = ",".join(str(2000 + index) for index in range(21))
+    clean_output_dir(output_dir)
+    run_prompt_tool(
+        root,
+        output_dir,
+        token_ids,
+        ["--prefill-chunk-tokens", "16"])
+    if not dryrun_binary.exists():
+        return
+    completed = subprocess.run(
+        [
+            str(dryrun_binary),
+            "--tokens",
+            str(output_dir / "prompt_tokens.txt"),
+            "--max-prefill-tokens",
+            "16",
+        ],
+        cwd=str(root),
+        text=True,
+        capture_output=True,
+        check=True)
+    lines = completed.stdout.splitlines()
+    assert lines[0] == "step\tkind\ttoken_offset\ttoken_count\tremaining\tcommit_after\tprefill_blocks\tkv_blocks\tflags"
+    assert lines[1].startswith("0\tprefill\t0\t16\t5\t16\t1\t1\t")
+    assert lines[2].startswith("1\tprefill\t16\t5\t0\t21\t1\t2\t")
+    assert lines[3].startswith("2\tdecode_ready\t0\t0\t0\t0\t0\t0\t")
 
 
 def test_long_prompt_pipeline_refuses_tail_collapse(root: Path) -> None:
@@ -114,6 +147,7 @@ def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_tail_window_artifacts(root)
     test_long_prompt_prefill_chunks(root)
+    test_c_prefill_dryrun_when_built(root)
     test_long_prompt_pipeline_refuses_tail_collapse(root)
 
 

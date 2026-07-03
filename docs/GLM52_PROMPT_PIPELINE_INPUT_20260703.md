@@ -35,8 +35,8 @@ The prefill plan describes the production-shaped prompt work:
 
 ```text
 prompt token ids [0..N)
-    -> prefill chunks over token ids [0..N-1)
-    -> final prompt token becomes the decode input token
+    -> prefill chunks over token ids [0..N)
+    -> first decode step begins after the full prompt is resident
 ```
 
 By default the chunk size is:
@@ -52,8 +52,8 @@ manifest is:
 ```text
 chunk 0: offset 0,  token_count 16
 chunk 1: offset 16, token_count 16
-chunk 2: offset 32, token_count 8, final_prefill_chunk=1
-decode input token: token[40]
+chunk 2: offset 32, token_count 9, final_prefill_chunk=1
+first decode step: after full prompt prefill
 ```
 
 That is the shape the C request API and scheduler need for:
@@ -63,6 +63,23 @@ arbitrary-length prompt tokens
     -> chunked prefill
     -> KV block table reservation
     -> decode continuation
+```
+
+The C-side dry-run checker consumes the token file and proves the request API
+turns it into prefill dispatches:
+
+```sh
+build/sparkpipe_glm52_prefill_dryrun \
+    --tokens build/glm52_prompt_prefill_chunk_smoke/prompt_tokens.txt \
+    --max-prefill-tokens 16
+```
+
+For a 21-token prompt, the expected sequence is:
+
+```text
+0   prefill       offset 0    token_count 16   remaining 5
+1   prefill       offset 16   token_count 5    remaining 0
+2   decode_ready
 ```
 
 The current local execution bridge is still intentionally narrow:
@@ -83,11 +100,14 @@ through `--run-pipeline` unless `--allow-tail-window-run` is passed. This keeps
 the local compatibility path from reporting a fake full-prompt pass.
 
 This is not yet full arbitrary-length prompt prefill execution. The current
-validation context is four tokens, so the compatibility path uses a tail window:
+validation context is four tokens, so the compatibility path uses a tail window.
+This is separate from the production-shaped prefill plan, which covers the full
+prompt:
 
 ```text
 prompt token ids [0..N)
-    -> context token ids [N-4..N)
+    -> production prefill chunks [0..N)
+    -> compatibility validation context [N-4..N)
 ```
 
 That is still a real improvement over the previous fake prefill behavior, where
