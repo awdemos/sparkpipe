@@ -19,23 +19,71 @@ The script writes:
 prompt.txt
 prompt_tokens.txt
 prompt_tokens.json
+prefill_plan.json
+prefill_chunks.jsonl
 pipeline_env.sh
 ```
 
-The current execution bridge is intentionally narrow:
+The script now emits two different things:
+
+```text
+1. full-prompt prefill plan artifacts
+2. narrow compatibility environment for the current local validation pipeline
+```
+
+The prefill plan describes the production-shaped prompt work:
+
+```text
+prompt token ids [0..N)
+    -> prefill chunks over token ids [0..N-1)
+    -> final prompt token becomes the decode input token
+```
+
+By default the chunk size is:
+
+```text
+256 tokens per prefill chunk
+16 tokens per KV/prefix-cache block
+```
+
+For a 41-token prompt and `--prefill-chunk-tokens 16`, the emitted chunk
+manifest is:
+
+```text
+chunk 0: offset 0,  token_count 16
+chunk 1: offset 16, token_count 16
+chunk 2: offset 32, token_count 8, final_prefill_chunk=1
+decode input token: token[40]
+```
+
+That is the shape the C request API and scheduler need for:
+
+```text
+arbitrary-length prompt tokens
+    -> chunked prefill
+    -> KV block table reservation
+    -> decode continuation
+```
+
+The current local execution bridge is still intentionally narrow:
 
 ```text
 full prompt text
     -> local HF tokenizer or explicit token ids
     -> persisted full token-id artifact
+    -> persisted chunked prefill plan artifact
     -> last four tokens become the current validation context
     -> first three tail tokens feed prefill/KV
     -> final tail token becomes GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID
     -> existing local pipeline gate runs dense-prefix/routed decode
 ```
 
-This is not yet full arbitrary-length prompt prefill. The current validation
-context is four tokens, so long prompts use a tail window:
+The script refuses to run prompts longer than the four-token validation window
+through `--run-pipeline` unless `--allow-tail-window-run` is passed. This keeps
+the local compatibility path from reporting a fake full-prompt pass.
+
+This is not yet full arbitrary-length prompt prefill execution. The current
+validation context is four tokens, so the compatibility path uses a tail window:
 
 ```text
 prompt token ids [0..N)
@@ -55,7 +103,8 @@ The artifact preserves the full token list so the next production step can wire:
 
 ```text
 prompt token ids
-    -> arbitrary-length prefill frames
+    -> prefill_plan.json / prefill_chunks.jsonl
+    -> arbitrary-length chunked prefill frames
     -> KV block table
     -> stage-slice prefill
     -> decode continuation

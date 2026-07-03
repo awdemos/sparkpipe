@@ -4,39 +4,117 @@ import subprocess
 from pathlib import Path
 
 
-def main() -> None:
-    root = Path(__file__).resolve().parents[1]
-    output_dir = root / "build" / "test_glm52_prompt_pipeline_input"
+def clean_output_dir(output_dir: Path) -> None:
     if output_dir.exists():
         for path in output_dir.iterdir():
             if path.is_file():
                 path.unlink()
+
+
+def run_prompt_tool(root: Path, output_dir: Path, token_ids: str, extra_args=None, check: bool = True) -> subprocess.CompletedProcess:
     command = [
         "python3",
         str(root / "tools" / "glm52_prompt_pipeline_input.py"),
         "--token-ids",
-        "101,202,303,404",
+        token_ids,
         "--output-dir",
         str(output_dir),
         "--pipeline-output-dir",
         str(output_dir / "pipeline"),
     ]
-    completed = subprocess.run(command, cwd=str(root), text=True, capture_output=True, check=True)
+    if extra_args is not None:
+        command.extend(extra_args)
+    return subprocess.run(command, cwd=str(root), text=True, capture_output=True, check=check)
+
+
+def test_tail_window_artifacts(root: Path) -> None:
+    output_dir = root / "build" / "test_glm52_prompt_pipeline_input"
+    clean_output_dir(output_dir)
+    completed = run_prompt_tool(root, output_dir, "101,202,303,404")
     assert "glm52_prompt_bootstrap_token=404" in completed.stdout
+    assert "glm52_prefill_plan_file=" in completed.stdout
+    assert "glm52_prefill_chunks_file=" in completed.stdout
     assert "glm52_prompt_pipeline_semantics=tail_window_prompt_prefill_validation_context" in completed.stdout
     token_json = output_dir / "prompt_tokens.json"
     token_txt = output_dir / "prompt_tokens.txt"
+    prefill_plan_json = output_dir / "prefill_plan.json"
+    prefill_chunks_jsonl = output_dir / "prefill_chunks.jsonl"
     env_file = output_dir / "pipeline_env.sh"
     payload = json.loads(token_json.read_text(encoding="utf-8"))
+    prefill_plan = json.loads(prefill_plan_json.read_text(encoding="utf-8"))
+    chunks = [json.loads(line) for line in prefill_chunks_jsonl.read_text(encoding="utf-8").splitlines()]
     assert payload["schema"] == "sparkpipe.glm52.prompt_pipeline_input.v1"
     assert payload["token_ids"] == [101, 202, 303, 404]
     assert payload["bootstrap_token_id"] == 404
     assert payload["prefill_token_ids_file"] == str(token_txt)
+    assert payload["prefill_plan_file"] == str(prefill_plan_json)
+    assert payload["prefill_chunks_file"] == str(prefill_chunks_jsonl)
+    assert payload["prefill_token_count"] == 3
+    assert payload["prefill_chunk_count"] == 1
     assert payload["pipeline_semantics"] == "tail-window prompt prefill plus current-token decode for the local validation pipeline"
+    assert prefill_plan["schema"] == "sparkpipe.glm52.prompt_prefill_plan.v1"
+    assert prefill_plan["decode_input_token_id"] == 404
+    assert prefill_plan["decode_input_token_offset"] == 3
+    assert prefill_plan["prefill_token_count"] == 3
+    assert prefill_plan["prefill_chunk_count"] == 1
+    assert chunks[0]["token_offset"] == 0
+    assert chunks[0]["token_count"] == 3
+    assert chunks[0]["token_ids"] == [101, 202, 303]
+    assert chunks[0]["final_prefill_chunk"] is True
     env_text = env_file.read_text(encoding="utf-8")
     assert "GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID=404" in env_text
     assert "GLM52_PREFILL_TOKEN_IDS_FILE=" in env_text
-    assert "GLM52_PROMPT_TOKEN_COUNT=4" in env_text
+    assert "GLM52_PREFILL_PLAN_FILE=" in env_text
+    assert "GLM52_PREFILL_CHUNKS_FILE=" in env_text
+    assert "GLM52_PROMPT_PREFILL_TOKEN_COUNT=3" in env_text
+    assert "GLM52_PROMPT_PREFILL_CHUNK_COUNT=1" in env_text
+
+
+def test_long_prompt_prefill_chunks(root: Path) -> None:
+    output_dir = root / "build" / "test_glm52_prompt_pipeline_input_long"
+    token_ids = ",".join(str(1000 + index) for index in range(41))
+    clean_output_dir(output_dir)
+    completed = run_prompt_tool(
+        root,
+        output_dir,
+        token_ids,
+        ["--prefill-chunk-tokens", "16"])
+    assert "glm52_prompt_token_count=41" in completed.stdout
+    prefill_plan_json = output_dir / "prefill_plan.json"
+    prefill_chunks_jsonl = output_dir / "prefill_chunks.jsonl"
+    prefill_plan = json.loads(prefill_plan_json.read_text(encoding="utf-8"))
+    chunks = [json.loads(line) for line in prefill_chunks_jsonl.read_text(encoding="utf-8").splitlines()]
+    assert prefill_plan["prefill_token_count"] == 40
+    assert prefill_plan["prefill_chunk_tokens"] == 16
+    assert prefill_plan["prefill_chunk_count"] == 3
+    assert prefill_plan["decode_input_token_id"] == 1040
+    assert [chunk["token_count"] for chunk in chunks] == [16, 16, 8]
+    assert [chunk["token_offset"] for chunk in chunks] == [0, 16, 32]
+    assert chunks[0]["token_ids"][0] == 1000
+    assert chunks[1]["token_ids"][0] == 1016
+    assert chunks[2]["token_ids"] == list(range(1032, 1040))
+    assert chunks[0]["final_prefill_chunk"] is False
+    assert chunks[2]["final_prefill_chunk"] is True
+
+
+def test_long_prompt_pipeline_refuses_tail_collapse(root: Path) -> None:
+    output_dir = root / "build" / "test_glm52_prompt_pipeline_input_refuse"
+    clean_output_dir(output_dir)
+    completed = run_prompt_tool(
+        root,
+        output_dir,
+        "101,202,303,404,505",
+        ["--run-pipeline"],
+        check=False)
+    assert completed.returncode == 2
+    assert "refusing to run long prompt through four-token tail-window pipeline" in completed.stderr
+
+
+def main() -> None:
+    root = Path(__file__).resolve().parents[1]
+    test_tail_window_artifacts(root)
+    test_long_prompt_prefill_chunks(root)
+    test_long_prompt_pipeline_refuses_tail_collapse(root)
 
 
 if __name__ == "__main__":
