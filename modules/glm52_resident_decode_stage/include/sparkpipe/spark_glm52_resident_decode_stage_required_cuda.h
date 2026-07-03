@@ -48,6 +48,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     void *cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSlice(
@@ -58,6 +59,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSlice(
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     void *cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(

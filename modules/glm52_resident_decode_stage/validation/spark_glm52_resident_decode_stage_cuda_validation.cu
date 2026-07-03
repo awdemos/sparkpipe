@@ -7529,6 +7529,7 @@ static bool SparkValidationRunExactPp13StageSliceSubmit(
         SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT,
         final_token_stage,
         0,
+        0,
         &completion);
     if (status != SPARK_STATUS_OK)
     {

@@ -5,6 +5,7 @@
 
 #include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
+#include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h"
 
@@ -263,7 +264,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_TARGET \
     "cuda.sm121.glm52.resident_decode_stage.bf16"
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 4u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52ResidentDecodeStageFrameContext))
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE \
@@ -272,10 +273,13 @@ extern "C" {
     0x00000002u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT \
     0x00000004u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS \
+    0x00000008u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_KNOWN_FLAGS \
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE | \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT | \
-     SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT)
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT | \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS)
 
 typedef SparkStatus (*SparkGlm52ResidentDecodeStageHiddenTransportPostReceiveSessionFunction)(
     SparkHiddenTransportSession *transport_session,
@@ -291,6 +295,9 @@ typedef struct SparkGlm52ResidentDecodeStageFrameContext
     uint32_t flags;
     uint32_t reserved;
     const SparkGlm52KvBlockTableView *kv_block_table;
+    const SparkGlm52DsparkHiddenTapPlan *dspark_hidden_tap_plan;
+    void *dspark_hidden_tap_output_bf16[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT];
+    uint64_t dspark_hidden_tap_lane_stride_bytes;
     SparkHiddenTransportSession *hidden_input_transport_session;
     SparkHiddenTransportSession *hidden_output_transport_session;
     SparkGlm52ResidentDecodeStageHiddenTransportPostReceiveSessionFunction hidden_input_post_receive_function;

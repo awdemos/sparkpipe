@@ -2789,6 +2789,81 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTable(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapPlanInline(
+    const SparkGlm52DsparkHiddenTapPlan *tap_plan)
+{
+    static const uint32_t ExpectedTargetLayers[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] =
+        { 8u, 23u, 39u, 55u, 70u };
+    uint32_t tap_index;
+
+    if (tap_plan == 0 ||
+        tap_plan->abi_version != SPARK_GLM52_DSPARK_ABI_VERSION ||
+        tap_plan->descriptor_bytes !=
+            SPARK_GLM52_DSPARK_HIDDEN_TAP_PLAN_DESCRIPTOR_BYTES ||
+        tap_plan->aux_layer_count != SPARK_GLM52_DSPARK_AUX_LAYER_COUNT ||
+        tap_plan->hidden_dimension != SPARK_GLM52_DSPARK_HIDDEN_DIMENSION ||
+        tap_plan->pp_stage_count != 13u ||
+        tap_plan->pp_stage_layer_count != 6u ||
+        tap_plan->reserved0 != 0u ||
+        tap_plan->reserved1 != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    for (tap_index = 0u;
+         tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+         ++tap_index)
+    {
+        const SparkGlm52DsparkTapStage *tap_stage;
+        uint32_t target_layer_index;
+
+        target_layer_index = ExpectedTargetLayers[tap_index];
+        tap_stage = &tap_plan->tap_stages[tap_index];
+        if (tap_stage->target_layer_index != target_layer_index ||
+            tap_stage->stage_index != target_layer_index / 6u ||
+            tap_stage->stage_first_layer_index !=
+                (target_layer_index / 6u) * 6u ||
+            tap_stage->stage_layer_count != 6u ||
+            tap_stage->layer_offset_in_stage !=
+                target_layer_index - tap_stage->stage_first_layer_index ||
+            tap_stage->reserved != 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapFrameContext(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context)
+{
+    uint32_t tap_index;
+
+    if ((frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS) ==
+        0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (frame_context->dspark_hidden_tap_lane_stride_bytes <
+            (uint64_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2ull ||
+        SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapPlanInline(
+            frame_context->dspark_hidden_tap_plan) != SPARK_STATUS_OK)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (tap_index = 0u;
+         tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+         ++tap_index)
+    {
+        if (frame_context->dspark_hidden_tap_output_bf16[tap_index] == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageExtractFrameContext(
     const SparkGlm52ResidentDecodeStageState *state,
     const SparkModelDriverFrame *frame,
@@ -2816,7 +2891,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageExtractFrameContext(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES ||
         (frame_context->flags &
             ~SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_KNOWN_FLAGS) != 0u ||
-        frame_context->reserved != 0u)
+        frame_context->reserved != 0u ||
+        SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapFrameContext(
+            frame_context) != SPARK_STATUS_OK)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -3290,6 +3367,7 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             frame->active_slot_count,
             state->stage_slice_final_token_stage,
             runtime_kv_block_table,
+            frame_context,
             &pending_completion->backend_completion);
     }
     else

@@ -8,6 +8,20 @@
 #define SPARK_TEST_PREFIX_ENTRY_COUNT 128u
 #define SPARK_TEST_PREFIX_BINDING_COUNT 512u
 #define SPARK_TEST_KV_BLOCK_COUNT 128u
+#define SPARK_TEST_DSPARK_SEQUENCE_STATE_COUNT SPARK_TEST_REQUEST_SLOT_COUNT
+
+typedef struct SparkTestDsparkDraftCapture
+{
+    uint32_t call_count;
+    uint32_t requested_token_count;
+    uint32_t priority;
+    uint32_t next_token_id;
+    uint32_t confidence_milli[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+    uint64_t request_id;
+    uint64_t sequence_id;
+    uint64_t sequence_position;
+    uint64_t tap_generation;
+} SparkTestDsparkDraftCapture;
 
 typedef struct SparkTestPrefetchCapture
 {
@@ -50,6 +64,10 @@ typedef struct SparkTestRequestApiFixture
     SparkGlm52Scheduler scheduler;
     SparkGlm52RequestApiSlot request_slots[SPARK_TEST_REQUEST_SLOT_COUNT];
     SparkGlm52RequestApi api;
+    SparkGlm52DsparkSpeculator dspark_speculator;
+    SparkGlm52DsparkSequenceState dspark_sequence_states[
+        SPARK_TEST_DSPARK_SEQUENCE_STATE_COUNT];
+    SparkTestDsparkDraftCapture dspark_capture;
     SparkTestPrefetchCapture prefetch_capture;
     unsigned char key_destination[SPARK_TEST_KV_BLOCK_COUNT][64u];
     unsigned char value_destination[SPARK_TEST_KV_BLOCK_COUNT][64u];
@@ -69,6 +87,53 @@ static void SparkTestFillTokenIds(
     {
         token_ids[token_index] = first_token_id + token_index;
     }
+}
+
+
+static SparkStatus SparkTestDsparkDraft(
+    void *context,
+    const SparkGlm52DsparkDraftRequest *request,
+    SparkGlm52DsparkDraftResult *result)
+{
+    SparkTestDsparkDraftCapture *capture;
+    uint32_t token_index;
+
+    capture = (SparkTestDsparkDraftCapture *)context;
+    assert(capture != 0);
+    assert(request != 0);
+    assert(result != 0);
+    assert(request->requested_token_count != 0u);
+    assert(request->requested_token_count <=
+        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT);
+    assert(request->sequence_id != 0u);
+    assert(request->tap_generation != 0u);
+
+    capture->call_count += 1u;
+    capture->requested_token_count = request->requested_token_count;
+    capture->priority = request->priority;
+    capture->request_id = request->request_id;
+    capture->sequence_id = request->sequence_id;
+    capture->sequence_position = request->sequence_position;
+    capture->tap_generation = request->tap_generation;
+
+    result->abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+    result->descriptor_bytes = SPARK_GLM52_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES;
+    result->token_count = request->requested_token_count;
+    for (token_index = 0u;
+         token_index < request->requested_token_count;
+         ++token_index)
+    {
+        uint32_t confidence_milli;
+
+        confidence_milli = capture->confidence_milli[token_index];
+        if (confidence_milli == 0u)
+        {
+            confidence_milli = 800u;
+        }
+        result->token_ids[token_index] = capture->next_token_id + token_index;
+        result->confidence_milli[token_index] = confidence_milli;
+    }
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkTestCaptureKvPrefetch(
@@ -389,6 +454,34 @@ static void SparkTestInitializeFixtureWithAsyncMemoryBackend(
     assert(SparkGlm52RequestApiInitialize(
         &fixture->api,
         &api_configuration) == SPARK_STATUS_OK);
+}
+
+
+static void SparkTestEnableDsparkSpeculation(
+    SparkTestRequestApiFixture *fixture)
+{
+    SparkGlm52DsparkSpeculatorConfiguration configuration;
+
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+    configuration.descriptor_bytes =
+        SPARK_GLM52_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES;
+    configuration.sequence_state_count = SPARK_TEST_DSPARK_SEQUENCE_STATE_COUNT;
+    configuration.default_speculative_token_count =
+        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+    configuration.minimum_confidence_milli = 350u;
+    configuration.realtime_minimum_confidence_milli = 250u;
+    configuration.sequence_states = fixture->dspark_sequence_states;
+    configuration.draft_function = SparkTestDsparkDraft;
+    configuration.draft_context = &fixture->dspark_capture;
+    assert(SparkGlm52DsparkInitialize(
+        &fixture->dspark_speculator,
+        &configuration) == SPARK_STATUS_OK);
+
+    fixture->dspark_capture.next_token_id = 140000u;
+    fixture->api.configuration_flags |=
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE;
+    fixture->api.dspark_speculator = &fixture->dspark_speculator;
 }
 
 static void SparkTestInitializeSubmitRequest(
@@ -2388,6 +2481,256 @@ static void SparkTestRequestApiRefreshesQueueAwarePrefixProtection(void)
         handle) == SPARK_STATUS_OK);
 }
 
+
+static void SparkTestRequestApiDsparkCapturesTapsAndRunsSpeculativeVerify(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiHandle handle;
+    uint32_t prompt[16u];
+
+    SparkTestFillTokenIds(prompt, 16u, 150000u);
+    SparkTestInitializeFixture(&fixture);
+    SparkTestEnableDsparkSpeculation(&fixture);
+
+    SparkTestInitializeSubmitRequest(
+        &request,
+        1500u,
+        11500u,
+        SPARK_GLM52_REQUEST_API_REALTIME_PRIORITY,
+        prompt,
+        16u,
+        10u);
+    request.flags = SPARK_GLM52_REQUEST_API_REQUEST_FLAG_REALTIME;
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,
+        &request,
+        &handle) == SPARK_STATUS_OK);
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.accepted == 1u);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.accepted == 1u);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+    assert(dispatch.request_count == 1u);
+    assert(dispatch.request_handles[0u] == handle);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(fixture.dspark_capture.call_count == 1u);
+    assert(fixture.dspark_capture.requested_token_count ==
+        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT);
+    assert(fixture.dspark_capture.sequence_id == 11500u);
+    assert(fixture.dspark_capture.sequence_position == 17u);
+    assert(fixture.api.dspark_tap_capture_dispatch_count == 1u);
+    assert(fixture.api.dspark_draft_ready_count == 1u);
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.accepted == 1u);
+    assert(dispatch.kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
+    assert(dispatch.request_count == 1u);
+    assert(dispatch.request_handles[0u] == handle);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u);
+    assert(dispatch.speculative_token_count ==
+        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT);
+    assert(dispatch.speculative_max_committed_token_count ==
+        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u);
+    assert(dispatch.speculative_draft_token_ids[0u][0u] == 140000u);
+    assert(dispatch.speculative_draft_token_ids[0u][6u] == 140006u);
+    assert(dispatch.speculative_confidence_milli[0u][0u] == 800u);
+
+    {
+        uint32_t verifier_tokens[SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT] = {
+            140000u, 140001u, 140002u, 141111u,
+            141112u, 141113u, 141114u
+        };
+        assert(SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
+            &fixture.api,
+            &dispatch,
+            verifier_tokens,
+            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
+            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) == SPARK_STATUS_OK);
+    }
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(fixture.api.dspark_verify_dispatch_count == 1u);
+    assert(fixture.api.dspark_accepted_draft_token_count == 3u);
+    assert(fixture.api.dspark_committed_token_count == 4u);
+    assert(fixture.api.dspark_rejected_token_count == 4u);
+    assert(fixture.api.completed_request_count == 0u);
+    assert(fixture.dspark_capture.call_count == 2u);
+    assert(fixture.dspark_capture.requested_token_count == 5u);
+    assert(fixture.dspark_capture.sequence_position == 21u);
+
+    assert(SparkGlm52RequestApiCancelRequest(
+        &fixture.api,
+        handle) == SPARK_STATUS_OK);
+}
+
+static void SparkTestRequestApiDsparkBatchesEqualLengthDrafts(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiHandle handles[3u];
+    uint32_t prompts[3u][16u];
+    uint32_t request_index;
+
+    SparkTestInitializeFixture(&fixture);
+    SparkTestEnableDsparkSpeculation(&fixture);
+
+    for (request_index = 0u; request_index < 3u; ++request_index)
+    {
+        SparkTestFillTokenIds(
+            prompts[request_index],
+            16u,
+            151000u + request_index * 100u);
+        SparkTestInitializeSubmitRequest(
+            &request,
+            1510u + request_index,
+            11510u + request_index,
+            SPARK_GLM52_REQUEST_API_REALTIME_PRIORITY - request_index,
+            prompts[request_index],
+            16u,
+            8u);
+        request.flags = SPARK_GLM52_REQUEST_API_REQUEST_FLAG_REALTIME;
+        assert(SparkGlm52RequestApiSubmit(
+            &fixture.api,
+            &request,
+            &handles[request_index]) == SPARK_STATUS_OK);
+    }
+
+    request_index = 0u;
+    while (request_index < 3u)
+    {
+        assert(SparkGlm52RequestApiScheduleNext(
+            &fixture.api,
+            &dispatch) == SPARK_STATUS_OK);
+        assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
+            dispatch.kind ==
+                SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH);
+        request_index += dispatch.request_count;
+        assert(SparkGlm52RequestApiCompleteDispatch(
+            &fixture.api,
+            &dispatch) == SPARK_STATUS_OK);
+    }
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+    assert(dispatch.request_count == 3u);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(fixture.dspark_capture.call_count == 3u);
+    assert(fixture.api.dspark_draft_ready_count == 3u);
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
+    assert(dispatch.request_count == 3u);
+    assert(dispatch.speculative_token_count == 7u);
+    {
+        uint32_t verifier_tokens[3u][SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+        uint32_t token_index;
+
+        for (request_index = 0u; request_index < 3u; ++request_index)
+        {
+            for (token_index = 0u;
+                 token_index < SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+                 ++token_index)
+            {
+                verifier_tokens[request_index][token_index] =
+                    dispatch.speculative_draft_token_ids[request_index][token_index];
+            }
+        }
+        assert(SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
+            &fixture.api,
+            &dispatch,
+            &verifier_tokens[0u][0u],
+            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT,
+            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) == SPARK_STATUS_OK);
+    }
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(fixture.api.completed_request_count == 3u);
+    assert(fixture.api.dspark_accepted_draft_token_count == 21u);
+    assert(fixture.api.dspark_committed_token_count == 21u);
+}
+
+static void SparkTestRequestApiDsparkDisabledPerRequestFallsBackToDecode(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiHandle handle;
+    uint32_t prompt[16u];
+
+    SparkTestFillTokenIds(prompt, 16u, 152000u);
+    SparkTestInitializeFixture(&fixture);
+    SparkTestEnableDsparkSpeculation(&fixture);
+
+    SparkTestInitializeSubmitRequest(
+        &request,
+        1520u,
+        11520u,
+        SPARK_GLM52_REQUEST_API_REALTIME_PRIORITY,
+        prompt,
+        16u,
+        2u);
+    request.flags =
+        SPARK_GLM52_REQUEST_API_REQUEST_FLAG_REALTIME |
+        SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION;
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,
+        &request,
+        &handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) == 0u);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(fixture.dspark_capture.call_count == 0u);
+    assert(SparkGlm52RequestApiCancelRequest(
+        &fixture.api,
+        handle) == SPARK_STATUS_OK);
+}
+
 int main(void)
 {
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
@@ -2410,5 +2753,8 @@ int main(void)
     SparkTestRequestApiReuseScoredEvictionKeepsSharedPrefixFamily();
     SparkTestRequestApiUsesBuiltInAsyncMemoryPrefetchBackend();
     SparkTestRequestApiRefreshesQueueAwarePrefixProtection();
+    SparkTestRequestApiDsparkCapturesTapsAndRunsSpeculativeVerify();
+    SparkTestRequestApiDsparkBatchesEqualLengthDrafts();
+    SparkTestRequestApiDsparkDisabledPerRequestFallsBackToDecode();
     return 0;
 }
