@@ -226,7 +226,9 @@ static SparkStatus SparkGlm52RequestApiValidateConfiguration(
 
     if ((configuration_flags &
             SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE) != 0u &&
-        configuration->dspark_speculator == 0)
+        (configuration->dspark_speculator == 0 ||
+         SparkGlm52DsparkValidate(configuration->dspark_speculator) !=
+            SPARK_STATUS_OK))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

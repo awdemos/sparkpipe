@@ -1,21 +1,48 @@
 # GLM-5.2 DSpark speculative decode integration
 
 This pass adds an internal Sparkpipe DSpark speculative-decode path for the
-GLM-5.2 FP8/4-bit deployment shape.
+GLM-5.2 FP8 verifier deployment shape.
 
 The supported DSpark contract is intentionally exact:
 
 ```text
 auxiliary verifier layers: 8, 23, 39, 55, 70
+verifier quantization: FP8 E4M3
+draft dtype: BF16
 fixed PP13 stage width: 6 layers
 speculator draft layers: 5
 block size: 8
 maximum speculative verify tokens: 7
 full vocabulary size: 154880
+draft intermediate size: 12288
+draft attention heads: 64
+draft KV heads: 64
+draft head dimension: 64
 markov rank: 256
+max anchors: 1024
 confidence head: required by policy
 markov head: required by policy
 ```
+
+The request API now rejects DSpark configuration unless the attached
+`SparkGlm52DsparkSpeculator` validates this exact model contract. In particular,
+the optional path is not allowed to silently run against a non-FP8 verifier.
+
+## Setup manifest
+
+The downloaded Hugging Face checkpoint can be reduced to a small setup-time
+manifest with:
+
+```sh
+python3 tools/glm52_dspark_manifest.py \
+  --model-dir /home/spark0/ds4_nvme/models/hf/RedHatAI/GLM-5.2-speculator.dspark \
+  --output /home/spark0/ds4_nvme/sparkpipe_artifacts/dspark/glm52_dspark_manifest.json
+```
+
+The tool validates the checkpoint `config.json` against the Sparkpipe DSpark
+contract and records the `model.safetensors` byte count and SHA-256. Python is
+only used here during one-time setup; serving should consume the JSON contract
+and the resident weights from C/CUDA.
 
 The PP13 tap mapping is:
 
@@ -119,7 +146,8 @@ requires BF16 output buffers for all five auxiliary taps.
 ## Current boundary
 
 This pass intentionally does not pretend to load or execute the 4B DSpark
-safetensors draft network. The runtime, scheduler, request API, frame flags, and
-resident tap ABI are now in place. Codex dev can bind the real DSpark draft
-backend under `SparkGlm52DsparkDraftFunction` and wire the device tap producer
-into the resident PP13 stages.
+safetensors draft network. The runtime, scheduler, request API, frame flags,
+manifest contract, and resident tap ABI are now in place. The remaining
+production work is a C/CUDA DSpark draft backend under
+`SparkGlm52DsparkDraftFunction`, fed by the five resident device taps and the
+setup manifest.

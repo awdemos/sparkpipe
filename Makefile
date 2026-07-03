@@ -98,6 +98,7 @@ TEST_NAMES := \
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
 	tests/test_b12x_scale_layout.py \
+	tests/test_glm52_dspark_manifest.py \
 	tests/test_glm52_b12x_pack_worker.py \
 	tests/test_glm52_b12x_relocate_aot_bundle.py \
 	tests/test_glm52_final_from_hidden_mode.py \

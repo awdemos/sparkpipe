@@ -68,6 +68,7 @@ typedef struct SparkTestRequestApiFixture
     SparkGlm52DsparkSequenceState dspark_sequence_states[
         SPARK_TEST_DSPARK_SEQUENCE_STATE_COUNT];
     SparkTestDsparkDraftCapture dspark_capture;
+    SparkGlm52DsparkModelContract dspark_model_contract;
     SparkTestPrefetchCapture prefetch_capture;
     unsigned char key_destination[SPARK_TEST_KV_BLOCK_COUNT][64u];
     unsigned char value_destination[SPARK_TEST_KV_BLOCK_COUNT][64u];
@@ -463,6 +464,8 @@ static void SparkTestEnableDsparkSpeculation(
     SparkGlm52DsparkSpeculatorConfiguration configuration;
 
     memset(&configuration, 0, sizeof(configuration));
+    assert(SparkGlm52DsparkBuildDefaultModelContract(
+        &fixture->dspark_model_contract) == SPARK_STATUS_OK);
     configuration.abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
     configuration.descriptor_bytes =
         SPARK_GLM52_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES;
@@ -474,6 +477,7 @@ static void SparkTestEnableDsparkSpeculation(
     configuration.sequence_states = fixture->dspark_sequence_states;
     configuration.draft_function = SparkTestDsparkDraft;
     configuration.draft_context = &fixture->dspark_capture;
+    configuration.model_contract = &fixture->dspark_model_contract;
     assert(SparkGlm52DsparkInitialize(
         &fixture->dspark_speculator,
         &configuration) == SPARK_STATUS_OK);

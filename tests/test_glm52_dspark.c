@@ -56,8 +56,11 @@ static void SparkTestDsparkInitializesSpeculator(
     SparkTestDsparkBackend *backend)
 {
     SparkGlm52DsparkSpeculatorConfiguration configuration;
+    SparkGlm52DsparkModelContract model_contract;
 
     memset(&configuration, 0, sizeof(configuration));
+    assert(SparkGlm52DsparkBuildDefaultModelContract(
+        &model_contract) == SPARK_STATUS_OK);
     configuration.abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
     configuration.descriptor_bytes =
         SPARK_GLM52_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES;
@@ -68,9 +71,23 @@ static void SparkTestDsparkInitializesSpeculator(
     configuration.sequence_states = sequence_states;
     configuration.draft_function = SparkTestDsparkDraftBackend;
     configuration.draft_context = backend;
+    configuration.model_contract = &model_contract;
     assert(SparkGlm52DsparkInitialize(
         speculator,
         &configuration) == SPARK_STATUS_OK);
+}
+
+static void SparkTestDsparkModelContractRejectsNonFp8Verifier(void)
+{
+    SparkGlm52DsparkModelContract model_contract;
+
+    assert(SparkGlm52DsparkBuildDefaultModelContract(
+        &model_contract) == SPARK_STATUS_OK);
+    assert(SparkGlm52DsparkValidateModelContract(
+        &model_contract) == SPARK_STATUS_OK);
+    model_contract.verifier_quantization_mode = 1u;
+    assert(SparkGlm52DsparkValidateModelContract(
+        &model_contract) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestDsparkDefaultTapPlanMatchesGlm52Pp13(void)
@@ -230,6 +247,7 @@ static void SparkTestDsparkResolvesVerifierTokens(void)
 
 int main(void)
 {
+    SparkTestDsparkModelContractRejectsNonFp8Verifier();
     SparkTestDsparkDefaultTapPlanMatchesGlm52Pp13();
     SparkTestDsparkDraftLifecycleWithConfidenceTruncation();
     SparkTestDsparkResolvesVerifierTokens();

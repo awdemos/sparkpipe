@@ -18,6 +18,8 @@ extern "C" {
     ((uint32_t)sizeof(SparkGlm52DsparkSequenceState))
 #define SPARK_GLM52_DSPARK_HIDDEN_TAP_PLAN_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52DsparkHiddenTapPlan))
+#define SPARK_GLM52_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52DsparkModelContract))
 #define SPARK_GLM52_DSPARK_DRAFT_REQUEST_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52DsparkDraftRequest))
 #define SPARK_GLM52_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES \
@@ -32,12 +34,19 @@ extern "C" {
 #define SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE 154880u
 #define SPARK_GLM52_DSPARK_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_DSPARK_MARKOV_RANK 256u
+#define SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION 12288u
+#define SPARK_GLM52_DSPARK_DRAFT_ATTENTION_HEAD_COUNT 64u
+#define SPARK_GLM52_DSPARK_DRAFT_KV_HEAD_COUNT 64u
+#define SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION 64u
+#define SPARK_GLM52_DSPARK_MAX_ANCHORS 1024u
 #define SPARK_GLM52_DSPARK_CONFIDENCE_MILLI_ONE 1000u
 #define SPARK_GLM52_DSPARK_DEFAULT_MIN_CONFIDENCE_MILLI 350u
 #define SPARK_GLM52_DSPARK_DEFAULT_REALTIME_MIN_CONFIDENCE_MILLI 250u
 #define SPARK_GLM52_DSPARK_DEFAULT_MAX_VERIFY_TOKENS \
     SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT
 #define SPARK_GLM52_DSPARK_INVALID_LAYER_INDEX 0xffffffffu
+#define SPARK_GLM52_DSPARK_VERIFIER_QUANTIZATION_FP8_E4M3_8BIT 2u
+#define SPARK_GLM52_DSPARK_DRAFT_DTYPE_BF16 1u
 
 #define SPARK_GLM52_DSPARK_POLICY_FLAG_ENABLE_REALTIME 0x00000001u
 #define SPARK_GLM52_DSPARK_POLICY_FLAG_ENABLE_UNDERFILLED_DECODE 0x00000002u
@@ -88,6 +97,31 @@ typedef struct SparkGlm52DsparkHiddenTapPlan
     uint32_t reserved1;
     SparkGlm52DsparkTapStage tap_stages[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT];
 } SparkGlm52DsparkHiddenTapPlan;
+
+typedef struct SparkGlm52DsparkModelContract
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t verifier_quantization_mode;
+    uint32_t draft_dtype;
+    uint32_t draft_layer_count;
+    uint32_t block_size;
+    uint32_t hidden_dimension;
+    uint32_t intermediate_dimension;
+    uint32_t attention_head_count;
+    uint32_t kv_head_count;
+    uint32_t head_dimension;
+    uint32_t vocab_size;
+    uint32_t draft_vocab_size;
+    uint32_t markov_rank;
+    uint32_t max_anchors;
+    uint32_t maximum_speculative_token_count;
+    uint32_t verifier_accept_k;
+    uint32_t aux_layer_count;
+    uint32_t enable_confidence_head;
+    uint32_t confidence_head_with_markov;
+    uint32_t aux_layer_ids[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT];
+} SparkGlm52DsparkModelContract;
 
 typedef struct SparkGlm52DsparkDraftRequest
 {
@@ -162,6 +196,7 @@ typedef struct SparkGlm52DsparkSpeculatorConfiguration
     SparkGlm52DsparkSequenceState *sequence_states;
     SparkGlm52DsparkDraftFunction draft_function;
     void *draft_context;
+    const SparkGlm52DsparkModelContract *model_contract;
 } SparkGlm52DsparkSpeculatorConfiguration;
 
 typedef struct SparkGlm52DsparkSpeculator
@@ -184,6 +219,7 @@ typedef struct SparkGlm52DsparkSpeculator
     uint64_t accepted_draft_token_count;
     uint64_t committed_token_count;
     uint64_t rejected_token_count;
+    SparkGlm52DsparkModelContract model_contract;
     SparkGlm52DsparkSequenceState *sequence_states;
     SparkGlm52DsparkDraftFunction draft_function;
     void *draft_context;
@@ -195,9 +231,18 @@ SparkStatus SparkGlm52DsparkBuildDefaultHiddenTapPlan(
 SparkStatus SparkGlm52DsparkValidateHiddenTapPlan(
     const SparkGlm52DsparkHiddenTapPlan *tap_plan);
 
+SparkStatus SparkGlm52DsparkBuildDefaultModelContract(
+    SparkGlm52DsparkModelContract *model_contract);
+
+SparkStatus SparkGlm52DsparkValidateModelContract(
+    const SparkGlm52DsparkModelContract *model_contract);
+
 SparkStatus SparkGlm52DsparkInitialize(
     SparkGlm52DsparkSpeculator *speculator,
     const SparkGlm52DsparkSpeculatorConfiguration *configuration);
+
+SparkStatus SparkGlm52DsparkValidate(
+    const SparkGlm52DsparkSpeculator *speculator);
 
 SparkStatus SparkGlm52DsparkMarkVerifierTapsReady(
     SparkGlm52DsparkSpeculator *speculator,

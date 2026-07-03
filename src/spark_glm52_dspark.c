@@ -5,6 +5,103 @@
 static const uint32_t SparkGlm52DsparkDefaultAuxLayerIds[
     SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] = { 8u, 23u, 39u, 55u, 70u };
 
+SparkStatus SparkGlm52DsparkBuildDefaultModelContract(
+    SparkGlm52DsparkModelContract *model_contract)
+{
+    uint32_t layer_index;
+
+    if (model_contract == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(model_contract, 0, sizeof(*model_contract));
+    model_contract->abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+    model_contract->descriptor_bytes =
+        SPARK_GLM52_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES;
+    model_contract->verifier_quantization_mode =
+        SPARK_GLM52_DSPARK_VERIFIER_QUANTIZATION_FP8_E4M3_8BIT;
+    model_contract->draft_dtype = SPARK_GLM52_DSPARK_DRAFT_DTYPE_BF16;
+    model_contract->draft_layer_count = SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT;
+    model_contract->block_size = SPARK_GLM52_DSPARK_BLOCK_SIZE;
+    model_contract->hidden_dimension = SPARK_GLM52_DSPARK_HIDDEN_DIMENSION;
+    model_contract->intermediate_dimension =
+        SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION;
+    model_contract->attention_head_count =
+        SPARK_GLM52_DSPARK_DRAFT_ATTENTION_HEAD_COUNT;
+    model_contract->kv_head_count = SPARK_GLM52_DSPARK_DRAFT_KV_HEAD_COUNT;
+    model_contract->head_dimension = SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION;
+    model_contract->vocab_size = SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE;
+    model_contract->draft_vocab_size = SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE;
+    model_contract->markov_rank = SPARK_GLM52_DSPARK_MARKOV_RANK;
+    model_contract->max_anchors = SPARK_GLM52_DSPARK_MAX_ANCHORS;
+    model_contract->maximum_speculative_token_count =
+        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+    model_contract->verifier_accept_k = 1u;
+    model_contract->aux_layer_count = SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+    model_contract->enable_confidence_head = 1u;
+    model_contract->confidence_head_with_markov = 1u;
+    for (layer_index = 0u;
+         layer_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+         ++layer_index)
+    {
+        model_contract->aux_layer_ids[layer_index] =
+            SparkGlm52DsparkDefaultAuxLayerIds[layer_index];
+    }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52DsparkValidateModelContract(
+    const SparkGlm52DsparkModelContract *model_contract)
+{
+    uint32_t layer_index;
+
+    if (model_contract == 0 ||
+        model_contract->abi_version != SPARK_GLM52_DSPARK_ABI_VERSION ||
+        model_contract->descriptor_bytes !=
+            SPARK_GLM52_DSPARK_MODEL_CONTRACT_DESCRIPTOR_BYTES ||
+        model_contract->verifier_quantization_mode !=
+            SPARK_GLM52_DSPARK_VERIFIER_QUANTIZATION_FP8_E4M3_8BIT ||
+        model_contract->draft_dtype != SPARK_GLM52_DSPARK_DRAFT_DTYPE_BF16 ||
+        model_contract->draft_layer_count !=
+            SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT ||
+        model_contract->block_size != SPARK_GLM52_DSPARK_BLOCK_SIZE ||
+        model_contract->hidden_dimension !=
+            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION ||
+        model_contract->intermediate_dimension !=
+            SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION ||
+        model_contract->attention_head_count !=
+            SPARK_GLM52_DSPARK_DRAFT_ATTENTION_HEAD_COUNT ||
+        model_contract->kv_head_count !=
+            SPARK_GLM52_DSPARK_DRAFT_KV_HEAD_COUNT ||
+        model_contract->head_dimension !=
+            SPARK_GLM52_DSPARK_DRAFT_HEAD_DIMENSION ||
+        model_contract->vocab_size != SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE ||
+        model_contract->draft_vocab_size !=
+            SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE ||
+        model_contract->markov_rank != SPARK_GLM52_DSPARK_MARKOV_RANK ||
+        model_contract->max_anchors != SPARK_GLM52_DSPARK_MAX_ANCHORS ||
+        model_contract->maximum_speculative_token_count !=
+            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
+        model_contract->verifier_accept_k != 1u ||
+        model_contract->aux_layer_count != SPARK_GLM52_DSPARK_AUX_LAYER_COUNT ||
+        model_contract->enable_confidence_head != 1u ||
+        model_contract->confidence_head_with_markov != 1u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (layer_index = 0u;
+         layer_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+         ++layer_index)
+    {
+        if (model_contract->aux_layer_ids[layer_index] !=
+            SparkGlm52DsparkDefaultAuxLayerIds[layer_index])
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
 static uint32_t SparkGlm52DsparkNormalizePolicyFlags(
     uint32_t policy_flags)
 {
@@ -44,7 +141,7 @@ static uint32_t SparkGlm52DsparkNormalizeConfidenceMilli(
     return confidence_milli;
 }
 
-static SparkStatus SparkGlm52DsparkValidate(
+SparkStatus SparkGlm52DsparkValidate(
     const SparkGlm52DsparkSpeculator *speculator)
 {
     if (speculator == 0 ||
@@ -56,7 +153,9 @@ static SparkStatus SparkGlm52DsparkValidate(
         speculator->default_speculative_token_count == 0u ||
         speculator->default_speculative_token_count >
             SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
-        (speculator->policy_flags & ~SPARK_GLM52_DSPARK_POLICY_KNOWN_FLAGS) != 0u)
+        (speculator->policy_flags & ~SPARK_GLM52_DSPARK_POLICY_KNOWN_FLAGS) != 0u ||
+        SparkGlm52DsparkValidateModelContract(
+            &speculator->model_contract) != SPARK_STATUS_OK)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -75,6 +174,7 @@ static SparkStatus SparkGlm52DsparkValidateConfiguration(
         configuration->sequence_state_count == 0u ||
         configuration->sequence_states == 0 ||
         configuration->draft_function == 0 ||
+        configuration->model_contract == 0 ||
         configuration->reserved != 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -83,6 +183,11 @@ static SparkStatus SparkGlm52DsparkValidateConfiguration(
     policy_flags = SparkGlm52DsparkNormalizePolicyFlags(
         configuration->policy_flags);
     if ((policy_flags & ~SPARK_GLM52_DSPARK_POLICY_KNOWN_FLAGS) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (SparkGlm52DsparkValidateModelContract(
+            configuration->model_contract) != SPARK_STATUS_OK)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -290,6 +395,7 @@ SparkStatus SparkGlm52DsparkInitialize(
             SPARK_GLM52_DSPARK_DEFAULT_REALTIME_MIN_CONFIDENCE_MILLI);
     speculator->next_tap_generation = 1u;
     speculator->next_draft_generation = 1u;
+    speculator->model_contract = *configuration->model_contract;
     speculator->sequence_states = configuration->sequence_states;
     speculator->draft_function = configuration->draft_function;
     speculator->draft_context = configuration->draft_context;
