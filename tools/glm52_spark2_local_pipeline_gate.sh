@@ -12,6 +12,12 @@ ENABLE_GRAPH_REPLAY="${GLM52_ENABLE_CUDA_GRAPH_REPLAY:-0}"
 AOT_OUTPUT_DIR="${B12X_AOT_OUTPUT_DIR:-build/glm52_b12x_aot}"
 PACK_ROOT="${GLM52_LOCAL_PIPELINE_PACK_ROOT:-$ROOT/build}"
 RESUME="${GLM52_LOCAL_PIPELINE_RESUME:-0}"
+RUN_MODE="${GLM52_LOCAL_PIPELINE_RUN_MODE:-direct}"
+ACTIVE_SEQUENCE_COUNT="${GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT:-1}"
+DIRECT_RUNNER_DIR="${GLM52_LOCAL_PIPELINE_RUNNER_DIR:-$OUTPUT_DIR/runner}"
+DIRECT_RUNNER="$DIRECT_RUNNER_DIR/glm52_resident_decode_stage_runner"
+MODULE_ARCHIVE="${GLM52_LOCAL_PIPELINE_MODULE_ARCHIVE:-$ROOT/build/modules/glm52_resident_decode_stage/libglm52_resident_decode_stage.a}"
+FORCE_RUNNER_REBUILD="${GLM52_LOCAL_PIPELINE_FORCE_RUNNER_REBUILD:-0}"
 
 case "$MODEL_DIR" in
 	/mnt/mac/*|/Volumes/*)
@@ -26,6 +32,10 @@ if [ ! -d "$MODEL_DIR" ]; then
 fi
 if ! command -v "$NVCC_BIN" >/dev/null 2>&1; then
 	echo "missing nvcc for GLM52 local pipeline gate: $NVCC_BIN" >&2
+	exit 4
+fi
+if [ "$RUN_MODE" != "direct" ] && [ "$RUN_MODE" != "package" ]; then
+	echo "unsupported GLM52_LOCAL_PIPELINE_RUN_MODE: $RUN_MODE" >&2
 	exit 4
 fi
 
@@ -79,6 +89,7 @@ pack_dir_for_stage()
 	label="$(printf "%04u_%04u" "$first" "$last")"
 	for candidate in \
 		"$PACK_ROOT/glm52_b12x_resident_moe_${label}_v3" \
+		"$PACK_ROOT/glm52_b12x_resident_moe_all_v3" \
 		"$PACK_ROOT/glm52_b12x_resident_moe_0003_0010_v3" \
 		"$PACK_ROOT/glm52_b12x_resident_moe_0027_0050_v3" \
 		"$PACK_ROOT/glm52_b12x_resident_moe_0075_0077_v3" \
@@ -157,7 +168,94 @@ record_stage_summary()
 	return 0
 }
 
-run_stage()
+required_cuda_link_args()
+{
+	local runtime_args_file
+	local adapter_archive
+	local backend_archive
+	local table_archive
+	if [ -n "${GLM52_REQUIRED_CUDA_LINK_ARGS:-}" ]; then
+		printf "%s" "$GLM52_REQUIRED_CUDA_LINK_ARGS"
+		return 0
+	fi
+	runtime_args_file="$AOT_OUTPUT_DIR/generated/runtime_link_args.txt"
+	case "$runtime_args_file" in
+		/*) ;;
+		*) runtime_args_file="$ROOT/$runtime_args_file" ;;
+	esac
+	adapter_archive="$ROOT/build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a"
+	backend_archive="$ROOT/build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a"
+	table_archive="$ROOT/build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a"
+	if [ ! -s "$adapter_archive" ] || [ ! -s "$backend_archive" ] || [ ! -s "$table_archive" ]; then
+		echo "missing B12x generated archives; run setup/build before direct pipeline mode" >&2
+		exit 15
+	fi
+	if [ ! -s "$runtime_args_file" ]; then
+		echo "missing B12x runtime link args: $runtime_args_file" >&2
+		exit 16
+	fi
+	printf "%s %s %s " "$adapter_archive" "$backend_archive" "$table_archive"
+	cat "$runtime_args_file"
+}
+
+export_required_cuda_library_path()
+{
+	local link_args="$1"
+	local arg
+	local directory
+	for arg in $link_args; do
+		case "$arg" in
+			*.so)
+				directory="$(cd "$(dirname "$arg")" && pwd)"
+				case ":${LD_LIBRARY_PATH:-}:" in
+					*":$directory:"*) ;;
+					*) export LD_LIBRARY_PATH="$directory${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" ;;
+				esac
+				;;
+		esac
+	done
+}
+
+build_direct_runner()
+{
+	local link_args
+	if [ ! -s "$MODULE_ARCHIVE" ]; then
+		echo "missing GLM52 module archive for direct pipeline mode: $MODULE_ARCHIVE" >&2
+		echo "build it once with make -C modules/glm52_resident_decode_stage archive" >&2
+		exit 17
+	fi
+	link_args="$(required_cuda_link_args)"
+	export_required_cuda_library_path "$link_args"
+	if [ "$FORCE_RUNNER_REBUILD" = "0" ] &&
+		[ -x "$DIRECT_RUNNER" ] &&
+		[ "$DIRECT_RUNNER" -nt "$MODULE_ARCHIVE" ] &&
+		[ "$DIRECT_RUNNER" -nt "$ROOT/modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu" ]; then
+		return 0
+	fi
+	mkdir -p "$DIRECT_RUNNER_DIR"
+	make -C "$ROOT" build/libsparkpipe_common.a build/libsparkpipe_runtime.a build/libsparkpipe_compiler.a
+	"$NVCC_BIN" \
+		-std=c++17 \
+		-O3 \
+		--use_fast_math \
+		-arch="$CUDA_ARCH_VALUE" \
+		-DSPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT="${ACTIVE_SEQUENCE_COUNT}u" \
+		-I"$ROOT/include" \
+		-I"$ROOT/modules/glm52_resident_decode_stage/include" \
+		-I"$ROOT/modules/glm52_resident_decode_stage/source" \
+		"$ROOT/modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu" \
+		"$MODULE_ARCHIVE" \
+		"$ROOT/build/libsparkpipe_runtime.a" \
+		"$ROOT/build/libsparkpipe_compiler.a" \
+		"$ROOT/build/libsparkpipe_common.a" \
+		$link_args \
+		-lcublasLt \
+		-lcublas \
+		-ldl \
+		-o "$DIRECT_RUNNER"
+}
+
+run_stage_direct()
 {
 	local mode="$1"
 	local first="$2"
@@ -165,16 +263,58 @@ run_stage()
 	local input_hidden="$4"
 	local output_hidden="$5"
 	local pack_dir="$6"
+	local log_path="$7"
+	local stage_env
+	stage_env=(
+		"NVCC=$NVCC_BIN"
+		"CUDA_ARCH=$CUDA_ARCH_VALUE"
+		"GLM52_B12X_MOE_PACK_DIR=$pack_dir"
+		"GLM52_MODEL_DIR=$MODEL_DIR"
+		"GLM52_ALLOW_REMOTE_MODEL_DIR=0"
+		"GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX=$first"
+		"GLM52_ROUTED_CHAIN_LAYER_COUNT=$count"
+		"GLM52_ENABLE_CUDA_GRAPH_REPLAY=$ENABLE_GRAPH_REPLAY"
+		"GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT=$ACTIVE_SEQUENCE_COUNT"
+		"GLM52_PIPELINE_OUTPUT_HIDDEN_BF16=$output_hidden"
+	)
+	if [ "$mode" = "dense_prefix" ]; then
+		stage_env+=(
+			"GLM52_INPUT_TOKEN_ID=$INPUT_TOKEN_ID"
+			"GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK=1"
+		)
+	elif [ "$mode" = "hidden" ]; then
+		stage_env+=(
+			"GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16=1"
+			"GLM52_PIPELINE_INPUT_HIDDEN_BF16=$input_hidden"
+		)
+	elif [ "$mode" = "final" ]; then
+		stage_env+=(
+			"GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN=1"
+			"GLM52_PIPELINE_INPUT_HIDDEN_BF16=$input_hidden"
+		)
+	else
+		echo "unknown local pipeline stage mode: $mode" >&2
+		exit 8
+	fi
+	if ! (cd "$ROOT" && env "${stage_env[@]}" "$DIRECT_RUNNER" "$MAX_STAGE_US") >"$log_path" 2>&1; then
+		echo "glm52_local_pipeline_stage=failed mode=$mode first_layer=$first layer_count=$count log=$log_path" >&2
+		tail -80 "$log_path" >&2 || true
+		exit 9
+	fi
+}
+
+run_stage_package()
+{
+	local mode="$1"
+	local first="$2"
+	local count="$3"
+	local input_hidden="$4"
+	local output_hidden="$5"
+	local pack_dir="$6"
+	local log_path="$7"
 	local layer_list
-	local log_path
-	local pass_line
-	local total_us
-	local maximum_us
-	local token
 	local command
 	layer_list="$(layers_csv "$first" "$count")"
-	log_path="$OUTPUT_DIR/stage_${first}_${count}_${mode}.log"
-	require_stage_packs "$pack_dir" "$first" "$count"
 	command=(
 		make
 		glm52_resident_decode_stage_firmware_package
@@ -214,6 +354,30 @@ run_stage()
 		echo "glm52_local_pipeline_stage=failed mode=$mode first_layer=$first layer_count=$count log=$log_path" >&2
 		tail -80 "$log_path" >&2 || true
 		exit 9
+	fi
+}
+
+run_stage()
+{
+	local mode="$1"
+	local first="$2"
+	local count="$3"
+	local input_hidden="$4"
+	local output_hidden="$5"
+	local pack_dir="$6"
+	local layer_list
+	local log_path
+	local pass_line
+	local total_us
+	local maximum_us
+	local token
+	log_path="$OUTPUT_DIR/stage_${first}_${count}_${mode}.log"
+	require_stage_packs "$pack_dir" "$first" "$count"
+	if [ "$RUN_MODE" = "direct" ]; then
+		build_direct_runner
+		run_stage_direct "$mode" "$first" "$count" "$input_hidden" "$output_hidden" "$pack_dir" "$log_path"
+	else
+		run_stage_package "$mode" "$first" "$count" "$input_hidden" "$output_hidden" "$pack_dir" "$log_path"
 	fi
 	pass_line="$(stage_pass_line "$log_path")"
 	if [ -z "$pass_line" ]; then
