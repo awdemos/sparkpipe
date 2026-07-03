@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -65,6 +66,7 @@ def test_tail_window_artifacts(root: Path) -> None:
     assert chunks[0]["final_prefill_chunk"] is True
     env_text = env_file.read_text(encoding="utf-8")
     assert "GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID=404" in env_text
+    assert "GLM52_LOCAL_PIPELINE_MAX_PREFILL_TOKENS=256" in env_text
     assert "GLM52_PREFILL_TOKEN_IDS_FILE=" in env_text
     assert "GLM52_PREFILL_PLAN_FILE=" in env_text
     assert "GLM52_PREFILL_CHUNKS_FILE=" in env_text
@@ -130,6 +132,46 @@ def test_c_prefill_dryrun_when_built(root: Path) -> None:
     assert lines[3].startswith("2\tdecode_ready\t0\t0\t0\t0\t0\t0\t")
 
 
+def test_local_pipeline_gate_prefill_only(root: Path) -> None:
+    output_dir = root / "build" / "test_glm52_prompt_pipeline_gate_prefill_only"
+    prompt_dir = output_dir / "prompt"
+    pipeline_dir = output_dir / "pipeline"
+    fake_model_dir = output_dir / "model"
+    token_ids = ",".join(str(3000 + index) for index in range(21))
+    clean_output_dir(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fake_model_dir.mkdir(parents=True, exist_ok=True)
+    run_prompt_tool(
+        root,
+        prompt_dir,
+        token_ids,
+        ["--prefill-chunk-tokens", "16"])
+    env = os.environ.copy()
+    env.update({
+        "NVCC": "true",
+        "GLM52_MODEL_DIR": str(fake_model_dir),
+        "GLM52_PREFILL_TOKEN_IDS_FILE": str(prompt_dir / "prompt_tokens.txt"),
+        "GLM52_LOCAL_PIPELINE_OUTPUT_DIR": str(pipeline_dir),
+        "GLM52_LOCAL_PIPELINE_PREFILL_ONLY": "1",
+        "GLM52_LOCAL_PIPELINE_MAX_PREFILL_TOKENS": "16",
+    })
+    completed = subprocess.run(
+        ["bash", str(root / "tools" / "glm52_spark2_local_pipeline_gate.sh")],
+        cwd=str(root),
+        text=True,
+        capture_output=True,
+        env=env,
+        check=True)
+    schedule_path = pipeline_dir / "prefill_schedule.tsv"
+    assert "glm52_local_pipeline_prefill_only=1" in completed.stdout
+    assert "glm52_local_pipeline_prefill_steps=2" in completed.stdout
+    assert "glm52_local_pipeline_prefill_tokens=21" in completed.stdout
+    schedule_lines = schedule_path.read_text(encoding="utf-8").splitlines()
+    assert schedule_lines[1].startswith("0\tprefill\t0\t16\t5\t16\t1\t1\t")
+    assert schedule_lines[2].startswith("1\tprefill\t16\t5\t0\t21\t1\t2\t")
+    assert schedule_lines[3].startswith("2\tdecode_ready\t0\t0\t0\t0\t0\t0\t")
+
+
 def test_long_prompt_pipeline_refuses_tail_collapse(root: Path) -> None:
     output_dir = root / "build" / "test_glm52_prompt_pipeline_input_refuse"
     clean_output_dir(output_dir)
@@ -148,6 +190,7 @@ def main() -> None:
     test_tail_window_artifacts(root)
     test_long_prompt_prefill_chunks(root)
     test_c_prefill_dryrun_when_built(root)
+    test_local_pipeline_gate_prefill_only(root)
     test_long_prompt_pipeline_refuses_tail_collapse(root)
 
 

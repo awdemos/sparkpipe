@@ -82,6 +82,37 @@ For a 21-token prompt, the expected sequence is:
 2   decode_ready
 ```
 
+When `GLM52_PREFILL_TOKEN_IDS_FILE` is present, the Spark2 local pipeline gate
+runs that same C checker before the decode/tail-window compatibility pipeline:
+
+```text
+tools/glm52_spark2_local_pipeline_gate.sh
+    -> build/sparkpipe_glm52_prefill_dryrun
+    -> prefill_schedule.tsv
+    -> require final row kind=decode_ready
+    -> run current CUDA local pipeline
+```
+
+The gate exports:
+
+```text
+glm52_local_pipeline_prefill_schedule=<path>
+glm52_local_pipeline_prefill_steps=<count>
+glm52_local_pipeline_prefill_tokens=<count>
+```
+
+For prefill schedule testing without launching CUDA stages:
+
+```sh
+GLM52_LOCAL_PIPELINE_PREFILL_ONLY=1 \
+GLM52_PREFILL_TOKEN_IDS_FILE=build/glm52_prompt_prefill_chunk_smoke/prompt_tokens.txt \
+tools/glm52_spark2_local_pipeline_gate.sh
+```
+
+This is still not claiming CUDA prefill execution. It is a fail-closed bridge
+that makes the local pipeline consume and check the SparkPipe C prefill schedule
+instead of ignoring prompt prefill artifacts.
+
 The current local execution bridge is still intentionally narrow:
 
 ```text
