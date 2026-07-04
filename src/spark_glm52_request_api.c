@@ -799,6 +799,47 @@ static void SparkGlm52RequestApiAddSlotToPrefixFamilyGroup(
     }
 }
 
+static SparkStatus SparkGlm52RequestApiExtendPrefixScanHash(
+    SparkGlm52RequestApiSlot *slot,
+    uint32_t block_token_count,
+    uint32_t needed_token_count,
+    uint64_t *prefix_hash_out)
+{
+    SparkGlm52PrefixCachePromptHash block_hash;
+    uint32_t hashed_token_count;
+    uint64_t hash_value;
+    SparkStatus status;
+
+    hashed_token_count = slot->prefix_scan_hashed_token_count;
+    hash_value = slot->prefix_scan_hash;
+    if (hashed_token_count == 0u ||
+        hashed_token_count > needed_token_count ||
+        (hashed_token_count % block_token_count) != 0u)
+    {
+        hashed_token_count = 0u;
+        hash_value = SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH;
+    }
+    while (hashed_token_count < needed_token_count)
+    {
+        status = SparkGlm52PrefixCacheHashPromptTokens(
+            block_token_count,
+            hash_value,
+            &slot->prompt_token_ids[hashed_token_count],
+            block_token_count,
+            &block_hash);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        hash_value = block_hash.prompt_hash;
+        hashed_token_count += block_token_count;
+    }
+    slot->prefix_scan_hashed_token_count = hashed_token_count;
+    slot->prefix_scan_hash = hash_value;
+    *prefix_hash_out = hash_value;
+    return SPARK_STATUS_OK;
+}
+
 static uint32_t SparkGlm52RequestApiBuildBestPrefixFamilyChoice(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiPrefixFamilyChoice *choice)
@@ -866,22 +907,21 @@ static uint32_t SparkGlm52RequestApiBuildBestPrefixFamilyChoice(
 
         while (prefix_token_count <= maximum_family_prefix_token_count)
         {
-            SparkGlm52PrefixCachePromptHash prefix_hash;
+            uint64_t prefix_hash_value;
             SparkGlm52RequestApiPrefixFamilyGroup *group;
 
-            if (SparkGlm52PrefixCacheHashPromptTokens(
+            if (SparkGlm52RequestApiExtendPrefixScanHash(
+                    slot,
                     block_token_count,
-                    SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH,
-                    slot->prompt_token_ids,
                     prefix_token_count,
-                    &prefix_hash) != SPARK_STATUS_OK)
+                    &prefix_hash_value) != SPARK_STATUS_OK)
             {
                 break;
             }
             group = SparkGlm52RequestApiAcquirePrefixFamilyGroup(
                 groups,
                 &group_count,
-                prefix_hash.prompt_hash,
+                prefix_hash_value,
                 prefix_token_count);
             SparkGlm52RequestApiAddSlotToPrefixFamilyGroup(group, slot);
             prefix_token_count += block_token_count;
@@ -1141,58 +1181,78 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindBestDecodeSlot(
     return best_slot;
 }
 
-static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindBestDecodeBatchMember(
-    SparkGlm52RequestApi *api,
-    const SparkGlm52RequestApiSlot *leader_slot,
-    SparkGlm52RequestApiHandle *excluded_handles,
-    uint32_t excluded_handle_count,
-    uint32_t require_resident_kv)
+static void SparkGlm52RequestApiInsertBatchMemberByPriority(
+    SparkGlm52RequestApiSlot **selected_slots,
+    uint32_t *selected_count,
+    uint32_t selected_capacity,
+    SparkGlm52RequestApiSlot *slot)
 {
-    SparkGlm52RequestApiSlot *best_slot;
+    uint32_t insert_index;
+    uint32_t shift_index;
+
+    if (*selected_count >= selected_capacity)
+    {
+        if (!SparkGlm52RequestApiSlotHasHigherSchedulingPriority(
+                slot,
+                selected_slots[selected_capacity - 1u]))
+        {
+            return;
+        }
+        *selected_count = selected_capacity - 1u;
+    }
+    insert_index = *selected_count;
+    while (insert_index > 1u &&
+           SparkGlm52RequestApiSlotHasHigherSchedulingPriority(
+               slot,
+               selected_slots[insert_index - 1u]))
+    {
+        insert_index -= 1u;
+    }
+    for (shift_index = *selected_count;
+         shift_index > insert_index;
+         --shift_index)
+    {
+        selected_slots[shift_index] = selected_slots[shift_index - 1u];
+    }
+    selected_slots[insert_index] = slot;
+    *selected_count += 1u;
+}
+
+static uint32_t SparkGlm52RequestApiCollectDecodeBatchMembers(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot *leader_slot,
+    uint32_t require_resident_kv,
+    SparkGlm52RequestApiSlot **selected_slots,
+    uint32_t selected_capacity)
+{
+    uint32_t selected_count;
     uint32_t slot_index;
 
-    best_slot = 0;
+    selected_slots[0] = leader_slot;
+    selected_count = 1u;
     for (slot_index = 0u; slot_index < api->request_capacity; ++slot_index)
     {
         SparkGlm52RequestApiSlot *slot;
-        uint32_t excluded_index;
-        uint32_t is_excluded;
-        uint32_t slot_blocks_are_resident;
 
         slot = &api->request_slots[slot_index];
-        if (!SparkGlm52RequestApiSlotIsSchedulableDecode(slot))
+        if (slot == leader_slot ||
+            !SparkGlm52RequestApiSlotIsSchedulableDecode(slot))
         {
             continue;
         }
-        slot_blocks_are_resident = SparkGlm52RequestApiDecodeBlocksAreResident(
-            api,
+        if ((require_resident_kv != 0u ||
+             slot->priority < leader_slot->priority) &&
+            !SparkGlm52RequestApiDecodeBlocksAreResident(api, slot))
+        {
+            continue;
+        }
+        SparkGlm52RequestApiInsertBatchMemberByPriority(
+            selected_slots,
+            &selected_count,
+            selected_capacity,
             slot);
-        if ((require_resident_kv != 0u || slot->priority < leader_slot->priority) &&
-            slot_blocks_are_resident == 0u)
-        {
-            continue;
-        }
-        is_excluded = 0u;
-        for (excluded_index = 0u;
-             excluded_index < excluded_handle_count;
-             ++excluded_index)
-        {
-            if (excluded_handles[excluded_index] == slot->handle)
-            {
-                is_excluded = 1u;
-                break;
-            }
-        }
-        if (is_excluded != 0u)
-        {
-            continue;
-        }
-        if (SparkGlm52RequestApiSlotHasHigherSchedulingPriority(slot, best_slot))
-        {
-            best_slot = slot;
-        }
     }
-    return best_slot;
+    return selected_count;
 }
 
 static uint32_t SparkGlm52RequestApiMinimumU32(
@@ -3427,24 +3487,23 @@ static SparkStatus SparkGlm52RequestApiGetSlotDsparkDraft(
         draft_result);
 }
 
-static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindBestSpeculativeVerifyBatchMember(
+static uint32_t SparkGlm52RequestApiCollectSpeculativeVerifyBatchMembers(
     SparkGlm52RequestApi *api,
-    const SparkGlm52RequestApiSlot *leader_slot,
+    SparkGlm52RequestApiSlot *leader_slot,
     uint32_t leader_token_count,
-    SparkGlm52RequestApiHandle *excluded_handles,
-    uint32_t excluded_handle_count,
-    uint32_t require_resident_kv)
+    uint32_t require_resident_kv,
+    SparkGlm52RequestApiSlot **selected_slots,
+    uint32_t selected_capacity)
 {
-    SparkGlm52RequestApiSlot *best_slot;
+    uint32_t selected_count;
     uint32_t slot_index;
 
-    best_slot = 0;
+    selected_slots[0] = leader_slot;
+    selected_count = 1u;
     for (slot_index = 0u; slot_index < api->request_capacity; ++slot_index)
     {
         SparkGlm52RequestApiSlot *slot;
         SparkGlm52DsparkDraftResult draft_result;
-        uint32_t excluded_index;
-        uint32_t is_excluded;
 
         slot = &api->request_slots[slot_index];
         if (slot == leader_slot ||
@@ -3462,27 +3521,13 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindBestSpeculativeVerifyBa
         {
             continue;
         }
-        is_excluded = 0u;
-        for (excluded_index = 0u;
-             excluded_index < excluded_handle_count;
-             ++excluded_index)
-        {
-            if (excluded_handles[excluded_index] == slot->handle)
-            {
-                is_excluded = 1u;
-                break;
-            }
-        }
-        if (is_excluded != 0u)
-        {
-            continue;
-        }
-        if (SparkGlm52RequestApiSlotHasHigherSchedulingPriority(slot, best_slot))
-        {
-            best_slot = slot;
-        }
+        SparkGlm52RequestApiInsertBatchMemberByPriority(
+            selected_slots,
+            &selected_count,
+            selected_capacity,
+            slot);
     }
-    return best_slot;
+    return selected_count;
 }
 
 static void SparkGlm52RequestApiFillSpeculativeVerifySchedulerRequest(
@@ -3504,11 +3549,8 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     SparkGlm52SchedulerRequest scheduler_requests[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     SparkGlm52SchedulerBatchRequest batch_request;
-    SparkGlm52RequestApiHandle selected_handles[
-        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     SparkGlm52RequestApiSlot *selected_slots[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
-    SparkGlm52RequestApiSlot *slot;
     SparkGlm52DsparkDraftResult leader_draft;
     uint32_t batch_target;
     uint32_t request_count;
@@ -3541,22 +3583,17 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     require_resident_batch_members =
         SparkGlm52RequestApiSlotHasRealtimePriority(first_slot) ||
         !SparkGlm52RequestApiJitPrefetchIsEnabled(api);
-    request_count = 0u;
-    slot = first_slot;
-    while (slot != 0 && request_count < batch_target)
+    request_count = SparkGlm52RequestApiCollectSpeculativeVerifyBatchMembers(
+        api,
+        first_slot,
+        leader_draft.token_count,
+        require_resident_batch_members,
+        selected_slots,
+        batch_target);
+    for (request_index = 0u; request_index < request_count; ++request_index)
     {
-        selected_slots[request_count] = slot;
-        selected_handles[request_count] = slot->handle;
         SparkGlm52RequestApiFillSpeculativeVerifySchedulerRequest(
-            &scheduler_requests[request_count]);
-        request_count += 1u;
-        slot = SparkGlm52RequestApiFindBestSpeculativeVerifyBatchMember(
-            api,
-            first_slot,
-            leader_draft.token_count,
-            selected_handles,
-            request_count,
-            require_resident_batch_members);
+            &scheduler_requests[request_index]);
     }
     if (request_count == 0u)
     {
@@ -3674,11 +3711,8 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
     SparkGlm52SchedulerRequest scheduler_requests[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     SparkGlm52SchedulerBatchRequest batch_request;
-    SparkGlm52RequestApiHandle selected_handles[
-        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     SparkGlm52RequestApiSlot *selected_slots[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
-    SparkGlm52RequestApiSlot *slot;
     uint32_t request_count;
     uint32_t request_index;
     uint32_t batch_target;
@@ -3695,21 +3729,16 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
     require_resident_batch_members =
         SparkGlm52RequestApiSlotHasRealtimePriority(first_slot) ||
         !SparkGlm52RequestApiJitPrefetchIsEnabled(api);
-    request_count = 0u;
-    slot = first_slot;
-    while (slot != 0 && request_count < batch_target)
+    request_count = SparkGlm52RequestApiCollectDecodeBatchMembers(
+        api,
+        first_slot,
+        require_resident_batch_members,
+        selected_slots,
+        batch_target);
+    for (request_index = 0u; request_index < request_count; ++request_index)
     {
-        selected_slots[request_count] = slot;
-        selected_handles[request_count] = slot->handle;
         SparkGlm52RequestApiFillDecodeSchedulerRequest(
-            &scheduler_requests[request_count]);
-        request_count += 1u;
-        slot = SparkGlm52RequestApiFindBestDecodeBatchMember(
-            api,
-            first_slot,
-            selected_handles,
-            request_count,
-            require_resident_batch_members);
+            &scheduler_requests[request_index]);
     }
     if (request_count == 0u)
     {
