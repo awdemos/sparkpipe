@@ -10232,6 +10232,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidatePagedChunkPrefillPlan(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStagePagedPrefillPlan **paged_prefill_plan_out)
@@ -10252,6 +10253,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidatePagedChunkPrefillPlan(
         pipeline_slot == 0 ||
         active_sequence_count == 0u ||
         prompt_token_count == 0u ||
+        prompt_token_count > UINT32_MAX - prompt_token_offset ||
         active_sequence_count > node_context->max_active_sequence_count ||
         active_sequence_count > bulk_prefill_plan->maximum_active_sequence_count ||
         prompt_token_count > bulk_prefill_plan->maximum_prompt_token_count)
@@ -10441,6 +10443,7 @@ void SparkGlm52ResidentDecodeStagePagedPrefillAttentionTiledKernel(
     const uint32_t *__restrict__ prompt_block_table,
     uint16_t *__restrict__ prompt_attention_output_latent_bf16,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     uint32_t prompt_token_stride,
     uint32_t block_token_count,
@@ -10529,7 +10532,8 @@ void SparkGlm52ResidentDecodeStagePagedPrefillAttentionTiledKernel(
             prompt_row_index =
                 ((uint64_t)sequence_index * (uint64_t)effective_prompt_token_stride) +
                 (uint64_t)prompt_token_index;
-            current_position = prompt_positions[prompt_row_index];
+            current_position =
+                prompt_token_offset + prompt_positions[prompt_row_index];
             context_length = prompt_context_lengths[sequence_index];
             if (context_length == 0u || context_length > current_position + 1u)
             {
@@ -10802,6 +10806,7 @@ void SparkGlm52ResidentDecodeStagePagedPrefillAttentionOnlineKernel(
     const uint32_t *__restrict__ prompt_block_table,
     uint16_t *__restrict__ prompt_attention_output_latent_bf16,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     uint32_t block_token_count,
     uint32_t max_blocks_per_sequence,
@@ -10855,7 +10860,7 @@ void SparkGlm52ResidentDecodeStagePagedPrefillAttentionOnlineKernel(
     prompt_row_index =
         ((uint64_t)sequence_index * (uint64_t)prompt_token_count) +
         (uint64_t)prompt_token_index;
-    current_position = prompt_positions[prompt_row_index];
+    current_position = prompt_token_offset + prompt_positions[prompt_row_index];
     context_length = prompt_context_lengths[sequence_index];
     if (context_length == 0u || context_length > current_position + 1u)
     {
@@ -11075,6 +11080,7 @@ __global__ static void SparkGlm52ResidentDecodeStagePagedPrefillBlockMetadataKer
     uint32_t effective_prompt_token_stride;
     uint32_t lane_prompt_token_count;
     uint32_t context_length;
+    uint32_t absolute_token_position;
     uint32_t cache_slot;
 
     effective_prompt_token_stride =
@@ -11100,10 +11106,12 @@ __global__ static void SparkGlm52ResidentDecodeStagePagedPrefillBlockMetadataKer
     }
 
     context_length = prompt_context_lengths[sequence_index];
+    absolute_token_position =
+        prompt_token_offset + prompt_positions[token_index];
     cache_slot = SparkGlm52ResidentDecodeStageResolvePagedPrefillCacheSlot(
         prompt_block_table,
         sequence_index,
-        prompt_positions[token_index],
+        absolute_token_position,
         0u,
         block_token_count,
         max_blocks_per_sequence,
@@ -11124,6 +11132,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     void *cuda_stream)
@@ -11150,6 +11159,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill
         node_context,
         pipeline_slot,
         active_sequence_count,
+        prompt_token_offset,
         prompt_token_count,
         runtime_kv_block_table,
         &paged_prefill_plan);
@@ -11190,6 +11200,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill
         effective_prompt_block_table,
         pipeline_slot->sparse_token_indices,
         active_sequence_count,
+        prompt_token_offset,
         prompt_token_count,
         effective_prompt_token_stride,
         effective_block_token_count,
@@ -11232,6 +11243,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill
             effective_prompt_block_table,
             (uint16_t *)paged_prefill_plan->prompt_attention_output_latent_bf16,
             active_sequence_count,
+            prompt_token_offset,
             prompt_token_count,
             effective_prompt_token_stride,
             effective_block_token_count,
@@ -11284,6 +11296,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     void *cuda_stream)
@@ -11293,6 +11306,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
         const SparkGlm52ResidentDecodeStageNodeContext *node_context,
         const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
         uint32_t active_sequence_count,
+        uint32_t prompt_token_offset,
         uint32_t prompt_token_count,
         void *cuda_stream);
     typedef SparkStatus (*SparkGlm52ResidentDecodeStageRuntimeKvBulkPrefillLaunchFunction)(
@@ -11300,6 +11314,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
         const SparkGlm52ResidentDecodeStageNodeContext *node_context,
         const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
         uint32_t active_sequence_count,
+        uint32_t prompt_token_offset,
         uint32_t prompt_token_count,
         const SparkGlm52KvBlockTableView *runtime_kv_block_table,
         void *cuda_stream);
@@ -11320,6 +11335,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
         pipeline_slot->cuda_stream != cuda_stream ||
         active_sequence_count == 0u ||
         active_sequence_count > node_context->max_active_sequence_count ||
+        prompt_token_count > UINT32_MAX - prompt_token_offset ||
         prompt_token_count == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -11361,6 +11377,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
             node_context,
             effective_pipeline_slot,
             active_sequence_count,
+            prompt_token_offset,
             prompt_token_count,
             runtime_kv_block_table,
             cuda_stream);
@@ -11380,6 +11397,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
             node_context,
             effective_pipeline_slot,
             active_sequence_count,
+            prompt_token_offset,
             prompt_token_count,
             runtime_kv_block_table,
             cuda_stream);
@@ -11394,6 +11412,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
             node_context,
             effective_pipeline_slot,
             active_sequence_count,
+            prompt_token_offset,
             prompt_token_count,
             cuda_stream);
     }
@@ -11413,6 +11432,7 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeStageSliceBulkPrefillGraphSi
     const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table)
 {
@@ -11433,6 +11453,9 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeStageSliceBulkPrefillGraphSi
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
         signature,
         pipeline_slot_index);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        prompt_token_offset);
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
         signature,
         prompt_token_count);
@@ -11486,6 +11509,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateStageSliceBulkPrefill(
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     cudaStream_t cuda_stream)
 {
@@ -11500,6 +11524,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateStageSliceBulkPrefill(
         layer_count >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_STAGE_SLICE_LAYER_COUNT ||
         active_sequence_count == 0u ||
+        prompt_token_count > UINT32_MAX - prompt_token_offset ||
         prompt_token_count == 0u ||
         cuda_stream == 0)
     {
@@ -11561,6 +11586,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPre
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     void *cuda_stream)
@@ -11581,6 +11607,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPre
         layer_count,
         pipeline_slot_index,
         active_sequence_count,
+        prompt_token_offset,
         prompt_token_count,
         typed_cuda_stream);
     if (status != SPARK_STATUS_OK)
@@ -11598,6 +11625,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPre
             layer_node_contexts,
             layer_count,
             pipeline_slot_index,
+            prompt_token_offset,
             prompt_token_count,
             runtime_kv_block_table);
 
@@ -11667,6 +11695,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPre
             &layer_node_context->pipeline_slots[pipeline_slot_index],
             pipeline_slot_index,
             active_sequence_count,
+            prompt_token_offset,
             prompt_token_count,
             runtime_kv_block_table,
             cuda_stream);
