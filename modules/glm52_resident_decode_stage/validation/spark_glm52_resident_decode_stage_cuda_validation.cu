@@ -7634,41 +7634,17 @@ static bool SparkValidationRunExactPp13StageSliceSubmit(
     SparkGlm52ResidentDecodeStageBackendCompletion completion;
     struct timespec host_start_time;
     struct timespec host_stop_time;
-    cudaStream_t stage_cuda_stream;
-    cudaEvent_t start_event;
-    cudaEvent_t stop_event;
     uint64_t host_elapsed_nanoseconds;
-    uint32_t use_device_sync_timing;
     SparkStatus status;
 
     host_elapsed_nanoseconds = 0u;
-    use_device_sync_timing =
-        getenv("GLM52_EXACT_PP13_DEVICE_SYNC_TIMING") != 0 ? 1u : 0u;
-    stage_cuda_stream = cuda_stream;
-    if (runtime != 0 &&
-        runtime->pipeline_slots[0].cuda_stream != 0)
-    {
-        stage_cuda_stream =
-            (cudaStream_t)runtime->pipeline_slots[0].cuda_stream;
-    }
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&completion, 0, sizeof(completion));
     completion.function = SparkValidationCompletion;
     completion.context = &completion_state;
-    start_event = 0;
-    stop_event = 0;
-    if (use_device_sync_timing != 0u)
+    if (clock_gettime(CLOCK_MONOTONIC, &host_start_time) != 0)
     {
-        if (clock_gettime(CLOCK_MONOTONIC, &host_start_time) != 0)
-        {
-            fprintf(stderr, "clock_gettime exact_pp13_start failed\n");
-            return false;
-        }
-    }
-    else if (!SparkValidationCudaSucceeded(cudaEventCreate(&start_event), "cudaEventCreate exact_pp13_start") ||
-        !SparkValidationCudaSucceeded(cudaEventCreate(&stop_event), "cudaEventCreate exact_pp13_stop") ||
-        !SparkValidationCudaSucceeded(cudaEventRecord(start_event, stage_cuda_stream), "cudaEventRecord exact_pp13_start"))
-    {
+        fprintf(stderr, "clock_gettime exact_pp13_start failed\n");
         return false;
     }
     status = SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
@@ -7686,23 +7662,15 @@ static bool SparkValidationRunExactPp13StageSliceSubmit(
         fprintf(stderr, "exact PP13 stage-slice submit failed status=%d\n", (int)status);
         return false;
     }
-    if (use_device_sync_timing != 0u)
+    if (!SparkValidationCudaSucceeded(
+            cudaDeviceSynchronize(),
+            "cudaDeviceSynchronize exact_pp13_timing"))
     {
-        if (!SparkValidationCudaSucceeded(
-                cudaDeviceSynchronize(),
-                "cudaDeviceSynchronize exact_pp13_device_sync_timing"))
-        {
-            return false;
-        }
-        if (clock_gettime(CLOCK_MONOTONIC, &host_stop_time) != 0)
-        {
-            fprintf(stderr, "clock_gettime exact_pp13_stop failed\n");
-            return false;
-        }
+        return false;
     }
-    else if (!SparkValidationCudaSucceeded(cudaEventRecord(stop_event, stage_cuda_stream), "cudaEventRecord exact_pp13_stop") ||
-        !SparkValidationCudaSucceeded(cudaEventSynchronize(stop_event), "cudaEventSynchronize exact_pp13_stop"))
+    if (clock_gettime(CLOCK_MONOTONIC, &host_stop_time) != 0)
     {
+        fprintf(stderr, "clock_gettime exact_pp13_stop failed\n");
         return false;
     }
     if (completion_state.completion_count.load(std::memory_order_acquire) != 1u)
@@ -7710,35 +7678,23 @@ static bool SparkValidationRunExactPp13StageSliceSubmit(
         fprintf(stderr, "exact PP13 stage-slice completion callback did not fire\n");
         return false;
     }
-    if (use_device_sync_timing != 0u)
+    if (host_stop_time.tv_nsec >= host_start_time.tv_nsec)
     {
-        if (host_stop_time.tv_nsec >= host_start_time.tv_nsec)
-        {
-            host_elapsed_nanoseconds =
-                ((uint64_t)(host_stop_time.tv_sec - host_start_time.tv_sec) *
-                 1000000000ull) +
-                (uint64_t)(host_stop_time.tv_nsec - host_start_time.tv_nsec);
-        }
-        else
-        {
-            host_elapsed_nanoseconds =
-                ((uint64_t)(host_stop_time.tv_sec - host_start_time.tv_sec - 1) *
-                 1000000000ull) +
-                (uint64_t)(host_stop_time.tv_nsec + 1000000000 -
-                           host_start_time.tv_nsec);
-        }
-        *elapsed_microseconds =
-            (float)((double)host_elapsed_nanoseconds / 1000.0);
-        return true;
+        host_elapsed_nanoseconds =
+            ((uint64_t)(host_stop_time.tv_sec - host_start_time.tv_sec) *
+             1000000000ull) +
+            (uint64_t)(host_stop_time.tv_nsec - host_start_time.tv_nsec);
     }
-    if (!SparkValidationCudaSucceeded(
-            cudaEventElapsedTime(elapsed_microseconds, start_event, stop_event),
-            "cudaEventElapsedTime exact_pp13"))
+    else
     {
-        return false;
+        host_elapsed_nanoseconds =
+            ((uint64_t)(host_stop_time.tv_sec - host_start_time.tv_sec - 1) *
+             1000000000ull) +
+            (uint64_t)(host_stop_time.tv_nsec + 1000000000 -
+                       host_start_time.tv_nsec);
     }
-    cudaEventDestroy(start_event);
-    cudaEventDestroy(stop_event);
+    *elapsed_microseconds =
+        (float)((double)host_elapsed_nanoseconds / 1000.0);
     return true;
 }
 
