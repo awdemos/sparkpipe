@@ -10,7 +10,7 @@ NVCC_BIN="${NVCC:-/usr/local/cuda/bin/nvcc}"
 CUDA_ARCH_VALUE="${CUDA_ARCH:-sm_121a}"
 ENABLE_GRAPH_REPLAY="${GLM52_ENABLE_CUDA_GRAPH_REPLAY:-0}"
 AOT_OUTPUT_DIR="${B12X_AOT_OUTPUT_DIR:-build/glm52_b12x_aot}"
-PACK_ROOT="${GLM52_LOCAL_PIPELINE_PACK_ROOT:-$ROOT/build}"
+B12X_PACK_DIR="/home/spark2/sparkpipe_artifacts/glm52_b12x_resident_moe_all_v3"
 RESUME="${GLM52_LOCAL_PIPELINE_RESUME:-0}"
 RUN_MODE="${GLM52_LOCAL_PIPELINE_RUN_MODE:-direct}"
 ACTIVE_SEQUENCE_COUNT="${GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT:-1}"
@@ -80,34 +80,6 @@ pack_dir_has_stage_packs()
 		fi
 	done
 	return 0
-}
-
-pack_dir_for_stage()
-{
-	local first="$1"
-	local count="$2"
-	local last
-	local label
-	local candidate
-	last=$((first + count - 1))
-	label="$(printf "%04u_%04u" "$first" "$last")"
-	for candidate in \
-		"$PACK_ROOT/glm52_b12x_resident_moe_${label}_v3" \
-		"$PACK_ROOT/glm52_b12x_resident_moe_all_v3" \
-		"$PACK_ROOT/glm52_b12x_resident_moe_0003_0010_v3" \
-		"$PACK_ROOT/glm52_b12x_resident_moe_0027_0050_v3" \
-		"$PACK_ROOT/glm52_b12x_resident_moe_0075_0077_v3" \
-		"$PACK_ROOT/glm52_b12x_resident_moe_${label}_v2" \
-		"$PACK_ROOT/glm52_b12x_resident_moe_${label}" \
-		"$PACK_ROOT/glm52_b12x_resident_moe"
-	do
-		if pack_dir_has_stage_packs "$candidate" "$first" "$count"; then
-			printf "%s" "$candidate"
-			return 0
-		fi
-	done
-	echo "missing B12x pack directory for routed stage ${first}:${count}" >&2
-	exit 5
 }
 
 require_stage_packs()
@@ -463,7 +435,11 @@ run_pipeline_once()
 	for spec in "${stages[@]}"; do
 		IFS=: read -r first count mode <<<"$spec"
 		output_hidden="$OUTPUT_DIR/${run_label}_after_layer_$((first + count - 1)).bf16"
-		pack_dir="$(pack_dir_for_stage "$first" "$count")"
+		pack_dir="$B12X_PACK_DIR"
+		if ! pack_dir_has_stage_packs "$pack_dir" "$first" "$count"; then
+			echo "missing stable B12x resident pack set for routed stage ${first}:${count}: $pack_dir" >&2
+			exit 5
+		fi
 		if [ "$RESUME" != "0" ] && [ -s "$output_hidden" ]; then
 			if ! record_stage_summary "$mode" "$first" "$count" "$pack_dir" "$OUTPUT_DIR/stage_${first}_${count}_${mode}.log"; then
 				echo "resumed stage did not have a reusable validation log: $first:$count" >&2
