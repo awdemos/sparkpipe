@@ -41,6 +41,70 @@ extern "C" {
 #define SPARK_GLM52_STAGE_PLAN_BUCKET_B32 32u
 #define SPARK_GLM52_STAGE_PLAN_BUCKET_B64 64u
 #define SPARK_GLM52_STAGE_PLAN_BUCKET_B128 128u
+#define SPARK_GLM52_STAGE_PLAN_BUCKET_B256 256u
+#define SPARK_GLM52_STAGE_PLAN_BUCKET_B512 512u
+#define SPARK_GLM52_STAGE_PLAN_BUCKET_B1024 1024u
+#define SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET \
+    SPARK_GLM52_STAGE_PLAN_BUCKET_B1024
+#define SPARK_GLM52_STAGE_PLAN_BATCH_BUCKETS \
+    SPARK_GLM52_STAGE_PLAN_BUCKET_B16, \
+    SPARK_GLM52_STAGE_PLAN_BUCKET_B32, \
+    SPARK_GLM52_STAGE_PLAN_BUCKET_B64, \
+    SPARK_GLM52_STAGE_PLAN_BUCKET_B128, \
+    SPARK_GLM52_STAGE_PLAN_BUCKET_B256, \
+    SPARK_GLM52_STAGE_PLAN_BUCKET_B512, \
+    SPARK_GLM52_STAGE_PLAN_BUCKET_B1024
+
+static inline uint32_t SparkGlm52StagePlanBatchBucketIsSupported(
+    uint32_t batch_bucket)
+{
+    if (batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B16 ||
+        batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B32 ||
+        batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B64 ||
+        batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128 ||
+        batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B256 ||
+        batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B512 ||
+        batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B1024)
+    {
+        return 1u;
+    }
+    return 0u;
+}
+
+static inline uint32_t SparkGlm52StagePlanSelectBatchBucketValue(
+    uint32_t active_sequence_count)
+{
+    if (active_sequence_count == 0u ||
+        active_sequence_count > SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
+    {
+        return 0u;
+    }
+    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B16)
+    {
+        return SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
+    }
+    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B32)
+    {
+        return SPARK_GLM52_STAGE_PLAN_BUCKET_B32;
+    }
+    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B64)
+    {
+        return SPARK_GLM52_STAGE_PLAN_BUCKET_B64;
+    }
+    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B128)
+    {
+        return SPARK_GLM52_STAGE_PLAN_BUCKET_B128;
+    }
+    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B256)
+    {
+        return SPARK_GLM52_STAGE_PLAN_BUCKET_B256;
+    }
+    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B512)
+    {
+        return SPARK_GLM52_STAGE_PLAN_BUCKET_B512;
+    }
+    return SPARK_GLM52_STAGE_PLAN_BUCKET_B1024;
+}
 
 typedef struct SparkGlm52StagePlanStage
 {

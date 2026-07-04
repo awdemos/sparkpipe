@@ -585,14 +585,14 @@ static void SparkTestGlm52SchedulerPacksDecodeRequestsIntoSingleGraphDecision(vo
     assert(scheduler.completed_count == 1u);
 }
 
-static void SparkTestGlm52SchedulerDecodeBatchFillsB128FromOversubscribedQueue(void)
+static void SparkTestGlm52SchedulerDecodeBatchFillsMaxBucketFromOversubscribedQueue(void)
 {
     SparkGlm52PrefixCache cache;
     SparkGlm52PrefixCacheEntry entries[128u];
     SparkGlm52PrefixCacheSequenceBinding bindings[512u];
     SparkGlm52SchedulerConfiguration configuration;
     SparkGlm52Scheduler scheduler;
-    SparkGlm52SchedulerRequest requests[140u];
+    SparkGlm52SchedulerRequest requests[1040u];
     SparkGlm52SchedulerBatchRequest batch_request;
     SparkGlm52SchedulerBatchDecision batch_decision;
     uint32_t request_index;
@@ -606,7 +606,7 @@ static void SparkTestGlm52SchedulerDecodeBatchFillsB128FromOversubscribedQueue(v
         &scheduler,
         &configuration) == SPARK_STATUS_OK);
 
-    for (request_index = 0u; request_index < 140u; ++request_index)
+    for (request_index = 0u; request_index < 1040u; ++request_index)
     {
         SparkTestInitializeDecodeRequest(&requests[request_index], 1u);
     }
@@ -614,7 +614,7 @@ static void SparkTestGlm52SchedulerDecodeBatchFillsB128FromOversubscribedQueue(v
     batch_request.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
     batch_request.descriptor_bytes =
         SPARK_GLM52_SCHEDULER_BATCH_REQUEST_DESCRIPTOR_BYTES;
-    batch_request.request_count = 140u;
+    batch_request.request_count = 1040u;
     batch_request.requests = requests;
 
     assert(SparkGlm52SchedulerAdmitDecodeBatch(
@@ -622,13 +622,19 @@ static void SparkTestGlm52SchedulerDecodeBatchFillsB128FromOversubscribedQueue(v
         &batch_request,
         &batch_decision) == SPARK_STATUS_OK);
     assert(batch_decision.accepted == 1u);
-    assert(batch_decision.source_request_count == 140u);
-    assert(batch_decision.packed_request_count == 128u);
-    assert(batch_decision.active_sequence_count == 128u);
-    assert(batch_decision.batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128);
+    assert(batch_decision.source_request_count == 1040u);
+    assert(batch_decision.packed_request_count ==
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
+    assert(batch_decision.active_sequence_count ==
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
+    assert(batch_decision.batch_bucket == SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
     assert(batch_decision.graph_sequence_padding_count == 0u);
-    assert(batch_decision.packed_requests[127u].request_index == 127u);
-    assert(batch_decision.packed_requests[127u].active_sequence_offset == 127u);
+    assert(batch_decision.packed_requests[
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET - 1u].request_index ==
+            SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET - 1u);
+    assert(batch_decision.packed_requests[
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET - 1u].active_sequence_offset ==
+            SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET - 1u);
     assert(batch_decision.stage_decision.quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT);
     assert(SparkGlm52SchedulerCompleteDecodeBatch(
@@ -1027,7 +1033,9 @@ static void SparkTestGlm52SchedulerRejectsInvalidInputs(void)
     assert(scheduler.quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT);
 
-    SparkTestInitializeDecodeRequest(&request, 129u);
+    SparkTestInitializeDecodeRequest(
+        &request,
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET + 1u);
     assert(SparkGlm52SchedulerAdmit(
         &scheduler,
         &request,
@@ -1071,7 +1079,7 @@ int main(void)
     SparkTestGlm52SchedulerUsesIntegratedPrefixCacheAdmission();
     SparkTestGlm52SchedulerInterleavesPrefillAndDecode();
     SparkTestGlm52SchedulerPacksDecodeRequestsIntoSingleGraphDecision();
-    SparkTestGlm52SchedulerDecodeBatchFillsB128FromOversubscribedQueue();
+    SparkTestGlm52SchedulerDecodeBatchFillsMaxBucketFromOversubscribedQueue();
     SparkTestGlm52SchedulerUsesMeasuredDecodeBucketForMidSizedBatch();
     SparkTestGlm52SchedulerRejectsPrefillInDecodeBatch();
     SparkTestGlm52SchedulerExposesKvBlockTableAndCancelsReservation();

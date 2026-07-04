@@ -6533,7 +6533,7 @@ static bool SparkValidationRunDriverOnce(
     status = SparkOrchestratorResolveRoute(
         orchestrator,
         "zai.glm-5.2.resident-decode-stage-firmware",
-        "bf16-h6144-h64-d512-r64-k2048-b128-rv256-mtp2-v1",
+        "bf16-h6144-h64-d512-r64-k2048-b1024-rv256-mtp2-v1",
         "resident_decode",
         "decode",
         &route_handle);
@@ -7388,15 +7388,8 @@ static bool SparkValidationRunRoutedChainFromHidden(
 
 static uint32_t SparkValidationExactPp13BucketForActiveCount(void)
 {
-    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 16u)
-        return 16u;
-    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 32u)
-        return 32u;
-    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 64u)
-        return 64u;
-    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 128u)
-        return 128u;
-    return 0u;
+    return SparkGlm52StagePlanSelectBatchBucketValue(
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT);
 }
 
 static bool SparkValidationAllocateExactFinalEpilogueWorkspace(
@@ -7445,7 +7438,10 @@ static bool SparkValidationInitializeExactPp13StageSlicePlan(
     bucket = SparkValidationExactPp13BucketForActiveCount();
     if (bucket == 0u)
     {
-        fprintf(stderr, "exact PP13 stage-slice validation supports B<=128 active sequences\n");
+        fprintf(
+            stderr,
+            "exact PP13 stage-slice validation supports B<=%u active sequences\n",
+            SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
         return false;
     }
     stage_index = first_layer_index /

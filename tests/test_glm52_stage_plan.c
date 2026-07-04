@@ -112,6 +112,15 @@ static void SparkTestGlm52StagePlanBuilderAndBuckets(void)
         SPARK_STATUS_OK);
     assert(bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128);
     assert(SparkGlm52StagePlanSelectBatchBucket(129u, &bucket) ==
+        SPARK_STATUS_OK);
+    assert(bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B256);
+    assert(SparkGlm52StagePlanSelectBatchBucket(257u, &bucket) ==
+        SPARK_STATUS_OK);
+    assert(bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B512);
+    assert(SparkGlm52StagePlanSelectBatchBucket(513u, &bucket) ==
+        SPARK_STATUS_OK);
+    assert(bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B1024);
+    assert(SparkGlm52StagePlanSelectBatchBucket(1025u, &bucket) ==
         SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 
@@ -175,7 +184,25 @@ static void SparkTestGlm52StagePlanMeasuredBalanced(void)
     assert(SparkTestGlm52StagePlanMaximumStageCostNs(
         &stage_plan,
         layer_cost_ns,
-        final_stage_extra_cost_ns) == 101320576u);
+        final_stage_extra_cost_ns) == 197361562u);
+
+    assert(SparkGlm52StagePlanLoadMeasuredCostProfile(
+        SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701,
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B256,
+        layer_cost_ns,
+        &final_stage_extra_cost_ns) == SPARK_STATUS_OK);
+    assert(final_stage_extra_cost_ns == 0u);
+    assert(SparkGlm52StagePlanBuildCurrentSparkMeasuredBalanced(
+        SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701,
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B256,
+        &stage_plan,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
+    assert(stage_plan.stage_count == 13u);
+    assert(stage_plan.stages[0].first_layer_index == 0u);
+    assert(stage_plan.stages[0].layer_count == 6u);
+    assert(stage_plan.stages[12].first_layer_index == 72u);
+    assert(stage_plan.stages[12].layer_count == 6u);
 
     assert(SparkGlm52StagePlanLoadMeasuredCostProfile(
         SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701,

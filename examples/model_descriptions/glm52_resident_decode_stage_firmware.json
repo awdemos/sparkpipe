@@ -2,7 +2,7 @@
   "schema_version": 1,
   "model": {
     "id": "zai.glm-5.2.resident-decode-stage-firmware",
-    "revision": "bf16-h6144-h64-d512-r64-k2048-b128-rv256-mtp2-v1"
+    "revision": "bf16-h6144-h64-d512-r64-k2048-b1024-rv256-mtp2-v1"
   },
   "metadata": {
     "architecture": "glm52_resident_decode_stage",
@@ -301,12 +301,12 @@
         {
           "name": "decode",
           "id": 1,
-          "max_inflight": 128,
+          "max_inflight": 1024,
           "completion": "external",
           "operations": [
             {
               "name": "resident_decode_stage",
-              "module": "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b128.rv256.mtp2.v1",
+              "module": "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b1024.rv256.mtp2.v1",
               "configuration": {
                 "required_cuda_module": "spark.glm52.sm121.required_decode_stage.b12x_fused.v1",
                 "required_arch": "sm_121a",
@@ -414,9 +414,9 @@
               "no_shell_transport",
               "bulk_prefill"
             ],
-            "max_active_slots": 128,
+            "max_active_slots": 1024,
             "max_new_tokens": 3,
-            "max_resident_sequences": 128,
+            "max_resident_sequences": 1024,
             "max_sequence_tokens": 8192,
             "target_latency_ns": 0,
             "validated_latency_ns": 0,
@@ -425,7 +425,7 @@
             "static_workspace_bytes": 0,
             "device_memcpy_bytes_per_submit_ceiling": 0,
             "host_staging_bytes_per_submit_ceiling": 0,
-            "private_queue_count": 128
+            "private_queue_count": 1024
           }
         }
       ]

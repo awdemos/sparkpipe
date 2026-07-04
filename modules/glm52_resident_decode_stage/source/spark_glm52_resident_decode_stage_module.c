@@ -803,10 +803,8 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
         exact_stage_slice_plan->first_layer_index != first_layer_index ||
         exact_stage_slice_plan->layer_count != 6u ||
         exact_stage_slice_plan->stage_index >= 13u ||
-        (exact_stage_slice_plan->batch_bucket != 16u &&
-         exact_stage_slice_plan->batch_bucket != 32u &&
-         exact_stage_slice_plan->batch_bucket != 64u &&
-         exact_stage_slice_plan->batch_bucket != 128u) ||
+        SparkGlm52StagePlanBatchBucketIsSupported(
+            exact_stage_slice_plan->batch_bucket) == 0u ||
         exact_stage_slice_plan->maximum_active_sequence_count <
             required_active_sequence_count ||
         exact_stage_slice_plan->batch_bucket < required_active_sequence_count ||

@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_module_abi.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_dspark.h"
+#include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h"
 
@@ -71,7 +72,8 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_SIZE \
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT / \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT)
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 128u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT \
+    SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT 78u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER 3u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ROUTED_STAGE_SLICE_LAYER_COUNT 8u
@@ -281,7 +283,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_WORKSPACE_ALIGNMENT_BYTES 256u
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MODULE_ID \
-    "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b128.rv256.mtp2.v1"
+    "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b1024.rv256.mtp2.v1"
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_TARGET \
     "cuda.sm121.glm52.resident_decode_stage.bf16"
 

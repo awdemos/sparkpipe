@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_model_description.h"
 
 
@@ -56,7 +57,8 @@ int main(void)
     assert(cpu_stage != 0);
     decode_program = SparkFindModelProgram(cpu_stage, "decode");
     assert(decode_program != 0);
-    assert(decode_program->max_inflight == 128u);
+    assert(decode_program->max_inflight ==
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
     assert((decode_program->scheduling.flags &
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE) != 0u);
     assert((decode_program->scheduling.flags &
@@ -71,10 +73,13 @@ int main(void)
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT) != 0u);
     assert((decode_program->scheduling.flags &
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL) != 0u);
-    assert(decode_program->scheduling.max_active_slots == 128u);
+    assert(decode_program->scheduling.max_active_slots ==
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
     assert(decode_program->scheduling.max_new_tokens == 3u);
-    assert(decode_program->scheduling.max_resident_sequences == 128u);
-    assert(decode_program->scheduling.private_queue_count == 128u);
+    assert(decode_program->scheduling.max_resident_sequences ==
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
+    assert(decode_program->scheduling.private_queue_count ==
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
     assert(decode_program->scheduling.host_staging_bytes_per_submit_ceiling == 0u);
     SparkModelDescriptionDestroy(&description);
 
