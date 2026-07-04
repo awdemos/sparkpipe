@@ -4491,6 +4491,199 @@ static uint32_t SparkGlm52RequestApiDispatchLaneCount(
     return 0u;
 }
 
+
+SparkStatus SparkGlm52RequestApiDescribePrefillDispatch(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    SparkGlm52RequestApiPrefillDispatchView *prefill_view)
+{
+    uint32_t lane_index;
+    uint32_t lane_count;
+    uint32_t prompt_token_stride;
+
+    if (prefill_view == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(prefill_view, 0, sizeof(*prefill_view));
+
+    if (dispatch == 0 ||
+        dispatch->abi_version != SPARK_GLM52_REQUEST_API_ABI_VERSION ||
+        dispatch->descriptor_bytes !=
+            SPARK_GLM52_REQUEST_API_DISPATCH_DESCRIPTOR_BYTES ||
+        dispatch->accepted == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (dispatch->kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL)
+    {
+        const SparkGlm52SchedulerDecision *decision;
+
+        decision = &dispatch->prefill_decision;
+        if (decision->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
+            decision->descriptor_bytes !=
+                SPARK_GLM52_SCHEDULER_DECISION_DESCRIPTOR_BYTES ||
+            decision->accepted == 0u ||
+            decision->active_sequence_count == 0u ||
+            decision->active_sequence_count > 1u ||
+            decision->scheduled_prompt_token_count == 0u ||
+            decision->prompt_token_ids == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+
+        prefill_view->abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
+        prefill_view->descriptor_bytes =
+            SPARK_GLM52_REQUEST_API_PREFILL_DISPATCH_VIEW_DESCRIPTOR_BYTES;
+        prefill_view->kind = dispatch->kind;
+        prefill_view->active_sequence_count = decision->active_sequence_count;
+        prefill_view->lane_count = 1u;
+        prefill_view->prompt_token_offset =
+            decision->scheduled_prompt_token_offset;
+        prefill_view->prompt_token_count =
+            decision->scheduled_prompt_token_count;
+        prefill_view->prompt_token_stride =
+            decision->scheduled_prompt_token_count;
+        prefill_view->lanes[0u].request_index = 0u;
+        prefill_view->lanes[0u].prompt_token_offset =
+            decision->scheduled_prompt_token_offset;
+        prefill_view->lanes[0u].prompt_token_count =
+            decision->scheduled_prompt_token_count;
+        prefill_view->lanes[0u].request_id = dispatch->request_ids[0u];
+        prefill_view->lanes[0u].sequence_id = dispatch->sequence_ids[0u];
+        prefill_view->lanes[0u].request_handle = dispatch->request_handles[0u];
+        prefill_view->lanes[0u].prompt_token_ids = decision->prompt_token_ids;
+        return SPARK_STATUS_OK;
+    }
+
+    if (dispatch->kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH)
+    {
+        const SparkGlm52SchedulerPrefillBatchDecision *batch_decision;
+
+        batch_decision = &dispatch->prefill_batch_decision;
+        lane_count = batch_decision->active_sequence_count;
+        prompt_token_stride = batch_decision->maximum_scheduled_prompt_token_count;
+        if (batch_decision->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
+            batch_decision->descriptor_bytes !=
+                SPARK_GLM52_SCHEDULER_PREFILL_BATCH_DECISION_DESCRIPTOR_BYTES ||
+            batch_decision->accepted == 0u ||
+            lane_count == 0u ||
+            lane_count > SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT ||
+            prompt_token_stride == 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+
+        prefill_view->abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
+        prefill_view->descriptor_bytes =
+            SPARK_GLM52_REQUEST_API_PREFILL_DISPATCH_VIEW_DESCRIPTOR_BYTES;
+        prefill_view->kind = dispatch->kind;
+        prefill_view->active_sequence_count = lane_count;
+        prefill_view->lane_count = lane_count;
+        prefill_view->prompt_token_stride = prompt_token_stride;
+        for (lane_index = 0u; lane_index < lane_count; ++lane_index)
+        {
+            const SparkGlm52SchedulerPrefillBatchLane *lane;
+
+            lane = &batch_decision->lanes[lane_index];
+            if (lane->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
+                lane->descriptor_bytes !=
+                    SPARK_GLM52_SCHEDULER_PREFILL_BATCH_LANE_DESCRIPTOR_BYTES ||
+                lane->active_sequence_count == 0u ||
+                lane->scheduled_prompt_token_count == 0u ||
+                lane->scheduled_prompt_token_count > prompt_token_stride ||
+                lane->prompt_token_ids == 0)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            if (lane_index == 0u)
+            {
+                prefill_view->prompt_token_offset =
+                    lane->scheduled_prompt_token_offset;
+            }
+            else if (prefill_view->prompt_token_offset !=
+                lane->scheduled_prompt_token_offset)
+            {
+                prefill_view->prompt_token_offset = 0u;
+            }
+            prefill_view->prompt_token_count = SparkGlm52RequestApiMaximumU32(
+                prefill_view->prompt_token_count,
+                lane->scheduled_prompt_token_count);
+            prefill_view->lanes[lane_index].request_index = lane->request_index;
+            prefill_view->lanes[lane_index].prompt_token_offset =
+                lane->scheduled_prompt_token_offset;
+            prefill_view->lanes[lane_index].prompt_token_count =
+                lane->scheduled_prompt_token_count;
+            prefill_view->lanes[lane_index].request_id =
+                dispatch->request_ids[lane_index];
+            prefill_view->lanes[lane_index].sequence_id =
+                dispatch->sequence_ids[lane_index];
+            prefill_view->lanes[lane_index].request_handle =
+                dispatch->request_handles[lane_index];
+            prefill_view->lanes[lane_index].prompt_token_ids =
+                lane->prompt_token_ids;
+        }
+        return SPARK_STATUS_OK;
+    }
+
+    return SPARK_STATUS_INVALID_ARGUMENT;
+}
+
+SparkStatus SparkGlm52RequestApiCopyPrefillDispatchTokenIds(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    uint32_t *destination_token_ids,
+    uint32_t destination_token_stride,
+    uint32_t destination_lane_capacity)
+{
+    SparkGlm52RequestApiPrefillDispatchView prefill_view;
+    uint32_t lane_index;
+    SparkStatus status;
+
+    if (destination_token_ids == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    status = SparkGlm52RequestApiDescribePrefillDispatch(
+        dispatch,
+        &prefill_view);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (destination_lane_capacity < prefill_view.lane_count ||
+        destination_token_stride < prefill_view.prompt_token_stride)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    for (lane_index = 0u; lane_index < prefill_view.lane_count; ++lane_index)
+    {
+        const SparkGlm52RequestApiPrefillDispatchLaneView *lane;
+        uint32_t token_index;
+        uint32_t *destination_lane;
+
+        lane = &prefill_view.lanes[lane_index];
+        destination_lane =
+            &destination_token_ids[(uint64_t)lane_index * destination_token_stride];
+        for (token_index = 0u;
+             token_index < lane->prompt_token_count;
+             ++token_index)
+        {
+            destination_lane[token_index] =
+                lane->prompt_token_ids[lane->prompt_token_offset + token_index];
+        }
+        for (token_index = lane->prompt_token_count;
+             token_index < destination_token_stride;
+             ++token_index)
+        {
+            destination_lane[token_index] = 0u;
+        }
+    }
+
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkGlm52RequestApiBuildDispatchKvBlockTables(
     SparkGlm52RequestApi *api,
     const SparkGlm52RequestApiDispatch *dispatch,
@@ -4912,6 +5105,75 @@ SparkStatus SparkGlm52RequestApiGetRequestCacheState(
         (void)nonresident_block_count;
         cache_state->physical_block_count = physical_block_count;
     }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52RequestApiFinishRequestGeneration(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiHandle handle)
+{
+    SparkGlm52RequestApiSlot *slot;
+    SparkStatus status;
+
+    status = SparkGlm52RequestApiValidate(api);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    slot = SparkGlm52RequestApiFindSlotByHandle(api, handle);
+    if (slot == 0)
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+
+    if (slot->state == SPARK_GLM52_REQUEST_API_STATE_COMPLETED)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (slot->state == SPARK_GLM52_REQUEST_API_STATE_CANCELLED)
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    if (slot->state == SPARK_GLM52_REQUEST_API_STATE_RUNNING_PREFILL ||
+        slot->state == SPARK_GLM52_REQUEST_API_STATE_RUNNING_DECODE ||
+        slot->state ==
+            SPARK_GLM52_REQUEST_API_STATE_RUNNING_SPECULATIVE_VERIFY ||
+        slot->state == SPARK_GLM52_REQUEST_API_STATE_WAITING_PREFIX_COHORT)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+
+    if (slot->state == SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL)
+    {
+        if (api->queued_request_count == 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        api->queued_request_count -= 1u;
+    }
+    else if (slot->state != SPARK_GLM52_REQUEST_API_STATE_READY_DECODE &&
+             slot->state !=
+                SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (slot->state == SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY &&
+        SparkGlm52RequestApiDsparkSpeculationIsEnabled(api))
+    {
+        status = SparkGlm52DsparkCancelSequence(
+            api->dspark_speculator,
+            slot->sequence_id);
+        if (status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND)
+        {
+            return status;
+        }
+    }
+
+    slot->remaining_thinking_token_budget = 0u;
+    slot->remaining_output_token_budget = 0u;
+    slot->state = SPARK_GLM52_REQUEST_API_STATE_COMPLETED;
+    api->completed_request_count += 1u;
     return SPARK_STATUS_OK;
 }
 

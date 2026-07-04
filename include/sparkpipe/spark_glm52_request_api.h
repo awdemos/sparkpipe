@@ -25,6 +25,8 @@ extern "C" {
     ((uint32_t)sizeof(SparkGlm52RequestApiDispatch))
 #define SPARK_GLM52_REQUEST_API_CACHE_STATE_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52RequestApiCacheState))
+#define SPARK_GLM52_REQUEST_API_PREFILL_DISPATCH_VIEW_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52RequestApiPrefillDispatchView))
 
 #define SPARK_GLM52_REQUEST_API_INVALID_HANDLE 0ull
 #define SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY 1000000u
@@ -235,6 +237,34 @@ typedef struct SparkGlm52RequestApiDispatch
             SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
 } SparkGlm52RequestApiDispatch;
 
+
+typedef struct SparkGlm52RequestApiPrefillDispatchLaneView
+{
+    uint32_t request_index;
+    uint32_t prompt_token_offset;
+    uint32_t prompt_token_count;
+    uint64_t request_id;
+    uint64_t sequence_id;
+    SparkGlm52RequestApiHandle request_handle;
+    const uint32_t *prompt_token_ids;
+} SparkGlm52RequestApiPrefillDispatchLaneView;
+
+typedef struct SparkGlm52RequestApiPrefillDispatchView
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t kind;
+    uint32_t active_sequence_count;
+    uint32_t prompt_token_offset;
+    uint32_t prompt_token_count;
+    uint32_t prompt_token_stride;
+    uint32_t lane_count;
+    uint32_t reserved0;
+    uint32_t reserved1;
+    SparkGlm52RequestApiPrefillDispatchLaneView lanes[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+} SparkGlm52RequestApiPrefillDispatchView;
+
 typedef struct SparkGlm52RequestApi
 {
     uint32_t abi_version;
@@ -322,6 +352,16 @@ SparkStatus SparkGlm52RequestApiCompleteDispatch(
     SparkGlm52RequestApi *api,
     const SparkGlm52RequestApiDispatch *dispatch);
 
+SparkStatus SparkGlm52RequestApiDescribePrefillDispatch(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    SparkGlm52RequestApiPrefillDispatchView *prefill_view);
+
+SparkStatus SparkGlm52RequestApiCopyPrefillDispatchTokenIds(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    uint32_t *destination_token_ids,
+    uint32_t destination_token_stride,
+    uint32_t destination_lane_capacity);
+
 SparkStatus SparkGlm52RequestApiBuildDispatchKvBlockTables(
     SparkGlm52RequestApi *api,
     const SparkGlm52RequestApiDispatch *dispatch,
@@ -350,6 +390,11 @@ SparkStatus SparkGlm52RequestApiGetRequestCacheState(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiHandle handle,
     SparkGlm52RequestApiCacheState *cache_state);
+
+
+SparkStatus SparkGlm52RequestApiFinishRequestGeneration(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiHandle handle);
 
 SparkStatus SparkGlm52RequestApiCancelRequest(
     SparkGlm52RequestApi *api,

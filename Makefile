@@ -46,17 +46,21 @@ B12X_RUNTIME_LINK_ARGS_FILE := $(abspath $(B12X_AOT_OUTPUT_DIR))/generated/runti
 COMMON_SOURCES := \
     src/spark_status.c \
     src/spark_filesystem.c \
+    src/spark_json.c \
     src/spark_hidden_transport.c \
     src/spark_glm52_kv_cache.c \
     src/spark_glm52_dspark.c \
     src/spark_glm52_stage_plan.c \
     src/spark_glm52_scheduler.c \
     src/spark_glm52_prefix_cache.c \
-    src/spark_glm52_request_api.c
+    src/spark_glm52_request_api.c \
+    src/spark_tokenizer.c \
+    src/spark_glm52_text_prompt.c \
+    src/spark_glm52_prompt_pipeline.c \
+    src/spark_glm52_serving_engine.c
 
 COMPILER_SOURCES := \
     src/spark_sha256.c \
-    src/spark_json.c \
     src/spark_model_description.c \
     src/spark_module_library.c \
     src/spark_driver_compiler.c
@@ -77,7 +81,9 @@ TOOL_NAMES := \
     sparkpipe_module_publish \
     sparkpipe_model_compile \
     sparkpipe_driver_inspect \
-    sparkpipe_glm52_prefill_dryrun
+    sparkpipe_glm52_prefill_dryrun \
+    sparkpipe_glm52_tokenize \
+    sparkpipe_tokenize_prompt
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -90,6 +96,9 @@ TEST_NAMES := \
     test_glm52_scheduler \
     test_glm52_prefix_cache \
     test_glm52_request_api \
+    test_tokenizer \
+    test_glm52_prompt_pipeline \
+    test_glm52_serving_engine \
     test_model_description \
     test_module_library \
     test_driver_compiler \
@@ -182,6 +191,12 @@ build/sparkpipe_driver_inspect: tools/sparkpipe_driver_inspect.c $(RUNTIME_LIBRA
 build/sparkpipe_glm52_prefill_dryrun: tools/sparkpipe_glm52_prefill_dryrun.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_SUPPORT_OBJECT): tests/test_support.c tests/test_support.h $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -MMD -MP -c tests/test_support.c -o $@
 
@@ -239,6 +254,17 @@ build/test_glm52_prefix_cache: tests/test_glm52_prefix_cache.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_request_api: tests/test_glm52_request_api.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+
+build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_prompt_pipeline: tests/test_glm52_prompt_pipeline.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+
+build/test_glm52_serving_engine: tests/test_glm52_serving_engine.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 
