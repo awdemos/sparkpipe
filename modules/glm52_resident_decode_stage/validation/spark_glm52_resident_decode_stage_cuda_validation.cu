@@ -7963,6 +7963,7 @@ int main(int argc, char **argv)
     const char *load_layer0_dense;
     const char *load_layer0_attention;
     const char *input_token_text;
+    const char *write_input_embedding_hidden_text;
     const char *dense_layer_index_text;
     const char *prefill_kv_text;
     const char *prefill_token_ids_path;
@@ -7995,6 +7996,7 @@ int main(int argc, char **argv)
     uint32_t use_dense_mlp;
     uint32_t use_attention_bf16;
     uint32_t use_input_embedding;
+    uint32_t write_input_embedding_hidden;
     uint32_t use_prefill_kv;
     uint32_t check_layer0_reference;
     uint32_t check_layer0_full_reference;
@@ -8044,6 +8046,8 @@ int main(int argc, char **argv)
     load_layer0_dense = getenv("GLM52_LOAD_LAYER0_DENSE_BF16");
     load_layer0_attention = getenv("GLM52_LOAD_LAYER0_ATTENTION_BF16");
     input_token_text = getenv("GLM52_INPUT_TOKEN_ID");
+    write_input_embedding_hidden_text =
+        getenv("GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16");
     dense_layer_index_text = getenv("GLM52_DENSE_LAYER_INDEX");
     prefill_kv_text = getenv("GLM52_PREFILL_KV_FROM_EMBEDDINGS");
     prefill_token_ids_path = getenv("GLM52_PREFILL_TOKEN_IDS_FILE");
@@ -8092,6 +8096,10 @@ int main(int argc, char **argv)
         load_layer0_attention != 0 && load_layer0_attention[0] != '\0' &&
         strcmp(load_layer0_attention, "0") != 0;
     use_input_embedding = input_token_text != 0 && input_token_text[0] != '\0';
+    write_input_embedding_hidden =
+        write_input_embedding_hidden_text != 0 &&
+        write_input_embedding_hidden_text[0] != '\0' &&
+        strcmp(write_input_embedding_hidden_text, "0") != 0;
     use_prefill_kv = prefill_kv_text != 0 && prefill_kv_text[0] != '\0' &&
         strcmp(prefill_kv_text, "0") != 0;
     check_layer0_reference =
@@ -8243,6 +8251,27 @@ int main(int argc, char **argv)
         fprintf(stderr, "GLM52_INPUT_TOKEN_ID does not match prompt current token input=%u current=%u\n",
             input_token_id,
             prompt_tokens.token_ids[SPARK_VALIDATION_CONTEXT_LENGTH - 1u]);
+        return 2;
+    }
+    if (write_input_embedding_hidden != 0u &&
+        (use_input_embedding == 0u ||
+         pipeline_output_hidden_path == 0 ||
+         pipeline_output_hidden_path[0] == '\0' ||
+         model_directory == 0 ||
+         model_directory[0] == '\0' ||
+         use_prefill_kv != 0u ||
+         check_layer0_reference != 0u ||
+         check_layer0_full_reference != 0u ||
+         use_dense_chain != 0u ||
+         use_dense_chain_layer3_routed_expert_topk != 0u ||
+         use_routed_chain_from_hidden != 0u ||
+         use_routed_chain_from_hidden_final != 0u ||
+         use_exact_pp13_stage_slice != 0u ||
+         use_layer3_router != 0u ||
+         use_layer3_shared_expert != 0u ||
+         use_layer3_routed_expert != 0u))
+    {
+        fprintf(stderr, "GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16 requires only GLM52_INPUT_TOKEN_ID, GLM52_MODEL_DIR, and GLM52_PIPELINE_OUTPUT_HIDDEN_BF16\n");
         return 2;
     }
     if (dense_layer_index_text != 0 && dense_layer_index_text[0] != '\0')
@@ -8505,6 +8534,23 @@ int main(int argc, char **argv)
             &input_embedding))
     {
         return 2;
+    }
+    if (write_input_embedding_hidden != 0u)
+    {
+        if (!SparkValidationWriteHiddenBf16File(
+                pipeline_output_hidden_path,
+                buffers.input_hidden_bf16))
+        {
+            return 2;
+        }
+        printf(
+            "glm52_resident_decode_stage validation passed fixture=input_embedding_hidden token=%u total_submissions=0 total_us=0.000 maximum_us=0.000 pipeline_output_hidden=%s bytes=%u\n",
+            input_token_id,
+            pipeline_output_hidden_path,
+            SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+                2u);
+        return 0;
     }
     if (use_attention_bf16 != 0u &&
         !SparkValidationLoadLayer0AttentionBf16Fixture(

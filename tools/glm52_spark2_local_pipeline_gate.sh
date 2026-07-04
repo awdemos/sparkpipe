@@ -8,11 +8,10 @@ INPUT_TOKEN_ID="${GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID:-1037}"
 MAX_STAGE_US="${GLM52_LOCAL_PIPELINE_MAX_STAGE_US:-1000000}"
 NVCC_BIN="${NVCC:-/usr/local/cuda/bin/nvcc}"
 CUDA_ARCH_VALUE="${CUDA_ARCH:-sm_121a}"
-ENABLE_GRAPH_REPLAY="${GLM52_ENABLE_CUDA_GRAPH_REPLAY:-0}"
+ENABLE_GRAPH_REPLAY="${GLM52_ENABLE_CUDA_GRAPH_REPLAY:-1}"
 AOT_OUTPUT_DIR="${B12X_AOT_OUTPUT_DIR:-build/glm52_b12x_aot}"
 B12X_PACK_DIR="/home/spark2/sparkpipe_artifacts/glm52_b12x_resident_moe_all_v3"
 RESUME="${GLM52_LOCAL_PIPELINE_RESUME:-0}"
-RUN_MODE="${GLM52_LOCAL_PIPELINE_RUN_MODE:-direct}"
 ACTIVE_SEQUENCE_COUNT="${GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT:-1}"
 DIRECT_RUNNER_DIR="${GLM52_LOCAL_PIPELINE_RUNNER_DIR:-$OUTPUT_DIR/runner}"
 DIRECT_RUNNER="$DIRECT_RUNNER_DIR/glm52_resident_decode_stage_runner"
@@ -38,30 +37,9 @@ if ! command -v "$NVCC_BIN" >/dev/null 2>&1; then
 	echo "missing nvcc for GLM52 local pipeline gate: $NVCC_BIN" >&2
 	exit 4
 fi
-if [ "$RUN_MODE" != "direct" ] && [ "$RUN_MODE" != "package" ]; then
-	echo "unsupported GLM52_LOCAL_PIPELINE_RUN_MODE: $RUN_MODE" >&2
-	exit 4
-fi
-
 mkdir -p "$OUTPUT_DIR"
 SUMMARY_TSV="$OUTPUT_DIR/local_pipeline_summary.tsv"
 printf "stage\tmode\tfirst_layer\tlayer_count\tpack_dir\ttotal_us\tmaximum_us\ttoken\tprompt_prefill\tprompt_source_tokens\tlog\n" >"$SUMMARY_TSV"
-
-layers_csv()
-{
-	local first="$1"
-	local count="$2"
-	local layer
-	local result=""
-	for ((layer=first; layer<first+count; layer++)); do
-		if [ -n "$result" ]; then
-			result="$result,$layer"
-		else
-			result="$layer"
-		fi
-	done
-	printf "%s" "$result"
-}
 
 pack_dir_has_stage_packs()
 {
@@ -74,6 +52,9 @@ pack_dir_has_stage_packs()
 		return 1
 	fi
 	for ((layer=first; layer<first+count; layer++)); do
+		if [ "$layer" -lt 3 ]; then
+			continue
+		fi
 		pack_path="$(printf "%s/glm52_layer_%04u_b12x_moe.spb12x" "$pack_dir" "$layer")"
 		if [ ! -s "$pack_path" ]; then
 			return 1
@@ -94,6 +75,9 @@ require_stage_packs()
 		exit 6
 	fi
 	for ((layer=first; layer<first+count; layer++)); do
+		if [ "$layer" -lt 3 ]; then
+			continue
+		fi
 		pack_path="$(printf "%s/glm52_layer_%04u_b12x_moe.spb12x" "$pack_dir" "$layer")"
 		if [ ! -s "$pack_path" ]; then
 			echo "missing B12x resident pack: $pack_path" >&2
@@ -268,6 +252,44 @@ build_direct_runner()
 		-o "$DIRECT_RUNNER"
 }
 
+write_input_embedding_hidden()
+{
+	local output_hidden="$1"
+	local log_path="$OUTPUT_DIR/input_embedding_hidden.log"
+	local pass_line
+	local stage_env
+	stage_env=(
+		"NVCC=$NVCC_BIN"
+		"CUDA_ARCH=$CUDA_ARCH_VALUE"
+		"GLM52_MODEL_DIR=$MODEL_DIR"
+		"GLM52_ALLOW_REMOTE_MODEL_DIR=0"
+		"GLM52_INPUT_TOKEN_ID=$INPUT_TOKEN_ID"
+		"GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16=1"
+		"GLM52_PIPELINE_OUTPUT_HIDDEN_BF16=$output_hidden"
+		"GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT=$ACTIVE_SEQUENCE_COUNT"
+	)
+	if [ "$RESUME" != "0" ] && [ -s "$output_hidden" ]; then
+		echo "glm52_local_pipeline_input_embedding=resume output_hidden=$output_hidden"
+		return 0
+	fi
+	build_direct_runner
+	if ! (cd "$ROOT" && env "${stage_env[@]}" "$DIRECT_RUNNER" "$MAX_STAGE_US") >"$log_path" 2>&1; then
+		echo "glm52_local_pipeline_input_embedding=failed log=$log_path" >&2
+		tail -80 "$log_path" >&2 || true
+		exit 9
+	fi
+	pass_line="$(stage_pass_line "$log_path")"
+	if [ -z "$pass_line" ]; then
+		echo "input embedding writer did not emit validation pass line: $log_path" >&2
+		exit 10
+	fi
+	if [ ! -s "$output_hidden" ]; then
+		echo "input embedding writer did not write hidden: $output_hidden" >&2
+		exit 11
+	fi
+	echo "glm52_local_pipeline_input_embedding=passed output_hidden=$output_hidden"
+}
+
 run_stage_direct()
 {
 	local mode="$1"
@@ -287,83 +309,20 @@ run_stage_direct()
 		"GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX=$first"
 		"GLM52_ROUTED_CHAIN_LAYER_COUNT=$count"
 		"GLM52_ENABLE_CUDA_GRAPH_REPLAY=$ENABLE_GRAPH_REPLAY"
+		"GLM52_EXACT_PP13_STAGE_SLICE=1"
 		"GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT=$ACTIVE_SEQUENCE_COUNT"
+		"GLM52_PIPELINE_INPUT_HIDDEN_BF16=$input_hidden"
 		"GLM52_PIPELINE_OUTPUT_HIDDEN_BF16=$output_hidden"
 	)
-	if [ "$mode" = "dense_prefix" ]; then
+	if [ "$mode" = "exact_final" ]; then
 		stage_env+=(
-			"GLM52_INPUT_TOKEN_ID=$INPUT_TOKEN_ID"
-			"GLM52_CHAIN_DENSE_TO_LAYER3_ROUTED_EXPERT_NVFP4_TOPK=1"
+			"GLM52_EXACT_PP13_STAGE_SLICE_FINAL_TOKEN=1"
 		)
-	elif [ "$mode" = "hidden" ]; then
-		stage_env+=(
-			"GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16=1"
-			"GLM52_PIPELINE_INPUT_HIDDEN_BF16=$input_hidden"
-		)
-	elif [ "$mode" = "final" ]; then
-		stage_env+=(
-			"GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN=1"
-			"GLM52_PIPELINE_INPUT_HIDDEN_BF16=$input_hidden"
-		)
-	else
+	elif [ "$mode" != "exact" ]; then
 		echo "unknown local pipeline stage mode: $mode" >&2
 		exit 8
 	fi
 	if ! (cd "$ROOT" && env "${stage_env[@]}" "$DIRECT_RUNNER" "$MAX_STAGE_US") >"$log_path" 2>&1; then
-		echo "glm52_local_pipeline_stage=failed mode=$mode first_layer=$first layer_count=$count log=$log_path" >&2
-		tail -80 "$log_path" >&2 || true
-		exit 9
-	fi
-}
-
-run_stage_package()
-{
-	local mode="$1"
-	local first="$2"
-	local count="$3"
-	local input_hidden="$4"
-	local output_hidden="$5"
-	local pack_dir="$6"
-	local log_path="$7"
-	local layer_list
-	local command
-	layer_list="$(layers_csv "$first" "$count")"
-	command=(
-		make
-		glm52_resident_decode_stage_firmware_package
-		"MAX_STAGE_MICROSECONDS=$MAX_STAGE_US"
-		"NVCC=$NVCC_BIN"
-		"CUDA_ARCH=$CUDA_ARCH_VALUE"
-		"GLM52_MODEL_DIR=$MODEL_DIR"
-		"B12X_AOT_OUTPUT_DIR=$AOT_OUTPUT_DIR"
-		"B12X_MOE_PACK_OUTPUT_DIR=$pack_dir"
-		"B12X_MOE_PACK_LAYERS=$layer_list"
-		"B12X_MOE_PACK_REQUIRE_REUSE=1"
-		"GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX=$first"
-		"GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT=$count"
-		"GLM52_ENABLE_CUDA_GRAPH_REPLAY=$ENABLE_GRAPH_REPLAY"
-		"GLM52_PIPELINE_OUTPUT_HIDDEN_BF16=$output_hidden"
-	)
-	if [ "$mode" = "dense_prefix" ]; then
-		command+=(
-			"GLM52_VALIDATION_MODE=dense_to_layer3_routed"
-			"GLM52_VALIDATION_INPUT_TOKEN_ID=$INPUT_TOKEN_ID"
-		)
-	elif [ "$mode" = "hidden" ]; then
-		command+=(
-			"GLM52_VALIDATION_MODE=routed_from_hidden"
-			"GLM52_PIPELINE_INPUT_HIDDEN_BF16=$input_hidden"
-		)
-	elif [ "$mode" = "final" ]; then
-		command+=(
-			"GLM52_VALIDATION_MODE=routed_from_hidden_final"
-			"GLM52_PIPELINE_INPUT_HIDDEN_BF16=$input_hidden"
-		)
-	else
-		echo "unknown local pipeline stage mode: $mode" >&2
-		exit 8
-	fi
-	if ! (cd "$ROOT" && "${command[@]}") >"$log_path" 2>&1; then
 		echo "glm52_local_pipeline_stage=failed mode=$mode first_layer=$first layer_count=$count log=$log_path" >&2
 		tail -80 "$log_path" >&2 || true
 		exit 9
@@ -378,7 +337,6 @@ run_stage()
 	local input_hidden="$4"
 	local output_hidden="$5"
 	local pack_dir="$6"
-	local layer_list
 	local log_path
 	local pass_line
 	local total_us
@@ -386,12 +344,8 @@ run_stage()
 	local token
 	log_path="$OUTPUT_DIR/stage_${first}_${count}_${mode}.log"
 	require_stage_packs "$pack_dir" "$first" "$count"
-	if [ "$RUN_MODE" = "direct" ]; then
-		build_direct_runner
-		run_stage_direct "$mode" "$first" "$count" "$input_hidden" "$output_hidden" "$pack_dir" "$log_path"
-	else
-		run_stage_package "$mode" "$first" "$count" "$input_hidden" "$output_hidden" "$pack_dir" "$log_path"
-	fi
+	build_direct_runner
+	run_stage_direct "$mode" "$first" "$count" "$input_hidden" "$output_hidden" "$pack_dir" "$log_path"
 	pass_line="$(stage_pass_line "$log_path")"
 	if [ -z "$pass_line" ]; then
 		echo "stage did not emit validation pass line: $log_path" >&2
@@ -417,21 +371,25 @@ run_pipeline_once()
 	local first
 	local count
 	local mode
-	local input_hidden=""
+	local input_hidden="$OUTPUT_DIR/${run_label}_input_embedding.bf16"
 	local output_hidden
 	local pack_dir
 	local stages=(
-		"3:8:dense_prefix"
-		"11:8:hidden"
-		"19:8:hidden"
-		"27:8:hidden"
-		"35:8:hidden"
-		"43:8:hidden"
-		"51:8:hidden"
-		"59:8:hidden"
-		"67:8:hidden"
-		"75:3:final"
+		"0:6:exact"
+		"6:6:exact"
+		"12:6:exact"
+		"18:6:exact"
+		"24:6:exact"
+		"30:6:exact"
+		"36:6:exact"
+		"42:6:exact"
+		"48:6:exact"
+		"54:6:exact"
+		"60:6:exact"
+		"66:6:exact"
+		"72:6:exact_final"
 	)
+	write_input_embedding_hidden "$input_hidden"
 	for spec in "${stages[@]}"; do
 		IFS=: read -r first count mode <<<"$spec"
 		output_hidden="$OUTPUT_DIR/${run_label}_after_layer_$((first + count - 1)).bf16"
