@@ -15401,8 +15401,18 @@ static __device__ __forceinline__ uint32_t SparkGlm52ResidentDecodeStageWarpReso
 }
 
 
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
-void SparkGlm52ResidentDecodeStagePagedPrefillAttentionTiledKernel(
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS 16u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_THREADS 256u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_WARPS \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_THREADS / \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_WARP_VALUE_DIMENSIONS \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION / \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_WARPS)
+
+static __global__ __launch_bounds__(
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_THREADS, 2)
+void SparkGlm52ResidentDecodeStagePagedPrefillAttentionWmmaKernel(
     const uint16_t *__restrict__ prompt_query_latent_bf16,
     const uint16_t *__restrict__ prompt_rotated_query_rope_bf16,
     const uint16_t *__restrict__ mla_cache_bf16,
@@ -15424,58 +15434,62 @@ void SparkGlm52ResidentDecodeStagePagedPrefillAttentionTiledKernel(
     uint32_t cache_token_capacity,
     float qk_scale)
 {
-    __shared__ float shared_queries[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS]
+    __shared__ __align__(32) __nv_bfloat16 shared_query_tile[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS]
         [SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION];
-    __shared__ float shared_tile_scores[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS]
-        [SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_KEY_TILE_TOKENS];
+    __shared__ __align__(32) __nv_bfloat16 shared_key_tile[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS]
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION];
+    __shared__ __align__(32) __nv_bfloat16 shared_value_tile[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS]
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION];
+    __shared__ __align__(32) float shared_output_accumulator[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS]
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION];
+    __shared__ __align__(32) float shared_score_tile[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS]
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS];
+    __shared__ __align__(32) __nv_bfloat16 shared_probability_tile[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS]
+        [SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS];
     __shared__ uint32_t shared_tile_cache_slots[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_KEY_TILE_TOKENS];
-    __shared__ uint32_t shared_query_context_lengths[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS];
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS];
     __shared__ uint32_t shared_query_positions[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS];
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS];
+    __shared__ uint32_t shared_query_context_lengths[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS];
     __shared__ uint32_t shared_query_valid[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS];
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS];
+    __shared__ float shared_row_maximum[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS];
+    __shared__ float shared_row_denominator[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS];
+    __shared__ float shared_row_scale[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS];
     __shared__ uint32_t shared_maximum_context_length;
-    float online_maximum[SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS];
-    float online_denominator[SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS];
-    float accumulated_value[SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS];
     uint32_t sequence_index;
     uint32_t query_tile_base;
     uint32_t head_index;
     uint32_t lane_index;
     uint32_t warp_index;
-    uint32_t query_tile_index;
-    uint32_t key_tile_index;
     uint32_t first_block_token_offset;
     uint32_t lane_prompt_token_count;
     uint32_t effective_prompt_token_stride;
-    uint32_t dimension_index;
-    uint32_t candidate_base;
+    uint32_t element_index;
     uint32_t tile_index;
+    uint32_t candidate_base;
 
     sequence_index = blockIdx.x;
     query_tile_base =
-        blockIdx.y * SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS;
+        blockIdx.y * SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS;
     head_index = blockIdx.z;
     if (sequence_index >= active_sequence_count ||
         head_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT)
     {
         return;
     }
-
-    lane_index =
-        threadIdx.x &
-        (SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES - 1u);
-    warp_index =
-        threadIdx.x / SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES;
-    query_tile_index =
-        warp_index / SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_KEY_TILE_TOKENS;
-    key_tile_index =
-        warp_index -
-        query_tile_index * SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_KEY_TILE_TOKENS;
+    lane_index = threadIdx.x & (SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES - 1u);
+    warp_index = threadIdx.x / SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES;
     effective_prompt_token_stride =
         SparkGlm52ResidentDecodeStagePagedPrefillTokenStride(
             prompt_token_stride,
@@ -15488,29 +15502,23 @@ void SparkGlm52ResidentDecodeStagePagedPrefillAttentionTiledKernel(
     first_block_token_offset = prompt_first_block_token_offsets == 0
         ? 0u
         : prompt_first_block_token_offsets[sequence_index];
-
-    for (tile_index = threadIdx.x;
-         tile_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS;
-         tile_index += blockDim.x)
+    if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS)
     {
         uint32_t prompt_token_index;
-        uint64_t prompt_row_index;
         uint32_t current_position;
         uint32_t context_length;
 
+        tile_index = threadIdx.x;
         prompt_token_index = query_tile_base + tile_index;
         if (prompt_token_index < lane_prompt_token_count)
         {
-            prompt_row_index =
-                ((uint64_t)sequence_index * (uint64_t)effective_prompt_token_stride) +
-                (uint64_t)prompt_token_index;
-            current_position =
-                prompt_token_offset + prompt_positions[prompt_row_index];
+            current_position = prompt_token_offset + prompt_positions[
+                ((uint64_t)sequence_index *
+                 (uint64_t)effective_prompt_token_stride) +
+                (uint64_t)prompt_token_index];
             context_length = prompt_context_lengths[sequence_index];
             if (context_length == 0u || context_length > current_position + 1u)
-            {
                 context_length = current_position + 1u;
-            }
             shared_query_positions[tile_index] = current_position;
             shared_query_context_lengths[tile_index] = context_length;
             shared_query_valid[tile_index] = 1u;
@@ -15521,25 +15529,18 @@ void SparkGlm52ResidentDecodeStagePagedPrefillAttentionTiledKernel(
             shared_query_context_lengths[tile_index] = 0u;
             shared_query_valid[tile_index] = 0u;
         }
+        shared_row_maximum[tile_index] = -FLT_MAX;
+        shared_row_denominator[tile_index] = 0.0f;
+        shared_row_scale[tile_index] = 0.0f;
     }
     __syncthreads();
-
-    for (tile_index = 0u;
-         tile_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS;
-         ++tile_index)
-    {
-        online_maximum[tile_index] = -FLT_MAX;
-        online_denominator[tile_index] = 0.0f;
-        accumulated_value[tile_index] = 0.0f;
-    }
-
     if (threadIdx.x == 0u)
     {
         uint32_t maximum_context_length;
 
         maximum_context_length = 0u;
         for (tile_index = 0u;
-             tile_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS;
+             tile_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS;
              ++tile_index)
         {
             if (shared_query_valid[tile_index] != 0u &&
@@ -15550,83 +15551,70 @@ void SparkGlm52ResidentDecodeStagePagedPrefillAttentionTiledKernel(
         }
         shared_maximum_context_length = maximum_context_length;
     }
+    for (element_index = threadIdx.x;
+         element_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION;
+         element_index += blockDim.x)
+    {
+        uint32_t query_dimension;
+        uint64_t query_row_index;
+        uint16_t query_value;
+
+        tile_index =
+            element_index / SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION;
+        query_dimension =
+            element_index - (tile_index *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION);
+        query_value = 0u;
+        if (query_tile_base + tile_index < lane_prompt_token_count)
+        {
+            query_row_index =
+                ((((uint64_t)sequence_index *
+                   (uint64_t)effective_prompt_token_stride) +
+                  (uint64_t)(query_tile_base + tile_index)) *
+                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT) +
+                (uint64_t)head_index;
+            query_value = query_dimension <
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION
+                ? prompt_query_latent_bf16[
+                    (query_row_index *
+                     (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION) +
+                    (uint64_t)query_dimension]
+                : prompt_rotated_query_rope_bf16[
+                    (query_row_index *
+                     (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION) +
+                    (uint64_t)(query_dimension -
+                        SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION)];
+        }
+        ((uint16_t *)shared_query_tile)[element_index] = query_value;
+    }
+    for (element_index = threadIdx.x;
+         element_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+         element_index += blockDim.x)
+    {
+        ((float *)shared_output_accumulator)[element_index] = 0.0f;
+    }
     __syncthreads();
     if (shared_maximum_context_length == 0u)
     {
         return;
     }
-
-    for (tile_index = 0u;
-         tile_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS;
-         ++tile_index)
-    {
-        uint32_t prompt_token_index;
-        uint64_t prompt_row_index;
-        uint64_t query_row_index;
-
-        prompt_token_index = query_tile_base + tile_index;
-        if (shared_query_valid[tile_index] == 0u)
-        {
-            for (dimension_index = threadIdx.x;
-                 dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION;
-                 dimension_index += blockDim.x)
-            {
-                shared_queries[tile_index][dimension_index] = 0.0f;
-            }
-            continue;
-        }
-        prompt_row_index =
-            ((uint64_t)sequence_index * (uint64_t)effective_prompt_token_stride) +
-            (uint64_t)prompt_token_index;
-        query_row_index =
-            (prompt_row_index *
-             (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT) +
-            (uint64_t)head_index;
-        for (dimension_index = threadIdx.x;
-             dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION;
-             dimension_index += blockDim.x)
-        {
-            shared_queries[tile_index][dimension_index] =
-                SparkGlm52ResidentDecodeStageBf16ToFloat(
-                    prompt_query_latent_bf16[
-                        (query_row_index *
-                         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION) +
-                        (uint64_t)dimension_index]);
-        }
-        for (dimension_index = threadIdx.x;
-             dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION;
-             dimension_index += blockDim.x)
-        {
-            shared_queries[tile_index]
-                [SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION +
-                 dimension_index] =
-                SparkGlm52ResidentDecodeStageBf16ToFloat(
-                    prompt_rotated_query_rope_bf16[
-                        (query_row_index *
-                         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION) +
-                        (uint64_t)dimension_index]);
-        }
-    }
-    __syncthreads();
-
-    dimension_index = threadIdx.x;
     for (candidate_base = 0u;
          candidate_base < shared_maximum_context_length;
-         candidate_base += SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_KEY_TILE_TOKENS)
+         candidate_base += SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS)
     {
-        uint32_t candidate_index;
-        uint32_t cache_slot_index;
-        float attention_score;
-
-        if (query_tile_index == 0u &&
-            key_tile_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_KEY_TILE_TOKENS)
+        if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS)
         {
-            candidate_index = candidate_base + key_tile_index;
+            uint32_t candidate_index;
+            uint32_t cache_slot_index;
+
+            candidate_index = candidate_base + threadIdx.x;
             cache_slot_index = SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT;
             if (candidate_index < shared_maximum_context_length)
             {
                 cache_slot_index =
-                    SparkGlm52ResidentDecodeStageWarpResolvePagedPrefillCacheSlot(
+                    SparkGlm52ResidentDecodeStageResolvePagedPrefillCacheSlot(
                         prompt_block_table,
                         sequence_index,
                         candidate_index,
@@ -15634,134 +15622,262 @@ void SparkGlm52ResidentDecodeStagePagedPrefillAttentionTiledKernel(
                         block_token_count,
                         max_blocks_per_sequence,
                         kv_block_count,
-                        cache_token_capacity,
-                        lane_index);
+                        cache_token_capacity);
             }
-            if (lane_index == 0u)
-            {
-                shared_tile_cache_slots[key_tile_index] = cache_slot_index;
-            }
+            shared_tile_cache_slots[threadIdx.x] = cache_slot_index;
         }
         __syncthreads();
-
-        if (query_tile_index <
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS &&
-            key_tile_index <
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_KEY_TILE_TOKENS)
+        for (element_index = threadIdx.x;
+             element_index <
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION;
+             element_index += blockDim.x)
         {
-            candidate_index = candidate_base + key_tile_index;
-            cache_slot_index = shared_tile_cache_slots[key_tile_index];
-            attention_score = -FLT_MAX;
-            if (shared_query_valid[query_tile_index] != 0u &&
-                candidate_index < shared_query_context_lengths[query_tile_index] &&
-                cache_slot_index != SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT)
+            uint32_t key_dimension;
+            uint32_t cache_slot_index;
+            uint16_t key_value;
+
+            tile_index =
+                element_index / SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION;
+            key_dimension =
+                element_index - (tile_index *
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION);
+            cache_slot_index = shared_tile_cache_slots[tile_index];
+            key_value = 0u;
+            if (cache_slot_index !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT)
             {
-                attention_score = SparkGlm52ResidentDecodeStageWarpDotProduct(
-                    shared_queries[query_tile_index],
-                    key_nope_cache_bf16,
-                    mla_cache_bf16,
-                    cache_slot_index,
-                    head_index,
-                    lane_index,
-                    qk_scale);
+                key_value = key_dimension <
+                        SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION
+                    ? key_nope_cache_bf16[
+                        ((((uint64_t)cache_slot_index *
+                           (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT) +
+                          (uint64_t)head_index) *
+                         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION) +
+                        (uint64_t)key_dimension]
+                    : mla_cache_bf16[
+                        ((uint64_t)cache_slot_index *
+                         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) +
+                        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION +
+                        (uint64_t)(key_dimension -
+                            SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION)];
             }
-            if (lane_index == 0u)
+            ((uint16_t *)shared_key_tile)[element_index] = key_value;
+        }
+        for (element_index = threadIdx.x;
+             element_index <
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+             element_index += blockDim.x)
+        {
+            uint32_t value_dimension;
+            uint32_t cache_slot_index;
+            uint16_t cache_value;
+
+            tile_index =
+                element_index / SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+            value_dimension =
+                element_index - (tile_index *
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION);
+            cache_slot_index = shared_tile_cache_slots[tile_index];
+            cache_value = 0u;
+            if (cache_slot_index !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT)
             {
-                shared_tile_scores[query_tile_index][key_tile_index] = attention_score;
+                cache_value = value_cache_bf16[
+                    ((((uint64_t)cache_slot_index *
+                       (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT) +
+                      (uint64_t)head_index) *
+                     (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) +
+                    (uint64_t)value_dimension];
             }
+            ((uint16_t *)shared_value_tile)[element_index] = cache_value;
         }
         __syncthreads();
-
-        if (dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION)
+        if (warp_index == 0u)
         {
-            for (tile_index = 0u;
-                 tile_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS;
-                 ++tile_index)
+            nvcuda::wmma::fragment<
+                nvcuda::wmma::accumulator, 16, 16, 16, float> score_fragment;
+            nvcuda::wmma::fragment<
+                nvcuda::wmma::matrix_a, 16, 16, 16,
+                __nv_bfloat16, nvcuda::wmma::row_major> query_fragment;
+            nvcuda::wmma::fragment<
+                nvcuda::wmma::matrix_b, 16, 16, 16,
+                __nv_bfloat16, nvcuda::wmma::col_major> key_fragment;
+            uint32_t slab_index;
+
+            nvcuda::wmma::fill_fragment(score_fragment, 0.0f);
+            for (slab_index = 0u;
+                 slab_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION;
+                 slab_index += 16u)
             {
-                uint32_t key_index;
+                nvcuda::wmma::load_matrix_sync(
+                    query_fragment,
+                    &shared_query_tile[0][slab_index],
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION);
+                nvcuda::wmma::load_matrix_sync(
+                    key_fragment,
+                    &shared_key_tile[0][slab_index],
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION);
+                nvcuda::wmma::mma_sync(
+                    score_fragment, query_fragment, key_fragment, score_fragment);
+            }
+            nvcuda::wmma::store_matrix_sync(
+                &shared_score_tile[0][0],
+                score_fragment,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS,
+                nvcuda::wmma::mem_row_major);
+        }
+        __syncthreads();
+        if (threadIdx.x < SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS)
+        {
+            uint32_t key_index;
+            uint32_t candidate_index;
+            float tile_maximum;
+            float next_maximum;
+            float old_scale;
+            float probability;
+            float probability_sum;
+            float masked_score;
 
-                if (shared_query_valid[tile_index] == 0u)
+            tile_index = threadIdx.x;
+            tile_maximum = -FLT_MAX;
+            for (key_index = 0u;
+                 key_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS;
+                 ++key_index)
+            {
+                candidate_index = candidate_base + key_index;
+                masked_score = -FLT_MAX;
+                if (shared_query_valid[tile_index] != 0u &&
+                    candidate_index < shared_query_context_lengths[tile_index] &&
+                    shared_tile_cache_slots[key_index] !=
+                        SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT)
                 {
-                    continue;
+                    masked_score =
+                        shared_score_tile[tile_index][key_index] * qk_scale;
                 }
-                for (key_index = 0u;
-                     key_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_KEY_TILE_TOKENS;
-                     ++key_index)
-                {
-                    float tile_score;
-                    uint32_t tile_cache_slot;
+                shared_score_tile[tile_index][key_index] = masked_score;
+                if (masked_score > tile_maximum)
+                    tile_maximum = masked_score;
+            }
+            next_maximum = shared_row_maximum[tile_index] > tile_maximum
+                ? shared_row_maximum[tile_index]
+                : tile_maximum;
+            old_scale = shared_row_denominator[tile_index] > 0.0f &&
+                    next_maximum > (-FLT_MAX * 0.5f)
+                ? __expf(shared_row_maximum[tile_index] - next_maximum)
+                : 0.0f;
+            probability_sum = 0.0f;
+            for (key_index = 0u;
+                 key_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS;
+                 ++key_index)
+            {
+                probability = shared_score_tile[tile_index][key_index] >
+                        (-FLT_MAX * 0.5f) &&
+                        next_maximum > (-FLT_MAX * 0.5f)
+                    ? __expf(shared_score_tile[tile_index][key_index] - next_maximum)
+                    : 0.0f;
+                shared_probability_tile[tile_index][key_index] =
+                    __float2bfloat16(probability);
+                probability_sum += probability;
+            }
+            shared_row_scale[tile_index] = old_scale;
+            shared_row_denominator[tile_index] =
+                (shared_row_denominator[tile_index] * old_scale) + probability_sum;
+            shared_row_maximum[tile_index] = next_maximum;
+        }
+        __syncthreads();
+        for (element_index = threadIdx.x;
+             element_index <
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+             element_index += blockDim.x)
+        {
+            tile_index =
+                element_index / SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+            ((float *)shared_output_accumulator)[element_index] *=
+                shared_row_scale[tile_index];
+        }
+        __syncthreads();
+        {
+            nvcuda::wmma::fragment<
+                nvcuda::wmma::accumulator, 16, 16, 16, float> output_fragment;
+            nvcuda::wmma::fragment<
+                nvcuda::wmma::matrix_a, 16, 16, 16,
+                __nv_bfloat16, nvcuda::wmma::row_major> probability_fragment;
+            nvcuda::wmma::fragment<
+                nvcuda::wmma::matrix_b, 16, 16, 16,
+                __nv_bfloat16, nvcuda::wmma::row_major> value_fragment;
+            uint32_t fragment_index;
+            uint32_t value_column;
 
-                    tile_score = shared_tile_scores[tile_index][key_index];
-                    tile_cache_slot = shared_tile_cache_slots[key_index];
-                    if (tile_cache_slot !=
-                            SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT &&
-                        tile_score > (-FLT_MAX * 0.5f))
-                    {
-                        float next_maximum;
-                        float old_scale;
-                        float tile_scale;
-                        float value;
-                        uint64_t cache_element_offset;
-
-                        next_maximum = tile_score > online_maximum[tile_index]
-                            ? tile_score
-                            : online_maximum[tile_index];
-                        old_scale = online_denominator[tile_index] > 0.0f
-                            ? __expf(online_maximum[tile_index] - next_maximum)
-                            : 0.0f;
-                        tile_scale = __expf(tile_score - next_maximum);
-                        cache_element_offset =
-                            (((uint64_t)tile_cache_slot *
-                              (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT +
-                              (uint64_t)head_index) *
-                             (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) +
-                            (uint64_t)dimension_index;
-                        value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-                            value_cache_bf16[cache_element_offset]);
-                        accumulated_value[tile_index] =
-                            (accumulated_value[tile_index] * old_scale) +
-                            (value * tile_scale);
-                        online_denominator[tile_index] =
-                            (online_denominator[tile_index] * old_scale) + tile_scale;
-                        online_maximum[tile_index] = next_maximum;
-                    }
-                }
+            nvcuda::wmma::load_matrix_sync(
+                probability_fragment,
+                &shared_probability_tile[0][0],
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS);
+            for (fragment_index = 0u;
+                 fragment_index <
+                     SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_WARP_VALUE_DIMENSIONS / 16u;
+                 ++fragment_index)
+            {
+                value_column = (warp_index *
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_WARP_VALUE_DIMENSIONS) +
+                    (fragment_index * 16u);
+                nvcuda::wmma::load_matrix_sync(
+                    output_fragment,
+                    &shared_output_accumulator[0][value_column],
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,
+                    nvcuda::wmma::mem_row_major);
+                nvcuda::wmma::load_matrix_sync(
+                    value_fragment,
+                    &shared_value_tile[0][value_column],
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION);
+                nvcuda::wmma::mma_sync(
+                    output_fragment,
+                    probability_fragment,
+                    value_fragment,
+                    output_fragment);
+                nvcuda::wmma::store_matrix_sync(
+                    &shared_output_accumulator[0][value_column],
+                    output_fragment,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,
+                    nvcuda::wmma::mem_row_major);
             }
         }
         __syncthreads();
     }
-
-    if (dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION)
+    for (element_index = threadIdx.x;
+         element_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+         element_index += blockDim.x)
     {
-        for (tile_index = 0u;
-             tile_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS;
-             ++tile_index)
-        {
-            uint32_t prompt_token_index;
-            uint64_t prompt_row_index;
-            uint64_t output_row_offset;
+        uint32_t value_dimension;
+        uint64_t output_row_offset;
+        float output_value;
 
-            if (shared_query_valid[tile_index] == 0u)
-            {
-                continue;
-            }
-            prompt_token_index = query_tile_base + tile_index;
-            prompt_row_index =
-                ((uint64_t)sequence_index * (uint64_t)effective_prompt_token_stride) +
-                (uint64_t)prompt_token_index;
-            output_row_offset =
-                ((prompt_row_index *
-                  (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT) +
-                 (uint64_t)head_index) *
-                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
-            prompt_attention_output_latent_bf16[
-                output_row_offset + (uint64_t)dimension_index] =
-                SparkGlm52ResidentDecodeStageFloatToBf16(
-                    online_denominator[tile_index] > 0.0f
-                        ? accumulated_value[tile_index] /
-                            online_denominator[tile_index]
-                        : 0.0f);
+        tile_index =
+            element_index / SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+        value_dimension =
+            element_index - (tile_index *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION);
+        if (shared_query_valid[tile_index] == 0u)
+        {
+            continue;
         }
+        output_row_offset =
+            ((((uint64_t)sequence_index *
+               (uint64_t)effective_prompt_token_stride) +
+              (uint64_t)(query_tile_base + tile_index)) *
+             (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT +
+             (uint64_t)head_index) *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+        output_value = shared_row_denominator[tile_index] > 0.0f
+            ? shared_output_accumulator[tile_index][value_dimension] /
+                shared_row_denominator[tile_index]
+            : 0.0f;
+        prompt_attention_output_latent_bf16[
+            output_row_offset + (uint64_t)value_dimension] =
+            SparkGlm52ResidentDecodeStageFloatToBf16(output_value);
     }
 }
 
@@ -16676,9 +16792,16 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill
         }
         else
         {
-            SparkGlm52ResidentDecodeStagePagedPrefillAttentionTiledKernel<<<
-                paged_attention_grid,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            dim3 wmma_attention_grid;
+
+            wmma_attention_grid.x = active_sequence_count;
+            wmma_attention_grid.y = (prompt_token_count +
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS - 1u) /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_TILE_TOKENS;
+            wmma_attention_grid.z = SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT;
+            SparkGlm52ResidentDecodeStagePagedPrefillAttentionWmmaKernel<<<
+                wmma_attention_grid,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_WMMA_PREFILL_THREADS,
                 0u,
                 typed_cuda_stream>>>(
                 (const uint16_t *)effective_prompt_query_latent_bf16,
