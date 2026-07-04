@@ -177,3 +177,168 @@ current mode as:
 ```text
 tail_window_prompt_prefill_validation_context
 ```
+
+## C/CUDA full-prompt handoff added
+
+The tail-window validation guard remains in the Python compatibility bridge, but
+there is now a C/CUDA path that can consume the full scheduled prompt-token
+windows instead of reducing them to the last four tokens.
+
+New request-API helpers expose the exact scheduled prefill slice for each
+dispatch:
+
+```c
+SparkGlm52RequestApiDescribePrefillDispatch(...)
+SparkGlm52RequestApiCopyPrefillDispatchTokenIds(...)
+```
+
+A production prompt server should use these after
+`SparkGlm52RequestApiScheduleNext(...)` for prefill dispatches. The copied token
+matrix is rectangular and lane-major, so it can be uploaded once per scheduled
+prefill step without Python stepping one token at a time.
+
+The SM121 required CUDA surface now has a prompt-prefill device workspace and
+stage-slice launcher:
+
+```c
+SparkGlm52Sm121RequiredDecodeStageCalculatePromptPrefillWorkspaceBytes(...)
+SparkGlm52Sm121RequiredDecodeStageResolvePromptPrefillWorkspace(...)
+SparkGlm52Sm121RequiredDecodeStageUploadPromptTokenIds(...)
+SparkGlm52Sm121RequiredDecodeStageLaunchPromptEmbeddingGatherBf16(...)
+SparkGlm52Sm121RequiredDecodeStageLaunchPromptPrefillMetadataBuild(...)
+SparkGlm52Sm121RequiredDecodeStageBuildPromptPrefillFrameView(...)
+SparkGlm52Sm121RequiredDecodeStageLaunchPromptStageSliceBulkPrefillFromTokenIds(...)
+SparkGlm52Sm121RequiredDecodeStageLaunchPromptStageSliceBulkPrefillFromHostTokenIds(...)
+```
+
+That CUDA path performs:
+
+```text
+host token-id window from request API
+    -> device token-id matrix
+    -> BF16 embedding gather
+    -> prompt positions / slot mapping / context lengths / per-lane counts
+    -> SparkGlm52ResidentDecodeStagePrefillFrameView
+    -> stage-slice bulk prefill
+    -> KV-resident decode continuation
+```
+
+Raw prompt text still requires a tokenizer source outside this CUDA module. The
+important change is that, once token IDs exist, the production runtime no longer
+needs to spoon-feed one decode token through Python. The remaining Spark2 work is
+nvcc bringup, wiring the server loop to this handoff, and verifying that decode
+uses the committed KV blocks after the final prefill dispatch.
+
+## C tokenizer and prompt dry-run handoff
+
+The repository now has a C Hugging Face byte-level BPE tokenizer path wired into
+both a standalone tokenizer CLI and the prefill dry-run scheduler:
+
+```sh
+build/sparkpipe_tokenize_prompt \
+    --tokenizer-json /model/tokenizer.json \
+    --prompt "..." \
+    --output build/prompt_tokens.txt
+
+build/sparkpipe_glm52_prefill_dryrun \
+    --tokenizer-json /model/tokenizer.json \
+    --prompt "..." \
+    --max-prefill-tokens 256 \
+    --write-tokens build/prompt_tokens.txt
+```
+
+The dry-run path performs the production-shaped input sequence in one C process:
+
+```text
+raw UTF-8 prompt text
+    -> C byte-level BPE tokenizer
+    -> prompt token-id buffer
+    -> SparkGlm52RequestApiSubmit
+    -> scheduled chunked prefill dispatches
+    -> decode_ready only after the full prompt is scheduled/committed
+```
+
+This does not make a CUDA correctness claim by itself. It removes the Python
+one-token-at-a-time prompt input dependency and gives the Spark2 server a direct
+C entry surface for prompt text or explicit token IDs.
+
+The tokenizer is intentionally CPU-side. Byte-level BPE is branchy, table-heavy,
+and tiny compared with a 50+ tok/sec GLM52 prefill/decode pipeline. The GPU
+should stay occupied with embedding, layer prefill, KV writes, and decode. The
+C tokenizer can run ahead on host threads and fill request token buffers while
+GPU work for previous prompt chunks is already in flight.
+
+## Prefill throughput and pipelining target
+
+The current planning target is still measured on Spark2, not asserted here. A
+1500 tok/sec prefill target means an effective budget of about 0.667 ms per
+prefill token across the slowest end-to-end stage path. With chunked prefill,
+the important metric is not a single-token loop but the amortized stage-slice
+rate after the PP13 pipeline is full:
+
+```text
+steady_state_prefill_tok_per_sec ~=
+    active_prompt_tokens_per_chunk /
+    max_stage_slice_seconds_for_that_chunk
+```
+
+The production scheduler should therefore run prompt input as a producer/consumer
+pipeline:
+
+```text
+host tokenizer thread(s)
+    -> token-id ring buffers
+    -> request API prefill dispatches
+    -> CUDA prompt-prefill H2D/token upload on stream A
+    -> embedding + stage-slice prefill on stream B
+    -> KV commit
+    -> decode_ready when final prompt chunk commits
+```
+
+Parallelism that is safe now:
+
+```text
+1. CPU-tokenize request N+1 while GPU prefills request N.
+2. Batch multiple request prefill lanes when the scheduler emits PREFILL_BATCH.
+3. Pipeline PP13 chunks so later stages consume chunk k while earlier stages
+   prepare chunk k+1, subject to KV commit ordering.
+4. Interleave decode-ready requests with lower-priority prefill chunks when the
+   scheduler policy says decode latency is at risk.
+```
+
+Dependency that cannot be skipped:
+
+```text
+A request's first decode token must wait until that request's final prompt
+prefill chunk has committed all required KV blocks.
+```
+
+JIT KV prefetch helps cold prefix/decode residency. It is not a substitute for
+full prompt prefill of new uncached tokens.
+
+## Native C tokenizer and prompt pipeline pump update
+
+The production-shaped path now has native C pieces instead of relying on Python token feeding:
+
+```text
+spark_tokenizer.h / spark_tokenizer.c
+    tokenizer.json BPE load
+    UTF-8 prompt -> token IDs
+
+spark_glm52_text_prompt.h / spark_glm52_text_prompt.c
+    prompt text -> request API submit
+
+spark_glm52_prompt_pipeline.h / spark_glm52_prompt_pipeline.c
+    request API dispatch loop
+    prefill token-window copy
+    KV block table view build
+    callback into CUDA prefill/decode execution
+```
+
+The Python script remains useful artifact glue, but it is no longer the intended production control loop. The C prompt pipeline pump is the handoff point for the Sparkring server/direct runner to execute:
+
+```text
+full prompt text -> C tokenizer -> request scheduler -> chunked CUDA prefill -> decode
+```
+
+See `docs/GLM52_NATIVE_PROMPT_INPUT_AND_PREFILL_PIPELINE_20260704.md` for the speed estimate and pipeline plan.

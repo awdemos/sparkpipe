@@ -132,6 +132,57 @@ def test_c_prefill_dryrun_when_built(root: Path) -> None:
     assert lines[3].startswith("2\tdecode_ready\t0\t0\t0\t0\t0\t0\t")
 
 
+
+def write_tiny_byte_bpe_tokenizer(path: Path) -> None:
+    path.write_text(json.dumps({
+        "model": {
+            "type": "BPE",
+            "unk_token": "<unk>",
+            "byte_fallback": False,
+            "vocab": {
+                "a": 1, "b": 2, "c": 3, "ab": 4, "abc": 5,
+                "<unk>": 6, "x": 9, "y": 10, "z": 11,
+                "xy": 12, "xyz": 13,
+            },
+            "merges": ["a b", "ab c", "x y", "xy z"],
+        },
+        "pre_tokenizer": {"type": "ByteLevel", "add_prefix_space": False},
+        "added_tokens": [],
+    }), encoding="utf-8")
+
+
+def test_c_prefill_dryrun_tokenizes_prompt_text_when_built(root: Path) -> None:
+    output_dir = root / "build" / "test_glm52_prompt_pipeline_input_c_tokenizer"
+    dryrun_binary = root / "build" / "sparkpipe_glm52_prefill_dryrun"
+    clean_output_dir(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if not dryrun_binary.exists():
+        return
+    tokenizer_json = output_dir / "tokenizer.json"
+    written_tokens = output_dir / "prompt_tokens.txt"
+    write_tiny_byte_bpe_tokenizer(tokenizer_json)
+    completed = subprocess.run(
+        [
+            str(dryrun_binary),
+            "--tokenizer-json",
+            str(tokenizer_json),
+            "--prompt",
+            "abcxyz",
+            "--max-prefill-tokens",
+            "16",
+            "--write-tokens",
+            str(written_tokens),
+        ],
+        cwd=str(root),
+        text=True,
+        capture_output=True,
+        check=True)
+    lines = completed.stdout.splitlines()
+    assert lines[0] == "step\tkind\ttoken_offset\ttoken_count\tremaining\tcommit_after\tprefill_blocks\tkv_blocks\tflags"
+    assert lines[1].startswith("0\tprefill\t0\t2\t0\t2\t1\t1\t")
+    assert lines[2].startswith("1\tdecode_ready\t0\t0\t0\t0\t0\t0\t")
+    assert written_tokens.read_text(encoding="utf-8").splitlines() == ["5", "13"]
+
 def test_local_pipeline_gate_prefill_only(root: Path) -> None:
     output_dir = root / "build" / "test_glm52_prompt_pipeline_gate_prefill_only"
     prompt_dir = output_dir / "prompt"
@@ -190,6 +241,7 @@ def main() -> None:
     test_tail_window_artifacts(root)
     test_long_prompt_prefill_chunks(root)
     test_c_prefill_dryrun_when_built(root)
+    test_c_prefill_dryrun_tokenizes_prompt_text_when_built(root)
     test_local_pipeline_gate_prefill_only(root)
     test_long_prompt_pipeline_refuses_tail_collapse(root)
 

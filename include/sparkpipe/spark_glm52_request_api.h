@@ -25,6 +25,10 @@ extern "C" {
     ((uint32_t)sizeof(SparkGlm52RequestApiDispatch))
 #define SPARK_GLM52_REQUEST_API_CACHE_STATE_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52RequestApiCacheState))
+#define SPARK_GLM52_REQUEST_API_PREFILL_DISPATCH_VIEW_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52RequestApiPrefillDispatchView))
+#define SPARK_GLM52_REQUEST_API_DECODE_DISPATCH_VIEW_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52RequestApiDecodeDispatchView))
 
 #define SPARK_GLM52_REQUEST_API_INVALID_HANDLE 0ull
 #define SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY 1000000u
@@ -52,10 +56,12 @@ extern "C" {
      SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING | \
      SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING | \
      SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION)
+#define SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT 0x00000080u
 #define SPARK_GLM52_REQUEST_API_CONFIGURATION_KNOWN_FLAGS \
     (SPARK_GLM52_REQUEST_API_CONFIGURATION_DEFAULT_FLAGS | \
      SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ASYNC_JIT_KV_PREFETCH | \
-     SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE)
+     SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE | \
+     SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT)
 
 #define SPARK_GLM52_REQUEST_API_REQUEST_FLAG_REALTIME 0x00000001u
 #define SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION 0x00000002u
@@ -89,6 +95,8 @@ extern "C" {
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE 0x00000040u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY 0x00000080u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_CONFIDENCE_TRUNCATED 0x00000100u
+#define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT 0x00000200u
+#define SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT 2u
 
 #define SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY 8u
 
@@ -233,7 +241,63 @@ typedef struct SparkGlm52RequestApiDispatch
     uint32_t speculative_confidence_milli[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT][
             SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+    uint32_t mtp_draft_token_budget;
+    uint32_t decode_committed_token_counts[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
 } SparkGlm52RequestApiDispatch;
+
+
+typedef struct SparkGlm52RequestApiPrefillDispatchLaneView
+{
+    uint32_t request_index;
+    uint32_t prompt_token_offset;
+    uint32_t prompt_token_count;
+    uint64_t request_id;
+    uint64_t sequence_id;
+    SparkGlm52RequestApiHandle request_handle;
+    const uint32_t *prompt_token_ids;
+} SparkGlm52RequestApiPrefillDispatchLaneView;
+
+typedef struct SparkGlm52RequestApiPrefillDispatchView
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t kind;
+    uint32_t active_sequence_count;
+    uint32_t prompt_token_offset;
+    uint32_t prompt_token_count;
+    uint32_t prompt_token_stride;
+    uint32_t lane_count;
+    uint32_t reserved0;
+    uint32_t reserved1;
+    SparkGlm52RequestApiPrefillDispatchLaneView lanes[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+} SparkGlm52RequestApiPrefillDispatchView;
+
+typedef struct SparkGlm52RequestApiDecodeDispatchLaneView
+{
+    uint32_t request_index;
+    uint32_t sequence_position;
+    uint32_t context_token_count;
+    uint32_t reserved0;
+    uint64_t request_id;
+    uint64_t sequence_id;
+    SparkGlm52RequestApiHandle request_handle;
+} SparkGlm52RequestApiDecodeDispatchLaneView;
+
+typedef struct SparkGlm52RequestApiDecodeDispatchView
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t kind;
+    uint32_t active_sequence_count;
+    uint32_t lane_count;
+    uint32_t speculative_token_count;
+    uint32_t reserved0;
+    uint32_t reserved1;
+    SparkGlm52RequestApiDecodeDispatchLaneView lanes[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+} SparkGlm52RequestApiDecodeDispatchView;
 
 typedef struct SparkGlm52RequestApi
 {
@@ -322,6 +386,21 @@ SparkStatus SparkGlm52RequestApiCompleteDispatch(
     SparkGlm52RequestApi *api,
     const SparkGlm52RequestApiDispatch *dispatch);
 
+SparkStatus SparkGlm52RequestApiDescribePrefillDispatch(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    SparkGlm52RequestApiPrefillDispatchView *prefill_view);
+
+SparkStatus SparkGlm52RequestApiCopyPrefillDispatchTokenIds(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    uint32_t *destination_token_ids,
+    uint32_t destination_token_stride,
+    uint32_t destination_lane_capacity);
+
+SparkStatus SparkGlm52RequestApiDescribeDecodeDispatch(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiDispatch *dispatch,
+    SparkGlm52RequestApiDecodeDispatchView *decode_view);
+
 SparkStatus SparkGlm52RequestApiBuildDispatchKvBlockTables(
     SparkGlm52RequestApi *api,
     const SparkGlm52RequestApiDispatch *dispatch,
@@ -350,6 +429,11 @@ SparkStatus SparkGlm52RequestApiGetRequestCacheState(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiHandle handle,
     SparkGlm52RequestApiCacheState *cache_state);
+
+
+SparkStatus SparkGlm52RequestApiFinishRequestGeneration(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiHandle handle);
 
 SparkStatus SparkGlm52RequestApiCancelRequest(
     SparkGlm52RequestApi *api,

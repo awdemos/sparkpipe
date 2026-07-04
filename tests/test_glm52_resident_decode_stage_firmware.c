@@ -166,7 +166,7 @@ static void SparkTestGlm52ResidentDecodeStageB12xRouterLogitsAbi(void)
     assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_FUSED_STAGE_MOE) != 0u);
     assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES &
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_QKV_BRANCH_OVERLAP) == 0u);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_QKV_BRANCH_OVERLAP) != 0u);
 }
 
 static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
@@ -2299,7 +2299,7 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeValidation(void
 
     router_linear_plans[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ROUTER_LOGITS].plan_kind =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUDA_REFERENCE_FP8_E4M3_ROW_MAJOR;
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_UNUSED;
     module_state = 0;
     assert(SparkGlm52ResidentDecodeStageInitialize(
         &configuration,
@@ -3112,7 +3112,7 @@ int main(void)
     assert(SparkOrchestratorResolveRoute(
                orchestrator,
                "zai.glm-5.2.resident-decode-stage-firmware",
-               "bf16-h6144-h64-d512-r64-k2048-b64-rv256-mtp2-v1",
+               "bf16-h6144-h64-d512-r64-k2048-b1024-rv256-mtp2-v1",
                "resident_decode",
                "decode",
                &route_handle) == SPARK_STATUS_OK);

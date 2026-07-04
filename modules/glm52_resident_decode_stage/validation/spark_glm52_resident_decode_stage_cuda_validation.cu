@@ -15,6 +15,7 @@
 #include "spark_glm52_resident_decode_stage_backend.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_b12x_moe_plan.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
+#include "sparkpipe/spark_glm52_resident_decode_stage_required_cuda.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_orchestrator.h"
 #include "sparkpipe/spark_status.h"
@@ -3385,6 +3386,68 @@ static uint32_t SparkValidationCountInitializedLinearPlans(
     return initialized_count;
 }
 
+static bool SparkValidationRawAttentionFp8PlansAvailable(
+    const SparkValidationDeviceBuffers *buffers)
+{
+    return buffers != 0 &&
+        buffers->raw_query_a_weight_fp8_e4m3 != 0 &&
+        buffers->raw_query_a_weight_scale_inv_f32 != 0 &&
+        buffers->raw_query_b_weight_fp8_e4m3 != 0 &&
+        buffers->raw_query_b_weight_scale_inv_f32 != 0 &&
+        buffers->raw_kv_a_weight_fp8_e4m3 != 0 &&
+        buffers->raw_kv_a_weight_scale_inv_f32 != 0 &&
+        buffers->raw_kv_b_weight_fp8_e4m3 != 0 &&
+        buffers->raw_kv_b_weight_scale_inv_f32 != 0 &&
+        buffers->attention_output_weight_fp8_e4m3 != 0 &&
+        buffers->attention_output_weight_scale_inv_f32 != 0;
+}
+
+static bool SparkValidationBindRequiredQuantizedProjectionPlans(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t required_plan_mask,
+    uint32_t use_quantized_attention_plans)
+{
+    SparkGlm52ResidentDecodeStageLinearPlan *plans;
+    SparkStatus status;
+    uint32_t plan_count;
+
+    if ((required_plan_mask &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) == 0u ||
+        use_quantized_attention_plans == 0u)
+    {
+        return true;
+    }
+    if (buffers == 0 || buffers->linear_plan_binding == 0 ||
+        node_context == 0)
+    {
+        return false;
+    }
+    plans = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingMutablePlans(
+        buffers->linear_plan_binding,
+        &plan_count);
+    if (plans == 0 ||
+        plan_count < SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT)
+    {
+        fprintf(stderr, "resident tensor-core linear binder returned no mutable plans\n");
+        return false;
+    }
+    status = SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedProjectionPlans(
+        plans,
+        plan_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(
+            stderr,
+            "failed to bind required quantized Q/KV/O projection launcher status=%d\n",
+            (int)status);
+        return false;
+    }
+    node_context->linear_plans = plans;
+    node_context->linear_plan_count = plan_count;
+    return true;
+}
+
 static bool SparkValidationBindRequiredLinearPlans(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
@@ -3414,6 +3477,16 @@ static bool SparkValidationBindRequiredLinearPlans(
         fprintf(stderr, "invalid required linear plan mask=0x%08x\n", required_plan_mask);
         return false;
     }
+    if ((required_plan_mask &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) != 0u &&
+        use_quantized_attention_plans != 0u &&
+        !SparkValidationRawAttentionFp8PlansAvailable(buffers))
+    {
+        fprintf(
+            stderr,
+            "required quantized attention projection plans missing FP8 weight/scale buffers\n");
+        return false;
+    }
     if (buffers->linear_plan_binding != 0)
     {
         plans = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPlans(
@@ -3424,6 +3497,14 @@ static bool SparkValidationBindRequiredLinearPlans(
         {
             node_context->linear_plans = plans;
             node_context->linear_plan_count = plan_count;
+            if (!SparkValidationBindRequiredQuantizedProjectionPlans(
+                    buffers,
+                    node_context,
+                    required_plan_mask,
+                    use_quantized_attention_plans))
+            {
+                return false;
+            }
             if ((required_plan_mask &
                  (SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
                   SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
@@ -3436,7 +3517,9 @@ static bool SparkValidationBindRequiredLinearPlans(
                  SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) != 0u)
             {
                 node_context->projection_backend_mode =
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
+                    use_quantized_attention_plans != 0u
+                        ? SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE
+                        : SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
             }
             if ((required_plan_mask &
                  SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RESTRICTED_LOGITS) != 0u)
@@ -3599,6 +3682,15 @@ static bool SparkValidationBindRequiredLinearPlans(
     }
     node_context->linear_plans = plans;
     node_context->linear_plan_count = plan_count;
+    if (!SparkValidationBindRequiredQuantizedProjectionPlans(
+            buffers,
+            node_context,
+            required_plan_mask,
+            use_quantized_attention_plans))
+    {
+        SparkValidationReleaseLinearPlanBinding(buffers);
+        return false;
+    }
     initialized_plan_count = SparkValidationCountInitializedLinearPlans(
         plans,
         plan_count);
@@ -3614,7 +3706,9 @@ static bool SparkValidationBindRequiredLinearPlans(
          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) != 0u)
     {
         node_context->projection_backend_mode =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
+            use_quantized_attention_plans != 0u
+                ? SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE
+                : SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
     }
     if ((required_plan_mask &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RESTRICTED_LOGITS) != 0u)
@@ -6439,7 +6533,7 @@ static bool SparkValidationRunDriverOnce(
     status = SparkOrchestratorResolveRoute(
         orchestrator,
         "zai.glm-5.2.resident-decode-stage-firmware",
-        "bf16-h6144-h64-d512-r64-k2048-b64-rv256-mtp2-v1",
+        "bf16-h6144-h64-d512-r64-k2048-b1024-rv256-mtp2-v1",
         "resident_decode",
         "decode",
         &route_handle);
@@ -6932,73 +7026,6 @@ static bool SparkValidationRunLayer3RoutedTopKLayer(
     return true;
 }
 
-static bool SparkValidationRunRoutedLayerDynamicTopK(
-    SparkValidationDeviceBuffers *buffers,
-    SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    cudaStream_t cuda_stream,
-    const char *driver_path,
-    const char *model_directory,
-    SparkValidationRealLmHeadFixture *real_lm_head,
-    SparkValidationLayer3RoutedExpertNvfp4Fixture *layer3_routed_expert,
-    uint32_t layer_index,
-    uint32_t position,
-    uint32_t slot_mapping,
-    uint32_t context_length,
-    uint32_t check_outputs,
-    double *total_microseconds,
-    double *maximum_observed_microseconds,
-    uint32_t *submission_count)
-{
-    uint32_t topk_expert_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
-
-    if (!SparkValidationRunLayer3RouterTopKLayer(
-            buffers,
-            node_context,
-            cuda_stream,
-            driver_path,
-            model_directory,
-            layer_index,
-            position,
-            slot_mapping,
-            context_length,
-            check_outputs,
-            total_microseconds,
-            maximum_observed_microseconds,
-            submission_count) ||
-        !SparkValidationReadLayer3TopKExpertIds(buffers, topk_expert_ids))
-    {
-        return false;
-    }
-    fprintf(stderr, "routed_layer_dynamic_topk_ids layer=%u ids=%u,%u,%u,%u,%u,%u,%u,%u\n", layer_index, topk_expert_ids[0], topk_expert_ids[1], topk_expert_ids[2], topk_expert_ids[3], topk_expert_ids[4], topk_expert_ids[5], topk_expert_ids[6], topk_expert_ids[7]);
-    if (!SparkValidationLoadLayer3RoutedExpertNvfp4FixtureForExperts(
-            buffers,
-            model_directory,
-            layer_index,
-            layer3_routed_expert,
-            topk_expert_ids,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K) ||
-        !SparkValidationRunLayer3RoutedTopKLayer(
-            buffers,
-            node_context,
-            cuda_stream,
-            driver_path,
-            model_directory,
-            real_lm_head,
-            layer3_routed_expert,
-            layer_index,
-            position,
-            slot_mapping,
-            context_length,
-            check_outputs,
-            total_microseconds,
-            maximum_observed_microseconds,
-            submission_count))
-    {
-        return false;
-    }
-    return true;
-}
-
 static bool SparkValidationRunRoutedLayerProductionB12x(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
@@ -7361,13 +7388,8 @@ static bool SparkValidationRunRoutedChainFromHidden(
 
 static uint32_t SparkValidationExactPp13BucketForActiveCount(void)
 {
-    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 16u)
-        return 16u;
-    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 32u)
-        return 32u;
-    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 64u)
-        return 64u;
-    return 0u;
+    return SparkGlm52StagePlanSelectBatchBucketValue(
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT);
 }
 
 static bool SparkValidationAllocateExactFinalEpilogueWorkspace(
@@ -7416,7 +7438,10 @@ static bool SparkValidationInitializeExactPp13StageSlicePlan(
     bucket = SparkValidationExactPp13BucketForActiveCount();
     if (bucket == 0u)
     {
-        fprintf(stderr, "exact PP13 stage-slice validation supports B<=64 active sequences\n");
+        fprintf(
+            stderr,
+            "exact PP13 stage-slice validation supports B<=%u active sequences\n",
+            SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
         return false;
     }
     stage_index = first_layer_index /
