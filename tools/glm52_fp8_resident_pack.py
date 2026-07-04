@@ -16,8 +16,6 @@ import struct
 import tempfile
 from typing import Any, BinaryIO, Dict, Iterable, List, Tuple
 
-from safetensors import safe_open
-import torch
 
 
 MAGIC = b"SPARKGLM52FP8\0\0"
@@ -46,11 +44,68 @@ class PackFailure(RuntimeError):
     pass
 
 
+def import_torch() -> Any:
+    try:
+        import torch
+    except ImportError as error:
+        raise PackFailure("torch is required to build GLM-5.2 FP8 packs") from error
+    return torch
+
+
+def fp8_scale_inv_row_block_major_byte_count(rows: int, column_blocks: int) -> int:
+    if rows <= 0 or column_blocks <= 0:
+        raise PackFailure("FP8 scale dimensions must be positive")
+    return rows * column_blocks * 4
+
+
+def fp8_scale_inv_bytes_to_runtime_row_block_major(
+    name: str,
+    row_major: bytes,
+    rows: int,
+    column_blocks: int,
+) -> bytes:
+    expected_bytes = fp8_scale_inv_row_block_major_byte_count(rows, column_blocks)
+    if len(row_major) != expected_bytes:
+        raise PackFailure(
+            f"{name} scale byte count {len(row_major)}, expected {expected_bytes} "
+            f"for runtime shape ({rows}, {column_blocks})"
+        )
+    return row_major
+
+
+def transposed_fp8_scale_inv_bytes_to_runtime_row_block_major(
+    name: str,
+    transposed: bytes,
+    rows: int,
+    column_blocks: int,
+) -> bytes:
+    expected_bytes = fp8_scale_inv_row_block_major_byte_count(rows, column_blocks)
+    if len(transposed) != expected_bytes:
+        raise PackFailure(
+            f"{name} transposed scale byte count {len(transposed)}, "
+            f"expected {expected_bytes} for checkpoint shape ({column_blocks}, {rows})"
+        )
+    runtime = bytearray(expected_bytes)
+    for row in range(rows):
+        for column_block in range(column_blocks):
+            source = ((column_block * rows) + row) * 4
+            target = ((row * column_blocks) + column_block) * 4
+            runtime[target:target + 4] = transposed[source:source + 4]
+    return bytes(runtime)
+
+
 class SafetensorReader:
     def __init__(self, model_dir: Path) -> None:
+        try:
+            from safetensors import safe_open
+        except ImportError as error:
+            raise PackFailure(
+                "safetensors is required to build GLM-5.2 FP8 packs"
+            ) from error
         index_path = model_dir / "model.safetensors.index.json"
         self.model_dir = model_dir
-        self.weight_map = json.loads(index_path.read_text())["weight_map"]
+        self.safe_open = safe_open
+        self.weight_map = json.loads(index_path.read_text(encoding="utf-8"))["weight_map"]
         self.handles: Dict[str, Any] = {}
 
     def tensor(self, name: str) -> Any:
@@ -61,7 +116,7 @@ class SafetensorReader:
             path = self.model_dir / shard
             if not path.exists():
                 raise PackFailure(f"missing safetensors shard: {path}")
-            self.handles[shard] = safe_open(str(path), framework="pt", device="cpu")
+            self.handles[shard] = self.safe_open(str(path), framework="pt", device="cpu")
         handle = self.handles[shard]
         if name not in handle.keys():
             raise PackFailure(f"missing tensor in shard {shard}: {name}")
@@ -129,6 +184,7 @@ def seek_region(file: BinaryIO, regions: List[Dict[str, int]], region_index: int
 
 
 def write_tensor_bytes(file: BinaryIO, tensor: Any, expected_shape: Tuple[int, ...], name: str) -> None:
+    torch = import_torch()
     if tuple(tensor.shape) != expected_shape:
         raise PackFailure(f"{name} has shape {tuple(tensor.shape)}, expected {expected_shape}")
     if "float8_e4m3" not in str(tensor.dtype):
@@ -136,15 +192,54 @@ def write_tensor_bytes(file: BinaryIO, tensor: Any, expected_shape: Tuple[int, .
     file.write(tensor.contiguous().view(torch.uint8).numpy().tobytes())
 
 
-def write_scale_bytes(file: BinaryIO, tensor: Any, expected_shape: Tuple[int, ...], name: str) -> None:
-    if tuple(tensor.shape) != expected_shape:
-        raise PackFailure(f"{name} has shape {tuple(tensor.shape)}, expected {expected_shape}")
-    if str(tensor.dtype) != "torch.float32":
-        raise PackFailure(f"{name} has dtype {tensor.dtype}, expected float32")
-    file.write(tensor.contiguous().numpy().astype("<f4", copy=False).tobytes())
+def fp8_scale_tensor_to_runtime_bytes(
+    tensor: Any,
+    expected_shape: Tuple[int, int],
+    name: str,
+    allow_transposed_scales: bool,
+) -> bytes:
+    shape = tuple(tensor.shape)
+    if shape == expected_shape:
+        source_tensor = tensor
+    elif allow_transposed_scales and shape == (expected_shape[1], expected_shape[0]):
+        source_tensor = tensor.transpose(0, 1)
+    else:
+        raise PackFailure(f"{name} has shape {shape}, expected {expected_shape}")
+    if str(source_tensor.dtype) != "torch.float32":
+        raise PackFailure(f"{name} has dtype {source_tensor.dtype}, expected float32")
+    row_major = source_tensor.contiguous().numpy().astype("<f4", copy=False).tobytes()
+    return fp8_scale_inv_bytes_to_runtime_row_block_major(
+        name,
+        row_major,
+        expected_shape[0],
+        expected_shape[1],
+    )
 
 
-def write_layer_pack(model_dir: Path, output_dir: Path, layer: int, reuse: bool) -> Dict[str, Any]:
+def write_scale_bytes(
+    file: BinaryIO,
+    tensor: Any,
+    expected_shape: Tuple[int, int],
+    name: str,
+    allow_transposed_scales: bool,
+) -> None:
+    file.write(
+        fp8_scale_tensor_to_runtime_bytes(
+            tensor,
+            expected_shape,
+            name,
+            allow_transposed_scales,
+        )
+    )
+
+
+def write_layer_pack(
+    model_dir: Path,
+    output_dir: Path,
+    layer: int,
+    reuse: bool,
+    allow_transposed_scales: bool,
+) -> Dict[str, Any]:
     reader = SafetensorReader(model_dir)
     regions = reserve_regions()
     output_path = output_dir / f"glm52_layer_{layer:04d}_fp8_moe.spfp8"
@@ -182,12 +277,14 @@ def write_layer_pack(model_dir: Path, output_dir: Path, layer: int, reuse: bool)
                     reader.tensor(tensor_name(layer, expert, "up_proj", "weight_scale_inv")),
                     (16, 48),
                     f"layer {layer} expert {expert} up scale_inv",
+                    allow_transposed_scales,
                 )
                 write_scale_bytes(
                     file,
                     reader.tensor(tensor_name(layer, expert, "gate_proj", "weight_scale_inv")),
                     (16, 48),
                     f"layer {layer} expert {expert} gate scale_inv",
+                    allow_transposed_scales,
                 )
             seek_region(file, regions, REGION_W2_WEIGHT)
             for expert in range(EXPERT_COUNT):
@@ -204,6 +301,7 @@ def write_layer_pack(model_dir: Path, output_dir: Path, layer: int, reuse: bool)
                     reader.tensor(tensor_name(layer, expert, "down_proj", "weight_scale_inv")),
                     (48, 16),
                     f"layer {layer} expert {expert} down scale_inv",
+                    allow_transposed_scales,
                 )
         tmp_path.replace(output_path)
         return {"layer": layer, "path": str(output_path), "bytes": expected_bytes, "reused": False}
@@ -220,9 +318,15 @@ def parse_layers(value: str) -> List[int]:
     return layers
 
 
-def worker(argument: Tuple[str, str, int, bool]) -> Dict[str, Any]:
-    model_dir, output_dir, layer, reuse = argument
-    return write_layer_pack(Path(model_dir), Path(output_dir), layer, reuse)
+def worker(argument: Tuple[str, str, int, bool, bool]) -> Dict[str, Any]:
+    model_dir, output_dir, layer, reuse, allow_transposed_scales = argument
+    return write_layer_pack(
+        Path(model_dir),
+        Path(output_dir),
+        layer,
+        reuse,
+        allow_transposed_scales,
+    )
 
 
 def merge_manifest_records(output_dir: Path, records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -244,11 +348,21 @@ def main() -> int:
     parser.add_argument("--layers", required=True)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--no-reuse", action="store_true")
+    parser.add_argument("--allow-transposed-scales", action="store_true")
     args = parser.parse_args()
     layers = parse_layers(args.layers)
     jobs = max(1, int(args.jobs))
     output_dir = Path(args.output_dir)
-    tasks = [(args.model_dir, args.output_dir, layer, not args.no_reuse) for layer in layers]
+    tasks = [
+        (
+            args.model_dir,
+            args.output_dir,
+            layer,
+            not args.no_reuse,
+            bool(args.allow_transposed_scales),
+        )
+        for layer in layers
+    ]
     if jobs == 1:
         records = [worker(task) for task in tasks]
     else:
@@ -262,6 +376,8 @@ def main() -> int:
             {
                 "format": "sparkpipe.glm52.fp8.resident_moe_pack.v1",
                 "model_dir": str(Path(args.model_dir)),
+                "allow_transposed_scales": bool(args.allow_transposed_scales),
+                "scale_layout": "expert_major_row_block_major_f32_scale_inv",
                 "layers": manifest_records,
             },
             indent=2,

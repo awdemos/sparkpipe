@@ -3398,6 +3398,7 @@ static bool SparkValidationBindRequiredLinearPlans(
     uint32_t plan_count;
     uint32_t initialized_plan_count;
     uint32_t dense_intermediate_dimension;
+    uint32_t use_quantized_dense_plans;
 
     if (buffers == 0 || node_context == 0)
     {
@@ -3463,11 +3464,34 @@ static bool SparkValidationBindRequiredLinearPlans(
     create_info.workspace_limit_bytes =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BINDING_DEFAULT_WORKSPACE_BYTES;
     create_info.cuda_stream = (void *)cuda_stream;
+    use_quantized_dense_plans =
+        node_context->model_quantization_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT &&
+        node_context->mlp_execution_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE;
     create_info.dense_input_bf16 =
         buffers->post_attention_normalized_hidden_bf16;
     create_info.dense_gate_weight_bf16 = buffers->dense_gate_weight_bf16;
+    create_info.dense_gate_weight_fp8_e4m3 = use_quantized_dense_plans != 0u
+        ? node_context->dense_gate_weight_fp8_e4m3
+        : 0;
+    create_info.dense_gate_weight_scale_inv_f32 = use_quantized_dense_plans != 0u
+        ? node_context->dense_gate_weight_scale_inv_f32
+        : 0;
     create_info.dense_up_weight_bf16 = buffers->dense_up_weight_bf16;
+    create_info.dense_up_weight_fp8_e4m3 = use_quantized_dense_plans != 0u
+        ? node_context->dense_up_weight_fp8_e4m3
+        : 0;
+    create_info.dense_up_weight_scale_inv_f32 = use_quantized_dense_plans != 0u
+        ? node_context->dense_up_weight_scale_inv_f32
+        : 0;
     create_info.dense_down_weight_bf16 = buffers->dense_down_weight_bf16;
+    create_info.dense_down_weight_fp8_e4m3 = use_quantized_dense_plans != 0u
+        ? node_context->dense_down_weight_fp8_e4m3
+        : 0;
+    create_info.dense_down_weight_scale_inv_f32 = use_quantized_dense_plans != 0u
+        ? node_context->dense_down_weight_scale_inv_f32
+        : 0;
     create_info.dense_gate_output_bf16 = buffers->moe_gate_bf16;
     create_info.dense_up_output_bf16 = buffers->moe_up_bf16;
     create_info.dense_intermediate_bf16 = buffers->moe_intermediate_bf16;
