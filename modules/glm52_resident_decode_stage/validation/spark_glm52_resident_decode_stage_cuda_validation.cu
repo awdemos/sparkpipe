@@ -3385,6 +3385,22 @@ static uint32_t SparkValidationCountInitializedLinearPlans(
     return initialized_count;
 }
 
+static bool SparkValidationRawAttentionFp8PlansAvailable(
+    const SparkValidationDeviceBuffers *buffers)
+{
+    return buffers != 0 &&
+        buffers->raw_query_a_weight_fp8_e4m3 != 0 &&
+        buffers->raw_query_a_weight_scale_inv_f32 != 0 &&
+        buffers->raw_query_b_weight_fp8_e4m3 != 0 &&
+        buffers->raw_query_b_weight_scale_inv_f32 != 0 &&
+        buffers->raw_kv_a_weight_fp8_e4m3 != 0 &&
+        buffers->raw_kv_a_weight_scale_inv_f32 != 0 &&
+        buffers->raw_kv_b_weight_fp8_e4m3 != 0 &&
+        buffers->raw_kv_b_weight_scale_inv_f32 != 0 &&
+        buffers->attention_output_weight_fp8_e4m3 != 0 &&
+        buffers->attention_output_weight_scale_inv_f32 != 0;
+}
+
 static bool SparkValidationBindRequiredLinearPlans(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
@@ -3414,6 +3430,16 @@ static bool SparkValidationBindRequiredLinearPlans(
         fprintf(stderr, "invalid required linear plan mask=0x%08x\n", required_plan_mask);
         return false;
     }
+    if ((required_plan_mask &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) != 0u &&
+        use_quantized_attention_plans != 0u &&
+        !SparkValidationRawAttentionFp8PlansAvailable(buffers))
+    {
+        fprintf(
+            stderr,
+            "required quantized attention projection plans missing FP8 weight/scale buffers\n");
+        return false;
+    }
     if (buffers->linear_plan_binding != 0)
     {
         plans = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPlans(
@@ -3436,7 +3462,9 @@ static bool SparkValidationBindRequiredLinearPlans(
                  SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) != 0u)
             {
                 node_context->projection_backend_mode =
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
+                    use_quantized_attention_plans != 0u
+                        ? SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE
+                        : SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
             }
             if ((required_plan_mask &
                  SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RESTRICTED_LOGITS) != 0u)
@@ -3614,7 +3642,9 @@ static bool SparkValidationBindRequiredLinearPlans(
          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) != 0u)
     {
         node_context->projection_backend_mode =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
+            use_quantized_attention_plans != 0u
+                ? SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE
+                : SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
     }
     if ((required_plan_mask &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RESTRICTED_LOGITS) != 0u)

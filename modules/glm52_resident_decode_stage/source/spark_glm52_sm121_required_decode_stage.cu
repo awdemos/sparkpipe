@@ -5234,7 +5234,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
                 linear_plan->output_is_f32,
                 (void *)cuda_stream);
         }
-        return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
     sequence_tile_rows = SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M;
