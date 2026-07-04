@@ -58,8 +58,14 @@ typedef struct SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo
     void *cuda_stream;
     const void *dense_input_bf16;
     const void *dense_gate_weight_bf16;
+    const void *dense_gate_weight_fp8_e4m3;
+    const void *dense_gate_weight_scale_inv_f32;
     const void *dense_up_weight_bf16;
+    const void *dense_up_weight_fp8_e4m3;
+    const void *dense_up_weight_scale_inv_f32;
     const void *dense_down_weight_bf16;
+    const void *dense_down_weight_fp8_e4m3;
+    const void *dense_down_weight_scale_inv_f32;
     void *dense_gate_output_bf16;
     void *dense_up_output_bf16;
     void *dense_intermediate_bf16;
