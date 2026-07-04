@@ -45,6 +45,8 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS \
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_WARPS * \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N 64u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K 32u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_FUSED_MAX_SCALE_BLOCKS 1024u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REFERENCE_WORKSPACE_BUFFER_COUNT 3u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_ACTIVATION_LINEAR_WORKSPACE_ALIGNMENT_BYTES 256ull
@@ -1028,7 +1030,7 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearKernel(
 }
 
 static __global__ __launch_bounds__(
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_THREADS, 2)
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_THREADS, 4)
 void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearBatchKernel(
     const uint16_t *__restrict__ input_bf16,
     const uint8_t *__restrict__ weight_payload,
@@ -1042,27 +1044,16 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearBatchKernel(
     uint32_t output_is_f32)
 {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-    __shared__ __nv_bfloat16 shared_input_tile[
+    __shared__ __align__(16) __nv_bfloat16 shared_input_tile[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K];
-    __shared__ __nv_bfloat16 shared_weight_tile[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K];
+    __shared__ __align__(16) __nv_bfloat16 shared_weight_tile[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K];
+    __shared__ __align__(16) float shared_stage_tile[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_WARPS *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N];
-    __shared__ float shared_output_tile[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N];
-    uint32_t sequence_tile_begin;
-    uint32_t output_tile_begin;
-    uint32_t tile_element_index;
-    uint32_t input_tile_begin;
-    uint32_t warp_index;
-
-    sequence_tile_begin = blockIdx.y *
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS;
-    output_tile_begin = blockIdx.x *
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
-    warp_index = threadIdx.x / 32u;
-
     nvcuda::wmma::fragment<
         nvcuda::wmma::matrix_a,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M,
@@ -1082,61 +1073,113 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearBatchKernel(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K,
-        float> accumulator_fragment;
+        float> accumulator_fragments[
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N];
+    uint32_t sequence_tile_begin;
+    uint32_t output_tile_begin;
+    uint32_t warp_index;
+    uint32_t lane_index;
+    uint32_t input_fill_is_vectorized;
+    uint32_t input_tile_begin;
+    uint32_t tile_element_index;
+    uint32_t slab_offset;
+    uint32_t fragment_index;
 
-    nvcuda::wmma::fill_fragment(accumulator_fragment, 0.0f);
+    sequence_tile_begin = blockIdx.y *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS;
+    output_tile_begin = blockIdx.x *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N;
+    warp_index = threadIdx.x / 32u;
+    lane_index = threadIdx.x & 31u;
+    input_fill_is_vectorized =
+        (input_dimension &
+         (SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K - 1u)) == 0u;
+    for (fragment_index = 0u;
+         fragment_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+         ++fragment_index)
+    {
+        nvcuda::wmma::fill_fragment(accumulator_fragments[fragment_index], 0.0f);
+    }
+
     for (input_tile_begin = 0u;
          input_tile_begin < input_dimension;
-         input_tile_begin += SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K)
+         input_tile_begin += SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K)
     {
-        for (tile_element_index = threadIdx.x;
-             tile_element_index <
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K;
-             tile_element_index += blockDim.x)
+        if (input_fill_is_vectorized != 0u)
         {
-            uint32_t local_sequence_index;
-            uint32_t local_input_index;
+            uint32_t fill_row;
+            uint32_t fill_quad;
             uint32_t sequence_index;
-            uint32_t input_index;
-            float input_value;
+            uint4 packed_values;
 
-            local_sequence_index = tile_element_index /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K;
-            local_input_index = tile_element_index -
-                (local_sequence_index *
-                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
-            sequence_index = sequence_tile_begin + local_sequence_index;
-            input_index = input_tile_begin + local_input_index;
-            input_value = 0.0f;
-            if (sequence_index < active_sequence_count &&
-                input_index < input_dimension)
+            fill_row = threadIdx.x >> 1u;
+            fill_quad = threadIdx.x & 1u;
+            sequence_index = sequence_tile_begin + fill_row;
+            packed_values = make_uint4(0u, 0u, 0u, 0u);
+            if (sequence_index < active_sequence_count)
             {
-                input_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-                    input_bf16[
-                        ((uint64_t)sequence_index * (uint64_t)input_dimension) +
-                        (uint64_t)input_index]);
+                packed_values = *(const uint4 *)&input_bf16[
+                    ((uint64_t)sequence_index * (uint64_t)input_dimension) +
+                    (uint64_t)input_tile_begin + ((uint64_t)fill_quad * 8u)];
             }
-            shared_input_tile[tile_element_index] = __float2bfloat16(input_value);
+            *(uint4 *)&shared_input_tile[
+                (fill_row *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K) +
+                (fill_quad * 8u)] = packed_values;
+        }
+        else
+        {
+            for (tile_element_index = threadIdx.x;
+                 tile_element_index <
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K;
+                 tile_element_index += blockDim.x)
+            {
+                uint32_t local_sequence_index;
+                uint32_t local_input_index;
+                uint32_t sequence_index;
+                uint32_t input_index;
+                uint16_t input_value;
+
+                local_sequence_index = tile_element_index /
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K;
+                local_input_index = tile_element_index -
+                    (local_sequence_index *
+                     SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K);
+                sequence_index = sequence_tile_begin + local_sequence_index;
+                input_index = input_tile_begin + local_input_index;
+                input_value = 0u;
+                if (sequence_index < active_sequence_count &&
+                    input_index < input_dimension)
+                {
+                    input_value = input_bf16[
+                        ((uint64_t)sequence_index * (uint64_t)input_dimension) +
+                        (uint64_t)input_index];
+                }
+                ((uint16_t *)shared_input_tile)[tile_element_index] = input_value;
+            }
         }
 
         for (tile_element_index = threadIdx.x;
              tile_element_index <
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K *
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K;
              tile_element_index += blockDim.x)
         {
-            uint32_t local_input_index;
             uint32_t local_output_index;
+            uint32_t local_input_index;
             uint32_t input_index;
             uint32_t output_index;
             float weight_value;
 
             local_output_index = tile_element_index /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K;
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K;
             local_input_index = tile_element_index -
                 (local_output_index *
-                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K);
             input_index = input_tile_begin + local_input_index;
             output_index = output_tile_begin + local_output_index;
             weight_value = 0.0f;
@@ -1152,81 +1195,112 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearBatchKernel(
                         output_index,
                         input_index);
             }
-            shared_weight_tile[
-                local_input_index +
-                (local_output_index *
-                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K)] =
-                __float2bfloat16(weight_value);
+            shared_weight_tile[tile_element_index] = __float2bfloat16(weight_value);
         }
         __syncthreads();
 
-        nvcuda::wmma::load_matrix_sync(
-            input_fragment,
-            shared_input_tile +
-                (warp_index *
-                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
-                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K),
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
-        nvcuda::wmma::load_matrix_sync(
-            weight_fragment,
-            shared_weight_tile,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
-        nvcuda::wmma::mma_sync(
-            accumulator_fragment,
-            input_fragment,
-            weight_fragment,
-            accumulator_fragment);
+        for (slab_offset = 0u;
+             slab_offset < SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K;
+             slab_offset += SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K)
+        {
+            nvcuda::wmma::load_matrix_sync(
+                input_fragment,
+                shared_input_tile +
+                    (warp_index *
+                     SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+                     SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K) +
+                    slab_offset,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K);
+#pragma unroll
+            for (fragment_index = 0u;
+                 fragment_index <
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N /
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+                 ++fragment_index)
+            {
+                nvcuda::wmma::load_matrix_sync(
+                    weight_fragment,
+                    shared_weight_tile +
+                        (fragment_index *
+                         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N *
+                         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K) +
+                        slab_offset,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K);
+                nvcuda::wmma::mma_sync(
+                    accumulator_fragments[fragment_index],
+                    input_fragment,
+                    weight_fragment,
+                    accumulator_fragments[fragment_index]);
+            }
+        }
         __syncthreads();
     }
 
-    nvcuda::wmma::store_matrix_sync(
-        shared_output_tile +
-            (warp_index *
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N),
-        accumulator_fragment,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
-        nvcuda::wmma::mem_row_major);
-    __syncthreads();
-
-    for (tile_element_index = threadIdx.x;
-         tile_element_index <
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
+    for (fragment_index = 0u;
+         fragment_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N /
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
-         tile_element_index += blockDim.x)
+         ++fragment_index)
     {
-        uint32_t local_sequence_index;
-        uint32_t local_output_index;
-        uint32_t sequence_index;
-        uint32_t output_index;
-        uint64_t output_offset;
-        float output_value;
+        nvcuda::wmma::store_matrix_sync(
+            shared_stage_tile +
+                (warp_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N),
+            accumulator_fragments[fragment_index],
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+            nvcuda::wmma::mem_row_major);
+        __syncwarp();
+        for (tile_element_index = lane_index;
+             tile_element_index <
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+             tile_element_index += 32u)
+        {
+            uint32_t local_row_index;
+            uint32_t local_column_index;
+            uint32_t sequence_index;
+            uint32_t output_index;
+            uint64_t output_offset;
+            float output_value;
 
-        local_sequence_index = tile_element_index /
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
-        local_output_index = tile_element_index -
-            (local_sequence_index *
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N);
-        sequence_index = sequence_tile_begin + local_sequence_index;
-        output_index = output_tile_begin + local_output_index;
-        if (sequence_index >= active_sequence_count ||
-            output_index >= output_dimension)
-        {
-            continue;
+            local_row_index = tile_element_index /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+            local_column_index = tile_element_index -
+                (local_row_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N);
+            sequence_index = sequence_tile_begin +
+                (warp_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M) +
+                local_row_index;
+            output_index = output_tile_begin +
+                (fragment_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N) +
+                local_column_index;
+            if (sequence_index >= active_sequence_count ||
+                output_index >= output_dimension)
+            {
+                continue;
+            }
+            output_offset =
+                ((uint64_t)sequence_index * (uint64_t)output_dimension) +
+                (uint64_t)output_index;
+            output_value = shared_stage_tile[
+                (warp_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N) +
+                tile_element_index];
+            if (output_is_f32 != 0u)
+            {
+                ((float *)output)[output_offset] = output_value;
+            }
+            else
+            {
+                ((uint16_t *)output)[output_offset] =
+                    SparkGlm52ResidentDecodeStageFloatToBf16(output_value);
+            }
         }
-        output_offset =
-            ((uint64_t)sequence_index * (uint64_t)output_dimension) +
-            (uint64_t)output_index;
-        output_value = shared_output_tile[tile_element_index];
-        if (output_is_f32 != 0u)
-        {
-            ((float *)output)[output_offset] = output_value;
-        }
-        else
-        {
-            ((uint16_t *)output)[output_offset] =
-                SparkGlm52ResidentDecodeStageFloatToBf16(output_value);
-        }
+        __syncwarp();
     }
 #else
     (void)input_bf16;
@@ -3231,45 +3305,48 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageWarpDotProd
     key_pairs = (const uint32_t *)&key_nope_cache_bf16[key_element_offset];
     rope_pairs = (const uint32_t *)&mla_cache_bf16[cache_element_offset];
     accumulated_dot_product = 0.0f;
-    for (pair_index = lane_index;
-         pair_index <
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION / 2u;
-         pair_index += SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES)
+    if (lane_index <
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_HEAD_DIMENSION / 8u))
     {
-        uint32_t packed_values;
-        uint32_t first_dimension;
+        const uint4 *lane_quad_pointer;
+        uint4 packed_quad;
+        uint32_t quad_pair_index;
+        uint32_t query_base;
 
-        packed_values = key_pairs[pair_index];
-        first_dimension = pair_index * 2u;
-        accumulated_dot_product +=
-            shared_query[first_dimension] *
-            SparkGlm52ResidentDecodeStageBf16ToFloat(
-                (uint16_t)(packed_values & 0xffffu));
-        accumulated_dot_product +=
-            shared_query[first_dimension + 1u] *
-            SparkGlm52ResidentDecodeStageBf16ToFloat(
-                (uint16_t)(packed_values >> 16u));
-    }
-    for (pair_index = lane_index;
-         pair_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION / 2u;
-         pair_index += SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES)
-    {
-        uint32_t packed_values;
-        uint32_t first_dimension;
+        if (lane_index <
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION / 8u))
+        {
+            lane_quad_pointer = ((const uint4 *)key_pairs) + lane_index;
+            query_base = lane_index * 8u;
+        }
+        else
+        {
+            lane_quad_pointer = ((const uint4 *)rope_pairs) +
+                (lane_index -
+                 (SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION / 8u));
+            query_base = lane_index * 8u;
+        }
+        packed_quad = *lane_quad_pointer;
+        for (quad_pair_index = 0u; quad_pair_index < 4u; ++quad_pair_index)
+        {
+            uint32_t packed_values;
 
-        packed_values = rope_pairs[pair_index];
-        first_dimension =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION +
-            (pair_index * 2u);
-        accumulated_dot_product +=
-            shared_query[first_dimension] *
-            SparkGlm52ResidentDecodeStageBf16ToFloat(
-                (uint16_t)(packed_values & 0xffffu));
-        accumulated_dot_product +=
-            shared_query[first_dimension + 1u] *
-            SparkGlm52ResidentDecodeStageBf16ToFloat(
-                (uint16_t)(packed_values >> 16u));
+            packed_values = quad_pair_index == 0u
+                ? packed_quad.x
+                : quad_pair_index == 1u
+                    ? packed_quad.y
+                    : quad_pair_index == 2u ? packed_quad.z : packed_quad.w;
+            accumulated_dot_product +=
+                shared_query[query_base + (quad_pair_index * 2u)] *
+                SparkGlm52ResidentDecodeStageBf16ToFloat(
+                    (uint16_t)(packed_values & 0xffffu));
+            accumulated_dot_product +=
+                shared_query[query_base + (quad_pair_index * 2u) + 1u] *
+                SparkGlm52ResidentDecodeStageBf16ToFloat(
+                    (uint16_t)(packed_values >> 16u));
+        }
     }
+    (void)pair_index;
     return SparkGlm52ResidentDecodeStageWarpReduceSum(
         accumulated_dot_product) * qk_scale;
 }
@@ -3430,6 +3507,16 @@ void SparkGlm52ResidentDecodeStageAttentionKernel(
     row_exponential_sum = SparkGlm52ResidentDecodeStageBlockReduceSum(
         local_exponential_sum,
         shared_reduction);
+    if (row_exponential_sum > 0.0f)
+    {
+        for (candidate_index = threadIdx.x;
+             candidate_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+             candidate_index += blockDim.x)
+        {
+            shared_scores[candidate_index] /= row_exponential_sum;
+        }
+    }
+    __syncthreads();
 
     for (dimension_index = threadIdx.x;
          dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
@@ -3459,7 +3546,7 @@ void SparkGlm52ResidentDecodeStageAttentionKernel(
                          (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) +
                         (uint64_t)dimension_index;
                     accumulated_value +=
-                        (shared_scores[candidate_index] / row_exponential_sum) *
+                        shared_scores[candidate_index] *
                         SparkGlm52ResidentDecodeStageBf16ToFloat(
                             value_cache_bf16[cache_element_offset]);
                 }
@@ -3498,6 +3585,13 @@ void SparkGlm52ResidentDecodeStageAttentionOnlineKernel(
     __shared__ uint32_t shared_tile_cache_slots[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS /
         SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES];
+    __shared__ float shared_tile_old_scale[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS /
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES];
+    __shared__ float shared_tile_value_scale[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS /
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES];
+    __shared__ float shared_online_denominator;
     uint32_t sequence_index;
     uint32_t head_index;
     uint32_t lane_index;
@@ -3615,25 +3709,24 @@ void SparkGlm52ResidentDecodeStageAttentionOnlineKernel(
         }
         __syncthreads();
 
-        if (dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION)
+        if (threadIdx.x == 0u)
         {
             for (tile_index = 0u; tile_index < warp_count; ++tile_index)
             {
                 float tile_score;
                 uint32_t tile_cache_slot;
+                float next_maximum;
+                float old_scale;
+                float tile_scale;
 
                 tile_score = shared_tile_scores[tile_index];
                 tile_cache_slot = shared_tile_cache_slots[tile_index];
+                old_scale = 1.0f;
+                tile_scale = 0.0f;
                 if (tile_cache_slot !=
                         SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT &&
                     tile_score > (-FLT_MAX * 0.5f))
                 {
-                    float next_maximum;
-                    float old_scale;
-                    float tile_scale;
-                    float value;
-                    uint64_t cache_element_offset;
-
                     next_maximum = tile_score > online_maximum
                         ? tile_score
                         : online_maximum;
@@ -3641,6 +3734,33 @@ void SparkGlm52ResidentDecodeStageAttentionOnlineKernel(
                         ? __expf(online_maximum - next_maximum)
                         : 0.0f;
                     tile_scale = __expf(tile_score - next_maximum);
+                    online_denominator =
+                        (online_denominator * old_scale) + tile_scale;
+                    online_maximum = next_maximum;
+                }
+                shared_tile_old_scale[tile_index] = old_scale;
+                shared_tile_value_scale[tile_index] = tile_scale;
+            }
+            shared_online_denominator = online_denominator;
+        }
+        __syncthreads();
+
+        if (dimension_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION)
+        {
+            for (tile_index = 0u; tile_index < warp_count; ++tile_index)
+            {
+                float tile_value_scale;
+                uint32_t tile_cache_slot;
+                float value;
+                uint64_t cache_element_offset;
+
+                tile_value_scale = shared_tile_value_scale[tile_index];
+                tile_cache_slot = shared_tile_cache_slots[tile_index];
+                accumulated_value *= shared_tile_old_scale[tile_index];
+                if (tile_value_scale != 0.0f &&
+                    tile_cache_slot !=
+                        SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT)
+                {
                     cache_element_offset =
                         (((uint64_t)tile_cache_slot *
                           (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT +
@@ -3649,11 +3769,7 @@ void SparkGlm52ResidentDecodeStageAttentionOnlineKernel(
                         (uint64_t)dimension_index;
                     value = SparkGlm52ResidentDecodeStageBf16ToFloat(
                         value_cache_bf16[cache_element_offset]);
-                    accumulated_value =
-                        (accumulated_value * old_scale) + (value * tile_scale);
-                    online_denominator =
-                        (online_denominator * old_scale) + tile_scale;
-                    online_maximum = next_maximum;
+                    accumulated_value += value * tile_value_scale;
                 }
             }
         }
@@ -3664,8 +3780,8 @@ void SparkGlm52ResidentDecodeStageAttentionOnlineKernel(
     {
         output_value_bf16[output_row_offset + (uint64_t)dimension_index] =
             SparkGlm52ResidentDecodeStageFloatToBf16(
-                online_denominator > 0.0f
-                    ? accumulated_value / online_denominator
+                shared_online_denominator > 0.0f
+                    ? accumulated_value / shared_online_denominator
                     : 0.0f);
     }
 }
@@ -5191,8 +5307,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     {
         grid = dim3(
             (linear_plan->output_dimension +
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N - 1u) /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N - 1u) /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N,
             (active_sequence_count +
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS - 1u) /
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS,
