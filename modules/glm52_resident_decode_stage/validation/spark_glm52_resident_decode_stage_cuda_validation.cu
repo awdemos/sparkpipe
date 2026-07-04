@@ -2965,19 +2965,46 @@ static bool SparkValidationSetDecodeScalars(
     uint32_t slot_mapping,
     uint32_t context_length)
 {
-    uint32_t positions[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
-    uint32_t slot_mappings[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
-    uint32_t context_lengths[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
-    uint32_t first_block_token_offsets[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
-    uint32_t block_table[
-        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
-        SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE];
-    uint32_t sparse_token_indices[
-        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT];
+    uint32_t *positions;
+    uint32_t *slot_mappings;
+    uint32_t *context_lengths;
+    uint32_t *first_block_token_offsets;
+    uint32_t *block_table;
+    uint32_t *sparse_token_indices;
+    size_t sequence_bytes;
+    size_t block_table_bytes;
+    size_t sparse_token_indices_bytes;
     uint32_t sequence_index;
     uint32_t block_index;
     uint32_t sparse_index;
+    bool copied;
+
+    sequence_bytes = (size_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        sizeof(uint32_t);
+    block_table_bytes = (size_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (size_t)SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE * sizeof(uint32_t);
+    sparse_token_indices_bytes =
+        (size_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (size_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT *
+        sizeof(uint32_t);
+    positions = (uint32_t *)malloc(sequence_bytes);
+    slot_mappings = (uint32_t *)malloc(sequence_bytes);
+    context_lengths = (uint32_t *)malloc(sequence_bytes);
+    first_block_token_offsets = (uint32_t *)malloc(sequence_bytes);
+    block_table = (uint32_t *)malloc(block_table_bytes);
+    sparse_token_indices = (uint32_t *)malloc(sparse_token_indices_bytes);
+    if (positions == 0 || slot_mappings == 0 || context_lengths == 0 ||
+        first_block_token_offsets == 0 || block_table == 0 ||
+        sparse_token_indices == 0)
+    {
+        free(positions);
+        free(slot_mappings);
+        free(context_lengths);
+        free(first_block_token_offsets);
+        free(block_table);
+        free(sparse_token_indices);
+        return false;
+    }
 
     for (sequence_index = 0u;
          sequence_index < SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT;
@@ -3008,12 +3035,20 @@ static bool SparkValidationSetDecodeScalars(
                     : SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
         }
     }
-    return SparkValidationCopyToDevice(buffers->positions, positions, sizeof(positions), "copy positions") &&
-        SparkValidationCopyToDevice(buffers->slot_mapping, slot_mappings, sizeof(slot_mappings), "copy slot_mappings") &&
-        SparkValidationCopyToDevice(buffers->context_lengths, context_lengths, sizeof(context_lengths), "copy context_lengths") &&
-        SparkValidationCopyToDevice(buffers->first_block_token_offsets, first_block_token_offsets, sizeof(first_block_token_offsets), "copy first_block_token_offsets") &&
-        SparkValidationCopyToDevice(buffers->block_table, block_table, sizeof(block_table), "copy block_table") &&
-        SparkValidationCopyToDevice(buffers->sparse_token_indices, sparse_token_indices, sizeof(sparse_token_indices), "copy sparse_token_indices");
+    copied =
+        SparkValidationCopyToDevice(buffers->positions, positions, sequence_bytes, "copy positions") &&
+        SparkValidationCopyToDevice(buffers->slot_mapping, slot_mappings, sequence_bytes, "copy slot_mappings") &&
+        SparkValidationCopyToDevice(buffers->context_lengths, context_lengths, sequence_bytes, "copy context_lengths") &&
+        SparkValidationCopyToDevice(buffers->first_block_token_offsets, first_block_token_offsets, sequence_bytes, "copy first_block_token_offsets") &&
+        SparkValidationCopyToDevice(buffers->block_table, block_table, block_table_bytes, "copy block_table") &&
+        SparkValidationCopyToDevice(buffers->sparse_token_indices, sparse_token_indices, sparse_token_indices_bytes, "copy sparse_token_indices");
+    free(positions);
+    free(slot_mappings);
+    free(context_lengths);
+    free(first_block_token_offsets);
+    free(block_table);
+    free(sparse_token_indices);
+    return copied;
 }
 
 static void SparkValidationConfigureNode(
@@ -4467,10 +4502,9 @@ static bool SparkValidationReadHiddenBf16File(
     SparkValidationDeviceBuffers *buffers,
     const char *path)
 {
-    uint16_t host_hidden[
-        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t *host_hidden;
     FILE *file;
+    size_t hidden_bytes;
     size_t read_bytes;
     int extra_byte;
 
@@ -4479,35 +4513,51 @@ static bool SparkValidationReadHiddenBf16File(
         fprintf(stderr, "pipeline input hidden path is missing\n");
         return false;
     }
+    hidden_bytes = (size_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (size_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+        sizeof(uint16_t);
+    host_hidden = (uint16_t *)malloc(hidden_bytes);
+    if (host_hidden == 0)
+    {
+        return false;
+    }
     file = fopen(path, "rb");
     if (file == 0)
     {
         fprintf(stderr, "could not open pipeline input hidden %s\n", path);
+        free(host_hidden);
         return false;
     }
-    read_bytes = fread(host_hidden, 1u, sizeof(host_hidden), file);
+    read_bytes = fread(host_hidden, 1u, hidden_bytes, file);
     extra_byte = fgetc(file);
     fclose(file);
-    if (read_bytes != sizeof(host_hidden) || extra_byte != EOF)
+    if (read_bytes != hidden_bytes || extra_byte != EOF)
     {
-        fprintf(stderr, "pipeline input hidden must be exactly %llu bytes for active_sequences=%u: %s\n", (unsigned long long)sizeof(host_hidden), SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT, path);
+        fprintf(stderr, "pipeline input hidden must be exactly %llu bytes for active_sequences=%u: %s\n", (unsigned long long)hidden_bytes, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT, path);
+        free(host_hidden);
         return false;
     }
-    return SparkValidationCopyToDevice(
+    if (!SparkValidationCopyToDevice(
         buffers->input_hidden_bf16,
         host_hidden,
-        sizeof(host_hidden),
-        "copy pipeline input hidden");
+        hidden_bytes,
+        "copy pipeline input hidden"))
+    {
+        free(host_hidden);
+        return false;
+    }
+    free(host_hidden);
+    return true;
 }
 
 static bool SparkValidationWriteHiddenBf16File(
     const char *path,
     const uint16_t *device_hidden)
 {
-    uint16_t host_hidden[
-        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION];
+    uint16_t *host_hidden;
     FILE *file;
+    size_t hidden_bytes;
+    size_t hidden_elements;
     size_t written_bytes;
     uint64_t checksum;
     uint32_t dimension_index;
@@ -4517,22 +4567,26 @@ static bool SparkValidationWriteHiddenBf16File(
     {
         return true;
     }
+    hidden_elements = (size_t)SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        (size_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    hidden_bytes = hidden_elements * sizeof(uint16_t);
+    host_hidden = (uint16_t *)malloc(hidden_bytes);
+    if (host_hidden == 0)
+    {
+        return false;
+    }
     if (!SparkValidationCopyDeviceBf16Vector(
             host_hidden,
             device_hidden,
-            SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            (uint32_t)hidden_elements,
             "copy pipeline output hidden"))
     {
+        free(host_hidden);
         return false;
     }
     checksum = 1469598103934665603ull;
     nonzero_count = 0u;
-    for (dimension_index = 0u;
-         dimension_index <
-            SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
-         ++dimension_index)
+    for (dimension_index = 0u; dimension_index < hidden_elements; ++dimension_index)
     {
         if (host_hidden[dimension_index] != 0u)
             nonzero_count += 1u;
@@ -4542,21 +4596,25 @@ static bool SparkValidationWriteHiddenBf16File(
     if (nonzero_count == 0u)
     {
         fprintf(stderr, "pipeline output hidden stayed zero path=%s\n", path);
+        free(host_hidden);
         return false;
     }
     file = fopen(path, "wb");
     if (file == 0)
     {
         fprintf(stderr, "could not open pipeline output hidden %s\n", path);
+        free(host_hidden);
         return false;
     }
-    written_bytes = fwrite(host_hidden, 1u, sizeof(host_hidden), file);
-    if (fclose(file) != 0 || written_bytes != sizeof(host_hidden))
+    written_bytes = fwrite(host_hidden, 1u, hidden_bytes, file);
+    if (fclose(file) != 0 || written_bytes != hidden_bytes)
     {
         fprintf(stderr, "could not write pipeline output hidden %s\n", path);
+        free(host_hidden);
         return false;
     }
-    fprintf(stderr, "pipeline_hidden_bf16_written=%s active_sequences=%u bytes=%llu nonzero=%u checksum64=%llu\n", path, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT, (unsigned long long)sizeof(host_hidden), nonzero_count, (unsigned long long)checksum);
+    fprintf(stderr, "pipeline_hidden_bf16_written=%s active_sequences=%u bytes=%llu nonzero=%u checksum64=%llu\n", path, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT, (unsigned long long)hidden_bytes, nonzero_count, (unsigned long long)checksum);
+    free(host_hidden);
     return true;
 }
 

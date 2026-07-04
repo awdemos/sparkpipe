@@ -1354,7 +1354,8 @@ static SparkStatus SparkGlm52B12xValidateRecipeAgainstGeneratedManifest(
         manifest->intermediate_dimension != recipe->intermediate_dimension ||
         manifest->expert_count != recipe->expert_count ||
         manifest->top_k != recipe->top_k ||
-        manifest->maximum_token_count < recipe->maximum_token_count ||
+        manifest->maximum_token_count == 0u ||
+        recipe->maximum_token_count == 0u ||
         manifest->cuda_architecture != recipe->cuda_architecture)
     {
         return SPARK_STATUS_TARGET_MISMATCH;
@@ -1389,6 +1390,44 @@ static const SparkGlm52Sm121B12xGeneratedKernelBucket *SparkGlm52B12xSelectBucke
         }
     }
     return 0;
+}
+
+static const SparkGlm52Sm121B12xGeneratedKernelBucket *
+SparkGlm52B12xSelectLargestBucketAtMost(
+    const SparkFlashInferB12xCompiledMoeState *state,
+    uint32_t token_count,
+    uint32_t *bucket_index_out)
+{
+    const SparkGlm52Sm121B12xGeneratedManifest *manifest;
+    const SparkGlm52Sm121B12xGeneratedKernelBucket *best_bucket;
+    uint32_t best_index;
+    uint32_t bucket_index;
+
+    if (state == 0 || token_count == 0u || bucket_index_out == 0)
+    {
+        return 0;
+    }
+
+    manifest = &SparkGlm52Sm121B12xGeneratedManifestInstance;
+    best_bucket = 0;
+    best_index = 0u;
+    for (bucket_index = 0u; bucket_index < manifest->bucket_count; ++bucket_index)
+    {
+        if (manifest->buckets[bucket_index].token_upper_bound <= token_count &&
+            (best_bucket == 0 ||
+             manifest->buckets[bucket_index].token_upper_bound >
+                best_bucket->token_upper_bound))
+        {
+            best_bucket = &manifest->buckets[bucket_index];
+            best_index = bucket_index;
+        }
+    }
+    if (best_bucket == 0)
+    {
+        return 0;
+    }
+    *bucket_index_out = best_index;
+    return best_bucket;
 }
 
 extern "C" SparkStatus SparkFlashInferB12xCompiledMoeCreate(
@@ -1444,35 +1483,20 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeCreate(
     return SPARK_STATUS_OK;
 }
 
-extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
-    void *state_pointer,
-    const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments)
+static SparkStatus SparkGlm52B12xLaunchSelectedBucket(
+    SparkFlashInferB12xCompiledMoeState *state,
+    const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments,
+    const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket,
+    uint32_t bucket_index)
 {
-    SparkFlashInferB12xCompiledMoeState *state;
     SparkGlm52Sm121B12xGeneratedLaunchArguments generated_arguments;
-    const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket;
     const int32_t *launch_topk_ids;
     SparkStatus status;
-    uint32_t bucket_index;
 
-    if (state_pointer == 0 || arguments == 0)
+    if (state == 0 || arguments == 0 || bucket == 0 ||
+        bucket_index >= state->bucket_count)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    state = (SparkFlashInferB12xCompiledMoeState *)state_pointer;
-    if (arguments->token_count > state->recipe.maximum_token_count)
-    {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    }
-
-    bucket = SparkGlm52B12xSelectBucket(
-        state,
-        arguments->token_count,
-        &bucket_index);
-    if (bucket == 0 || bucket_index >= state->bucket_count)
-    {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     status = SparkGlm52B12xResetLaunchState(
         &state->workspaces[bucket_index],
@@ -1545,6 +1569,134 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
         &state->workspaces[bucket_index],
         bucket,
         arguments);
+}
+
+static const void *SparkGlm52B12xOffsetConstElements(
+    const void *pointer,
+    uint32_t token_offset,
+    uint32_t element_count,
+    uint32_t element_bytes)
+{
+    return (const void *)((const uint8_t *)pointer +
+        ((size_t)token_offset * (size_t)element_count * (size_t)element_bytes));
+}
+
+static void *SparkGlm52B12xOffsetElements(
+    void *pointer,
+    uint32_t token_offset,
+    uint32_t element_count,
+    uint32_t element_bytes)
+{
+    return (void *)((uint8_t *)pointer +
+        ((size_t)token_offset * (size_t)element_count * (size_t)element_bytes));
+}
+
+static SparkStatus SparkGlm52B12xLaunchChunked(
+    SparkFlashInferB12xCompiledMoeState *state,
+    const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments)
+{
+    SparkGlm52Sm121FlashInferB12xMoeArguments chunk_arguments;
+    const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket;
+    SparkStatus status;
+    uint32_t bucket_index;
+    uint32_t token_offset;
+    uint32_t remaining_tokens;
+
+    if (state == 0 || arguments == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    token_offset = 0u;
+    while (token_offset < arguments->token_count)
+    {
+        remaining_tokens = arguments->token_count - token_offset;
+        bucket = SparkGlm52B12xSelectLargestBucketAtMost(
+            state,
+            remaining_tokens,
+            &bucket_index);
+        if (bucket == 0)
+        {
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+        chunk_arguments = *arguments;
+        chunk_arguments.token_count = bucket->token_upper_bound;
+        chunk_arguments.hidden_bf16 = SparkGlm52B12xOffsetConstElements(
+            arguments->hidden_bf16,
+            token_offset,
+            arguments->hidden_dimension,
+            sizeof(uint16_t));
+        chunk_arguments.topk_ids_i32 =
+            (int32_t *)SparkGlm52B12xOffsetElements(
+                arguments->topk_ids_i32,
+                token_offset,
+                arguments->top_k,
+                sizeof(int32_t));
+        chunk_arguments.topk_weights_fp32 =
+            (float *)SparkGlm52B12xOffsetElements(
+                arguments->topk_weights_fp32,
+                token_offset,
+                arguments->top_k,
+                sizeof(float));
+        if (arguments->router_logits_f32 != 0)
+        {
+            chunk_arguments.router_logits_f32 =
+                (const float *)SparkGlm52B12xOffsetConstElements(
+                    arguments->router_logits_f32,
+                    token_offset,
+                    arguments->expert_count,
+                    sizeof(float));
+        }
+        chunk_arguments.output_bf16 = SparkGlm52B12xOffsetElements(
+            arguments->output_bf16,
+            token_offset,
+            arguments->hidden_dimension,
+            sizeof(uint16_t));
+        status = SparkGlm52B12xLaunchSelectedBucket(
+            state,
+            &chunk_arguments,
+            bucket,
+            bucket_index);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        token_offset += bucket->token_upper_bound;
+    }
+    return SPARK_STATUS_OK;
+}
+
+extern "C" SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
+    void *state_pointer,
+    const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments)
+{
+    SparkFlashInferB12xCompiledMoeState *state;
+    const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket;
+    uint32_t bucket_index;
+
+    if (state_pointer == 0 || arguments == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    state = (SparkFlashInferB12xCompiledMoeState *)state_pointer;
+    if (arguments->token_count > state->recipe.maximum_token_count)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+
+    bucket = SparkGlm52B12xSelectBucket(
+        state,
+        arguments->token_count,
+        &bucket_index);
+    if (bucket == 0)
+    {
+        return SparkGlm52B12xLaunchChunked(state, arguments);
+    }
+    return SparkGlm52B12xLaunchSelectedBucket(
+        state,
+        arguments,
+        bucket,
+        bucket_index);
 }
 
 extern "C" void SparkFlashInferB12xCompiledMoeDestroy(void *state_pointer)
