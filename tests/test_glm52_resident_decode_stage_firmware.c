@@ -135,6 +135,7 @@ static void SparkTestInitializeBridgeSubmitRequest(
     request->sequence_id = 24001u;
     request->priority = 10u;
     request->prompt_token_count = 24u;
+    request->max_prefill_tokens_per_step = 16u;
     request->output_token_budget = 1u;
     request->prompt_token_ids = prompt_token_ids;
 }
@@ -349,6 +350,7 @@ static SparkStatus SparkTestBulkPrefillLaunchPlaceholder(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     void *cuda_stream)
 {
@@ -356,6 +358,7 @@ static SparkStatus SparkTestBulkPrefillLaunchPlaceholder(
     assert(node_context != 0);
     assert(pipeline_slot != 0);
     assert(active_sequence_count != 0u);
+    assert(prompt_token_offset < 128u);
     assert(prompt_token_count != 0u);
     assert(cuda_stream != 0);
     return SPARK_STATUS_OK;
@@ -1440,6 +1443,7 @@ static void SparkTestGlm52ResidentDecodeStageBulkPrefillSubmit(void)
         SPARK_STATUS_OK);
     assert(fake_streams[0].submit_count == 1u);
     assert(fake_streams[0].last_active_sequence_count == 4u);
+    assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 0u);
     assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 96u);
     assert(completion_state.completion_count == 1u);
     assert(completion_state.completions[0].accepted_token_count == 96u);
@@ -1544,6 +1548,7 @@ static void SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit(void)
     assert(fake_streams[0].last_active_sequence_count == 4u);
     assert(fake_streams[0].last_stage_slice_layer_count == 2u);
     assert(fake_streams[0].last_bulk_prefill_layer_count == 2u);
+    assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 0u);
     assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 96u);
     assert(completion_state.completion_count == 1u);
     assert(completion_state.completions[0].accepted_token_count == 96u);
@@ -1594,7 +1599,19 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     assert(dispatch.request_handles[0] == request_handle);
     assert(dispatch.prefill_decision.active_sequence_count == 1u);
     assert(dispatch.prefill_decision.scheduled_prompt_token_offset == 0u);
-    assert(dispatch.prefill_decision.scheduled_prompt_token_count == 24u);
+    assert(dispatch.prefill_decision.scheduled_prompt_token_count == 16u);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &bridge_fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &bridge_fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.accepted == 1u);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(dispatch.request_handles[0] == request_handle);
+    assert(dispatch.prefill_decision.active_sequence_count == 1u);
+    assert(dispatch.prefill_decision.scheduled_prompt_token_offset == 16u);
+    assert(dispatch.prefill_decision.scheduled_prompt_token_count == 8u);
     memset(host_block_indices, 0, sizeof(host_block_indices));
     memset(execution_block_indices, 0, sizeof(execution_block_indices));
     memset(lane_block_counts, 0, sizeof(lane_block_counts));
@@ -1697,13 +1714,14 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     assert(fake_streams[0].submit_count == 1u);
     assert(fake_streams[0].last_stage_slice_layer_count == 2u);
     assert(fake_streams[0].last_bulk_prefill_layer_count == 2u);
-    assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 24u);
+    assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 16u);
+    assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 8u);
     assert(fake_streams[0].last_runtime_kv_block_table == &block_table_view);
     assert(fake_streams[0].last_runtime_kv_physical_block_indices ==
         execution_block_indices);
     assert(fake_streams[0].last_runtime_kv_lane_count == 1u);
     assert(completion_state.completion_count == 1u);
-    assert(completion_state.completions[0].accepted_token_count == 24u);
+    assert(completion_state.completions[0].accepted_token_count == 8u);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &bridge_fixture.api,
         &dispatch) == SPARK_STATUS_OK);
@@ -2507,6 +2525,7 @@ static void SparkTestGlm52ResidentDecodeStagePagedBulkPrefillPlanWithoutLaunchFu
     assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
         SPARK_STATUS_OK);
     assert(fake_streams[0].submit_count == 1u);
+    assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 0u);
     assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 64u);
     assert(fake_streams[0].last_runtime_kv_block_table == &kv_block_table_view);
     assert(fake_streams[0].last_runtime_kv_block_token_count == 16u);

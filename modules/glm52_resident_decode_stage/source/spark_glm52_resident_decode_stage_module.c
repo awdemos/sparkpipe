@@ -2646,6 +2646,12 @@ static bool SparkGlm52ResidentDecodeStageFrameShapeIsSupported(
         (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u;
     if (frame_is_prefill)
     {
+        if (frame->sequence_position > UINT32_MAX ||
+            frame->new_token_count >
+                UINT32_MAX - (uint32_t)frame->sequence_position)
+        {
+            return false;
+        }
         if (state->stage_slice_layer_count != 0u)
         {
             return SparkGlm52ResidentDecodeStageStageSliceBulkPrefillSupportsPrompt(
@@ -3342,6 +3348,7 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
                 state->stage_slice_layer_count,
                 pipeline_slot_index,
                 frame->active_slot_count,
+                (uint32_t)frame->sequence_position,
                 frame->new_token_count,
                 runtime_kv_block_table,
                 &pending_completion->backend_completion);
@@ -3352,6 +3359,7 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
                 state->node_context,
                 pipeline_slot_index,
                 frame->active_slot_count,
+                (uint32_t)frame->sequence_position,
                 frame->new_token_count,
                 runtime_kv_block_table,
                 &pending_completion->backend_completion);

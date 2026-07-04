@@ -15,6 +15,7 @@ typedef struct SparkGlm52ResidentDecodeStageFakeStream
     uint32_t last_stage_slice_layer_count;
     uint32_t last_stage_slice_final_token_stage;
     const void *last_stage_slice_plan;
+    uint32_t last_bulk_prefill_prompt_token_offset;
     uint32_t last_bulk_prefill_prompt_token_count;
     uint32_t last_bulk_prefill_layer_count;
     uint32_t last_runtime_kv_block_token_count;

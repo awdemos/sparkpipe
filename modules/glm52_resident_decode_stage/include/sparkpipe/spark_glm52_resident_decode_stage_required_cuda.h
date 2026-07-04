@@ -67,6 +67,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     void *cuda_stream);
@@ -76,6 +77,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     void *cuda_stream);
@@ -85,6 +87,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPrefill(
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     void *cuda_stream);
