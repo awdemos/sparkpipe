@@ -151,54 +151,6 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinea
     uint32_t output_is_f32,
     void *cuda_stream);
 
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3PreparedActivationWeightLinearReference(
-    const uint8_t *activation_fp8_e4m3,
-    const float *activation_scale_f32,
-    const uint8_t *weight_fp8_e4m3,
-    const float *weight_scale_inv_f32,
-    void *output,
-    uint32_t active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t scale_block_size,
-    uint32_t output_is_f32,
-    void *cuda_stream);
-
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3SharedActivationDualWeightLinearReference(
-    const void *input_bf16,
-    const uint8_t *first_weight_fp8_e4m3,
-    const float *first_weight_scale_inv_f32,
-    const uint8_t *second_weight_fp8_e4m3,
-    const float *second_weight_scale_inv_f32,
-    void *workspace,
-    uint64_t workspace_bytes,
-    void *first_output,
-    void *second_output,
-    uint32_t active_sequence_count,
-    uint32_t maximum_active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t first_output_dimension,
-    uint32_t second_output_dimension,
-    uint32_t scale_block_size,
-    uint32_t first_output_is_f32,
-    uint32_t second_output_is_f32,
-    void *cuda_stream);
-
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearReference(
-    const void *input_bf16,
-    const uint8_t *weight_fp8_e4m3,
-    const float *weight_scale_inv_f32,
-    void *workspace,
-    uint64_t workspace_bytes,
-    void *output,
-    uint32_t active_sequence_count,
-    uint32_t maximum_active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t scale_block_size,
-    uint32_t output_is_f32,
-    void *cuda_stream);
-
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3KvCacheStore(
     const void *input_bf16,
     uint8_t *output_fp8_e4m3,
