@@ -356,7 +356,7 @@ glm52_b12x_resident_pack:
 
 glm52_b12x_compiled_backend:
 	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend archive NVCC=$(NVCC) CUDA_ARCH=sm_121a
-	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend generated_archive NVCC=$(NVCC) CUDA_ARCH=sm_121a GENERATED_DIRECTORY=$(abspath build/glm52_b12x_aot/generated)
+	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend generated_archive NVCC=$(NVCC) CUDA_ARCH=sm_121a GENERATED_DIRECTORY=$(abspath $(B12X_AOT_OUTPUT_DIR)/generated)
 
 glm52_required_cuda_link_args: glm52_flashinfer_b12x_moe_adapter glm52_b12x_compiled_backend
 	@test -s "$(B12X_RUNTIME_LINK_ARGS_FILE)" || \

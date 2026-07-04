@@ -7394,6 +7394,8 @@ static uint32_t SparkValidationExactPp13BucketForActiveCount(void)
         return 32u;
     if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 64u)
         return 64u;
+    if (SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT <= 128u)
+        return 128u;
     return 0u;
 }
 
@@ -7443,7 +7445,7 @@ static bool SparkValidationInitializeExactPp13StageSlicePlan(
     bucket = SparkValidationExactPp13BucketForActiveCount();
     if (bucket == 0u)
     {
-        fprintf(stderr, "exact PP13 stage-slice validation supports B<=64 active sequences\n");
+        fprintf(stderr, "exact PP13 stage-slice validation supports B<=128 active sequences\n");
         return false;
     }
     stage_index = first_layer_index /
