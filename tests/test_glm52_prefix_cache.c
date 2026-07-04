@@ -379,6 +379,41 @@ static void SparkTestPrefixCacheLookaheadProtectionSkipsProtectedVictim(void)
     assert(lookup.matched_token_count == 0u);
 }
 
+static void SparkTestPrefixCacheChainedBlockHashMatchesFullHash(void)
+{
+    SparkGlm52PrefixCachePromptHash full_hash;
+    SparkGlm52PrefixCachePromptHash block_hash;
+    uint32_t token_ids[80u];
+    uint32_t token_index;
+    uint32_t boundary_token_count;
+    uint64_t chained_hash;
+
+    for (token_index = 0u; token_index < 80u; ++token_index)
+    {
+        token_ids[token_index] = 100000u + (token_index * 37u);
+    }
+    chained_hash = SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH;
+    for (boundary_token_count = 16u;
+         boundary_token_count <= 80u;
+         boundary_token_count += 16u)
+    {
+        assert(SparkGlm52PrefixCacheHashPromptTokens(
+            16u,
+            SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH,
+            token_ids,
+            boundary_token_count,
+            &full_hash) == SPARK_STATUS_OK);
+        assert(SparkGlm52PrefixCacheHashPromptTokens(
+            16u,
+            chained_hash,
+            &token_ids[boundary_token_count - 16u],
+            16u,
+            &block_hash) == SPARK_STATUS_OK);
+        chained_hash = block_hash.prompt_hash;
+        assert(chained_hash == full_hash.prompt_hash);
+    }
+}
+
 int main(void)
 {
     SparkTestPrefixCacheMatchesCommittedBlocks();
@@ -388,5 +423,6 @@ int main(void)
     SparkTestPrefixCacheRejectsBindingExhaustionWithoutLeakingRefs();
     SparkTestPrefixCacheReservationOwnsPhysicalBlocksUntilCommitOrCancel();
     SparkTestPrefixCacheLookaheadProtectionSkipsProtectedVictim();
+    SparkTestPrefixCacheChainedBlockHashMatchesFullHash();
     return 0;
 }

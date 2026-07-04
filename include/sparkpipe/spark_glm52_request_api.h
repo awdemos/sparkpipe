@@ -142,7 +142,8 @@ typedef struct SparkGlm52RequestApiSlot
     uint32_t scheduled_decode_token_count;
     uint32_t completed_decode_token_count;
     uint32_t last_committed_prefix_token_count;
-    uint32_t reserved0;
+    uint32_t prefix_scan_hashed_token_count;
+    uint64_t prefix_scan_hash;
     uint64_t last_committed_prefix_hash;
     uint64_t request_id;
     uint64_t sequence_id;
