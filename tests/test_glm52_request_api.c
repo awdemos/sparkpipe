@@ -12,6 +12,12 @@
 #define SPARK_TEST_PREFIX_BINDING_COUNT 512u
 #define SPARK_TEST_KV_BLOCK_COUNT 128u
 #define SPARK_TEST_DSPARK_SEQUENCE_STATE_COUNT SPARK_TEST_REQUEST_SLOT_COUNT
+#define SPARK_TEST_TEXT_TOKEN_A 1u
+#define SPARK_TEST_TEXT_TOKEN_B 2u
+#define SPARK_TEST_TEXT_TOKEN_C 3u
+#define SPARK_TEST_TEXT_TOKEN_AB 4u
+#define SPARK_TEST_TEXT_TOKEN_ABC 5u
+#define SPARK_TEST_TEXT_TOKEN_UNKNOWN 6u
 
 typedef struct SparkTestDsparkDraftCapture
 {
@@ -509,6 +515,65 @@ static void SparkTestInitializeSubmitRequest(
     request->request_id = request_id;
     request->sequence_id = sequence_id;
     request->prompt_token_ids = prompt_token_ids;
+}
+
+static const char *SparkTestRequestApiTokenizerJsonPath(void)
+{
+    return "build/test_glm52_request_api_tokenizer.json";
+}
+
+static void SparkTestRequestApiWriteTokenizerJson(void)
+{
+    FILE *file;
+
+    file = fopen(SparkTestRequestApiTokenizerJsonPath(), "wb");
+    assert(file != 0);
+    fprintf(file,
+        "{\n"
+        "  \"model\": {\n"
+        "    \"type\": \"BPE\",\n"
+        "    \"unk_token\": \"<unk>\",\n"
+        "    \"byte_fallback\": false,\n"
+        "    \"vocab\": {\n"
+        "      \"a\": %u,\n"
+        "      \"b\": %u,\n"
+        "      \"c\": %u,\n"
+        "      \"ab\": %u,\n"
+        "      \"abc\": %u,\n"
+        "      \"<unk>\": %u\n"
+        "    },\n"
+        "    \"merges\": [\n"
+        "      \"a b\",\n"
+        "      \"ab c\"\n"
+        "    ]\n"
+        "  },\n"
+        "  \"pre_tokenizer\": {\n"
+        "    \"type\": \"ByteLevel\",\n"
+        "    \"add_prefix_space\": false\n"
+        "  },\n"
+        "  \"added_tokens\": []\n"
+        "}\n",
+        SPARK_TEST_TEXT_TOKEN_A,
+        SPARK_TEST_TEXT_TOKEN_B,
+        SPARK_TEST_TEXT_TOKEN_C,
+        SPARK_TEST_TEXT_TOKEN_AB,
+        SPARK_TEST_TEXT_TOKEN_ABC,
+        SPARK_TEST_TEXT_TOKEN_UNKNOWN);
+    assert(fclose(file) == 0);
+}
+
+static void SparkTestRequestApiLoadTokenizer(SparkTokenizer *tokenizer)
+{
+    SparkTokenizerHuggingFaceJsonConfiguration configuration;
+
+    SparkTokenizerReset(tokenizer);
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    configuration.descriptor_bytes =
+        SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES;
+    configuration.tokenizer_json_path = SparkTestRequestApiTokenizerJsonPath();
+    assert(SparkTokenizerLoadHuggingFaceJson(tokenizer, &configuration) ==
+        SPARK_STATUS_OK);
 }
 
 static void SparkTestRequestApiWarmsPrefixCacheAndReleases(
@@ -2833,6 +2898,109 @@ static void SparkTestRequestApiDsparkDisabledPerRequestFallsBackToDecode(void)
     assert(SparkGlm52RequestApiCancelRequest(
         &fixture.api,
         handle) == SPARK_STATUS_OK);
+}
+
+static void SparkTestRequestApiMtpCommitConsumesMultiTokenBudget(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiCacheState cache_state;
+    SparkGlm52RequestApiHandle handle;
+    uint32_t prompt[16u];
+
+    SparkTestFillTokenIds(prompt, 16u, 153000u);
+    SparkTestInitializeFixture(&fixture);
+    fixture.api.configuration_flags |=
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+    SparkTestInitializeSubmitRequest(
+        &request,
+        1530u,
+        11530u,
+        SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
+        prompt,
+        16u,
+        2u);
+    request.thinking_token_budget = 1u;
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,
+        &request,
+        &handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u);
+    assert(dispatch.mtp_draft_token_budget == 2u);
+    dispatch.decode_committed_token_counts[0u] = 3u;
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiGetRequestCacheState(
+        &fixture.api,
+        handle,
+        &cache_state) == SPARK_STATUS_OK);
+    assert(cache_state.state == SPARK_GLM52_REQUEST_API_STATE_COMPLETED);
+    assert(fixture.api.request_slots[0u].completed_decode_token_count == 3u);
+    assert(fixture.api.request_slots[0u].remaining_thinking_token_budget == 0u);
+    assert(fixture.api.request_slots[0u].remaining_output_token_budget == 0u);
+}
+
+static void SparkTestRequestApiSubmitsCTextPromptToPrefillSchedule(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkTokenizer tokenizer;
+    SparkGlm52TextPromptSubmitRequest request;
+    SparkGlm52TextPromptSubmitResult result;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiPrefillDispatchView prefill_view;
+    uint32_t prompt_token_storage[8u];
+
+    SparkTestRequestApiWriteTokenizerJson();
+    SparkTestRequestApiLoadTokenizer(&tokenizer);
+    SparkTestInitializeFixture(&fixture);
+    SparkGlm52TextPromptGetDefaultSubmitRequest(&request);
+    request.priority = SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY;
+    request.output_token_budget = 2u;
+    request.request_id = 1540u;
+    request.sequence_id = 11540u;
+    request.prompt_text = "abc";
+    request.prompt_text_bytes = 3u;
+    request.prompt_token_storage = prompt_token_storage;
+    request.prompt_token_storage_capacity = 8u;
+    memset(prompt_token_storage, 0, sizeof(prompt_token_storage));
+    assert(SparkGlm52RequestApiSubmitTextPrompt(
+        &fixture.api,
+        &tokenizer,
+        &request,
+        &result) == SPARK_STATUS_OK);
+    assert(result.prompt_token_count == 1u);
+    assert(result.required_prompt_token_count == 1u);
+    assert(result.request_handle != SPARK_GLM52_REQUEST_API_INVALID_HANDLE);
+    assert(prompt_token_storage[0u] == SPARK_TEST_TEXT_TOKEN_ABC);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(dispatch.request_count == 1u);
+    assert(dispatch.request_handles[0u] == result.request_handle);
+    assert(SparkGlm52RequestApiDescribePrefillDispatch(
+        &dispatch,
+        &prefill_view) == SPARK_STATUS_OK);
+    assert(prefill_view.prompt_token_count == 1u);
+    assert(prefill_view.lanes[0u].prompt_token_ids == prompt_token_storage);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    SparkTokenizerDestroy(&tokenizer);
 }
 
 static void SparkTestRequestApiDecodeBatchPacksTopPriorityMembersInOrder(void)
