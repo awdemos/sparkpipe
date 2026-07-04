@@ -13537,7 +13537,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFusedFinalTokenEpil
         (const uint8_t *)node_context->mtp_mxfp4_weight_payload_u8,
         (const uint8_t *)node_context->mtp_mxfp4_scale_e8m0_u8,
         node_context->restricted_token_ids,
-        0,
+        pipeline_slot->restricted_logits,
         candidate_scores,
         candidate_tokens,
         active_sequence_count);
