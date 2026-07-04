@@ -7460,9 +7460,13 @@ static bool SparkValidationInitializeExactPp13StageSlicePlan(
     runtime->stage_slice_plan.workspace_bytes =
         runtime->final_epilogue_workspace_bytes;
     runtime->stage_slice_plan.validated_maximum_latency_ns = 1000000000ull;
-    return final_token_stage == (first_layer_index +
-        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT ==
-        SPARK_VALIDATION_LAYER_COUNT ? 1u : 0u);
+    if (final_token_stage != 0u &&
+        first_layer_index + SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT !=
+            SPARK_VALIDATION_LAYER_COUNT)
+    {
+        return false;
+    }
+    return true;
 }
 
 static bool SparkValidationPrepareExactPp13StageSliceLayer(
