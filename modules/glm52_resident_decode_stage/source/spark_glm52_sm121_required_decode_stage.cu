@@ -9028,9 +9028,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateExactPp13StageSlicePlan(
         (exact_stage_slice_plan->capability_flags & exact_required_capabilities) !=
             exact_required_capabilities ||
         layer_count != 6u ||
-        final_token_stage !=
-            (exact_stage_slice_plan->first_layer_index + 6u ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ? 1u : 0u))
+        (final_token_stage != 0u &&
+         exact_stage_slice_plan->first_layer_index + 6u !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -9507,6 +9507,9 @@ static const SparkGlm52ResidentDecodeStageBuiltinExactPp13StageSliceLauncher
     SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(11u, 16u, 0u),
     SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(11u, 32u, 0u),
     SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(11u, 64u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 16u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 32u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 64u, 0u),
     SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 16u, 1u),
     SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 32u, 1u),
     SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 64u, 1u)
