@@ -39,6 +39,12 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS 32u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_WARPS 8u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_THREADS \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_WARPS * 32u)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_WARPS * \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_FUSED_MAX_SCALE_BLOCKS 1024u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REFERENCE_WORKSPACE_BUFFER_COUNT 3u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_ACTIVATION_LINEAR_WORKSPACE_ALIGNMENT_BYTES 256ull
@@ -1021,10 +1027,9 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearKernel(
 #endif
 }
 
-template <uint32_t SequenceTileRows,uint32_t OutputTileColumns>
 static __global__ __launch_bounds__(
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS, 4)
-void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_THREADS, 2)
+void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearBatchKernel(
     const uint16_t *__restrict__ input_bf16,
     const uint8_t *__restrict__ weight_payload,
     const void *__restrict__ weight_scale,
@@ -1037,30 +1042,26 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
     uint32_t output_is_f32)
 {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-    constexpr uint32_t row_fragment_count =
-        SequenceTileRows /
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M;
-    constexpr uint32_t column_fragment_count =
-        OutputTileColumns /
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
     __shared__ __nv_bfloat16 shared_input_tile[
-        SequenceTileRows *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K];
     __shared__ __nv_bfloat16 shared_weight_tile[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K *
-        OutputTileColumns];
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N];
     __shared__ float shared_output_tile[
-        SequenceTileRows *
-        OutputTileColumns];
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N];
     uint32_t sequence_tile_begin;
     uint32_t output_tile_begin;
     uint32_t tile_element_index;
     uint32_t input_tile_begin;
-    uint32_t row_fragment_index;
-    uint32_t column_fragment_index;
+    uint32_t warp_index;
 
-    sequence_tile_begin = blockIdx.y * SequenceTileRows;
-    output_tile_begin = blockIdx.x * OutputTileColumns;
+    sequence_tile_begin = blockIdx.y *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS;
+    output_tile_begin = blockIdx.x *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+    warp_index = threadIdx.x / 32u;
 
     nvcuda::wmma::fragment<
         nvcuda::wmma::matrix_a,
@@ -1068,44 +1069,29 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K,
         __nv_bfloat16,
-        nvcuda::wmma::row_major> input_fragment[row_fragment_count];
+        nvcuda::wmma::row_major> input_fragment;
     nvcuda::wmma::fragment<
         nvcuda::wmma::matrix_b,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K,
         __nv_bfloat16,
-        nvcuda::wmma::col_major> weight_fragment[column_fragment_count];
+        nvcuda::wmma::col_major> weight_fragment;
     nvcuda::wmma::fragment<
         nvcuda::wmma::accumulator,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K,
-        float> accumulator_fragment[
-            row_fragment_count * column_fragment_count];
+        float> accumulator_fragment;
 
-    for (row_fragment_index = 0u;
-         row_fragment_index < row_fragment_count;
-         ++row_fragment_index)
-    {
-        for (column_fragment_index = 0u;
-             column_fragment_index < column_fragment_count;
-             ++column_fragment_index)
-        {
-            nvcuda::wmma::fill_fragment(
-                accumulator_fragment[
-                    (row_fragment_index * column_fragment_count) +
-                    column_fragment_index],
-                0.0f);
-        }
-    }
+    nvcuda::wmma::fill_fragment(accumulator_fragment, 0.0f);
     for (input_tile_begin = 0u;
          input_tile_begin < input_dimension;
          input_tile_begin += SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K)
     {
         for (tile_element_index = threadIdx.x;
              tile_element_index <
-                SequenceTileRows *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K;
              tile_element_index += blockDim.x)
         {
@@ -1137,7 +1123,7 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
         for (tile_element_index = threadIdx.x;
              tile_element_index <
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K *
-                OutputTileColumns;
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
              tile_element_index += blockDim.x)
         {
             uint32_t local_input_index;
@@ -1174,75 +1160,39 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
         }
         __syncthreads();
 
-        for (column_fragment_index = 0u;
-             column_fragment_index < column_fragment_count;
-             ++column_fragment_index)
-        {
-            nvcuda::wmma::load_matrix_sync(
-                weight_fragment[column_fragment_index],
-                &shared_weight_tile[
-                    column_fragment_index *
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N *
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K],
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
-        }
-        for (row_fragment_index = 0u;
-             row_fragment_index < row_fragment_count;
-             ++row_fragment_index)
-        {
-            nvcuda::wmma::load_matrix_sync(
-                input_fragment[row_fragment_index],
-                &shared_input_tile[
-                    row_fragment_index *
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K],
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
-            for (column_fragment_index = 0u;
-                 column_fragment_index < column_fragment_count;
-                 ++column_fragment_index)
-            {
-                nvcuda::wmma::mma_sync(
-                    accumulator_fragment[
-                        (row_fragment_index * column_fragment_count) +
-                        column_fragment_index],
-                    input_fragment[row_fragment_index],
-                    weight_fragment[column_fragment_index],
-                    accumulator_fragment[
-                        (row_fragment_index * column_fragment_count) +
-                        column_fragment_index]);
-            }
-        }
+        nvcuda::wmma::load_matrix_sync(
+            input_fragment,
+            shared_input_tile +
+                (warp_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K),
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
+        nvcuda::wmma::load_matrix_sync(
+            weight_fragment,
+            shared_weight_tile,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
+        nvcuda::wmma::mma_sync(
+            accumulator_fragment,
+            input_fragment,
+            weight_fragment,
+            accumulator_fragment);
         __syncthreads();
     }
 
-    for (row_fragment_index = 0u;
-         row_fragment_index < row_fragment_count;
-         ++row_fragment_index)
-    {
-        for (column_fragment_index = 0u;
-             column_fragment_index < column_fragment_count;
-             ++column_fragment_index)
-        {
-            nvcuda::wmma::store_matrix_sync(
-                &shared_output_tile[
-                    (row_fragment_index *
-                     SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
-                     OutputTileColumns) +
-                    (column_fragment_index *
-                     SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N)],
-                accumulator_fragment[
-                    (row_fragment_index * column_fragment_count) +
-                    column_fragment_index],
-                OutputTileColumns,
-                nvcuda::wmma::mem_row_major);
-        }
-    }
+    nvcuda::wmma::store_matrix_sync(
+        shared_output_tile +
+            (warp_index *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N),
+        accumulator_fragment,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+        nvcuda::wmma::mem_row_major);
     __syncthreads();
 
     for (tile_element_index = threadIdx.x;
          tile_element_index <
-            SequenceTileRows *
-            OutputTileColumns;
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
          tile_element_index += blockDim.x)
     {
         uint32_t local_sequence_index;
@@ -1253,9 +1203,10 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
         float output_value;
 
         local_sequence_index = tile_element_index /
-            OutputTileColumns;
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
         local_output_index = tile_element_index -
-            (local_sequence_index * OutputTileColumns);
+            (local_sequence_index *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N);
         sequence_index = sequence_tile_begin + local_sequence_index;
         output_index = output_tile_begin + local_output_index;
         if (sequence_index >= active_sequence_count ||
@@ -5192,7 +5143,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     const SparkGlm52ResidentDecodeStageQuantizedLinearView *quantized_view;
     dim3 grid;
     cudaError_t cuda_status;
-    uint32_t sequence_tile_rows;
 
     if (linear_plan == 0 || input == 0 || output == 0 ||
         active_sequence_count == 0u ||
@@ -5236,50 +5186,20 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
         }
     }
 
-    sequence_tile_rows = SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M;
-    if (linear_plan->input_dimension ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION &&
-        linear_plan->output_dimension ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)
+    if (active_sequence_count >
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M)
     {
-        if (active_sequence_count > 32u)
-        {
-            sequence_tile_rows = 64u;
-        }
-        else if (active_sequence_count > 16u)
-        {
-            sequence_tile_rows = 32u;
-        }
-    }
-    grid = dim3(
-        (linear_plan->output_dimension +
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N - 1u) /
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
-        (active_sequence_count + sequence_tile_rows - 1u) / sequence_tile_rows,
-        1u);
-    if (sequence_tile_rows == 64u)
-    {
-        SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel<64u, 16u><<<
+        grid = dim3(
+            (linear_plan->output_dimension +
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N - 1u) /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+            (active_sequence_count +
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS - 1u) /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS,
+            1u);
+        SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearBatchKernel<<<
             grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)input,
-            (const uint8_t *)quantized_view->weight_payload,
-            quantized_view->weight_scale,
-            output,
-            active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            quantized_view->weight_format,
-            quantized_view->scale_block_size,
-            linear_plan->output_is_f32);
-    }
-    else if (sequence_tile_rows == 32u)
-    {
-        SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel<32u, 16u><<<
-            grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_THREADS,
             0u,
             cuda_stream>>>(
             (const uint16_t *)input,
@@ -5295,6 +5215,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     }
     else
     {
+        grid = dim3(
+            (linear_plan->output_dimension +
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N - 1u) /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+            1u,
+            1u);
         SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearKernel<<<
             grid,
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS,
