@@ -199,6 +199,42 @@ static SparkStatus SparkTestServingDecode(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkTestServingMtpDecode(
+    void *context,
+    const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+    SparkGlm52ServingDecodeResult *decode_result)
+{
+    SparkTestServingCallbackContext *callback_context;
+    uint32_t lane_index;
+    uint32_t expected_budget;
+
+    callback_context = (SparkTestServingCallbackContext *)context;
+    assert(callback_context != 0);
+    assert(decode_dispatch != 0);
+    assert(decode_dispatch->request_dispatch != 0);
+    assert((decode_dispatch->request_dispatch->flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u);
+    expected_budget = callback_context->decode_callback_count == 0u ? 2u : 1u;
+    assert(decode_dispatch->request_dispatch->mtp_draft_token_budget ==
+        expected_budget);
+    SparkGlm52ServingInitializeDecodeResult(
+        decode_result,
+        decode_dispatch->request_count,
+        SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE);
+    for (lane_index = 0u;
+         lane_index < decode_dispatch->request_count;
+         ++lane_index)
+    {
+        decode_result->token_counts[lane_index] = 2u;
+        decode_result->token_ids[lane_index][0u] =
+            90000u + (callback_context->decode_callback_count * 10u);
+        decode_result->token_ids[lane_index][1u] =
+            90001u + (callback_context->decode_callback_count * 10u);
+    }
+    callback_context->decode_callback_count += 1u;
+    return SPARK_STATUS_OK;
+}
+
 static void SparkTestServingInitializeFixture(
     SparkTestServingFixture *fixture,
     SparkTestServingCallbackContext *callback_context)
@@ -507,9 +543,67 @@ static void SparkTestServingPrefillBatchingIsInternal(void)
     assert(CallbackContext.largest_prefill_lane_count == 2u);
 }
 
+static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
+{
+    SparkGlm52ServingSubmitTokenIdsRequest submit_request;
+    SparkGlm52ServingSubmitResult submit_result;
+    SparkGlm52ServingStats stats;
+    SparkGlm52ServingEvent event;
+    uint32_t token_event_count;
+    uint32_t completion_event_count;
+    SparkStatus status;
+
+    SparkTestServingInitializeFixture(&Fixture, &CallbackContext);
+    Fixture.request_api.configuration_flags |=
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+    Fixture.serving_engine.decode_function = SparkTestServingMtpDecode;
+    SparkGlm52ServingInitializeSubmitTokenIdsRequest(&submit_request);
+    submit_request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
+    submit_request.token_ids = Fixture.prompt_tokens;
+    submit_request.output_token_budget = 4u;
+    submit_request.request_id = 9301u;
+    submit_request.sequence_id = 19301u;
+    assert(SparkGlm52ServingEngineSubmitTokenIds(
+        &Fixture.serving_engine,
+        &submit_request,
+        &submit_result) == SPARK_STATUS_OK);
+    assert(submit_result.output_token_budget == 4u);
+
+    status = SparkGlm52ServingEnginePump(
+        &Fixture.serving_engine,
+        0u,
+        16u,
+        &stats);
+    assert(status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_OK);
+    assert(CallbackContext.decode_callback_count == 2u);
+    assert(stats.decode_dispatch_count == 2u);
+    assert(stats.decoded_token_count == 4u);
+
+    token_event_count = 0u;
+    completion_event_count = 0u;
+    while (SparkGlm52ServingEnginePopEvent(
+            &Fixture.serving_engine,
+            &event) == SPARK_STATUS_OK)
+    {
+        if (event.kind == SPARK_GLM52_SERVING_EVENT_KIND_TOKEN)
+        {
+            token_event_count += 1u;
+            assert(event.token_id == 90000u || event.token_id == 90001u ||
+                event.token_id == 90010u || event.token_id == 90011u);
+        }
+        else if (event.kind == SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_COMPLETED)
+        {
+            completion_event_count += 1u;
+        }
+    }
+    assert(token_event_count == 4u);
+    assert(completion_event_count == 1u);
+}
+
 int main(void)
 {
     SparkTestServingRejectsTailWindowRuntimeContract();
+    SparkTestServingMtpCommitStreamsMultiTokenLanes();
     SparkTestServingFireAndForgetPumpRunsFullPromptToDecode();
     SparkTestServingPrefillBatchingIsInternal();
     return 0;

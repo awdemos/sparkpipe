@@ -2944,9 +2944,69 @@ static void SparkTestRequestApiSubmitsCTextPromptToPrefillSchedule(void)
     SparkTokenizerDestroy(&tokenizer);
 }
 
+static void SparkTestRequestApiMtpCommitConsumesMultiTokenBudget(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiHandle handle;
+    uint32_t prompt[16u];
+
+    SparkTestFillTokenIds(prompt, 16u, 70000u);
+    SparkTestInitializeFixture(&fixture);
+    SparkTestInitializeSubmitRequest(
+        &request,
+        41u,
+        5041u,
+        10u,
+        prompt,
+        16u,
+        4u);
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,
+        &request,
+        &handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+
+    fixture.api.configuration_flags |=
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u);
+    assert(dispatch.mtp_draft_token_budget == 2u);
+    assert(dispatch.decode_committed_token_counts[0] == 1u);
+    dispatch.decode_committed_token_counts[0] = 3u;
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) == 0u);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiReleaseCompletedRequest(
+        &fixture.api,
+        handle) == SPARK_STATUS_OK);
+}
+
 int main(void)
 {
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
+    SparkTestRequestApiMtpCommitConsumesMultiTokenBudget();
     SparkTestRequestApiBatchesReadyDecodeRequestsAndConsumesBudgets();
     SparkTestRequestApiCohortsSamePromptRequestsAndSharesBlocks();
     SparkTestRequestApiCohortsArbitrarySharedPrefixWithSuffixes();

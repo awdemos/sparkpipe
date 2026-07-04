@@ -350,6 +350,11 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterInitialize(
             &adapter->host_decode_token_ids,
             adapter->maximum_active_sequence_count);
     if (status == SPARK_STATUS_OK)
+        status = SparkGlm52ServingAdapterHostAlloc(
+            &adapter->host_mtp_committed_token_ids,
+            adapter->maximum_active_sequence_count *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT);
+    if (status == SPARK_STATUS_OK)
         status = SparkGlm52ServingAdapterDeviceAlloc(
             (void **)&adapter->device_prefill_token_ids,
             metadata_token_count * sizeof(uint32_t));
@@ -433,6 +438,7 @@ void SparkGlm52ResidentDecodeStageServingAdapterDestroy(
     SparkGlm52ServingAdapterFreeHost(adapter->host_lane_counts);
     SparkGlm52ServingAdapterFreeHost(adapter->host_decode_positions);
     SparkGlm52ServingAdapterFreeHost(adapter->host_decode_token_ids);
+    SparkGlm52ServingAdapterFreeHost(adapter->host_mtp_committed_token_ids);
     if (adapter->owns_cuda_stream != 0u && adapter->cuda_stream != 0)
     {
         (void)cudaStreamDestroy((cudaStream_t)adapter->cuda_stream);
@@ -648,6 +654,7 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
     uint32_t lane_index;
     uint64_t word_count;
     uint32_t block_count;
+    uint32_t mtp_commit_active;
     SparkStatus status;
 
     adapter = (SparkGlm52ResidentDecodeStageServingAdapter *)context;
@@ -802,6 +809,33 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
     {
         return status;
     }
+    mtp_commit_active =
+        (decode_dispatch->request_dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u;
+    if (mtp_commit_active != 0u)
+    {
+        static_assert(
+            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,
+            "request api and firmware MTP draft token counts must match");
+        if (pipeline_slot->mtp_committed_token_ids == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        status = SparkGlm52ServingAdapterCudaStatus(
+            cudaMemcpyAsync(
+                adapter->host_mtp_committed_token_ids,
+                pipeline_slot->mtp_committed_token_ids,
+                (size_t)decode_dispatch->active_sequence_count *
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
+                    sizeof(uint32_t),
+                cudaMemcpyDeviceToHost,
+                stream));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
     status = SparkGlm52ServingAdapterCudaStatus(cudaStreamSynchronize(stream));
     if (status != SPARK_STATUS_OK)
     {
@@ -811,9 +845,36 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
          lane_index < decode_dispatch->active_sequence_count;
          ++lane_index)
     {
-        decode_result->token_counts[lane_index] = 1u;
+        uint32_t committed_token_count;
+        uint32_t draft_index;
+
+        committed_token_count = 1u;
         decode_result->token_ids[lane_index][0u] =
             adapter->host_decode_token_ids[lane_index];
+        if (mtp_commit_active != 0u)
+        {
+            for (draft_index = 0u;
+                 draft_index <
+                    decode_dispatch->request_dispatch->mtp_draft_token_budget;
+                 ++draft_index)
+            {
+                uint32_t committed_token_id;
+
+                committed_token_id = adapter->host_mtp_committed_token_ids[
+                    (lane_index *
+                     SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT) +
+                    draft_index];
+                if (committed_token_id ==
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_CANCELLED_TOKEN_ID)
+                {
+                    break;
+                }
+                decode_result->token_ids[lane_index][committed_token_count] =
+                    committed_token_id;
+                committed_token_count += 1u;
+            }
+        }
+        decode_result->token_counts[lane_index] = committed_token_count;
     }
     return SPARK_STATUS_OK;
 }

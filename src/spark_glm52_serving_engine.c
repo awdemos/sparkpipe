@@ -1039,10 +1039,17 @@ static SparkStatus SparkGlm52ServingValidateDecodeResult(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    maximum_token_count = dispatch->kind ==
-        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH
-            ? dispatch->speculative_max_committed_token_count
-            : 1u;
+    maximum_token_count = 1u;
+    if (dispatch->kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+    {
+        maximum_token_count = dispatch->speculative_max_committed_token_count;
+    }
+    else if ((dispatch->flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u)
+    {
+        maximum_token_count = dispatch->mtp_draft_token_budget + 1u;
+    }
     if (maximum_token_count == 0u ||
         maximum_token_count > SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE)
     {
@@ -1061,10 +1068,34 @@ static SparkStatus SparkGlm52ServingValidateDecodeResult(
         }
         if (dispatch->kind !=
                 SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
+            (dispatch->flags &
+                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) == 0u &&
             decode_result->token_counts[lane_index] != 1u)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52ServingResolveMtpDecode(
+    SparkGlm52RequestApiDispatch *dispatch,
+    const SparkGlm52ServingDecodeResult *decode_result)
+{
+    uint32_t lane_index;
+
+    if (dispatch->kind != SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
+        (dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    for (lane_index = 0u;
+         lane_index < decode_result->lane_count;
+         ++lane_index)
+    {
+        dispatch->decode_committed_token_counts[lane_index] =
+            decode_result->token_counts[lane_index];
     }
     return SPARK_STATUS_OK;
 }
@@ -1358,6 +1389,11 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
         engine,
         dispatch,
         &decode_result);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ServingResolveMtpDecode(dispatch, &decode_result);
     if (status != SPARK_STATUS_OK)
     {
         return status;
