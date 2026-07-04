@@ -620,6 +620,10 @@ static uint32_t SparkGlm52RequestApiBatchBucketCapacityForSequenceCount(
     {
         return SPARK_GLM52_STAGE_PLAN_BUCKET_B64;
     }
+    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B128)
+    {
+        return SPARK_GLM52_STAGE_PLAN_BUCKET_B128;
+    }
     return 0u;
 }
 

@@ -183,7 +183,7 @@ publish: require_sm121a require_latency_limit require_fast_model_dir require_val
 	$(GLM52_VALIDATION_ENV) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 		--library $(MODULE_LIBRARY_ROOT) \
-		--module spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1 \
+		--module spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b128.rv256.mtp2.v1 \
 		--target cuda.sm121.glm52.resident_decode_stage.bf16 \
 		--link-unit $(MODULE_ARCHIVE) \
 		--recipe $(VALIDATION_RECIPE) \

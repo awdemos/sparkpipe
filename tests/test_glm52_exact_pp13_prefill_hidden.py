@@ -6,7 +6,7 @@ def test_final_stage_has_hidden_only_builtin_launcher(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_sm121_required_decode_stage.cu").read_text(
                   encoding="utf-8")
-    for bucket in (16, 32, 64):
+    for bucket in (16, 32, 64, 128):
         needle = (
             "SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY"
             f"(12u, {bucket}u, 0u)")

@@ -514,6 +514,30 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB64CostProfile(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52StagePlanLoadEstimatedB128CostProfile(
+    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t *final_stage_extra_cost_ns_out)
+{
+    uint32_t layer_index;
+    SparkStatus status;
+
+    status = SparkGlm52StagePlanLoadMeasuredB64CostProfile(
+        layer_cost_ns,
+        final_stage_extra_cost_ns_out);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    for (layer_index = 0u;
+         layer_index < SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
+         ++layer_index)
+    {
+        layer_cost_ns[layer_index] *= 2u;
+    }
+    *final_stage_extra_cost_ns_out *= 2u;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52StagePlanLoadMeasuredB32CostProfile(
     uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
@@ -624,6 +648,12 @@ SparkStatus SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
             layer_cost_ns,
             final_stage_extra_cost_ns_out);
     }
+    if (batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128)
+    {
+        return SparkGlm52StagePlanLoadEstimatedB128CostProfile(
+            layer_cost_ns,
+            final_stage_extra_cost_ns_out);
+    }
     if (batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B32 ||
         batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B16)
     {
@@ -725,7 +755,8 @@ SparkStatus SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
             "invalid measured stage-plan quantization mode");
     }
     if (measured_profile_id == SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701 &&
-        batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B64 &&
+        (batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B64 ||
+         batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128) &&
         (normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
          normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT))
     {
@@ -804,6 +835,11 @@ SparkStatus SparkGlm52StagePlanSelectBatchBucket(
     if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B64)
     {
         *bucket_out = SPARK_GLM52_STAGE_PLAN_BUCKET_B64;
+        return SPARK_STATUS_OK;
+    }
+    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B128)
+    {
+        *bucket_out = SPARK_GLM52_STAGE_PLAN_BUCKET_B128;
         return SPARK_STATUS_OK;
     }
     return SPARK_STATUS_CAPACITY_EXCEEDED;

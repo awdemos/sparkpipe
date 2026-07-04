@@ -6533,7 +6533,7 @@ static bool SparkValidationRunDriverOnce(
     status = SparkOrchestratorResolveRoute(
         orchestrator,
         "zai.glm-5.2.resident-decode-stage-firmware",
-        "bf16-h6144-h64-d512-r64-k2048-b64-rv256-mtp2-v1",
+        "bf16-h6144-h64-d512-r64-k2048-b128-rv256-mtp2-v1",
         "resident_decode",
         "decode",
         &route_handle);

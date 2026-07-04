@@ -257,7 +257,8 @@ static SparkStatus SparkGlm52SchedulerSelectDecodeBatchBucket(
     static const uint32_t candidate_buckets[] = {
         SPARK_GLM52_STAGE_PLAN_BUCKET_B16,
         SPARK_GLM52_STAGE_PLAN_BUCKET_B32,
-        SPARK_GLM52_STAGE_PLAN_BUCKET_B64
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B64,
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B128
     };
     uint64_t best_critical_path_ns;
     uint32_t best_bucket;

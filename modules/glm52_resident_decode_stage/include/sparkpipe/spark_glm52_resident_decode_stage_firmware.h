@@ -281,7 +281,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_WORKSPACE_ALIGNMENT_BYTES 256u
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MODULE_ID \
-    "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1"
+    "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b128.rv256.mtp2.v1"
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_TARGET \
     "cuda.sm121.glm52.resident_decode_stage.bf16"
 
