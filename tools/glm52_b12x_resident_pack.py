@@ -409,7 +409,7 @@ def retag_existing_pack_metadata(
         0,
         0,
     )
-    if prefix[:17] != fixed_prefix:
+    if prefix[:4] != fixed_prefix[:4] or prefix[5:17] != fixed_prefix[5:17]:
         raise PackFailure(f"cannot retag {output_path}: fixed header fields mismatch")
     if observed_regions != regions:
         raise PackFailure(f"cannot retag {output_path}: region layout mismatch")
@@ -831,6 +831,7 @@ def main() -> int:
     parser.add_argument("--aot-manifest", default="build/glm52_b12x_aot/generated/aot_manifest.json")
     parser.add_argument("--layers", default="3,4,5,6,7,8,9,10")
     parser.add_argument("--output-dir", default="build/glm52_b12x_resident_moe")
+    parser.add_argument("--maximum-token-count", type=int, default=0)
     parser.add_argument("--qualified-maximum-microseconds", type=int, default=0)
     parser.add_argument("--reuse-valid", action="store_true")
     parser.add_argument("--require-reuse", action="store_true")
@@ -848,6 +849,8 @@ def main() -> int:
         raise PackFailure(f"AOT manifest does not exist: {aot_manifest_path}")
 
     maximum_token_count, manifest_qualified_us, kernel_manifest_hash_low64 = read_aot_manifest(aot_manifest_path)
+    if args.maximum_token_count > 0:
+        maximum_token_count = args.maximum_token_count
     qualified_us = args.qualified_maximum_microseconds or manifest_qualified_us
     if qualified_us <= 0:
         raise PackFailure("qualified maximum microseconds must be positive")

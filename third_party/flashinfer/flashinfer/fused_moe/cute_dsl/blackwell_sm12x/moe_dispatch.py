@@ -1597,6 +1597,7 @@ def _get_dynamic_kernel(
     kernel: Any = MoEDynamicKernel(
         sf_vec_size=sf_vec_size,
         mma_tiler_mn=mma_tiler_mn,
+        output_tile_count_n=max(1, (n + mma_tiler_mn[1] - 1) // mma_tiler_mn[1]),
         input_scales_are_reciprocal=input_scales_are_reciprocal,
         fast_math=fast_math,
         activation=activation,

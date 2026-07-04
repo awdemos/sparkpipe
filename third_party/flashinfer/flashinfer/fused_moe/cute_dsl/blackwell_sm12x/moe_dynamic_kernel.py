@@ -276,6 +276,7 @@ class MoEDynamicKernel:
         self,
         sf_vec_size: int,
         mma_tiler_mn: Tuple[int, int],
+        output_tile_count_n: int,
         *,
         input_scales_are_reciprocal: bool = False,
         fast_math: bool = False,
@@ -292,6 +293,7 @@ class MoEDynamicKernel:
         self.activation = activation
         self.is_gated = activation == "silu"
         self.share_input_across_experts = share_input_across_experts
+        self.output_tile_count_n = output_tile_count_n
         tile_k = sf_vec_size * 8
         self.tile_shape_mnk = (mma_tiler_mn[0], mma_tiler_mn[1], tile_k)
         self.cluster_shape_mnk = (1, 1, 1)
