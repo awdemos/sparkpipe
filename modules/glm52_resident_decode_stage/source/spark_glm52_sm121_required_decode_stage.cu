@@ -5182,6 +5182,35 @@ static bool SparkGlm52ResidentDecodeStagePlanKindIsBlackwellQuantizedTensorCore(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_MXFP4_E2M1_ROW_MAJOR;
 }
 
+static bool SparkGlm52ResidentDecodeStageLinearPlanShapeIsRawAttentionProjection(
+    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan)
+{
+    if (linear_plan == 0)
+    {
+        return false;
+    }
+    return (linear_plan->input_dimension ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION &&
+            linear_plan->output_dimension ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION) ||
+        (linear_plan->input_dimension ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION &&
+            linear_plan->output_dimension ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION) ||
+        (linear_plan->input_dimension ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION &&
+            linear_plan->output_dimension ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION) ||
+        (linear_plan->input_dimension ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION &&
+            linear_plan->output_dimension ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION) ||
+        (linear_plan->input_dimension ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION &&
+            linear_plan->output_dimension ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION);
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedTensorCoreLinearPlan(
     const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
     const void *input,
@@ -5237,10 +5266,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     }
 
     sequence_tile_rows = SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M;
-    if (linear_plan->input_dimension ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION &&
-        linear_plan->output_dimension ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)
+    if (SparkGlm52ResidentDecodeStageLinearPlanShapeIsRawAttentionProjection(
+            linear_plan))
     {
         if (active_sequence_count > 32u)
         {

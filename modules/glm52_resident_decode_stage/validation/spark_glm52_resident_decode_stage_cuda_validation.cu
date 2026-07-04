@@ -15,6 +15,7 @@
 #include "spark_glm52_resident_decode_stage_backend.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_b12x_moe_plan.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
+#include "sparkpipe/spark_glm52_resident_decode_stage_required_cuda.h"
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_orchestrator.h"
 #include "sparkpipe/spark_status.h"
@@ -3401,6 +3402,52 @@ static bool SparkValidationRawAttentionFp8PlansAvailable(
         buffers->attention_output_weight_scale_inv_f32 != 0;
 }
 
+static bool SparkValidationBindRequiredQuantizedProjectionPlans(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t required_plan_mask,
+    uint32_t use_quantized_attention_plans)
+{
+    SparkGlm52ResidentDecodeStageLinearPlan *plans;
+    SparkStatus status;
+    uint32_t plan_count;
+
+    if ((required_plan_mask &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) == 0u ||
+        use_quantized_attention_plans == 0u)
+    {
+        return true;
+    }
+    if (buffers == 0 || buffers->linear_plan_binding == 0 ||
+        node_context == 0)
+    {
+        return false;
+    }
+    plans = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingMutablePlans(
+        buffers->linear_plan_binding,
+        &plan_count);
+    if (plans == 0 ||
+        plan_count < SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT)
+    {
+        fprintf(stderr, "resident tensor-core linear binder returned no mutable plans\n");
+        return false;
+    }
+    status = SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedProjectionPlans(
+        plans,
+        plan_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(
+            stderr,
+            "failed to bind required quantized Q/KV/O projection launcher status=%d\n",
+            (int)status);
+        return false;
+    }
+    node_context->linear_plans = plans;
+    node_context->linear_plan_count = plan_count;
+    return true;
+}
+
 static bool SparkValidationBindRequiredLinearPlans(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
@@ -3450,6 +3497,14 @@ static bool SparkValidationBindRequiredLinearPlans(
         {
             node_context->linear_plans = plans;
             node_context->linear_plan_count = plan_count;
+            if (!SparkValidationBindRequiredQuantizedProjectionPlans(
+                    buffers,
+                    node_context,
+                    required_plan_mask,
+                    use_quantized_attention_plans))
+            {
+                return false;
+            }
             if ((required_plan_mask &
                  (SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
                   SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
@@ -3627,6 +3682,15 @@ static bool SparkValidationBindRequiredLinearPlans(
     }
     node_context->linear_plans = plans;
     node_context->linear_plan_count = plan_count;
+    if (!SparkValidationBindRequiredQuantizedProjectionPlans(
+            buffers,
+            node_context,
+            required_plan_mask,
+            use_quantized_attention_plans))
+    {
+        SparkValidationReleaseLinearPlanBinding(buffers);
+        return false;
+    }
     initialized_plan_count = SparkValidationCountInitializedLinearPlans(
         plans,
         plan_count);
