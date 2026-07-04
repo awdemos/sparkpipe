@@ -7829,6 +7829,7 @@ static bool SparkValidationRunExactPp13StageSliceFromHidden(
     cudaStream_t cuda_stream,
     const char *model_directory,
     const char *pipeline_input_hidden_path,
+    SparkValidationRealLmHeadFixture *real_lm_head,
     uint32_t first_layer_index,
     uint32_t final_token_stage,
     uint32_t disable_graph_replay,
@@ -7915,12 +7916,26 @@ static bool SparkValidationRunExactPp13StageSliceFromHidden(
         {
             return false;
         }
+        if (real_lm_head == 0 || real_lm_head->ready == 0u)
+        {
+            fprintf(stderr, "exact PP13 final stage requires real lm_head fixture\n");
+            return false;
+        }
+        if (!SparkValidationCheckRealRestrictedLogits(
+                last_buffers,
+                real_lm_head,
+                selected_token_id))
+        {
+            return false;
+        }
         fprintf(
             stderr,
-            "exact_pp13_stage_slice_final_evidence restricted_token=%u mtp_draft=%u mtp_reject=%u built_in_final_epilogue=1\n",
+            "exact_pp13_stage_slice_final_evidence restricted_token=%u expected_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=1 real_lm_head_max_logit_error=%.8f built_in_final_epilogue=1\n",
             selected_token_id,
+            real_lm_head->expected_selected_token,
             mtp_draft_token_id,
-            mtp_reject_token_id);
+            mtp_reject_token_id,
+            real_lm_head->maximum_logit_error);
     }
     return true;
 }
@@ -8608,6 +8623,16 @@ int main(int argc, char **argv)
     {
         return 2;
     }
+    if (use_exact_pp13_stage_slice != 0u &&
+        use_exact_pp13_stage_slice_final != 0u &&
+        model_directory != 0 && model_directory[0] != '\0' &&
+        !SparkValidationLoadRealLmHeadFixture(
+            &buffers,
+            model_directory,
+            &real_lm_head))
+    {
+        return 2;
+    }
     SparkValidationConfigureNode(
         &buffers,
         cuda_stream,
@@ -8751,6 +8776,7 @@ int main(int argc, char **argv)
                 cuda_stream,
                 model_directory,
                 pipeline_input_hidden_path,
+                &real_lm_head,
                 routed_chain_first_layer_index,
                 use_exact_pp13_stage_slice_final,
                 disable_exact_pp13_graph_replay,
@@ -8844,7 +8870,7 @@ int main(int argc, char **argv)
             return 1;
         }
         printf(
-            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff exact_pp13_stage_slice=1 intermediate_stage=%u final_stage=%u stage_index=%u first_layer=%u layer_count=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u mtp_draft=%u mtp_reject=%u built_in_exact_pp13_aot=1 built_in_final_epilogue=%u layer_bodies=%llu b12x_moe_launches=%llu launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
+            "glm52_resident_decode_stage validation passed fixture=local_hidden_handoff exact_pp13_stage_slice=1 intermediate_stage=%u final_stage=%u stage_index=%u first_layer=%u layer_count=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f pipeline_input_hidden=%s pipeline_output_hidden=%s restricted_token=%u expected_token=%u mtp_draft=%u mtp_reject=%u real_lm_head=%u real_lm_head_max_logit_error=%.8f built_in_exact_pp13_aot=1 built_in_final_epilogue=%u layer_bodies=%llu b12x_moe_launches=%llu launch_chains=%llu graph_captures=%llu graph_replays=%llu\n",
             use_exact_pp13_stage_slice_final == 0u ? 1u : 0u,
             use_exact_pp13_stage_slice_final,
             routed_chain_first_layer_index /
@@ -8858,8 +8884,13 @@ int main(int argc, char **argv)
             pipeline_input_hidden_path,
             pipeline_output_hidden_path,
             selected_token_id,
+            real_lm_head.ready != 0u
+                ? real_lm_head.expected_selected_token
+                : SPARK_VALIDATION_EXPECTED_RESTRICTED_TOKEN,
             mtp_draft_token_id,
             mtp_reject_token_id,
+            real_lm_head.ready,
+            real_lm_head.maximum_logit_error,
             use_exact_pp13_stage_slice_final,
             (unsigned long long)layer_body_success_count,
             (unsigned long long)b12x_moe_success_count,

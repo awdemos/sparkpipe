@@ -4,13 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODEL_DIR="${GLM52_MODEL_DIR:-/home/spark2/models/hf/nvidia/GLM-5.2-NVFP4}"
 OUTPUT_DIR="${GLM52_ACCURACY_OUTPUT_DIR:-$ROOT/build/glm52_accuracy_gate}"
-INPUT_HIDDEN="${GLM52_ACCURACY_INPUT_HIDDEN_BF16:-/tmp/glm52_pipeline_sim/spark2local_layer0074.bf16}"
-B12X_PACK_DIR="${GLM52_B12X_MOE_PACK_DIR:-$ROOT/build/glm52_b12x_resident_moe_0075_0077_v3}"
+INPUT_HIDDEN="${GLM52_ACCURACY_INPUT_HIDDEN_BF16:-$ROOT/build/glm52_local_pipeline_gate/run1_after_layer_71.bf16}"
+B12X_PACK_DIR="${GLM52_B12X_MOE_PACK_DIR:-/home/spark2/sparkpipe_artifacts/glm52_b12x_resident_moe_all_v3}"
 REPEAT_COUNT="${GLM52_ACCURACY_REPEAT_COUNT:-3}"
 TRACE_BUFFERS="${GLM52_ACCURACY_TRACE_BUFFERS:-1}"
 MAX_STAGE_US="${GLM52_ACCURACY_MAX_STAGE_US:-1000000}"
 MAX_ABS_DIFF="${GLM52_ACCURACY_MAX_ABS_DIFF:-0.01}"
 MAX_MEAN_ABS_DIFF="${GLM52_ACCURACY_MAX_MEAN_ABS_DIFF:-0.001}"
+MAX_LOGIT_ERROR="${GLM52_ACCURACY_MAX_LOGIT_ERROR:-0.01}"
 REQUIRE_BIT_STABLE="${GLM52_ACCURACY_REQUIRE_BIT_STABLE:-1}"
 NVCC_BIN="${NVCC:-/usr/local/cuda/bin/nvcc}"
 CUDA_ARCH_VALUE="${CUDA_ARCH:-sm_121a}"
@@ -35,7 +36,17 @@ if [ ! -d "$MODEL_DIR" ]; then
     exit 3
 fi
 if [ ! -f "$INPUT_HIDDEN" ]; then
-    echo "missing final-stage input hidden: $INPUT_HIDDEN" >&2
+    echo "missing exact-PP13 final-stage input hidden, running local pipeline gate once: $INPUT_HIDDEN" >&2
+    GLM52_MODEL_DIR="$MODEL_DIR" \
+    GLM52_B12X_MOE_PACK_DIR="$B12X_PACK_DIR" \
+    GLM52_ENABLE_CUDA_GRAPH_REPLAY=1 \
+    GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT=1 \
+    NVCC="$NVCC_BIN" \
+    CUDA_ARCH="$CUDA_ARCH_VALUE" \
+        bash "$ROOT/tools/glm52_spark2_local_pipeline_gate.sh" >&2
+fi
+if [ ! -f "$INPUT_HIDDEN" ]; then
+    echo "missing exact-PP13 final-stage input hidden after local pipeline gate: $INPUT_HIDDEN" >&2
     exit 4
 fi
 if [ ! -d "$B12X_PACK_DIR" ]; then
@@ -55,29 +66,14 @@ LINK_ARGS="$B12X_ADAPTER $B12X_BACKEND $B12X_TABLE $(cat "$LINK_ARGS_FILE")"
 echo "accuracy_gate_model_dir=$MODEL_DIR"
 echo "accuracy_gate_input_hidden=$INPUT_HIDDEN"
 echo "accuracy_gate_output_dir=$OUTPUT_DIR"
+echo "accuracy_gate_final_stage=72:6"
+echo "accuracy_gate_graph_replay=required"
 echo "accuracy_gate_max_abs_diff=$MAX_ABS_DIFF"
 echo "accuracy_gate_max_mean_abs_diff=$MAX_MEAN_ABS_DIFF"
-
-GLM52_REQUIRED_CUDA_LINK_ARGS="$LINK_ARGS" \
-GLM52_B12X_MOE_PACK_DIR="$B12X_PACK_DIR" \
-GLM52_MODEL_DIR="$MODEL_DIR" \
-GLM52_INPUT_TOKEN_ID=1037 \
-GLM52_LOAD_LAYER0_ATTENTION_BF16=1 \
-GLM52_LOAD_LAYER0_DENSE_BF16=1 \
-GLM52_PREFILL_KV_FROM_EMBEDDINGS=1 \
-GLM52_CHECK_LAYER0_FULL_REFERENCE=1 \
-GLM52_ENABLE_CUDA_GRAPH_REPLAY=0 \
-GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT=1 \
-NVCC="$NVCC_BIN" \
-CUDA_ARCH="$CUDA_ARCH_VALUE" \
-"$VALIDATOR" "$MAX_STAGE_US" "$MODULE" "$DRIVER" \
-    >"$OUTPUT_DIR/dense_reference.log" 2>&1
-
-grep -E "layer0_reference_full=1|real_lm_head=1" "$OUTPUT_DIR/dense_reference.log" >/dev/null
-echo "accuracy_gate_dense_reference=passed"
-grep -E "layer0_reference_full_max_error|real_lm_head_max_logit_error" "$OUTPUT_DIR/dense_reference.log" | tail -1
+echo "accuracy_gate_max_logit_error=$MAX_LOGIT_ERROR"
 
 rm -f "$OUTPUT_DIR"/final_repeat_*.bf16 "$OUTPUT_DIR"/final_repeat_*.log "$OUTPUT_DIR"/final_repeat.sha256 "$OUTPUT_DIR"/final_repeat.tokens
+rm -f "$OUTPUT_DIR"/final_repeat.logits
 
 for repeat_index in $(seq 1 "$REPEAT_COUNT"); do
     output_hidden="$OUTPUT_DIR/final_repeat_${repeat_index}.bf16"
@@ -85,11 +81,12 @@ for repeat_index in $(seq 1 "$REPEAT_COUNT"); do
     GLM52_REQUIRED_CUDA_LINK_ARGS="$LINK_ARGS" \
     GLM52_B12X_MOE_PACK_DIR="$B12X_PACK_DIR" \
     GLM52_MODEL_DIR="$MODEL_DIR" \
-    GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX=75 \
-    GLM52_ROUTED_CHAIN_LAYER_COUNT=3 \
-    GLM52_ENABLE_CUDA_GRAPH_REPLAY=0 \
+    GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX=72 \
+    GLM52_ROUTED_CHAIN_LAYER_COUNT=6 \
+    GLM52_ENABLE_CUDA_GRAPH_REPLAY=1 \
     GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT=1 \
-    GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN=1 \
+    GLM52_EXACT_PP13_STAGE_SLICE=1 \
+    GLM52_EXACT_PP13_STAGE_SLICE_FINAL_TOKEN=1 \
     GLM52_ACCURACY_TRACE_BUFFERS="$TRACE_BUFFERS" \
     GLM52_PIPELINE_INPUT_HIDDEN_BF16="$INPUT_HIDDEN" \
     GLM52_PIPELINE_OUTPUT_HIDDEN_BF16="$output_hidden" \
@@ -97,7 +94,32 @@ for repeat_index in $(seq 1 "$REPEAT_COUNT"); do
     CUDA_ARCH="$CUDA_ARCH_VALUE" \
 	    "$VALIDATOR" "$MAX_STAGE_US" "$MODULE" "$DRIVER" \
 	        >"$output_log" 2>&1
-	    grep -E "routed_pipeline_from_hidden_final=1|restricted_token=|real_lm_head_max_logit_error" "$output_log" | tail -1
+	    pass_line="$(grep -E "^glm52_resident_decode_stage validation passed.*exact_pp13_stage_slice=1.*final_stage=1" "$output_log" | tail -1 || true)"
+	    if [ -z "$pass_line" ]; then
+	        echo "accuracy_gate_exact_final=failed repeat=$repeat_index log=$output_log" >&2
+	        tail -80 "$output_log" >&2 || true
+	        exit 12
+	    fi
+	    printf "%s\n" "$pass_line"
+	    if ! printf "%s\n" "$pass_line" | grep -E "real_lm_head=1" >/dev/null; then
+	        echo "accuracy_gate_real_lm_head=failed repeat=$repeat_index" >&2
+	        exit 13
+	    fi
+	    graph_replays="$(printf "%s\n" "$pass_line" | sed -n 's/.*graph_replays=\([0-9][0-9]*\).*/\1/p')"
+	    if [ -z "$graph_replays" ] || [ "$graph_replays" = "0" ]; then
+	        echo "accuracy_gate_graph_replay=failed repeat=$repeat_index graph_replays=${graph_replays:-missing}" >&2
+	        exit 14
+	    fi
+	    logit_error="$(printf "%s\n" "$pass_line" | sed -n 's/.*real_lm_head_max_logit_error=\([^ ]*\).*/\1/p')"
+	    if [ -z "$logit_error" ]; then
+	        echo "accuracy_gate_real_lm_head_logit_error=missing repeat=$repeat_index" >&2
+	        exit 15
+	    fi
+	    if ! awk -v value="$logit_error" -v limit="$MAX_LOGIT_ERROR" 'BEGIN { exit(value <= limit ? 0 : 1) }'; then
+	        echo "accuracy_gate_real_lm_head_logit_error=failed repeat=$repeat_index value=$logit_error limit=$MAX_LOGIT_ERROR" >&2
+	        exit 16
+	    fi
+	    printf "%s\n" "$logit_error" >>"$OUTPUT_DIR/final_repeat.logits"
 	    sed -n 's/.*restricted_token=\([0-9][0-9]*\).*/\1/p' "$output_log" | tail -1 >>"$OUTPUT_DIR/final_repeat.tokens"
 	    sha256sum "$output_hidden" >>"$OUTPUT_DIR/final_repeat.sha256"
 done
@@ -111,6 +133,7 @@ if [ "$unique_token_count" != "1" ]; then
 	exit 7
 fi
 echo "accuracy_gate_restricted_token_stability=passed token=$(head -1 "$OUTPUT_DIR/final_repeat.tokens")"
+echo "accuracy_gate_real_lm_head_logit_error=passed max=$(sort -nr "$OUTPUT_DIR/final_repeat.logits" | head -1) limit=$MAX_LOGIT_ERROR"
 if [ "$unique_hash_count" != "1" ]; then
 	    if [ "$TRACE_BUFFERS" != "0" ] && [ "$REPEAT_COUNT" -ge 2 ]; then
         awk '
