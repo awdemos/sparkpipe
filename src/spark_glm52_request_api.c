@@ -4684,6 +4684,87 @@ SparkStatus SparkGlm52RequestApiCopyPrefillDispatchTokenIds(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkGlm52RequestApiDescribeDecodeDispatch(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiDispatch *dispatch,
+    SparkGlm52RequestApiDecodeDispatchView *decode_view)
+{
+    uint32_t lane_index;
+    SparkStatus status;
+
+    if (decode_view == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(decode_view, 0, sizeof(*decode_view));
+
+    status = SparkGlm52RequestApiValidate(api);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+
+    if (dispatch == 0 ||
+        dispatch->abi_version != SPARK_GLM52_REQUEST_API_ABI_VERSION ||
+        dispatch->descriptor_bytes !=
+            SPARK_GLM52_REQUEST_API_DISPATCH_DESCRIPTOR_BYTES ||
+        dispatch->accepted == 0u ||
+        (dispatch->kind != SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
+         dispatch->kind !=
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH) ||
+        dispatch->request_count == 0u ||
+        dispatch->request_count > SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    decode_view->abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
+    decode_view->descriptor_bytes =
+        SPARK_GLM52_REQUEST_API_DECODE_DISPATCH_VIEW_DESCRIPTOR_BYTES;
+    decode_view->kind = dispatch->kind;
+    decode_view->active_sequence_count = dispatch->request_count;
+    decode_view->lane_count = dispatch->request_count;
+    decode_view->speculative_token_count = dispatch->speculative_token_count;
+    for (lane_index = 0u;
+         lane_index < dispatch->request_count;
+         ++lane_index)
+    {
+        SparkGlm52RequestApiSlot *slot;
+        SparkGlm52RequestApiDecodeDispatchLaneView *lane;
+        uint64_t sequence_position;
+
+        slot = SparkGlm52RequestApiFindSlotByHandle(
+            api,
+            dispatch->request_handles[lane_index]);
+        if (slot == 0 ||
+            slot->computed_prompt_token_count == 0u ||
+            (slot->state != SPARK_GLM52_REQUEST_API_STATE_RUNNING_DECODE &&
+             slot->state !=
+                SPARK_GLM52_REQUEST_API_STATE_RUNNING_SPECULATIVE_VERIFY))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+
+        sequence_position =
+            (uint64_t)slot->computed_prompt_token_count +
+            (uint64_t)slot->completed_decode_token_count;
+        if (sequence_position > UINT32_MAX - 1u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+
+        lane = &decode_view->lanes[lane_index];
+        lane->request_index = lane_index;
+        lane->sequence_position = (uint32_t)sequence_position;
+        lane->context_token_count = (uint32_t)(sequence_position + 1u);
+        lane->request_id = slot->request_id;
+        lane->sequence_id = slot->sequence_id;
+        lane->request_handle = slot->handle;
+    }
+
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkGlm52RequestApiBuildDispatchKvBlockTables(
     SparkGlm52RequestApi *api,
     const SparkGlm52RequestApiDispatch *dispatch,

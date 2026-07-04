@@ -206,6 +206,8 @@ typedef struct SparkGlm52ServingDecodeDispatch
     uint32_t reserved2;
     const SparkGlm52RequestApiDispatch *request_dispatch;
     const SparkGlm52KvBlockTableView *kv_block_table_view;
+    const SparkGlm52RequestApiDecodeDispatchView *decode_view;
+    uint32_t input_token_ids[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
 } SparkGlm52ServingDecodeDispatch;
 
 typedef struct SparkGlm52ServingDecodeResult

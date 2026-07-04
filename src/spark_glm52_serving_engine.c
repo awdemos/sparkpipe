@@ -954,8 +954,10 @@ static SparkStatus SparkGlm52ServingBuildDecodeDispatch(
     SparkGlm52ServingEngine *engine,
     const SparkGlm52RequestApiDispatch *dispatch,
     SparkGlm52KvBlockTableView *block_table_view,
+    SparkGlm52RequestApiDecodeDispatchView *decode_view,
     SparkGlm52ServingDecodeDispatch *decode_dispatch)
 {
+    uint32_t lane_index;
     SparkStatus status;
 
     status = SparkGlm52RequestApiBuildDispatchKvBlockTableView(
@@ -973,6 +975,15 @@ static SparkStatus SparkGlm52ServingBuildDecodeDispatch(
         return status;
     }
 
+    status = SparkGlm52RequestApiDescribeDecodeDispatch(
+        engine->request_api,
+        dispatch,
+        decode_view);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+
     memset(decode_dispatch, 0, sizeof(*decode_dispatch));
     decode_dispatch->abi_version = SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
     decode_dispatch->descriptor_bytes =
@@ -982,6 +993,29 @@ static SparkStatus SparkGlm52ServingBuildDecodeDispatch(
     decode_dispatch->active_sequence_count = block_table_view->lane_count;
     decode_dispatch->request_dispatch = dispatch;
     decode_dispatch->kv_block_table_view = block_table_view;
+    decode_dispatch->decode_view = decode_view;
+    for (lane_index = 0u;
+         lane_index < decode_view->lane_count;
+         ++lane_index)
+    {
+        SparkGlm52ServingRequestRecord *record;
+        uint32_t input_token_index;
+
+        record = SparkGlm52ServingFindRecordByHandle(
+            engine,
+            dispatch->request_handles[lane_index]);
+        if (record == 0 ||
+            record->prompt_token_count == 0u ||
+            record->prompt_token_count + record->streamed_decode_token_count >
+                record->token_capacity)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        input_token_index =
+            record->prompt_token_count + record->streamed_decode_token_count - 1u;
+        decode_dispatch->input_token_ids[lane_index] =
+            record->token_ids[input_token_index];
+    }
     return SPARK_STATUS_OK;
 }
 
@@ -1121,6 +1155,15 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
             SparkGlm52ServingEvent event;
 
             token_id = decode_result->token_ids[lane_index][token_index];
+            if (record->prompt_token_count + record->streamed_decode_token_count +
+                    token_index >= record->token_capacity)
+            {
+                return SPARK_STATUS_CAPACITY_EXCEEDED;
+            }
+            record->token_ids[
+                record->prompt_token_count +
+                record->streamed_decode_token_count +
+                token_index] = token_id;
             if (SparkGlm52ServingTokenIsStopToken(engine, token_id))
             {
                 lane_finish = 1u;
@@ -1274,6 +1317,7 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     SparkGlm52RequestApiDispatch *dispatch)
 {
     SparkGlm52KvBlockTableView block_table_view;
+    SparkGlm52RequestApiDecodeDispatchView decode_view;
     SparkGlm52ServingDecodeDispatch decode_dispatch;
     SparkGlm52ServingDecodeResult decode_result;
     SparkGlm52ServingRequestHandle finish_handles[
@@ -1285,6 +1329,7 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
         engine,
         dispatch,
         &block_table_view,
+        &decode_view,
         &decode_dispatch);
     if (status != SPARK_STATUS_OK)
     {
