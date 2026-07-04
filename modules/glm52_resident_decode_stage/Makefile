@@ -31,6 +31,7 @@ CUDA_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda.o
 REQUIRED_STAGE_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_sm121_required_decode_stage.o
 B12X_MOE_PLAN_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_b12x_moe_plan.o
 LINEAR_PLAN_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_linear_plan.o
+SERVING_ADAPTER_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_serving_adapter.o
 MODULE_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_resident_decode_stage.a
 ARTIFACT_CHECK_TOOL := $(BUILD_DIRECTORY)/glm52_artifact_check
 PACKAGE_DIRECTORY ?= $(REPOSITORY_ROOT)/build/packages/glm52_resident_decode_stage
@@ -44,6 +45,7 @@ CUDA_DEPENDENCY := $(CUDA_OBJECT:.o=.d)
 REQUIRED_STAGE_DEPENDENCY := $(REQUIRED_STAGE_OBJECT:.o=.d)
 B12X_MOE_PLAN_DEPENDENCY := $(B12X_MOE_PLAN_OBJECT:.o=.d)
 LINEAR_PLAN_DEPENDENCY := $(LINEAR_PLAN_OBJECT:.o=.d)
+SERVING_ADAPTER_DEPENDENCY := $(SERVING_ADAPTER_OBJECT:.o=.d)
 
 .PHONY: archive cold_archive artifact_check b12x_resident_pack validate publish package clean require_sm121a require_latency_limit require_model_dir require_fast_model_dir require_validation_inputs prepare_validation_output
 
@@ -125,7 +127,11 @@ $(LINEAR_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_linear_plan.cu |
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT) $(REQUIRED_STAGE_OBJECT) $(B12X_MOE_PLAN_OBJECT) $(LINEAR_PLAN_OBJECT)
+$(SERVING_ADAPTER_OBJECT): source/spark_glm52_resident_decode_stage_serving_adapter.cu | $(BUILD_DIRECTORY)
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
+		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
+
+$(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT) $(REQUIRED_STAGE_OBJECT) $(B12X_MOE_PLAN_OBJECT) $(LINEAR_PLAN_OBJECT) $(SERVING_ADAPTER_OBJECT)
 	rm -f $@
 	$(AR) rcs $@ $^
 
@@ -177,7 +183,7 @@ publish: require_sm121a require_latency_limit require_fast_model_dir require_val
 	$(GLM52_VALIDATION_ENV) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 		--library $(MODULE_LIBRARY_ROOT) \
-		--module spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b64.rv256.mtp2.v1 \
+		--module spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b128.rv256.mtp2.v1 \
 		--target cuda.sm121.glm52.resident_decode_stage.bf16 \
 		--link-unit $(MODULE_ARCHIVE) \
 		--recipe $(VALIDATION_RECIPE) \
@@ -231,4 +237,4 @@ package: publish
 clean:
 	rm -rf $(BUILD_DIRECTORY)
 
--include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(REQUIRED_STAGE_DEPENDENCY) $(B12X_MOE_PLAN_DEPENDENCY) $(LINEAR_PLAN_DEPENDENCY)
+-include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(REQUIRED_STAGE_DEPENDENCY) $(B12X_MOE_PLAN_DEPENDENCY) $(LINEAR_PLAN_DEPENDENCY) $(SERVING_ADAPTER_DEPENDENCY)

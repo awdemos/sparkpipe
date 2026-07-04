@@ -39,6 +39,12 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS 32u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_WARPS 8u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_THREADS \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_WARPS * 32u)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_WARPS * \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_FUSED_MAX_SCALE_BLOCKS 1024u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REFERENCE_WORKSPACE_BUFFER_COUNT 3u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_ACTIVATION_LINEAR_WORKSPACE_ALIGNMENT_BYTES 256ull
@@ -814,229 +820,6 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageQuantizedLi
             ((const uint8_t *)weight_scale)[scale_index]);
 }
 
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
-void SparkGlm52ResidentDecodeStageQuantizedLinearBf16Kernel(
-    const uint16_t *__restrict__ input_bf16,
-    const uint8_t *__restrict__ weight_payload,
-    const void *__restrict__ weight_scale,
-    uint16_t *__restrict__ output_bf16,
-    uint32_t active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t weight_format,
-    uint32_t scale_block_size)
-{
-    __shared__ float shared_reduction[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    uint32_t output_index;
-    uint32_t sequence_index;
-    uint32_t input_index;
-    float local_sum;
-    float row_sum;
-
-    output_index = blockIdx.x;
-    sequence_index = blockIdx.y;
-    if (sequence_index >= active_sequence_count ||
-        output_index >= output_dimension)
-    {
-        return;
-    }
-
-    local_sum = 0.0f;
-    for (input_index = threadIdx.x;
-         input_index < input_dimension;
-         input_index += blockDim.x)
-    {
-        float activation_value;
-        float weight_value;
-
-        activation_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-            input_bf16[
-                ((uint64_t)sequence_index * (uint64_t)input_dimension) +
-                (uint64_t)input_index]);
-        weight_value = SparkGlm52ResidentDecodeStageQuantizedLinearWeightToFloat(
-            weight_payload,
-            weight_scale,
-            weight_format,
-            scale_block_size,
-            input_dimension,
-            output_index,
-            input_index);
-        local_sum += activation_value * weight_value;
-    }
-
-    row_sum = SparkGlm52ResidentDecodeStageBlockReduceSum(
-        local_sum,
-        shared_reduction);
-    if (threadIdx.x == 0u)
-    {
-        output_bf16[
-            ((uint64_t)sequence_index * (uint64_t)output_dimension) +
-            (uint64_t)output_index] =
-            SparkGlm52ResidentDecodeStageFloatToBf16(row_sum);
-    }
-}
-
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
-void SparkGlm52ResidentDecodeStageQuantizedLinearF32Kernel(
-    const uint16_t *__restrict__ input_bf16,
-    const uint8_t *__restrict__ weight_payload,
-    const void *__restrict__ weight_scale,
-    float *__restrict__ output_f32,
-    uint32_t active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t weight_format,
-    uint32_t scale_block_size)
-{
-    __shared__ float shared_reduction[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    uint32_t output_index;
-    uint32_t sequence_index;
-    uint32_t input_index;
-    float local_sum;
-    float row_sum;
-
-    output_index = blockIdx.x;
-    sequence_index = blockIdx.y;
-    if (sequence_index >= active_sequence_count ||
-        output_index >= output_dimension)
-    {
-        return;
-    }
-
-    local_sum = 0.0f;
-    for (input_index = threadIdx.x;
-         input_index < input_dimension;
-         input_index += blockDim.x)
-    {
-        float activation_value;
-        float weight_value;
-
-        activation_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-            input_bf16[
-                ((uint64_t)sequence_index * (uint64_t)input_dimension) +
-                (uint64_t)input_index]);
-        weight_value = SparkGlm52ResidentDecodeStageQuantizedLinearWeightToFloat(
-            weight_payload,
-            weight_scale,
-            weight_format,
-            scale_block_size,
-            input_dimension,
-            output_index,
-            input_index);
-        local_sum += activation_value * weight_value;
-    }
-
-    row_sum = SparkGlm52ResidentDecodeStageBlockReduceSum(
-        local_sum,
-        shared_reduction);
-    if (threadIdx.x == 0u)
-    {
-        output_f32[
-            ((uint64_t)sequence_index * (uint64_t)output_dimension) +
-            (uint64_t)output_index] = row_sum;
-    }
-}
-
-
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
-void SparkGlm52ResidentDecodeStageFp8ActivationWeightLinearReferenceKernel(
-    const uint8_t *__restrict__ activation_fp8_e4m3,
-    const float *__restrict__ activation_scale_f32,
-    const uint8_t *__restrict__ weight_fp8_e4m3,
-    const float *__restrict__ weight_scale_inv_f32,
-    void *__restrict__ output,
-    uint32_t active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t scale_block_size,
-    uint32_t output_is_f32)
-{
-    __shared__ float shared_reduction[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    uint32_t output_index;
-    uint32_t sequence_index;
-    uint32_t input_index;
-    uint32_t input_scale_block_count;
-    uint64_t activation_scale_row_offset;
-    uint64_t weight_scale_row_offset;
-    float local_sum;
-    float row_sum;
-
-    output_index = blockIdx.x;
-    sequence_index = blockIdx.y;
-    if (sequence_index >= active_sequence_count ||
-        output_index >= output_dimension ||
-        scale_block_size == 0u)
-    {
-        return;
-    }
-
-    input_scale_block_count =
-        (input_dimension + scale_block_size - 1u) / scale_block_size;
-    activation_scale_row_offset =
-        (uint64_t)sequence_index * (uint64_t)input_scale_block_count;
-    weight_scale_row_offset =
-        (uint64_t)(output_index / scale_block_size) *
-        (uint64_t)input_scale_block_count;
-
-    local_sum = 0.0f;
-    for (input_index = threadIdx.x;
-         input_index < input_dimension;
-         input_index += blockDim.x)
-    {
-        uint32_t input_scale_block_index;
-        uint64_t activation_index;
-        uint64_t weight_index;
-        float activation_value;
-        float weight_value;
-
-        input_scale_block_index = input_index / scale_block_size;
-        activation_index =
-            ((uint64_t)sequence_index * (uint64_t)input_dimension) +
-            (uint64_t)input_index;
-        weight_index =
-            ((uint64_t)output_index * (uint64_t)input_dimension) +
-            (uint64_t)input_index;
-
-        activation_value =
-            SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
-                activation_fp8_e4m3[activation_index]) *
-            activation_scale_f32[
-                activation_scale_row_offset +
-                (uint64_t)input_scale_block_index];
-        weight_value =
-            SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
-                weight_fp8_e4m3[weight_index]) *
-            weight_scale_inv_f32[
-                weight_scale_row_offset +
-                (uint64_t)input_scale_block_index];
-        local_sum += activation_value * weight_value;
-    }
-
-    row_sum = SparkGlm52ResidentDecodeStageBlockReduceSum(
-        local_sum,
-        shared_reduction);
-    if (threadIdx.x == 0u)
-    {
-        uint64_t output_offset;
-
-        output_offset =
-            ((uint64_t)sequence_index * (uint64_t)output_dimension) +
-            (uint64_t)output_index;
-        if (output_is_f32 != 0u)
-        {
-            ((float *)output)[output_offset] = row_sum;
-        }
-        else
-        {
-            ((uint16_t *)output)[output_offset] =
-                SparkGlm52ResidentDecodeStageFloatToBf16(row_sum);
-        }
-    }
-}
-
 static __global__ __launch_bounds__(
     SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS, 4)
 void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearKernel(
@@ -1244,10 +1027,9 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearKernel(
 #endif
 }
 
-template <uint32_t SequenceTileRows,uint32_t OutputTileColumns>
 static __global__ __launch_bounds__(
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS, 4)
-void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_THREADS, 2)
+void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearBatchKernel(
     const uint16_t *__restrict__ input_bf16,
     const uint8_t *__restrict__ weight_payload,
     const void *__restrict__ weight_scale,
@@ -1260,30 +1042,26 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
     uint32_t output_is_f32)
 {
 #if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ >= 800)
-    constexpr uint32_t row_fragment_count =
-        SequenceTileRows /
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M;
-    constexpr uint32_t column_fragment_count =
-        OutputTileColumns /
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
     __shared__ __nv_bfloat16 shared_input_tile[
-        SequenceTileRows *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K];
     __shared__ __nv_bfloat16 shared_weight_tile[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K *
-        OutputTileColumns];
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N];
     __shared__ float shared_output_tile[
-        SequenceTileRows *
-        OutputTileColumns];
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N];
     uint32_t sequence_tile_begin;
     uint32_t output_tile_begin;
     uint32_t tile_element_index;
     uint32_t input_tile_begin;
-    uint32_t row_fragment_index;
-    uint32_t column_fragment_index;
+    uint32_t warp_index;
 
-    sequence_tile_begin = blockIdx.y * SequenceTileRows;
-    output_tile_begin = blockIdx.x * OutputTileColumns;
+    sequence_tile_begin = blockIdx.y *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS;
+    output_tile_begin = blockIdx.x *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
+    warp_index = threadIdx.x / 32u;
 
     nvcuda::wmma::fragment<
         nvcuda::wmma::matrix_a,
@@ -1291,44 +1069,29 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K,
         __nv_bfloat16,
-        nvcuda::wmma::row_major> input_fragment[row_fragment_count];
+        nvcuda::wmma::row_major> input_fragment;
     nvcuda::wmma::fragment<
         nvcuda::wmma::matrix_b,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K,
         __nv_bfloat16,
-        nvcuda::wmma::col_major> weight_fragment[column_fragment_count];
+        nvcuda::wmma::col_major> weight_fragment;
     nvcuda::wmma::fragment<
         nvcuda::wmma::accumulator,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K,
-        float> accumulator_fragment[
-            row_fragment_count * column_fragment_count];
+        float> accumulator_fragment;
 
-    for (row_fragment_index = 0u;
-         row_fragment_index < row_fragment_count;
-         ++row_fragment_index)
-    {
-        for (column_fragment_index = 0u;
-             column_fragment_index < column_fragment_count;
-             ++column_fragment_index)
-        {
-            nvcuda::wmma::fill_fragment(
-                accumulator_fragment[
-                    (row_fragment_index * column_fragment_count) +
-                    column_fragment_index],
-                0.0f);
-        }
-    }
+    nvcuda::wmma::fill_fragment(accumulator_fragment, 0.0f);
     for (input_tile_begin = 0u;
          input_tile_begin < input_dimension;
          input_tile_begin += SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K)
     {
         for (tile_element_index = threadIdx.x;
              tile_element_index <
-                SequenceTileRows *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K;
              tile_element_index += blockDim.x)
         {
@@ -1360,7 +1123,7 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
         for (tile_element_index = threadIdx.x;
              tile_element_index <
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K *
-                OutputTileColumns;
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
              tile_element_index += blockDim.x)
         {
             uint32_t local_input_index;
@@ -1397,75 +1160,39 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
         }
         __syncthreads();
 
-        for (column_fragment_index = 0u;
-             column_fragment_index < column_fragment_count;
-             ++column_fragment_index)
-        {
-            nvcuda::wmma::load_matrix_sync(
-                weight_fragment[column_fragment_index],
-                &shared_weight_tile[
-                    column_fragment_index *
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N *
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K],
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
-        }
-        for (row_fragment_index = 0u;
-             row_fragment_index < row_fragment_count;
-             ++row_fragment_index)
-        {
-            nvcuda::wmma::load_matrix_sync(
-                input_fragment[row_fragment_index],
-                &shared_input_tile[
-                    row_fragment_index *
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K],
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
-            for (column_fragment_index = 0u;
-                 column_fragment_index < column_fragment_count;
-                 ++column_fragment_index)
-            {
-                nvcuda::wmma::mma_sync(
-                    accumulator_fragment[
-                        (row_fragment_index * column_fragment_count) +
-                        column_fragment_index],
-                    input_fragment[row_fragment_index],
-                    weight_fragment[column_fragment_index],
-                    accumulator_fragment[
-                        (row_fragment_index * column_fragment_count) +
-                        column_fragment_index]);
-            }
-        }
+        nvcuda::wmma::load_matrix_sync(
+            input_fragment,
+            shared_input_tile +
+                (warp_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K),
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
+        nvcuda::wmma::load_matrix_sync(
+            weight_fragment,
+            shared_weight_tile,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_K);
+        nvcuda::wmma::mma_sync(
+            accumulator_fragment,
+            input_fragment,
+            weight_fragment,
+            accumulator_fragment);
         __syncthreads();
     }
 
-    for (row_fragment_index = 0u;
-         row_fragment_index < row_fragment_count;
-         ++row_fragment_index)
-    {
-        for (column_fragment_index = 0u;
-             column_fragment_index < column_fragment_count;
-             ++column_fragment_index)
-        {
-            nvcuda::wmma::store_matrix_sync(
-                &shared_output_tile[
-                    (row_fragment_index *
-                     SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
-                     OutputTileColumns) +
-                    (column_fragment_index *
-                     SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N)],
-                accumulator_fragment[
-                    (row_fragment_index * column_fragment_count) +
-                    column_fragment_index],
-                OutputTileColumns,
-                nvcuda::wmma::mem_row_major);
-        }
-    }
+    nvcuda::wmma::store_matrix_sync(
+        shared_output_tile +
+            (warp_index *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N),
+        accumulator_fragment,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+        nvcuda::wmma::mem_row_major);
     __syncthreads();
 
     for (tile_element_index = threadIdx.x;
          tile_element_index <
-            SequenceTileRows *
-            OutputTileColumns;
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS *
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
          tile_element_index += blockDim.x)
     {
         uint32_t local_sequence_index;
@@ -1476,9 +1203,10 @@ void SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel(
         float output_value;
 
         local_sequence_index = tile_element_index /
-            OutputTileColumns;
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N;
         local_output_index = tile_element_index -
-            (local_sequence_index * OutputTileColumns);
+            (local_sequence_index *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N);
         sequence_index = sequence_tile_begin + local_sequence_index;
         output_index = output_tile_begin + local_output_index;
         if (sequence_index >= active_sequence_count ||
@@ -2111,18 +1839,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeigh
         linear_plan->algorithm;
     if (backend == 0)
     {
-        return SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3PreparedActivationWeightLinearReference(
-            activation_fp8_e4m3,
-            activation_scale_f32,
-            (const uint8_t *)quantized_view->weight_payload,
-            (const float *)quantized_view->weight_scale,
-            output,
-            active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            quantized_view->scale_block_size,
-            linear_plan->output_is_f32,
-            cuda_stream);
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
     status = SparkGlm52ResidentDecodeStageValidateFp8ScaledGemmBackend(
@@ -2180,450 +1897,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeigh
     arguments.opaque_state = backend->opaque_state;
     arguments.cuda_stream = cuda_stream;
     return backend->launch_function(&arguments);
-}
-
-static __global__ void SparkGlm52ResidentDecodeStageFp8LinearDebugStatsResetKernel(
-    SparkGlm52Sm121RequiredDecodeStageFp8LinearDebugStats *stats,
-    uint32_t compared_element_count)
-{
-    if (threadIdx.x == 0u && blockIdx.x == 0u)
-    {
-        stats->abi_version =
-            SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_LINEAR_DEBUG_STATS_ABI_VERSION;
-        stats->status_flags = 0u;
-        stats->compared_element_count = compared_element_count;
-        stats->exceeded_element_count = 0u;
-        stats->max_abs_error_bits = 0u;
-        stats->max_relative_error_bits = 0u;
-        stats->reserved0 = 0u;
-        stats->reserved1 = 0u;
-    }
-}
-
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
-void SparkGlm52ResidentDecodeStageFp8PreparedLinearDebugCompareKernel(
-    const uint8_t *__restrict__ activation_fp8_e4m3,
-    const float *__restrict__ activation_scale_f32,
-    const uint8_t *__restrict__ weight_fp8_e4m3,
-    const float *__restrict__ weight_scale_inv_f32,
-    const void *__restrict__ candidate_output,
-    SparkGlm52Sm121RequiredDecodeStageFp8LinearDebugStats *__restrict__ stats,
-    uint32_t active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t scale_block_size,
-    uint32_t candidate_output_is_f32,
-    float absolute_error_limit,
-    float relative_error_limit)
-{
-    __shared__ float shared_reduction[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    uint32_t linear_output_index;
-    uint32_t sequence_index;
-    uint32_t output_index;
-    uint32_t input_index;
-    uint64_t output_offset;
-    float local_sum;
-    float reference_value;
-
-    linear_output_index = blockIdx.x;
-    if (linear_output_index >= active_sequence_count * output_dimension)
-    {
-        return;
-    }
-    sequence_index = linear_output_index / output_dimension;
-    output_index = linear_output_index - (sequence_index * output_dimension);
-
-    local_sum = 0.0f;
-    for (input_index = threadIdx.x;
-         input_index < input_dimension;
-         input_index += blockDim.x)
-    {
-        float activation_value;
-        float weight_value;
-        uint64_t activation_offset;
-        uint64_t weight_offset;
-        uint64_t activation_scale_index;
-        uint64_t weight_scale_index;
-        uint32_t activation_scale_block_count;
-        uint32_t weight_scale_block_count;
-
-        activation_scale_block_count =
-            (input_dimension + scale_block_size - 1u) / scale_block_size;
-        weight_scale_block_count = activation_scale_block_count;
-        activation_offset =
-            ((uint64_t)sequence_index * (uint64_t)input_dimension) +
-            (uint64_t)input_index;
-        weight_offset =
-            ((uint64_t)output_index * (uint64_t)input_dimension) +
-            (uint64_t)input_index;
-        activation_scale_index =
-            ((uint64_t)sequence_index * (uint64_t)activation_scale_block_count) +
-            (uint64_t)(input_index / scale_block_size);
-        weight_scale_index =
-            ((uint64_t)(output_index / scale_block_size) *
-             (uint64_t)weight_scale_block_count) +
-            (uint64_t)(input_index / scale_block_size);
-        activation_value = SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
-            activation_fp8_e4m3[activation_offset]) *
-            activation_scale_f32[activation_scale_index];
-        weight_value = SparkGlm52ResidentDecodeStageFp8E4m3ToFloat(
-            weight_fp8_e4m3[weight_offset]) *
-            weight_scale_inv_f32[weight_scale_index];
-        local_sum += activation_value * weight_value;
-    }
-
-    reference_value = SparkGlm52ResidentDecodeStageBlockReduceSum(
-        local_sum,
-        shared_reduction);
-    if (threadIdx.x == 0u)
-    {
-        float candidate_value;
-        float absolute_error;
-        float relative_error;
-        float denominator;
-
-        output_offset =
-            ((uint64_t)sequence_index * (uint64_t)output_dimension) +
-            (uint64_t)output_index;
-        candidate_value = candidate_output_is_f32 != 0u
-            ? ((const float *)candidate_output)[output_offset]
-            : SparkGlm52ResidentDecodeStageBf16ToFloat(
-                ((const uint16_t *)candidate_output)[output_offset]);
-        absolute_error = fabsf(candidate_value - reference_value);
-        denominator = fmaxf(fabsf(reference_value), 1.0e-6f);
-        relative_error = absolute_error / denominator;
-        if (!isfinite(candidate_value) || !isfinite(reference_value))
-        {
-            atomicOr(
-                &stats->status_flags,
-                SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_LINEAR_DEBUG_FLAG_NAN_OR_INF);
-        }
-        atomicMax(&stats->max_abs_error_bits, __float_as_uint(absolute_error));
-        atomicMax(&stats->max_relative_error_bits, __float_as_uint(relative_error));
-        if (absolute_error > absolute_error_limit &&
-            relative_error > relative_error_limit)
-        {
-            atomicAdd(&stats->exceeded_element_count, 1u);
-        }
-    }
-}
-
-extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3PreparedActivationWeightLinearDebugCompare(
-    const uint8_t *activation_fp8_e4m3,
-    const float *activation_scale_f32,
-    const uint8_t *weight_fp8_e4m3,
-    const float *weight_scale_inv_f32,
-    const void *candidate_output,
-    SparkGlm52Sm121RequiredDecodeStageFp8LinearDebugStats *device_stats,
-    uint32_t active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t scale_block_size,
-    uint32_t candidate_output_is_f32,
-    float absolute_error_limit,
-    float relative_error_limit,
-    void *cuda_stream)
-{
-    uint64_t compared_element_count;
-    SparkStatus status;
-    cudaError_t cuda_status;
-
-    status = SparkGlm52ResidentDecodeStageValidatePreparedFp8ActivationWeightLinearArguments(
-        activation_fp8_e4m3,
-        activation_scale_f32,
-        weight_fp8_e4m3,
-        weight_scale_inv_f32,
-        candidate_output,
-        active_sequence_count,
-        input_dimension,
-        output_dimension,
-        scale_block_size,
-        cuda_stream);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    if (device_stats == 0 || absolute_error_limit < 0.0f ||
-        relative_error_limit < 0.0f ||
-        (uint64_t)active_sequence_count > UINT32_MAX / (uint64_t)output_dimension)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    compared_element_count =
-        (uint64_t)active_sequence_count * (uint64_t)output_dimension;
-    SparkGlm52ResidentDecodeStageFp8LinearDebugStatsResetKernel<<<
-        1u,
-        1u,
-        0u,
-        (cudaStream_t)cuda_stream>>>(
-        device_stats,
-        (uint32_t)compared_element_count);
-    cuda_status = cudaPeekAtLastError();
-    if (cuda_status != cudaSuccess)
-    {
-        return SPARK_STATUS_INTERNAL_ERROR;
-    }
-
-    SparkGlm52ResidentDecodeStageFp8PreparedLinearDebugCompareKernel<<<
-        (uint32_t)compared_element_count,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-        0u,
-        (cudaStream_t)cuda_stream>>>(
-        activation_fp8_e4m3,
-        activation_scale_f32,
-        weight_fp8_e4m3,
-        weight_scale_inv_f32,
-        candidate_output,
-        device_stats,
-        active_sequence_count,
-        input_dimension,
-        output_dimension,
-        scale_block_size,
-        candidate_output_is_f32,
-        absolute_error_limit,
-        relative_error_limit);
-    cuda_status = cudaPeekAtLastError();
-    return cuda_status == cudaSuccess
-        ? SPARK_STATUS_OK
-        : SPARK_STATUS_INTERNAL_ERROR;
-}
-
-extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3PreparedActivationWeightLinearReference(
-    const uint8_t *activation_fp8_e4m3,
-    const float *activation_scale_f32,
-    const uint8_t *weight_fp8_e4m3,
-    const float *weight_scale_inv_f32,
-    void *output,
-    uint32_t active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t scale_block_size,
-    uint32_t output_is_f32,
-    void *cuda_stream)
-{
-    SparkStatus status;
-    cudaError_t cuda_status;
-    dim3 grid;
-
-    status = SparkGlm52ResidentDecodeStageValidatePreparedFp8ActivationWeightLinearArguments(
-        activation_fp8_e4m3,
-        activation_scale_f32,
-        weight_fp8_e4m3,
-        weight_scale_inv_f32,
-        output,
-        active_sequence_count,
-        input_dimension,
-        output_dimension,
-        scale_block_size,
-        cuda_stream);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-
-    grid = dim3(output_dimension, active_sequence_count, 1u);
-    SparkGlm52ResidentDecodeStageFp8ActivationWeightLinearReferenceKernel<<<
-        grid,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-        0u,
-        (cudaStream_t)cuda_stream>>>(
-        activation_fp8_e4m3,
-        activation_scale_f32,
-        weight_fp8_e4m3,
-        weight_scale_inv_f32,
-        output,
-        active_sequence_count,
-        input_dimension,
-        output_dimension,
-        scale_block_size,
-        output_is_f32);
-    cuda_status = cudaPeekAtLastError();
-    return cuda_status == cudaSuccess
-        ? SPARK_STATUS_OK
-        : SPARK_STATUS_INTERNAL_ERROR;
-}
-
-extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3SharedActivationDualWeightLinearReference(
-    const void *input_bf16,
-    const uint8_t *first_weight_fp8_e4m3,
-    const float *first_weight_scale_inv_f32,
-    const uint8_t *second_weight_fp8_e4m3,
-    const float *second_weight_scale_inv_f32,
-    void *workspace,
-    uint64_t workspace_bytes,
-    void *first_output,
-    void *second_output,
-    uint32_t active_sequence_count,
-    uint32_t maximum_active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t first_output_dimension,
-    uint32_t second_output_dimension,
-    uint32_t scale_block_size,
-    uint32_t first_output_is_f32,
-    uint32_t second_output_is_f32,
-    void *cuda_stream)
-{
-    SparkStatus status;
-    uint8_t *activation_fp8_e4m3;
-    float *activation_scale_f32;
-    float *activation_amax_f32;
-
-    if (input_bf16 == 0 || first_weight_fp8_e4m3 == 0 ||
-        first_weight_scale_inv_f32 == 0 || second_weight_fp8_e4m3 == 0 ||
-        second_weight_scale_inv_f32 == 0 || first_output == 0 ||
-        second_output == 0 || cuda_stream == 0 || active_sequence_count == 0u ||
-        maximum_active_sequence_count < active_sequence_count ||
-        input_dimension == 0u || first_output_dimension == 0u ||
-        second_output_dimension == 0u || scale_block_size == 0u ||
-        scale_block_size > 1024u || (scale_block_size & 15u) != 0u)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    status = SparkGlm52ResidentDecodeStageResolveFp8ActivationLinearWorkspace(
-        workspace,
-        workspace_bytes,
-        maximum_active_sequence_count,
-        input_dimension,
-        scale_block_size,
-        &activation_fp8_e4m3,
-        &activation_scale_f32,
-        &activation_amax_f32);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-
-    status = SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationQuantize(
-        input_bf16,
-        activation_fp8_e4m3,
-        activation_scale_f32,
-        activation_amax_f32,
-        active_sequence_count,
-        input_dimension,
-        scale_block_size,
-        cuda_stream);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-
-    status = SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3PreparedActivationWeightLinearReference(
-        activation_fp8_e4m3,
-        activation_scale_f32,
-        first_weight_fp8_e4m3,
-        first_weight_scale_inv_f32,
-        first_output,
-        active_sequence_count,
-        input_dimension,
-        first_output_dimension,
-        scale_block_size,
-        first_output_is_f32,
-        cuda_stream);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-
-    return SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3PreparedActivationWeightLinearReference(
-        activation_fp8_e4m3,
-        activation_scale_f32,
-        second_weight_fp8_e4m3,
-        second_weight_scale_inv_f32,
-        second_output,
-        active_sequence_count,
-        input_dimension,
-        second_output_dimension,
-        scale_block_size,
-        second_output_is_f32,
-        cuda_stream);
-}
-
-extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearReference(
-    const void *input_bf16,
-    const uint8_t *weight_fp8_e4m3,
-    const float *weight_scale_inv_f32,
-    void *workspace,
-    uint64_t workspace_bytes,
-    void *output,
-    uint32_t active_sequence_count,
-    uint32_t maximum_active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t scale_block_size,
-    uint32_t output_is_f32,
-    void *cuda_stream)
-{
-    uint8_t *activation_fp8_e4m3;
-    float *activation_scale_f32;
-    float *activation_amax_f32;
-    dim3 grid;
-    SparkStatus status;
-    cudaError_t cuda_status;
-
-    if (input_bf16 == 0 || weight_fp8_e4m3 == 0 ||
-        weight_scale_inv_f32 == 0 || output == 0 || cuda_stream == 0 ||
-        active_sequence_count == 0u ||
-        maximum_active_sequence_count < active_sequence_count ||
-        input_dimension == 0u || output_dimension == 0u ||
-        scale_block_size == 0u || scale_block_size > 1024u ||
-        (scale_block_size & 15u) != 0u ||
-        !SparkGlm52ResidentDecodeStagePointerIsAlignedCuda(weight_fp8_e4m3, 16u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAlignedCuda(weight_scale_inv_f32, 4u))
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    status = SparkGlm52ResidentDecodeStageResolveFp8ActivationLinearWorkspace(
-        workspace,
-        workspace_bytes,
-        maximum_active_sequence_count,
-        input_dimension,
-        scale_block_size,
-        &activation_fp8_e4m3,
-        &activation_scale_f32,
-        &activation_amax_f32);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-
-    status = SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationQuantize(
-        input_bf16,
-        activation_fp8_e4m3,
-        activation_scale_f32,
-        activation_amax_f32,
-        active_sequence_count,
-        input_dimension,
-        scale_block_size,
-        cuda_stream);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-
-    grid = dim3(output_dimension, active_sequence_count, 1u);
-    SparkGlm52ResidentDecodeStageFp8ActivationWeightLinearReferenceKernel<<<
-        grid,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-        0u,
-        (cudaStream_t)cuda_stream>>>(
-        activation_fp8_e4m3,
-        activation_scale_f32,
-        weight_fp8_e4m3,
-        weight_scale_inv_f32,
-        output,
-        active_sequence_count,
-        input_dimension,
-        output_dimension,
-        scale_block_size,
-        output_is_f32);
-    cuda_status = cudaPeekAtLastError();
-    return cuda_status == cudaSuccess
-        ? SPARK_STATUS_OK
-        : SPARK_STATUS_INTERNAL_ERROR;
 }
 
 static __host__ __device__ __forceinline__ uint64_t SparkGlm52ResidentDecodeStageNativeActivationScaleBlockSize(
@@ -5705,26 +4978,20 @@ static uint64_t SparkGlm52ResidentDecodeStageDivideRoundUpU64(
     return (value + divisor - 1u) / divisor;
 }
 
-static uint32_t SparkGlm52ResidentDecodeStageReferencePlanWeightFormat(
+static uint32_t SparkGlm52ResidentDecodeStageQuantizedTensorCorePlanWeightFormat(
     uint32_t plan_kind)
 {
     if (plan_kind ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUDA_REFERENCE_FP8_E4M3_ROW_MAJOR ||
-        plan_kind ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR)
     {
         return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
     }
     if (plan_kind ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUDA_REFERENCE_NVFP4_E2M1_ROW_MAJOR ||
-        plan_kind ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_NVFP4_E2M1_ROW_MAJOR)
     {
         return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1;
     }
     if (plan_kind ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUDA_REFERENCE_MXFP4_E2M1_ROW_MAJOR ||
-        plan_kind ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_MXFP4_E2M1_ROW_MAJOR)
     {
         return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1;
@@ -5732,7 +4999,7 @@ static uint32_t SparkGlm52ResidentDecodeStageReferencePlanWeightFormat(
     return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_BF16;
 }
 
-static uint32_t SparkGlm52ResidentDecodeStageReferencePlanScaleBlockSize(
+static uint32_t SparkGlm52ResidentDecodeStageQuantizedTensorCorePlanScaleBlockSize(
     uint32_t weight_format)
 {
     if (weight_format ==
@@ -5776,9 +5043,9 @@ static bool SparkGlm52ResidentDecodeStageQuantizedLinearViewIsUsable(
         return false;
     }
 
-    expected_weight_format = SparkGlm52ResidentDecodeStageReferencePlanWeightFormat(
+    expected_weight_format = SparkGlm52ResidentDecodeStageQuantizedTensorCorePlanWeightFormat(
         linear_plan->plan_kind);
-    expected_scale_block_size = SparkGlm52ResidentDecodeStageReferencePlanScaleBlockSize(
+    expected_scale_block_size = SparkGlm52ResidentDecodeStageQuantizedTensorCorePlanScaleBlockSize(
         expected_weight_format);
     if (expected_scale_block_size == 0u)
     {
@@ -5839,92 +5106,6 @@ static bool SparkGlm52ResidentDecodeStageQuantizedLinearViewIsUsable(
     return true;
 }
 
-static SparkStatus SparkGlm52ResidentDecodeStageLaunchQuantizedReferenceLinearPlan(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
-    const void *input,
-    void *output,
-    uint32_t active_sequence_count,
-    cudaStream_t cuda_stream)
-{
-    const SparkGlm52ResidentDecodeStageQuantizedLinearView *view;
-    cudaError_t cuda_status;
-    dim3 grid;
-
-    if (input == 0 || output == 0 ||
-        !SparkGlm52ResidentDecodeStageQuantizedLinearViewIsUsable(
-            linear_plan,
-            &view))
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    if (active_sequence_count == 0u ||
-        active_sequence_count > linear_plan->maximum_active_sequence_count)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    grid = dim3(
-        linear_plan->output_dimension,
-        active_sequence_count,
-        1u);
-    if (linear_plan->output_is_f32 != 0u)
-    {
-        SparkGlm52ResidentDecodeStageQuantizedLinearF32Kernel<<<
-            grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)input,
-            (const uint8_t *)view->weight_payload,
-            view->weight_scale,
-            (float *)output,
-            active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            view->weight_format,
-            view->scale_block_size);
-    }
-    else
-    {
-        SparkGlm52ResidentDecodeStageQuantizedLinearBf16Kernel<<<
-            grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)input,
-            (const uint8_t *)view->weight_payload,
-            view->weight_scale,
-            (uint16_t *)output,
-            active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            view->weight_format,
-            view->scale_block_size);
-    }
-
-    cuda_status = cudaPeekAtLastError();
-    if (cuda_status != cudaSuccess &&
-        getenv("GLM52_LINEAR_DEBUG") != 0)
-    {
-        fprintf(
-            stderr,
-            "quantized_tensor_core_linear_launch_failed kind=%u in=%u out=%u active=%u grid=(%u,%u,%u) error=%d message=%s\n",
-            linear_plan->plan_kind,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            active_sequence_count,
-            grid.x,
-            grid.y,
-            grid.z,
-            (int)cuda_status,
-            cudaGetErrorString(cuda_status));
-    }
-    return cuda_status == cudaSuccess
-        ? SPARK_STATUS_OK
-        : SPARK_STATUS_INTERNAL_ERROR;
-}
-
-
 static bool SparkGlm52ResidentDecodeStageBlackwellQuantizedTensorCorePlanShapeIsSupported(
     const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan)
 {
@@ -5962,7 +5143,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     const SparkGlm52ResidentDecodeStageQuantizedLinearView *quantized_view;
     dim3 grid;
     cudaError_t cuda_status;
-    uint32_t sequence_tile_rows;
 
     if (linear_plan == 0 || input == 0 || output == 0 ||
         active_sequence_count == 0u ||
@@ -6004,66 +5184,22 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
                 linear_plan->output_is_f32,
                 (void *)cuda_stream);
         }
-        return SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearReference(
-            input,
-            (const uint8_t *)quantized_view->weight_payload,
-            (const float *)quantized_view->weight_scale,
-            linear_plan->workspace,
-            linear_plan->workspace_bytes,
-            output,
-            active_sequence_count,
-            linear_plan->maximum_active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            quantized_view->scale_block_size,
-            linear_plan->output_is_f32,
-            (void *)cuda_stream);
     }
 
-    sequence_tile_rows = SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M;
-    if (linear_plan->input_dimension ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION &&
-        linear_plan->output_dimension ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)
+    if (active_sequence_count >
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M)
     {
-        if (active_sequence_count > 32u)
-        {
-            sequence_tile_rows = 64u;
-        }
-        else if (active_sequence_count > 16u)
-        {
-            sequence_tile_rows = 32u;
-        }
-    }
-    grid = dim3(
-        (linear_plan->output_dimension +
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N - 1u) /
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
-        (active_sequence_count + sequence_tile_rows - 1u) / sequence_tile_rows,
-        1u);
-    if (sequence_tile_rows == 64u)
-    {
-        SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel<64u, 16u><<<
+        grid = dim3(
+            (linear_plan->output_dimension +
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N - 1u) /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+            (active_sequence_count +
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS - 1u) /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS,
+            1u);
+        SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearBatchKernel<<<
             grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)input,
-            (const uint8_t *)quantized_view->weight_payload,
-            quantized_view->weight_scale,
-            output,
-            active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            quantized_view->weight_format,
-            quantized_view->scale_block_size,
-            linear_plan->output_is_f32);
-    }
-    else if (sequence_tile_rows == 32u)
-    {
-        SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearWideKernel<32u, 16u><<<
-            grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_THREADS,
             0u,
             cuda_stream>>>(
             (const uint16_t *)input,
@@ -6079,6 +5215,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     }
     else
     {
+        grid = dim3(
+            (linear_plan->output_dimension +
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N - 1u) /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
+            1u,
+            1u);
         SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearKernel<<<
             grid,
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS,
@@ -9239,170 +8381,6 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedRoute
         : SPARK_STATUS_INTERNAL_ERROR;
 }
 
-
-static __global__ void SparkGlm52ResidentDecodeStageFp8MoePackedRouteDebugResetKernel(
-    SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteDebugStats *stats,
-    uint32_t expected_route_count)
-{
-    if (threadIdx.x == 0u && blockIdx.x == 0u)
-    {
-        stats->abi_version =
-            SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_MOE_PACKED_ROUTE_DEBUG_STATS_ABI_VERSION;
-        stats->status_flags = 0u;
-        stats->expected_route_count = expected_route_count;
-        stats->observed_route_count = 0u;
-        stats->invalid_entry_count = 0u;
-        stats->reserved0 = 0u;
-        stats->reserved1 = 0u;
-        stats->reserved2 = 0u;
-    }
-}
-
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)
-void SparkGlm52ResidentDecodeStageFp8MoePackedRouteDebugCheckKernel(
-    const uint32_t *__restrict__ expert_route_offsets,
-    const uint32_t *__restrict__ expert_route_counts,
-    const uint32_t *__restrict__ packed_expert_ids,
-    const uint32_t *__restrict__ packed_source_token_indices,
-    const uint32_t *__restrict__ packed_source_route_indices,
-    const uint32_t *__restrict__ packed_route_rows_by_token_route,
-    const float *__restrict__ packed_route_weights,
-    const uint32_t *__restrict__ packed_route_count,
-    SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteDebugStats *__restrict__ stats,
-    uint32_t active_sequence_count,
-    uint32_t expert_count,
-    uint32_t top_k,
-    uint32_t maximum_route_count)
-{
-    uint32_t expected_route_count;
-    uint32_t observed_route_count;
-    uint32_t linear_index;
-    uint32_t linear_stride;
-
-    expected_route_count = active_sequence_count * top_k;
-    observed_route_count = *packed_route_count;
-    if (threadIdx.x == 0u)
-    {
-        stats->observed_route_count = observed_route_count;
-        if (observed_route_count != expected_route_count ||
-            observed_route_count > maximum_route_count ||
-            expert_route_offsets[expert_count] != observed_route_count)
-        {
-            atomicAdd(&stats->invalid_entry_count, 1u);
-        }
-    }
-    __syncthreads();
-
-    linear_index = threadIdx.x;
-    linear_stride = blockDim.x;
-    for (; linear_index < expert_count; linear_index += linear_stride)
-    {
-        uint32_t expert_begin;
-        uint32_t expert_end;
-        uint32_t expert_count_value;
-
-        expert_begin = expert_route_offsets[linear_index];
-        expert_end = expert_route_offsets[linear_index + 1u];
-        expert_count_value = expert_route_counts[linear_index];
-        if (expert_begin > expert_end || expert_end > observed_route_count ||
-            expert_count_value != expert_end - expert_begin)
-        {
-            atomicAdd(&stats->invalid_entry_count, 1u);
-        }
-    }
-    __syncthreads();
-
-    for (linear_index = threadIdx.x;
-         linear_index < expected_route_count;
-         linear_index += linear_stride)
-    {
-        uint32_t packed_route_row;
-
-        packed_route_row = packed_route_rows_by_token_route[linear_index];
-        if (packed_route_row >= observed_route_count)
-        {
-            atomicAdd(&stats->invalid_entry_count, 1u);
-            continue;
-        }
-        if (packed_expert_ids[packed_route_row] >= expert_count ||
-            packed_source_token_indices[packed_route_row] >= active_sequence_count ||
-            packed_source_route_indices[packed_route_row] >= top_k ||
-            !isfinite(packed_route_weights[packed_route_row]))
-        {
-            atomicAdd(&stats->invalid_entry_count, 1u);
-        }
-        if (((packed_source_token_indices[packed_route_row] * top_k) +
-             packed_source_route_indices[packed_route_row]) != linear_index)
-        {
-            atomicAdd(&stats->invalid_entry_count, 1u);
-        }
-    }
-}
-
-extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedRouteDebugCheck(
-    const SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteView *packed_route_view,
-    SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteDebugStats *device_stats,
-    uint32_t active_sequence_count,
-    void *cuda_stream_pointer)
-{
-    uint32_t expected_route_count;
-    SparkStatus status;
-    cudaError_t cuda_status;
-
-    if (device_stats == 0 || cuda_stream_pointer == 0 || active_sequence_count == 0u)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    status = SparkGlm52ResidentDecodeStageValidateFp8MoePackedRouteView(
-        packed_route_view);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    if (active_sequence_count > packed_route_view->maximum_token_count ||
-        active_sequence_count > UINT32_MAX / packed_route_view->top_k)
-    {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    }
-
-    expected_route_count = active_sequence_count * packed_route_view->top_k;
-    SparkGlm52ResidentDecodeStageFp8MoePackedRouteDebugResetKernel<<<
-        1u,
-        1u,
-        0u,
-        (cudaStream_t)cuda_stream_pointer>>>(
-        device_stats,
-        expected_route_count);
-    cuda_status = cudaPeekAtLastError();
-    if (cuda_status != cudaSuccess)
-    {
-        return SPARK_STATUS_INTERNAL_ERROR;
-    }
-
-    SparkGlm52ResidentDecodeStageFp8MoePackedRouteDebugCheckKernel<<<
-        1u,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-        0u,
-        (cudaStream_t)cuda_stream_pointer>>>(
-        packed_route_view->expert_route_offsets,
-        packed_route_view->expert_route_counts,
-        packed_route_view->packed_expert_ids,
-        packed_route_view->packed_source_token_indices,
-        packed_route_view->packed_source_route_indices,
-        packed_route_view->packed_route_rows_by_token_route,
-        packed_route_view->packed_route_weights,
-        packed_route_view->packed_route_count,
-        device_stats,
-        active_sequence_count,
-        packed_route_view->expert_count,
-        packed_route_view->top_k,
-        packed_route_view->maximum_route_count);
-    cuda_status = cudaPeekAtLastError();
-    return cuda_status == cudaSuccess
-        ? SPARK_STATUS_OK
-        : SPARK_STATUS_INTERNAL_ERROR;
-}
-
 static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)
 void SparkGlm52ResidentDecodeStageFp8MoePackedHiddenQuantizeKernel(
     const uint16_t *__restrict__ hidden_bf16,
@@ -10977,21 +9955,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
             active_sequence_count,
             cuda_stream);
     }
-    if (linear_plan->plan_kind ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUDA_REFERENCE_FP8_E4M3_ROW_MAJOR ||
-        linear_plan->plan_kind ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUDA_REFERENCE_NVFP4_E2M1_ROW_MAJOR ||
-        linear_plan->plan_kind ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUDA_REFERENCE_MXFP4_E2M1_ROW_MAJOR)
-    {
-        return SparkGlm52ResidentDecodeStageLaunchQuantizedReferenceLinearPlan(
-            linear_plan,
-            input,
-            output,
-            active_sequence_count,
-            cuda_stream);
-    }
-
 #if SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_CUBLASLT
     if (linear_plan->plan_kind ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR ||
@@ -11247,8 +10210,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchRawLinear(
 {
     bool plan_is_required;
 
-    plan_is_required = node_context->projection_backend_mode !=
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_SCALAR_REFERENCE;
+    plan_is_required = true;
     if (node_context->projection_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3)
     {
@@ -15002,9 +13964,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateExactPp13StageSlicePlan(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
         exact_stage_slice_plan->stage_index >= 13u ||
         active_sequence_count > exact_stage_slice_plan->batch_bucket ||
-        (exact_stage_slice_plan->batch_bucket != 16u &&
-         exact_stage_slice_plan->batch_bucket != 32u &&
-         exact_stage_slice_plan->batch_bucket != 64u) ||
+        SparkGlm52StagePlanBatchBucketIsSupported(
+            exact_stage_slice_plan->batch_bucket) == 0u ||
         exact_stage_slice_plan->maximum_active_sequence_count < active_sequence_count ||
         exact_stage_slice_plan->validated_maximum_latency_ns == 0u ||
         (exact_stage_slice_plan->capability_flags & exact_required_capabilities) !=
@@ -15450,53 +14411,35 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageSlice
             stage_index, batch_bucket, final_token_stage> \
     }
 
+#define SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(stage_index, final_token_stage) \
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(stage_index, SPARK_GLM52_STAGE_PLAN_BUCKET_B16, final_token_stage), \
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(stage_index, SPARK_GLM52_STAGE_PLAN_BUCKET_B32, final_token_stage), \
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(stage_index, SPARK_GLM52_STAGE_PLAN_BUCKET_B64, final_token_stage), \
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(stage_index, SPARK_GLM52_STAGE_PLAN_BUCKET_B128, final_token_stage), \
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(stage_index, SPARK_GLM52_STAGE_PLAN_BUCKET_B256, final_token_stage), \
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(stage_index, SPARK_GLM52_STAGE_PLAN_BUCKET_B512, final_token_stage), \
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(stage_index, SPARK_GLM52_STAGE_PLAN_BUCKET_B1024, final_token_stage)
+
 static const SparkGlm52ResidentDecodeStageBuiltinExactPp13StageSliceLauncher
     SparkGlm52ResidentDecodeStageBuiltinExactPp13StageSliceLaunchers[] =
 {
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(0u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(0u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(0u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(1u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(1u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(1u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(2u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(2u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(2u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(3u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(3u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(3u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(4u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(4u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(4u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(5u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(5u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(5u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(6u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(6u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(6u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(7u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(7u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(7u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(8u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(8u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(8u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(9u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(9u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(9u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(10u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(10u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(10u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(11u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(11u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(11u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 16u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 32u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 64u, 0u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 16u, 1u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 32u, 1u),
-    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY(12u, 64u, 1u)
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(0u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(1u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(2u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(3u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(4u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(5u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(6u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(7u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(8u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(9u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(10u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(11u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(12u, 0u),
+    SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS(12u, 1u)
 };
 
+#undef SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_BUCKETS
 #undef SPARK_GLM52_EXACT_PP13_BUILTIN_AOT_LAUNCHER_ENTRY
 
 static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchBuiltinExactPp13StageSlicePlan(

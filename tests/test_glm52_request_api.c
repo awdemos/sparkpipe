@@ -1,8 +1,11 @@
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
+#include "sparkpipe/spark_glm52_text_prompt.h"
 #include "sparkpipe/spark_glm52_request_api.h"
+#include "sparkpipe/spark_tokenizer.h"
 
 #define SPARK_TEST_REQUEST_SLOT_COUNT 32u
 #define SPARK_TEST_PREFIX_ENTRY_COUNT 128u
@@ -2685,6 +2688,103 @@ static void SparkTestRequestApiDsparkBatchesEqualLengthDrafts(void)
     assert(fixture.api.dspark_committed_token_count == 21u);
 }
 
+static void SparkTestRequestApiDescribesAndCopiesFullPrefillTokenWindows(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiPrefillDispatchView prefill_view;
+    SparkGlm52RequestApiHandle handle;
+    uint32_t prompt[97u];
+    uint32_t copied_tokens[64u];
+    uint32_t token_index;
+
+    SparkTestFillTokenIds(prompt, 97u, 160000u);
+    SparkTestInitializeFixture(&fixture);
+    SparkTestInitializeSubmitRequest(
+        &request,
+        1600u,
+        11600u,
+        SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
+        prompt,
+        97u,
+        1u);
+    request.max_prefill_tokens_per_step = 64u;
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,
+        &request,
+        &handle) == SPARK_STATUS_OK);
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiDescribePrefillDispatch(
+        &dispatch,
+        &prefill_view) == SPARK_STATUS_OK);
+    assert(prefill_view.abi_version == SPARK_GLM52_REQUEST_API_ABI_VERSION);
+    assert(prefill_view.lane_count == 1u);
+    assert(prefill_view.active_sequence_count == 1u);
+    assert(prefill_view.prompt_token_offset == 0u);
+    assert(prefill_view.prompt_token_count == 64u);
+    assert(prefill_view.prompt_token_stride == 64u);
+    assert(prefill_view.lanes[0u].prompt_token_ids == prompt);
+    memset(copied_tokens, 0xa5, sizeof(copied_tokens));
+    assert(SparkGlm52RequestApiCopyPrefillDispatchTokenIds(
+        &dispatch,
+        copied_tokens,
+        64u,
+        1u) == SPARK_STATUS_OK);
+    for (token_index = 0u; token_index < 64u; ++token_index)
+    {
+        assert(copied_tokens[token_index] == prompt[token_index]);
+    }
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiDescribePrefillDispatch(
+        &dispatch,
+        &prefill_view) == SPARK_STATUS_OK);
+    assert(prefill_view.lane_count == 1u);
+    assert(prefill_view.prompt_token_offset == 64u);
+    assert(prefill_view.prompt_token_count == 33u);
+    assert(prefill_view.prompt_token_stride == 33u);
+    memset(copied_tokens, 0xa5, sizeof(copied_tokens));
+    assert(SparkGlm52RequestApiCopyPrefillDispatchTokenIds(
+        &dispatch,
+        copied_tokens,
+        64u,
+        1u) == SPARK_STATUS_OK);
+    for (token_index = 0u; token_index < 33u; ++token_index)
+    {
+        assert(copied_tokens[token_index] ==
+            prompt[64u + token_index]);
+    }
+    for (token_index = 33u; token_index < 64u; ++token_index)
+    {
+        assert(copied_tokens[token_index] == 0u);
+    }
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+    assert(SparkGlm52RequestApiDescribePrefillDispatch(
+        &dispatch,
+        &prefill_view) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+}
+
 static void SparkTestRequestApiDsparkDisabledPerRequestFallsBackToDecode(void)
 {
     SparkTestRequestApiFixture fixture;
@@ -2792,6 +2892,7 @@ static void SparkTestRequestApiDecodeBatchPacksTopPriorityMembersInOrder(void)
 int main(void)
 {
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
+    SparkTestRequestApiMtpCommitConsumesMultiTokenBudget();
     SparkTestRequestApiBatchesReadyDecodeRequestsAndConsumesBudgets();
     SparkTestRequestApiCohortsSamePromptRequestsAndSharesBlocks();
     SparkTestRequestApiCohortsArbitrarySharedPrefixWithSuffixes();
@@ -2815,5 +2916,7 @@ int main(void)
     SparkTestRequestApiDsparkCapturesTapsAndRunsSpeculativeVerify();
     SparkTestRequestApiDsparkBatchesEqualLengthDrafts();
     SparkTestRequestApiDsparkDisabledPerRequestFallsBackToDecode();
+    SparkTestRequestApiDescribesAndCopiesFullPrefillTokenWindows();
+    SparkTestRequestApiSubmitsCTextPromptToPrefillSchedule();
     return 0;
 }

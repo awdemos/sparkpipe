@@ -114,6 +114,11 @@ SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPlans(
     const SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
     uint32_t *plan_count_out);
 
+SparkGlm52ResidentDecodeStageLinearPlan *
+SparkGlm52ResidentDecodeStageLinearPlanResidentBindingMutablePlans(
+    SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
+    uint32_t *plan_count_out);
+
 #ifdef __cplusplus
 }
 #endif

@@ -514,6 +514,87 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB64CostProfile(
     return SPARK_STATUS_OK;
 }
 
+static void SparkGlm52StagePlanScaleCostProfile(
+    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t *final_stage_extra_cost_ns,
+    uint32_t numerator,
+    uint32_t denominator)
+{
+    uint32_t layer_index;
+
+    for (layer_index = 0u;
+         layer_index < SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
+         ++layer_index)
+    {
+        layer_cost_ns[layer_index] =
+            ((layer_cost_ns[layer_index] * (uint64_t)numerator) +
+             (uint64_t)denominator - 1u) / (uint64_t)denominator;
+    }
+    *final_stage_extra_cost_ns =
+        ((*final_stage_extra_cost_ns * (uint64_t)numerator) +
+         (uint64_t)denominator - 1u) / (uint64_t)denominator;
+}
+
+static SparkStatus SparkGlm52StagePlanLoadMeasuredB128CostProfile(
+    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t *final_stage_extra_cost_ns_out)
+{
+    static const uint64_t stage_cost_ns[13] = {
+        177756500u,
+        188399000u,
+        193653016u,
+        197361562u,
+        195107453u,
+        195583047u,
+        192805688u,
+        194702031u,
+        195701188u,
+        193026547u,
+        196165188u,
+        190992359u,
+        194542891u
+    };
+    uint32_t stage_index;
+
+    for (stage_index = 0u; stage_index < 13u; ++stage_index)
+    {
+        SparkGlm52StagePlanStoreUniformSegmentCost(
+            stage_cost_ns[stage_index],
+            stage_index * 6u,
+            6u,
+            layer_cost_ns);
+    }
+    *final_stage_extra_cost_ns_out = 0u;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52StagePlanLoadEstimatedLargeBatchCostProfile(
+    uint32_t batch_bucket,
+    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t *final_stage_extra_cost_ns_out)
+{
+    SparkStatus status;
+
+    if (batch_bucket < SPARK_GLM52_STAGE_PLAN_BUCKET_B128 ||
+        SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52StagePlanLoadMeasuredB128CostProfile(
+        layer_cost_ns,
+        final_stage_extra_cost_ns_out);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    SparkGlm52StagePlanScaleCostProfile(
+        layer_cost_ns,
+        final_stage_extra_cost_ns_out,
+        batch_bucket,
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B128);
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52StagePlanLoadMeasuredB32CostProfile(
     uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
@@ -624,6 +705,20 @@ SparkStatus SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
             layer_cost_ns,
             final_stage_extra_cost_ns_out);
     }
+    if (batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128)
+    {
+        return SparkGlm52StagePlanLoadMeasuredB128CostProfile(
+            layer_cost_ns,
+            final_stage_extra_cost_ns_out);
+    }
+    if (batch_bucket > SPARK_GLM52_STAGE_PLAN_BUCKET_B128 &&
+        SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) != 0u)
+    {
+        return SparkGlm52StagePlanLoadEstimatedLargeBatchCostProfile(
+            batch_bucket,
+            layer_cost_ns,
+            final_stage_extra_cost_ns_out);
+    }
     if (batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B32 ||
         batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B16)
     {
@@ -725,7 +820,8 @@ SparkStatus SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
             "invalid measured stage-plan quantization mode");
     }
     if (measured_profile_id == SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701 &&
-        batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B64 &&
+        batch_bucket >= SPARK_GLM52_STAGE_PLAN_BUCKET_B64 &&
+        SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) != 0u &&
         (normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
          normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT))
     {
@@ -791,20 +887,11 @@ SparkStatus SparkGlm52StagePlanSelectBatchBucket(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B16)
+    *bucket_out = SparkGlm52StagePlanSelectBatchBucketValue(
+        active_sequence_count);
+    if (*bucket_out == 0u)
     {
-        *bucket_out = SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
-        return SPARK_STATUS_OK;
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B32)
-    {
-        *bucket_out = SPARK_GLM52_STAGE_PLAN_BUCKET_B32;
-        return SPARK_STATUS_OK;
-    }
-    if (active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B64)
-    {
-        *bucket_out = SPARK_GLM52_STAGE_PLAN_BUCKET_B64;
-        return SPARK_STATUS_OK;
-    }
-    return SPARK_STATUS_CAPACITY_EXCEEDED;
+    return SPARK_STATUS_OK;
 }

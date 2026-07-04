@@ -1145,3 +1145,25 @@ SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPlans(
     }
     return binding->plans;
 }
+
+SparkGlm52ResidentDecodeStageLinearPlan *
+SparkGlm52ResidentDecodeStageLinearPlanResidentBindingMutablePlans(
+    SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
+    uint32_t *plan_count_out)
+{
+    if (plan_count_out != 0)
+    {
+        *plan_count_out = 0u;
+    }
+    if (binding == 0 ||
+        binding->abi_version !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BINDING_ABI_VERSION)
+    {
+        return 0;
+    }
+    if (plan_count_out != 0)
+    {
+        *plan_count_out = binding->plan_count;
+    }
+    return binding->plans;
+}

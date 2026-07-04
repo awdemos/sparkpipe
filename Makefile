@@ -8,7 +8,7 @@ LDLIBS ?= -ldl
 CUDA_ARCH ?= sm_121a
 NVCCFLAGS ?= -O3 --use_fast_math -arch=$(CUDA_ARCH)
 SPARKPIPE_B12X_AOT_ENV ?= $(HOME)/.config/sparkpipe/glm52_b12x_aot_env.sh
-B12X_AOT_TOKENS ?= 1,2,4,8,16,32,64,96,128
+B12X_AOT_TOKENS ?= 1,2,4,8,16,32,64,96,128,256,512,1024
 B12X_AOT_WARMUP ?= 5
 B12X_AOT_ITERATIONS ?= 20
 B12X_AOT_OUTPUT_DIR ?= build/glm52_b12x_aot
@@ -26,7 +26,7 @@ GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT ?= 1
 GLM52_PIPELINE_INPUT_HIDDEN_BF16 ?=
 GLM52_PIPELINE_OUTPUT_HIDDEN_BF16 ?= build/glm52_pipeline_validation/output_hidden.bf16
 GLM52_ENABLE_CUDA_GRAPH_REPLAY ?= 0
-GLM52_STAGE_SWEEP_BUCKETS ?= 8,16,32,64
+GLM52_STAGE_SWEEP_BUCKETS ?= 8,16,32,64,128
 GLM52_STAGE_SWEEP_STAGE_ARGS ?=
 GLM52_STAGE_SWEEP_MAX_STAGE_US ?= 1000000
 GLM52_STAGE_SWEEP_OUTPUT_DIR ?= build/glm52_stage_bucket_sweep
@@ -46,17 +46,21 @@ B12X_RUNTIME_LINK_ARGS_FILE := $(abspath $(B12X_AOT_OUTPUT_DIR))/generated/runti
 COMMON_SOURCES := \
     src/spark_status.c \
     src/spark_filesystem.c \
+    src/spark_json.c \
     src/spark_hidden_transport.c \
     src/spark_glm52_kv_cache.c \
     src/spark_glm52_dspark.c \
     src/spark_glm52_stage_plan.c \
     src/spark_glm52_scheduler.c \
     src/spark_glm52_prefix_cache.c \
-    src/spark_glm52_request_api.c
+    src/spark_glm52_request_api.c \
+    src/spark_tokenizer.c \
+    src/spark_glm52_text_prompt.c \
+    src/spark_glm52_prompt_pipeline.c \
+    src/spark_glm52_serving_engine.c
 
 COMPILER_SOURCES := \
     src/spark_sha256.c \
-    src/spark_json.c \
     src/spark_model_description.c \
     src/spark_module_library.c \
     src/spark_driver_compiler.c
@@ -77,7 +81,9 @@ TOOL_NAMES := \
     sparkpipe_module_publish \
     sparkpipe_model_compile \
     sparkpipe_driver_inspect \
-    sparkpipe_glm52_prefill_dryrun
+    sparkpipe_glm52_prefill_dryrun \
+    sparkpipe_glm52_tokenize \
+    sparkpipe_tokenize_prompt
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -90,6 +96,9 @@ TEST_NAMES := \
     test_glm52_scheduler \
     test_glm52_prefix_cache \
     test_glm52_request_api \
+    test_tokenizer \
+    test_glm52_prompt_pipeline \
+    test_glm52_serving_engine \
     test_model_description \
     test_module_library \
     test_driver_compiler \
@@ -182,6 +191,12 @@ build/sparkpipe_driver_inspect: tools/sparkpipe_driver_inspect.c $(RUNTIME_LIBRA
 build/sparkpipe_glm52_prefill_dryrun: tools/sparkpipe_glm52_prefill_dryrun.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_SUPPORT_OBJECT): tests/test_support.c tests/test_support.h $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -MMD -MP -c tests/test_support.c -o $@
 
@@ -239,6 +254,17 @@ build/test_glm52_prefix_cache: tests/test_glm52_prefix_cache.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_request_api: tests/test_glm52_request_api.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+
+build/test_tokenizer: tests/test_tokenizer.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_prompt_pipeline: tests/test_glm52_prompt_pipeline.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+
+build/test_glm52_serving_engine: tests/test_glm52_serving_engine.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 
@@ -330,7 +356,7 @@ glm52_b12x_resident_pack:
 
 glm52_b12x_compiled_backend:
 	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend archive NVCC=$(NVCC) CUDA_ARCH=sm_121a
-	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend generated_archive NVCC=$(NVCC) CUDA_ARCH=sm_121a GENERATED_DIRECTORY=$(abspath build/glm52_b12x_aot/generated)
+	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend generated_archive NVCC=$(NVCC) CUDA_ARCH=sm_121a GENERATED_DIRECTORY=$(abspath $(B12X_AOT_OUTPUT_DIR)/generated)
 
 glm52_required_cuda_link_args: glm52_flashinfer_b12x_moe_adapter glm52_b12x_compiled_backend
 	@test -s "$(B12X_RUNTIME_LINK_ARGS_FILE)" || \

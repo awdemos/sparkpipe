@@ -151,85 +151,6 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinea
     uint32_t output_is_f32,
     void *cuda_stream);
 
-#define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_LINEAR_DEBUG_STATS_ABI_VERSION 1u
-#define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_LINEAR_DEBUG_FLAG_NAN_OR_INF 0x00000001u
-
-typedef struct SparkGlm52Sm121RequiredDecodeStageFp8LinearDebugStats
-{
-    uint32_t abi_version;
-    uint32_t status_flags;
-    uint32_t compared_element_count;
-    uint32_t exceeded_element_count;
-    uint32_t max_abs_error_bits;
-    uint32_t max_relative_error_bits;
-    uint32_t reserved0;
-    uint32_t reserved1;
-} SparkGlm52Sm121RequiredDecodeStageFp8LinearDebugStats;
-
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3PreparedActivationWeightLinearDebugCompare(
-    const uint8_t *activation_fp8_e4m3,
-    const float *activation_scale_f32,
-    const uint8_t *weight_fp8_e4m3,
-    const float *weight_scale_inv_f32,
-    const void *candidate_output,
-    SparkGlm52Sm121RequiredDecodeStageFp8LinearDebugStats *device_stats,
-    uint32_t active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t scale_block_size,
-    uint32_t candidate_output_is_f32,
-    float absolute_error_limit,
-    float relative_error_limit,
-    void *cuda_stream);
-
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3PreparedActivationWeightLinearReference(
-    const uint8_t *activation_fp8_e4m3,
-    const float *activation_scale_f32,
-    const uint8_t *weight_fp8_e4m3,
-    const float *weight_scale_inv_f32,
-    void *output,
-    uint32_t active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t scale_block_size,
-    uint32_t output_is_f32,
-    void *cuda_stream);
-
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3SharedActivationDualWeightLinearReference(
-    const void *input_bf16,
-    const uint8_t *first_weight_fp8_e4m3,
-    const float *first_weight_scale_inv_f32,
-    const uint8_t *second_weight_fp8_e4m3,
-    const float *second_weight_scale_inv_f32,
-    void *workspace,
-    uint64_t workspace_bytes,
-    void *first_output,
-    void *second_output,
-    uint32_t active_sequence_count,
-    uint32_t maximum_active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t first_output_dimension,
-    uint32_t second_output_dimension,
-    uint32_t scale_block_size,
-    uint32_t first_output_is_f32,
-    uint32_t second_output_is_f32,
-    void *cuda_stream);
-
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearReference(
-    const void *input_bf16,
-    const uint8_t *weight_fp8_e4m3,
-    const float *weight_scale_inv_f32,
-    void *workspace,
-    uint64_t workspace_bytes,
-    void *output,
-    uint32_t active_sequence_count,
-    uint32_t maximum_active_sequence_count,
-    uint32_t input_dimension,
-    uint32_t output_dimension,
-    uint32_t scale_block_size,
-    uint32_t output_is_f32,
-    void *cuda_stream);
-
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3KvCacheStore(
     const void *input_bf16,
     uint8_t *output_fp8_e4m3,
@@ -405,26 +326,6 @@ typedef struct SparkGlm52Sm121RequiredDecodeStageFp8MoeGroupedBackend
     uint64_t required_workspace_bytes;
     uint64_t validated_maximum_latency_ns;
 } SparkGlm52Sm121RequiredDecodeStageFp8MoeGroupedBackend;
-
-#define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_MOE_PACKED_ROUTE_DEBUG_STATS_ABI_VERSION 1u
-
-typedef struct SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteDebugStats
-{
-    uint32_t abi_version;
-    uint32_t status_flags;
-    uint32_t expected_route_count;
-    uint32_t observed_route_count;
-    uint32_t invalid_entry_count;
-    uint32_t reserved0;
-    uint32_t reserved1;
-    uint32_t reserved2;
-} SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteDebugStats;
-
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedRouteDebugCheck(
-    const SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteView *packed_route_view,
-    SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteDebugStats *device_stats,
-    uint32_t active_sequence_count,
-    void *cuda_stream);
 
 uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateFp8MoeGroupedExternalBackendWorkspaceBytes(
     const SparkGlm52ResidentDecodeStageFp8MoePlan *fp8_moe_plan,
