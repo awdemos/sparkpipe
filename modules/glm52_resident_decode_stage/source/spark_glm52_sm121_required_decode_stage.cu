@@ -6352,6 +6352,7 @@ void SparkGlm52ResidentDecodeStageSiluMulFp8E4m3QuantizeKernel(
     float *__restrict__ output_amax_f32,
     uint32_t row_count,
     uint32_t element_count,
+    uint32_t input_row_stride,
     uint32_t scale_block_size)
 {
     __shared__ float shared_reduction[256u];
@@ -6397,7 +6398,7 @@ void SparkGlm52ResidentDecodeStageSiluMulFp8E4m3QuantizeKernel(
             float output_value;
 
             input_index =
-                ((uint64_t)row_index * (uint64_t)element_count) +
+                ((uint64_t)row_index * (uint64_t)input_row_stride) +
                 (uint64_t)element_index;
             gate_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
                 gate_bf16[input_index]);
@@ -6430,19 +6431,23 @@ void SparkGlm52ResidentDecodeStageSiluMulFp8E4m3QuantizeKernel(
              element_index < block_end;
              element_index += blockDim.x)
         {
+            uint64_t input_index;
             uint64_t output_index;
             float gate_value;
             float up_value;
             float silu_value;
             float output_value;
 
+            input_index =
+                ((uint64_t)row_index * (uint64_t)input_row_stride) +
+                (uint64_t)element_index;
             output_index =
                 ((uint64_t)row_index * (uint64_t)element_count) +
                 (uint64_t)element_index;
             gate_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-                gate_bf16[output_index]);
+                gate_bf16[input_index]);
             up_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-                up_bf16[output_index]);
+                up_bf16[input_index]);
             silu_value = gate_value / (1.0f + __expf(-gate_value));
             output_value = silu_value * up_value;
             if (output_bf16 != 0)
@@ -7092,6 +7097,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchSiluMulFp8E4m3Act
         output_scale_f32,
         output_amax_f32,
         active_sequence_count,
+        input_dimension,
         input_dimension,
         scale_block_size);
     cuda_status = cudaPeekAtLastError();
@@ -8469,10 +8475,8 @@ typedef struct SparkGlm52ResidentDecodeStageFp8MoeGroupedReferenceWorkspaceLayou
     uint64_t hidden_scale_bytes;
     uint64_t hidden_amax_offset;
     uint64_t hidden_amax_bytes;
-    uint64_t gate_bf16_offset;
-    uint64_t gate_bf16_bytes;
-    uint64_t up_bf16_offset;
-    uint64_t up_bf16_bytes;
+    uint64_t w1_output_bf16_offset;
+    uint64_t w1_output_bf16_bytes;
     uint64_t packed_down_bf16_offset;
     uint64_t packed_down_bf16_bytes;
     uint64_t intermediate_arena_offset;
@@ -8499,8 +8503,7 @@ typedef struct SparkGlm52ResidentDecodeStageFp8MoeGroupedReferenceWorkspaceView
     uint8_t *hidden_fp8_e4m3;
     float *hidden_scale_f32;
     float *hidden_amax_f32;
-    uint16_t *gate_bf16;
-    uint16_t *up_bf16;
+    uint16_t *w1_output_bf16;
     uint16_t *packed_down_bf16;
     uint8_t *intermediate_fp8_e4m3;
     float *intermediate_scale_f32;
@@ -8653,26 +8656,21 @@ static bool SparkGlm52ResidentDecodeStageCalculateFp8MoeGroupedReferenceWorkspac
     }
     layout.hidden_amax_bytes = workspace_cursor - layout.hidden_amax_offset;
 
-    layout.gate_bf16_offset = workspace_cursor;
+    if (bf16_route_activation_bytes > UINT64_MAX / 2ull)
+    {
+        return false;
+    }
+    layout.w1_output_bf16_offset = workspace_cursor;
     if (!SparkGlm52ResidentDecodeStageAddAlignedWorkspaceRange(
             &workspace_cursor,
-            bf16_route_activation_bytes,
+            bf16_route_activation_bytes * 2ull,
             1u,
             alignment))
     {
         return false;
     }
-    layout.gate_bf16_bytes = workspace_cursor - layout.gate_bf16_offset;
-    layout.up_bf16_offset = workspace_cursor;
-    if (!SparkGlm52ResidentDecodeStageAddAlignedWorkspaceRange(
-            &workspace_cursor,
-            bf16_route_activation_bytes,
-            1u,
-            alignment))
-    {
-        return false;
-    }
-    layout.up_bf16_bytes = workspace_cursor - layout.up_bf16_offset;
+    layout.w1_output_bf16_bytes =
+        workspace_cursor - layout.w1_output_bf16_offset;
     layout.packed_down_bf16_offset = workspace_cursor;
     if (!SparkGlm52ResidentDecodeStageAddAlignedWorkspaceRange(
             &workspace_cursor,
@@ -8863,10 +8861,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageResolveFp8MoeGroupedReferenceWor
         (float *)(workspace_base + layout.hidden_scale_offset);
     workspace_view_out->hidden_amax_f32 =
         (float *)(workspace_base + layout.hidden_amax_offset);
-    workspace_view_out->gate_bf16 =
-        (uint16_t *)(workspace_base + layout.gate_bf16_offset);
-    workspace_view_out->up_bf16 =
-        (uint16_t *)(workspace_base + layout.up_bf16_offset);
+    workspace_view_out->w1_output_bf16 =
+        (uint16_t *)(workspace_base + layout.w1_output_bf16_offset);
     workspace_view_out->packed_down_bf16 =
         (uint16_t *)(workspace_base + layout.packed_down_bf16_offset);
     workspace_view_out->intermediate_fp8_e4m3 =
@@ -9406,7 +9402,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedRefe
         workspace_view.hidden_scale_f32,
         fp8_moe_plan->w1_weight_fp8_e4m3,
         fp8_moe_plan->w1_scale_inv_f32,
-        workspace_view.gate_bf16,
+        workspace_view.w1_output_bf16,
         workspace_view.cutlass_m_indptr,
         workspace_view.cutlass_int_workspace,
         workspace_view.cutlass_int_workspace_bytes,
@@ -9427,14 +9423,15 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedRefe
         SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
         0u,
         cuda_stream>>>(
-        workspace_view.up_bf16,
-        workspace_view.gate_bf16,
+        workspace_view.w1_output_bf16 + fp8_moe_plan->intermediate_dimension,
+        workspace_view.w1_output_bf16,
         0,
         workspace_view.intermediate_fp8_e4m3,
         workspace_view.intermediate_scale_f32,
         workspace_view.intermediate_amax_f32,
         routed_row_count,
         fp8_moe_plan->intermediate_dimension,
+        fp8_moe_plan->intermediate_dimension * 2u,
         fp8_moe_plan->scale_block_size);
     cuda_status = cudaPeekAtLastError();
     if (cuda_status != cudaSuccess)
