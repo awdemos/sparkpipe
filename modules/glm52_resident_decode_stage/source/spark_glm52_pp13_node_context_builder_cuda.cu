@@ -137,6 +137,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint32_t allocation_count;
 	uint32_t *host_physical_block_indices;
 	uint32_t *host_lane_physical_block_counts;
+	uint8_t *host_physical_block_states;
 	uint32_t *device_physical_block_indices;
 	uint32_t *device_lane_physical_block_counts;
 	void *selected_token_indices_by_layer;
@@ -1440,10 +1441,13 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		(uint32_t *)malloc((size_t)(kv_entries * sizeof(uint32_t)));
 	state->host_lane_physical_block_counts =
 		(uint32_t *)malloc((size_t)(max_active * sizeof(uint32_t)));
+	state->host_physical_block_states =
+		(uint8_t *)malloc((size_t)(kv_entries * sizeof(uint8_t)));
 	state->host_mtp_draft_budgets =
 		(uint32_t *)malloc((size_t)(max_active * sizeof(uint32_t)));
 	if (state->host_physical_block_indices == 0 ||
 		state->host_lane_physical_block_counts == 0 ||
+		state->host_physical_block_states == 0 ||
 		state->host_mtp_draft_budgets == 0)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	status = SparkGlm52Pp13WorkControlInitializeKvState(
@@ -1452,7 +1456,8 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE,
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS,
 		state->host_physical_block_indices,
-		state->host_lane_physical_block_counts);
+		state->host_lane_physical_block_counts,
+		state->host_physical_block_states);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	status = SparkGlm52Pp13BuilderInitializeTables(state);
@@ -1608,6 +1613,7 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 		cudaEventDestroy(state->kv_event);
 	free(state->host_physical_block_indices);
 	free(state->host_lane_physical_block_counts);
+	free(state->host_physical_block_states);
 	free(state->host_prefill_lane_offsets);
 	free(state->host_prefill_lane_counts);
 	free(state->host_decode_positions);
@@ -1929,9 +1935,18 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 		&dispatch.hidden_output_packet);
 	dispatch.completion_function = completion_function;
 	dispatch.completion_context = completion_context;
-	return SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
+	status = SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
 		&state->runner,
 		&dispatch);
+	if (status == SPARK_STATUS_OK)
+		(void)SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
+			work_packet,
+			&state->kv_state);
+	else
+		(void)SparkGlm52Pp13WorkControlCancelHostKvBlockTable(
+			work_packet,
+			&state->kv_state);
+	return status;
 }
 
 static SparkStatus SparkGlm52Pp13BuilderPrefill(

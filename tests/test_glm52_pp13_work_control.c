@@ -48,15 +48,18 @@ static void SparkTestGlm52Pp13WorkControlHostBlockTable(void)
 	SparkGlm52KvBlockTableView view;
 	uint32_t physical_blocks[4u * 4096u];
 	uint32_t lane_counts[4u];
+	uint8_t block_states[4u * 4096u];
 
 	SparkTestInitializeWorkPacket(&packet);
+	packet.flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL;
 	assert(SparkGlm52Pp13WorkControlInitializeKvState(
 		&state,
 		4u,
 		4096u,
 		256u,
 		physical_blocks,
-		lane_counts) == SPARK_STATUS_OK);
+		lane_counts,
+		block_states) == SPARK_STATUS_OK);
 	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 		&packet,
 		&state,
@@ -75,9 +78,56 @@ static void SparkTestGlm52Pp13WorkControlHostBlockTable(void)
 	assert(physical_blocks[(3u * 4096u) + 128u] == ((3u * 4096u) + 128u));
 }
 
+static void SparkTestGlm52Pp13WorkControlTracksKvReadiness(void)
+{
+	SparkGlm52Pp13WorkControlPacket packet;
+	SparkGlm52Pp13WorkControlKvState state;
+	SparkGlm52KvBlockTableView view;
+	uint32_t physical_blocks[2u * 4096u];
+	uint32_t lane_counts[2u];
+	uint8_t block_states[2u * 4096u];
+
+	SparkTestInitializeWorkPacket(&packet);
+	packet.active_sequence_count = 2u;
+	assert(SparkGlm52Pp13WorkControlInitializeKvState(
+		&state,
+		2u,
+		4096u,
+		256u,
+		physical_blocks,
+		lane_counts,
+		block_states) == SPARK_STATUS_OK);
+	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
+		&packet,
+		&state,
+		&view) == SPARK_STATUS_BUSY);
+	assert(state.missing_block_count == 1u);
+	packet.flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL;
+	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
+		&packet,
+		&state,
+		&view) == SPARK_STATUS_OK);
+	assert(block_states[0] == SPARK_GLM52_PP13_KV_ENTRY_IN_FLIGHT);
+	assert(SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
+		&packet,
+		&state) == SPARK_STATUS_OK);
+	assert(block_states[0] == SPARK_GLM52_PP13_KV_ENTRY_RESIDENT);
+	packet.flags = 0u;
+	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
+		&packet,
+		&state,
+		&view) == SPARK_STATUS_OK);
+	assert(state.resident_block_count != 0u);
+	assert(SparkGlm52Pp13WorkControlCancelHostKvBlockTable(
+		&packet,
+		&state) == SPARK_STATUS_OK);
+	assert(block_states[0] == SPARK_GLM52_PP13_KV_ENTRY_RESIDENT);
+}
+
 int main(void)
 {
 	SparkTestGlm52Pp13WorkControlPacket();
 	SparkTestGlm52Pp13WorkControlHostBlockTable();
+	SparkTestGlm52Pp13WorkControlTracksKvReadiness();
 	return 0;
 }

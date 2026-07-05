@@ -803,6 +803,15 @@ static void SparkGlm52Pp13DaemonPopWork(
     runtime->work_queue_count -= 1u;
 }
 
+static void SparkGlm52Pp13DaemonDeferWork(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    if (runtime == 0 || runtime->work_queue_count <= 1u)
+        return;
+    runtime->work_queue_head = (runtime->work_queue_head + 1u) %
+        SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
+}
+
 static void SparkGlm52Pp13DaemonPumpQueuedWork(
     SparkGlm52Pp13DaemonRuntime *runtime)
 {
@@ -814,7 +823,12 @@ static void SparkGlm52Pp13DaemonPumpQueuedWork(
     packet = &runtime->work_queue[runtime->work_queue_head];
     status = SparkGlm52Pp13DaemonSubmitWork(runtime,packet);
     if (status == SPARK_STATUS_OK)
+    {
         runtime->work_submit_count += 1u;
+        SparkGlm52Pp13DaemonPopWork(runtime);
+    }
+    else if (status == SPARK_STATUS_BUSY)
+        SparkGlm52Pp13DaemonDeferWork(runtime);
     else
     {
         runtime->work_error_count += 1u;
@@ -825,8 +839,8 @@ static void SparkGlm52Pp13DaemonPumpQueuedWork(
             (unsigned long long)packet->sequence_id,
             (unsigned long long)packet->sequence_position,
             runtime->work_queue_count);
+        SparkGlm52Pp13DaemonPopWork(runtime);
     }
-    SparkGlm52Pp13DaemonPopWork(runtime);
 }
 
 static void SparkGlm52Pp13DaemonHandleWork(
