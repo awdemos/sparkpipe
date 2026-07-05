@@ -1565,6 +1565,14 @@ static SparkStatus SparkGlm52B12xLaunchSelectedBucket(
     {
         return status;
     }
+    status = SparkGlm52B12xMaybeLogExpertCoverage(
+        &state->workspaces[bucket_index],
+        arguments,
+        arguments->token_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     return SparkGlm52B12xLaunchDeterministicFc2Finalize(
         &state->workspaces[bucket_index],
         bucket,
@@ -1589,6 +1597,34 @@ static void *SparkGlm52B12xOffsetElements(
 {
     return (void *)((uint8_t *)pointer +
         ((size_t)token_offset * (size_t)element_count * (size_t)element_bytes));
+}
+
+static SparkStatus SparkGlm52B12xMaybeLogExpertCoverage(const SparkGlm52Sm121B12xGeneratedWorkspace *workspace, const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments, uint32_t chunk_token_count)
+{
+    cudaStream_t cuda_stream;
+    cudaStreamCaptureStatus capture_status;
+    cudaError_t cuda_status;
+    int32_t active_expert_count = -1;
+
+    if (getenv("GLM52_LOG_EXPERT_COVERAGE") == 0)
+        return SPARK_STATUS_OK;
+    cuda_stream = (cudaStream_t)arguments->cuda_stream;
+    cuda_status = cudaStreamIsCapturing(cuda_stream, &capture_status);
+    if (cuda_status != cudaSuccess)
+        return SPARK_STATUS_INTERNAL_ERROR;
+    if (capture_status != cudaStreamCaptureStatusNone)
+    {
+        fprintf(stderr, "b12x_expert_coverage skipped: stream is graph-capturing\n");
+        return SPARK_STATUS_OK;
+    }
+    cuda_status = cudaMemcpyAsync(&active_expert_count, workspace->active_expert_count_i32, sizeof(int32_t), cudaMemcpyDeviceToHost, cuda_stream);
+    if (cuda_status != cudaSuccess)
+        return SPARK_STATUS_INTERNAL_ERROR;
+    cuda_status = cudaStreamSynchronize(cuda_stream);
+    if (cuda_status != cudaSuccess)
+        return SPARK_STATUS_INTERNAL_ERROR;
+    fprintf(stderr, "b12x_expert_coverage tokens=%u active_experts=%d of=%u\n", chunk_token_count, active_expert_count, arguments->expert_count);
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52B12xLaunchChunked(
