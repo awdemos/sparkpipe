@@ -49,11 +49,12 @@ GLM52_STAGE_SWEEP_REQUIRED_CUDA_LINK_ARGS ?=
 GLM52_STAGE_SWEEP_FORCE_VALIDATOR_REBUILD ?= 0
 GLM52_REQUIRED_CUDA_LINK_ARGS ?=
 REQUIRED_CUDA_CC_ARGS ?=
-GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(GLM52_REQUIRED_CUDA_LINK_ARGS)
 B12X_ADAPTER_ARCHIVE := $(abspath build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a)
 B12X_COMPILED_BACKEND_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a)
 B12X_GENERATED_KERNEL_TABLE_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a)
 B12X_RUNTIME_LINK_ARGS_FILE := $(abspath $(B12X_AOT_OUTPUT_DIR))/generated/runtime_link_args.txt
+GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(shell cat "$(B12X_RUNTIME_LINK_ARGS_FILE)" 2>/dev/null)
+GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS))
 GLM52_PP13_NODE_CONTEXT_BUILDER := build/libglm52_pp13_node_context_builder.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
 
@@ -297,6 +298,10 @@ $(GLM52_PP13_NODE_CONTEXT_BUILDER): modules/glm52_resident_decode_stage/source/s
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "glm52_pp13_node_context_builder skipped: nvcc unavailable"; \
 	else \
+		if [ -z "$(GLM52_REQUIRED_CUDA_LINK_ARGS)" ] && [ ! -s "$(B12X_RUNTIME_LINK_ARGS_FILE)" ]; then \
+			echo "missing $(B12X_RUNTIME_LINK_ARGS_FILE); run make glm52_b12x_aot_compile first" >&2; \
+			exit 2; \
+		fi; \
 		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -lcublasLt -lcublas -lm -ldl $(GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS) -o $@; \
 	fi
 
