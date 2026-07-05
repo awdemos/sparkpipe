@@ -29,6 +29,7 @@ HTTP/SSE gateway production service-backend ABI
 PP13 service-backend shared object that validates rank0 packs/runtime inputs
 gateway health first_blocker for incomplete production service state
 PP13 service backend owns the C service runtime, scheduler, request API, prefix cache, and KV arena
+resident driver fills hidden transport packet device pointers and streams from driver-owned pipeline slots
 ```
 
 Missing:
@@ -74,6 +75,7 @@ fail-closed requirement for GLM-5.2 model driver shared object
 final-token ids carried in SparkModelDriverCompletion and PP13 final events
 spark0 PP13 service backend that surfaces the first blocker through health
 spark0 PP13 service backend initializes the C service runtime without scripts
+resident driver hidden-transport packet templates no longer require external private device pointers
 ```
 
 Missing:
@@ -83,6 +85,7 @@ real persistent hidden transport backend
 GLM-5.2 rank model-driver shared object for the resident daemon
 driver node-context binding for resident weights, KV, graph buckets, and packs
 rank0 token-id input bridge from service callbacks into stage runner submissions
+rank daemon receive-to-submit loop with per-rank KV block table ownership
 final-token bridge from PP13 service backend into service decode results
 cross-rank error propagation
 ring restart and quiesce path

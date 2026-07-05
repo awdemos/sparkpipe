@@ -1500,6 +1500,8 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
         2u,
         8100u,
         33u);
+    frame_context.hidden_input_packet.hidden_bf16 = 0;
+    frame_context.hidden_input_packet.cuda_stream = 0;
     SparkTestInitializeStageHiddenTransportPacket(
         &frame_context.hidden_output_packet,
         &pipeline_slots[0],
@@ -1507,6 +1509,8 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
         2u,
         8100u,
         34u);
+    frame_context.hidden_output_packet.hidden_bf16 = 0;
+    frame_context.hidden_output_packet.cuda_stream = 0;
 
     memset(&frame, 0, sizeof(frame));
     frame.request_id = 309u;
