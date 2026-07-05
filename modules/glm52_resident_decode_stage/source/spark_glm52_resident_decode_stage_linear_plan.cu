@@ -699,7 +699,13 @@ static SparkStatus SparkGlm52LinearPlanValidateCreateInfo(
             create_info->raw_kv_b_weight_scale_inv_f32) != SPARK_STATUS_OK ||
         SparkGlm52LinearPlanValidateQuantizedFp8Pair(
             create_info->attention_output_weight_fp8_e4m3,
-            create_info->attention_output_weight_scale_inv_f32) != SPARK_STATUS_OK)
+            create_info->attention_output_weight_scale_inv_f32) != SPARK_STATUS_OK ||
+        SparkGlm52LinearPlanValidateQuantizedFp8Pair(
+            create_info->dsa_query_weight_fp8_e4m3,
+            create_info->dsa_query_weight_scale_inv_f32) != SPARK_STATUS_OK ||
+        SparkGlm52LinearPlanValidateQuantizedFp8Pair(
+            create_info->dsa_key_weight_fp8_e4m3,
+            create_info->dsa_key_weight_scale_inv_f32) != SPARK_STATUS_OK)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -1089,6 +1095,100 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
             normalized_create_info.restricted_logits_input_bf16,
             normalized_create_info.restricted_lm_head_weight_bf16,
             normalized_create_info.restricted_logits_f32,
+            &normalized_create_info);
+        if (status != SPARK_STATUS_OK)
+        {
+            SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(binding);
+            return status;
+        }
+    }
+
+    if ((normalized_create_info.required_plan_mask &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DSA_QUERY) != 0u)
+    {
+        if (SparkGlm52LinearPlanUseQuantizedFp8(
+                normalized_create_info.dsa_query_weight_fp8_e4m3,
+                normalized_create_info.dsa_query_weight_scale_inv_f32) != 0u)
+        {
+            status = SparkGlm52LinearPlanCreateQuantizedFp8One(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_QUERY,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
+                0u,
+                normalized_create_info.dsa_query_weight_fp8_e4m3,
+                normalized_create_info.dsa_query_weight_scale_inv_f32,
+                &normalized_create_info);
+        }
+        else
+        {
+            status = SparkGlm52LinearPlanCreateOne(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_QUERY,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
+                0u,
+                normalized_create_info.dsa_query_input_bf16,
+                normalized_create_info.dsa_query_weight_bf16,
+                normalized_create_info.dsa_query_output_bf16,
+                &normalized_create_info);
+        }
+        if (status != SPARK_STATUS_OK)
+        {
+            SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(binding);
+            return status;
+        }
+    }
+
+    if ((normalized_create_info.required_plan_mask &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DSA_KEY) != 0u)
+    {
+        if (SparkGlm52LinearPlanUseQuantizedFp8(
+                normalized_create_info.dsa_key_weight_fp8_e4m3,
+                normalized_create_info.dsa_key_weight_scale_inv_f32) != 0u)
+        {
+            status = SparkGlm52LinearPlanCreateQuantizedFp8One(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_KEY,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
+                0u,
+                normalized_create_info.dsa_key_weight_fp8_e4m3,
+                normalized_create_info.dsa_key_weight_scale_inv_f32,
+                &normalized_create_info);
+        }
+        else
+        {
+            status = SparkGlm52LinearPlanCreateOne(
+                binding,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_KEY,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
+                0u,
+                normalized_create_info.dsa_key_input_bf16,
+                normalized_create_info.dsa_key_weight_bf16,
+                normalized_create_info.dsa_key_output_bf16,
+                &normalized_create_info);
+        }
+        if (status != SPARK_STATUS_OK)
+        {
+            SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(binding);
+            return status;
+        }
+    }
+
+    if ((normalized_create_info.required_plan_mask &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DSA_WEIGHTS) != 0u)
+    {
+        status = SparkGlm52LinearPlanCreateOne(
+            binding,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_WEIGHTS,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,
+            0u,
+            normalized_create_info.dsa_weights_input_bf16,
+            normalized_create_info.dsa_weights_proj_weight_bf16,
+            normalized_create_info.dsa_weights_output_bf16,
             &normalized_create_info);
         if (status != SPARK_STATUS_OK)
         {

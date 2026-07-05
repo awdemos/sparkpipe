@@ -11323,8 +11323,14 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(
         pipeline_slot->index_head_weights_bf16 == 0 ||
         pipeline_slot->positions == 0 ||
         pipeline_slot->slot_mapping == 0 ||
-        node_context->index_query_weight_bf16 == 0 ||
-        node_context->index_key_weight_bf16 == 0 ||
+        ((node_context->index_query_weight_fp8_e4m3 == 0) !=
+            (node_context->index_query_weight_scale_inv_f32 == 0)) ||
+        ((node_context->index_key_weight_fp8_e4m3 == 0) !=
+            (node_context->index_key_weight_scale_inv_f32 == 0)) ||
+        (node_context->index_query_weight_bf16 == 0 &&
+            node_context->index_query_weight_fp8_e4m3 == 0) ||
+        (node_context->index_key_weight_bf16 == 0 &&
+            node_context->index_key_weight_fp8_e4m3 == 0) ||
         node_context->index_weights_proj_weight_bf16 == 0 ||
         node_context->index_key_norm_weight_bf16 == 0 ||
         node_context->index_key_norm_bias_bf16 == 0 ||
@@ -11338,36 +11344,77 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    plan_is_required = node_context->projection_backend_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT;
-    status = SparkGlm52ResidentDecodeStageLaunchLinear(
-        node_context,
-        cuda_slot_state,
-        cuda_stream,
-        (const uint16_t *)pipeline_slot->raw_query_a_normalized_bf16,
-        (const uint16_t *)node_context->index_query_weight_bf16,
-        (uint16_t *)pipeline_slot->query_index_heads_bf16,
-        active_sequence_count,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_QUERY,
-        plan_is_required);
+    plan_is_required =
+        node_context->projection_backend_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT ||
+        node_context->projection_backend_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
+    if (node_context->index_query_weight_fp8_e4m3 != 0)
+    {
+        status = SparkGlm52ResidentDecodeStageLaunchLinearFp8(
+            node_context,
+            cuda_slot_state,
+            cuda_stream,
+            (const uint16_t *)pipeline_slot->raw_query_a_normalized_bf16,
+            node_context->index_query_weight_fp8_e4m3,
+            node_context->index_query_weight_scale_inv_f32,
+            (uint16_t *)pipeline_slot->query_index_heads_bf16,
+            active_sequence_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_QUERY,
+            plan_is_required);
+    }
+    else
+    {
+        status = SparkGlm52ResidentDecodeStageLaunchLinear(
+            node_context,
+            cuda_slot_state,
+            cuda_stream,
+            (const uint16_t *)pipeline_slot->raw_query_a_normalized_bf16,
+            (const uint16_t *)node_context->index_query_weight_bf16,
+            (uint16_t *)pipeline_slot->query_index_heads_bf16,
+            active_sequence_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_QUERY,
+            plan_is_required);
+    }
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    status = SparkGlm52ResidentDecodeStageLaunchLinear(
-        node_context,
-        cuda_slot_state,
-        cuda_stream,
-        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
-        (const uint16_t *)node_context->index_key_weight_bf16,
-        (uint16_t *)pipeline_slot->current_key_index_bf16,
-        active_sequence_count,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_KEY,
-        plan_is_required);
+    if (node_context->index_key_weight_fp8_e4m3 != 0)
+    {
+        status = SparkGlm52ResidentDecodeStageLaunchLinearFp8(
+            node_context,
+            cuda_slot_state,
+            cuda_stream,
+            (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
+            node_context->index_key_weight_fp8_e4m3,
+            node_context->index_key_weight_scale_inv_f32,
+            (uint16_t *)pipeline_slot->current_key_index_bf16,
+            active_sequence_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_KEY,
+            plan_is_required);
+    }
+    else
+    {
+        status = SparkGlm52ResidentDecodeStageLaunchLinear(
+            node_context,
+            cuda_slot_state,
+            cuda_stream,
+            (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
+            (const uint16_t *)node_context->index_key_weight_bf16,
+            (uint16_t *)pipeline_slot->current_key_index_bf16,
+            active_sequence_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_KEY,
+            plan_is_required);
+    }
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -13038,7 +13085,11 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeGraphSignature(
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, (uint64_t)(node_context->index_softmax_scale * 1000000.0f));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->selected_token_indices_by_layer));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_query_weight_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_query_weight_fp8_e4m3));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_query_weight_scale_inv_f32));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_key_weight_bf16));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_key_weight_fp8_e4m3));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_key_weight_scale_inv_f32));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_weights_proj_weight_bf16));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_key_norm_weight_bf16));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_key_norm_bias_bf16));

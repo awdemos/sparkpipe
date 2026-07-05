@@ -149,12 +149,25 @@ static SparkStatus SparkGlm52ProductionTopologyAppendSideband(
 
 uint32_t SparkGlm52DsaIndexShareSourceLayer(uint32_t layer_index)
 {
+    uint32_t adjusted_layer_index;
+
     if (layer_index >= SPARK_GLM52_STAGE_PLAN_LAYER_COUNT)
     {
         return UINT32_MAX;
     }
-    return layer_index -
-        (layer_index % SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT);
+    if (layer_index <
+        SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT)
+    {
+        return layer_index;
+    }
+    adjusted_layer_index =
+        layer_index -
+        (SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET - 1u);
+    return
+        (SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET - 1u) +
+        (adjusted_layer_index -
+            (adjusted_layer_index %
+             SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT));
 }
 
 SparkStatus SparkGlm52DsaIndexShareFindGroupEndLayerExclusive(
@@ -169,10 +182,17 @@ SparkStatus SparkGlm52DsaIndexShareFindGroupEndLayerExclusive(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     source_layer_index = SparkGlm52DsaIndexShareSourceLayer(layer_index);
-    *group_end_layer_exclusive_out = SparkGlm52ProductionTopologyMinimumU32(
-        source_layer_index +
-            SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT,
-        SPARK_GLM52_STAGE_PLAN_LAYER_COUNT);
+    *group_end_layer_exclusive_out =
+        source_layer_index + 1u;
+    if (source_layer_index + 1u >=
+        SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT)
+    {
+        *group_end_layer_exclusive_out =
+            SparkGlm52ProductionTopologyMinimumU32(
+                source_layer_index +
+                    SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT,
+                SPARK_GLM52_STAGE_PLAN_LAYER_COUNT);
+    }
     return SPARK_STATUS_OK;
 }
 
@@ -231,12 +251,19 @@ SparkStatus SparkGlm52ProductionTopologyBuild(
     }
     for (source_layer_index = 0u;
          source_layer_index < SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
-         source_layer_index +=
-            SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT)
+         source_layer_index += 1u)
     {
+        if (SparkGlm52DsaIndexShareSourceLayer(source_layer_index) !=
+            source_layer_index)
+        {
+            continue;
+        }
         group_end_layer_exclusive = SparkGlm52ProductionTopologyMinimumU32(
             source_layer_index +
-                SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT,
+                (source_layer_index + 1u >=
+                    SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT
+                    ? SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT
+                    : 1u),
             SPARK_GLM52_STAGE_PLAN_LAYER_COUNT);
         status = SparkGlm52ProductionTopologyFindStageForLayer(
             stage_plan,
