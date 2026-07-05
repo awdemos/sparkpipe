@@ -2172,7 +2172,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->mlp_execution_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE ||
         node_context->attention_execution_mode >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT ||
         !SparkGlm52ResidentDecodeStageModelQuantizationModeIsSupported(
             node_context->model_quantization_mode) ||
         node_context->reserved1 != 0u ||
