@@ -32,6 +32,7 @@ typedef struct SparkGlm52TextPromptSubmitRequest
     const char *prompt_text;
     uint32_t prompt_text_bytes;
     uint32_t tokenizer_encode_flags;
+    SparkTokenizerWorkspace *tokenizer_workspace;
     uint32_t *prompt_token_storage;
 } SparkGlm52TextPromptSubmitRequest;
 

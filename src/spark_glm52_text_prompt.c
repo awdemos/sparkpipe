@@ -23,7 +23,12 @@ static SparkStatus SparkGlm52TextPromptValidateSubmitRequest(
         (request->prompt_text == 0 && request->prompt_text_bytes != 0u) ||
         request->prompt_token_storage == 0 ||
         request->prompt_token_storage_capacity == 0u ||
-        (request->tokenizer_encode_flags & ~SPARK_TOKENIZER_ENCODE_KNOWN_FLAGS) != 0u)
+        (request->tokenizer_encode_flags & ~SPARK_TOKENIZER_ENCODE_KNOWN_FLAGS) != 0u ||
+        (request->tokenizer_workspace != 0 &&
+            (request->tokenizer_workspace->abi_version != SPARK_TOKENIZER_ABI_VERSION ||
+                request->tokenizer_workspace->descriptor_bytes !=
+                    SPARK_TOKENIZER_WORKSPACE_DESCRIPTOR_BYTES ||
+                request->tokenizer_workspace->symbol_capacity == 0u)))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -61,12 +66,25 @@ SparkStatus SparkGlm52RequestApiSubmitTextPrompt(
     encoding.descriptor_bytes = SPARK_TOKENIZER_ENCODING_DESCRIPTOR_BYTES;
     encoding.token_capacity = request->prompt_token_storage_capacity;
     encoding.token_ids = request->prompt_token_storage;
-    status = SparkTokenizerEncodeUtf8(
-        tokenizer,
-        request->prompt_text,
-        request->prompt_text_bytes,
-        request->tokenizer_encode_flags,
-        &encoding);
+    if (request->tokenizer_workspace != 0)
+    {
+        status = SparkTokenizerEncodeUtf8WithWorkspace(
+            tokenizer,
+            request->prompt_text,
+            request->prompt_text_bytes,
+            request->tokenizer_encode_flags,
+            request->tokenizer_workspace,
+            &encoding);
+    }
+    else
+    {
+        status = SparkTokenizerEncodeUtf8(
+            tokenizer,
+            request->prompt_text,
+            request->prompt_text_bytes,
+            request->tokenizer_encode_flags,
+            &encoding);
+    }
     result->prompt_token_count = encoding.token_count;
     result->required_prompt_token_count = encoding.token_count +
         encoding.overflow_token_count;

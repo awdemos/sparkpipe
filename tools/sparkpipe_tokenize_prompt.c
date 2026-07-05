@@ -13,7 +13,7 @@ static int SparkTokenizePromptUsage(
 {
     fprintf(
         stderr,
-        "usage: %s --tokenizer-json path (--prompt text | --prompt-file path | --text text | --text-file path) [--output path] [--disable-special | --disable-special-token-match] [--add-prefix-space]\n",
+        "usage: %s (--tokenizer-json path | --tokenizer-compiled path) (--prompt text | --prompt-file path | --text text | --text-file path) [--output path] [--save-compiled-tokenizer path] [--disable-special | --disable-special-token-match] [--add-prefix-space] [--disable-regex-pretokenization]\n",
         program);
     return 2;
 }
@@ -121,6 +121,8 @@ static SparkStatus SparkTokenizePromptParseArguments(
     int argc,
     char **argv,
     const char **tokenizer_json_path_out,
+    const char **tokenizer_compiled_path_out,
+    const char **save_compiled_path_out,
     const char **prompt_text_out,
     const char **prompt_file_path_out,
     const char **output_path_out,
@@ -128,7 +130,8 @@ static SparkStatus SparkTokenizePromptParseArguments(
 {
     int argument_index;
 
-    if (tokenizer_json_path_out == 0 || prompt_text_out == 0 ||
+    if (tokenizer_json_path_out == 0 || tokenizer_compiled_path_out == 0 ||
+        save_compiled_path_out == 0 || prompt_text_out == 0 ||
         prompt_file_path_out == 0 || output_path_out == 0 ||
         encode_flags_out == 0)
     {
@@ -136,6 +139,8 @@ static SparkStatus SparkTokenizePromptParseArguments(
     }
 
     *tokenizer_json_path_out = 0;
+    *tokenizer_compiled_path_out = 0;
+    *save_compiled_path_out = 0;
     *prompt_text_out = 0;
     *prompt_file_path_out = 0;
     *output_path_out = 0;
@@ -147,6 +152,17 @@ static SparkStatus SparkTokenizePromptParseArguments(
             argument_index + 1 < argc)
         {
             *tokenizer_json_path_out = argv[++argument_index];
+        }
+        else if ((strcmp(argv[argument_index], "--tokenizer-compiled") == 0 ||
+                  strcmp(argv[argument_index], "--compiled-tokenizer") == 0) &&
+            argument_index + 1 < argc)
+        {
+            *tokenizer_compiled_path_out = argv[++argument_index];
+        }
+        else if (strcmp(argv[argument_index], "--save-compiled-tokenizer") == 0 &&
+            argument_index + 1 < argc)
+        {
+            *save_compiled_path_out = argv[++argument_index];
         }
         else if ((strcmp(argv[argument_index], "--prompt") == 0 ||
                   strcmp(argv[argument_index], "--text") == 0) &&
@@ -174,13 +190,17 @@ static SparkStatus SparkTokenizePromptParseArguments(
         {
             *encode_flags_out |= SPARK_TOKENIZER_ENCODE_FLAG_ADD_PREFIX_SPACE;
         }
+        else if (strcmp(argv[argument_index], "--disable-regex-pretokenization") == 0)
+        {
+            *encode_flags_out |= SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_REGEX_PRETOKENIZATION;
+        }
         else
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
     }
 
-    if (*tokenizer_json_path_out == 0 ||
+    if (((*tokenizer_json_path_out == 0) == (*tokenizer_compiled_path_out == 0)) ||
         ((*prompt_text_out == 0) == (*prompt_file_path_out == 0)))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -193,6 +213,8 @@ int main(
     char **argv)
 {
     const char *tokenizer_json_path;
+    const char *tokenizer_compiled_path;
+    const char *save_compiled_path;
     const char *prompt_text;
     const char *prompt_file_path;
     const char *output_path;
@@ -202,6 +224,7 @@ int main(
     uint32_t *token_ids;
     SparkTokenizer tokenizer;
     SparkTokenizerHuggingFaceJsonConfiguration tokenizer_configuration;
+    SparkTokenizerCompiledFileConfiguration compiled_configuration;
     SparkTokenizerEncoding encoding;
     SparkStatus status;
 
@@ -209,6 +232,8 @@ int main(
         argc,
         argv,
         &tokenizer_json_path,
+        &tokenizer_compiled_path,
+        &save_compiled_path,
         &prompt_text,
         &prompt_file_path,
         &output_path,
@@ -254,14 +279,33 @@ int main(
     }
 
     SparkTokenizerReset(&tokenizer);
-    memset(&tokenizer_configuration, 0, sizeof(tokenizer_configuration));
-    tokenizer_configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
-    tokenizer_configuration.descriptor_bytes =
-        SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES;
-    tokenizer_configuration.tokenizer_json_path = tokenizer_json_path;
-    status = SparkTokenizerLoadHuggingFaceJson(
-        &tokenizer,
-        &tokenizer_configuration);
+    if (tokenizer_compiled_path != 0)
+    {
+        memset(&compiled_configuration, 0, sizeof(compiled_configuration));
+        compiled_configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+        compiled_configuration.descriptor_bytes =
+            SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
+        compiled_configuration.compiled_tokenizer_path = tokenizer_compiled_path;
+        status = SparkTokenizerLoadCompiledFile(&tokenizer, &compiled_configuration);
+    }
+    else
+    {
+        memset(&tokenizer_configuration, 0, sizeof(tokenizer_configuration));
+        tokenizer_configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+        tokenizer_configuration.descriptor_bytes =
+            SPARK_TOKENIZER_HF_JSON_CONFIGURATION_DESCRIPTOR_BYTES;
+        tokenizer_configuration.tokenizer_json_path = tokenizer_json_path;
+        status = SparkTokenizerLoadHuggingFaceJson(&tokenizer, &tokenizer_configuration);
+        if (status == SPARK_STATUS_OK && save_compiled_path != 0)
+        {
+            memset(&compiled_configuration, 0, sizeof(compiled_configuration));
+            compiled_configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+            compiled_configuration.descriptor_bytes =
+                SPARK_TOKENIZER_COMPILED_FILE_CONFIGURATION_DESCRIPTOR_BYTES;
+            compiled_configuration.compiled_tokenizer_path = save_compiled_path;
+            status = SparkTokenizerSaveCompiledFile(&tokenizer, &compiled_configuration);
+        }
+    }
     if (status != SPARK_STATUS_OK)
     {
         free(token_ids);
