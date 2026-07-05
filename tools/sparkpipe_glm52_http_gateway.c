@@ -52,6 +52,14 @@ typedef struct SparkGlm52GatewayRuntime
 	SparkGlm52ServiceClientId service_client_id;
 	uint64_t next_client_request_id;
 	uint32_t service_backend_attached;
+	uint32_t pump_log_valid;
+	uint32_t last_pump_status;
+	uint32_t last_service_status;
+	uint32_t last_serving_status;
+	uint32_t last_live_request_count;
+	uint32_t last_queued_request_count;
+	uint64_t last_prefill_dispatch_count;
+	uint64_t last_decode_dispatch_count;
 } SparkGlm52GatewayRuntime;
 
 static void SparkGlm52GatewayInitializeConfig(
@@ -368,6 +376,7 @@ static void SparkGlm52GatewayPumpService(SparkGlm52GatewayRuntime *runtime)
 {
 	SparkGlm52ServiceStats service_stats;
 	SparkStatus status;
+	uint32_t should_log;
 
 	if (runtime == 0 || runtime->service_backend_attached == 0u)
 		return;
@@ -378,6 +387,42 @@ static void SparkGlm52GatewayPumpService(SparkGlm52GatewayRuntime *runtime)
 	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY &&
 		status != SPARK_STATUS_NOT_FOUND)
 		fprintf(stderr,"gateway backend pump status=%u\n",status);
+	should_log = runtime->pump_log_valid == 0u ||
+		runtime->last_pump_status != (uint32_t)status ||
+		runtime->last_service_status != service_stats.last_status ||
+		runtime->last_serving_status != service_stats.serving_stats.last_status ||
+		runtime->last_live_request_count != service_stats.live_request_count ||
+		runtime->last_queued_request_count !=
+			service_stats.serving_stats.queued_request_count ||
+		runtime->last_prefill_dispatch_count !=
+			service_stats.serving_stats.prefill_dispatch_count ||
+		runtime->last_decode_dispatch_count !=
+			service_stats.serving_stats.decode_dispatch_count;
+	if (should_log != 0u)
+	{
+		fprintf(
+			stderr,
+			"gateway_pump status=%u service_last=%u serving_last=%u live=%u queued=%u prefill=%llu decode=%llu events=%u\n",
+			(uint32_t)status,
+			service_stats.last_status,
+			service_stats.serving_stats.last_status,
+			service_stats.live_request_count,
+			service_stats.serving_stats.queued_request_count,
+			(unsigned long long)service_stats.serving_stats.prefill_dispatch_count,
+			(unsigned long long)service_stats.serving_stats.decode_dispatch_count,
+			service_stats.event_count);
+		runtime->pump_log_valid = 1u;
+		runtime->last_pump_status = (uint32_t)status;
+		runtime->last_service_status = service_stats.last_status;
+		runtime->last_serving_status = service_stats.serving_stats.last_status;
+		runtime->last_live_request_count = service_stats.live_request_count;
+		runtime->last_queued_request_count =
+			service_stats.serving_stats.queued_request_count;
+		runtime->last_prefill_dispatch_count =
+			service_stats.serving_stats.prefill_dispatch_count;
+		runtime->last_decode_dispatch_count =
+			service_stats.serving_stats.decode_dispatch_count;
+	}
 	if (SparkGlm52GatewayRefreshBackendView(runtime) == 0)
 		SparkGlm52GatewayLogServiceEvents(runtime);
 }
