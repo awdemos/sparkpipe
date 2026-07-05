@@ -3089,6 +3089,10 @@ static bool SparkGlm52ResidentDecodeStageFrameShapeIsSupported(
         }
         if (state->stage_slice_layer_count != 0u)
         {
+            if (frame->new_token_count == 1u)
+            {
+                return true;
+            }
             return SparkGlm52ResidentDecodeStageStageSliceBulkPrefillSupportsPrompt(
                 state,
                 frame->new_token_count);
