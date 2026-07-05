@@ -15,6 +15,7 @@
 #define SPARK_HIDDEN_TCP_CUDA_MAGIC 0x48544355u
 #define SPARK_HIDDEN_TCP_CUDA_HOST_BYTES 32u
 #define SPARK_HIDDEN_TCP_CUDA_DEFAULT_PORT_BASE 52100u
+#define SPARK_HIDDEN_TCP_CUDA_DEFAULT_PORT_OFFSET 1000u
 #define SPARK_HIDDEN_TCP_CUDA_CONNECT_ATTEMPTS 600u
 #define SPARK_HIDDEN_TCP_CUDA_CONNECT_SLEEP_US 100000u
 
@@ -244,8 +245,11 @@ static SparkStatus SparkHiddenTcpCudaInitialize(
     state->listen_fd = -1;
     state->socket_fd = -1;
     state->port_base = SparkHiddenTcpCudaParseUintEnv(
-        "SPARKPIPE_PP13_TRANSPORT_PORT_BASE",
-        SPARK_HIDDEN_TCP_CUDA_DEFAULT_PORT_BASE);
+        "SPARKPIPE_PP13_HIDDEN_TRANSPORT_PORT_BASE",
+        SparkHiddenTcpCudaParseUintEnv(
+            "SPARKPIPE_PP13_TRANSPORT_PORT_BASE",
+            SPARK_HIDDEN_TCP_CUDA_DEFAULT_PORT_BASE) +
+            SPARK_HIDDEN_TCP_CUDA_DEFAULT_PORT_OFFSET);
     rank_text = getenv("SPARKPIPE_PP13_TRANSPORT_RANK");
     if (rank_text == 0 || rank_text[0] == '\0')
     {
