@@ -13,6 +13,7 @@ typedef struct SparkGlm52Pp13GateConfig
     const char *config_path;
     const char *fp8_pack_root;
     const char *generated_root;
+    const char *transport_shared_object_path;
     uint32_t rank_index;
     uint32_t rank_is_set;
     uint32_t max_active_sequence_count;
@@ -20,6 +21,7 @@ typedef struct SparkGlm52Pp13GateConfig
     uint32_t require_pack_files;
     uint32_t require_gpudirect_preflight;
     uint32_t generate_missing_runtime_files;
+    uint32_t require_transport_shared_object;
 } SparkGlm52Pp13GateConfig;
 
 static int SparkGlm52Pp13GateParseU32(const char *text,uint32_t *value_out)
@@ -58,6 +60,7 @@ static void SparkGlm52Pp13GateInitializeConfig(
     configuration->require_pack_files = 1u;
     configuration->require_gpudirect_preflight = 0u;
     configuration->generate_missing_runtime_files = 1u;
+    configuration->require_transport_shared_object = 0u;
 }
 
 static SparkStatus SparkGlm52Pp13GateGetOptionalU32(
@@ -139,6 +142,13 @@ static SparkStatus SparkGlm52Pp13GateLoadConfigFile(
     {
         return status;
     }
+    status = SparkGlm52Pp13GateGetOptionalStringPointer(
+        document,root,"transport_so",
+        &configuration->transport_shared_object_path);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     status = SparkGlm52Pp13GateGetOptionalU32(
         document,root,"max_active_sequence_count",
         &configuration->max_active_sequence_count);
@@ -176,6 +186,14 @@ static SparkStatus SparkGlm52Pp13GateLoadConfigFile(
         return status;
     }
     configuration->generate_missing_runtime_files = value != 0u ? 1u : 0u;
+    value = configuration->require_transport_shared_object;
+    status = SparkGlm52Pp13GateGetOptionalU32(
+        document,root,"require_transport_so",&value);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    configuration->require_transport_shared_object = value != 0u ? 1u : 0u;
     return SPARK_STATUS_OK;
 }
 
@@ -229,12 +247,23 @@ static int SparkGlm52Pp13GateApplyArgument(
         *index += 1;
         return 0;
     }
+    if (strcmp(argv[*index],"--transport-so") == 0)
+    {
+        if (*index + 1 >= argc)
+        {
+            return -5;
+        }
+        configuration->transport_shared_object_path = argv[*index + 1];
+        configuration->require_transport_shared_object = 1u;
+        *index += 1;
+        return 0;
+    }
     if (strcmp(argv[*index],"--max-active") == 0)
     {
         if (*index + 1 >= argc ||
             SparkGlm52Pp13GateParseU32(argv[*index + 1],&parsed) < 0)
         {
-            return -5;
+            return -6;
         }
         configuration->max_active_sequence_count = parsed;
         *index += 1;
@@ -245,7 +274,7 @@ static int SparkGlm52Pp13GateApplyArgument(
         if (*index + 1 >= argc ||
             SparkGlm52Pp13GateParseU32(argv[*index + 1],&parsed) < 0)
         {
-            return -6;
+            return -7;
         }
         configuration->port_base = parsed;
         *index += 1;
@@ -266,7 +295,12 @@ static int SparkGlm52Pp13GateApplyArgument(
         configuration->generate_missing_runtime_files = 0u;
         return 0;
     }
-    return -7;
+    if (strcmp(argv[*index],"--require-transport-so") == 0)
+    {
+        configuration->require_transport_shared_object = 1u;
+        return 0;
+    }
+    return -8;
 }
 
 static uint32_t SparkGlm52Pp13GateFileExists(const char *path)
@@ -479,11 +513,78 @@ static SparkStatus SparkGlm52Pp13GateGenerateRuntimeFiles(
         rank_plan,configuration->fp8_pack_root,pack_list_path);
 }
 
+static SparkStatus SparkGlm52Pp13GateOpenTransportSessions(
+    const SparkGlm52Pp13GateConfig *configuration,
+    const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
+    SparkHiddenTransportDynamicLibrary *transport_library,
+    SparkHiddenTransportSession **input_session,
+    SparkHiddenTransportSession **output_session,
+    SparkStatus *input_status,
+    SparkStatus *output_status)
+{
+    SparkStatus status;
+
+    if (configuration == 0 || rank_plan == 0 || transport_library == 0 ||
+        input_session == 0 || output_session == 0 || input_status == 0 ||
+        output_status == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *input_session = 0;
+    *output_session = 0;
+    *input_status = SPARK_STATUS_OK;
+    *output_status = SPARK_STATUS_OK;
+    memset(transport_library,0,sizeof(*transport_library));
+    if (configuration->transport_shared_object_path == 0 ||
+        configuration->transport_shared_object_path[0] == '\0')
+    {
+        return configuration->require_transport_shared_object != 0u ?
+            SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK;
+    }
+    status = SparkHiddenTransportLoadInterfaceFromSharedObject(
+        configuration->transport_shared_object_path,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+        transport_library);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if ((rank_plan->flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u)
+    {
+        *input_status = SparkHiddenTransportOpen(
+            &rank_plan->input_endpoint,
+            &transport_library->transport_interface,
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+            input_session);
+        if (*input_status != SPARK_STATUS_OK)
+        {
+            return *input_status;
+        }
+    }
+    if ((rank_plan->flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u)
+    {
+        *output_status = SparkHiddenTransportOpen(
+            &rank_plan->output_endpoint,
+            &transport_library->transport_interface,
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+            output_session);
+        if (*output_status != SPARK_STATUS_OK)
+        {
+            return *output_status;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
 static void SparkGlm52Pp13GatePrintPlan(
     const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
     const char *fp8_pack_root,
+    const char *transport_shared_object_path,
     SparkStatus pack_status,
-    SparkStatus transport_status)
+    SparkStatus transport_status,
+    SparkStatus transport_module_status,
+    SparkStatus input_open_status,
+    SparkStatus output_open_status)
 {
     printf("glm52_pp13_rank_gate=1\n");
     printf("rank=%u\n",rank_plan->rank_index);
@@ -494,6 +595,14 @@ static void SparkGlm52Pp13GatePrintPlan(
     printf("fp8_pack_root=%s\n",fp8_pack_root != 0 ? fp8_pack_root : "");
     printf("pack_status=%s\n",SparkStatusToString(pack_status));
     printf("transport_preflight_status=%s\n",SparkStatusToString(transport_status));
+    printf("transport_so=%s\n",
+        transport_shared_object_path != 0 ? transport_shared_object_path : "");
+    printf("transport_module_status=%s\n",
+        SparkStatusToString(transport_module_status));
+    printf("transport_input_open_status=%s\n",
+        SparkStatusToString(input_open_status));
+    printf("transport_output_open_status=%s\n",
+        SparkStatusToString(output_open_status));
     printf("listen_port=%u\n",rank_plan->listen_port);
     printf("next_port=%u\n",rank_plan->next_port);
     printf("previous_host=%s\n",rank_plan->previous_host_name);
@@ -512,15 +621,24 @@ int main(int argc,char **argv)
     SparkGlm52Pp13GateConfig configuration;
     SparkGlm52Pp13RuntimeRankPlan rank_plan;
     SparkJsonDocument document;
+    SparkHiddenTransportDynamicLibrary transport_library;
+    SparkHiddenTransportSession *input_transport_session;
+    SparkHiddenTransportSession *output_transport_session;
     SparkStatus status;
     SparkStatus pack_status;
     SparkStatus transport_status;
+    SparkStatus transport_module_status;
+    SparkStatus transport_input_open_status;
+    SparkStatus transport_output_open_status;
     SparkStatus generate_status;
     char error_buffer[256];
     int index;
 
     SparkGlm52Pp13GateInitializeConfig(&configuration);
     SparkJsonDocumentReset(&document);
+    memset(&transport_library,0,sizeof(transport_library));
+    input_transport_session = 0;
+    output_transport_session = 0;
     for (index = 1; index < argc; ++index)
     {
         if (SparkGlm52Pp13GateApplyArgument(
@@ -597,29 +715,68 @@ int main(int argc,char **argv)
                 &rank_plan.input_endpoint,0,0);
         }
     }
+    transport_input_open_status = SPARK_STATUS_OK;
+    transport_output_open_status = SPARK_STATUS_OK;
+    transport_module_status = SPARK_STATUS_OK;
+    if (pack_status == SPARK_STATUS_OK && transport_status == SPARK_STATUS_OK)
+    {
+        transport_module_status = SparkGlm52Pp13GateOpenTransportSessions(
+            &configuration,
+            &rank_plan,
+            &transport_library,
+            &input_transport_session,
+            &output_transport_session,
+            &transport_input_open_status,
+            &transport_output_open_status);
+    }
     SparkGlm52Pp13GatePrintPlan(
-        &rank_plan,configuration.fp8_pack_root,pack_status,transport_status);
+        &rank_plan,
+        configuration.fp8_pack_root,
+        configuration.transport_shared_object_path,
+        pack_status,
+        transport_status,
+        transport_module_status,
+        transport_input_open_status,
+        transport_output_open_status);
     SparkJsonDocumentDestroy(&document);
     if (pack_status != SPARK_STATUS_OK)
     {
+        SparkHiddenTransportClose(output_transport_session);
+        SparkHiddenTransportClose(input_transport_session);
+        SparkHiddenTransportUnloadInterface(&transport_library);
         fprintf(stderr,"FP8 pack gate failed: %s %s\n",
             SparkStatusToString(pack_status),error_buffer);
         return 6;
     }
     if (transport_status != SPARK_STATUS_OK)
     {
+        SparkHiddenTransportClose(output_transport_session);
+        SparkHiddenTransportClose(input_transport_session);
+        SparkHiddenTransportUnloadInterface(&transport_library);
         fprintf(stderr,"GPUDirect transport preflight failed: %s\n",
             SparkStatusToString(transport_status));
         return 7;
     }
+    if (transport_module_status != SPARK_STATUS_OK)
+    {
+        SparkHiddenTransportClose(output_transport_session);
+        SparkHiddenTransportClose(input_transport_session);
+        SparkHiddenTransportUnloadInterface(&transport_library);
+        fprintf(stderr,"production transport module failed: %s\n",
+            SparkStatusToString(transport_module_status));
+        return 8;
+    }
     generate_status = SparkGlm52Pp13GateGenerateRuntimeFiles(
         &configuration,&rank_plan);
     printf("generated_runtime_status=%s\n",SparkStatusToString(generate_status));
+    SparkHiddenTransportClose(output_transport_session);
+    SparkHiddenTransportClose(input_transport_session);
+    SparkHiddenTransportUnloadInterface(&transport_library);
     if (generate_status != SPARK_STATUS_OK)
     {
         fprintf(stderr,"runtime file generation failed: %s\n",
             SparkStatusToString(generate_status));
-        return 8;
+        return 9;
     }
     return 0;
 }

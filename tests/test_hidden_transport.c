@@ -5,6 +5,11 @@
 
 #include "sparkpipe/spark_hidden_transport.h"
 
+#ifndef SPARK_TEST_HIDDEN_TRANSPORT_MODULE_PATH
+#define SPARK_TEST_HIDDEN_TRANSPORT_MODULE_PATH \
+    "build/test_modules/libhidden_transport_module.so"
+#endif
+
 typedef struct TestHiddenTransportState
 {
     uint32_t send_count;
@@ -450,6 +455,52 @@ static void SparkTestHiddenTransportRejectsInvalidInterface(void)
         &session) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkTestHiddenTransportLoadsProductionModule(void)
+{
+    SparkHiddenTransportDynamicLibrary library;
+    SparkHiddenTransportEndpoint endpoint;
+    SparkHiddenTransportPacket packet;
+    SparkHiddenTransportCompletion completion;
+    SparkHiddenTransportSession *session;
+    uint16_t hidden_payload[6144u * 2u];
+
+    memset(&library, 0, sizeof(library));
+    assert(SparkHiddenTransportLoadInterfaceFromSharedObject(
+        "build/test_modules/missing_hidden_transport_module.so",
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+        &library) == SPARK_STATUS_DRIVER_LOAD_ERROR);
+    assert(library.dynamic_library == 0);
+
+    assert(SparkHiddenTransportLoadInterfaceFromSharedObject(
+        SPARK_TEST_HIDDEN_TRANSPORT_MODULE_PATH,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+        &library) == SPARK_STATUS_OK);
+    assert(library.abi_version == SPARK_HIDDEN_TRANSPORT_ABI_VERSION);
+    assert(library.descriptor_bytes ==
+        SPARK_HIDDEN_TRANSPORT_DYNAMIC_LIBRARY_BYTES);
+    assert(library.dynamic_library != 0);
+    assert((library.transport_interface.capability_flags &
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS) ==
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS);
+
+    SparkTestInitializeEndpoint(&endpoint);
+    SparkTestInitializePacket(&packet, &endpoint, hidden_payload, 77u);
+    session = 0;
+    assert(SparkHiddenTransportOpen(
+        &endpoint,
+        &library.transport_interface,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+        &session) == SPARK_STATUS_OK);
+    assert(session != 0);
+    assert(SparkHiddenTransportSend(session, &packet) == SPARK_STATUS_OK);
+    memset(&completion, 0, sizeof(completion));
+    assert(SparkHiddenTransportPoll(session, &completion) == SPARK_STATUS_OK);
+    assert(completion.status == SPARK_STATUS_BUSY);
+    SparkHiddenTransportClose(session);
+    SparkHiddenTransportUnloadInterface(&library);
+    assert(library.dynamic_library == 0);
+}
+
 static void SparkTestHiddenTransportGpudirectPreflight(void)
 {
     SparkHiddenTransportEndpoint endpoint;
@@ -498,6 +549,7 @@ int main(void)
     SparkTestHiddenTransportPersistentRingBackend();
     SparkTestHiddenTransportPersistentRingAccountsSidebandBytes();
     SparkTestHiddenTransportRejectsInvalidInterface();
+    SparkTestHiddenTransportLoadsProductionModule();
     SparkTestHiddenTransportGpudirectPreflight();
     return 0;
 }
