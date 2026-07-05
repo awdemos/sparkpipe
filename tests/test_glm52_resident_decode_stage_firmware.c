@@ -3126,6 +3126,90 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
         &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkTestGlm52ResidentDecodeStageMlaCompressedKvValidation(void)
+{
+    SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[2];
+    SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
+    SparkGlm52ResidentDecodeStageNodeContext node_context;
+    SparkGlm52ResidentDecodeStageFp8KvCachePlan fp8_kv_cache_plan;
+    SparkFirmwareModuleConfiguration configuration;
+    SparkFirmwareModuleHostServices host_services;
+    SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
+    void *module_state;
+
+    SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
+        &node_context,
+        pipeline_slots,
+        fake_streams);
+    node_context.attention_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+    node_context.reserved_execution_flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MLA_COMPRESSED_KV_CACHE;
+    node_context.key_nope_cache_bf16 = 0;
+    node_context.value_cache_bf16 = 0;
+
+    memset(&completion_state, 0, sizeof(completion_state));
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    memset(&host_services, 0, sizeof(host_services));
+    host_services.completion_function =
+        SparkGlm52ResidentDecodeStageTestCompletion;
+    host_services.completion_context = &completion_state;
+    host_services.node_context = &node_context;
+
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_OK);
+    assert(module_state != 0);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
+
+    node_context.key_nope_cache_bf16 = node_context.mla_cache_bf16;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    node_context.key_nope_cache_bf16 = 0;
+    node_context.attention_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    node_context.attention_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+    SparkTestInitializeFp8KvCachePlan(&fp8_kv_cache_plan);
+    node_context.fp8_kv_cache_plan = &fp8_kv_cache_plan;
+    node_context.reserved_execution_flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FP8_KV_CACHE;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    fp8_kv_cache_plan.capability_flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_CAPABILITY_MLA_ONLY;
+    fp8_kv_cache_plan.key_nope_elements = 0u;
+    fp8_kv_cache_plan.value_elements = 0u;
+    fp8_kv_cache_plan.key_nope_cache_fp8_e4m3 = 0;
+    fp8_kv_cache_plan.key_nope_cache_scale_f32 = 0;
+    fp8_kv_cache_plan.value_cache_fp8_e4m3 = 0;
+    fp8_kv_cache_plan.value_cache_scale_f32 = 0;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_OK);
+    assert(module_state != 0);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
+}
+
 int main(void)
 {
     static const char LibraryRoot[] =
@@ -3165,6 +3249,7 @@ int main(void)
     SparkTestGlm52ResidentDecodeStageBuiltInQuantizedProjectionValidation();
     SparkTestGlm52ResidentDecodeStageFp8DenseMlpPlanValidation();
     SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation();
+    SparkTestGlm52ResidentDecodeStageMlaCompressedKvValidation();
     SparkTestGlm52ResidentDecodeStageDsaIndexShareFullRequiresScoreInputs();
     SparkTestGlm52ResidentDecodeStageBulkPrefillSubmit();
     SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit();

@@ -13,6 +13,161 @@ static uint64_t SparkGlm52KvCacheMulU64(
     return left * right;
 }
 
+static uint64_t SparkGlm52KvCacheCeilDivU64(
+    uint64_t numerator,
+    uint64_t denominator)
+{
+    if (denominator == 0u)
+    {
+        return 0u;
+    }
+    return (numerator + denominator - 1u) / denominator;
+}
+
+static SparkStatus SparkGlm52KvCacheCalculateAttentionBytesPerTokenLayer(
+    const SparkGlm52KvCacheCapacityRequest *request,
+    uint64_t *bytes_per_token_per_layer_out)
+{
+    uint64_t element_count;
+    uint64_t scale_count;
+
+    if (request == 0 || bytes_per_token_per_layer_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    switch (request->layout)
+    {
+        case SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE:
+            element_count =
+                (uint64_t)request->latent_dimension +
+                (uint64_t)request->rope_dimension +
+                ((uint64_t)request->head_count *
+                 (uint64_t)request->qk_nope_head_dimension) +
+                ((uint64_t)request->head_count *
+                 (uint64_t)request->value_head_dimension);
+            *bytes_per_token_per_layer_out =
+                element_count * (uint64_t)request->bytes_per_scalar;
+            return SPARK_STATUS_OK;
+
+        case SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED:
+            element_count =
+                (uint64_t)request->latent_dimension +
+                (uint64_t)request->rope_dimension;
+            *bytes_per_token_per_layer_out =
+                element_count * (uint64_t)request->bytes_per_scalar;
+            return SPARK_STATUS_OK;
+
+        case SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3:
+            if (request->fp8_scale_block_size == 0u)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            element_count =
+                (uint64_t)request->latent_dimension +
+                (uint64_t)request->rope_dimension;
+            scale_count = SparkGlm52KvCacheCeilDivU64(
+                element_count,
+                (uint64_t)request->fp8_scale_block_size);
+            *bytes_per_token_per_layer_out =
+                element_count + (scale_count * sizeof(float));
+            return SPARK_STATUS_OK;
+
+        default:
+            return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+}
+
+SparkStatus SparkGlm52KvCacheEstimateCapacity(
+    const SparkGlm52KvCacheCapacityRequest *request,
+    SparkGlm52KvCacheCapacityEstimate *estimate)
+{
+    uint64_t attention_bytes_per_token_per_layer;
+    uint64_t dsa_index_bytes_per_token;
+    uint64_t block_count_per_context;
+    uint64_t bytes_per_block_per_layer;
+    uint64_t bytes_per_context_per_rank;
+    SparkStatus status;
+
+    if (request == 0 || estimate == 0 ||
+        request->abi_version != SPARK_GLM52_KV_CACHE_ABI_VERSION ||
+        request->descriptor_bytes !=
+            SPARK_GLM52_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES ||
+        request->context_token_count == 0u ||
+        request->block_token_count == 0u ||
+        request->layer_count == 0u ||
+        request->latent_dimension == 0u ||
+        request->rope_dimension == 0u ||
+        request->bytes_per_scalar == 0u ||
+        request->cache_bytes_per_rank == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    status = SparkGlm52KvCacheCalculateAttentionBytesPerTokenLayer(
+        request,
+        &attention_bytes_per_token_per_layer);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+
+    dsa_index_bytes_per_token = 0u;
+    if (request->index_key_layer_count != 0u ||
+        request->index_key_dimension != 0u ||
+        request->index_key_bytes_per_scalar != 0u)
+    {
+        if (request->index_key_layer_count == 0u ||
+            request->index_key_dimension == 0u ||
+            request->index_key_bytes_per_scalar == 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        dsa_index_bytes_per_token =
+            (uint64_t)request->index_key_layer_count *
+            (uint64_t)request->index_key_dimension *
+            (uint64_t)request->index_key_bytes_per_scalar;
+    }
+
+    block_count_per_context = SparkGlm52KvCacheCeilDivU64(
+        (uint64_t)request->context_token_count,
+        (uint64_t)request->block_token_count);
+    bytes_per_block_per_layer =
+        (uint64_t)request->block_token_count *
+        attention_bytes_per_token_per_layer;
+    bytes_per_context_per_rank =
+        ((uint64_t)request->context_token_count *
+         (uint64_t)request->layer_count *
+         attention_bytes_per_token_per_layer) +
+        ((uint64_t)request->context_token_count *
+         dsa_index_bytes_per_token);
+    if (bytes_per_context_per_rank == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    memset(estimate, 0, sizeof(*estimate));
+    estimate->abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    estimate->descriptor_bytes =
+        SPARK_GLM52_KV_CACHE_CAPACITY_ESTIMATE_DESCRIPTOR_BYTES;
+    estimate->layout = request->layout;
+    estimate->context_token_count = request->context_token_count;
+    estimate->block_token_count = request->block_token_count;
+    estimate->layer_count = request->layer_count;
+    estimate->block_count_per_context = (uint32_t)block_count_per_context;
+    estimate->contexts_per_rank =
+        (uint32_t)(request->cache_bytes_per_rank / bytes_per_context_per_rank);
+    estimate->attention_bytes_per_token_per_layer =
+        attention_bytes_per_token_per_layer;
+    estimate->dsa_index_bytes_per_token = dsa_index_bytes_per_token;
+    estimate->bytes_per_block_per_layer = bytes_per_block_per_layer;
+    estimate->bytes_per_context_per_rank = bytes_per_context_per_rank;
+    estimate->unused_cache_bytes_per_rank =
+        request->cache_bytes_per_rank -
+        ((uint64_t)estimate->contexts_per_rank * bytes_per_context_per_rank);
+    return SPARK_STATUS_OK;
+}
+
 static uint64_t SparkGlm52KvCacheDefaultBlockStrideBytes(
     const SparkGlm52KvCacheConfiguration *configuration)
 {
@@ -33,6 +188,22 @@ static uint64_t SparkGlm52KvCacheDefaultBlockStrideBytes(
     return stride_bytes;
 }
 
+static uint32_t SparkGlm52KvCacheConfigurationHasValuePayload(
+    const SparkGlm52KvCacheConfiguration *configuration)
+{
+    return configuration != 0 &&
+        (configuration->value_device_base != 0 ||
+         configuration->value_block_stride_bytes != 0u);
+}
+
+static uint32_t SparkGlm52KvCacheArenaHasValuePayload(
+    const SparkGlm52KvCacheArena *arena)
+{
+    return arena != 0 &&
+        (arena->value_device_base != 0u ||
+         arena->value_block_stride_bytes != 0u);
+}
+
 static uint32_t SparkGlm52KvCacheConfigurationIsValid(
     const SparkGlm52KvCacheConfiguration *configuration)
 {
@@ -50,8 +221,12 @@ static uint32_t SparkGlm52KvCacheConfigurationIsValid(
         configuration->head_dim == 0u ||
         configuration->bytes_per_scalar == 0u ||
         configuration->key_device_base == 0 ||
-        configuration->value_device_base == 0 ||
         configuration->blocks == 0)
+    {
+        return 0u;
+    }
+    if (configuration->value_device_base == 0 &&
+        configuration->value_block_stride_bytes != 0u)
     {
         return 0u;
     }
@@ -75,10 +250,16 @@ static SparkStatus SparkGlm52KvCacheArenaValidate(
         arena->head_dim == 0u ||
         arena->bytes_per_scalar == 0u ||
         arena->key_device_base == 0u ||
-        arena->value_device_base == 0u ||
         arena->key_block_stride_bytes == 0u ||
-        arena->value_block_stride_bytes == 0u ||
         arena->blocks == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (arena->value_device_base == 0u && arena->value_block_stride_bytes != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (arena->value_device_base != 0u && arena->value_block_stride_bytes == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -99,8 +280,11 @@ static void SparkGlm52KvCacheInitializeBlock(
     block->token_capacity = arena->block_token_count;
     block->key_device_address = arena->key_device_base +
         (uintptr_t)(arena->key_block_stride_bytes * physical_block_index);
-    block->value_device_address = arena->value_device_base +
-        (uintptr_t)(arena->value_block_stride_bytes * physical_block_index);
+    block->value_device_address =
+        SparkGlm52KvCacheArenaHasValuePayload(arena) != 0u
+        ? arena->value_device_base +
+            (uintptr_t)(arena->value_block_stride_bytes * physical_block_index)
+        : 0u;
 }
 
 SparkStatus SparkGlm52KvCacheArenaInitialize(
@@ -131,11 +315,17 @@ SparkStatus SparkGlm52KvCacheArenaInitialize(
     arena->key_block_stride_bytes = configuration->key_block_stride_bytes != 0u
         ? configuration->key_block_stride_bytes
         : default_stride_bytes;
-    arena->value_block_stride_bytes = configuration->value_block_stride_bytes != 0u
-        ? configuration->value_block_stride_bytes
-        : default_stride_bytes;
+    arena->value_block_stride_bytes =
+        SparkGlm52KvCacheConfigurationHasValuePayload(configuration) != 0u
+        ? configuration->value_block_stride_bytes != 0u
+            ? configuration->value_block_stride_bytes
+            : default_stride_bytes
+        : 0u;
     arena->key_device_base = (uintptr_t)configuration->key_device_base;
-    arena->value_device_base = (uintptr_t)configuration->value_device_base;
+    arena->value_device_base =
+        SparkGlm52KvCacheConfigurationHasValuePayload(configuration) != 0u
+        ? (uintptr_t)configuration->value_device_base
+        : 0u;
     arena->blocks = configuration->blocks;
 
     for (physical_block_index = 0u;
@@ -665,14 +855,19 @@ static uint32_t SparkGlm52KvCachePrefetchPlanAlreadyContainsBlock(
 
 static void SparkGlm52KvCachePrefetchSourceInitializeFromPhysicalBlock(
     SparkGlm52KvCachePrefetchSourceBlock *source_block,
-    uint32_t physical_block_index)
+    uint32_t physical_block_index,
+    uint32_t include_value_payload)
 {
     memset(source_block, 0, sizeof(*source_block));
     source_block->abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
     source_block->descriptor_bytes =
         SPARK_GLM52_KV_CACHE_PREFETCH_SOURCE_BLOCK_DESCRIPTOR_BYTES;
     source_block->physical_block_index = physical_block_index;
-    source_block->flags = SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS;
+    source_block->flags = SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_FLAG_KEY;
+    if (include_value_payload != 0u)
+    {
+        source_block->flags |= SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_FLAG_VALUE;
+    }
 }
 
 static SparkStatus SparkGlm52KvCacheValidatePrefetchSourceBlock(
@@ -685,10 +880,15 @@ static SparkStatus SparkGlm52KvCacheValidatePrefetchSourceBlock(
             SPARK_GLM52_KV_CACHE_PREFETCH_SOURCE_BLOCK_DESCRIPTOR_BYTES ||
         source_block->physical_block_index >= arena->physical_block_count ||
         (source_block->flags &
-            SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS) !=
-            SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS ||
+            SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS) == 0u ||
         (source_block->flags &
             ~SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((source_block->flags &
+            SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_FLAG_VALUE) != 0u &&
+        SparkGlm52KvCacheArenaHasValuePayload(arena) == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -833,7 +1033,8 @@ SparkStatus SparkGlm52KvCacheArenaBuildPrefetchPlan(
     {
         SparkGlm52KvCachePrefetchSourceInitializeFromPhysicalBlock(
             &source_blocks[block_index],
-            physical_block_indices[block_index]);
+            physical_block_indices[block_index],
+            SparkGlm52KvCacheArenaHasValuePayload(arena));
     }
     return SparkGlm52KvCacheArenaBuildPrefetchPlanFromSourceBlocks(
         arena,
@@ -871,8 +1072,9 @@ static SparkStatus SparkGlm52KvCacheValidatePrefetchPlan(
                 SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DESCRIPTOR_BYTES ||
             prefetch_block->lane_index >= prefetch_plan->lane_count ||
             (prefetch_block->flags &
-                SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS) !=
-                SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS)
+                SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS) == 0u ||
+            (prefetch_block->flags &
+                ~SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS) != 0u)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -1229,24 +1431,24 @@ static SparkStatus SparkGlm52KvCacheAsyncPrefetchBackendValidateConfiguration(
         configuration->max_inflight_prefetch_count == 0u ||
         configuration->max_inflight_prefetch_count >
             SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_INFLIGHT_CAPACITY ||
-        configuration->physical_block_count == 0u ||
-        configuration->key_source_stride_bytes == 0u ||
-        configuration->value_source_stride_bytes == 0u ||
-        configuration->key_transfer_bytes == 0u ||
-        configuration->value_transfer_bytes == 0u)
+        configuration->physical_block_count == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
     if ((configuration->flags &
             SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_FLAG_COPY_KEY_BLOCKS) != 0u &&
-        configuration->key_transfer_bytes > configuration->key_source_stride_bytes)
+        (configuration->key_source_stride_bytes == 0u ||
+         configuration->key_transfer_bytes == 0u ||
+         configuration->key_transfer_bytes > configuration->key_source_stride_bytes))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((configuration->flags &
             SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_FLAG_COPY_VALUE_BLOCKS) != 0u &&
-        configuration->value_transfer_bytes > configuration->value_source_stride_bytes)
+        (configuration->value_source_stride_bytes == 0u ||
+         configuration->value_transfer_bytes == 0u ||
+         configuration->value_transfer_bytes > configuration->value_source_stride_bytes))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -1299,11 +1501,19 @@ static SparkStatus SparkGlm52KvCacheAsyncPrefetchBackendValidate(
         backend->max_inflight_prefetch_count >
             SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_INFLIGHT_CAPACITY ||
         backend->physical_block_count == 0u ||
-        backend->blocks_per_poll == 0u ||
-        backend->key_source_stride_bytes == 0u ||
-        backend->value_source_stride_bytes == 0u ||
-        backend->key_transfer_bytes == 0u ||
-        backend->value_transfer_bytes == 0u)
+        backend->blocks_per_poll == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((backend->flags &
+            SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_FLAG_COPY_KEY_BLOCKS) != 0u &&
+        (backend->key_source_stride_bytes == 0u || backend->key_transfer_bytes == 0u))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((backend->flags &
+            SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_FLAG_COPY_VALUE_BLOCKS) != 0u &&
+        (backend->value_source_stride_bytes == 0u || backend->value_transfer_bytes == 0u))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

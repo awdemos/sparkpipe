@@ -607,6 +607,148 @@ static void SparkTestKvCacheRejectsRecyclingRetainedBlocks(void)
         SPARK_GLM52_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u);
 }
 
+static void SparkTestKvCacheSupportsMlaPrimaryOnlyArenaAndPrefetch(void)
+{
+    SparkGlm52KvCacheArena arena;
+    SparkGlm52KvCacheBlock blocks[2u];
+    SparkGlm52KvCacheConfiguration arena_configuration;
+    SparkGlm52KvCachePrefetchSourceBlock source_block;
+    SparkGlm52KvCachePrefetchPlan prefetch_plan;
+    SparkGlm52KvCacheAsyncPrefetchBackendConfiguration backend_configuration;
+    SparkGlm52KvCacheAsyncPrefetchBackend backend;
+    unsigned char source[2u][64u];
+    unsigned char destination[2u][64u];
+    uint32_t physical_block_index;
+    uint32_t byte_index;
+
+    memset(source, 0, sizeof(source));
+    memset(destination, 0, sizeof(destination));
+    for (byte_index = 0u; byte_index < 64u; ++byte_index)
+    {
+        source[1u][byte_index] = (unsigned char)(0x40u + byte_index);
+    }
+
+    memset(&arena_configuration, 0, sizeof(arena_configuration));
+    arena_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    arena_configuration.descriptor_bytes =
+        SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+    arena_configuration.physical_block_count = 2u;
+    arena_configuration.block_token_count = 16u;
+    arena_configuration.layer_count = 1u;
+    arena_configuration.kv_head_count = 1u;
+    arena_configuration.head_dim = 32u;
+    arena_configuration.bytes_per_scalar = 2u;
+    arena_configuration.key_block_stride_bytes = 64u;
+    arena_configuration.key_device_base = destination;
+    arena_configuration.blocks = blocks;
+    assert(SparkGlm52KvCacheArenaInitialize(
+        &arena,
+        &arena_configuration) == SPARK_STATUS_OK);
+    assert(arena.value_device_base == 0u);
+    assert(arena.value_block_stride_bytes == 0u);
+
+    assert(SparkGlm52KvCacheArenaAcquireBlock(
+        &arena,
+        &physical_block_index) == SPARK_STATUS_OK);
+    assert(blocks[physical_block_index].value_device_address == 0u);
+
+    memset(&source_block, 0, sizeof(source_block));
+    source_block.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    source_block.descriptor_bytes =
+        SPARK_GLM52_KV_CACHE_PREFETCH_SOURCE_BLOCK_DESCRIPTOR_BYTES;
+    source_block.physical_block_index = physical_block_index;
+    source_block.token_capacity = 16u;
+    source_block.token_count = 16u;
+    source_block.flags = SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_FLAG_KEY;
+    source_block.generation = blocks[physical_block_index].generation;
+    source_block.parent_hash = 0x101u;
+    source_block.block_hash = 0x202u;
+    source_block.content_hash = 0x303u;
+    assert(SparkGlm52KvCacheArenaBuildPrefetchPlanFromSourceBlocks(
+        &arena,
+        &source_block,
+        1u,
+        1u,
+        &prefetch_plan) == SPARK_STATUS_OK);
+    assert(prefetch_plan.prefetch_block_count == 1u);
+    assert((prefetch_plan.blocks[0u].flags &
+        SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_FLAG_VALUE) == 0u);
+
+    memset(&backend_configuration, 0, sizeof(backend_configuration));
+    backend_configuration.abi_version =
+        SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_ABI_VERSION;
+    backend_configuration.descriptor_bytes =
+        SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES;
+    backend_configuration.flags =
+        SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_FLAG_MEMORY_SOURCE |
+        SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_FLAG_COPY_KEY_BLOCKS;
+    backend_configuration.lane_count = 1u;
+    backend_configuration.max_inflight_prefetch_count = 1u;
+    backend_configuration.physical_block_count = 2u;
+    backend_configuration.blocks_per_poll = 1u;
+    backend_configuration.key_source_stride_bytes = 64u;
+    backend_configuration.key_transfer_bytes = 64u;
+    backend_configuration.key_source_base = source;
+    assert(SparkGlm52KvCacheAsyncPrefetchBackendInitialize(
+        &backend,
+        &backend_configuration) == SPARK_STATUS_OK);
+    assert(SparkGlm52KvCacheAsyncPrefetchBackendStart(
+        &backend,
+        7u,
+        &prefetch_plan) == SPARK_STATUS_OK);
+    assert(SparkGlm52KvCacheAsyncPrefetchBackendPoll(
+        &backend,
+        7u,
+        &prefetch_plan) == SPARK_STATUS_OK);
+    assert(memcmp(destination[physical_block_index], source[physical_block_index], 64u) == 0);
+    assert(backend.copied_key_block_count == 1u);
+    assert(backend.copied_value_block_count == 0u);
+}
+
+static void SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression(void)
+{
+    SparkGlm52KvCacheCapacityRequest request;
+    SparkGlm52KvCacheCapacityEstimate full_estimate;
+    SparkGlm52KvCacheCapacityEstimate mla_estimate;
+
+    memset(&request, 0, sizeof(request));
+    request.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    request.descriptor_bytes =
+        SPARK_GLM52_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
+    request.layout = SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE;
+    request.context_token_count = 1048576u;
+    request.block_token_count = 64u;
+    request.layer_count = 6u;
+    request.head_count = 64u;
+    request.qk_nope_head_dimension = 192u;
+    request.value_head_dimension = 256u;
+    request.latent_dimension = 512u;
+    request.rope_dimension = 64u;
+    request.bytes_per_scalar = 2u;
+    request.index_key_layer_count = 2u;
+    request.index_key_dimension = 128u;
+    request.index_key_bytes_per_scalar = 2u;
+    request.cache_bytes_per_rank = 1024ull * 1024ull * 1024ull * 1024ull;
+
+    assert(SparkGlm52KvCacheEstimateCapacity(
+        &request,
+        &full_estimate) == SPARK_STATUS_OK);
+
+    request.layout = SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED;
+    assert(SparkGlm52KvCacheEstimateCapacity(
+        &request,
+        &mla_estimate) == SPARK_STATUS_OK);
+
+    assert(full_estimate.contexts_per_rank < mla_estimate.contexts_per_rank);
+    assert(full_estimate.attention_bytes_per_token_per_layer ==
+        ((512ull + 64ull + (64ull * 192ull) + (64ull * 256ull)) * 2ull));
+    assert(mla_estimate.attention_bytes_per_token_per_layer ==
+        ((512ull + 64ull) * 2ull));
+    assert(mla_estimate.dsa_index_bytes_per_token ==
+        (2ull * 128ull * 2ull));
+    assert(mla_estimate.block_count_per_context == 16384u);
+}
+
 int main(void)
 {
     SparkTestKvCacheAllocatesResidentDeviceBlocks();
@@ -618,6 +760,8 @@ int main(void)
     SparkTestKvCachePrefetchPlanResidencyIsAtomicUnderCapacity();
     SparkTestKvCachePrefetchPlanEvictsColdBlocksAsGroup();
     SparkTestKvCacheAsyncPrefetchBackendCopiesHashAddressedBlocks();
+    SparkTestKvCacheSupportsMlaPrimaryOnlyArenaAndPrefetch();
     SparkTestKvCacheRejectsRecyclingRetainedBlocks();
+    SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression();
     return 0;
 }

@@ -80,6 +80,50 @@ static bool SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
     return (node_context->reserved_execution_flags & execution_flag) != 0u;
 }
 
+static bool SparkGlm52ResidentDecodeStageUsesMlaCompressedKvCache(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    return node_context != 0 &&
+        node_context->attention_execution_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+}
+
+static bool SparkGlm52ResidentDecodeStageDsaTransportPlanUsesOnlyMlaCompressedPayloads(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan)
+{
+    uint32_t payload_index;
+
+    if (transport_plan == 0)
+    {
+        return true;
+    }
+    if (transport_plan->payload_count >
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_MAX_PAYLOADS)
+    {
+        return false;
+    }
+    for (payload_index = 0u;
+         payload_index < transport_plan->payload_count;
+         ++payload_index)
+    {
+        uint32_t payload_flags;
+
+        payload_flags = transport_plan->payloads[payload_index].flags;
+        if ((payload_flags &
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_ENABLED) == 0u)
+        {
+            continue;
+        }
+        if ((payload_flags &
+                (SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_KEY_NOPE |
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_VALUE)) != 0u)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 static uint32_t SparkGlm52ResidentDecodeStageEffectiveKvBlockTokenCount(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
@@ -1294,6 +1338,7 @@ static bool SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(
 {
     const SparkGlm52ResidentDecodeStageFp8KvCachePlan *fp8_kv_cache_plan;
     uint32_t required_capabilities;
+    uint32_t mla_only;
 
     if (node_context == 0 || node_context->fp8_kv_cache_plan == 0)
     {
@@ -1303,6 +1348,9 @@ static bool SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(
     fp8_kv_cache_plan = node_context->fp8_kv_cache_plan;
     required_capabilities =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_REQUIRED_CAPABILITIES;
+    mla_only = SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
+        node_context,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MLA_COMPRESSED_KV_CACHE);
     if (fp8_kv_cache_plan->abi_version !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_PLAN_ABI_VERSION ||
         fp8_kv_cache_plan->maximum_active_sequence_count <
@@ -1311,12 +1359,6 @@ static bool SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(
             node_context->cache_token_capacity ||
         fp8_kv_cache_plan->cache_token_elements !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS ||
-        fp8_kv_cache_plan->key_nope_elements !=
-            (SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION) ||
-        fp8_kv_cache_plan->value_elements !=
-            (SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) ||
         fp8_kv_cache_plan->scale_block_size !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK ||
         fp8_kv_cache_plan->validated_maximum_latency_ns == 0u ||
@@ -1327,7 +1369,28 @@ static bool SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(
             1u) ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
             fp8_kv_cache_plan->mla_cache_scale_f32,
-            4u) ||
+            4u))
+    {
+        return false;
+    }
+    if (mla_only != 0u)
+    {
+        return
+            (fp8_kv_cache_plan->capability_flags &
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_CAPABILITY_MLA_ONLY) != 0u &&
+            fp8_kv_cache_plan->key_nope_elements == 0u &&
+            fp8_kv_cache_plan->value_elements == 0u &&
+            fp8_kv_cache_plan->key_nope_cache_fp8_e4m3 == 0 &&
+            fp8_kv_cache_plan->key_nope_cache_scale_f32 == 0 &&
+            fp8_kv_cache_plan->value_cache_fp8_e4m3 == 0 &&
+            fp8_kv_cache_plan->value_cache_scale_f32 == 0;
+    }
+    if (fp8_kv_cache_plan->key_nope_elements !=
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION) ||
+        fp8_kv_cache_plan->value_elements !=
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
             fp8_kv_cache_plan->key_nope_cache_fp8_e4m3,
             1u) ||
@@ -1599,6 +1662,30 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
+            node_context,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MLA_COMPRESSED_KV_CACHE))
+    {
+        if (!SparkGlm52ResidentDecodeStageUsesMlaCompressedKvCache(node_context) ||
+            SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
+                node_context,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_TILED_ONLINE_ATTENTION))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
+            node_context,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MLA_COMPRESSED_KV_CACHE))
+    {
+        if (node_context->attention_execution_mode !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT ||
+            node_context->key_nope_cache_bf16 != 0 ||
+            node_context->value_cache_bf16 != 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
             node_context,
@@ -2233,15 +2320,47 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             node_context->mla_cache_bf16,
             4u) ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->key_nope_cache_bf16,
-            4u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->value_cache_bf16,
-            4u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
             node_context->attention_norm_weight_bf16,
             2u) ||
         node_context->pipeline_slots == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (node_context->attention_execution_mode !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
+        (!SparkGlm52ResidentDecodeStagePointerIsAligned(
+             node_context->key_nope_cache_bf16,
+             4u) ||
+         !SparkGlm52ResidentDecodeStagePointerIsAligned(
+             node_context->value_cache_bf16,
+             4u)))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (node_context->attention_execution_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
+        SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
+            node_context,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MLA_COMPRESSED_KV_CACHE) &&
+        (node_context->key_nope_cache_bf16 != 0 ||
+         node_context->value_cache_bf16 != 0))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
+            node_context,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MLA_COMPRESSED_KV_CACHE) &&
+        (!SparkGlm52ResidentDecodeStageDsaTransportPlanUsesOnlyMlaCompressedPayloads(
+             node_context->dsa_kv_fragment_prefetch_plan) ||
+         !SparkGlm52ResidentDecodeStageDsaTransportPlanUsesOnlyMlaCompressedPayloads(
+             node_context->dsa_kv_fragment_save_plan)))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
+            node_context,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MLA_COMPRESSED_KV_CACHE) &&
+        !SparkGlm52ResidentDecodeStageUsesMlaCompressedKvCache(node_context))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

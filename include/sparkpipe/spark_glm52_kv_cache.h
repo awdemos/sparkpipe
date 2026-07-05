@@ -34,6 +34,53 @@ extern "C" {
 #define SPARK_GLM52_KV_CACHE_MAX_LAYER_COUNT 256u
 #endif
 
+#define SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE 1u
+#define SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED 2u
+#define SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3 3u
+#define SPARK_GLM52_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52KvCacheCapacityRequest))
+#define SPARK_GLM52_KV_CACHE_CAPACITY_ESTIMATE_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52KvCacheCapacityEstimate))
+
+typedef struct SparkGlm52KvCacheCapacityRequest
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t layout;
+    uint32_t context_token_count;
+    uint32_t block_token_count;
+    uint32_t layer_count;
+    uint32_t head_count;
+    uint32_t qk_nope_head_dimension;
+    uint32_t value_head_dimension;
+    uint32_t latent_dimension;
+    uint32_t rope_dimension;
+    uint32_t bytes_per_scalar;
+    uint32_t fp8_scale_block_size;
+    uint32_t index_key_layer_count;
+    uint32_t index_key_dimension;
+    uint32_t index_key_bytes_per_scalar;
+    uint64_t cache_bytes_per_rank;
+} SparkGlm52KvCacheCapacityRequest;
+
+typedef struct SparkGlm52KvCacheCapacityEstimate
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t layout;
+    uint32_t context_token_count;
+    uint32_t block_token_count;
+    uint32_t layer_count;
+    uint32_t block_count_per_context;
+    uint32_t contexts_per_rank;
+    uint32_t reserved0;
+    uint64_t attention_bytes_per_token_per_layer;
+    uint64_t dsa_index_bytes_per_token;
+    uint64_t bytes_per_block_per_layer;
+    uint64_t bytes_per_context_per_rank;
+    uint64_t unused_cache_bytes_per_rank;
+} SparkGlm52KvCacheCapacityEstimate;
+
 
 #define SPARK_GLM52_KV_CACHE_PREFETCH_SOURCE_BLOCK_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52KvCachePrefetchSourceBlock))
@@ -291,6 +338,10 @@ typedef struct SparkGlm52KvCacheArena
     uint64_t retained_block_count;
     uint64_t released_reference_count;
 } SparkGlm52KvCacheArena;
+
+SparkStatus SparkGlm52KvCacheEstimateCapacity(
+    const SparkGlm52KvCacheCapacityRequest *request,
+    SparkGlm52KvCacheCapacityEstimate *estimate);
 
 SparkStatus SparkGlm52KvCacheArenaInitialize(
     SparkGlm52KvCacheArena *arena,
