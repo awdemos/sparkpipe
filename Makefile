@@ -71,7 +71,8 @@ COMMON_SOURCES := \
     src/spark_glm52_prompt_pipeline.c \
     src/spark_glm52_serving_engine.c \
     src/spark_glm52_service.c \
-    src/spark_glm52_compat_api.c
+    src/spark_glm52_compat_api.c \
+    src/spark_glm52_http_gateway.c
 
 COMPILER_SOURCES := \
     src/spark_sha256.c \
@@ -100,7 +101,8 @@ TOOL_NAMES := \
     sparkpipe_glm52_pp13_rank_gate \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
-    sparkpipe_tokenizer_benchmark
+    sparkpipe_tokenizer_benchmark \
+    sparkpipe_glm52_http_gateway
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -121,6 +123,7 @@ TEST_NAMES := \
     test_glm52_serving_engine \
     test_glm52_service \
     test_glm52_compat_api \
+    test_glm52_http_gateway \
     test_model_description \
     test_module_library \
     test_driver_compiler \
@@ -245,6 +248,9 @@ build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBR
 build/sparkpipe_tokenizer_benchmark: tools/sparkpipe_tokenizer_benchmark.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_glm52_http_gateway: tools/sparkpipe_glm52_http_gateway.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_SUPPORT_OBJECT): tests/test_support.c tests/test_support.h $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -MMD -MP -c tests/test_support.c -o $@
 
@@ -332,6 +338,9 @@ build/test_glm52_service: tests/test_glm52_service.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_compat_api: tests/test_glm52_compat_api.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_http_gateway: tests/test_glm52_http_gateway.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 

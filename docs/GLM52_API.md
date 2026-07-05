@@ -38,6 +38,7 @@ SparkGlm52CompatPrepareOpenAiJson
 SparkGlm52CompatPrepareAnthropicJson
 SparkGlm52CompatSubmitOpenAiJson
 SparkGlm52CompatSubmitAnthropicJson
+sparkpipe_glm52_http_gateway
 ```
 
 Stable deployment-facing contracts:
@@ -97,6 +98,13 @@ include/sparkpipe/spark_glm52_service.h
 include/sparkpipe/spark_glm52_compat_api.h
 include/sparkpipe/spark_glm52_pp13_runtime.h
 modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h
+include/sparkpipe/spark_glm52_http_gateway.h
+```
+
+The LAN and public website gateway contract is described in:
+
+```text
+docs/GLM52_LAN_API_GATEWAY.md
 ```
 
 Important tests:

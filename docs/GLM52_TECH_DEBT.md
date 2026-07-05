@@ -14,6 +14,8 @@ C service runtime
 C binary frame protocol
 OpenAI JSON to service request adapter
 Anthropic JSON to service request adapter
+LAN HTTP/SSE gateway shell
+demo UI served by the gateway
 PP13 rank-plan API
 resident decode-stage production runner API
 ```
@@ -21,7 +23,8 @@ resident decode-stage production runner API
 Missing:
 
 ```text
-stable HTTP/SSE daemon over the C service API
+attach HTTP/SSE gateway to the production C service runtime
+final-stage sparkc to spark0 event return path
 token-id to text streaming response formatter
 authentication and tenant policy above the C API
 public schema examples for final OpenAI and Anthropic responses

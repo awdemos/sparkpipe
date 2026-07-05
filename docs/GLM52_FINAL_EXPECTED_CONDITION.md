@@ -5,7 +5,8 @@ not final production inference.
 
 ## Final User-visible Behavior
 
-A client submits a real prompt and receives a streamed text response.
+A client submits a real prompt through Spark0 and receives a streamed text
+response.
 
 Accepted input forms:
 
@@ -63,6 +64,7 @@ The final stage must additionally:
 ```text
 run final-token selection
 return token ids
+send final token events back to Spark0
 optionally run MTP or DSpark verification when enabled
 ```
 
@@ -77,9 +79,10 @@ Real prompt inference requires all of these to happen in one request:
 4. write resident KV for every owning rank
 5. retain KV ownership after prefill
 6. decode generated tokens through the exact PP13 pipeline
-7. stream generated token ids
-8. decode token ids to text
-9. finish or cancel with a service event
+7. return final-stage token events from sparkc to spark0
+8. stream generated token ids
+9. decode token ids to text
+10. finish or cancel with a service event
 ```
 
 Last-token embedding validation is not prompt inference.
