@@ -34,7 +34,7 @@ Local development:
 build/sparkpipe_glm52_http_gateway \
     --bind 127.0.0.1 \
     --port 8080 \
-    --api-key dev-secret
+    --api-key-file /path/to/sparkpipe_api_key
 ```
 
 Management LAN:
@@ -43,7 +43,7 @@ Management LAN:
 build/sparkpipe_glm52_http_gateway \
     --bind <spark0-management-lan-ip> \
     --port 8080 \
-    --api-key <shared-secret>
+    --api-key-file /home/spark0/sparkpipe_runtime/API_KEY
 ```
 
 Supported endpoints:

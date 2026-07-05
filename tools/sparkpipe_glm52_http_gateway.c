@@ -18,6 +18,8 @@ typedef struct SparkGlm52GatewayConfig
 {
 	const char *bind_address;
 	const char *api_key;
+	const char *api_key_file;
+	char api_key_storage[256];
 	uint32_t port;
 	uint32_t backend_ready;
 	uint32_t pp13_ready;
@@ -84,6 +86,14 @@ static int32_t SparkGlm52GatewayApplyArgument(
 		*index += 1;
 		return 0;
 	}
+	if (strcmp(argv[*index],"--api-key-file") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -4;
+		configuration->api_key_file = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
 	if (strcmp(argv[*index],"--backend-ready") == 0)
 	{
 		configuration->backend_ready = 1u;
@@ -94,7 +104,37 @@ static int32_t SparkGlm52GatewayApplyArgument(
 		configuration->pp13_ready = 1u;
 		return 0;
 	}
-	return -4;
+	return -5;
+}
+
+static int32_t SparkGlm52GatewayLoadApiKeyFile(
+	SparkGlm52GatewayConfig *configuration)
+{
+	FILE *file;
+	uint32_t bytes;
+
+	if (configuration->api_key_file == 0)
+		return 0;
+	file = fopen(configuration->api_key_file,"rb");
+	if (file == 0)
+		return -1;
+	bytes = (uint32_t)fread(
+		configuration->api_key_storage,
+		1u,
+		sizeof(configuration->api_key_storage) - 1u,
+		file);
+	fclose(file);
+	while (bytes != 0u &&
+		(configuration->api_key_storage[bytes - 1u] == '\n' ||
+		 configuration->api_key_storage[bytes - 1u] == '\r' ||
+		 configuration->api_key_storage[bytes - 1u] == ' ' ||
+		 configuration->api_key_storage[bytes - 1u] == '\t'))
+		--bytes;
+	configuration->api_key_storage[bytes] = '\0';
+	if (bytes == 0u)
+		return -2;
+	configuration->api_key = configuration->api_key_storage;
+	return 0;
 }
 
 static int32_t SparkGlm52GatewayParseArguments(
@@ -403,7 +443,12 @@ int main(int argc,char **argv)
 	SparkGlm52GatewayInitializeConfig(&configuration);
 	if (SparkGlm52GatewayParseArguments(&configuration,argc,argv) < 0)
 	{
-		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--backend-ready] [--pp13-ready]\n",argv[0]);
+		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--backend-ready] [--pp13-ready]\n",argv[0]);
+		return 2;
+	}
+	if (SparkGlm52GatewayLoadApiKeyFile(&configuration) < 0)
+	{
+		fprintf(stderr,"api key file failed\n");
 		return 2;
 	}
 	listen_fd = SparkGlm52GatewayCreateListenSocket(&configuration);
