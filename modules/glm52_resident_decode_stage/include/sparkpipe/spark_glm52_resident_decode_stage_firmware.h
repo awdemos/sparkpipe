@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 22u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 23u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT 64u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION 512u
@@ -799,7 +799,8 @@ typedef struct SparkGlm52ResidentDecodeStagePipelineSlot
     const uint32_t *block_table;
     const uint32_t *context_lengths;
     const uint32_t *first_block_token_offsets;
-    const float *dsa_token_scores;
+    void *query_index_heads_bf16;
+    float *dsa_token_scores;
     uint32_t *sparse_token_indices;
     void *rotated_query_rope_bf16;
     void *attention_output_latent_bf16;
@@ -923,8 +924,13 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t dsa_indexshare_group_end_layer_exclusive;
     uint32_t dsa_indexshare_selected_token_count;
     uint32_t dsa_indexshare_layer_count;
+    uint32_t dsa_index_head_count;
+    uint32_t dsa_index_head_dimension;
     uint32_t reserved2;
     uint32_t *selected_token_indices_by_layer;
+    const void *key_index_cache_bf16;
+    const float *index_head_weights_f32;
+    float index_softmax_scale;
 
 } SparkGlm52ResidentDecodeStageNodeContext;
 
