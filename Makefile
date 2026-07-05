@@ -69,7 +69,8 @@ COMMON_SOURCES := \
     src/spark_tokenizer.c \
     src/spark_glm52_text_prompt.c \
     src/spark_glm52_prompt_pipeline.c \
-    src/spark_glm52_serving_engine.c
+    src/spark_glm52_serving_engine.c \
+    src/spark_glm52_service.c
 
 COMPILER_SOURCES := \
     src/spark_sha256.c \
@@ -117,11 +118,13 @@ TEST_NAMES := \
     test_tokenizer \
     test_glm52_prompt_pipeline \
     test_glm52_serving_engine \
+    test_glm52_service \
     test_model_description \
     test_module_library \
     test_driver_compiler \
     test_orchestrator \
-    test_glm52_resident_decode_stage_firmware
+    test_glm52_resident_decode_stage_firmware \
+    test_glm52_resident_decode_stage_production_runner
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
@@ -323,6 +326,9 @@ build/test_glm52_prompt_pipeline: tests/test_glm52_prompt_pipeline.c $(COMMON_LI
 build/test_glm52_serving_engine: tests/test_glm52_serving_engine.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_glm52_service: tests/test_glm52_service.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -338,6 +344,9 @@ build/test_orchestrator: tests/test_orchestrator.c $(TEST_SUPPORT_OBJECT) $(TEST
 
 build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decode_stage_firmware.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h tests/fixtures/glm52_resident_decode_stage_fake_backend.h $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE) $(TEST_SUPPORT_OBJECT) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Itests/fixtures -Imodules/glm52_resident_decode_stage/include $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_resident_decode_stage_production_runner: tests/test_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 test: $(TEST_BINARIES) build/sparkpipe_glm52_prefill_dryrun
 	@set -e; \
