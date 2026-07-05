@@ -7,6 +7,7 @@
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <time.h>
@@ -463,9 +464,19 @@ static SparkStatus SparkGlm52Pp13DaemonLoadTransport(
     SparkGlm52Pp13DaemonRuntime *runtime,
     const SparkGlm52Pp13DaemonConfig *configuration)
 {
+    char rank_buffer[16];
+    char port_buffer[16];
+    if (snprintf(rank_buffer, sizeof(rank_buffer), "%u",
+            runtime->rank_plan.rank_index) < 0 ||
+        snprintf(port_buffer, sizeof(port_buffer), "%u",
+            configuration->port_base) < 0)
+        return SPARK_STATUS_INTERNAL_ERROR;
+    if (setenv("SPARKPIPE_PP13_TRANSPORT_RANK",rank_buffer,1) != 0 ||
+        setenv("SPARKPIPE_PP13_TRANSPORT_PORT_BASE",port_buffer,1) != 0)
+        return SPARK_STATUS_INTERNAL_ERROR;
     return SparkHiddenTransportLoadInterfaceFromSharedObject(
         configuration->transport_shared_object_path,
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
         &runtime->transport_library);
 }
 
@@ -480,7 +491,7 @@ static SparkStatus SparkGlm52Pp13DaemonOpenHiddenTransport(
         status = SparkHiddenTransportOpen(
             &runtime->rank_plan.input_endpoint,
             &runtime->transport_library.transport_interface,
-            SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
             &runtime->input_transport_session);
         if (status != SPARK_STATUS_OK)
             return status;
@@ -491,7 +502,7 @@ static SparkStatus SparkGlm52Pp13DaemonOpenHiddenTransport(
         status = SparkHiddenTransportOpen(
             &runtime->rank_plan.output_endpoint,
             &runtime->transport_library.transport_interface,
-            SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
             &runtime->output_transport_session);
         if (status != SPARK_STATUS_OK)
             return status;

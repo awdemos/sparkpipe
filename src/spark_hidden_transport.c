@@ -52,6 +52,14 @@ static uint32_t SparkHiddenTransportCapabilitiesMeetSimulation(
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS;
 }
 
+static uint32_t SparkHiddenTransportCapabilitiesMeetPipelineHostStaged(
+    uint32_t capability_flags)
+{
+    return (capability_flags &
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS) ==
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS;
+}
+
 static uint32_t SparkHiddenTransportStringsEqual(
     const char *left,
     const char *right)
@@ -89,6 +97,8 @@ SparkStatus SparkHiddenTransportValidateEndpoint(
         }
     }
     else if (!SparkHiddenTransportCapabilitiesMeetProduction(
+            endpoint->capability_flags) &&
+        !SparkHiddenTransportCapabilitiesMeetPipelineHostStaged(
             endpoint->capability_flags))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;

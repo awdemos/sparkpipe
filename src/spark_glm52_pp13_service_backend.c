@@ -1087,9 +1087,22 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13ServiceBackendRank0Fail(
 			state,status,error_buffer,"failed to validate rank0 FP8 packs");
+	{
+		char rank_buffer[16];
+		char port_buffer[16];
+		if (snprintf(rank_buffer,sizeof(rank_buffer),"%u",
+				state->rank_plan.rank_index) < 0 ||
+			snprintf(port_buffer,sizeof(port_buffer),"%u",
+				SparkGlm52Pp13ServiceBackendPortBase(configuration)) < 0 ||
+			setenv("SPARKPIPE_PP13_TRANSPORT_RANK",rank_buffer,1) != 0 ||
+			setenv("SPARKPIPE_PP13_TRANSPORT_PORT_BASE",port_buffer,1) != 0)
+			return SparkGlm52Pp13ServiceBackendRank0Fail(
+				state,SPARK_STATUS_INTERNAL_ERROR,error_buffer,
+				"failed to configure rank0 transport environment");
+	}
 	status = SparkHiddenTransportLoadInterfaceFromSharedObject(
 		configuration->transport_shared_object_path,
-		SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+		SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
 		&state->transport_library);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13ServiceBackendRank0Fail(
@@ -1097,7 +1110,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 	status = SparkHiddenTransportOpen(
 		&state->rank_plan.output_endpoint,
 		&state->transport_library.transport_interface,
-		SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS,
+		SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
 		&state->output_transport_session);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13ServiceBackendRank0Fail(

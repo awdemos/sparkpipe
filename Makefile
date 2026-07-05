@@ -55,6 +55,7 @@ B12X_COMPILED_BACKEND_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compil
 B12X_GENERATED_KERNEL_TABLE_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a)
 B12X_RUNTIME_LINK_ARGS_FILE := $(abspath $(B12X_AOT_OUTPUT_DIR))/generated/runtime_link_args.txt
 GLM52_PP13_NODE_CONTEXT_BUILDER := build/libglm52_pp13_node_context_builder.$(SHARED_LIBRARY_EXT)
+HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
 
 COMMON_SOURCES := \
     src/spark_status.c \
@@ -275,6 +276,15 @@ $(GLM52_PP13_SERVICE_BACKEND): src/spark_glm52_pp13_service_backend.c modules/gl
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) src/spark_glm52_pp13_service_backend.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 glm52_pp13_service_backend: $(GLM52_PP13_SERVICE_BACKEND)
+
+$(HIDDEN_TRANSPORT_TCP_CUDA): modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBRARY)
+	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
+		echo "hidden_transport_tcp_cuda skipped: nvcc unavailable"; \
+	else \
+		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -ldl -pthread -o $@; \
+	fi
+
+hidden_transport_tcp_cuda: $(HIDDEN_TRANSPORT_TCP_CUDA)
 
 $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE):
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
