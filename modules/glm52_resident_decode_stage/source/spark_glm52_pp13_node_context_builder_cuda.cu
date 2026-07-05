@@ -1006,9 +1006,6 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 	if (layer_offset > 0u)
 		layer->slot.input_hidden_bf16 =
 			state->layers[layer_offset - 1u].layer_output_hidden;
-	status = SparkGlm52Pp13BuilderBindLayerPlans(state,layer,layer_index);
-	if (status != SPARK_STATUS_OK)
-		return SparkGlm52Pp13BuilderReportStatus("bind_layer_plans",layer_index,status);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderBindFp8Moe(state,layer,layer_index);
 	if (status != SPARK_STATUS_OK)
@@ -1036,6 +1033,9 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 	}
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus("load_final_outputs",layer_index,status);
+	status = SparkGlm52Pp13BuilderBindLayerPlans(state,layer,layer_index);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13BuilderReportStatus("bind_layer_plans",layer_index,status);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Sm121RequiredDecodeStageInitialize(&layer->node);
 	if (status != SPARK_STATUS_OK)
