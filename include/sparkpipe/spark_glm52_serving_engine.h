@@ -220,6 +220,9 @@ typedef struct SparkGlm52ServingDecodeDispatch
     const SparkGlm52KvBlockTableView *kv_block_table_view;
     const SparkGlm52RequestApiDecodeDispatchView *decode_view;
     uint32_t input_token_ids[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+    uint32_t speculative_token_count;
+    uint32_t speculative_draft_token_ids[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT][
+        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
 } SparkGlm52ServingDecodeDispatch;
 
 typedef struct SparkGlm52ServingDecodeResult
@@ -262,6 +265,8 @@ typedef struct SparkGlm52ServingStats
     uint64_t prefill_token_count;
     uint64_t decode_dispatch_count;
     uint64_t decoded_token_count;
+    uint64_t mtp_draft_token_count;
+    uint64_t mtp_verify_dispatch_count;
     uint64_t completed_stream_count;
     uint64_t jit_prefetch_dispatch_count;
     uint64_t jit_prefetch_block_count;

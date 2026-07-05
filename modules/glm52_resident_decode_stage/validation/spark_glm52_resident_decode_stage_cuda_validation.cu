@@ -324,6 +324,7 @@ typedef struct SparkValidationDeviceBuffers
     uint32_t *moe_topk_expert_ids;
     uint32_t *restricted_selected_token_ids;
     uint32_t *mtp_draft_token_ids;
+    uint32_t *mtp_draft_token_budgets;
     uint32_t *mtp_target_token_ids;
     uint32_t *mtp_accept_mask;
     uint32_t *mtp_committed_token_ids;
@@ -3384,6 +3385,7 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->moe_topk_expert_ids, SPARK_VALIDATION_MOE_ROUTE_COUNT * 4u, "cudaMalloc moe_topk_expert_ids") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_ids, final_token_count * 4u, "cudaMalloc selected_token_ids") &&
         SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_token_ids, mtp_token_count * 4u, "cudaMalloc mtp_draft_token_ids") &&
+        SparkValidationAllocateZeroed((void **)&buffers->mtp_draft_token_budgets, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * 4u, "cudaMalloc mtp_draft_token_budgets") &&
         SparkValidationAllocateZeroed((void **)&buffers->mtp_target_token_ids, mtp_token_count * 4u, "cudaMalloc mtp_target_token_ids") &&
         SparkValidationAllocateZeroed((void **)&buffers->mtp_accept_mask, mtp_token_count * 4u, "cudaMalloc mtp_accept_mask") &&
         SparkValidationAllocateZeroed((void **)&buffers->mtp_committed_token_ids, mtp_token_count * 4u, "cudaMalloc mtp_committed_token_ids") &&
@@ -3429,6 +3431,7 @@ static bool SparkValidationInitializeDeviceInputs(
     uint32_t mtp_target_token_ids[
         SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT];
+    uint32_t mtp_draft_token_budgets[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
     uint32_t moe_topk_expert_ids[SPARK_VALIDATION_MOE_ROUTE_COUNT];
     float moe_topk_weights[SPARK_VALIDATION_MOE_ROUTE_COUNT];
     uint32_t index;
@@ -3514,10 +3517,13 @@ static bool SparkValidationInitializeDeviceInputs(
     block_table[0] = 1u;
     block_table[1] = 0u;
     first_block_token_offset = SPARK_VALIDATION_FIRST_BLOCK_TOKEN_OFFSET;
+    memset(mtp_draft_token_budgets, 0, sizeof(mtp_draft_token_budgets));
     for (index = 0u;
          index < SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT;
          ++index)
     {
+        mtp_draft_token_budgets[index] =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
         mtp_target_token_ids[
             index * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT] =
             SPARK_VALIDATION_EXPECTED_MTP_DRAFT_TOKEN;
@@ -3550,6 +3556,7 @@ static bool SparkValidationInitializeDeviceInputs(
         SparkValidationCopyToDevice(buffers->slot_mapping, &slot_mapping, sizeof(slot_mapping), "copy slot_mapping") &&
         SparkValidationCopyToDevice(buffers->block_table, block_table, sizeof(block_table), "copy block_table") &&
         SparkValidationCopyToDevice(buffers->first_block_token_offsets, &first_block_token_offset, sizeof(first_block_token_offset), "copy first_block_token_offset") &&
+        SparkValidationCopyToDevice(buffers->mtp_draft_token_budgets, mtp_draft_token_budgets, sizeof(mtp_draft_token_budgets), "copy mtp budgets") &&
         SparkValidationCopyToDevice(buffers->mtp_target_token_ids, mtp_target_token_ids, sizeof(mtp_target_token_ids), "copy mtp targets") &&
         SparkValidationSeedKeyValueCache(buffers, SPARK_VALIDATION_REMAP_CACHE_SLOT0, 0u) &&
         SparkValidationSeedKeyValueCache(buffers, SPARK_VALIDATION_REMAP_CACHE_SLOT1, 1u) &&
@@ -3793,6 +3800,7 @@ static void SparkValidationConfigureNode(
     pipeline_slot->restricted_selected_token_ids = buffers->restricted_selected_token_ids;
     pipeline_slot->restricted_selected_token_scores = buffers->restricted_selected_token_scores;
     pipeline_slot->mtp_draft_token_ids = buffers->mtp_draft_token_ids;
+    pipeline_slot->mtp_draft_token_budgets = buffers->mtp_draft_token_budgets;
     pipeline_slot->mtp_target_token_ids = buffers->mtp_target_token_ids;
     pipeline_slot->mtp_accept_mask = buffers->mtp_accept_mask;
     pipeline_slot->mtp_committed_token_ids = buffers->mtp_committed_token_ids;
@@ -7956,7 +7964,7 @@ static bool SparkValidationRunDriverOnce(
     status = SparkOrchestratorResolveRoute(
         orchestrator,
         "zai.glm-5.2.resident-decode-stage-firmware",
-        "bf16-h6144-h64-d512-r64-k2048-b1024-rv256-mtp2-v1",
+        "bf16-h6144-h64-d512-r64-k2048-b1024-rv256-mtp6-v1",
         "resident_decode",
         "decode",
         &route_handle);

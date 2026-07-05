@@ -96,7 +96,8 @@ extern "C" {
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY 0x00000080u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_CONFIDENCE_TRUNCATED 0x00000100u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT 0x00000200u
-#define SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT 2u
+#define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY 0x00000400u
+#define SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT 6u
 
 #define SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY 8u
 
@@ -159,6 +160,8 @@ typedef struct SparkGlm52RequestApiSlot
     uint64_t handle;
     uint64_t submission_order;
     const uint32_t *prompt_token_ids;
+    uint32_t mtp_draft_token_count;
+    uint32_t mtp_draft_token_ids[SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
 } SparkGlm52RequestApiSlot;
 
 typedef struct SparkGlm52RequestApiPendingPrefetch
@@ -347,6 +350,11 @@ typedef struct SparkGlm52RequestApi
     uint64_t dspark_accepted_draft_token_count;
     uint64_t dspark_committed_token_count;
     uint64_t dspark_rejected_token_count;
+    uint64_t mtp_draft_ready_count;
+    uint64_t mtp_verify_dispatch_count;
+    uint64_t mtp_accepted_draft_token_count;
+    uint64_t mtp_committed_token_count;
+    uint64_t mtp_rejected_token_count;
     SparkGlm52RequestApiPendingPrefetch pending_prefetches[
         SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY];
 } SparkGlm52RequestApi;
@@ -382,6 +390,13 @@ SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
     const uint32_t *verifier_token_ids,
     uint32_t lane_stride,
     uint32_t verifier_token_count);
+
+SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiDispatch *completed_decode_dispatch,
+    const uint32_t *draft_token_ids,
+    uint32_t lane_stride,
+    uint32_t draft_token_count);
 
 SparkStatus SparkGlm52RequestApiCompleteDispatch(
     SparkGlm52RequestApi *api,

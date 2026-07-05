@@ -2,7 +2,7 @@
   "schema_version": 1,
   "model": {
     "id": "zai.glm-5.2.resident-decode-stage-firmware",
-    "revision": "bf16-h6144-h64-d512-r64-k2048-b1024-rv256-mtp2-v1"
+    "revision": "bf16-h6144-h64-d512-r64-k2048-b1024-rv256-mtp6-v1"
   },
   "metadata": {
     "architecture": "glm52_resident_decode_stage",
@@ -18,7 +18,7 @@
       "moe_top_k": 8,
       "moe_intermediate_dimension": 2048,
       "restricted_vocab_count": 256,
-      "mtp_draft_tokens": 2
+      "mtp_draft_tokens": 6
     },
     "hf_config_geometry": {
       "hidden_size": 6144,
@@ -306,7 +306,7 @@
           "operations": [
             {
               "name": "resident_decode_stage",
-              "module": "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b1024.rv256.mtp2.v1",
+              "module": "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b1024.rv256.mtp6.v1",
               "configuration": {
                 "required_cuda_module": "spark.glm52.sm121.required_decode_stage.b12x_fused.v1",
                 "required_arch": "sm_121a",

@@ -206,31 +206,66 @@ static SparkStatus SparkTestServingMtpDecode(
 {
     SparkTestServingCallbackContext *callback_context;
     uint32_t lane_index;
+    uint32_t token_index;
     uint32_t expected_budget;
 
     callback_context = (SparkTestServingCallbackContext *)context;
     assert(callback_context != 0);
     assert(decode_dispatch != 0);
     assert(decode_dispatch->request_dispatch != 0);
-    assert((decode_dispatch->request_dispatch->flags &
-        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u);
-    expected_budget = callback_context->decode_callback_count == 0u ? 2u : 1u;
-    assert(decode_dispatch->request_dispatch->mtp_draft_token_budget ==
-        expected_budget);
     SparkGlm52ServingInitializeDecodeResult(
         decode_result,
         decode_dispatch->request_count,
         SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE);
-    for (lane_index = 0u;
-         lane_index < decode_dispatch->request_count;
-         ++lane_index)
+
+    if (decode_dispatch->request_dispatch->kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH)
     {
-        decode_result->token_counts[lane_index] = 2u;
-        decode_result->token_ids[lane_index][0u] =
-            90000u + (callback_context->decode_callback_count * 10u);
-        decode_result->token_ids[lane_index][1u] =
-            90001u + (callback_context->decode_callback_count * 10u);
+        assert((decode_dispatch->request_dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u);
+        expected_budget = SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+        assert(callback_context->decode_callback_count == 0u);
+        assert(decode_dispatch->request_dispatch->mtp_draft_token_budget ==
+            expected_budget);
+        for (lane_index = 0u;
+             lane_index < decode_dispatch->request_count;
+             ++lane_index)
+        {
+            decode_result->token_counts[lane_index] = expected_budget + 1u;
+            for (token_index = 0u;
+                 token_index < decode_result->token_counts[lane_index];
+                 ++token_index)
+            {
+                decode_result->token_ids[lane_index][token_index] =
+                    90000u + token_index;
+            }
+        }
     }
+    else
+    {
+        assert(decode_dispatch->request_dispatch->kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
+        assert((decode_dispatch->request_dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u);
+        expected_budget = SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+        assert(callback_context->decode_callback_count == 1u);
+        assert(decode_dispatch->request_dispatch->speculative_token_count ==
+            expected_budget);
+        for (lane_index = 0u;
+             lane_index < decode_dispatch->request_count;
+             ++lane_index)
+        {
+            decode_result->token_counts[lane_index] = expected_budget;
+            for (token_index = 0u;
+                 token_index < expected_budget;
+                 ++token_index)
+            {
+                decode_result->token_ids[lane_index][token_index] =
+                    90001u + token_index;
+            }
+        }
+    }
+
     callback_context->decode_callback_count += 1u;
     return SPARK_STATUS_OK;
 }
@@ -568,14 +603,16 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
     SparkGlm52ServingInitializeSubmitTokenIdsRequest(&submit_request);
     submit_request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
     submit_request.token_ids = Fixture.prompt_tokens;
-    submit_request.output_token_budget = 4u;
+    submit_request.output_token_budget =
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u;
     submit_request.request_id = 9301u;
     submit_request.sequence_id = 19301u;
     assert(SparkGlm52ServingEngineSubmitTokenIds(
         &Fixture.serving_engine,
         &submit_request,
         &submit_result) == SPARK_STATUS_OK);
-    assert(submit_result.output_token_budget == 4u);
+    assert(submit_result.output_token_budget ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u);
 
     status = SparkGlm52ServingEnginePump(
         &Fixture.serving_engine,
@@ -585,7 +622,11 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
     assert(status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_OK);
     assert(CallbackContext.decode_callback_count == 2u);
     assert(stats.decode_dispatch_count == 2u);
-    assert(stats.decoded_token_count == 4u);
+    assert(stats.decoded_token_count ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u);
+    assert(stats.mtp_draft_token_count ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
+    assert(stats.mtp_verify_dispatch_count == 1u);
 
     token_event_count = 0u;
     completion_event_count = 0u;
@@ -596,15 +637,17 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
         if (event.kind == SPARK_GLM52_SERVING_EVENT_KIND_TOKEN)
         {
             token_event_count += 1u;
-            assert(event.token_id == 90000u || event.token_id == 90001u ||
-                event.token_id == 90010u || event.token_id == 90011u);
+            assert(event.token_id >= 90000u &&
+                event.token_id <=
+                    90000u + SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
         }
         else if (event.kind == SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_COMPLETED)
         {
             completion_event_count += 1u;
         }
     }
-    assert(token_event_count == 4u);
+    assert(token_event_count ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u);
     assert(completion_event_count == 1u);
 }
 
