@@ -2202,6 +2202,7 @@ static void SparkTestGlm52ResidentDecodeStageRejectsUnbackedExactPp13AotPlan(voi
 
 static void SparkTestGlm52ResidentDecodeStageBuiltInFinalTokenEpilogueValidation(void)
 {
+    static uint32_t FinalTokenIds[4];
     SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[2];
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
     SparkGlm52ResidentDecodeStageNodeContext node_contexts[6];
@@ -2212,6 +2213,7 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFinalTokenEpilogueValidation
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
     SparkFirmwareModuleConfiguration configuration;
     SparkFirmwareModuleHostServices host_services;
+    SparkModelDriverFrame frame;
     void *module_state;
     uint32_t layer_index;
     uint8_t final_epilogue_workspace[4096];
@@ -2292,6 +2294,31 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFinalTokenEpilogueValidation
         &host_services,
         &module_state) == SPARK_STATUS_OK);
     assert(module_state != 0);
+    memset(&frame, 0, sizeof(frame));
+    frame.request_id = 312u;
+    frame.sequence_id = 8120u;
+    frame.sequence_position = 77u;
+    frame.active_slot_count = 2u;
+    frame.new_token_count = 3u;
+    frame.program_id = 1u;
+    frame.scalar[SPARK_GLM52_RESIDENT_DECODE_STAGE_PIPELINE_SLOT_SCALAR_INDEX] =
+        0u;
+    pipeline_slots[0].restricted_selected_token_ids = FinalTokenIds;
+    pipeline_slots[0].mtp_committed_token_ids = FinalTokenIds + 1u;
+    FinalTokenIds[0u] = 91016u;
+    FinalTokenIds[1u] = 91017u;
+    FinalTokenIds[2u] = 91018u;
+    assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
+        SPARK_STATUS_OK);
+    assert(completion_state.completion_count == 1u);
+    assert(completion_state.completions[0].request_id == 312u);
+    assert(completion_state.completions[0].completion_flags ==
+        SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS);
+    assert(completion_state.completions[0].accepted_token_count == 3u);
+    assert(completion_state.completions[0].token_count == 3u);
+    assert(completion_state.completions[0].token_ids[0] == 91016u);
+    assert(completion_state.completions[0].token_ids[1] == 91017u);
+    assert(completion_state.completions[0].token_ids[2] == 91018u);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
 
     exact_stage_slice_plan.workspace = 0;

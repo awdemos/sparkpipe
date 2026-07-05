@@ -14,6 +14,7 @@
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
+#include "sparkpipe/spark_model_driver.h"
 
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_DEFAULT_MAX_ACTIVE 1024u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_DEFAULT_PORT_BASE 52100u
@@ -34,6 +35,8 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	int32_t final_event_socket_fd;
 	uint64_t final_event_receive_count;
 	uint64_t final_event_receive_error_count;
+	uint32_t last_final_event_token_count;
+	uint32_t last_final_event_token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
 	uint32_t initialized;
 	uint32_t tokenizer_ready;
 	uint32_t rank0_runtime_ready;
@@ -48,8 +51,9 @@ typedef struct SparkGlm52Pp13ServiceBackendFinalEvent
 	uint32_t program_id;
 	uint32_t driver_dispatch_slot;
 	uint32_t accepted_token_count;
-	uint32_t reserved0;
-	uint32_t reserved1;
+	uint32_t completion_flags;
+	uint32_t token_count;
+	uint32_t token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
 	uint64_t request_id;
 	uint64_t sequence_id;
 	uint64_t sequence_position;
@@ -333,7 +337,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 	state->rank0_runtime_ready = 1u;
 	SparkGlm52Pp13ServiceBackendSetBlocker(
 		state,
-		"final-stage token bridge is missing: PP13 final events carry completion metadata but no generated token ids");
+		"service submit path is not yet mapped to PP13 rank0 runner requests");
 	return SPARK_STATUS_OK;
 }
 
@@ -467,6 +471,33 @@ static void SparkGlm52Pp13ServiceBackendAcceptFinalEventSocket(
 	state->final_event_socket_fd = fd;
 }
 
+static void SparkGlm52Pp13ServiceBackendRecordFinalEvent(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52Pp13ServiceBackendFinalEvent *event)
+{
+	uint32_t token_count;
+
+	if (event->magic != SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_MAGIC ||
+		event->descriptor_bytes != (uint32_t)sizeof(*event))
+	{
+		state->final_event_receive_error_count += 1u;
+		return;
+	}
+	if ((event->completion_flags & SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u)
+	{
+		state->final_event_receive_count += 1u;
+		state->last_final_event_token_count = 0u;
+		return;
+	}
+	token_count = event->token_count;
+	if (token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
+		token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
+	memcpy(state->last_final_event_token_ids,event->token_ids,
+		token_count * sizeof(state->last_final_event_token_ids[0u]));
+	state->last_final_event_token_count = token_count;
+	state->final_event_receive_count += 1u;
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 	void *backend_state,
 	uint32_t max_dispatch_steps,
@@ -484,7 +515,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 	{
 		got = read(state->final_event_socket_fd,buffer,sizeof(buffer));
 		if (got == (ssize_t)sizeof(buffer))
-			state->final_event_receive_count += 1u;
+			SparkGlm52Pp13ServiceBackendRecordFinalEvent(
+				state,
+				(const SparkGlm52Pp13ServiceBackendFinalEvent *)buffer);
 		else if (got < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
 			errno != EINTR)
 			state->final_event_receive_error_count += 1u;

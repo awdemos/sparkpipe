@@ -50,6 +50,42 @@ static void SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
     fake_stream->last_runtime_kv_lane_count = runtime_kv_block_table->lane_count;
 }
 
+static SparkStatus SparkGlm52ResidentDecodeStageFakeCopyFinalTokens(
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t final_token_stage,
+    uint32_t active_sequence_count,
+    SparkGlm52ResidentDecodeStageBackendCompletion *completion)
+{
+    uint32_t token_index;
+    uint32_t token_count;
+
+    if (final_token_stage == 0u)
+        return SPARK_STATUS_OK;
+    if (pipeline_slot == 0 || active_sequence_count == 0u ||
+        completion == 0 || pipeline_slot->restricted_selected_token_ids == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    token_count = completion->requested_token_count;
+    if (token_count == 0u)
+        token_count = 1u;
+    if (token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
+        token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
+    if (token_count >
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
+        token_count =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u;
+    completion->token_ids[0u] = pipeline_slot->restricted_selected_token_ids[0u];
+    if (token_count > 1u)
+    {
+        if (pipeline_slot->mtp_committed_token_ids == 0)
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        for (token_index = 1u; token_index < token_count; ++token_index)
+            completion->token_ids[token_index] =
+                pipeline_slot->mtp_committed_token_ids[token_index - 1u];
+    }
+    completion->token_count = token_count;
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     uint32_t pipeline_slot_index,
@@ -159,6 +195,14 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
+    }
+    if (SparkGlm52ResidentDecodeStageFakeCopyFinalTokens(
+            &first_node_context->pipeline_slots[pipeline_slot_index],
+            final_token_stage,
+            active_sequence_count,
+            completion) != SPARK_STATUS_OK)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
     fake_stream->submit_count += 1u;

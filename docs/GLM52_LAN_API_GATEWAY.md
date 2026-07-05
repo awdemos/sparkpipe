@@ -109,7 +109,7 @@ Until the PP13 backend is attached, the gateway returns fail-closed errors:
 
 It does not fabricate tokens. A backend may be attached and still return
 `pp13_ready=0` if the production rank runner, tokenizer, transport, driver, or
-final-token bridge is incomplete.
+service submission path is incomplete.
 
 ## Public sparkpipe.ai Access
 
