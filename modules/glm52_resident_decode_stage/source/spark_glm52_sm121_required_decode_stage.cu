@@ -13893,6 +13893,21 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         }
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    if (gate_plan->algorithm == 0 || up_plan->algorithm == 0 ||
+        down_plan->algorithm == 0)
+    {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "dense_mlp_fp8_prepared_backend_missing layer=%u gate_backend=%p up_backend=%p down_backend=%p\n",
+                node_context->layer_index,
+                gate_plan->algorithm,
+                up_plan->algorithm,
+                down_plan->algorithm);
+        }
+        return SPARK_STATUS_NOT_FOUND;
+    }
 
     status = SparkGlm52ResidentDecodeStageResolveFp8ActivationLinearWorkspace(
         gate_plan->workspace,
