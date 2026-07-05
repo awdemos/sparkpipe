@@ -19,6 +19,7 @@
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 #include "sparkpipe/spark_model_driver.h"
+#include "spark_filesystem.h"
 
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_DEFAULT_MAX_ACTIVE 1024u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_DEFAULT_PORT_BASE 52100u
