@@ -1041,7 +1041,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 	uint32_t batch_bucket;
 	SparkStatus status;
 	batch_bucket =
-		SparkGlm52StagePlanSelectBatchBucket(
+		SparkGlm52StagePlanSelectBatchBucketValue(
 			state->rank_plan.max_active_sequence_count);
 	candidates =
 		(uint64_t)batch_bucket *
