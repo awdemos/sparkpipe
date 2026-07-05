@@ -2205,8 +2205,14 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT ||
           node_context->dsa_index_head_dimension !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_DIMENSION ||
-          node_context->index_query_weight_bf16 == 0 ||
-          node_context->index_key_weight_bf16 == 0 ||
+          ((node_context->index_query_weight_fp8_e4m3 == 0) !=
+              (node_context->index_query_weight_scale_inv_f32 == 0)) ||
+          ((node_context->index_key_weight_fp8_e4m3 == 0) !=
+              (node_context->index_key_weight_scale_inv_f32 == 0)) ||
+          (node_context->index_query_weight_bf16 == 0 &&
+              node_context->index_query_weight_fp8_e4m3 == 0) ||
+          (node_context->index_key_weight_bf16 == 0 &&
+              node_context->index_key_weight_fp8_e4m3 == 0) ||
           node_context->index_weights_proj_weight_bf16 == 0 ||
           node_context->index_key_norm_weight_bf16 == 0 ||
           node_context->index_key_norm_bias_bf16 == 0 ||

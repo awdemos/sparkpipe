@@ -77,6 +77,36 @@
 #define SPARK_VALIDATION_FP8_MOE_COPY_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 #define SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_NVFP4 0u
 #define SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8 1u
+#define SPARK_VALIDATION_DSA_INDEXSHARE_GROUP_LAYER_COUNT 4u
+
+static uint32_t SparkValidationDsaIndexShareSourceLayer(uint32_t layer_index)
+{
+    uint32_t adjusted_layer_index;
+
+    if (layer_index >= SPARK_VALIDATION_LAYER_COUNT)
+        return UINT32_MAX;
+    if (layer_index < SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT)
+        return layer_index;
+    adjusted_layer_index =
+        layer_index - (SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT - 1u);
+    return
+        (SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT - 1u) +
+        (adjusted_layer_index -
+            (adjusted_layer_index %
+             SPARK_VALIDATION_DSA_INDEXSHARE_GROUP_LAYER_COUNT));
+}
+
+static uint32_t SparkValidationDsaIndexShareGroupEndLayer(uint32_t source_layer_index)
+{
+    if (source_layer_index + 1u < SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT)
+        return source_layer_index + 1u;
+    if (source_layer_index +
+        SPARK_VALIDATION_DSA_INDEXSHARE_GROUP_LAYER_COUNT >
+        SPARK_VALIDATION_LAYER_COUNT)
+        return SPARK_VALIDATION_LAYER_COUNT;
+    return source_layer_index +
+        SPARK_VALIDATION_DSA_INDEXSHARE_GROUP_LAYER_COUNT;
+}
 
 typedef struct SparkValidationCompletionState
 {
@@ -221,6 +251,15 @@ typedef struct SparkValidationDeviceBuffers
     uint16_t *raw_kv_a_weight_bf16;
     uint16_t *raw_kv_a_norm_weight_bf16;
     uint16_t *raw_kv_b_weight_bf16;
+    uint16_t *index_query_weight_bf16;
+    uint16_t *index_key_weight_bf16;
+    uint16_t *index_weights_proj_weight_bf16;
+    uint16_t *index_key_norm_weight_bf16;
+    uint16_t *index_key_norm_bias_bf16;
+    uint8_t *index_query_weight_fp8_e4m3;
+    float *index_query_weight_scale_inv_f32;
+    uint8_t *index_key_weight_fp8_e4m3;
+    float *index_key_weight_scale_inv_f32;
     uint8_t *raw_query_a_weight_fp8_e4m3;
     float *raw_query_a_weight_scale_inv_f32;
     uint8_t *raw_query_b_weight_fp8_e4m3;
@@ -280,6 +319,7 @@ typedef struct SparkValidationDeviceBuffers
     uint32_t *context_lengths;
     uint32_t *first_block_token_offsets;
     uint32_t *sparse_token_indices;
+    uint32_t *selected_token_indices_by_layer;
     uint32_t *restricted_token_ids;
     uint32_t *moe_topk_expert_ids;
     uint32_t *restricted_selected_token_ids;
@@ -1729,6 +1769,102 @@ static bool SparkValidationLoadLayer0AttentionFp8Fixture(
     return true;
 }
 
+static bool SparkValidationLoadDsaIndexerBf16Fixture(
+    SparkValidationDeviceBuffers *buffers,
+    const char *model_directory,
+    uint32_t layer_index,
+    uint64_t *copied_bytes)
+{
+    const uint64_t query_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION};
+    const uint64_t key_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t weights_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t norm_shape[1] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION};
+    char query_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char key_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char weights_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char norm_weight_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char norm_bias_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+
+    if (!SparkValidationBuildLayerTensorName(query_name, sizeof(query_name), layer_index, "self_attn.indexer.wq_b.weight") ||
+        !SparkValidationBuildLayerTensorName(key_name, sizeof(key_name), layer_index, "self_attn.indexer.wk.weight") ||
+        !SparkValidationBuildLayerTensorName(weights_name, sizeof(weights_name), layer_index, "self_attn.indexer.weights_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(norm_weight_name, sizeof(norm_weight_name), layer_index, "self_attn.indexer.k_norm.weight") ||
+        !SparkValidationBuildLayerTensorName(norm_bias_name, sizeof(norm_bias_name), layer_index, "self_attn.indexer.k_norm.bias"))
+    {
+        fprintf(stderr, "DSA indexer tensor name is too long\n");
+        return false;
+    }
+    if (!SparkValidationCopyBf16TensorToDevice(model_directory, query_name, query_shape, 2u, buffers->index_query_weight_bf16, copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(model_directory, key_name, key_shape, 2u, buffers->index_key_weight_bf16, copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(model_directory, weights_name, weights_shape, 2u, buffers->index_weights_proj_weight_bf16, copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(model_directory, norm_weight_name, norm_shape, 1u, buffers->index_key_norm_weight_bf16, copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(model_directory, norm_bias_name, norm_shape, 1u, buffers->index_key_norm_bias_bf16, copied_bytes))
+    {
+        return false;
+    }
+    fprintf(stderr, "dsa_indexer_bf16_fixture_ready=1 model_dir=%s layer_index=%u\n", model_directory, layer_index);
+    return true;
+}
+
+static bool SparkValidationLoadDsaIndexerFp8Fixture(
+    SparkValidationDeviceBuffers *buffers,
+    const char *model_directory,
+    uint32_t layer_index,
+    uint64_t *copied_bytes)
+{
+    const uint64_t query_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION};
+    const uint64_t query_scale_shape[2] = {32u, 16u};
+    const uint64_t key_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t key_scale_shape[2] = {1u, 48u};
+    const uint64_t weights_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t norm_shape[1] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION};
+    char query_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char query_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char key_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char key_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char weights_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char norm_weight_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char norm_bias_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+
+    if (!SparkValidationBuildLayerTensorName(query_name, sizeof(query_name), layer_index, "self_attn.indexer.wq_b.weight") ||
+        !SparkValidationBuildLayerTensorName(query_scale_name, sizeof(query_scale_name), layer_index, "self_attn.indexer.wq_b.weight_scale_inv") ||
+        !SparkValidationBuildLayerTensorName(key_name, sizeof(key_name), layer_index, "self_attn.indexer.wk.weight") ||
+        !SparkValidationBuildLayerTensorName(key_scale_name, sizeof(key_scale_name), layer_index, "self_attn.indexer.wk.weight_scale_inv") ||
+        !SparkValidationBuildLayerTensorName(weights_name, sizeof(weights_name), layer_index, "self_attn.indexer.weights_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(norm_weight_name, sizeof(norm_weight_name), layer_index, "self_attn.indexer.k_norm.weight") ||
+        !SparkValidationBuildLayerTensorName(norm_bias_name, sizeof(norm_bias_name), layer_index, "self_attn.indexer.k_norm.bias"))
+    {
+        fprintf(stderr, "FP8 DSA indexer tensor name is too long\n");
+        return false;
+    }
+    if (!SparkValidationCopyF8E4m3TensorToDevice(model_directory, query_name, query_shape, 2u, buffers->index_query_weight_fp8_e4m3, copied_bytes) ||
+        !SparkValidationCopyF32TensorToDevice(model_directory, query_scale_name, query_scale_shape, 2u, buffers->index_query_weight_scale_inv_f32, copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, key_name, key_shape, 2u, buffers->index_key_weight_fp8_e4m3, copied_bytes) ||
+        !SparkValidationCopyF32TensorToDevice(model_directory, key_scale_name, key_scale_shape, 2u, buffers->index_key_weight_scale_inv_f32, copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(model_directory, weights_name, weights_shape, 2u, buffers->index_weights_proj_weight_bf16, copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(model_directory, norm_weight_name, norm_shape, 1u, buffers->index_key_norm_weight_bf16, copied_bytes) ||
+        !SparkValidationCopyBf16TensorToDevice(model_directory, norm_bias_name, norm_shape, 1u, buffers->index_key_norm_bias_bf16, copied_bytes))
+    {
+        return false;
+    }
+    fprintf(stderr, "dsa_indexer_fp8_fixture_ready=1 model_dir=%s layer_index=%u\n", model_directory, layer_index);
+    return true;
+}
+
 static bool SparkValidationLoadRoutedLayerRouterBf16Fixture(
     SparkValidationDeviceBuffers *buffers,
     const char *model_directory,
@@ -2916,6 +3052,11 @@ static bool SparkValidationAllocateDeviceBuffers(
     uint64_t raw_query_b_weight_count;
     uint64_t raw_kv_a_weight_count;
     uint64_t raw_kv_b_weight_count;
+    uint64_t index_query_weight_count;
+    uint64_t index_key_weight_count;
+    uint64_t index_weights_proj_weight_count;
+    uint64_t index_query_scale_count;
+    uint64_t index_key_scale_count;
     uint64_t raw_query_a_scale_count;
     uint64_t raw_query_b_scale_count;
     uint64_t raw_kv_a_scale_count;
@@ -2994,6 +3135,29 @@ static bool SparkValidationAllocateDeviceBuffers(
     raw_kv_b_weight_count =
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION;
+    index_query_weight_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION;
+    index_key_weight_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    index_weights_proj_weight_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    index_query_scale_count =
+        (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION +
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK) *
+        (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION +
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK);
+    index_key_scale_count =
+        (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION +
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK) *
+        (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION +
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK);
     raw_query_a_scale_count =
         (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION +
           SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
@@ -3147,6 +3311,15 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->raw_kv_a_weight_bf16, raw_kv_a_weight_count * 2u, "cudaMalloc raw_kv_a_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->raw_kv_a_norm_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u, "cudaMalloc raw_kv_a_norm_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->raw_kv_b_weight_bf16, raw_kv_b_weight_count * 2u, "cudaMalloc raw_kv_b_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->index_query_weight_bf16, index_query_weight_count * 2u, "cudaMalloc index_query_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->index_key_weight_bf16, index_key_weight_count * 2u, "cudaMalloc index_key_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->index_weights_proj_weight_bf16, index_weights_proj_weight_count * 2u, "cudaMalloc index_weights_proj_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->index_key_norm_weight_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION * 2u, "cudaMalloc index_key_norm_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->index_key_norm_bias_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION * 2u, "cudaMalloc index_key_norm_bias") &&
+        SparkValidationAllocateZeroed((void **)&buffers->index_query_weight_fp8_e4m3, index_query_weight_count, "cudaMalloc index_query_weight_fp8") &&
+        SparkValidationAllocateZeroed((void **)&buffers->index_query_weight_scale_inv_f32, index_query_scale_count * 4u, "cudaMalloc index_query_scale") &&
+        SparkValidationAllocateZeroed((void **)&buffers->index_key_weight_fp8_e4m3, index_key_weight_count, "cudaMalloc index_key_weight_fp8") &&
+        SparkValidationAllocateZeroed((void **)&buffers->index_key_weight_scale_inv_f32, index_key_scale_count * 4u, "cudaMalloc index_key_scale") &&
         SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_weight_fp8_e4m3, raw_query_a_weight_count, "cudaMalloc raw_query_a_weight_fp8") &&
         SparkValidationAllocateZeroed((void **)&buffers->raw_query_a_weight_scale_inv_f32, raw_query_a_scale_count * 4u, "cudaMalloc raw_query_a_scale") &&
         SparkValidationAllocateZeroed((void **)&buffers->raw_query_b_weight_fp8_e4m3, raw_query_b_weight_count, "cudaMalloc raw_query_b_weight_fp8") &&
@@ -3206,6 +3379,7 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->context_lengths, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * 4u, "cudaMalloc context_lengths") &&
         SparkValidationAllocateZeroed((void **)&buffers->first_block_token_offsets, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * 4u, "cudaMalloc first_block_token_offsets") &&
         SparkValidationAllocateZeroed((void **)&buffers->sparse_token_indices, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * 4u, "cudaMalloc sparse_indices") &&
+        SparkValidationAllocateZeroed((void **)&buffers->selected_token_indices_by_layer, SPARK_VALIDATION_LAYER_COUNT * SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * 4u, "cudaMalloc selected_indices_by_layer") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_token_ids, SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT * 4u, "cudaMalloc restricted_token_ids") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_topk_expert_ids, SPARK_VALIDATION_MOE_ROUTE_COUNT * 4u, "cudaMalloc moe_topk_expert_ids") &&
         SparkValidationAllocateZeroed((void **)&buffers->restricted_selected_token_ids, final_token_count * 4u, "cudaMalloc selected_token_ids") &&
@@ -3561,11 +3735,22 @@ static void SparkValidationConfigureNode(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT;
     node_context->dsa_index_head_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_DIMENSION;
-    node_context->index_query_weight_bf16 = buffers->raw_query_b_weight_bf16;
-    node_context->index_key_weight_bf16 = buffers->raw_kv_a_weight_bf16;
-    node_context->index_weights_proj_weight_bf16 = buffers->moe_router_weight_bf16;
-    node_context->index_key_norm_weight_bf16 = buffers->raw_kv_a_norm_weight_bf16;
-    node_context->index_key_norm_bias_bf16 = buffers->raw_kv_a_norm_weight_bf16;
+    node_context->index_query_weight_bf16 = buffers->index_query_weight_bf16;
+    node_context->index_key_weight_bf16 = buffers->index_key_weight_bf16;
+    node_context->index_query_weight_fp8_e4m3 =
+        buffers->index_query_weight_fp8_e4m3;
+    node_context->index_query_weight_scale_inv_f32 =
+        buffers->index_query_weight_scale_inv_f32;
+    node_context->index_key_weight_fp8_e4m3 =
+        buffers->index_key_weight_fp8_e4m3;
+    node_context->index_key_weight_scale_inv_f32 =
+        buffers->index_key_weight_scale_inv_f32;
+    node_context->index_weights_proj_weight_bf16 =
+        buffers->index_weights_proj_weight_bf16;
+    node_context->index_key_norm_weight_bf16 =
+        buffers->index_key_norm_weight_bf16;
+    node_context->index_key_norm_bias_bf16 =
+        buffers->index_key_norm_bias_bf16;
     node_context->mla_cache_bf16 = buffers->mla_cache_bf16;
     node_context->key_nope_cache_bf16 = buffers->key_nope_cache_bf16;
     node_context->value_cache_bf16 = buffers->value_cache_bf16;
@@ -4537,6 +4722,40 @@ static bool SparkValidationBindRequiredLinearPlans(
         buffers->restricted_lm_head_weight_bf16;
     create_info.restricted_logits_f32 =
         buffers->restricted_logits;
+    create_info.dsa_query_input_bf16 =
+        buffers->raw_query_a_normalized_bf16;
+    create_info.dsa_query_weight_bf16 =
+        buffers->index_query_weight_bf16;
+    create_info.dsa_query_weight_fp8_e4m3 =
+        use_quantized_attention_plans != 0u
+            ? buffers->index_query_weight_fp8_e4m3
+            : 0;
+    create_info.dsa_query_weight_scale_inv_f32 =
+        use_quantized_attention_plans != 0u
+            ? buffers->index_query_weight_scale_inv_f32
+            : 0;
+    create_info.dsa_query_output_bf16 =
+        buffers->query_index_heads_bf16;
+    create_info.dsa_key_input_bf16 =
+        buffers->normalized_hidden_bf16;
+    create_info.dsa_key_weight_bf16 =
+        buffers->index_key_weight_bf16;
+    create_info.dsa_key_weight_fp8_e4m3 =
+        use_quantized_attention_plans != 0u
+            ? buffers->index_key_weight_fp8_e4m3
+            : 0;
+    create_info.dsa_key_weight_scale_inv_f32 =
+        use_quantized_attention_plans != 0u
+            ? buffers->index_key_weight_scale_inv_f32
+            : 0;
+    create_info.dsa_key_output_bf16 =
+        buffers->current_key_index_bf16;
+    create_info.dsa_weights_input_bf16 =
+        buffers->normalized_hidden_bf16;
+    create_info.dsa_weights_proj_weight_bf16 =
+        buffers->index_weights_proj_weight_bf16;
+    create_info.dsa_weights_output_bf16 =
+        buffers->index_head_weights_bf16;
     status = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
         &buffers->linear_plan_binding,
         &create_info);
@@ -8440,10 +8659,16 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
     SparkGlm52ResidentDecodeStageNodeContext *node_context;
     SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot;
     uint32_t layer_index;
+    uint32_t dsa_source_layer_index;
+    uint32_t dsa_group_end_layer_exclusive;
     uint32_t required_linear_plan_mask;
     uint32_t use_dense_mlp;
 
     layer_index = first_layer_index + layer_offset;
+    dsa_source_layer_index =
+        SparkValidationDsaIndexShareSourceLayer(layer_index);
+    dsa_group_end_layer_exclusive =
+        SparkValidationDsaIndexShareGroupEndLayer(dsa_source_layer_index);
     use_dense_mlp = layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX;
     buffers = &runtime->buffers[layer_offset];
     pipeline_slot = &runtime->pipeline_slots[layer_offset];
@@ -8463,6 +8688,19 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
         node_context,
         use_dense_mlp,
         0u);
+    node_context->sparse_index_mode =
+        dsa_source_layer_index == layer_index
+        ? SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL
+        : SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED;
+    node_context->dsa_indexshare_source_layer_index = dsa_source_layer_index;
+    node_context->dsa_indexshare_group_end_layer_exclusive =
+        dsa_group_end_layer_exclusive;
+    node_context->dsa_indexshare_selected_token_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+    node_context->dsa_indexshare_layer_count =
+        SPARK_VALIDATION_LAYER_COUNT;
+    node_context->selected_token_indices_by_layer =
+        runtime->buffers[0].selected_token_indices_by_layer;
     pipeline_slot->input_hidden_bf16 =
         layer_offset == 0u
         ? buffers->input_hidden_bf16
@@ -8515,6 +8753,35 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
             SPARK_VALIDATION_CONTEXT_LENGTH))
     {
         return false;
+    }
+    if (dsa_source_layer_index == layer_index)
+    {
+        uint64_t dsa_copied_bytes;
+
+        dsa_copied_bytes = 0u;
+        if (!(model_quantization ==
+                SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8
+                ? SparkValidationLoadDsaIndexerFp8Fixture(
+                    buffers,
+                    model_directory,
+                    layer_index,
+                    &dsa_copied_bytes)
+                : SparkValidationLoadDsaIndexerBf16Fixture(
+                    buffers,
+                    model_directory,
+                    layer_index,
+                    &dsa_copied_bytes)))
+        {
+            return false;
+        }
+        required_linear_plan_mask |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DSA_INDEXER;
+        fprintf(
+            stderr,
+            "dsa_indexer_official_fixture_ready=1 layer=%u source=%u bytes=%llu\n",
+            layer_index,
+            dsa_source_layer_index,
+            (unsigned long long)dsa_copied_bytes);
     }
     if (use_dense_mlp != 0u)
     {

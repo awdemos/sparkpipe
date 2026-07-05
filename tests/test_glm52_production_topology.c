@@ -52,21 +52,23 @@ static void SparkTestGlm52IndexShareSchedule(void)
     uint32_t group_end_layer_exclusive;
 
     assert(SparkGlm52DsaIndexShareSourceLayer(0u) == 0u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(1u) == 0u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(3u) == 0u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(4u) == 4u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(5u) == 4u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(6u) == 4u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(7u) == 4u);
+    assert(SparkGlm52DsaIndexShareSourceLayer(1u) == 1u);
+    assert(SparkGlm52DsaIndexShareSourceLayer(2u) == 2u);
+    assert(SparkGlm52DsaIndexShareSourceLayer(3u) == 2u);
+    assert(SparkGlm52DsaIndexShareSourceLayer(5u) == 2u);
+    assert(SparkGlm52DsaIndexShareSourceLayer(6u) == 6u);
+    assert(SparkGlm52DsaIndexShareSourceLayer(9u) == 6u);
+    assert(SparkGlm52DsaIndexShareSourceLayer(10u) == 10u);
+    assert(SparkGlm52DsaIndexShareSourceLayer(77u) == 74u);
     assert(SparkGlm52DsaIndexShareSourceLayer(78u) == UINT32_MAX);
     assert(SparkGlm52DsaIndexShareFindGroupEndLayerExclusive(
-        4u,
+        0u,
         &group_end_layer_exclusive) == SPARK_STATUS_OK);
-    assert(group_end_layer_exclusive == 8u);
+    assert(group_end_layer_exclusive == 1u);
     assert(SparkGlm52DsaIndexShareFindGroupEndLayerExclusive(
-        5u,
+        3u,
         &group_end_layer_exclusive) == SPARK_STATUS_OK);
-    assert(group_end_layer_exclusive == 8u);
+    assert(group_end_layer_exclusive == 6u);
     assert(SparkGlm52DsaIndexShareFindGroupEndLayerExclusive(
         77u,
         &group_end_layer_exclusive) == SPARK_STATUS_OK);
@@ -100,17 +102,17 @@ static void SparkTestGlm52ProductionTopologyPp13Sideband(void)
     assert((topology.topology_flags &
         SPARK_GLM52_PRODUCTION_TOPOLOGY_FLAG_MLA_COMPRESSED_KV_CACHE) != 0u);
     assert(topology.mla_cache_element_count == 576u);
-    sideband = SparkTestFindSidebandForSourceLayer(&topology, 4u);
+    sideband = SparkTestFindSidebandForSourceLayer(&topology, 10u);
     assert(sideband != 0);
-    assert(sideband->source_layer_index == 4u);
-    assert(sideband->group_end_layer_exclusive == 8u);
-    assert(sideband->export_stage_index == 0u);
-    assert(sideband->import_stage_index == 1u);
-    assert(sideband->first_imported_consumer_layer_index == 6u);
+    assert(sideband->source_layer_index == 10u);
+    assert(sideband->group_end_layer_exclusive == 14u);
+    assert(sideband->export_stage_index == 1u);
+    assert(sideband->import_stage_index == 2u);
+    assert(sideband->first_imported_consumer_layer_index == 12u);
     assert(sideband->imported_consumer_layer_count == 2u);
     assert(sideband->payload_bytes == 524288u);
-    assert(topology.stages[0u].exported_sideband_count != 0u);
-    assert(topology.stages[1u].imported_sideband_count != 0u);
+    assert(topology.stages[1u].exported_sideband_count != 0u);
+    assert(topology.stages[2u].imported_sideband_count != 0u);
     assert(topology.stages[0u].first_layer_index == 0u);
     assert(topology.stages[0u].layer_count == 6u);
     assert(topology.stages[1u].first_layer_index == 6u);

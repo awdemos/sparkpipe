@@ -948,6 +948,10 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t *selected_token_indices_by_layer;
     const void *index_query_weight_bf16;
     const void *index_key_weight_bf16;
+    const uint8_t *index_query_weight_fp8_e4m3;
+    const float *index_query_weight_scale_inv_f32;
+    const uint8_t *index_key_weight_fp8_e4m3;
+    const float *index_key_weight_scale_inv_f32;
     const void *index_weights_proj_weight_bf16;
     const void *index_key_norm_weight_bf16;
     const void *index_key_norm_bias_bf16;
