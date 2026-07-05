@@ -1004,27 +1004,53 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildNodeContext(
 		configuration->embedding_pack_path;
 	builder_configuration.node_target = configuration->node_target;
 	builder_configuration.rank_plan = &state->rank_plan;
+	fprintf(
+		stderr,
+		"pp13_build_context load_builder rank=%u first=%u layers=%u max_active=%u builder=%s fp8=%s stagepack=%s\n",
+		state->rank_plan.rank_index,
+		state->rank_plan.first_layer_index,
+		state->rank_plan.layer_count,
+		builder_configuration.max_active_sequence_count,
+		configuration->node_context_builder_shared_object_path,
+		configuration->fp8_pack_root,
+		configuration->stagepack_root);
 	status = SparkGlm52Pp13NodeContextBuilderLoadInterfaceFromSharedObject(
 		configuration->node_context_builder_shared_object_path,
 		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_REQUIRED_PRODUCTION_CAPS,
 		&state->builder_library);
 	if (status != SPARK_STATUS_OK)
+	{
+		fprintf(stderr,"pp13_build_context load_builder_status=%u\n",status);
 		return status;
+	}
 	status = state->builder_library.builder_interface.initialize(
 		&builder_configuration,
 		&state->builder_state);
 	if (status != SPARK_STATUS_OK || state->builder_state == 0)
+	{
+		fprintf(stderr,"pp13_build_context initialize_status=%u state=%p\n",
+			status,
+			state->builder_state);
 		return status == SPARK_STATUS_OK ?
 			SPARK_STATUS_INVALID_ARGUMENT : status;
+	}
 	memset(&state->builder_result,0,sizeof(state->builder_result));
 	status = state->builder_library.builder_interface.build(
 		state->builder_state,
 		&state->builder_result);
 	if (status != SPARK_STATUS_OK)
+	{
+		fprintf(stderr,"pp13_build_context build_status=%u\n",status);
 		return status;
-	return SparkGlm52Pp13NodeContextBuilderValidateResult(
+	}
+	status = SparkGlm52Pp13NodeContextBuilderValidateResult(
 		&state->builder_result,
 		&state->rank_plan);
+	if (status != SPARK_STATUS_OK)
+		fprintf(stderr,"pp13_build_context result_status=%u node=%p\n",
+			status,
+			state->builder_result.node_context);
+	return status;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendAttachBuilderDriver(
