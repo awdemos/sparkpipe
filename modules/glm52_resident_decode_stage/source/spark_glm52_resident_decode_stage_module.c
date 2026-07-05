@@ -4000,16 +4000,20 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
             memory_order_relaxed);
         return SPARK_STATUS_OK;
     }
-    if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
-    {
-        bool prefill_shape_supported;
+	if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
+	{
+		bool prefill_shape_supported;
 
-        if (state->stage_slice_layer_count != 0u)
-        {
-            prefill_shape_supported =
-                SparkGlm52ResidentDecodeStageStageSliceBulkPrefillSupportsPrompt(
-                    state,
-                    request->new_token_count);
+		if (state->stage_slice_layer_count != 0u && request->new_token_count == 1u)
+		{
+			prefill_shape_supported = true;
+		}
+		else if (state->stage_slice_layer_count != 0u)
+		{
+			prefill_shape_supported =
+				SparkGlm52ResidentDecodeStageStageSliceBulkPrefillSupportsPrompt(
+					state,
+					request->new_token_count);
         }
         else
         {
