@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "sparkpipe/spark_driver_loader.h"
+#include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 
@@ -25,6 +26,8 @@ typedef struct SparkGlm52Pp13DaemonConfig
     const char *fp8_pack_root;
     const char *transport_shared_object_path;
     const char *driver_path;
+    const char *node_context_builder_shared_object_path;
+    const char *embedding_pack_path;
     const char *program_name;
     const char *node_target;
     const char *final_event_bind_address;
@@ -42,6 +45,9 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     SparkHiddenTransportDynamicLibrary transport_library;
     SparkHiddenTransportSession *input_transport_session;
     SparkHiddenTransportSession *output_transport_session;
+    SparkGlm52Pp13NodeContextBuilderDynamicLibrary builder_library;
+    void *builder_state;
+    SparkGlm52Pp13NodeContextBuilderResult builder_result;
     SparkLoadedModelDriver loaded_driver;
     void *driver_instance;
     const SparkModelDriverProgramDescriptor *program;
@@ -168,10 +174,27 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
         *index += 1;
         return 0;
     }
-    if (strcmp(argv[*index],"--program") == 0)
+    if (strcmp(argv[*index],"--node-context-builder-so") == 0)
     {
         if ((*index + 1) >= argc)
             return -5;
+        configuration->node_context_builder_shared_object_path =
+            argv[*index + 1];
+        *index += 1;
+        return 0;
+    }
+    if (strcmp(argv[*index],"--embedding-pack") == 0)
+    {
+        if ((*index + 1) >= argc)
+            return -6;
+        configuration->embedding_pack_path = argv[*index + 1];
+        *index += 1;
+        return 0;
+    }
+    if (strcmp(argv[*index],"--program") == 0)
+    {
+        if ((*index + 1) >= argc)
+            return -7;
         configuration->program_name = argv[*index + 1];
         *index += 1;
         return 0;
@@ -179,7 +202,7 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
     if (strcmp(argv[*index],"--node-target") == 0)
     {
         if ((*index + 1) >= argc)
-            return -6;
+            return -8;
         configuration->node_target = argv[*index + 1];
         *index += 1;
         return 0;
@@ -188,7 +211,7 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
     {
         if ((*index + 1) >= argc ||
             SparkGlm52Pp13DaemonParseU32(argv[*index + 1],&parsed) < 0)
-            return -7;
+            return -9;
         configuration->max_active_sequence_count = parsed;
         *index += 1;
         return 0;
@@ -197,7 +220,7 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
     {
         if ((*index + 1) >= argc ||
             SparkGlm52Pp13DaemonParseU32(argv[*index + 1],&parsed) < 0)
-            return -8;
+            return -10;
         configuration->port_base = parsed;
         *index += 1;
         return 0;
@@ -205,7 +228,7 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
     if (strcmp(argv[*index],"--final-event-bind") == 0)
     {
         if ((*index + 1) >= argc)
-            return -9;
+            return -11;
         configuration->final_event_bind_address = argv[*index + 1];
         *index += 1;
         return 0;
@@ -213,12 +236,12 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
     if (strcmp(argv[*index],"--final-event-return-host") == 0)
     {
         if ((*index + 1) >= argc)
-            return -10;
+            return -12;
         configuration->final_event_return_host = argv[*index + 1];
         *index += 1;
         return 0;
     }
-    return -11;
+    return -13;
 }
 
 static int32_t SparkGlm52Pp13DaemonParseArguments(
@@ -237,7 +260,9 @@ static int32_t SparkGlm52Pp13DaemonParseArguments(
     if (configuration->rank_is_set == 0u ||
         configuration->fp8_pack_root == 0 ||
         configuration->transport_shared_object_path == 0 ||
-        configuration->driver_path == 0)
+        configuration->driver_path == 0 ||
+        configuration->node_context_builder_shared_object_path == 0 ||
+        configuration->embedding_pack_path == 0)
         return -2;
     return 0;
 }
@@ -466,7 +491,7 @@ static SparkStatus SparkGlm52Pp13DaemonLoadDriver(
     memset(&create_request,0,sizeof(create_request));
     create_request.node_id = runtime->rank_plan.host_name;
     create_request.node_target = configuration->node_target;
-    create_request.node_context = 0;
+    create_request.node_context = runtime->builder_result.node_context;
     create_request.completion_function = SparkGlm52Pp13DaemonCompletion;
     create_request.completion_context = runtime;
     status = runtime->loaded_driver.interface->create(
@@ -477,6 +502,67 @@ static SparkStatus SparkGlm52Pp13DaemonLoadDriver(
     if (runtime->driver_instance == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13DaemonBuildNodeContext(
+    SparkGlm52Pp13DaemonRuntime *runtime,
+    const SparkGlm52Pp13DaemonConfig *configuration)
+{
+    SparkGlm52Pp13NodeContextBuilderConfiguration builder_configuration;
+    SparkStatus status;
+
+    memset(&builder_configuration,0,sizeof(builder_configuration));
+    builder_configuration.abi_version =
+        SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION;
+    builder_configuration.descriptor_bytes =
+        SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_BYTES;
+    builder_configuration.rank_index = runtime->rank_plan.rank_index;
+    builder_configuration.max_active_sequence_count =
+        configuration->max_active_sequence_count;
+    builder_configuration.port_base = configuration->port_base;
+    builder_configuration.fp8_pack_root = configuration->fp8_pack_root;
+    builder_configuration.embedding_pack_path =
+        configuration->embedding_pack_path;
+    builder_configuration.node_target = configuration->node_target;
+    builder_configuration.rank_plan = &runtime->rank_plan;
+    status = SparkGlm52Pp13NodeContextBuilderLoadInterfaceFromSharedObject(
+        configuration->node_context_builder_shared_object_path,
+        SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_REQUIRED_PRODUCTION_CAPS,
+        &runtime->builder_library);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    status = runtime->builder_library.builder_interface.initialize(
+        &builder_configuration,
+        &runtime->builder_state);
+    if (status != SPARK_STATUS_OK || runtime->builder_state == 0)
+        return status == SPARK_STATUS_OK ?
+            SPARK_STATUS_INVALID_ARGUMENT : status;
+    memset(&runtime->builder_result,0,sizeof(runtime->builder_result));
+    status = runtime->builder_library.builder_interface.build(
+        runtime->builder_state,
+        &runtime->builder_result);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    return SparkGlm52Pp13NodeContextBuilderValidateResult(
+        &runtime->builder_result,
+        &runtime->rank_plan);
+}
+
+static SparkStatus SparkGlm52Pp13DaemonAttachBuilderDriver(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    if (runtime == 0 || runtime->builder_state == 0 ||
+        runtime->builder_library.builder_interface.attach_driver == 0 ||
+        runtime->loaded_driver.interface == 0 ||
+        runtime->driver_instance == 0 ||
+        runtime->program == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    return runtime->builder_library.builder_interface.attach_driver(
+        runtime->builder_state,
+        runtime->loaded_driver.interface,
+        runtime->driver_instance,
+        runtime->program,
+        runtime->output_transport_session);
 }
 
 static SparkStatus SparkGlm52Pp13DaemonInitializeRunner(
@@ -691,6 +777,15 @@ static SparkStatus SparkGlm52Pp13DaemonInitialize(
             "failed to validate rank FP8 pack files");
         return status;
     }
+    status = SparkGlm52Pp13DaemonBuildNodeContext(runtime,configuration);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to build resident node context");
+        return status;
+    }
     status = SparkGlm52Pp13DaemonLoadTransport(runtime,configuration);
     if (status != SPARK_STATUS_OK)
     {
@@ -720,6 +815,15 @@ static SparkStatus SparkGlm52Pp13DaemonInitialize(
             error_buffer,
             error_buffer_bytes,
             "failed to load GLM52 model driver");
+        return status;
+    }
+    status = SparkGlm52Pp13DaemonAttachBuilderDriver(runtime);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to attach node-context builder to driver");
         return status;
     }
     status = SparkGlm52Pp13DaemonInitializeRunner(runtime);
@@ -757,6 +861,16 @@ static void SparkGlm52Pp13DaemonDestroy(
         runtime->driver_instance != 0)
         runtime->loaded_driver.interface->destroy(runtime->driver_instance);
     SparkUnloadModelDriver(&runtime->loaded_driver);
+    if (runtime->builder_library.builder_interface.destroy_result != 0 &&
+        runtime->builder_state != 0)
+        runtime->builder_library.builder_interface.destroy_result(
+            runtime->builder_state,
+            &runtime->builder_result);
+    if (runtime->builder_library.builder_interface.destroy != 0 &&
+        runtime->builder_state != 0)
+        runtime->builder_library.builder_interface.destroy(
+            runtime->builder_state);
+    SparkGlm52Pp13NodeContextBuilderUnloadInterface(&runtime->builder_library);
     SparkHiddenTransportClose(runtime->input_transport_session);
     SparkHiddenTransportClose(runtime->output_transport_session);
     SparkHiddenTransportUnloadInterface(&runtime->transport_library);
@@ -775,6 +889,9 @@ static void SparkGlm52Pp13DaemonPrintReady(
     printf("fp8_pack_root=%s\n",configuration->fp8_pack_root);
     printf("transport_so=%s\n",configuration->transport_shared_object_path);
     printf("driver_so=%s\n",configuration->driver_path);
+    printf("node_context_builder_so=%s\n",
+        configuration->node_context_builder_shared_object_path);
+    printf("embedding_pack=%s\n",configuration->embedding_pack_path);
     printf("input_transport=%u\n",
         runtime->input_transport_session != 0 ? 1u : 0u);
     printf("output_transport=%u\n",
@@ -800,7 +917,7 @@ int main(int argc,char **argv)
     if (SparkGlm52Pp13DaemonParseArguments(&configuration,argc,argv) < 0)
     {
         fprintf(stderr,
-            "usage: %s --rank n --fp8-pack-root dir --transport-so path --driver-so path [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host]\n",
+            "usage: %s --rank n --fp8-pack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host]\n",
             argv[0]);
         return 2;
     }

@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "sparkpipe/spark_driver_loader.h"
+#include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 #include "sparkpipe/spark_model_driver.h"
@@ -41,6 +42,9 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	SparkGlm52Pp13RuntimeFinalEventRoute final_event_route;
 	SparkHiddenTransportDynamicLibrary transport_library;
 	SparkHiddenTransportSession *output_transport_session;
+	SparkGlm52Pp13NodeContextBuilderDynamicLibrary builder_library;
+	void *builder_state;
+	SparkGlm52Pp13NodeContextBuilderResult builder_result;
 	SparkLoadedModelDriver loaded_driver;
 	void *driver_instance;
 	const SparkModelDriverProgramDescriptor *program;
@@ -228,7 +232,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendLoadTokenizer(
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52Pp13ServiceBackendUnavailablePrefill(
+static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 	void *context,
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
 {
@@ -237,13 +241,15 @@ static SparkStatus SparkGlm52Pp13ServiceBackendUnavailablePrefill(
 	state = (SparkGlm52Pp13ServiceBackendState *)context;
 	if (state == 0 || prefill_dispatch == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	SparkGlm52Pp13ServiceBackendSetBlocker(
-		state,
-		"rank0 token-id prefill input bridge is not connected to PP13 driver");
-	return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	if (state->builder_library.builder_interface.prefill == 0 ||
+		state->builder_state == 0)
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	return state->builder_library.builder_interface.prefill(
+		state->builder_state,
+		prefill_dispatch);
 }
 
-static SparkStatus SparkGlm52Pp13ServiceBackendUnavailableDecode(
+static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
 	void *context,
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
 	SparkGlm52ServingDecodeResult *decode_result)
@@ -253,10 +259,13 @@ static SparkStatus SparkGlm52Pp13ServiceBackendUnavailableDecode(
 	state = (SparkGlm52Pp13ServiceBackendState *)context;
 	if (state == 0 || decode_dispatch == 0 || decode_result == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	SparkGlm52Pp13ServiceBackendSetBlocker(
-		state,
-		"rank0 token-id decode input bridge is not connected to PP13 driver");
-	return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	if (state->builder_library.builder_interface.decode == 0 ||
+		state->builder_state == 0)
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	return state->builder_library.builder_interface.decode(
+		state->builder_state,
+		decode_dispatch,
+		decode_result);
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendAllocateCacheStorage(
@@ -507,9 +516,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeServingEngine(
 		state->lane_physical_block_counts;
 	serving_configuration.lane_count_capacity = lane_capacity;
 	serving_configuration.prefill_function =
-		SparkGlm52Pp13ServiceBackendUnavailablePrefill;
-	serving_configuration.decode_function =
-		SparkGlm52Pp13ServiceBackendUnavailableDecode;
+		SparkGlm52Pp13ServiceBackendPrefill;
+	serving_configuration.decode_function = SparkGlm52Pp13ServiceBackendDecode;
 	serving_configuration.callback_context = state;
 	return SparkGlm52ServingEngineInitialize(
 		&state->serving_engine,
@@ -650,7 +658,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendLoadDriver(
 	memset(&create_request,0,sizeof(create_request));
 	create_request.node_id = state->rank_plan.host_name;
 	create_request.node_target = configuration->node_target;
-	create_request.node_context = 0;
+	create_request.node_context = state->builder_result.node_context;
 	status = state->loaded_driver.interface->create(
 		&create_request,
 		&state->driver_instance);
@@ -659,6 +667,68 @@ static SparkStatus SparkGlm52Pp13ServiceBackendLoadDriver(
 	if (state->driver_instance == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendBuildNodeContext(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52ServiceBackendConfiguration *configuration)
+{
+	SparkGlm52Pp13NodeContextBuilderConfiguration builder_configuration;
+	SparkStatus status;
+
+	memset(&builder_configuration,0,sizeof(builder_configuration));
+	builder_configuration.abi_version =
+		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION;
+	builder_configuration.descriptor_bytes =
+		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_BYTES;
+	builder_configuration.rank_index = state->rank_plan.rank_index;
+	builder_configuration.max_active_sequence_count =
+		SparkGlm52Pp13ServiceBackendMaxActive(configuration);
+	builder_configuration.port_base =
+		SparkGlm52Pp13ServiceBackendPortBase(configuration);
+	builder_configuration.fp8_pack_root = configuration->fp8_pack_root;
+	builder_configuration.embedding_pack_path =
+		configuration->embedding_pack_path;
+	builder_configuration.node_target = configuration->node_target;
+	builder_configuration.rank_plan = &state->rank_plan;
+	status = SparkGlm52Pp13NodeContextBuilderLoadInterfaceFromSharedObject(
+		configuration->node_context_builder_shared_object_path,
+		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_REQUIRED_PRODUCTION_CAPS,
+		&state->builder_library);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = state->builder_library.builder_interface.initialize(
+		&builder_configuration,
+		&state->builder_state);
+	if (status != SPARK_STATUS_OK || state->builder_state == 0)
+		return status == SPARK_STATUS_OK ?
+			SPARK_STATUS_INVALID_ARGUMENT : status;
+	memset(&state->builder_result,0,sizeof(state->builder_result));
+	status = state->builder_library.builder_interface.build(
+		state->builder_state,
+		&state->builder_result);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	return SparkGlm52Pp13NodeContextBuilderValidateResult(
+		&state->builder_result,
+		&state->rank_plan);
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendAttachBuilderDriver(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	if (state == 0 || state->builder_state == 0 ||
+		state->builder_library.builder_interface.attach_driver == 0 ||
+		state->loaded_driver.interface == 0 ||
+		state->driver_instance == 0 ||
+		state->program == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return state->builder_library.builder_interface.attach_driver(
+		state->builder_state,
+		state->loaded_driver.interface,
+		state->driver_instance,
+		state->program,
+		state->output_transport_session);
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendRank0Fail(
@@ -745,6 +815,10 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13ServiceBackendRank0Fail(
 			state,status,error_buffer,"failed to open rank0 output transport");
+	status = SparkGlm52Pp13ServiceBackendBuildNodeContext(state,configuration);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,status,error_buffer,"failed to build rank0 resident context");
 	status = SparkGlm52Pp13ServiceBackendLoadDriver(
 		state,
 		configuration,
@@ -753,6 +827,10 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13ServiceBackendRank0Fail(
 			state,status,error_buffer,"failed to load GLM52 driver");
+	status = SparkGlm52Pp13ServiceBackendAttachBuilderDriver(state);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13ServiceBackendRank0Fail(
+			state,status,error_buffer,"failed to attach rank0 bridge driver");
 	status = SparkGlm52Pp13ServiceBackendInitializeRunner(state);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13ServiceBackendRank0Fail(
@@ -815,6 +893,16 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 			"GLM52 driver shared object is missing");
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13ServiceBackendRequireText(
+			configuration->node_context_builder_shared_object_path,
+			state,
+			"GLM52 PP13 node-context builder shared object is missing");
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendRequireText(
+			configuration->embedding_pack_path,
+			state,
+			"GLM52 embedding pack is missing");
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendRequireText(
 			configuration->driver_program_name,
 			state,
 			"GLM52 driver program name is missing");
@@ -837,19 +925,16 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 			state,
 			configuration);
 	if (status == SPARK_STATUS_OK)
-		(void)SparkGlm52Pp13ServiceBackendInitializeRank0(
+		status = SparkGlm52Pp13ServiceBackendInitializeRank0(
 			state,
 			configuration);
 	if (status != SPARK_STATUS_OK)
+	{
 		SparkGlm52Pp13ServiceBackendSetBlocker(
 			state,
 			"PP13 service runtime failed to initialize");
-	if (state->service_runtime_ready != 0u &&
-		state->rank0_runtime_ready != 0u &&
-		state->first_blocker[0] == '\0')
-		SparkGlm52Pp13ServiceBackendSetBlocker(
-			state,
-			"rank0 token-id input bridge is not connected to distributed PP13 driver");
+		return status;
+	}
 	return SPARK_STATUS_OK;
 }
 
@@ -869,6 +954,15 @@ static void SparkGlm52Pp13ServiceBackendDestroy(void *backend_state)
 		state->driver_instance != 0)
 		state->loaded_driver.interface->destroy(state->driver_instance);
 	SparkUnloadModelDriver(&state->loaded_driver);
+	if (state->builder_library.builder_interface.destroy_result != 0 &&
+		state->builder_state != 0)
+		state->builder_library.builder_interface.destroy_result(
+			state->builder_state,
+			&state->builder_result);
+	if (state->builder_library.builder_interface.destroy != 0 &&
+		state->builder_state != 0)
+		state->builder_library.builder_interface.destroy(state->builder_state);
+	SparkGlm52Pp13NodeContextBuilderUnloadInterface(&state->builder_library);
 	SparkHiddenTransportClose(state->output_transport_session);
 	SparkHiddenTransportUnloadInterface(&state->transport_library);
 	SparkTokenizerDestroy(&state->tokenizer);

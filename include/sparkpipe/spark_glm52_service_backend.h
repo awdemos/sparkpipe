@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 2u
+#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 3u
 #define SPARK_GLM52_SERVICE_BACKEND_INTERFACE_BYTES \
 	((uint32_t)sizeof(SparkGlm52ServiceBackendInterface))
 #define SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES \
@@ -41,6 +41,8 @@ typedef struct SparkGlm52ServiceBackendConfiguration
 	const char *fp8_pack_root;
 	const char *transport_shared_object_path;
 	const char *driver_shared_object_path;
+	const char *node_context_builder_shared_object_path;
+	const char *embedding_pack_path;
 	const char *driver_program_name;
 	const char *node_target;
 	const char *tokenizer_path;

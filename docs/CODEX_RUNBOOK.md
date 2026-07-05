@@ -133,6 +133,24 @@ Expected summary file:
 /home/spark2/src/sparkpipe-main-live/build/glm52_local_pipeline_gate/local_pipeline_summary.tsv
 ```
 
+## PP13 Production Startup Rule
+
+Every PP13 rank must create the GLM-5.2 driver with a real resident node
+context. A command or service configuration is invalid unless it has:
+
+```text
+--fp8-pack-root <stable local pack root>
+--transport-so <production hidden transport shared object>
+--driver-so <GLM52 driver shared object>
+--node-context-builder-so <production PP13 node-context builder shared object>
+--embedding-pack <resident embedding pack>
+```
+
+The rank daemon and service backend must pass the builder-owned `node_context`
+into `SparkModelDriverCreateRequest`. `node_context = 0` is never a production
+startup path. Rank0 request execution must enter the builder-owned prefill and
+decode callbacks, not placeholder callbacks.
+
 ## Performance Evidence
 
 Report timings by path:
