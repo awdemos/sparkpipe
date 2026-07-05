@@ -4,7 +4,7 @@ AR ?= ar
 NVCC ?= nvcc
 CUDA_ARCH ?= sm_121a
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3
-NVCCFLAGS ?= -std=c++17 -O3 --use_fast_math -lineinfo -arch=$(CUDA_ARCH)
+NVCCFLAGS ?= -std=c++17 -O3 --use_fast_math --expt-relaxed-constexpr -lineinfo -arch=$(CUDA_ARCH)
 MODULE_LIBRARY_ROOT ?= $(REPOSITORY_ROOT)/build/module_library
 MAX_STAGE_MICROSECONDS ?= 0
 ARTIFACT_CHECK_ARGS ?=
@@ -113,10 +113,16 @@ $(HOST_OBJECT): source/spark_glm52_resident_decode_stage_module.c | $(BUILD_DIRE
 
 $(CUDA_OBJECT): source/spark_glm52_resident_decode_stage_cuda.cu | $(BUILD_DIRECTORY)
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
+		-I$(REPOSITORY_ROOT)/third_party/flashinfer/include \
+		-I$(REPOSITORY_ROOT)/third_party/flashinfer/3rdparty/cutlass/include \
+		-I$(REPOSITORY_ROOT)/third_party/flashinfer/3rdparty/cutlass/tools/util/include \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(REQUIRED_STAGE_OBJECT): source/spark_glm52_sm121_required_decode_stage.cu | $(BUILD_DIRECTORY)
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
+		-I$(REPOSITORY_ROOT)/third_party/flashinfer/include \
+		-I$(REPOSITORY_ROOT)/third_party/flashinfer/3rdparty/cutlass/include \
+		-I$(REPOSITORY_ROOT)/third_party/flashinfer/3rdparty/cutlass/tools/util/include \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(B12X_MOE_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_b12x_moe_plan.cu | $(BUILD_DIRECTORY)
