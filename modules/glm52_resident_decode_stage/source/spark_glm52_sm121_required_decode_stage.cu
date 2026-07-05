@@ -34,6 +34,9 @@
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS 256u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES 32u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_CANDIDATES_PER_BLOCK \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS / \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT UINT32_MAX
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_FP8_MMA_K 32u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_NATIVE_FP4_MMA_K 64u
@@ -2807,6 +2810,143 @@ static __global__ void SparkGlm52ResidentDecodeStageDsaSelectKernel(
     }
 }
 
+static __device__ __forceinline__ uint32_t SparkGlm52ResidentDecodeStageDsaScoreIsBetter(
+    float candidate_score,
+    uint32_t candidate_token_index,
+    float best_score,
+    uint32_t best_token_index)
+{
+    if (candidate_token_index == SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID ||
+        candidate_score != candidate_score ||
+        candidate_score <= -FLT_MAX)
+    {
+        return 0u;
+    }
+    if (best_token_index == SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID ||
+        candidate_score > best_score ||
+        (candidate_score == best_score && candidate_token_index < best_token_index))
+    {
+        return 1u;
+    }
+    return 0u;
+}
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)
+void SparkGlm52ResidentDecodeStageDsaSelectDestructiveBlockKernel(
+    float *__restrict__ dsa_token_scores,
+    const uint32_t *__restrict__ context_lengths,
+    uint32_t *__restrict__ sparse_token_indices,
+    uint32_t active_sequence_count,
+    uint32_t dsa_candidate_count,
+    uint32_t selected_token_count)
+{
+    __shared__ float shared_best_scores[SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    __shared__ uint32_t shared_best_token_indices[SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    uint32_t sequence_index;
+    uint32_t context_length;
+    uint32_t selected_index;
+    uint64_t score_row_offset;
+    uint64_t output_row_offset;
+
+    sequence_index = blockIdx.x;
+    if (sequence_index >= active_sequence_count || dsa_candidate_count == 0u ||
+        selected_token_count == 0u ||
+        selected_token_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT)
+    {
+        return;
+    }
+
+    context_length = context_lengths[sequence_index];
+    if (context_length > dsa_candidate_count)
+    {
+        context_length = dsa_candidate_count;
+    }
+    score_row_offset = (uint64_t)sequence_index * (uint64_t)dsa_candidate_count;
+    output_row_offset =
+        (uint64_t)sequence_index *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+
+    for (selected_index = 0u;
+         selected_index < selected_token_count;
+         ++selected_index)
+    {
+        uint32_t candidate_index;
+        uint32_t reduction_stride;
+        float thread_best_score;
+        uint32_t thread_best_token_index;
+
+        thread_best_score = -FLT_MAX;
+        thread_best_token_index = SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
+        candidate_index = threadIdx.x;
+        while (candidate_index < context_length)
+        {
+            float candidate_score;
+
+            candidate_score = dsa_token_scores[score_row_offset + (uint64_t)candidate_index];
+            if (SparkGlm52ResidentDecodeStageDsaScoreIsBetter(
+                    candidate_score,
+                    candidate_index,
+                    thread_best_score,
+                    thread_best_token_index) != 0u)
+            {
+                thread_best_score = candidate_score;
+                thread_best_token_index = candidate_index;
+            }
+            candidate_index += blockDim.x;
+        }
+
+        shared_best_scores[threadIdx.x] = thread_best_score;
+        shared_best_token_indices[threadIdx.x] = thread_best_token_index;
+        __syncthreads();
+
+        reduction_stride = blockDim.x >> 1u;
+        while (reduction_stride != 0u)
+        {
+            if (threadIdx.x < reduction_stride)
+            {
+                float other_score;
+                uint32_t other_token_index;
+
+                other_score = shared_best_scores[threadIdx.x + reduction_stride];
+                other_token_index = shared_best_token_indices[threadIdx.x + reduction_stride];
+                if (SparkGlm52ResidentDecodeStageDsaScoreIsBetter(
+                        other_score,
+                        other_token_index,
+                        shared_best_scores[threadIdx.x],
+                        shared_best_token_indices[threadIdx.x]) != 0u)
+                {
+                    shared_best_scores[threadIdx.x] = other_score;
+                    shared_best_token_indices[threadIdx.x] = other_token_index;
+                }
+            }
+            __syncthreads();
+            reduction_stride >>= 1u;
+        }
+
+        if (threadIdx.x == 0u)
+        {
+            uint32_t selected_token_index;
+
+            selected_token_index = shared_best_token_indices[0];
+            sparse_token_indices[output_row_offset + (uint64_t)selected_index] =
+                selected_token_index;
+            if (selected_token_index != SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID)
+            {
+                dsa_token_scores[score_row_offset + (uint64_t)selected_token_index] = -FLT_MAX;
+            }
+        }
+        __syncthreads();
+    }
+
+    selected_index = selected_token_count + threadIdx.x;
+    while (selected_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT)
+    {
+        sparse_token_indices[output_row_offset + (uint64_t)selected_index] =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
+        selected_index += blockDim.x;
+    }
+}
+
 static __global__ void SparkGlm52ResidentDecodeStageCopyContextPrefixSparseIndicesKernel(
     const uint32_t *__restrict__ context_lengths,
     uint32_t *__restrict__ sparse_token_indices,
@@ -2854,6 +2994,503 @@ static __global__ void SparkGlm52ResidentDecodeStageCopySelectedTokenIndicesKern
         return;
     }
     output_indices[element_index] = input_indices[element_index];
+}
+
+
+static __global__ void SparkGlm52ResidentDecodeStageDsaSelectedBlockBuildKernel(
+    const uint32_t *__restrict__ selected_token_indices,
+    const uint32_t *__restrict__ context_lengths,
+    const uint32_t *__restrict__ positions,
+    const uint32_t *__restrict__ first_block_token_offsets,
+    uint32_t *__restrict__ selected_block_indices_by_layer,
+    uint32_t *__restrict__ selected_block_counts_by_layer,
+    uint32_t *__restrict__ selection_epoch_by_layer,
+    uint32_t active_sequence_count,
+    uint32_t maximum_active_sequence_count,
+    uint32_t layer_index,
+    uint32_t selected_token_count,
+    uint32_t kv_block_token_count,
+    uint32_t selected_block_stride,
+    uint32_t selected_block_capacity)
+{
+    uint32_t sequence_index;
+    uint32_t selected_entry_index;
+    uint32_t context_length;
+    uint32_t first_block_token_offset;
+    uint32_t written_logical_block_index;
+    uint64_t token_row_offset;
+    uint64_t layer_sequence_offset;
+    uint64_t block_row_offset;
+
+    sequence_index = blockIdx.x;
+    if (sequence_index >= active_sequence_count ||
+        selected_token_indices == 0 || context_lengths == 0 ||
+        selected_block_indices_by_layer == 0 || selected_block_counts_by_layer == 0 ||
+        maximum_active_sequence_count == 0u || kv_block_token_count == 0u ||
+        selected_token_count == 0u || selected_block_capacity == 0u ||
+        selected_block_stride < selected_block_capacity)
+    {
+        return;
+    }
+
+    context_length = context_lengths[sequence_index];
+    first_block_token_offset = first_block_token_offsets != 0
+        ? first_block_token_offsets[sequence_index]
+        : 0u;
+    written_logical_block_index = SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
+    if (positions != 0)
+    {
+        written_logical_block_index =
+            (positions[sequence_index] + first_block_token_offset) / kv_block_token_count;
+    }
+    token_row_offset =
+        (uint64_t)sequence_index *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+    layer_sequence_offset =
+        ((uint64_t)layer_index * (uint64_t)maximum_active_sequence_count) +
+        (uint64_t)sequence_index;
+    block_row_offset = layer_sequence_offset * (uint64_t)selected_block_stride;
+
+    selected_entry_index = threadIdx.x;
+    while (selected_entry_index < selected_block_capacity)
+    {
+        uint32_t selected_token_index;
+        uint32_t logical_block_index;
+
+        logical_block_index = SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
+        if (selected_entry_index < selected_token_count)
+        {
+            selected_token_index =
+                selected_token_indices[token_row_offset + (uint64_t)selected_entry_index];
+            if (selected_token_index != SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID &&
+                selected_token_index < context_length)
+            {
+                logical_block_index =
+                    (selected_token_index + first_block_token_offset) / kv_block_token_count;
+                if (logical_block_index == written_logical_block_index)
+                {
+                    logical_block_index = SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
+                }
+            }
+        }
+        selected_block_indices_by_layer[
+            block_row_offset + (uint64_t)selected_entry_index] = logical_block_index;
+        selected_entry_index += blockDim.x;
+    }
+
+    if (threadIdx.x == 0u)
+    {
+        uint32_t selected_block_count;
+
+        selected_block_count = selected_token_count < selected_block_capacity
+            ? selected_token_count
+            : selected_block_capacity;
+        selected_block_counts_by_layer[layer_sequence_offset] = selected_block_count;
+        if (selection_epoch_by_layer != 0)
+        {
+            selection_epoch_by_layer[layer_sequence_offset] += 1u;
+        }
+    }
+}
+
+typedef struct SparkGlm52ResidentDecodeStageDsaKvFragmentTransportKernelPayloads
+{
+    uint32_t payload_count;
+    uint32_t reserved0;
+    uint32_t reserved1;
+    uint32_t reserved2;
+    SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload payloads[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_MAX_PAYLOADS];
+} SparkGlm52ResidentDecodeStageDsaKvFragmentTransportKernelPayloads;
+
+static __device__ __forceinline__ uint32_t SparkGlm52ResidentDecodeStageTryClaimTransportBlock(
+    uint64_t *requested_epoch_by_physical_block,
+    uint32_t physical_block_index,
+    uint64_t transport_epoch)
+{
+    unsigned long long int *epoch_address;
+    unsigned long long int observed_epoch;
+
+    if (requested_epoch_by_physical_block == 0)
+    {
+        return 1u;
+    }
+    epoch_address = (unsigned long long int *)&requested_epoch_by_physical_block[
+        physical_block_index];
+    observed_epoch = atomicAdd(epoch_address, 0ull);
+    while (observed_epoch != (unsigned long long int)transport_epoch)
+    {
+        unsigned long long int previous_epoch;
+
+        previous_epoch = atomicCAS(
+            epoch_address,
+            observed_epoch,
+            (unsigned long long int)transport_epoch);
+        if (previous_epoch == observed_epoch)
+        {
+            return 1u;
+        }
+        observed_epoch = previous_epoch;
+    }
+    return 0u;
+}
+
+static __device__ __forceinline__ void SparkGlm52ResidentDecodeStageCopyTransportPayloadBytes(
+    const uint8_t *source,
+    uint8_t *destination,
+    uint64_t byte_count)
+{
+    uint64_t byte_index;
+
+    if ((((uintptr_t)source | (uintptr_t)destination | byte_count) & 7ull) == 0ull)
+    {
+        uint64_t word_index;
+        uint64_t word_count;
+
+        word_count = byte_count >> 3u;
+        word_index = threadIdx.x;
+        while (word_index < word_count)
+        {
+            ((uint64_t *)destination)[word_index] =
+                ((const uint64_t *)source)[word_index];
+            word_index += blockDim.x;
+        }
+        return;
+    }
+
+    byte_index = threadIdx.x;
+    while (byte_index < byte_count)
+    {
+        destination[byte_index] = source[byte_index];
+        byte_index += blockDim.x;
+    }
+}
+
+static __global__ void SparkGlm52ResidentDecodeStageBuildWrittenLogicalBlockListKernel(
+    const uint32_t *__restrict__ positions,
+    const uint32_t *__restrict__ first_block_token_offsets,
+    uint32_t *__restrict__ written_logical_block_indices,
+    uint32_t *__restrict__ written_logical_block_counts,
+    uint32_t active_sequence_count,
+    uint32_t kv_block_token_count,
+    uint32_t max_blocks_per_sequence,
+    uint32_t written_logical_block_stride)
+{
+    uint32_t sequence_index;
+    uint32_t addressed_token_index;
+    uint32_t logical_block_index;
+
+    sequence_index = blockIdx.x;
+    if (threadIdx.x != 0u || sequence_index >= active_sequence_count ||
+        positions == 0 || written_logical_block_indices == 0 ||
+        written_logical_block_counts == 0 || kv_block_token_count == 0u ||
+        max_blocks_per_sequence == 0u || written_logical_block_stride == 0u)
+    {
+        return;
+    }
+
+    addressed_token_index = positions[sequence_index];
+    if (first_block_token_offsets != 0)
+    {
+        addressed_token_index += first_block_token_offsets[sequence_index];
+    }
+    logical_block_index = addressed_token_index / kv_block_token_count;
+    if (logical_block_index < max_blocks_per_sequence)
+    {
+        written_logical_block_indices[
+            ((uint64_t)sequence_index * (uint64_t)written_logical_block_stride)] =
+            logical_block_index;
+        written_logical_block_counts[sequence_index] = 1u;
+    }
+    else
+    {
+        written_logical_block_indices[
+            ((uint64_t)sequence_index * (uint64_t)written_logical_block_stride)] =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
+        written_logical_block_counts[sequence_index] = 0u;
+    }
+}
+
+static __global__ void SparkGlm52ResidentDecodeStageDsaKvFragmentPrefetchKernel(
+    const uint32_t *__restrict__ selected_block_indices,
+    const uint32_t *__restrict__ selected_block_counts,
+    const uint32_t *__restrict__ block_table,
+    const uint32_t *__restrict__ source_physical_block_indices_by_destination,
+    uint64_t *__restrict__ requested_epoch_by_physical_block,
+    uint64_t *__restrict__ ready_epoch_by_physical_block,
+    const uint64_t *__restrict__ source_fragment_keys_by_physical_block,
+    const uint64_t *__restrict__ expected_fragment_keys_by_destination,
+    uint32_t *__restrict__ copied_block_count_device,
+    uint32_t *__restrict__ duplicate_block_count_device,
+    uint32_t *__restrict__ invalid_block_count_device,
+    uint32_t *__restrict__ key_mismatch_count_device,
+    SparkGlm52ResidentDecodeStageDsaKvFragmentTransportKernelPayloads payloads,
+    uint64_t transport_epoch,
+    uint32_t selected_block_stride,
+    uint32_t selected_block_capacity,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    uint32_t physical_block_count)
+{
+    uint32_t selected_entry_index;
+    uint32_t sequence_index;
+    uint32_t selected_block_index;
+    uint32_t logical_block_index;
+    uint32_t destination_physical_block_index;
+    uint32_t source_physical_block_index;
+    uint32_t payload_index;
+
+    selected_entry_index = blockIdx.x;
+    sequence_index = selected_entry_index / selected_block_capacity;
+    selected_block_index = selected_entry_index -
+        (sequence_index * selected_block_capacity);
+    if (selected_block_capacity == 0u || selected_block_stride < selected_block_capacity ||
+        selected_block_index >= selected_block_counts[sequence_index])
+    {
+        return;
+    }
+
+    logical_block_index = selected_block_indices[
+        ((uint64_t)sequence_index * (uint64_t)selected_block_stride) +
+        (uint64_t)selected_block_index];
+    if (logical_block_index == SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID ||
+        logical_block_index >= max_blocks_per_sequence)
+    {
+        if (threadIdx.x == 0u && invalid_block_count_device != 0)
+        {
+            atomicAdd(invalid_block_count_device, 1u);
+        }
+        return;
+    }
+
+    destination_physical_block_index = block_table[
+        ((uint64_t)sequence_index * (uint64_t)max_blocks_per_sequence) +
+        (uint64_t)logical_block_index];
+    if (destination_physical_block_index >= kv_block_count ||
+        destination_physical_block_index >= physical_block_count)
+    {
+        if (threadIdx.x == 0u && invalid_block_count_device != 0)
+        {
+            atomicAdd(invalid_block_count_device, 1u);
+        }
+        return;
+    }
+    source_physical_block_index = source_physical_block_indices_by_destination != 0
+        ? source_physical_block_indices_by_destination[destination_physical_block_index]
+        : destination_physical_block_index;
+    if (source_physical_block_index >= physical_block_count)
+    {
+        if (threadIdx.x == 0u && invalid_block_count_device != 0)
+        {
+            atomicAdd(invalid_block_count_device, 1u);
+        }
+        return;
+    }
+    if (source_fragment_keys_by_physical_block != 0 &&
+        expected_fragment_keys_by_destination != 0)
+    {
+        uint64_t source_key;
+        uint64_t expected_key;
+
+        source_key = source_fragment_keys_by_physical_block[source_physical_block_index];
+        expected_key = expected_fragment_keys_by_destination[destination_physical_block_index];
+        if (expected_key != 0ull && source_key != expected_key)
+        {
+            if (threadIdx.x == 0u && key_mismatch_count_device != 0)
+            {
+                atomicAdd(key_mismatch_count_device, 1u);
+            }
+            return;
+        }
+    }
+    if (SparkGlm52ResidentDecodeStageTryClaimTransportBlock(
+            requested_epoch_by_physical_block,
+            destination_physical_block_index,
+            transport_epoch) == 0u)
+    {
+        if (threadIdx.x == 0u && duplicate_block_count_device != 0)
+        {
+            atomicAdd(duplicate_block_count_device, 1u);
+        }
+        return;
+    }
+
+    for (payload_index = 0u; payload_index < payloads.payload_count; ++payload_index)
+    {
+        const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload *payload;
+        const uint8_t *source;
+        uint8_t *destination;
+
+        payload = &payloads.payloads[payload_index];
+        if ((payload->flags &
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_ENABLED) == 0u ||
+            payload->source_base == 0 || payload->destination_base == 0 ||
+            payload->transfer_bytes == 0ull)
+        {
+            continue;
+        }
+        source = ((const uint8_t *)payload->source_base) +
+            ((uint64_t)source_physical_block_index * payload->source_block_stride_bytes);
+        destination = ((uint8_t *)payload->destination_base) +
+            ((uint64_t)destination_physical_block_index * payload->destination_block_stride_bytes);
+        SparkGlm52ResidentDecodeStageCopyTransportPayloadBytes(
+            source,
+            destination,
+            payload->transfer_bytes);
+    }
+    __syncthreads();
+    if (threadIdx.x == 0u)
+    {
+        if (ready_epoch_by_physical_block != 0)
+        {
+            ready_epoch_by_physical_block[destination_physical_block_index] = transport_epoch;
+        }
+        if (copied_block_count_device != 0)
+        {
+            atomicAdd(copied_block_count_device, 1u);
+        }
+    }
+}
+
+static __global__ void SparkGlm52ResidentDecodeStageDsaKvFragmentSaveKernel(
+    const uint32_t *__restrict__ selected_block_indices,
+    const uint32_t *__restrict__ selected_block_counts,
+    const uint32_t *__restrict__ block_table,
+    const uint32_t *__restrict__ destination_physical_block_indices_by_source,
+    uint64_t *__restrict__ requested_epoch_by_physical_block,
+    uint64_t *__restrict__ ready_epoch_by_physical_block,
+    const uint64_t *__restrict__ source_fragment_keys_by_physical_block,
+    const uint64_t *__restrict__ expected_fragment_keys_by_destination,
+    uint32_t *__restrict__ copied_block_count_device,
+    uint32_t *__restrict__ duplicate_block_count_device,
+    uint32_t *__restrict__ invalid_block_count_device,
+    uint32_t *__restrict__ key_mismatch_count_device,
+    SparkGlm52ResidentDecodeStageDsaKvFragmentTransportKernelPayloads payloads,
+    uint64_t transport_epoch,
+    uint32_t selected_block_stride,
+    uint32_t selected_block_capacity,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    uint32_t physical_block_count)
+{
+    uint32_t selected_entry_index;
+    uint32_t sequence_index;
+    uint32_t selected_block_index;
+    uint32_t logical_block_index;
+    uint32_t source_physical_block_index;
+    uint32_t destination_physical_block_index;
+    uint32_t payload_index;
+
+    selected_entry_index = blockIdx.x;
+    sequence_index = selected_entry_index / selected_block_capacity;
+    selected_block_index = selected_entry_index -
+        (sequence_index * selected_block_capacity);
+    if (selected_block_capacity == 0u || selected_block_stride < selected_block_capacity ||
+        selected_block_index >= selected_block_counts[sequence_index])
+    {
+        return;
+    }
+
+    logical_block_index = selected_block_indices[
+        ((uint64_t)sequence_index * (uint64_t)selected_block_stride) +
+        (uint64_t)selected_block_index];
+    if (logical_block_index == SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID ||
+        logical_block_index >= max_blocks_per_sequence)
+    {
+        if (threadIdx.x == 0u && invalid_block_count_device != 0)
+        {
+            atomicAdd(invalid_block_count_device, 1u);
+        }
+        return;
+    }
+
+    source_physical_block_index = block_table[
+        ((uint64_t)sequence_index * (uint64_t)max_blocks_per_sequence) +
+        (uint64_t)logical_block_index];
+    if (source_physical_block_index >= kv_block_count ||
+        source_physical_block_index >= physical_block_count)
+    {
+        if (threadIdx.x == 0u && invalid_block_count_device != 0)
+        {
+            atomicAdd(invalid_block_count_device, 1u);
+        }
+        return;
+    }
+    destination_physical_block_index = destination_physical_block_indices_by_source != 0
+        ? destination_physical_block_indices_by_source[source_physical_block_index]
+        : source_physical_block_index;
+    if (destination_physical_block_index >= physical_block_count)
+    {
+        if (threadIdx.x == 0u && invalid_block_count_device != 0)
+        {
+            atomicAdd(invalid_block_count_device, 1u);
+        }
+        return;
+    }
+    if (source_fragment_keys_by_physical_block != 0 &&
+        expected_fragment_keys_by_destination != 0)
+    {
+        uint64_t source_key;
+        uint64_t expected_key;
+
+        source_key = source_fragment_keys_by_physical_block[source_physical_block_index];
+        expected_key = expected_fragment_keys_by_destination[destination_physical_block_index];
+        if (expected_key != 0ull && source_key != expected_key)
+        {
+            if (threadIdx.x == 0u && key_mismatch_count_device != 0)
+            {
+                atomicAdd(key_mismatch_count_device, 1u);
+            }
+            return;
+        }
+    }
+    if (SparkGlm52ResidentDecodeStageTryClaimTransportBlock(
+            requested_epoch_by_physical_block,
+            source_physical_block_index,
+            transport_epoch) == 0u)
+    {
+        if (threadIdx.x == 0u && duplicate_block_count_device != 0)
+        {
+            atomicAdd(duplicate_block_count_device, 1u);
+        }
+        return;
+    }
+
+    for (payload_index = 0u; payload_index < payloads.payload_count; ++payload_index)
+    {
+        const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload *payload;
+        const uint8_t *source;
+        uint8_t *destination;
+
+        payload = &payloads.payloads[payload_index];
+        if ((payload->flags &
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_ENABLED) == 0u ||
+            payload->source_base == 0 || payload->destination_base == 0 ||
+            payload->transfer_bytes == 0ull)
+        {
+            continue;
+        }
+        source = ((const uint8_t *)payload->source_base) +
+            ((uint64_t)source_physical_block_index * payload->source_block_stride_bytes);
+        destination = ((uint8_t *)payload->destination_base) +
+            ((uint64_t)destination_physical_block_index * payload->destination_block_stride_bytes);
+        SparkGlm52ResidentDecodeStageCopyTransportPayloadBytes(
+            source,
+            destination,
+            payload->transfer_bytes);
+    }
+    __syncthreads();
+    if (threadIdx.x == 0u)
+    {
+        if (ready_epoch_by_physical_block != 0)
+        {
+            ready_epoch_by_physical_block[source_physical_block_index] = transport_epoch;
+        }
+        if (copied_block_count_device != 0)
+        {
+            atomicAdd(copied_block_count_device, 1u);
+        }
+    }
 }
 
 static __global__ void SparkGlm52ResidentDecodeStagePrepareKernel(
@@ -3409,6 +4046,126 @@ static __global__ void SparkGlm52ResidentDecodeStageDsaScoreKernel(
             head_weight * rsqrtf((float)index_head_count);
     }
     if (threadIdx.x == 0u)
+    {
+        dsa_token_scores[
+            ((uint64_t)sequence_index * (uint64_t)dsa_candidate_count) +
+            (uint64_t)candidate_index] = score_sum;
+    }
+}
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
+void SparkGlm52ResidentDecodeStageDsaScoreWarpCandidateKernel(
+    const uint16_t *__restrict__ query_index_heads_bf16,
+    const uint16_t *__restrict__ key_index_cache_bf16,
+    const uint16_t *__restrict__ index_head_weights_bf16,
+    const uint32_t *__restrict__ block_table,
+    const uint32_t *__restrict__ context_lengths,
+    const uint32_t *__restrict__ first_block_token_offsets,
+    float *__restrict__ dsa_token_scores,
+    uint32_t active_sequence_count,
+    uint32_t dsa_candidate_count,
+    uint32_t candidate_group_count,
+    uint32_t index_head_count,
+    uint32_t index_head_dimension,
+    uint32_t block_token_count,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    uint32_t cache_token_capacity,
+    float index_softmax_scale)
+{
+    uint32_t work_group_index;
+    uint32_t sequence_index;
+    uint32_t candidate_group_index;
+    uint32_t warp_index;
+    uint32_t lane_index;
+    uint32_t candidate_index;
+    uint32_t context_length;
+    uint32_t first_block_token_offset;
+    uint32_t cache_slot_index;
+    uint32_t head_index;
+    float score_sum;
+
+    work_group_index = blockIdx.x;
+    sequence_index = work_group_index / candidate_group_count;
+    candidate_group_index = work_group_index -
+        (sequence_index * candidate_group_count);
+    warp_index = threadIdx.x / SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES;
+    lane_index = threadIdx.x & (SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES - 1u);
+    candidate_index =
+        (candidate_group_index * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_CANDIDATES_PER_BLOCK) +
+        warp_index;
+
+    if (sequence_index >= active_sequence_count || candidate_index >= dsa_candidate_count)
+    {
+        return;
+    }
+
+    context_length = context_lengths[sequence_index];
+    first_block_token_offset = first_block_token_offsets[sequence_index];
+    cache_slot_index = SparkGlm52ResidentDecodeStageWarpResolveCacheSlot(
+        block_table,
+        sequence_index,
+        candidate_index,
+        first_block_token_offset,
+        block_token_count,
+        max_blocks_per_sequence,
+        kv_block_count,
+        cache_token_capacity,
+        lane_index);
+    if (candidate_index >= context_length ||
+        cache_slot_index == SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_CACHE_SLOT)
+    {
+        if (lane_index == 0u)
+        {
+            dsa_token_scores[
+                ((uint64_t)sequence_index * (uint64_t)dsa_candidate_count) +
+                (uint64_t)candidate_index] = -FLT_MAX;
+        }
+        return;
+    }
+
+    score_sum = 0.0f;
+    for (head_index = 0u; head_index < index_head_count; ++head_index)
+    {
+        uint32_t dimension_index;
+        float head_weight;
+        float local_sum;
+        float head_score;
+
+        local_sum = 0.0f;
+        for (dimension_index = lane_index;
+             dimension_index < index_head_dimension;
+             dimension_index += SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES)
+        {
+            float query_value;
+            float key_value;
+
+            query_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+                query_index_heads_bf16[
+                    (((uint64_t)sequence_index * (uint64_t)index_head_count +
+                      (uint64_t)head_index) *
+                     (uint64_t)index_head_dimension) +
+                    (uint64_t)dimension_index]);
+            key_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+                key_index_cache_bf16[
+                    ((uint64_t)cache_slot_index *
+                     (uint64_t)index_head_dimension) +
+                    (uint64_t)dimension_index]);
+            local_sum += query_value * key_value;
+        }
+        head_score = SparkGlm52ResidentDecodeStageWarpReduceSum(local_sum);
+        if (lane_index == 0u)
+        {
+            head_weight = SparkGlm52ResidentDecodeStageBf16ToFloat(
+                index_head_weights_bf16[
+                    ((uint64_t)sequence_index * (uint64_t)index_head_count) +
+                    (uint64_t)head_index]);
+            score_sum += fmaxf(head_score * index_softmax_scale, 0.0f) *
+                head_weight * rsqrtf((float)index_head_count);
+        }
+    }
+
+    if (lane_index == 0u)
     {
         dsa_token_scores[
             ((uint64_t)sequence_index * (uint64_t)dsa_candidate_count) +
@@ -11305,6 +12062,430 @@ static SparkStatus SparkGlm52ResidentDecodeStageCopyDsaIndexShareIndices(
         cuda_stream);
 }
 
+
+static uint32_t SparkGlm52ResidentDecodeStageDsaSelectedBlockCapacity(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    if (node_context != 0 && node_context->dsa_selected_block_capacity != 0u)
+    {
+        return node_context->dsa_selected_block_capacity;
+    }
+    return SparkGlm52ResidentDecodeStageDsaIndexShareSelectedTokenCount(node_context);
+}
+
+static uint32_t SparkGlm52ResidentDecodeStageDsaSelectedBlockStride(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    uint32_t capacity;
+
+    capacity = SparkGlm52ResidentDecodeStageDsaSelectedBlockCapacity(node_context);
+    if (node_context != 0 && node_context->dsa_selected_block_stride >= capacity)
+    {
+        return node_context->dsa_selected_block_stride;
+    }
+    return capacity;
+}
+
+static uint32_t SparkGlm52ResidentDecodeStageDsaSelectedBlockLayerCount(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    if (node_context != 0 && node_context->dsa_selected_block_layer_count != 0u)
+    {
+        return node_context->dsa_selected_block_layer_count;
+    }
+    if (node_context != 0 && node_context->dsa_indexshare_layer_count != 0u)
+    {
+        return node_context->dsa_indexshare_layer_count;
+    }
+    return SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT;
+}
+
+static uint32_t *SparkGlm52ResidentDecodeStageDsaIndexShareLayerBlockCache(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t layer_index)
+{
+    uint64_t layer_stride;
+
+    if (node_context == 0 ||
+        node_context->selected_block_indices_by_layer == 0 ||
+        node_context->max_active_sequence_count == 0u ||
+        layer_index >= SparkGlm52ResidentDecodeStageDsaSelectedBlockLayerCount(node_context))
+    {
+        return 0;
+    }
+    layer_stride =
+        (uint64_t)node_context->max_active_sequence_count *
+        (uint64_t)SparkGlm52ResidentDecodeStageDsaSelectedBlockStride(node_context);
+    return node_context->selected_block_indices_by_layer +
+        (layer_stride * (uint64_t)layer_index);
+}
+
+static uint32_t *SparkGlm52ResidentDecodeStageDsaIndexShareLayerBlockCounts(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t layer_index)
+{
+    uint64_t layer_stride;
+
+    if (node_context == 0 ||
+        node_context->selected_block_counts_by_layer == 0 ||
+        node_context->max_active_sequence_count == 0u ||
+        layer_index >= SparkGlm52ResidentDecodeStageDsaSelectedBlockLayerCount(node_context))
+    {
+        return 0;
+    }
+    layer_stride = (uint64_t)node_context->max_active_sequence_count;
+    return node_context->selected_block_counts_by_layer +
+        (layer_stride * (uint64_t)layer_index);
+}
+
+static uint32_t *SparkGlm52ResidentDecodeStageDsaIndexShareLayerEpochs(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    uint32_t layer_index)
+{
+    uint64_t layer_stride;
+
+    if (node_context == 0 ||
+        node_context->dsa_selection_epoch_by_layer == 0 ||
+        node_context->max_active_sequence_count == 0u ||
+        layer_index >= SparkGlm52ResidentDecodeStageDsaSelectedBlockLayerCount(node_context))
+    {
+        return 0;
+    }
+    layer_stride = (uint64_t)node_context->max_active_sequence_count;
+    return node_context->dsa_selection_epoch_by_layer +
+        (layer_stride * (uint64_t)layer_index);
+}
+
+static uint32_t SparkGlm52ResidentDecodeStageDsaTransportPayloadIsUsable(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload *payload)
+{
+    if (payload == 0 ||
+        (payload->flags &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_ENABLED) == 0u)
+    {
+        return 1u;
+    }
+    return payload->abi_version ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_ABI_VERSION &&
+        payload->descriptor_bytes ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_DESCRIPTOR_BYTES &&
+        payload->source_base != 0 &&
+        payload->destination_base != 0 &&
+        payload->transfer_bytes != 0ull &&
+        payload->source_block_stride_bytes >= payload->transfer_bytes &&
+        payload->destination_block_stride_bytes >= payload->transfer_bytes;
+}
+
+static uint32_t SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan)
+{
+    uint32_t payload_index;
+    uint32_t enabled_payload_count;
+
+    if (transport_plan == 0)
+    {
+        return 0u;
+    }
+    if (transport_plan->abi_version !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_ABI_VERSION ||
+        transport_plan->descriptor_bytes !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_DESCRIPTOR_BYTES ||
+        (transport_plan->capability_flags &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_REQUIRED_CAPABILITIES) !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_REQUIRED_CAPABILITIES ||
+        transport_plan->payload_count == 0u ||
+        transport_plan->payload_count >
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_MAX_PAYLOADS ||
+        transport_plan->physical_block_count == 0u ||
+        transport_plan->maximum_active_sequence_count == 0u ||
+        transport_plan->selected_block_capacity == 0u ||
+        transport_plan->selected_block_stride < transport_plan->selected_block_capacity ||
+        transport_plan->requested_epoch_by_physical_block == 0 ||
+        transport_plan->transport_epoch == 0ull ||
+        transport_plan->validated_maximum_latency_ns == 0ull)
+    {
+        return 0u;
+    }
+    if (transport_plan->transport_stream != 0 &&
+        (transport_plan->selection_ready_event == 0 ||
+         transport_plan->transport_ready_event == 0))
+    {
+        return 0u;
+    }
+
+    enabled_payload_count = 0u;
+    for (payload_index = 0u; payload_index < transport_plan->payload_count; ++payload_index)
+    {
+        if (SparkGlm52ResidentDecodeStageDsaTransportPayloadIsUsable(
+                &transport_plan->payloads[payload_index]) == 0u)
+        {
+            return 0u;
+        }
+        if ((transport_plan->payloads[payload_index].flags &
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_ENABLED) != 0u)
+        {
+            enabled_payload_count += 1u;
+        }
+    }
+    return enabled_payload_count != 0u;
+}
+
+static SparkGlm52ResidentDecodeStageDsaKvFragmentTransportKernelPayloads SparkGlm52ResidentDecodeStageBuildDsaTransportKernelPayloads(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan)
+{
+    SparkGlm52ResidentDecodeStageDsaKvFragmentTransportKernelPayloads payloads;
+    uint32_t payload_index;
+
+    memset(&payloads, 0, sizeof(payloads));
+    if (transport_plan == 0)
+    {
+        return payloads;
+    }
+    payloads.payload_count = transport_plan->payload_count;
+    if (payloads.payload_count >
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_MAX_PAYLOADS)
+    {
+        payloads.payload_count =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_MAX_PAYLOADS;
+    }
+    for (payload_index = 0u; payload_index < payloads.payload_count; ++payload_index)
+    {
+        payloads.payloads[payload_index] = transport_plan->payloads[payload_index];
+    }
+    return payloads;
+}
+
+static cudaStream_t SparkGlm52ResidentDecodeStageDsaTransportStream(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan,
+    cudaStream_t producer_cuda_stream)
+{
+    if (transport_plan != 0 && transport_plan->transport_stream != 0)
+    {
+        return (cudaStream_t)transport_plan->transport_stream;
+    }
+    return producer_cuda_stream;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageRecordDsaTransportDependency(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan,
+    cudaStream_t producer_cuda_stream,
+    cudaStream_t transport_stream)
+{
+    if (producer_cuda_stream == transport_stream)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (transport_plan == 0 || transport_plan->selection_ready_event == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (cudaEventRecord((cudaEvent_t)transport_plan->selection_ready_event,
+            producer_cuda_stream) != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (cudaStreamWaitEvent(
+            transport_stream,
+            (cudaEvent_t)transport_plan->selection_ready_event,
+            0u) != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageRecordDsaTransportReady(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan,
+    cudaStream_t producer_cuda_stream,
+    cudaStream_t transport_stream)
+{
+    if (producer_cuda_stream == transport_stream)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (transport_plan == 0 || transport_plan->transport_ready_event == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return cudaEventRecord(
+        (cudaEvent_t)transport_plan->transport_ready_event,
+        transport_stream) == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaSelectedBlockBuildForLayer(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count,
+    uint32_t layer_index)
+{
+    uint32_t *selected_block_indices_for_layer;
+    uint32_t *selected_block_counts_for_layer;
+    uint32_t *selection_epoch_for_layer;
+    uint32_t selected_block_capacity;
+    uint32_t selected_block_stride;
+    uint32_t selected_token_count;
+    uint32_t kv_block_token_count;
+
+    if (node_context == 0 || pipeline_slot == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    selected_block_indices_for_layer =
+        SparkGlm52ResidentDecodeStageDsaIndexShareLayerBlockCache(
+            node_context,
+            layer_index);
+    selected_block_counts_for_layer =
+        SparkGlm52ResidentDecodeStageDsaIndexShareLayerBlockCounts(
+            node_context,
+            layer_index);
+    selection_epoch_for_layer =
+        SparkGlm52ResidentDecodeStageDsaIndexShareLayerEpochs(
+            node_context,
+            layer_index);
+    if (selected_block_indices_for_layer == 0 &&
+        selected_block_counts_for_layer == 0 &&
+        node_context->dsa_kv_fragment_prefetch_plan == 0)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (selected_block_indices_for_layer == 0 || selected_block_counts_for_layer == 0 ||
+        pipeline_slot->sparse_token_indices == 0 || pipeline_slot->context_lengths == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    selected_block_capacity =
+        SparkGlm52ResidentDecodeStageDsaSelectedBlockCapacity(node_context);
+    selected_block_stride =
+        SparkGlm52ResidentDecodeStageDsaSelectedBlockStride(node_context);
+    selected_token_count =
+        SparkGlm52ResidentDecodeStageDsaIndexShareSelectedTokenCount(node_context);
+    kv_block_token_count = node_context->kv_block_token_count != 0u
+        ? node_context->kv_block_token_count
+        : SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
+    SparkGlm52ResidentDecodeStageDsaSelectedBlockBuildKernel<<<
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        pipeline_slot->sparse_token_indices,
+        pipeline_slot->context_lengths,
+        pipeline_slot->positions,
+        pipeline_slot->first_block_token_offsets,
+        selected_block_indices_for_layer,
+        selected_block_counts_for_layer,
+        selection_epoch_for_layer,
+        active_sequence_count,
+        node_context->max_active_sequence_count,
+        0u,
+        selected_token_count,
+        kv_block_token_count,
+        selected_block_stride,
+        selected_block_capacity);
+    return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeLaunchDsaKvFragmentPrefetch(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count,
+    uint32_t layer_index)
+{
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *prefetch_plan;
+    const uint32_t *selected_block_indices_for_layer;
+    const uint32_t *selected_block_counts_for_layer;
+
+    if (node_context == 0 || pipeline_slot == 0 ||
+        node_context->dsa_kv_fragment_prefetch_plan == 0)
+    {
+        return SPARK_STATUS_OK;
+    }
+    prefetch_plan = node_context->dsa_kv_fragment_prefetch_plan;
+    selected_block_indices_for_layer =
+        SparkGlm52ResidentDecodeStageDsaIndexShareLayerBlockCache(
+            node_context,
+            layer_index);
+    selected_block_counts_for_layer =
+        SparkGlm52ResidentDecodeStageDsaIndexShareLayerBlockCounts(
+            node_context,
+            layer_index);
+    if (selected_block_indices_for_layer == 0 || selected_block_counts_for_layer == 0 ||
+        pipeline_slot->block_table == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedKvFragmentPrefetch(
+        prefetch_plan,
+        selected_block_indices_for_layer,
+        selected_block_counts_for_layer,
+        pipeline_slot->block_table,
+        active_sequence_count,
+        SparkGlm52ResidentDecodeStageDsaSelectedBlockStride(node_context),
+        SparkGlm52ResidentDecodeStageDsaSelectedBlockCapacity(node_context),
+        node_context->max_blocks_per_sequence,
+        node_context->kv_block_count,
+        (void *)cuda_stream);
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeLaunchDsaKvFragmentSaveWrittenSlots(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count)
+{
+    uint32_t kv_block_token_count;
+
+    if (node_context == 0 || pipeline_slot == 0 ||
+        node_context->dsa_kv_fragment_save_plan == 0)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (pipeline_slot->positions == 0 || pipeline_slot->block_table == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    kv_block_token_count = node_context->kv_block_token_count != 0u
+        ? node_context->kv_block_token_count
+        : SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
+    return SparkGlm52Sm121RequiredDecodeStageLaunchDsaKvFragmentSaveWrittenSlots(
+        node_context->dsa_kv_fragment_save_plan,
+        pipeline_slot->positions,
+        pipeline_slot->first_block_token_offsets,
+        pipeline_slot->block_table,
+        active_sequence_count,
+        kv_block_token_count,
+        node_context->max_blocks_per_sequence,
+        node_context->kv_block_count,
+        (void *)cuda_stream);
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeWaitForDsaKvFragmentPrefetch(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    cudaStream_t cuda_stream)
+{
+    if (node_context == 0 || node_context->dsa_kv_fragment_prefetch_plan == 0)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (node_context->sparse_index_mode !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL &&
+        node_context->sparse_index_mode !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED)
+    {
+        return SPARK_STATUS_OK;
+    }
+    return SparkGlm52Sm121RequiredDecodeStageWaitForDsaSelectedKvFragmentPrefetch(
+        node_context->dsa_kv_fragment_prefetch_plan,
+        (void *)cuda_stream);
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -11465,7 +12646,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareScore(
     cudaStream_t cuda_stream,
     uint32_t active_sequence_count)
 {
-    dim3 score_grid;
+    uint32_t candidate_group_count;
+    uint64_t score_work_group_count;
 
     if (node_context == 0 || pipeline_slot == 0 ||
         pipeline_slot->query_index_heads_bf16 == 0 ||
@@ -11475,6 +12657,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareScore(
         pipeline_slot->block_table == 0 ||
         pipeline_slot->context_lengths == 0 ||
         pipeline_slot->first_block_token_offsets == 0 ||
+        node_context->dsa_candidate_count == 0u ||
         node_context->dsa_index_head_count !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT ||
         node_context->dsa_index_head_dimension !=
@@ -11484,12 +12667,21 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareScore(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    score_grid = dim3(
-        active_sequence_count,
-        node_context->dsa_candidate_count,
-        1u);
-    SparkGlm52ResidentDecodeStageDsaScoreKernel<<<
-        score_grid,
+
+    candidate_group_count =
+        (node_context->dsa_candidate_count +
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_CANDIDATES_PER_BLOCK - 1u) /
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_CANDIDATES_PER_BLOCK;
+    score_work_group_count =
+        (uint64_t)active_sequence_count * (uint64_t)candidate_group_count;
+    if (candidate_group_count == 0u || score_work_group_count == 0u ||
+        score_work_group_count > (uint64_t)UINT32_MAX)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    SparkGlm52ResidentDecodeStageDsaScoreWarpCandidateKernel<<<
+        (uint32_t)score_work_group_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
         0u,
         cuda_stream>>>(
@@ -11502,6 +12694,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareScore(
         pipeline_slot->dsa_token_scores,
         active_sequence_count,
         node_context->dsa_candidate_count,
+        candidate_group_count,
         node_context->dsa_index_head_count,
         node_context->dsa_index_head_dimension,
         node_context->kv_block_token_count != 0u
@@ -11527,6 +12720,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
     uint32_t *layer_cache;
     SparkStatus status;
 
+    if (node_context == 0 || pipeline_slot == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     if (node_context->sparse_index_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_PRESELECTED)
     {
@@ -11538,13 +12735,34 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
         layer_cache = SparkGlm52ResidentDecodeStageDsaIndexShareLayerCache(
             node_context,
             node_context->dsa_indexshare_source_layer_index);
-        return SparkGlm52ResidentDecodeStageCopyDsaIndexShareIndices(
+        status = SparkGlm52ResidentDecodeStageCopyDsaIndexShareIndices(
             node_context,
             cuda_slot_state,
             cuda_stream,
             layer_cache,
             pipeline_slot->sparse_token_indices,
             active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52ResidentDecodeStageLaunchDsaSelectedBlockBuildForLayer(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count,
+            node_context->layer_index);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        return SparkGlm52ResidentDecodeStageMaybeLaunchDsaKvFragmentPrefetch(
+            node_context,
+            pipeline_slot,
+            cuda_stream,
+            active_sequence_count,
+            node_context->layer_index);
     }
     if (node_context->sparse_index_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_COPY_CONTEXT_PREFIX)
@@ -11557,37 +12775,88 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
             pipeline_slot->context_lengths,
             pipeline_slot->sparse_token_indices,
             active_sequence_count);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
             node_context,
             cuda_slot_state,
             cuda_stream);
     }
-    else
+    if (node_context->sparse_index_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL)
     {
-        if (node_context->sparse_index_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL)
+        status = SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
         {
-            status = SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(
-                node_context,
-                pipeline_slot,
-                cuda_slot_state,
-                cuda_stream,
-                active_sequence_count);
-            if (status != SPARK_STATUS_OK)
-            {
-                return status;
-            }
-            status = SparkGlm52ResidentDecodeStageLaunchDsaIndexShareScore(
-                node_context,
-                pipeline_slot,
-                cuda_slot_state,
-                cuda_stream,
-                active_sequence_count);
-            if (status != SPARK_STATUS_OK)
-            {
-                return status;
-            }
+            return status;
         }
+        status = SparkGlm52ResidentDecodeStageLaunchDsaIndexShareScore(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        SparkGlm52ResidentDecodeStageDsaSelectDestructiveBlockKernel<<<
+            active_sequence_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            pipeline_slot->dsa_token_scores,
+            pipeline_slot->context_lengths,
+            pipeline_slot->sparse_token_indices,
+            active_sequence_count,
+            node_context->dsa_candidate_count,
+            SparkGlm52ResidentDecodeStageDsaIndexShareSelectedTokenCount(node_context));
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        layer_cache = SparkGlm52ResidentDecodeStageDsaIndexShareLayerCache(
+            node_context,
+            node_context->layer_index);
+        status = SparkGlm52ResidentDecodeStageCopyDsaIndexShareIndices(
+            node_context,
+            cuda_slot_state,
+            cuda_stream,
+            pipeline_slot->sparse_token_indices,
+            layer_cache,
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52ResidentDecodeStageLaunchDsaSelectedBlockBuildForLayer(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count,
+            node_context->layer_index);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        return SparkGlm52ResidentDecodeStageMaybeLaunchDsaKvFragmentPrefetch(
+            node_context,
+            pipeline_slot,
+            cuda_stream,
+            active_sequence_count,
+            node_context->layer_index);
+    }
+    if (node_context->sparse_index_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DEBUG_SERIAL_TOPK)
+    {
         SparkGlm52ResidentDecodeStageDsaSelectKernel<<<
             active_sequence_count,
             1u,
@@ -11598,27 +12867,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
             pipeline_slot->sparse_token_indices,
             active_sequence_count,
             node_context->dsa_candidate_count);
-        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
             node_context,
             cuda_slot_state,
             cuda_stream);
     }
-    if (status != SPARK_STATUS_OK ||
-        node_context->sparse_index_mode !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL)
-    {
-        return status;
-    }
-    layer_cache = SparkGlm52ResidentDecodeStageDsaIndexShareLayerCache(
-        node_context,
-        node_context->layer_index);
-    return SparkGlm52ResidentDecodeStageCopyDsaIndexShareIndices(
-        node_context,
-        cuda_slot_state,
-        cuda_stream,
-        pipeline_slot->sparse_token_indices,
-        layer_cache,
-        active_sequence_count);
+    return SPARK_STATUS_INVALID_ARGUMENT;
 }
 
 
@@ -13058,6 +14312,153 @@ static uint64_t SparkGlm52ResidentDecodeStageMixFp8KvCachePlanGraphSignature(
     return signature;
 }
 
+
+static uint64_t SparkGlm52ResidentDecodeStageMixDsaKvFragmentTransportPlanGraphSignature(
+    uint64_t signature,
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan)
+{
+    uint32_t payload_index;
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload *payload;
+
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(transport_plan));
+    if (transport_plan == 0)
+    {
+        return signature;
+    }
+
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->abi_version);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->descriptor_bytes);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->capability_flags);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->payload_count);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->physical_block_count);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->maximum_active_sequence_count);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->selected_block_stride);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->selected_block_capacity);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->transport_epoch);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->source_physical_block_indices_by_destination));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->destination_physical_block_indices_by_source));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->requested_epoch_by_physical_block));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->ready_epoch_by_physical_block));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->written_logical_block_indices));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->written_logical_block_counts));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->written_logical_block_stride);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->source_fragment_keys_by_physical_block));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->expected_fragment_keys_by_destination));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->copied_block_count_device));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->duplicate_block_count_device));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->invalid_block_count_device));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->key_mismatch_count_device));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->selection_ready_event));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->transport_ready_event));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStagePointerGraphSignature(
+            transport_plan->transport_stream));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        transport_plan->validated_maximum_latency_ns);
+
+    for (payload_index = 0u;
+         payload_index < transport_plan->payload_count &&
+             payload_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_MAX_PAYLOADS;
+         ++payload_index)
+    {
+        payload = &transport_plan->payloads[payload_index];
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            payload->abi_version);
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            payload->descriptor_bytes);
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            payload->flags);
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            payload->source_block_stride_bytes);
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            payload->destination_block_stride_bytes);
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            payload->transfer_bytes);
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            SparkGlm52ResidentDecodeStagePointerGraphSignature(
+                payload->source_base));
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            SparkGlm52ResidentDecodeStagePointerGraphSignature(
+                payload->destination_base));
+    }
+
+    return signature;
+}
+
 static uint64_t SparkGlm52ResidentDecodeStageComputeGraphSignature(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -13084,6 +14485,14 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeGraphSignature(
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->dsa_index_head_dimension);
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, (uint64_t)(node_context->index_softmax_scale * 1000000.0f));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->selected_token_indices_by_layer));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->selected_block_indices_by_layer));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->selected_block_counts_by_layer));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->dsa_selection_epoch_by_layer));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->dsa_selected_block_stride);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->dsa_selected_block_capacity);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->dsa_selected_block_layer_count);
+    signature = SparkGlm52ResidentDecodeStageMixDsaKvFragmentTransportPlanGraphSignature(signature, node_context->dsa_kv_fragment_prefetch_plan);
+    signature = SparkGlm52ResidentDecodeStageMixDsaKvFragmentTransportPlanGraphSignature(signature, node_context->dsa_kv_fragment_save_plan);
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_query_weight_bf16));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_query_weight_fp8_e4m3));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_query_weight_scale_inv_f32));
@@ -13813,6 +15222,18 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         }
     }
 
+    status = SparkGlm52ResidentDecodeStageMaybeLaunchDsaKvFragmentSaveWrittenSlots(
+        node_context,
+        pipeline_slot,
+        cuda_stream,
+        active_sequence_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "dsa_kv_fragment_save",
+            status);
+    }
+
     status = SparkGlm52ResidentDecodeStageMaybeMarkPhase(
         node_context,
         pipeline_slot,
@@ -13823,6 +15244,16 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
     {
         return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
             "rope_kv_write_phase",
+            status);
+    }
+
+    status = SparkGlm52ResidentDecodeStageMaybeWaitForDsaKvFragmentPrefetch(
+        node_context,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "dsa_kv_fragment_prefetch_wait",
             status);
     }
 
@@ -14885,6 +16316,462 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageInitialize(
     }
     return SparkGlm52Sm121RequiredDecodeStageInitializeRequiredMoe(
         node_context);
+}
+
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageBindDsaKvFragmentTransportPlan(
+    SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan)
+{
+    if (SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(transport_plan) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SPARK_STATUS_OK;
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedBlockBuild(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const uint32_t *selected_token_indices,
+    const uint32_t *context_lengths,
+    const uint32_t *positions,
+    const uint32_t *first_block_token_offsets,
+    uint32_t *selected_block_indices,
+    uint32_t *selected_block_counts,
+    uint32_t *selection_epoch_by_layer,
+    uint32_t layer_index,
+    uint32_t active_sequence_count,
+    void *cuda_stream)
+{
+    cudaError_t cuda_status;
+    uint32_t selected_block_capacity;
+    uint32_t selected_block_stride;
+    uint32_t selected_token_count;
+    uint32_t kv_block_token_count;
+
+    if (node_context == 0 || selected_token_indices == 0 || context_lengths == 0 ||
+        selected_block_indices == 0 || selected_block_counts == 0 ||
+        cuda_stream == 0 || active_sequence_count == 0u ||
+        active_sequence_count > node_context->max_active_sequence_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    selected_block_capacity =
+        SparkGlm52ResidentDecodeStageDsaSelectedBlockCapacity(node_context);
+    selected_block_stride =
+        SparkGlm52ResidentDecodeStageDsaSelectedBlockStride(node_context);
+    selected_token_count =
+        SparkGlm52ResidentDecodeStageDsaIndexShareSelectedTokenCount(node_context);
+    kv_block_token_count = node_context->kv_block_token_count != 0u
+        ? node_context->kv_block_token_count
+        : SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
+    if (selected_block_capacity == 0u || selected_block_stride < selected_block_capacity ||
+        selected_token_count == 0u || kv_block_token_count == 0u ||
+        layer_index >= SparkGlm52ResidentDecodeStageDsaSelectedBlockLayerCount(node_context))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    SparkGlm52ResidentDecodeStageDsaSelectedBlockBuildKernel<<<
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        (cudaStream_t)cuda_stream>>>(
+        selected_token_indices,
+        context_lengths,
+        positions,
+        first_block_token_offsets,
+        selected_block_indices,
+        selected_block_counts,
+        selection_epoch_by_layer,
+        active_sequence_count,
+        node_context->max_active_sequence_count,
+        layer_index,
+        selected_token_count,
+        kv_block_token_count,
+        selected_block_stride,
+        selected_block_capacity);
+    cuda_status = cudaPeekAtLastError();
+    return cuda_status == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedKvFragmentPrefetch(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *prefetch_plan,
+    const uint32_t *selected_block_indices,
+    const uint32_t *selected_block_counts,
+    const uint32_t *block_table,
+    uint32_t active_sequence_count,
+    uint32_t selected_block_stride,
+    uint32_t selected_block_capacity,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    void *producer_cuda_stream)
+{
+    cudaStream_t producer_stream;
+    cudaStream_t transport_stream;
+    cudaError_t cuda_status;
+    SparkStatus status;
+    uint64_t selected_entry_count;
+    SparkGlm52ResidentDecodeStageDsaKvFragmentTransportKernelPayloads payloads;
+
+    if (SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(prefetch_plan) == 0u ||
+        selected_block_indices == 0 || selected_block_counts == 0 || block_table == 0 ||
+        producer_cuda_stream == 0 || active_sequence_count == 0u ||
+        active_sequence_count > prefetch_plan->maximum_active_sequence_count ||
+        selected_block_capacity == 0u || selected_block_stride < selected_block_capacity ||
+        selected_block_capacity > prefetch_plan->selected_block_capacity ||
+        max_blocks_per_sequence == 0u || kv_block_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    producer_stream = (cudaStream_t)producer_cuda_stream;
+    transport_stream = SparkGlm52ResidentDecodeStageDsaTransportStream(
+        prefetch_plan,
+        producer_stream);
+    status = SparkGlm52ResidentDecodeStageRecordDsaTransportDependency(
+        prefetch_plan,
+        producer_stream,
+        transport_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    payloads = SparkGlm52ResidentDecodeStageBuildDsaTransportKernelPayloads(
+        prefetch_plan);
+    selected_entry_count =
+        (uint64_t)active_sequence_count * (uint64_t)selected_block_capacity;
+    if (selected_entry_count == 0ull || selected_entry_count > (uint64_t)UINT32_MAX)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    SparkGlm52ResidentDecodeStageDsaKvFragmentPrefetchKernel<<<
+        (uint32_t)selected_entry_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        transport_stream>>>(
+        selected_block_indices,
+        selected_block_counts,
+        block_table,
+        prefetch_plan->source_physical_block_indices_by_destination,
+        prefetch_plan->requested_epoch_by_physical_block,
+        prefetch_plan->ready_epoch_by_physical_block,
+        prefetch_plan->source_fragment_keys_by_physical_block,
+        prefetch_plan->expected_fragment_keys_by_destination,
+        prefetch_plan->copied_block_count_device,
+        prefetch_plan->duplicate_block_count_device,
+        prefetch_plan->invalid_block_count_device,
+        prefetch_plan->key_mismatch_count_device,
+        payloads,
+        prefetch_plan->transport_epoch,
+        selected_block_stride,
+        selected_block_capacity,
+        max_blocks_per_sequence,
+        kv_block_count,
+        prefetch_plan->physical_block_count);
+    cuda_status = cudaPeekAtLastError();
+    if (cuda_status != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SparkGlm52ResidentDecodeStageRecordDsaTransportReady(
+        prefetch_plan,
+        producer_stream,
+        transport_stream);
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedKvFragmentSave(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *save_plan,
+    const uint32_t *selected_block_indices,
+    const uint32_t *selected_block_counts,
+    const uint32_t *block_table,
+    uint32_t active_sequence_count,
+    uint32_t selected_block_stride,
+    uint32_t selected_block_capacity,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    void *producer_cuda_stream)
+{
+    cudaStream_t producer_stream;
+    cudaStream_t transport_stream;
+    cudaError_t cuda_status;
+    SparkStatus status;
+    uint64_t selected_entry_count;
+    SparkGlm52ResidentDecodeStageDsaKvFragmentTransportKernelPayloads payloads;
+
+    if (SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(save_plan) == 0u ||
+        selected_block_indices == 0 || selected_block_counts == 0 || block_table == 0 ||
+        producer_cuda_stream == 0 || active_sequence_count == 0u ||
+        active_sequence_count > save_plan->maximum_active_sequence_count ||
+        selected_block_capacity == 0u || selected_block_stride < selected_block_capacity ||
+        selected_block_capacity > save_plan->selected_block_capacity ||
+        max_blocks_per_sequence == 0u || kv_block_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    producer_stream = (cudaStream_t)producer_cuda_stream;
+    transport_stream = SparkGlm52ResidentDecodeStageDsaTransportStream(
+        save_plan,
+        producer_stream);
+    status = SparkGlm52ResidentDecodeStageRecordDsaTransportDependency(
+        save_plan,
+        producer_stream,
+        transport_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    payloads = SparkGlm52ResidentDecodeStageBuildDsaTransportKernelPayloads(
+        save_plan);
+    selected_entry_count =
+        (uint64_t)active_sequence_count * (uint64_t)selected_block_capacity;
+    if (selected_entry_count == 0ull || selected_entry_count > (uint64_t)UINT32_MAX)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    SparkGlm52ResidentDecodeStageDsaKvFragmentSaveKernel<<<
+        (uint32_t)selected_entry_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        transport_stream>>>(
+        selected_block_indices,
+        selected_block_counts,
+        block_table,
+        save_plan->destination_physical_block_indices_by_source,
+        save_plan->requested_epoch_by_physical_block,
+        save_plan->ready_epoch_by_physical_block,
+        save_plan->source_fragment_keys_by_physical_block,
+        save_plan->expected_fragment_keys_by_destination,
+        save_plan->copied_block_count_device,
+        save_plan->duplicate_block_count_device,
+        save_plan->invalid_block_count_device,
+        save_plan->key_mismatch_count_device,
+        payloads,
+        save_plan->transport_epoch,
+        selected_block_stride,
+        selected_block_capacity,
+        max_blocks_per_sequence,
+        kv_block_count,
+        save_plan->physical_block_count);
+    cuda_status = cudaPeekAtLastError();
+    if (cuda_status != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SparkGlm52ResidentDecodeStageRecordDsaTransportReady(
+        save_plan,
+        producer_stream,
+        transport_stream);
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaKvFragmentSaveWrittenSlots(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *save_plan,
+    const uint32_t *positions,
+    const uint32_t *first_block_token_offsets,
+    const uint32_t *block_table,
+    uint32_t active_sequence_count,
+    uint32_t kv_block_token_count,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    void *producer_cuda_stream)
+{
+    cudaStream_t producer_stream;
+    cudaError_t cuda_status;
+
+    if (SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(save_plan) == 0u ||
+        positions == 0 || block_table == 0 || producer_cuda_stream == 0 ||
+        active_sequence_count == 0u ||
+        active_sequence_count > save_plan->maximum_active_sequence_count ||
+        kv_block_token_count == 0u || max_blocks_per_sequence == 0u ||
+        kv_block_count == 0u || save_plan->written_logical_block_indices == 0 ||
+        save_plan->written_logical_block_counts == 0 ||
+        save_plan->written_logical_block_stride == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    producer_stream = (cudaStream_t)producer_cuda_stream;
+    SparkGlm52ResidentDecodeStageBuildWrittenLogicalBlockListKernel<<<
+        active_sequence_count,
+        1u,
+        0u,
+        producer_stream>>>(
+        positions,
+        first_block_token_offsets,
+        save_plan->written_logical_block_indices,
+        save_plan->written_logical_block_counts,
+        active_sequence_count,
+        kv_block_token_count,
+        max_blocks_per_sequence,
+        save_plan->written_logical_block_stride);
+    cuda_status = cudaPeekAtLastError();
+    if (cuda_status != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedKvFragmentSave(
+        save_plan,
+        save_plan->written_logical_block_indices,
+        save_plan->written_logical_block_counts,
+        block_table,
+        active_sequence_count,
+        save_plan->written_logical_block_stride,
+        1u,
+        max_blocks_per_sequence,
+        kv_block_count,
+        producer_cuda_stream);
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageQueryDsaSelectedKvFragmentPrefetch(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *prefetch_plan)
+{
+    cudaError_t cuda_status;
+
+    if (prefetch_plan == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (prefetch_plan->transport_ready_event == 0)
+    {
+        return SPARK_STATUS_OK;
+    }
+    cuda_status = cudaEventQuery((cudaEvent_t)prefetch_plan->transport_ready_event);
+    if (cuda_status == cudaSuccess)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (cuda_status == cudaErrorNotReady)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+    return SPARK_STATUS_INTERNAL_ERROR;
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageWaitForDsaSelectedKvFragmentPrefetch(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *prefetch_plan,
+    void *consumer_cuda_stream)
+{
+    if (prefetch_plan == 0 || consumer_cuda_stream == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (prefetch_plan->transport_ready_event == 0 ||
+        prefetch_plan->transport_stream == 0 ||
+        (cudaStream_t)prefetch_plan->transport_stream == (cudaStream_t)consumer_cuda_stream)
+    {
+        return SPARK_STATUS_OK;
+    }
+    return cudaStreamWaitEvent(
+        (cudaStream_t)consumer_cuda_stream,
+        (cudaEvent_t)prefetch_plan->transport_ready_event,
+        0u) == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareSelectTopkFromScores(
+    float *dsa_token_scores,
+    const uint32_t *context_lengths,
+    uint32_t *sparse_token_indices,
+    uint32_t active_sequence_count,
+    uint32_t dsa_candidate_count,
+    uint32_t selected_token_count,
+    void *cuda_stream)
+{
+    cudaError_t cuda_status;
+
+    if (dsa_token_scores == 0 || context_lengths == 0 || sparse_token_indices == 0 ||
+        cuda_stream == 0 || active_sequence_count == 0u || dsa_candidate_count == 0u ||
+        selected_token_count == 0u ||
+        selected_token_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    SparkGlm52ResidentDecodeStageDsaSelectDestructiveBlockKernel<<<
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        (cudaStream_t)cuda_stream>>>(
+        dsa_token_scores,
+        context_lengths,
+        sparse_token_indices,
+        active_sequence_count,
+        dsa_candidate_count,
+        selected_token_count);
+    cuda_status = cudaPeekAtLastError();
+    return cuda_status == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareDecodeSelection(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t active_sequence_count,
+    void *cuda_stream)
+{
+    if (node_context == 0 || pipeline_slot == 0 || cuda_stream == 0 ||
+        active_sequence_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
+        node_context,
+        pipeline_slot,
+        0,
+        (cudaStream_t)cuda_stream,
+        active_sequence_count);
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaKeyIndexCacheStore(
+    const void *raw_key_index_bf16,
+    const void *key_norm_weight_bf16,
+    const void *key_norm_bias_bf16,
+    const uint32_t *positions,
+    const uint32_t *slot_mapping,
+    const float *cos_table,
+    const float *sin_table,
+    void *key_index_cache_bf16,
+    uint32_t row_count,
+    uint32_t position_count,
+    uint32_t cache_token_capacity,
+    float epsilon,
+    void *cuda_stream)
+{
+    cudaError_t cuda_status;
+
+    if (raw_key_index_bf16 == 0 || key_norm_weight_bf16 == 0 ||
+        key_norm_bias_bf16 == 0 || positions == 0 || slot_mapping == 0 ||
+        cos_table == 0 || sin_table == 0 || key_index_cache_bf16 == 0 ||
+        cuda_stream == 0 || row_count == 0u || position_count == 0u ||
+        cache_token_capacity == 0u || !isfinite(epsilon) || epsilon <= 0.0f)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    SparkGlm52ResidentDecodeStageDsaKeyNormRopeStoreKernel<<<
+        row_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        (cudaStream_t)cuda_stream>>>(
+        (const uint16_t *)raw_key_index_bf16,
+        (const uint16_t *)key_norm_weight_bf16,
+        (const uint16_t *)key_norm_bias_bf16,
+        positions,
+        slot_mapping,
+        cos_table,
+        sin_table,
+        (uint16_t *)key_index_cache_bf16,
+        row_count,
+        position_count,
+        cache_token_capacity,
+        epsilon);
+    cuda_status = cudaPeekAtLastError();
+    return cuda_status == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
 }
 
 extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareExportSelectedTokens(
