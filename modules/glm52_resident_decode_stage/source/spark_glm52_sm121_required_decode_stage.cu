@@ -11754,6 +11754,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFullStagePlan(
         cuda_stream);
 }
 
+static void SparkGlm52ResidentDecodeStageApplyFrameContextToRuntimePipelineSlot(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    SparkGlm52ResidentDecodeStagePipelineSlot *runtime_pipeline_slot);
 
 static void SparkGlm52ResidentDecodeStageBuildRuntimeKvLayerContexts(
     const SparkGlm52ResidentDecodeStageNodeContext *const *source_layer_node_contexts,
