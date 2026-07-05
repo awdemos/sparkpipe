@@ -263,6 +263,8 @@ typedef struct SparkValidationDeviceBuffers
     float *cos_table;
     float *sin_table;
     uint16_t *query_index_heads_bf16;
+    uint16_t *current_key_index_bf16;
+    uint16_t *index_head_weights_bf16;
     uint16_t *key_index_cache_bf16;
     float *dsa_token_scores;
     float *index_head_weights_f32;
@@ -3186,8 +3188,10 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->mtp_mxfp4_scale_e8m0_u8, mtp_scale_count, "cudaMalloc mtp_scale") &&
         SparkValidationAllocateZeroed((void **)&buffers->cos_table, rope_table_count * 4u, "cudaMalloc cos_table") &&
         SparkValidationAllocateZeroed((void **)&buffers->sin_table, rope_table_count * 4u, "cudaMalloc sin_table") &&
-        SparkValidationAllocateZeroed((void **)&buffers->query_index_heads_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * 2u, "cudaMalloc query_index_heads") &&
-        SparkValidationAllocateZeroed((void **)&buffers->key_index_cache_bf16, SPARK_VALIDATION_CACHE_TOKEN_CAPACITY * 2u, "cudaMalloc key_index_cache") &&
+        SparkValidationAllocateZeroed((void **)&buffers->query_index_heads_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION * 2u, "cudaMalloc query_index_heads") &&
+        SparkValidationAllocateZeroed((void **)&buffers->current_key_index_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION * 2u, "cudaMalloc current_key_index") &&
+        SparkValidationAllocateZeroed((void **)&buffers->index_head_weights_bf16, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION * 2u, "cudaMalloc index_head_weights_bf16") &&
+        SparkValidationAllocateZeroed((void **)&buffers->key_index_cache_bf16, SPARK_VALIDATION_CACHE_TOKEN_CAPACITY * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION * 2u, "cudaMalloc key_index_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->dsa_token_scores, 64u * 4u, "cudaMalloc dsa_scores") &&
         SparkValidationAllocateZeroed((void **)&buffers->index_head_weights_f32, 4u, "cudaMalloc index_head_weights") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_router_score_bias_f32, SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT * 4u, "cudaMalloc moe_router_bias") &&
@@ -3504,6 +3508,8 @@ static void SparkValidationConfigureNode(
     pipeline_slot->context_lengths = buffers->context_lengths;
     pipeline_slot->first_block_token_offsets = buffers->first_block_token_offsets;
     pipeline_slot->query_index_heads_bf16 = buffers->query_index_heads_bf16;
+    pipeline_slot->current_key_index_bf16 = buffers->current_key_index_bf16;
+    pipeline_slot->index_head_weights_bf16 = buffers->index_head_weights_bf16;
     pipeline_slot->dsa_token_scores = buffers->dsa_token_scores;
     pipeline_slot->sparse_token_indices = buffers->sparse_token_indices;
     pipeline_slot->rotated_query_rope_bf16 = buffers->rotated_query_rope_bf16;
@@ -3551,8 +3557,15 @@ static void SparkValidationConfigureNode(
     node_context->key_index_cache_bf16 = buffers->key_index_cache_bf16;
     node_context->index_head_weights_f32 = buffers->index_head_weights_f32;
     node_context->index_softmax_scale = 1.0f;
-    node_context->dsa_index_head_count = 1u;
-    node_context->dsa_index_head_dimension = 1u;
+    node_context->dsa_index_head_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT;
+    node_context->dsa_index_head_dimension =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_DIMENSION;
+    node_context->index_query_weight_bf16 = buffers->raw_query_b_weight_bf16;
+    node_context->index_key_weight_bf16 = buffers->raw_kv_a_weight_bf16;
+    node_context->index_weights_proj_weight_bf16 = buffers->moe_router_weight_bf16;
+    node_context->index_key_norm_weight_bf16 = buffers->raw_kv_a_norm_weight_bf16;
+    node_context->index_key_norm_bias_bf16 = buffers->raw_kv_a_norm_weight_bf16;
     node_context->mla_cache_bf16 = buffers->mla_cache_bf16;
     node_context->key_nope_cache_bf16 = buffers->key_nope_cache_bf16;
     node_context->value_cache_bf16 = buffers->value_cache_bf16;
