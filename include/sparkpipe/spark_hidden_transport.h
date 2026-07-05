@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_HIDDEN_TRANSPORT_ABI_VERSION 1u
+#define SPARK_HIDDEN_TRANSPORT_ABI_VERSION 2u
 #define SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportInterface))
 #define SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES \
@@ -61,6 +61,7 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 0x00000001u
 #define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER 0x00000002u
 #define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_END_OF_SEQUENCE 0x00000004u
+#define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD 0x00000008u
 
 typedef struct SparkHiddenTransportSession SparkHiddenTransportSession;
 
@@ -90,6 +91,9 @@ typedef struct SparkHiddenTransportPacket
     uint64_t token_index;
     const void *hidden_bf16;
     void *cuda_stream;
+    const void *sideband_payload;
+    uint32_t sideband_kind;
+    uint32_t sideband_bytes_per_sequence;
 } SparkHiddenTransportPacket;
 
 typedef struct SparkHiddenTransportCompletion
