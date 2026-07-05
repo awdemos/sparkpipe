@@ -3163,6 +3163,26 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
         runtime_kv_block_table->reserved0 != 0u ||
         runtime_kv_block_table->reserved1 != 0u)
     {
+        fprintf(
+            stderr,
+            "resident_kv_table_invalid layer=%u abi=%u bytes=%u block_tokens=%u expected_block_tokens=%u lanes=%u active=%u max_active=%u stride=%u expected_stride=%u capacity=%u expected_capacity=%u phys=%p counts=%p host=%p reserved=%u/%u\n",
+            node_context->layer_index,
+            runtime_kv_block_table->abi_version,
+            runtime_kv_block_table->descriptor_bytes,
+            runtime_kv_block_table->block_token_count,
+            expected_block_token_count,
+            runtime_kv_block_table->lane_count,
+            active_sequence_count,
+            node_context->max_active_sequence_count,
+            runtime_kv_block_table->lane_stride,
+            node_context->max_blocks_per_sequence,
+            runtime_kv_block_table->lane_capacity,
+            node_context->max_blocks_per_sequence,
+            (const void *)runtime_kv_block_table->physical_block_indices,
+            (const void *)runtime_kv_block_table->lane_physical_block_counts,
+            (const void *)runtime_kv_block_table->host_physical_block_indices,
+            runtime_kv_block_table->reserved0,
+            runtime_kv_block_table->reserved1);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -3176,10 +3196,24 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
             runtime_kv_block_table->lane_physical_block_counts[lane_index];
         if (lane_block_count > runtime_kv_block_table->lane_capacity)
         {
+            fprintf(
+                stderr,
+                "resident_kv_table_invalid layer=%u lane=%u count=%u capacity=%u\n",
+                node_context->layer_index,
+                lane_index,
+                lane_block_count,
+                runtime_kv_block_table->lane_capacity);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (lane_index >= active_sequence_count && lane_block_count != 0u)
         {
+            fprintf(
+                stderr,
+                "resident_kv_table_invalid layer=%u inactive_lane=%u count=%u active=%u\n",
+                node_context->layer_index,
+                lane_index,
+                lane_block_count,
+                active_sequence_count);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         for (block_index = 0u; block_index < lane_block_count; ++block_index)
@@ -3194,6 +3228,16 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
                     runtime_kv_block_table->block_token_count >
                     node_context->cache_token_capacity)
             {
+                fprintf(
+                    stderr,
+                    "resident_kv_table_invalid layer=%u lane=%u block=%u physical=%u kv_blocks=%u block_tokens=%u capacity=%u\n",
+                    node_context->layer_index,
+                    lane_index,
+                    block_index,
+                    physical_block_index,
+                    node_context->kv_block_count,
+                    runtime_kv_block_table->block_token_count,
+                    node_context->cache_token_capacity);
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
         }
