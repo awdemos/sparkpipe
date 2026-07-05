@@ -2044,7 +2044,7 @@ static SparkStatus SparkGlm52Pp13BuilderDecode(
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION;
 	dispatch.descriptor_bytes =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_BYTES;
-	dispatch.priority = decode_dispatch->request_dispatch->priority;
+	dispatch.priority = decode_dispatch->request_dispatch->highest_priority;
 	dispatch.request_id = decode_dispatch->request_dispatch->request_ids[0u];
 	dispatch.sequence_id = decode_dispatch->request_dispatch->sequence_ids[0u];
 	dispatch.sequence_position = lane->sequence_position;
