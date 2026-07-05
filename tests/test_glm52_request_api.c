@@ -2900,7 +2900,7 @@ static void SparkTestRequestApiDsparkDisabledPerRequestFallsBackToDecode(void)
         handle) == SPARK_STATUS_OK);
 }
 
-static void SparkTestRequestApiMtpCommitConsumesMultiTokenBudget(void)
+static void SparkTestRequestApiMtpDraftRequiresSpeculativeVerify(void)
 {
     SparkTestRequestApiFixture fixture;
     SparkGlm52RequestApiSubmitRequest request;
@@ -2908,6 +2908,9 @@ static void SparkTestRequestApiMtpCommitConsumesMultiTokenBudget(void)
     SparkGlm52RequestApiCacheState cache_state;
     SparkGlm52RequestApiHandle handle;
     uint32_t prompt[16u];
+    uint32_t draft_token_ids[SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
+    uint32_t verifier_token_ids[SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
+    uint32_t token_index;
 
     SparkTestFillTokenIds(prompt, 16u, 153000u);
     SparkTestInitializeFixture(&fixture);
@@ -2920,8 +2923,8 @@ static void SparkTestRequestApiMtpCommitConsumesMultiTokenBudget(void)
         SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
         prompt,
         16u,
-        2u);
-    request.thinking_token_budget = 1u;
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u);
+    request.thinking_token_budget = 0u;
     assert(SparkGlm52RequestApiSubmit(
         &fixture.api,
         &request,
@@ -2939,8 +2942,50 @@ static void SparkTestRequestApiMtpCommitConsumesMultiTokenBudget(void)
     assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
     assert((dispatch.flags &
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u);
-    assert(dispatch.mtp_draft_token_budget == 2u);
-    dispatch.decode_committed_token_counts[0u] = 3u;
+    assert(dispatch.mtp_draft_token_budget ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
+
+    dispatch.decode_committed_token_counts[0u] = 1u;
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    for (token_index = 0u;
+         token_index < SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+         ++token_index)
+    {
+        draft_token_ids[token_index] = 91000u + token_index;
+        verifier_token_ids[token_index] = draft_token_ids[token_index];
+    }
+    assert(SparkGlm52RequestApiArmMtpVerifyDispatch(
+        &fixture.api,
+        &dispatch,
+        draft_token_ids,
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT,
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT) == SPARK_STATUS_OK);
+    assert(fixture.api.mtp_draft_ready_count == 1u);
+
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u);
+    assert(dispatch.speculative_token_count ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
+    for (token_index = 0u;
+         token_index < dispatch.speculative_token_count;
+         ++token_index)
+    {
+        assert(dispatch.speculative_draft_token_ids[0u][token_index] ==
+            draft_token_ids[token_index]);
+    }
+    assert(SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
+        &fixture.api,
+        &dispatch,
+        verifier_token_ids,
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT,
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT) == SPARK_STATUS_OK);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,
         &dispatch) == SPARK_STATUS_OK);
@@ -2949,9 +2994,14 @@ static void SparkTestRequestApiMtpCommitConsumesMultiTokenBudget(void)
         handle,
         &cache_state) == SPARK_STATUS_OK);
     assert(cache_state.state == SPARK_GLM52_REQUEST_API_STATE_COMPLETED);
-    assert(fixture.api.request_slots[0u].completed_decode_token_count == 3u);
-    assert(fixture.api.request_slots[0u].remaining_thinking_token_budget == 0u);
-    assert(fixture.api.request_slots[0u].remaining_output_token_budget == 0u);
+    assert(fixture.api.request_slots[0u].completed_decode_token_count ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u);
+    assert(fixture.api.request_slots[0u].mtp_draft_token_count == 0u);
+    assert(fixture.api.mtp_verify_dispatch_count == 1u);
+    assert(fixture.api.mtp_accepted_draft_token_count ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
+    assert(fixture.api.mtp_committed_token_count ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
 }
 
 static void SparkTestRequestApiSubmitsCTextPromptToPrefillSchedule(void)
@@ -3060,7 +3110,7 @@ static void SparkTestRequestApiDecodeBatchPacksTopPriorityMembersInOrder(void)
 int main(void)
 {
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
-    SparkTestRequestApiMtpCommitConsumesMultiTokenBudget();
+    SparkTestRequestApiMtpDraftRequiresSpeculativeVerify();
     SparkTestRequestApiBatchesReadyDecodeRequestsAndConsumesBudgets();
     SparkTestRequestApiCohortsSamePromptRequestsAndSharesBlocks();
     SparkTestRequestApiCohortsArbitrarySharedPrefixWithSuffixes();

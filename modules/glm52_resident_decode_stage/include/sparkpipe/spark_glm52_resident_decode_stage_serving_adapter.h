@@ -62,12 +62,14 @@ typedef struct SparkGlm52ResidentDecodeStageServingAdapter
     uint32_t *host_lane_counts;
     uint32_t *host_decode_positions;
     uint32_t *host_decode_token_ids;
+    uint32_t *host_mtp_draft_token_budgets;
     uint32_t *host_mtp_committed_token_ids;
     uint32_t *device_prefill_token_ids;
     uint32_t *device_lane_offsets;
     uint32_t *device_lane_counts;
     uint32_t *device_decode_positions;
     uint32_t *device_decode_token_ids;
+    uint32_t *device_mtp_draft_token_budgets;
     uint32_t *device_prompt_positions;
     uint32_t *device_prompt_slot_mapping;
     uint32_t *device_prompt_context_lengths;

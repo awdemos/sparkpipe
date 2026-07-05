@@ -1015,6 +1015,21 @@ static SparkStatus SparkGlm52ServingBuildDecodeDispatch(
             record->prompt_token_count + record->streamed_decode_token_count - 1u;
         decode_dispatch->input_token_ids[lane_index] =
             record->token_ids[input_token_index];
+        if (dispatch->kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+        {
+            uint32_t draft_index;
+
+            decode_dispatch->speculative_token_count =
+                dispatch->speculative_token_count;
+            for (draft_index = 0u;
+                 draft_index < dispatch->speculative_token_count;
+                 ++draft_index)
+            {
+                decode_dispatch->speculative_draft_token_ids[lane_index][draft_index] =
+                    dispatch->speculative_draft_token_ids[lane_index][draft_index];
+            }
+        }
     }
     return SPARK_STATUS_OK;
 }
@@ -1094,8 +1109,105 @@ static SparkStatus SparkGlm52ServingResolveMtpDecode(
          lane_index < decode_result->lane_count;
          ++lane_index)
     {
-        dispatch->decode_committed_token_counts[lane_index] =
-            decode_result->token_counts[lane_index];
+        if (decode_result->token_counts[lane_index] == 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        dispatch->decode_committed_token_counts[lane_index] = 1u;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52ServingCaptureMtpDraftTokens(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    SparkGlm52ServingDecodeResult *decode_result,
+    uint32_t *draft_token_ids,
+    uint32_t draft_lane_stride,
+    uint32_t *draft_token_count_out)
+{
+    uint32_t lane_index;
+    uint32_t draft_token_count;
+
+    if (draft_token_count_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *draft_token_count_out = 0u;
+    if (dispatch->kind != SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
+        (dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (decode_result == 0 || draft_token_ids == 0 ||
+        draft_lane_stride < dispatch->mtp_draft_token_budget)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    draft_token_count = 0u;
+    for (lane_index = 0u;
+         lane_index < decode_result->lane_count;
+         ++lane_index)
+    {
+        uint32_t lane_draft_count;
+        uint32_t draft_index;
+
+        if (decode_result->token_counts[lane_index] == 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        lane_draft_count = decode_result->token_counts[lane_index] - 1u;
+        if (lane_draft_count > dispatch->mtp_draft_token_budget)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        if (lane_index == 0u)
+        {
+            draft_token_count = lane_draft_count;
+        }
+        else if (lane_draft_count != draft_token_count)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        for (draft_index = 0u;
+             draft_index < lane_draft_count;
+             ++draft_index)
+        {
+            draft_token_ids[(uint64_t)lane_index * draft_lane_stride + draft_index] =
+                decode_result->token_ids[lane_index][draft_index + 1u];
+        }
+        decode_result->token_counts[lane_index] = 1u;
+    }
+    *draft_token_count_out = draft_token_count;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52ServingClampSpeculativeVerifyDecodeResult(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    SparkGlm52ServingDecodeResult *decode_result)
+{
+    uint32_t lane_index;
+
+    if (dispatch->kind !=
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+    {
+        return SPARK_STATUS_OK;
+    }
+    for (lane_index = 0u;
+         lane_index < decode_result->lane_count;
+         ++lane_index)
+    {
+        uint32_t committed_token_count;
+
+        committed_token_count =
+            dispatch->speculative_committed_token_counts[lane_index];
+        if (committed_token_count == 0u ||
+            committed_token_count > decode_result->token_counts[lane_index])
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        decode_result->token_counts[lane_index] = committed_token_count;
     }
     return SPARK_STATUS_OK;
 }
@@ -1353,6 +1465,10 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     SparkGlm52ServingDecodeResult decode_result;
     SparkGlm52ServingRequestHandle finish_handles[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+    uint32_t mtp_draft_token_ids[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT *
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
+    uint32_t mtp_draft_token_count;
     uint32_t finish_handle_count;
     SparkStatus status;
 
@@ -1393,6 +1509,24 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     {
         return status;
     }
+    status = SparkGlm52ServingClampSpeculativeVerifyDecodeResult(
+        dispatch,
+        &decode_result);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    mtp_draft_token_count = 0u;
+    status = SparkGlm52ServingCaptureMtpDraftTokens(
+        dispatch,
+        &decode_result,
+        mtp_draft_token_ids,
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT,
+        &mtp_draft_token_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     status = SparkGlm52ServingResolveMtpDecode(dispatch, &decode_result);
     if (status != SPARK_STATUS_OK)
     {
@@ -1414,6 +1548,27 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     if (status != SPARK_STATUS_OK)
     {
         return status;
+    }
+    if (mtp_draft_token_count != 0u)
+    {
+        status = SparkGlm52RequestApiArmMtpVerifyDispatch(
+            engine->request_api,
+            dispatch,
+            mtp_draft_token_ids,
+            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT,
+            mtp_draft_token_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        engine->stats.mtp_draft_token_count +=
+            (uint64_t)mtp_draft_token_count *
+            (uint64_t)dispatch->request_count;
+    }
+    if ((dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
+    {
+        engine->stats.mtp_verify_dispatch_count += 1u;
     }
     status = SparkGlm52ServingCompleteFinishedHandles(
         engine,
