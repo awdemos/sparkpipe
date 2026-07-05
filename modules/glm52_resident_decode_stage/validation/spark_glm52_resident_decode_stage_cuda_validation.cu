@@ -9513,6 +9513,20 @@ int main(int argc, char **argv)
         node_context.reserved_execution_flags |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
     }
+    {
+        const char *attention_mode_text;
+
+        attention_mode_text = getenv("GLM52_ATTENTION_EXECUTION_MODE");
+        if (attention_mode_text != 0)
+        {
+            node_context.attention_execution_mode =
+                (uint32_t)strtoul(attention_mode_text, 0, 10);
+            fprintf(
+                stderr,
+                "validation attention_execution_mode=%u\n",
+                node_context.attention_execution_mode);
+        }
+    }
     if (production_timing != 0u)
     {
         node_context.launch_check_mode =
