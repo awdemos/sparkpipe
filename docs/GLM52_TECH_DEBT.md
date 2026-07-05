@@ -28,14 +28,14 @@ sparkc final completion event includes generated token ids
 HTTP/SSE gateway production service-backend ABI
 PP13 service-backend shared object that validates rank0 packs/runtime inputs
 gateway health first_blocker for incomplete production service state
+PP13 service backend owns the C service runtime, scheduler, request API, prefix cache, and KV arena
 ```
 
 Missing:
 
 ```text
-service-backend C service runtime ownership
-service-backend prefill callback mapped to PP13 rank runner submissions
-service-backend decode callback mapped to PP13 rank runner submissions
+rank0 token-id prefill input bridge into distributed PP13 driver frames
+rank0 token-id decode input bridge into distributed PP13 driver frames
 service-backend final token ids mapped into service decode results
 authentication and tenant policy above the C API
 public schema examples for final OpenAI and Anthropic responses
@@ -73,6 +73,7 @@ fail-closed requirement for production hidden transport shared object
 fail-closed requirement for GLM-5.2 model driver shared object
 final-token ids carried in SparkModelDriverCompletion and PP13 final events
 spark0 PP13 service backend that surfaces the first blocker through health
+spark0 PP13 service backend initializes the C service runtime without scripts
 ```
 
 Missing:
@@ -81,7 +82,7 @@ Missing:
 real persistent hidden transport backend
 GLM-5.2 rank model-driver shared object for the resident daemon
 driver node-context binding for resident weights, KV, graph buckets, and packs
-rank dispatch loop from Spark0 service callbacks into stage runner submissions
+rank0 token-id input bridge from service callbacks into stage runner submissions
 final-token bridge from PP13 service backend into service decode results
 cross-rank error propagation
 ring restart and quiesce path

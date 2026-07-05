@@ -68,6 +68,25 @@ send final token events back to Spark0
 optionally run MTP or DSpark verification when enabled
 ```
 
+Spark0 must additionally:
+
+```text
+accept the public API request
+own the C service runtime
+own the tokenizer handle
+own the scheduler and request API state
+own the final-event listener
+bridge request token IDs into distributed PP13 prefill/decode driver frames
+stream final tokens back to the client
+```
+
+Current PP13 service-backend progress:
+
+```text
+Spark0 owns the C service runtime, scheduler, request API, prefix cache, KV arena, tokenizer handle, and final-event listener.
+Spark0 remains fail-closed until the rank0 token-id input bridge to the distributed PP13 driver is present.
+```
+
 ## Prompt Inference Pass Condition
 
 Real prompt inference requires all of these to happen in one request:
