@@ -154,18 +154,6 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
         }
     }
 
-    status = SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
-        pipeline_slot,
-        final_token_stage,
-        active_sequence_count,
-        completion,
-        (cudaStream_t)cuda_stream);
-    if (status != SPARK_STATUS_OK)
-    {
-        cudaStreamSynchronize((cudaStream_t)cuda_stream);
-        return status;
-    }
-
     cuda_status = cudaLaunchHostFunc(
         (cudaStream_t)cuda_stream,
         SparkGlm52ResidentDecodeStageCudaCompletion,
@@ -250,6 +238,18 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
                 cudaGetErrorString(cuda_status));
             return SPARK_STATUS_INTERNAL_ERROR;
         }
+    }
+
+    status = SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
+        pipeline_slot,
+        final_token_stage,
+        active_sequence_count,
+        completion,
+        (cudaStream_t)cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        cudaStreamSynchronize((cudaStream_t)cuda_stream);
+        return status;
     }
 
     cuda_status = cudaLaunchHostFunc(
