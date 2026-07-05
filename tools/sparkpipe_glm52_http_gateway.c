@@ -392,7 +392,22 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 		&backend_configuration,
 		&runtime->service_backend_state);
 	if (status != SPARK_STATUS_OK || runtime->service_backend_state == 0)
+	{
+		SparkGlm52ServiceBackendView view;
+		memset(&view,0,sizeof(view));
+		if (runtime->service_backend_state != 0 &&
+			runtime->service_backend_library.backend_interface.get_view != 0 &&
+			runtime->service_backend_library.backend_interface.get_view(
+				runtime->service_backend_state,
+				&view) == SPARK_STATUS_OK &&
+			view.first_blocker != 0)
+			fprintf(stderr,"service backend initialize failed status=%d blocker=%s\n",
+				(int32_t)status,view.first_blocker);
+		else
+			fprintf(stderr,"service backend initialize failed status=%d\n",
+				(int32_t)status);
 		return -4;
+	}
 	runtime->service_backend_attached = 1u;
 	if (SparkGlm52GatewayRefreshBackendView(runtime) < 0)
 		return -5;
