@@ -421,7 +421,13 @@ static SparkStatus SparkGlm52Pp13BuilderReadToDevice(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	file = fopen(path,"rb");
 	if (file == 0)
+	{
+		fprintf(stderr,"pp13_builder_read_missing path=%s offset=%llu bytes=%llu\n",
+			path,
+			(unsigned long long)offset,
+			(unsigned long long)bytes);
 		return SPARK_STATUS_NOT_FOUND;
+	}
 	buffer = (uint8_t *)malloc((size_t)SPARK_GLM52_PP13_BUILDER_COPY_CHUNK_BYTES);
 	if (buffer == 0)
 	{
