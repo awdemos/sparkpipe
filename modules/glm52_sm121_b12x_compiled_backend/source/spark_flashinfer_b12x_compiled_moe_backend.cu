@@ -471,6 +471,170 @@ __global__ void SparkGlm52B12xPrepareRouterTopKMicroKernel(
     }
 }
 
+
+__global__ void SparkGlm52B12xBenchmarkForceExpertCoverageKernel(
+    int32_t *topk_ids,
+    float *topk_weights,
+    int32_t *compact_topk_ids,
+    int32_t *weight_expert_ids,
+    int32_t *active_expert_count,
+    uint32_t token_count,
+    uint32_t expert_count,
+    uint32_t top_k,
+    uint32_t forced_expert_count,
+    float routed_scaling_factor)
+{
+    uint64_t route_index;
+    uint64_t route_count;
+
+    route_index =
+        ((uint64_t)blockIdx.x * (uint64_t)blockDim.x) +
+        (uint64_t)threadIdx.x;
+    route_count = (uint64_t)token_count * (uint64_t)top_k;
+    if (topk_ids == 0 || topk_weights == 0 || route_index >= route_count ||
+        token_count == 0u || expert_count == 0u || top_k == 0u ||
+        forced_expert_count == 0u)
+    {
+        return;
+    }
+    if (forced_expert_count > expert_count)
+    {
+        forced_expert_count = expert_count;
+    }
+    topk_ids[route_index] = (int32_t)(route_index % forced_expert_count);
+    topk_weights[route_index] = routed_scaling_factor / (float)top_k;
+    if (compact_topk_ids != 0)
+    {
+        compact_topk_ids[route_index] = topk_ids[route_index];
+    }
+    if (route_index < (uint64_t)forced_expert_count && weight_expert_ids != 0)
+    {
+        weight_expert_ids[route_index] = (int32_t)route_index;
+    }
+    if (route_index == 0u && active_expert_count != 0)
+    {
+        active_expert_count[0] = (int32_t)forced_expert_count;
+    }
+}
+
+static uint32_t SparkGlm52B12xBenchmarkForcedExpertCoverage(
+    uint32_t token_count,
+    uint32_t expert_count,
+    uint32_t top_k)
+{
+    const char *text;
+    char *end_pointer;
+    unsigned long value;
+    uint64_t route_count;
+
+    text = getenv("GLM52_BENCHMARK_FORCE_EXPERT_COVERAGE");
+    if (text == 0 || text[0] == '\0' || token_count == 0u ||
+        expert_count == 0u || top_k == 0u)
+    {
+        return 0u;
+    }
+    value = strtoul(text, &end_pointer, 10);
+    if (end_pointer == text || value == 0ul)
+    {
+        return 0u;
+    }
+    route_count = (uint64_t)token_count * (uint64_t)top_k;
+    if (route_count > (uint64_t)UINT32_MAX)
+    {
+        route_count = (uint64_t)UINT32_MAX;
+    }
+    if (value > (unsigned long)expert_count)
+    {
+        value = (unsigned long)expert_count;
+    }
+    if (value > (unsigned long)route_count)
+    {
+        value = (unsigned long)route_count;
+    }
+    return (uint32_t)value;
+}
+
+static SparkStatus SparkGlm52B12xMaybeForceBenchmarkExpertCoverage(
+    const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket,
+    SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
+    const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments,
+    const int32_t **launch_topk_ids_inout)
+{
+    cudaStream_t cuda_stream;
+    cudaError_t cuda_status;
+    uint32_t forced_expert_count;
+    uint32_t route_count;
+    int32_t *compact_topk_ids;
+    int32_t *weight_expert_ids;
+    int32_t *active_expert_count;
+
+    if (bucket == 0 || workspace == 0 || arguments == 0 ||
+        launch_topk_ids_inout == 0 || arguments->topk_ids_i32 == 0 ||
+        arguments->topk_weights_fp32 == 0 || arguments->top_k == 0u ||
+        arguments->token_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    forced_expert_count = SparkGlm52B12xBenchmarkForcedExpertCoverage(
+        arguments->token_count,
+        arguments->expert_count,
+        arguments->top_k);
+    if (forced_expert_count == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    route_count = arguments->token_count * arguments->top_k;
+    if (route_count > bucket->max_rows)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    compact_topk_ids = 0;
+    weight_expert_ids = 0;
+    active_expert_count = 0;
+    if (bucket->backend_kind == SPARK_GLM52_SM121_B12X_BACKEND_KIND_MICRO)
+    {
+        if (workspace->compact_topk_ids_i32 == 0 ||
+            workspace->weight_expert_ids_i32 == 0 ||
+            workspace->active_expert_count_i32 == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        compact_topk_ids = (int32_t *)workspace->compact_topk_ids_i32;
+        weight_expert_ids = (int32_t *)workspace->weight_expert_ids_i32;
+        active_expert_count = (int32_t *)workspace->active_expert_count_i32;
+        *launch_topk_ids_inout = (const int32_t *)workspace->compact_topk_ids_i32;
+    }
+    cuda_stream = (cudaStream_t)arguments->cuda_stream;
+    SparkGlm52B12xBenchmarkForceExpertCoverageKernel<<<
+        (route_count + 255u) / 256u,
+        256u,
+        0u,
+        cuda_stream>>>(
+        (int32_t *)arguments->topk_ids_i32,
+        arguments->topk_weights_fp32,
+        compact_topk_ids,
+        weight_expert_ids,
+        active_expert_count,
+        arguments->token_count,
+        arguments->expert_count,
+        arguments->top_k,
+        forced_expert_count,
+        arguments->router_routed_scaling_factor);
+    cuda_status = cudaGetLastError();
+    if (cuda_status != cudaSuccess)
+    {
+        return SparkGlm52B12xCudaToSparkStatus(cuda_status);
+    }
+    fprintf(
+        stderr,
+        "b12x_forced_expert_coverage tokens=%u active_experts=%u of=%u routes=%u\n",
+        arguments->token_count,
+        forced_expert_count,
+        arguments->expert_count,
+        route_count);
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52B12xPrepareMicroTopK(
     const SparkGlm52Sm121B12xGeneratedKernelBucket *bucket,
     SparkGlm52Sm121B12xGeneratedWorkspace *workspace,
@@ -1561,6 +1725,16 @@ static SparkStatus SparkGlm52B12xLaunchSelectedBucket(
         }
         launch_topk_ids =
             (const int32_t *)state->workspaces[bucket_index].compact_topk_ids_i32;
+    }
+
+    status = SparkGlm52B12xMaybeForceBenchmarkExpertCoverage(
+        bucket,
+        &state->workspaces[bucket_index],
+        arguments,
+        &launch_topk_ids);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
     }
 
     memset(&generated_arguments, 0, sizeof(generated_arguments));
