@@ -21,6 +21,7 @@ PREFILL_TOKEN_IDS_FILE="${GLM52_PREFILL_TOKEN_IDS_FILE:-}"
 PREFILL_MAX_TOKENS="${GLM52_LOCAL_PIPELINE_MAX_PREFILL_TOKENS:-256}"
 PREFILL_SCHEDULE_TSV="$OUTPUT_DIR/prefill_schedule.tsv"
 PREFILL_ONLY="${GLM52_LOCAL_PIPELINE_PREFILL_ONLY:-0}"
+PROMPT_SEQUENCE="${GLM52_LOCAL_PIPELINE_PROMPT_SEQUENCE:-0}"
 
 case "$MODEL_DIR" in
 	/mnt/mac/*|/Volumes/*)
@@ -290,6 +291,48 @@ write_input_embedding_hidden()
 	echo "glm52_local_pipeline_input_embedding=passed output_hidden=$output_hidden"
 }
 
+write_input_embedding_sequence()
+{
+	local output_hidden="$1"
+	local log_path="$OUTPUT_DIR/input_embedding_sequence.log"
+	local pass_line
+	local stage_env
+	if [ -z "$PREFILL_TOKEN_IDS_FILE" ]; then
+		echo "GLM52_LOCAL_PIPELINE_PROMPT_SEQUENCE requires GLM52_PREFILL_TOKEN_IDS_FILE" >&2
+		exit 18
+	fi
+	stage_env=(
+		"NVCC=$NVCC_BIN"
+		"CUDA_ARCH=$CUDA_ARCH_VALUE"
+		"GLM52_MODEL_DIR=$MODEL_DIR"
+		"GLM52_ALLOW_REMOTE_MODEL_DIR=0"
+		"GLM52_PREFILL_TOKEN_IDS_FILE=$PREFILL_TOKEN_IDS_FILE"
+		"GLM52_WRITE_INPUT_EMBEDDING_SEQUENCE_BF16=1"
+		"GLM52_PIPELINE_OUTPUT_HIDDEN_BF16=$output_hidden"
+		"GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT=1"
+	)
+	if [ "$RESUME" != "0" ] && [ -s "$output_hidden" ]; then
+		echo "glm52_local_pipeline_input_embedding_sequence=resume output_hidden=$output_hidden"
+		return 0
+	fi
+	build_direct_runner
+	if ! (cd "$ROOT" && env "${stage_env[@]}" "$DIRECT_RUNNER" "$MAX_STAGE_US") >"$log_path" 2>&1; then
+		echo "glm52_local_pipeline_input_embedding_sequence=failed log=$log_path" >&2
+		tail -80 "$log_path" >&2 || true
+		exit 9
+	fi
+	pass_line="$(stage_pass_line "$log_path")"
+	if [ -z "$pass_line" ]; then
+		echo "input embedding sequence writer did not emit validation pass line: $log_path" >&2
+		exit 10
+	fi
+	if [ ! -s "$output_hidden" ]; then
+		echo "input embedding sequence writer did not write hidden sequence: $output_hidden" >&2
+		exit 11
+	fi
+	echo "glm52_local_pipeline_input_embedding_sequence=passed output_hidden=$output_hidden"
+}
+
 run_stage_direct()
 {
 	local mode="$1"
@@ -329,6 +372,82 @@ run_stage_direct()
 	fi
 }
 
+run_stage_sequence_direct()
+{
+	local mode="$1"
+	local first="$2"
+	local count="$3"
+	local input_hidden="$4"
+	local output_hidden="$5"
+	local pack_dir="$6"
+	local log_path="$7"
+	local stage_env
+	stage_env=(
+		"NVCC=$NVCC_BIN"
+		"CUDA_ARCH=$CUDA_ARCH_VALUE"
+		"GLM52_B12X_MOE_PACK_DIR=$pack_dir"
+		"GLM52_MODEL_DIR=$MODEL_DIR"
+		"GLM52_ALLOW_REMOTE_MODEL_DIR=0"
+		"GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX=$first"
+		"GLM52_ROUTED_CHAIN_LAYER_COUNT=$count"
+		"GLM52_ENABLE_CUDA_GRAPH_REPLAY=0"
+		"GLM52_EXACT_PP13_STAGE_SEQUENCE=1"
+		"GLM52_EXACT_PP13_DISABLE_GRAPH_REPLAY=1"
+		"GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT=1"
+		"GLM52_PIPELINE_INPUT_HIDDEN_BF16=$input_hidden"
+		"GLM52_PIPELINE_OUTPUT_HIDDEN_BF16=$output_hidden"
+	)
+	if [ "$mode" = "exact_final" ]; then
+		stage_env+=(
+			"GLM52_EXACT_PP13_STAGE_SLICE_FINAL_TOKEN=1"
+		)
+	elif [ "$mode" != "exact" ]; then
+		echo "unknown local pipeline stage mode: $mode" >&2
+		exit 8
+	fi
+	if ! (cd "$ROOT" && env "${stage_env[@]}" "$DIRECT_RUNNER" "$MAX_STAGE_US") >"$log_path" 2>&1; then
+		echo "glm52_local_pipeline_stage_sequence=failed mode=$mode first_layer=$first layer_count=$count log=$log_path" >&2
+		tail -80 "$log_path" >&2 || true
+		exit 9
+	fi
+}
+
+run_stage_sequence()
+{
+	local mode="$1"
+	local first="$2"
+	local count="$3"
+	local input_hidden="$4"
+	local output_hidden="$5"
+	local pack_dir="$6"
+	local log_path
+	local pass_line
+	local total_us
+	local maximum_us
+	local token
+	log_path="$OUTPUT_DIR/stage_sequence_${first}_${count}_${mode}.log"
+	require_stage_packs "$pack_dir" "$first" "$count"
+	build_direct_runner
+	run_stage_sequence_direct "$mode" "$first" "$count" "$input_hidden" "$output_hidden" "$pack_dir" "$log_path"
+	pass_line="$(stage_pass_line "$log_path")"
+	if [ -z "$pass_line" ]; then
+		echo "stage sequence did not emit validation pass line: $log_path" >&2
+		exit 10
+	fi
+	if [ ! -s "$output_hidden" ]; then
+		echo "stage sequence did not write output hidden sequence: $output_hidden" >&2
+		exit 11
+	fi
+	if ! record_stage_summary "$mode" "$first" "$count" "$pack_dir" "$log_path"; then
+		echo "stage sequence did not record summary: $log_path" >&2
+		exit 12
+	fi
+	total_us="$(extract_field "total_us" "$pass_line")"
+	maximum_us="$(extract_field "maximum_us" "$pass_line")"
+	token="$(extract_field "restricted_token" "$pass_line")"
+	echo "glm52_local_pipeline_stage_sequence=passed mode=$mode first_layer=$first layer_count=$count total_us=${total_us:-} maximum_us=${maximum_us:-} token=${token:-} output_hidden=$output_hidden"
+}
+
 run_stage()
 {
 	local mode="$1"
@@ -363,6 +482,52 @@ run_stage()
 	maximum_us="$(extract_field "maximum_us" "$pass_line")"
 	token="$(extract_field "restricted_token" "$pass_line")"
 	echo "glm52_local_pipeline_stage=passed mode=$mode first_layer=$first layer_count=$count total_us=${total_us:-} maximum_us=${maximum_us:-} token=${token:-} output_hidden=$output_hidden"
+}
+
+run_prompt_sequence_pipeline_once()
+{
+	local run_label="$1"
+	local first
+	local count
+	local mode
+	local input_hidden="$OUTPUT_DIR/${run_label}_input_embedding_sequence.bf16"
+	local output_hidden
+	local pack_dir
+	local stages=(
+		"0:6:exact"
+		"6:6:exact"
+		"12:6:exact"
+		"18:6:exact"
+		"24:6:exact"
+		"30:6:exact"
+		"36:6:exact"
+		"42:6:exact"
+		"48:6:exact"
+		"54:6:exact"
+		"60:6:exact"
+		"66:6:exact"
+		"72:6:exact_final"
+	)
+	write_input_embedding_sequence "$input_hidden"
+	for spec in "${stages[@]}"; do
+		IFS=: read -r first count mode <<<"$spec"
+		output_hidden="$OUTPUT_DIR/${run_label}_sequence_after_layer_$((first + count - 1)).bf16"
+		pack_dir="$B12X_PACK_DIR"
+		if ! pack_dir_has_stage_packs "$pack_dir" "$first" "$count"; then
+			echo "missing stable B12x resident pack set for routed stage ${first}:${count}: $pack_dir" >&2
+			exit 5
+		fi
+		if [ "$RESUME" != "0" ] && [ -s "$output_hidden" ]; then
+			if ! record_stage_summary "$mode" "$first" "$count" "$pack_dir" "$OUTPUT_DIR/stage_sequence_${first}_${count}_${mode}.log"; then
+				echo "resumed stage sequence did not have a reusable validation log: $first:$count" >&2
+				exit 13
+			fi
+			echo "glm52_local_pipeline_stage_sequence=resume mode=$mode first_layer=$first layer_count=$count output_hidden=$output_hidden"
+		else
+			run_stage_sequence "$mode" "$first" "$count" "$input_hidden" "$output_hidden" "$pack_dir"
+		fi
+		input_hidden="$output_hidden"
+	done
 }
 
 run_pipeline_once()
@@ -420,7 +585,11 @@ if [ "$PREFILL_ONLY" != "0" ]; then
 	echo "glm52_local_pipeline_prefill_only=1"
 	exit 0
 fi
-run_pipeline_once "run1"
+if [ "$PROMPT_SEQUENCE" != "0" ]; then
+	run_prompt_sequence_pipeline_once "run1"
+else
+	run_pipeline_once "run1"
+fi
 final_line="$(tail -1 "$SUMMARY_TSV")"
 final_token="$(printf "%s" "$final_line" | awk -F '\t' '{print $8}')"
 if [ -z "$final_token" ]; then

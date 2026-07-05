@@ -3649,6 +3649,93 @@ static bool SparkValidationSetDecodeScalars(
     return copied;
 }
 
+static bool SparkValidationSetSequentialDecodeScalars(
+    SparkValidationDeviceBuffers *buffers,
+    uint32_t position,
+    uint32_t context_length)
+{
+    uint32_t positions[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
+    uint32_t slot_mappings[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
+    uint32_t context_lengths[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
+    uint32_t first_block_token_offsets[SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT];
+    uint32_t block_table[
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE];
+    uint32_t sparse_token_indices[
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT];
+    uint32_t sequence_index;
+    uint32_t block_index;
+    uint32_t sparse_index;
+
+    if (buffers == 0 ||
+        context_length == 0u ||
+        context_length > SPARK_VALIDATION_CACHE_TOKEN_CAPACITY ||
+        position >= SPARK_VALIDATION_CACHE_TOKEN_CAPACITY)
+    {
+        return false;
+    }
+    for (sequence_index = 0u;
+         sequence_index < SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT;
+         ++sequence_index)
+    {
+        positions[sequence_index] = position;
+        slot_mappings[sequence_index] = position + sequence_index;
+        context_lengths[sequence_index] = context_length;
+        first_block_token_offsets[sequence_index] = 0u;
+        for (block_index = 0u;
+             block_index < SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE;
+             ++block_index)
+        {
+            block_table[
+                (sequence_index * SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE) +
+                block_index] = block_index;
+        }
+        for (sparse_index = 0u;
+             sparse_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+             ++sparse_index)
+        {
+            sparse_token_indices[
+                (sequence_index *
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT) +
+                sparse_index] = sparse_index < context_length
+                    ? sparse_index
+                    : SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
+        }
+    }
+    return
+        SparkValidationCopyToDevice(
+            buffers->positions,
+            positions,
+            sizeof(positions),
+            "copy sequential positions") &&
+        SparkValidationCopyToDevice(
+            buffers->slot_mapping,
+            slot_mappings,
+            sizeof(slot_mappings),
+            "copy sequential slot_mappings") &&
+        SparkValidationCopyToDevice(
+            buffers->context_lengths,
+            context_lengths,
+            sizeof(context_lengths),
+            "copy sequential context_lengths") &&
+        SparkValidationCopyToDevice(
+            buffers->first_block_token_offsets,
+            first_block_token_offsets,
+            sizeof(first_block_token_offsets),
+            "copy sequential first_block_token_offsets") &&
+        SparkValidationCopyToDevice(
+            buffers->block_table,
+            block_table,
+            sizeof(block_table),
+            "copy sequential block_table") &&
+        SparkValidationCopyToDevice(
+            buffers->sparse_token_indices,
+            sparse_token_indices,
+            sizeof(sparse_token_indices),
+            "copy sequential sparse_token_indices");
+}
+
 static void SparkValidationConfigureNode(
     SparkValidationDeviceBuffers *buffers,
     cudaStream_t cuda_stream,
@@ -5679,6 +5766,220 @@ static bool SparkValidationWriteHiddenBf16File(
     }
     fprintf(stderr, "pipeline_hidden_bf16_written=%s active_sequences=%u bytes=%llu nonzero=%u checksum64=%llu\n", path, SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT, (unsigned long long)hidden_bytes, nonzero_count, (unsigned long long)checksum);
     free(host_hidden);
+    return true;
+}
+
+static bool SparkValidationReadPromptTokenIdsFile(
+    const char *path,
+    uint32_t **token_ids_out,
+    uint32_t *token_count_out)
+{
+    FILE *file;
+    uint32_t *token_ids;
+    uint32_t token_count;
+    uint32_t token_capacity;
+
+    if (path == 0 || path[0] == '\0' ||
+        token_ids_out == 0 || token_count_out == 0)
+        return false;
+    *token_ids_out = 0;
+    *token_count_out = 0u;
+    file = fopen(path, "r");
+    if (file == 0)
+    {
+        fprintf(stderr, "could not open prompt token id file %s\n", path);
+        return false;
+    }
+    token_capacity = 256u;
+    token_count = 0u;
+    token_ids = (uint32_t *)malloc((size_t)token_capacity * sizeof(uint32_t));
+    if (token_ids == 0)
+    {
+        fclose(file);
+        return false;
+    }
+    for (;;)
+    {
+        unsigned long token_value;
+        int scan_result;
+
+        scan_result = fscanf(file, " %lu", &token_value);
+        if (scan_result == EOF)
+            break;
+        if (scan_result != 1 || token_value >= 154880ul)
+        {
+            fprintf(stderr, "invalid prompt token id in %s\n", path);
+            free(token_ids);
+            fclose(file);
+            return false;
+        }
+        if (token_count == token_capacity)
+        {
+            uint32_t *new_token_ids;
+
+            token_capacity *= 2u;
+            new_token_ids = (uint32_t *)realloc(
+                token_ids,
+                (size_t)token_capacity * sizeof(uint32_t));
+            if (new_token_ids == 0)
+            {
+                free(token_ids);
+                fclose(file);
+                return false;
+            }
+            token_ids = new_token_ids;
+        }
+        token_ids[token_count++] = (uint32_t)token_value;
+    }
+    fclose(file);
+    if (token_count == 0u)
+    {
+        fprintf(stderr, "prompt token id file is empty: %s\n", path);
+        free(token_ids);
+        return false;
+    }
+    *token_ids_out = token_ids;
+    *token_count_out = token_count;
+    return true;
+}
+
+static bool SparkValidationWriteDeviceBf16VectorToFile(
+    FILE *file,
+    uint16_t *host_hidden,
+    const uint16_t *device_hidden,
+    const char *name)
+{
+    size_t hidden_bytes;
+    size_t written_bytes;
+
+    if (file == 0 || host_hidden == 0 || device_hidden == 0)
+        return false;
+    hidden_bytes =
+        (size_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+        sizeof(uint16_t);
+    if (!SparkValidationCopyDeviceBf16Vector(
+            host_hidden,
+            device_hidden,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            name))
+        return false;
+    written_bytes = fwrite(host_hidden, 1u, hidden_bytes, file);
+    if (written_bytes != hidden_bytes)
+    {
+        fprintf(stderr, "failed to write hidden vector for %s\n", name);
+        return false;
+    }
+    return true;
+}
+
+static bool SparkValidationReadHostBf16VectorFromFile(
+    FILE *file,
+    uint16_t *host_hidden,
+    const char *name)
+{
+    size_t hidden_bytes;
+    size_t read_bytes;
+
+    if (file == 0 || host_hidden == 0)
+        return false;
+    hidden_bytes =
+        (size_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+        sizeof(uint16_t);
+    read_bytes = fread(host_hidden, 1u, hidden_bytes, file);
+    if (read_bytes != hidden_bytes)
+    {
+        fprintf(stderr, "failed to read hidden vector for %s\n", name);
+        return false;
+    }
+    return true;
+}
+
+static bool SparkValidationWriteInputEmbeddingSequenceBf16File(
+    SparkValidationDeviceBuffers *buffers,
+    const char *model_directory,
+    const char *token_ids_path,
+    const char *output_path)
+{
+    uint32_t *token_ids;
+    uint16_t *host_hidden;
+    FILE *output_file;
+    uint64_t copied_bytes;
+    uint64_t checksum;
+    uint32_t token_count;
+    uint32_t token_index;
+    uint32_t hidden_index;
+
+    token_ids = 0;
+    host_hidden = 0;
+    if (buffers == 0 || model_directory == 0 || model_directory[0] == '\0' ||
+        output_path == 0 || output_path[0] == '\0' ||
+        !SparkValidationReadPromptTokenIdsFile(
+            token_ids_path,
+            &token_ids,
+            &token_count))
+        return false;
+    output_file = fopen(output_path, "wb");
+    if (output_file == 0)
+    {
+        fprintf(stderr, "could not open embedding sequence output %s\n", output_path);
+        free(token_ids);
+        return false;
+    }
+    host_hidden = (uint16_t *)malloc(
+        (size_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+        sizeof(uint16_t));
+    if (host_hidden == 0)
+    {
+        fclose(output_file);
+        free(token_ids);
+        return false;
+    }
+    copied_bytes = 0u;
+    checksum = 1469598103934665603ull;
+    for (token_index = 0u; token_index < token_count; ++token_index)
+    {
+        if (!SparkValidationCopyInputEmbeddingBf16Row(
+                model_directory,
+                token_ids[token_index],
+                buffers->input_hidden_bf16,
+                &copied_bytes) ||
+            !SparkValidationWriteDeviceBf16VectorToFile(
+                output_file,
+                host_hidden,
+                buffers->input_hidden_bf16,
+                "write embedding sequence row"))
+        {
+            fclose(output_file);
+            free(host_hidden);
+            free(token_ids);
+            return false;
+        }
+        for (hidden_index = 0u;
+             hidden_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+             ++hidden_index)
+        {
+            checksum ^= (uint64_t)host_hidden[hidden_index];
+            checksum *= 1099511628211ull;
+        }
+    }
+    if (fclose(output_file) != 0)
+    {
+        free(host_hidden);
+        free(token_ids);
+        return false;
+    }
+    fprintf(
+        stderr,
+        "prompt_embedding_sequence_bf16_written=%s token_count=%u bytes=%llu checksum64=%llu copied_embedding_bytes=%llu\n",
+        output_path,
+        token_count,
+        (unsigned long long)((uint64_t)token_count *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+            2ull),
+        (unsigned long long)checksum,
+        (unsigned long long)copied_bytes);
+    free(host_hidden);
+    free(token_ids);
     return true;
 }
 
@@ -9182,6 +9483,251 @@ static bool SparkValidationRunExactPp13StageSliceFromHidden(
     return true;
 }
 
+static bool SparkValidationHiddenSequenceTokenCount(
+    const char *path,
+    uint32_t *token_count_out)
+{
+    FILE *file;
+    long file_size;
+    uint64_t row_bytes;
+
+    if (path == 0 || path[0] == '\0' || token_count_out == 0)
+        return false;
+    *token_count_out = 0u;
+    file = fopen(path, "rb");
+    if (file == 0)
+    {
+        fprintf(stderr, "could not open hidden sequence input %s\n", path);
+        return false;
+    }
+    if (fseek(file, 0L, SEEK_END) != 0)
+    {
+        fclose(file);
+        return false;
+    }
+    file_size = ftell(file);
+    fclose(file);
+    if (file_size <= 0)
+    {
+        fprintf(stderr, "hidden sequence input is empty: %s\n", path);
+        return false;
+    }
+    row_bytes =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+        2ull;
+    if (((uint64_t)file_size % row_bytes) != 0u)
+    {
+        fprintf(stderr, "hidden sequence input size is not row-aligned: %s bytes=%ld row_bytes=%llu\n", path, file_size, (unsigned long long)row_bytes);
+        return false;
+    }
+    *token_count_out = (uint32_t)((uint64_t)file_size / row_bytes);
+    return true;
+}
+
+static bool SparkValidationRunExactPp13StageSequenceFromHidden(
+    SparkValidationExactPp13StageSliceRuntime *runtime,
+    cudaStream_t cuda_stream,
+    const char *model_directory,
+    const char *pipeline_input_hidden_path,
+    const char *pipeline_output_hidden_path,
+    SparkValidationRealLmHeadFixture *real_lm_head,
+    uint32_t first_layer_index,
+    uint32_t final_token_stage,
+    uint32_t model_quantization,
+    double *total_microseconds,
+    double *maximum_observed_microseconds,
+    uint32_t *submission_count,
+    uint32_t *selected_token_id_out)
+{
+    FILE *input_file;
+    FILE *output_file;
+    uint16_t *host_hidden;
+    SparkValidationDeviceBuffers *last_buffers;
+    uint32_t token_count;
+    uint32_t token_index;
+    uint32_t layer_offset;
+    uint32_t selected_token_id;
+    uint32_t mtp_draft_token_id;
+    uint32_t mtp_reject_token_id;
+
+    if (runtime == 0 || total_microseconds == 0 ||
+        maximum_observed_microseconds == 0 || submission_count == 0 ||
+        selected_token_id_out == 0 ||
+        !SparkValidationHiddenSequenceTokenCount(
+            pipeline_input_hidden_path,
+            &token_count))
+    {
+        return false;
+    }
+    if (token_count == 0u ||
+        token_count > SPARK_VALIDATION_CACHE_TOKEN_CAPACITY)
+    {
+        fprintf(stderr, "exact PP13 stage sequence token count must be 1..%u observed=%u\n", SPARK_VALIDATION_CACHE_TOKEN_CAPACITY, token_count);
+        return false;
+    }
+    input_file = fopen(pipeline_input_hidden_path, "rb");
+    if (input_file == 0)
+        return false;
+    output_file = fopen(pipeline_output_hidden_path, "wb");
+    if (output_file == 0)
+    {
+        fclose(input_file);
+        return false;
+    }
+    host_hidden = (uint16_t *)malloc(
+        (size_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+        sizeof(uint16_t));
+    if (host_hidden == 0)
+    {
+        fclose(output_file);
+        fclose(input_file);
+        return false;
+    }
+    memset(runtime, 0, sizeof(*runtime));
+    *total_microseconds = 0.0;
+    *maximum_observed_microseconds = 0.0;
+    *submission_count = 0u;
+    *selected_token_id_out = 0u;
+    if (!SparkValidationInitializeExactPp13StageSlicePlan(
+            runtime,
+            first_layer_index,
+            final_token_stage))
+    {
+        free(host_hidden);
+        fclose(output_file);
+        fclose(input_file);
+        return false;
+    }
+    for (layer_offset = 0u;
+         layer_offset < SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+         ++layer_offset)
+    {
+        if (!SparkValidationPrepareExactPp13StageSliceLayer(
+                runtime,
+                model_directory,
+                cuda_stream,
+                first_layer_index,
+                layer_offset,
+                final_token_stage,
+                1u,
+                model_quantization))
+        {
+            free(host_hidden);
+            fclose(output_file);
+            fclose(input_file);
+            return false;
+        }
+    }
+    last_buffers =
+        &runtime->buffers[SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT - 1u];
+    for (token_index = 0u; token_index < token_count; ++token_index)
+    {
+        float elapsed_microseconds;
+        uint32_t run_final_outputs;
+
+        if (!SparkValidationReadHostBf16VectorFromFile(
+                input_file,
+                host_hidden,
+                "read exact pp13 stage sequence row") ||
+            !SparkValidationCopyToDevice(
+                runtime->buffers[0].input_hidden_bf16,
+                host_hidden,
+                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+                    2ull,
+                "copy exact pp13 stage sequence input row"))
+        {
+            free(host_hidden);
+            fclose(output_file);
+            fclose(input_file);
+            return false;
+        }
+        for (layer_offset = 0u;
+             layer_offset < SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+             ++layer_offset)
+        {
+            if (!SparkValidationSetSequentialDecodeScalars(
+                    &runtime->buffers[layer_offset],
+                    token_index,
+                    token_index + 1u))
+            {
+                free(host_hidden);
+                fclose(output_file);
+                fclose(input_file);
+                return false;
+            }
+        }
+        run_final_outputs =
+            final_token_stage != 0u && token_index + 1u == token_count;
+        if (!SparkValidationRunExactPp13StageSliceSubmit(
+                runtime,
+                cuda_stream,
+                run_final_outputs,
+                &elapsed_microseconds))
+        {
+            free(host_hidden);
+            fclose(output_file);
+            fclose(input_file);
+            return false;
+        }
+        *total_microseconds += (double)elapsed_microseconds;
+        if ((double)elapsed_microseconds > *maximum_observed_microseconds)
+            *maximum_observed_microseconds = (double)elapsed_microseconds;
+        *submission_count += 1u;
+        if (!SparkValidationWriteDeviceBf16VectorToFile(
+                output_file,
+                host_hidden,
+                last_buffers->layer_output_hidden_bf16,
+                "write exact pp13 stage sequence row"))
+        {
+            free(host_hidden);
+            fclose(output_file);
+            fclose(input_file);
+            return false;
+        }
+    }
+    if (final_token_stage != 0u)
+    {
+        if (!SparkValidationReadFinalTokenEvidence(
+                last_buffers,
+                &selected_token_id,
+                &mtp_draft_token_id,
+                &mtp_reject_token_id))
+        {
+            free(host_hidden);
+            fclose(output_file);
+            fclose(input_file);
+            return false;
+        }
+        *selected_token_id_out = selected_token_id;
+        fprintf(
+            stderr,
+            "exact_pp13_stage_sequence_final_evidence restricted_token=%u mtp_draft=%u mtp_reject=%u token_count=%u\n",
+            selected_token_id,
+            mtp_draft_token_id,
+            mtp_reject_token_id,
+            token_count);
+    }
+    free(host_hidden);
+    if (fclose(output_file) != 0)
+    {
+        fclose(input_file);
+        return false;
+    }
+    fclose(input_file);
+    fprintf(
+        stderr,
+        "exact_pp13_stage_sequence_complete first_layer=%u layer_count=%u final=%u token_count=%u total_us=%.3f maximum_us=%.3f submissions=%u output_hidden=%s\n",
+        first_layer_index,
+        SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT,
+        final_token_stage,
+        token_count,
+        *total_microseconds,
+        *maximum_observed_microseconds,
+        *submission_count,
+        pipeline_output_hidden_path);
+    return true;
+}
+
 int main(int argc, char **argv)
 {
     SparkValidationDeviceBuffers buffers;
@@ -9206,6 +9752,7 @@ int main(int argc, char **argv)
     const char *load_layer0_attention;
     const char *input_token_text;
     const char *write_input_embedding_hidden_text;
+    const char *write_input_embedding_sequence_text;
     const char *dense_layer_index_text;
     const char *prefill_kv_text;
     const char *prefill_token_ids_path;
@@ -9221,6 +9768,7 @@ int main(int argc, char **argv)
     const char *chain_routed_from_hidden_text;
     const char *chain_routed_from_hidden_final_text;
     const char *exact_pp13_stage_slice_text;
+    const char *exact_pp13_stage_sequence_text;
     const char *exact_pp13_stage_slice_final_text;
     const char *exact_pp13_disable_graph_replay_text;
     const char *exact_pp13_model_quantization_text;
@@ -9240,6 +9788,7 @@ int main(int argc, char **argv)
     uint32_t use_attention_bf16;
     uint32_t use_input_embedding;
     uint32_t write_input_embedding_hidden;
+    uint32_t write_input_embedding_sequence;
     uint32_t use_prefill_kv;
     uint32_t check_layer0_reference;
     uint32_t check_layer0_full_reference;
@@ -9253,6 +9802,7 @@ int main(int argc, char **argv)
     uint32_t use_routed_chain_from_hidden;
     uint32_t use_routed_chain_from_hidden_final;
     uint32_t use_exact_pp13_stage_slice;
+    uint32_t use_exact_pp13_stage_sequence;
     uint32_t use_exact_pp13_stage_slice_final;
     uint32_t disable_exact_pp13_graph_replay;
     uint32_t exact_pp13_model_quantization;
@@ -9295,6 +9845,8 @@ int main(int argc, char **argv)
     input_token_text = getenv("GLM52_INPUT_TOKEN_ID");
     write_input_embedding_hidden_text =
         getenv("GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16");
+    write_input_embedding_sequence_text =
+        getenv("GLM52_WRITE_INPUT_EMBEDDING_SEQUENCE_BF16");
     dense_layer_index_text = getenv("GLM52_DENSE_LAYER_INDEX");
     prefill_kv_text = getenv("GLM52_PREFILL_KV_FROM_EMBEDDINGS");
     prefill_token_ids_path = getenv("GLM52_PREFILL_TOKEN_IDS_FILE");
@@ -9319,6 +9871,8 @@ int main(int argc, char **argv)
         getenv("GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN");
     exact_pp13_stage_slice_text =
         getenv("GLM52_EXACT_PP13_STAGE_SLICE");
+    exact_pp13_stage_sequence_text =
+        getenv("GLM52_EXACT_PP13_STAGE_SEQUENCE");
     exact_pp13_stage_slice_final_text =
         getenv("GLM52_EXACT_PP13_STAGE_SLICE_FINAL_TOKEN");
     exact_pp13_disable_graph_replay_text =
@@ -9349,6 +9903,10 @@ int main(int argc, char **argv)
         write_input_embedding_hidden_text != 0 &&
         write_input_embedding_hidden_text[0] != '\0' &&
         strcmp(write_input_embedding_hidden_text, "0") != 0;
+    write_input_embedding_sequence =
+        write_input_embedding_sequence_text != 0 &&
+        write_input_embedding_sequence_text[0] != '\0' &&
+        strcmp(write_input_embedding_sequence_text, "0") != 0;
     use_prefill_kv = prefill_kv_text != 0 && prefill_kv_text[0] != '\0' &&
         strcmp(prefill_kv_text, "0") != 0;
     check_layer0_reference =
@@ -9399,8 +9957,13 @@ int main(int argc, char **argv)
         exact_pp13_stage_slice_final_text != 0 &&
         exact_pp13_stage_slice_final_text[0] != '\0' &&
         strcmp(exact_pp13_stage_slice_final_text, "0") != 0;
+    use_exact_pp13_stage_sequence =
+        exact_pp13_stage_sequence_text != 0 &&
+        exact_pp13_stage_sequence_text[0] != '\0' &&
+        strcmp(exact_pp13_stage_sequence_text, "0") != 0;
     use_exact_pp13_stage_slice =
         use_exact_pp13_stage_slice_final != 0u ||
+        use_exact_pp13_stage_sequence != 0u ||
         (exact_pp13_stage_slice_text != 0 &&
          exact_pp13_stage_slice_text[0] != '\0' &&
          strcmp(exact_pp13_stage_slice_text, "0") != 0);
@@ -9545,6 +10108,29 @@ int main(int argc, char **argv)
          use_layer3_routed_expert != 0u))
     {
         fprintf(stderr, "GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16 requires only GLM52_INPUT_TOKEN_ID, GLM52_STAGE_PACK_DIR or GLM52_MODEL_DIR, and GLM52_PIPELINE_OUTPUT_HIDDEN_BF16\n");
+        return 2;
+    }
+    if (write_input_embedding_sequence != 0u &&
+        (prefill_token_ids_path == 0 ||
+         prefill_token_ids_path[0] == '\0' ||
+         pipeline_output_hidden_path == 0 ||
+         pipeline_output_hidden_path[0] == '\0' ||
+         (model_directory == 0 || model_directory[0] == '\0') ||
+         use_input_embedding != 0u ||
+         write_input_embedding_hidden != 0u ||
+         use_prefill_kv != 0u ||
+         check_layer0_reference != 0u ||
+         check_layer0_full_reference != 0u ||
+         use_dense_chain != 0u ||
+         use_dense_chain_layer3_routed_expert_topk != 0u ||
+         use_routed_chain_from_hidden != 0u ||
+         use_routed_chain_from_hidden_final != 0u ||
+         use_exact_pp13_stage_slice != 0u ||
+         use_layer3_router != 0u ||
+         use_layer3_shared_expert != 0u ||
+         use_layer3_routed_expert != 0u))
+    {
+        fprintf(stderr, "GLM52_WRITE_INPUT_EMBEDDING_SEQUENCE_BF16 requires GLM52_PREFILL_TOKEN_IDS_FILE, GLM52_MODEL_DIR, and GLM52_PIPELINE_OUTPUT_HIDDEN_BF16 only\n");
         return 2;
     }
     if (dense_layer_index_text != 0 && dense_layer_index_text[0] != '\0')
@@ -9826,6 +10412,22 @@ int main(int argc, char **argv)
                 2u);
         return 0;
     }
+    if (write_input_embedding_sequence != 0u)
+    {
+        if (!SparkValidationWriteInputEmbeddingSequenceBf16File(
+                &buffers,
+                model_directory,
+                prefill_token_ids_path,
+                pipeline_output_hidden_path))
+        {
+            return 2;
+        }
+        printf(
+            "glm52_resident_decode_stage validation passed fixture=input_embedding_sequence token_ids=%s total_submissions=0 total_us=0.000 maximum_us=0.000 pipeline_output_hidden=%s\n",
+            prefill_token_ids_path,
+            pipeline_output_hidden_path);
+        return 0;
+    }
     if (use_attention_bf16 != 0u &&
         !SparkValidationLoadLayer0AttentionBf16Fixture(
             &buffers,
@@ -10064,6 +10666,39 @@ int main(int argc, char **argv)
         routed_layer_count = 0u;
         layer_body_success_count = 0u;
         b12x_moe_success_count = 0u;
+        if (use_exact_pp13_stage_sequence != 0u)
+        {
+            if (!SparkValidationRunExactPp13StageSequenceFromHidden(
+                    &exact_stage_slice_runtime,
+                    cuda_stream,
+                    model_directory,
+                    pipeline_input_hidden_path,
+                    pipeline_output_hidden_path,
+                    &real_lm_head,
+                    routed_chain_first_layer_index,
+                    use_exact_pp13_stage_slice_final,
+                    exact_pp13_model_quantization,
+                    &total_microseconds,
+                    &maximum_observed_microseconds,
+                    &submission_count,
+                    &selected_token_id))
+            {
+                return 2;
+            }
+            printf(
+                "glm52_resident_decode_stage validation passed fixture=exact_pp13_stage_sequence first_layer=%u layer_count=%u final=%u token_count=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u pipeline_output_hidden=%s graph_captures=0 graph_replays=0\n",
+                routed_chain_first_layer_index,
+                SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT,
+                use_exact_pp13_stage_slice_final,
+                submission_count,
+                submission_count,
+                total_microseconds,
+                maximum_observed_microseconds,
+                maximum_stage_microseconds,
+                selected_token_id,
+                pipeline_output_hidden_path);
+            return maximum_observed_microseconds <= maximum_stage_microseconds ? 0 : 1;
+        }
         if (!SparkValidationRunExactPp13StageSliceFromHidden(
                 &exact_stage_slice_runtime,
                 cuda_stream,

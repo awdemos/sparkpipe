@@ -6,6 +6,8 @@ extern SparkStatus SparkFlashInferB12xCompiledMoeCreate(
     const SparkGlm52Sm121FlashInferB12xMoeRecipe *recipe,
     void **state_out);
 
+extern uint64_t SparkFlashInferB12xCompiledMoeActiveManifestHashLow64(void);
+
 extern SparkStatus SparkFlashInferB12xCompiledMoeLaunch(
     void *state,
     const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments);
@@ -181,6 +183,11 @@ SparkStatus SparkGlm52Sm121FlashInferB12xMoeCreate(
         return status;
     }
     return SparkFlashInferB12xCompiledMoeCreate(recipe, state_out);
+}
+
+uint64_t SparkGlm52Sm121FlashInferB12xMoeActiveKernelManifestHashLow64(void)
+{
+    return SparkFlashInferB12xCompiledMoeActiveManifestHashLow64();
 }
 
 SparkStatus SparkGlm52Sm121FlashInferB12xMoeLaunch(

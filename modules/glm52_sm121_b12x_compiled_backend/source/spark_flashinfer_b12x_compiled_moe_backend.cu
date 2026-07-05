@@ -1648,6 +1648,11 @@ extern "C" SparkStatus SparkFlashInferB12xCompiledMoeCreate(
     return SPARK_STATUS_OK;
 }
 
+extern "C" uint64_t SparkFlashInferB12xCompiledMoeActiveManifestHashLow64(void)
+{
+    return SparkGlm52Sm121B12xGeneratedManifestInstance.manifest_hash_low64;
+}
+
 static SparkStatus SparkGlm52B12xMaybeLogExpertCoverage(const SparkGlm52Sm121B12xGeneratedWorkspace *workspace, const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments, uint32_t chunk_token_count)
 {
     cudaStream_t cuda_stream;

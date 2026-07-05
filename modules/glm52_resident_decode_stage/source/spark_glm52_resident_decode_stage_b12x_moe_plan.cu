@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_b12x_moe_plan.h"
+#include "sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h"
 
 #include <cuda_runtime_api.h>
 
@@ -748,6 +749,15 @@ SparkStatus SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFil
             binding,
             &header,
             create_info->maximum_active_sequence_count);
+        binding->plan.recipe.kernel_manifest_hash_low64 =
+            SparkGlm52Sm121FlashInferB12xMoeActiveKernelManifestHashLow64();
+        if (binding->plan.recipe.kernel_manifest_hash_low64 == 0u)
+        {
+            status = SPARK_STATUS_MODULE_NOT_VALIDATED;
+        }
+    }
+    if (status == SPARK_STATUS_OK)
+    {
         status = SparkGlm52B12xPlanAllocateDeterministicWorkspace(
             binding,
             &header);
