@@ -778,6 +778,10 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	if ((state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u)
 		node->reserved_execution_flags |=
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_HIDDEN_TRANSPORT_OUTPUT;
+	if ((state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u ||
+		layer_index + 1u != state->rank_plan.first_layer_index + state->rank_plan.layer_count)
+		node->reserved_execution_flags |=
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
 	node->validated_stage_latency_ns = 1000000000ull;
 	node->estimated_service_time_ns = 1000000000ull;
 	node->index_softmax_scale = 1.0f;
