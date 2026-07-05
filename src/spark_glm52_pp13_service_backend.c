@@ -30,9 +30,11 @@
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS 65536u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_TOKENS 512u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_MAX_BLOCKS_PER_SEQUENCE 32u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_TOKENS \
+	SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT \
 	(SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS / \
-	 SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS)
+	 SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_TOKENS)
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_PREFIX_BINDING_COUNT \
 	(SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT + \
 	 SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY)
@@ -390,7 +392,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 	packet->active_sequence_count = 1u;
 	packet->new_token_count = mtp_budget + 1u;
 	packet->priority = decode_dispatch->request_dispatch->highest_priority;
-	packet->block_token_count = SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+	packet->block_token_count = SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_TOKENS;
 	packet->kv_block_table_token_count = lane->context_token_count;
 	packet->max_blocks_per_sequence =
 		SPARK_GLM52_PP13_SERVICE_BACKEND_MAX_BLOCKS_PER_SEQUENCE;
@@ -425,7 +427,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildPrefillWorkPacket(
 	packet->active_sequence_count = 1u;
 	packet->new_token_count = 1u;
 	packet->priority = prefill_dispatch->request_dispatch->highest_priority;
-	packet->block_token_count = SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+	packet->block_token_count = SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_TOKENS;
 	packet->kv_block_table_token_count = position + 1u;
 	packet->max_blocks_per_sequence =
 		SPARK_GLM52_PP13_SERVICE_BACKEND_MAX_BLOCKS_PER_SEQUENCE;
@@ -689,7 +691,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeKvArena(
 	kv_configuration.physical_block_count =
 		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT;
 	kv_configuration.block_token_count =
-		SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_TOKENS;
 	kv_configuration.layer_count = SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
 	kv_configuration.kv_head_count = 8u;
 	kv_configuration.head_dim = 128u;
@@ -714,7 +716,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializePrefixCache(
 	prefix_configuration.descriptor_bytes =
 		SPARK_GLM52_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
 	prefix_configuration.block_token_count =
-		SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_TOKENS;
 	prefix_configuration.entry_count =
 		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT;
 	prefix_configuration.physical_block_count =
