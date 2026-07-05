@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <errno.h>
 #include <netinet/in.h>
+#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -324,6 +325,61 @@ static int32_t SparkGlm52GatewayRefreshBackendView(
 		SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES)
 		return -3;
 	return 0;
+}
+
+static void SparkGlm52GatewayLogServiceEvents(SparkGlm52GatewayRuntime *runtime)
+{
+	SparkGlm52ServiceEvent event;
+	SparkStatus status;
+
+	if (runtime == 0 || runtime->service_backend_attached == 0u ||
+		runtime->service_backend_view.service == 0)
+		return;
+	for (;;)
+	{
+		status = SparkGlm52ServicePopEvent(
+			runtime->service_backend_view.service,
+			&event);
+		if (status == SPARK_STATUS_NOT_FOUND)
+			return;
+		if (status != SPARK_STATUS_OK)
+		{
+			fprintf(stderr,"gateway service event pop failed status=%u\n",status);
+			return;
+		}
+		fprintf(
+			stderr,
+			"gateway_service_event kind=%u status=%u client_request=%llu serving_request=%llu sequence=%llu token=%u token_index=%u prompt_offset=%u prompt_count=%u dispatch_kind=%u dispatch_flags=%u\n",
+			event.kind,
+			event.status,
+			(unsigned long long)event.client_request_id,
+			(unsigned long long)event.serving_request_id,
+			(unsigned long long)event.sequence_id,
+			event.token_id,
+			event.token_index,
+			event.prompt_token_offset,
+			event.prompt_token_count,
+			event.dispatch_kind,
+			event.dispatch_flags);
+	}
+}
+
+static void SparkGlm52GatewayPumpService(SparkGlm52GatewayRuntime *runtime)
+{
+	SparkGlm52ServiceStats service_stats;
+	SparkStatus status;
+
+	if (runtime == 0 || runtime->service_backend_attached == 0u)
+		return;
+	status = runtime->service_backend_library.backend_interface.pump(
+		runtime->service_backend_state,
+		runtime->configuration.pump_steps,
+		&service_stats);
+	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY &&
+		status != SPARK_STATUS_NOT_FOUND)
+		fprintf(stderr,"gateway backend pump status=%u\n",status);
+	if (SparkGlm52GatewayRefreshBackendView(runtime) == 0)
+		SparkGlm52GatewayLogServiceEvents(runtime);
 }
 
 static int32_t SparkGlm52GatewayEnsureServiceClient(
@@ -796,8 +852,10 @@ static int32_t SparkGlm52GatewayServeOne(
 int main(int argc,char **argv)
 {
 	SparkGlm52GatewayRuntime runtime;
+	struct pollfd poll_fds[1];
 	int32_t listen_fd;
 	int32_t client_fd;
+	int32_t poll_result;
 
 	(void)signal(SIGPIPE,SIG_IGN);
 	memset(&runtime,0,sizeof(runtime));
@@ -830,11 +888,26 @@ int main(int argc,char **argv)
 		runtime.configuration.port);
 	for (;;)
 	{
+		SparkGlm52GatewayPumpService(&runtime);
+		memset(poll_fds,0,sizeof(poll_fds));
+		poll_fds[0].fd = listen_fd;
+		poll_fds[0].events = POLLIN;
+		poll_result = poll(poll_fds,1u,5);
+		if (poll_result < 0)
+		{
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+		if (poll_result == 0 ||
+			(poll_fds[0].revents & POLLIN) == 0)
+			continue;
 		client_fd = accept(listen_fd,0,0);
 		if (client_fd < 0)
 			continue;
 		(void)SparkGlm52GatewayServeOne(&runtime,client_fd);
 		close(client_fd);
+		SparkGlm52GatewayPumpService(&runtime);
 	}
 	SparkGlm52GatewayDestroyServiceBackend(&runtime);
 	return 0;
