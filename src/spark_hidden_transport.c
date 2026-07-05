@@ -112,6 +112,8 @@ SparkStatus SparkHiddenTransportValidatePacket(
     const SparkHiddenTransportPacket *packet)
 {
     SparkStatus status;
+    uint64_t hidden_transfer_bytes;
+    uint64_t sideband_transfer_bytes;
     uint64_t transfer_bytes;
     uint32_t required_packet_flags;
     uint32_t known_packet_flags;
@@ -134,7 +136,8 @@ SparkStatus SparkHiddenTransportValidatePacket(
     known_packet_flags =
         SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 |
         SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER |
-        SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_END_OF_SEQUENCE;
+        SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_END_OF_SEQUENCE |
+        SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
     if ((packet->flags & ~known_packet_flags) != 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -168,12 +171,39 @@ SparkStatus SparkHiddenTransportValidatePacket(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    transfer_bytes =
+    hidden_transfer_bytes =
         (uint64_t)packet->bytes_per_sequence *
         (uint64_t)packet->active_sequence_count;
     if (packet->active_sequence_count != 0u &&
-        transfer_bytes / packet->active_sequence_count !=
+        hidden_transfer_bytes / packet->active_sequence_count !=
             (uint64_t)packet->bytes_per_sequence)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    sideband_transfer_bytes = 0u;
+    if ((packet->flags &
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) != 0u)
+    {
+        sideband_transfer_bytes =
+            (uint64_t)packet->sideband_bytes_per_sequence *
+            (uint64_t)packet->active_sequence_count;
+        if (packet->sideband_payload == 0 ||
+            packet->sideband_kind == 0u ||
+            packet->sideband_bytes_per_sequence == 0u ||
+            sideband_transfer_bytes / packet->active_sequence_count !=
+                (uint64_t)packet->sideband_bytes_per_sequence)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    else if (packet->sideband_payload != 0 ||
+             packet->sideband_kind != 0u ||
+             packet->sideband_bytes_per_sequence != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    transfer_bytes = hidden_transfer_bytes + sideband_transfer_bytes;
+    if (transfer_bytes < hidden_transfer_bytes)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
@@ -514,6 +544,13 @@ static SparkStatus SparkHiddenTransportPersistentRingPushCompletion(
 
     transfer_bytes = (uint64_t)packet->bytes_per_sequence *
         (uint64_t)packet->active_sequence_count;
+    if ((packet->flags &
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) != 0u)
+    {
+        transfer_bytes +=
+            (uint64_t)packet->sideband_bytes_per_sequence *
+            (uint64_t)packet->active_sequence_count;
+    }
     completion = &state->completions[state->completion_tail];
     memset(completion, 0, sizeof(*completion));
     completion->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;

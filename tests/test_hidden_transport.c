@@ -195,6 +195,40 @@ static void SparkTestHiddenTransportValidatesEndpointAndPacket(void)
         SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkTestHiddenTransportValidatesSidebandPayload(void)
+{
+    SparkHiddenTransportEndpoint endpoint;
+    SparkHiddenTransportPacket packet;
+    uint16_t hidden_payload[6144u * 2u];
+    uint32_t sideband_payload[2048u * 2u];
+
+    SparkTestInitializeEndpoint(&endpoint);
+    SparkTestInitializePacket(&packet, &endpoint, hidden_payload, 9u);
+    packet.flags |= SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
+    packet.sideband_payload = sideband_payload;
+    packet.sideband_kind = 1u;
+    packet.sideband_bytes_per_sequence = 8192u;
+    assert(SparkHiddenTransportValidatePacket(&endpoint, &packet) ==
+        SPARK_STATUS_OK);
+
+    packet.sideband_payload = 0;
+    assert(SparkHiddenTransportValidatePacket(&endpoint, &packet) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    packet.sideband_payload = sideband_payload;
+    packet.sideband_kind = 0u;
+    assert(SparkHiddenTransportValidatePacket(&endpoint, &packet) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    packet.sideband_kind = 1u;
+    packet.sideband_bytes_per_sequence = 0u;
+    assert(SparkHiddenTransportValidatePacket(&endpoint, &packet) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+
+    packet.sideband_bytes_per_sequence = 8192u;
+    packet.flags &= ~SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
+    assert(SparkHiddenTransportValidatePacket(&endpoint, &packet) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 static void SparkTestHiddenTransportUsesScalarFallbackBatch(void)
 {
     SparkHiddenTransportEndpoint endpoint;
@@ -349,6 +383,39 @@ static void SparkTestHiddenTransportPersistentRingBackend(void)
     SparkHiddenTransportClose(session);
 }
 
+static void SparkTestHiddenTransportPersistentRingAccountsSidebandBytes(void)
+{
+    SparkHiddenTransportEndpoint endpoint;
+    SparkHiddenTransportInterface transport_interface;
+    SparkHiddenTransportPacket packet;
+    SparkHiddenTransportCompletion completion;
+    SparkHiddenTransportSession *session;
+    uint16_t hidden_payload[6144u * 2u];
+    uint32_t sideband_payload[2048u * 2u];
+
+    SparkTestInitializeEndpoint(&endpoint);
+    endpoint.capability_flags = SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SIMULATION_CAPS;
+    endpoint.transport_module_id = SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_MODULE_ID;
+    SparkTestInitializePacket(&packet, &endpoint, hidden_payload, 43u);
+    packet.flags |= SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
+    packet.sideband_payload = sideband_payload;
+    packet.sideband_kind = 1u;
+    packet.sideband_bytes_per_sequence = 8192u;
+
+    assert(SparkHiddenTransportPersistentRingGetInterface(&transport_interface) ==
+        SPARK_STATUS_OK);
+    assert(SparkHiddenTransportOpen(
+        &endpoint,
+        &transport_interface,
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SIMULATION_CAPS,
+        &session) == SPARK_STATUS_OK);
+    assert(SparkHiddenTransportSend(session, &packet) == SPARK_STATUS_OK);
+    assert(SparkHiddenTransportPoll(session, &completion) == SPARK_STATUS_OK);
+    assert(completion.status == SPARK_STATUS_OK);
+    assert(completion.transfer_bytes == 40960u);
+    SparkHiddenTransportClose(session);
+}
+
 static void SparkTestHiddenTransportRejectsInvalidInterface(void)
 {
     SparkHiddenTransportEndpoint endpoint;
@@ -374,9 +441,11 @@ static void SparkTestHiddenTransportRejectsInvalidInterface(void)
 int main(void)
 {
     SparkTestHiddenTransportValidatesEndpointAndPacket();
+    SparkTestHiddenTransportValidatesSidebandPayload();
     SparkTestHiddenTransportUsesScalarFallbackBatch();
     SparkTestHiddenTransportUsesNativeBatchSubmission();
     SparkTestHiddenTransportPersistentRingBackend();
+    SparkTestHiddenTransportPersistentRingAccountsSidebandBytes();
     SparkTestHiddenTransportRejectsInvalidInterface();
     return 0;
 }
