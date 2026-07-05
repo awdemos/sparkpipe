@@ -149,6 +149,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
 
 .PHONY: all clean test tools demo \
     hidden_transport_cuda_host_dmabuf_verbs_preflight \
+    hidden_transport_cuda_host_dmabuf_rdma_smoke \
     cuda_glm52_resident_decode_stage \
     cuda_glm52_resident_decode_stage_publish \
     glm52_flashinfer_b12x_moe_adapter \
@@ -208,6 +209,11 @@ build/sparkpipe_cuda_host_dmabuf_verbs_preflight: tools/sparkpipe_cuda_host_dmab
 
 hidden_transport_cuda_host_dmabuf_verbs_preflight: build/sparkpipe_cuda_host_dmabuf_verbs_preflight
 	./build/sparkpipe_cuda_host_dmabuf_verbs_preflight
+
+build/sparkpipe_cuda_host_dmabuf_rdma_smoke: tools/sparkpipe_cuda_host_dmabuf_rdma_smoke.c
+	$(CC) $(CPPFLAGS) -I$(CUDA_HOME)/include $(CFLAGS) $< $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcuda -libverbs $(LDLIBS) -o $@
+
+hidden_transport_cuda_host_dmabuf_rdma_smoke: build/sparkpipe_cuda_host_dmabuf_rdma_smoke
 
 build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
