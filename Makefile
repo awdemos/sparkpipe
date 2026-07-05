@@ -70,7 +70,8 @@ COMMON_SOURCES := \
     src/spark_glm52_text_prompt.c \
     src/spark_glm52_prompt_pipeline.c \
     src/spark_glm52_serving_engine.c \
-    src/spark_glm52_service.c
+    src/spark_glm52_service.c \
+    src/spark_glm52_compat_api.c
 
 COMPILER_SOURCES := \
     src/spark_sha256.c \
@@ -119,6 +120,7 @@ TEST_NAMES := \
     test_glm52_prompt_pipeline \
     test_glm52_serving_engine \
     test_glm52_service \
+    test_glm52_compat_api \
     test_model_description \
     test_module_library \
     test_driver_compiler \
@@ -327,6 +329,9 @@ build/test_glm52_serving_engine: tests/test_glm52_serving_engine.c $(COMMON_LIBR
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_service: tests/test_glm52_service.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_compat_api: tests/test_glm52_compat_api.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 
