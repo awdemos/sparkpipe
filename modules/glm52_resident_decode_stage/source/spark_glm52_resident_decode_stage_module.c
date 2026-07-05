@@ -1646,12 +1646,20 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
         if (!SparkGlm52ResidentDecodeStageProjectionBackendIsPrebound(
                 node_context))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "fast_projection_backend",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         status = SparkValidateGlm52ResidentDecodeStageRequiredProjectionAndOutputPlans(
             node_context);
         if (status != SPARK_STATUS_OK)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "fast_projection_plans",
+                status);
             return status;
         }
     }
@@ -1661,6 +1669,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
         node_context->attention_execution_mode !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_attention_mode",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1668,6 +1680,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_GRAPH_REPLAY) &&
         node_context->enable_cuda_graph_replay == 0u)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_graph_replay",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1676,6 +1692,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
         node_context->sparse_index_mode !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_PRESELECTED)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_sparse_indices",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1690,12 +1710,20 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
                 node_context->mlp_execution_mode !=
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE)
             {
+                SparkGlm52ResidentDecodeStageReportValidationFailure(
+                    node_context,
+                    "fast_dense_mlp_mode",
+                    SPARK_STATUS_INVALID_ARGUMENT);
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
             status = SparkValidateGlm52ResidentDecodeStageRequiredDenseMlpPlans(
                 node_context);
             if (status != SPARK_STATUS_OK)
             {
+                SparkGlm52ResidentDecodeStageReportValidationFailure(
+                    node_context,
+                    "fast_dense_mlp_plans",
+                    status);
                 return status;
             }
         }
@@ -1704,18 +1732,30 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             node_context->mlp_execution_mode !=
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "fast_b12x_moe_mode",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsRequiredForLayer(
                 node_context) &&
             !SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsUsable(node_context))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "fast_b12x_moe_plan",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (node_context->layer_progression_mode ==
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK &&
             !SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(node_context))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "fast_fp8_moe_plan",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
     }
@@ -1724,6 +1764,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MOE_ROUTER) &&
         !SparkGlm52ResidentDecodeStageRouterLinearPlanIsProductionFast(node_context))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_router_plan",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1736,12 +1780,20 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
             SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_restricted_logits",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageMtpDraftRequired(node_context) &&
         !SparkGlm52ResidentDecodeStageMtpDraftPlanIsUsable(
             node_context->mtp_draft_plan))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_mtp_plan",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1752,6 +1804,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
          node_context->phase_clock_mode !=
              SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DISABLED))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_debug_sync",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1759,6 +1815,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_BULK_PREFILL) &&
         !SparkGlm52ResidentDecodeStageBulkPrefillPlanIsUsable(node_context))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_bulk_prefill",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1766,6 +1826,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_VALIDATED_LATENCY) &&
         node_context->validated_stage_latency_ns == 0u)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_latency",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     return SPARK_STATUS_OK;
