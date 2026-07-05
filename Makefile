@@ -16,6 +16,10 @@ else
 SHARED_LIBRARY_FLAGS ?= -shared
 SHARED_LIBRARY_EXT ?= so
 endif
+GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH :=
+ifneq ($(UNAME_S),Darwin)
+GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH := -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
+endif
 SPARKPIPE_B12X_AOT_ENV ?= $(HOME)/.config/sparkpipe/glm52_b12x_aot_env.sh
 B12X_AOT_TOKENS ?= 1,2,4,8,16,32,64,96,128,256,512,1024
 B12X_AOT_WARMUP ?= 5
@@ -302,7 +306,7 @@ $(GLM52_PP13_NODE_CONTEXT_BUILDER): modules/glm52_resident_decode_stage/source/s
 			echo "missing $(B12X_RUNTIME_LINK_ARGS_FILE); run make glm52_b12x_aot_compile first" >&2; \
 			exit 2; \
 		fi; \
-		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -lcublasLt -lcublas -lm -ldl $(GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS) -o $@; \
+		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -lcublasLt -lcublas -lm -ldl $(GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH) $(GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS) -o $@; \
 	fi
 
 glm52_pp13_node_context_builder: $(GLM52_PP13_NODE_CONTEXT_BUILDER)
