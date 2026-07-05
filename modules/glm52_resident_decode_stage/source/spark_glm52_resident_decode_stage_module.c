@@ -3721,6 +3721,13 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=shape flags=0x%08x active=%u tokens=%u position=%llu\n",
+            frame->flags,
+            frame->active_slot_count,
+            frame->new_token_count,
+            (unsigned long long)frame->sequence_position);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -3736,6 +3743,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=frame_context status=%d flags=0x%08x user_context=%p\n",
+            (int32_t)status,
+            frame->flags,
+            frame->user_context);
         return status;
     }
 
@@ -3750,6 +3763,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=kv_table status=%d flags=0x%08x frame_context=%p\n",
+            (int32_t)status,
+            frame->flags,
+            (const void *)frame_context);
         return status;
     }
 
@@ -3763,6 +3782,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=prefill_view status=%d flags=0x%08x frame_context=%p\n",
+            (int32_t)status,
+            frame->flags,
+            (const void *)frame_context);
         return status;
     }
 
@@ -3782,6 +3807,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=pipeline_slot slot=%llu slot_count=%u flags=0x%08x\n",
+            (unsigned long long)pipeline_slot_value,
+            state->pipeline_slot_count,
+            frame->flags);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -3851,6 +3882,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=input_transport status=%d slot=%u flags=0x%08x\n",
+            (int32_t)status,
+            pipeline_slot_index,
+            frame->flags);
         return status;
     }
 
@@ -3870,6 +3907,13 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=output_transport status=%d slot=%u flags=0x%08x out_session=%p\n",
+            (int32_t)status,
+            pipeline_slot_index,
+            frame->flags,
+            frame_context != 0 ? (void *)frame_context->hidden_output_transport_session : 0);
         return status;
     }
 
@@ -3956,6 +4000,17 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=backend_submit status=%d slot=%u flags=0x%08x active=%u tokens=%u prefill_view=%p stage_layers=%u final=%u\n",
+            (int32_t)status,
+            pipeline_slot_index,
+            frame->flags,
+            frame->active_slot_count,
+            frame->new_token_count,
+            (const void *)prefill_frame_view,
+            state->stage_slice_layer_count,
+            state->stage_slice_final_token_stage);
         return status;
     }
 
