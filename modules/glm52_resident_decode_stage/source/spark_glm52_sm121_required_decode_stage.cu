@@ -14001,6 +14001,269 @@ SparkGlm52ResidentDecodeStageGetCudaSlotState(
     return &node_context->cuda_pipeline_slot_states[pipeline_slot_index];
 }
 
+static bool SparkGlm52ResidentDecodeStagePacketHasIndexShareSideband(
+    const SparkHiddenTransportPacket *packet)
+{
+    return packet != 0 &&
+        (packet->flags &
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) != 0u &&
+        packet->sideband_kind ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_TRANSPORT_SIDEBAND_INDEXSHARE_SELECTED_TOKENS;
+}
+
+static bool SparkGlm52ResidentDecodeStageFrameContextHasInputIndexShareSideband(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context)
+{
+    return frame_context != 0 &&
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u &&
+        SparkGlm52ResidentDecodeStagePacketHasIndexShareSideband(
+            &frame_context->hidden_input_packet);
+}
+
+static bool SparkGlm52ResidentDecodeStageFrameContextHasOutputIndexShareSideband(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context)
+{
+    return frame_context != 0 &&
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u &&
+        SparkGlm52ResidentDecodeStagePacketHasIndexShareSideband(
+            &frame_context->hidden_output_packet);
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageValidateIndexShareSidebandPacket(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkHiddenTransportPacket *packet,
+    uint32_t active_sequence_count)
+{
+    uint64_t expected_bytes_per_sequence;
+
+    if (node_context == 0 || packet == 0 ||
+        !SparkGlm52ResidentDecodeStagePacketHasIndexShareSideband(packet) ||
+        active_sequence_count == 0u ||
+        packet->active_sequence_count != active_sequence_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    expected_bytes_per_sequence =
+        (uint64_t)SparkGlm52ResidentDecodeStageDsaIndexShareSelectedTokenCount(
+            node_context) *
+        (uint64_t)sizeof(uint32_t);
+    if (expected_bytes_per_sequence == 0u ||
+        expected_bytes_per_sequence > UINT32_MAX ||
+        packet->sideband_payload == 0 ||
+        packet->sideband_bytes_per_sequence !=
+            (uint32_t)expected_bytes_per_sequence)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkGlm52ResidentDecodeStageStageSliceFirstLayerIndex(
+    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    uint32_t layer_count)
+{
+    if (layer_node_contexts == 0 || layer_count == 0u ||
+        layer_node_contexts[0] == 0)
+    {
+        return UINT32_MAX;
+    }
+    return layer_node_contexts[0]->layer_index;
+}
+
+static uint32_t SparkGlm52ResidentDecodeStageStageSliceEndLayerExclusive(
+    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    uint32_t layer_count)
+{
+    const SparkGlm52ResidentDecodeStageNodeContext *last_node_context;
+
+    if (layer_node_contexts == 0 || layer_count == 0u)
+    {
+        return UINT32_MAX;
+    }
+    last_node_context = layer_node_contexts[layer_count - 1u];
+    if (last_node_context == 0 ||
+        last_node_context->layer_index == UINT32_MAX)
+    {
+        return UINT32_MAX;
+    }
+    return last_node_context->layer_index + 1u;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeImportStageSliceIndexShareSideband(
+    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    uint32_t layer_count,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    uint32_t active_sequence_count,
+    cudaStream_t cuda_stream)
+{
+    const SparkGlm52ResidentDecodeStageNodeContext *layer_node_context;
+    const SparkHiddenTransportPacket *packet;
+    uint32_t first_layer_index;
+    uint32_t imported_source_layer_index;
+    uint32_t layer_offset;
+    uint32_t *layer_cache;
+    SparkStatus status;
+
+    if (frame_context == 0 ||
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) == 0u ||
+        (frame_context->hidden_input_packet.flags &
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    packet = &frame_context->hidden_input_packet;
+    if (!SparkGlm52ResidentDecodeStagePacketHasIndexShareSideband(packet))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    first_layer_index = SparkGlm52ResidentDecodeStageStageSliceFirstLayerIndex(
+        layer_node_contexts,
+        layer_count);
+    if (first_layer_index == UINT32_MAX)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    imported_source_layer_index = UINT32_MAX;
+    for (layer_offset = 0u; layer_offset < layer_count; ++layer_offset)
+    {
+        layer_node_context = layer_node_contexts[layer_offset];
+        if (layer_node_context == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        if (layer_node_context->sparse_index_mode !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED ||
+            layer_node_context->dsa_indexshare_source_layer_index >=
+                first_layer_index)
+        {
+            continue;
+        }
+        if (imported_source_layer_index != UINT32_MAX &&
+            imported_source_layer_index !=
+                layer_node_context->dsa_indexshare_source_layer_index)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        status = SparkGlm52ResidentDecodeStageValidateIndexShareSidebandPacket(
+            layer_node_context,
+            packet,
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        layer_cache = SparkGlm52ResidentDecodeStageDsaIndexShareLayerCache(
+            layer_node_context,
+            layer_node_context->dsa_indexshare_source_layer_index);
+        status = SparkGlm52ResidentDecodeStageCopyDsaIndexShareIndices(
+            layer_node_context,
+            cuda_slot_state,
+            cuda_stream,
+            (const uint32_t *)packet->sideband_payload,
+            layer_cache,
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        imported_source_layer_index =
+            layer_node_context->dsa_indexshare_source_layer_index;
+    }
+    return imported_source_layer_index == UINT32_MAX
+        ? SPARK_STATUS_INVALID_ARGUMENT
+        : SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeExportStageSliceIndexShareSideband(
+    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    uint32_t layer_count,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    uint32_t active_sequence_count,
+    cudaStream_t cuda_stream)
+{
+    const SparkGlm52ResidentDecodeStageNodeContext *layer_node_context;
+    const SparkHiddenTransportPacket *packet;
+    uint32_t exported_source_layer_index;
+    uint32_t stage_end_layer_exclusive;
+    uint32_t layer_offset;
+    uint32_t *layer_cache;
+    SparkStatus status;
+
+    if (frame_context == 0 ||
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) == 0u ||
+        (frame_context->hidden_output_packet.flags &
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    packet = &frame_context->hidden_output_packet;
+    if (!SparkGlm52ResidentDecodeStagePacketHasIndexShareSideband(packet))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    stage_end_layer_exclusive =
+        SparkGlm52ResidentDecodeStageStageSliceEndLayerExclusive(
+            layer_node_contexts,
+            layer_count);
+    if (stage_end_layer_exclusive == UINT32_MAX)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    exported_source_layer_index = UINT32_MAX;
+    for (layer_offset = 0u; layer_offset < layer_count; ++layer_offset)
+    {
+        layer_node_context = layer_node_contexts[layer_offset];
+        if (layer_node_context == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        if (layer_node_context->sparse_index_mode !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL ||
+            layer_node_context->dsa_indexshare_group_end_layer_exclusive <=
+                stage_end_layer_exclusive)
+        {
+            continue;
+        }
+        if (exported_source_layer_index != UINT32_MAX)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        status = SparkGlm52ResidentDecodeStageValidateIndexShareSidebandPacket(
+            layer_node_context,
+            packet,
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        layer_cache = SparkGlm52ResidentDecodeStageDsaIndexShareLayerCache(
+            layer_node_context,
+            layer_node_context->dsa_indexshare_source_layer_index);
+        status = SparkGlm52ResidentDecodeStageCopyDsaIndexShareIndices(
+            layer_node_context,
+            cuda_slot_state,
+            cuda_stream,
+            layer_cache,
+            (uint32_t *)packet->sideband_payload,
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        exported_source_layer_index =
+            layer_node_context->dsa_indexshare_source_layer_index;
+    }
+    return exported_source_layer_index == UINT32_MAX
+        ? SPARK_STATUS_INVALID_ARGUMENT
+        : SPARK_STATUS_OK;
+}
+
 static bool SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context);
 
@@ -14038,6 +14301,40 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeStageSliceGraphSignature(
             frame_context)
             ? 1u
             : 0u);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStageFrameContextHasInputIndexShareSideband(
+            frame_context)
+            ? 1u
+            : 0u);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
+        SparkGlm52ResidentDecodeStageFrameContextHasOutputIndexShareSideband(
+            frame_context)
+            ? 1u
+            : 0u);
+    if (SparkGlm52ResidentDecodeStageFrameContextHasInputIndexShareSideband(
+            frame_context))
+    {
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            SparkGlm52ResidentDecodeStagePointerGraphSignature(
+                frame_context->hidden_input_packet.sideband_payload));
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            frame_context->hidden_input_packet.sideband_bytes_per_sequence);
+    }
+    if (SparkGlm52ResidentDecodeStageFrameContextHasOutputIndexShareSideband(
+            frame_context))
+    {
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            SparkGlm52ResidentDecodeStagePointerGraphSignature(
+                frame_context->hidden_output_packet.sideband_payload));
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            frame_context->hidden_output_packet.sideband_bytes_per_sequence);
+    }
     if (SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(
             frame_context))
     {
@@ -15466,6 +15763,23 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         first_cuda_slot_state->launch_chain_count += 1u;
     }
 
+    status = SparkGlm52ResidentDecodeStageMaybeImportStageSliceIndexShareSideband(
+        layer_node_contexts,
+        layer_count,
+        frame_context,
+        first_cuda_slot_state,
+        active_sequence_count,
+        typed_cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        if (graph_capture_active != 0u)
+        {
+            SparkGlm52ResidentDecodeStageAbortGraphCapture(
+                typed_cuda_stream);
+        }
+        return status;
+    }
+
     exact_stage_slice_plan_was_launched = false;
     status = SparkGlm52ResidentDecodeStageTryLaunchExactPp13StageSlicePlan(
         exact_stage_slice_plan,
@@ -15529,6 +15843,23 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
             }
             return status;
         }
+    }
+
+    status = SparkGlm52ResidentDecodeStageMaybeExportStageSliceIndexShareSideband(
+        layer_node_contexts,
+        layer_count,
+        frame_context,
+        first_cuda_slot_state,
+        active_sequence_count,
+        typed_cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        if (graph_capture_active != 0u)
+        {
+            SparkGlm52ResidentDecodeStageAbortGraphCapture(
+                typed_cuda_stream);
+        }
+        return status;
     }
 
     if (graph_capture_active != 0u && first_cuda_slot_state != 0)
@@ -15632,6 +15963,20 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
     }
 
     stage_slice_plan_was_launched = false;
+    if (stage_slice_plan != 0 && stage_slice_plan->launch_function != 0)
+    {
+        status = SparkGlm52ResidentDecodeStageMaybeImportStageSliceIndexShareSideband(
+            layer_node_contexts,
+            layer_count,
+            frame_context,
+            first_cuda_slot_state,
+            active_sequence_count,
+            typed_cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
     status = SparkGlm52ResidentDecodeStageTryLaunchStageSlicePlan(
         stage_slice_plan,
         layer_node_contexts,
@@ -15649,6 +15994,17 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
     }
     if (stage_slice_plan_was_launched)
     {
+        status = SparkGlm52ResidentDecodeStageMaybeExportStageSliceIndexShareSideband(
+            layer_node_contexts,
+            layer_count,
+            frame_context,
+            first_cuda_slot_state,
+            active_sequence_count,
+            typed_cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
         return SparkGlm52ResidentDecodeStageEnqueueCompletion(
             typed_cuda_stream,
             first_cuda_slot_state,
@@ -15722,6 +16078,23 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
         first_cuda_slot_state->launch_chain_count += 1u;
     }
 
+    status = SparkGlm52ResidentDecodeStageMaybeImportStageSliceIndexShareSideband(
+        layer_node_contexts,
+        layer_count,
+        frame_context,
+        first_cuda_slot_state,
+        active_sequence_count,
+        typed_cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        if (graph_capture_active != 0u)
+        {
+            SparkGlm52ResidentDecodeStageAbortGraphCapture(
+                typed_cuda_stream);
+        }
+        return status;
+    }
+
     for (layer_offset = 0u; layer_offset < layer_count; ++layer_offset)
     {
         layer_node_context = layer_node_contexts[layer_offset];
@@ -15763,6 +16136,23 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
             }
             return status;
         }
+    }
+
+    status = SparkGlm52ResidentDecodeStageMaybeExportStageSliceIndexShareSideband(
+        layer_node_contexts,
+        layer_count,
+        frame_context,
+        first_cuda_slot_state,
+        active_sequence_count,
+        typed_cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        if (graph_capture_active != 0u)
+        {
+            SparkGlm52ResidentDecodeStageAbortGraphCapture(
+                typed_cuda_stream);
+        }
+        return status;
     }
 
     if (graph_capture_active != 0u && first_cuda_slot_state != 0)
