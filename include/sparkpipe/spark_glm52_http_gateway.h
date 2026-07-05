@@ -101,7 +101,8 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
     uint32_t backend_ready,
     uint32_t pp13_ready,
     uint32_t max_context_tokens,
-    uint32_t production_contract_flags);
+    uint32_t production_contract_flags,
+    const char *first_blocker);
 
 SparkStatus SparkGlm52HttpGatewaySubmitJsonToService(
     SparkGlm52ServiceRuntime *service,

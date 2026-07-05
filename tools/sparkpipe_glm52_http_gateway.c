@@ -23,10 +23,20 @@ typedef struct SparkGlm52GatewayConfig
 	const char *api_key;
 	const char *api_key_file;
 	const char *service_backend_path;
+	const char *fp8_pack_root;
+	const char *transport_shared_object_path;
+	const char *driver_shared_object_path;
+	const char *driver_program_name;
+	const char *node_target;
+	const char *tokenizer_path;
+	const char *final_event_bind_address;
+	const char *final_event_return_host;
 	char api_key_storage[256];
 	uint32_t port;
 	uint32_t require_service_backend;
 	uint32_t pump_steps;
+	uint32_t max_active_sequence_count;
+	uint32_t port_base;
 } SparkGlm52GatewayConfig;
 
 typedef struct SparkGlm52GatewayRuntime
@@ -45,8 +55,13 @@ static void SparkGlm52GatewayInitializeConfig(
 {
 	memset(configuration,0,sizeof(*configuration));
 	configuration->bind_address = "127.0.0.1";
+	configuration->driver_program_name = "glm52.pp13.rank.production";
+	configuration->final_event_bind_address = "0.0.0.0";
+	configuration->final_event_return_host = "spark0";
 	configuration->port = SPARK_GLM52_GATEWAY_DEFAULT_PORT;
 	configuration->pump_steps = SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS;
+	configuration->max_active_sequence_count = 1024u;
+	configuration->port_base = 52100u;
 }
 
 static int32_t SparkGlm52GatewayParseU32(const char *text,uint32_t *value_out)
@@ -133,7 +148,89 @@ static int32_t SparkGlm52GatewayApplyArgument(
 		*index += 1;
 		return 0;
 	}
-	return -7;
+	if (strcmp(argv[*index],"--fp8-pack-root") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -7;
+		configuration->fp8_pack_root = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--transport-so") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -8;
+		configuration->transport_shared_object_path = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--driver-so") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -9;
+		configuration->driver_shared_object_path = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--program") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -10;
+		configuration->driver_program_name = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--node-target") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -11;
+		configuration->node_target = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--tokenizer") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -12;
+		configuration->tokenizer_path = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--max-active") == 0)
+	{
+		if ((*index + 1) >= argc ||
+			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0)
+			return -13;
+		configuration->max_active_sequence_count = parsed;
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--port-base") == 0)
+	{
+		if ((*index + 1) >= argc ||
+			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0)
+			return -14;
+		configuration->port_base = parsed;
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--final-event-bind") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -15;
+		configuration->final_event_bind_address = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--final-event-return-host") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -16;
+		configuration->final_event_return_host = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	return -17;
 }
 
 static int32_t SparkGlm52GatewayLoadApiKeyFile(
@@ -196,11 +293,27 @@ static int32_t SparkGlm52GatewayRefreshBackendView(
 	if (runtime->service_backend_view.abi_version !=
 		SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION ||
 		runtime->service_backend_view.descriptor_bytes !=
-		SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES ||
-		runtime->service_backend_view.service == 0 ||
-		runtime->service_backend_view.backend_ready == 0u ||
-		runtime->service_backend_view.pp13_ready == 0u)
+		SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES)
 		return -3;
+	return 0;
+}
+
+static int32_t SparkGlm52GatewayEnsureServiceClient(
+	SparkGlm52GatewayRuntime *runtime)
+{
+	SparkStatus status;
+
+	if (runtime == 0 || runtime->service_backend_view.service == 0)
+		return -1;
+	if (runtime->service_client_id != 0u)
+		return 0;
+	status = SparkGlm52ServiceRegisterClient(
+		runtime->service_backend_view.service,
+		1u,
+		&runtime->service_client_id);
+	if (status != SPARK_STATUS_OK || runtime->service_client_id == 0u)
+		return -2;
+	runtime->next_client_request_id = 1u;
 	return 0;
 }
 
@@ -216,7 +329,7 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 		return runtime->configuration.require_service_backend != 0u ? -2 : 0;
 	status = SparkGlm52ServiceBackendLoadInterfaceFromSharedObject(
 		runtime->configuration.service_backend_path,
-		SPARK_GLM52_SERVICE_BACKEND_REQUIRED_PRODUCTION_CAPS,
+		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME,
 		&runtime->service_backend_library);
 	if (status != SPARK_STATUS_OK)
 		return -3;
@@ -225,6 +338,22 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 		SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION;
 	backend_configuration.descriptor_bytes =
 		SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES;
+	backend_configuration.max_active_sequence_count =
+		runtime->configuration.max_active_sequence_count;
+	backend_configuration.port_base = runtime->configuration.port_base;
+	backend_configuration.fp8_pack_root = runtime->configuration.fp8_pack_root;
+	backend_configuration.transport_shared_object_path =
+		runtime->configuration.transport_shared_object_path;
+	backend_configuration.driver_shared_object_path =
+		runtime->configuration.driver_shared_object_path;
+	backend_configuration.driver_program_name =
+		runtime->configuration.driver_program_name;
+	backend_configuration.node_target = runtime->configuration.node_target;
+	backend_configuration.tokenizer_path = runtime->configuration.tokenizer_path;
+	backend_configuration.final_event_bind_address =
+		runtime->configuration.final_event_bind_address;
+	backend_configuration.final_event_return_host =
+		runtime->configuration.final_event_return_host;
 	status = runtime->service_backend_library.backend_interface.initialize(
 		&backend_configuration,
 		&runtime->service_backend_state);
@@ -233,13 +362,9 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 	runtime->service_backend_attached = 1u;
 	if (SparkGlm52GatewayRefreshBackendView(runtime) < 0)
 		return -5;
-	status = SparkGlm52ServiceRegisterClient(
-		runtime->service_backend_view.service,
-		1u,
-		&runtime->service_client_id);
-	if (status != SPARK_STATUS_OK || runtime->service_client_id == 0u)
+	if (runtime->service_backend_view.service != 0 &&
+		SparkGlm52GatewayEnsureServiceClient(runtime) < 0)
 		return -6;
-	runtime->next_client_request_id = 1u;
 	return 0;
 }
 
@@ -521,7 +646,8 @@ static SparkStatus SparkGlm52GatewayBuildResponse(
 	{
 		memset(&service_stats,0,sizeof(service_stats));
 		if (runtime->service_backend_attached != 0u &&
-			SparkGlm52GatewayRefreshBackendView(runtime) == 0)
+			SparkGlm52GatewayRefreshBackendView(runtime) == 0 &&
+			runtime->service_backend_view.service != 0)
 		{
 			(void)SparkGlm52ServiceGetStats(
 				runtime->service_backend_view.service,
@@ -535,7 +661,8 @@ static SparkStatus SparkGlm52GatewayBuildResponse(
 			runtime->service_backend_view.max_context_tokens != 0u ?
 				runtime->service_backend_view.max_context_tokens :
 				SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS,
-			runtime->service_backend_view.production_contract_flags);
+			runtime->service_backend_view.production_contract_flags,
+			runtime->service_backend_view.first_blocker);
 	}
 	if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_NONE)
 		return SparkGlm52HttpGatewayBuildNotFound(response);
@@ -547,7 +674,11 @@ static SparkStatus SparkGlm52GatewayBuildResponse(
 		request->body,
 		request->body_bytes);
 	if (runtime->service_backend_attached == 0u ||
-		SparkGlm52GatewayRefreshBackendView(runtime) < 0)
+		SparkGlm52GatewayRefreshBackendView(runtime) < 0 ||
+		runtime->service_backend_view.service == 0 ||
+		runtime->service_backend_view.backend_ready == 0u ||
+		runtime->service_backend_view.pp13_ready == 0u ||
+		SparkGlm52GatewayEnsureServiceClient(runtime) < 0)
 		return SparkGlm52HttpGatewayBuildBackendUnavailable(response,stream);
 	SparkGlm52CompatInitializeTextRequest(
 		&compat_request,

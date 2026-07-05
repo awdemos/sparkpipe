@@ -25,14 +25,17 @@ resident decode-stage production runner API
 resident PP13 rank daemon
 sparkc to spark0 final completion event route
 HTTP/SSE gateway production service-backend ABI
+PP13 service-backend shared object that validates rank0 packs/runtime inputs
+gateway health first_blocker for incomplete production service state
 ```
 
 Missing:
 
 ```text
-production service-backend shared object that owns the C service runtime
+service-backend C service runtime ownership after final token bridge lands
 service-backend prefill callback mapped to PP13 rank runner submissions
 service-backend decode callback mapped to PP13 rank runner submissions
+final-stage completion event carrying generated token ids back to Spark0
 authentication and tenant policy above the C API
 public schema examples for final OpenAI and Anthropic responses
 versioned API compatibility tests for external callers
@@ -67,16 +70,17 @@ rank-specific input/output hidden transport requirements
 sparkc completion event socket back to spark0
 fail-closed requirement for production hidden transport shared object
 fail-closed requirement for GLM-5.2 model driver shared object
+spark0 PP13 service backend that surfaces the first blocker through health
 ```
 
 Missing:
 
 ```text
-13-rank service startup and health protocol
 real persistent hidden transport backend
 GLM-5.2 rank model-driver shared object for the resident daemon
 driver node-context binding for resident weights, KV, graph buckets, and packs
-rank dispatch loop from Spark0 service requests into stage runner submissions
+rank dispatch loop from Spark0 service callbacks into stage runner submissions
+final-token bridge from SparkModelDriverCompletion into service decode results
 cross-rank error propagation
 ring restart and quiesce path
 ```

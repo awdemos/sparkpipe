@@ -43,7 +43,29 @@ Management LAN:
 build/sparkpipe_glm52_http_gateway \
     --bind <spark0-management-lan-ip> \
     --port 8080 \
-    --api-key-file /home/spark0/sparkpipe_runtime/API_KEY
+    --api-key-file /home/spark0/sparkpipe_runtime/API_KEY \
+    --service-backend-so /home/spark0/sparkpipe_runtime/libglm52_pp13_service_backend.so \
+    --fp8-pack-root /srv/sparkpipe/packs/glm52/fp8_pp13 \
+    --transport-so /home/spark0/sparkpipe_runtime/libspark_hidden_transport.so \
+    --driver-so /home/spark0/sparkpipe_runtime/model_driver.so \
+    --program glm52.pp13.rank.production \
+    --node-target cuda.sm121.glm52.pp13.fp8 \
+    --tokenizer /srv/sparkpipe/packs/glm52/tokenizer.sptok \
+    --max-active 1024 \
+    --port-base 52100
+```
+
+The service backend is a shared object loaded by the gateway. It receives all
+PP13 production paths through the backend configuration and exposes the first
+missing production blocker through `/health`.
+
+Current strict behavior:
+
+```text
+backend_ready=1 means the backend loaded and can report status
+pp13_ready=1 means requests may enter the production PP13 service
+pp13_ready=0 means requests fail closed with backend_unavailable
+first_blocker names the first missing production component
 ```
 
 Supported endpoints:
@@ -85,7 +107,9 @@ Until the PP13 backend is attached, the gateway returns fail-closed errors:
 503 backend_unavailable
 ```
 
-It does not fabricate tokens.
+It does not fabricate tokens. A backend may be attached and still return
+`pp13_ready=0` if the production rank runner, tokenizer, transport, driver, or
+final-token bridge is incomplete.
 
 ## Public sparkpipe.ai Access
 

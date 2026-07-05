@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 1u
+#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 2u
 #define SPARK_GLM52_SERVICE_BACKEND_INTERFACE_BYTES \
 	((uint32_t)sizeof(SparkGlm52ServiceBackendInterface))
 #define SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES \
@@ -21,6 +21,7 @@ extern "C" {
 	((uint32_t)sizeof(SparkGlm52ServiceBackendDynamicLibrary))
 #define SPARK_GLM52_SERVICE_BACKEND_INTERFACE_SYMBOL \
 	"SparkGlm52ServiceBackendGetInterface"
+#define SPARK_GLM52_SERVICE_BACKEND_BLOCKER_BYTES 256u
 
 #define SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_SERVICE_RUNTIME 0x00000001u
 #define SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME 0x00000002u
@@ -34,7 +35,17 @@ typedef struct SparkGlm52ServiceBackendConfiguration
 	uint32_t abi_version;
 	uint32_t descriptor_bytes;
 	uint32_t flags;
+	uint32_t max_active_sequence_count;
+	uint32_t port_base;
 	uint32_t reserved0;
+	const char *fp8_pack_root;
+	const char *transport_shared_object_path;
+	const char *driver_shared_object_path;
+	const char *driver_program_name;
+	const char *node_target;
+	const char *tokenizer_path;
+	const char *final_event_bind_address;
+	const char *final_event_return_host;
 } SparkGlm52ServiceBackendConfiguration;
 
 typedef struct SparkGlm52ServiceBackendView
@@ -47,6 +58,7 @@ typedef struct SparkGlm52ServiceBackendView
 	uint32_t production_contract_flags;
 	SparkGlm52ServiceRuntime *service;
 	const SparkTokenizer *tokenizer;
+	const char *first_blocker;
 } SparkGlm52ServiceBackendView;
 
 typedef SparkStatus (*SparkGlm52ServiceBackendInitializeFunction)(
