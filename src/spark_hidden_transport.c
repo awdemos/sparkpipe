@@ -1,5 +1,6 @@
 #include "sparkpipe/spark_hidden_transport.h"
 
+#include <dlfcn.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -293,6 +294,65 @@ SparkStatus SparkHiddenTransportValidateInterface(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkHiddenTransportLoadInterfaceFromSharedObject(
+    const char *shared_object_path,
+    uint32_t required_capability_flags,
+    SparkHiddenTransportDynamicLibrary *library)
+{
+    SparkHiddenTransportGetInterfaceFunction get_interface;
+    const SparkHiddenTransportInterface *transport_interface;
+    SparkStatus status;
+    void *dynamic_library;
+
+    if (shared_object_path == 0 || shared_object_path[0] == '\0' ||
+        library == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(library, 0, sizeof(*library));
+    dynamic_library = dlopen(shared_object_path, RTLD_NOW | RTLD_LOCAL);
+    if (dynamic_library == 0)
+    {
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
+    get_interface = (SparkHiddenTransportGetInterfaceFunction)dlsym(
+        dynamic_library,
+        SPARK_HIDDEN_TRANSPORT_INTERFACE_SYMBOL);
+    if (get_interface == 0)
+    {
+        dlclose(dynamic_library);
+        return SPARK_STATUS_DRIVER_LOAD_ERROR;
+    }
+    transport_interface = get_interface();
+    status = SparkHiddenTransportValidateInterface(
+        transport_interface,
+        required_capability_flags);
+    if (status != SPARK_STATUS_OK)
+    {
+        dlclose(dynamic_library);
+        return status;
+    }
+    library->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    library->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_DYNAMIC_LIBRARY_BYTES;
+    library->dynamic_library = dynamic_library;
+    library->transport_interface = *transport_interface;
+    return SPARK_STATUS_OK;
+}
+
+void SparkHiddenTransportUnloadInterface(
+    SparkHiddenTransportDynamicLibrary *library)
+{
+    if (library == 0)
+    {
+        return;
+    }
+    if (library->dynamic_library != 0)
+    {
+        dlclose(library->dynamic_library);
+    }
+    memset(library, 0, sizeof(*library));
 }
 
 SparkStatus SparkHiddenTransportOpen(

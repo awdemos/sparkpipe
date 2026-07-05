@@ -47,7 +47,7 @@ B12X_MOE_PLAN_DEPENDENCY := $(B12X_MOE_PLAN_OBJECT:.o=.d)
 LINEAR_PLAN_DEPENDENCY := $(LINEAR_PLAN_OBJECT:.o=.d)
 SERVING_ADAPTER_DEPENDENCY := $(SERVING_ADAPTER_OBJECT:.o=.d)
 
-.PHONY: archive cold_archive artifact_check b12x_resident_pack validate publish package clean require_sm121a require_latency_limit require_model_dir require_fast_model_dir require_validation_inputs prepare_validation_output
+.PHONY: archive cold_archive artifact_check b12x_resident_pack validate validate_dsa_topk_parity publish package clean require_sm121a require_latency_limit require_model_dir require_fast_model_dir require_validation_inputs prepare_validation_output
 
 GLM52_VALIDATION_BASE_ENV := NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" GLM52_B12X_MOE_PACK_DIR="$(B12X_MOE_PACK_DIR)" GLM52_MODEL_DIR="$(GLM52_MODEL_DIR)" GLM52_ALLOW_REMOTE_MODEL_DIR="$(GLM52_ALLOW_REMOTE_MODEL_DIR)" GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX="$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)" GLM52_ROUTED_CHAIN_LAYER_COUNT="$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)" GLM52_ENABLE_CUDA_GRAPH_REPLAY="$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)" GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT="$(GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT)"
 
@@ -183,6 +183,11 @@ validate: require_sm121a require_latency_limit require_fast_model_dir require_va
 	$(GLM52_VALIDATION_ENV) \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE)
+
+validate_dsa_topk_parity: require_sm121a archive
+	GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" \
+		bash validation/validate_glm52_dsa_topk_parity.sh \
+		$(MODULE_ARCHIVE)
 
 publish: require_sm121a require_latency_limit require_fast_model_dir require_validation_inputs prepare_validation_output b12x_resident_pack cold_archive
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish

@@ -12,7 +12,7 @@ def clean_output_dir(output_dir: Path) -> None:
                 path.unlink()
 
 
-def run_prompt_tool(root: Path, output_dir: Path, token_ids: str, extra_args=None, check: bool = True) -> subprocess.CompletedProcess:
+def run_prompt_tool(root: Path, output_dir: Path, token_ids: str, extra_args=None, check: bool = True, env=None) -> subprocess.CompletedProcess:
     command = [
         "python3",
         str(root / "tools" / "glm52_prompt_pipeline_input.py"),
@@ -25,7 +25,7 @@ def run_prompt_tool(root: Path, output_dir: Path, token_ids: str, extra_args=Non
     ]
     if extra_args is not None:
         command.extend(extra_args)
-    return subprocess.run(command, cwd=str(root), text=True, capture_output=True, check=check)
+    return subprocess.run(command, cwd=str(root), text=True, capture_output=True, check=check, env=env)
 
 
 def test_tail_window_artifacts(root: Path) -> None:
@@ -236,6 +236,54 @@ def test_long_prompt_pipeline_refuses_tail_collapse(root: Path) -> None:
     assert "refusing to run long prompt through four-token tail-window pipeline" in completed.stderr
 
 
+def test_pipeline_run_scrubs_validation_env(root: Path) -> None:
+    output_dir = root / "build" / "test_glm52_prompt_pipeline_input_env_scrub"
+    fake_pipeline = output_dir / "capture_pipeline.py"
+    capture_path = output_dir / "captured_env.txt"
+    inherited_env = os.environ.copy()
+    clean_output_dir(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    fake_pipeline.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os\n"
+        "from pathlib import Path\n"
+        "names = [\n"
+        "    'GLM52_PREFILL_KV_FROM_EMBEDDINGS',\n"
+        "    'GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16',\n"
+        "    'GLM52_EXACT_PP13_STAGE_SLICE',\n"
+        "    'GLM52_PIPELINE_OUTPUT_HIDDEN_BF16',\n"
+        "    'GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID',\n"
+        "    'GLM52_LOCAL_PIPELINE_PROMPT_SEQUENCE',\n"
+        "    'GLM52_PREFILL_TOKEN_IDS_FILE',\n"
+        "]\n"
+        "Path(os.environ['SPARK_TEST_ENV_CAPTURE']).write_text('\\n'.join(f'{name}={os.environ.get(name, \"\")}' for name in names) + '\\n', encoding='utf-8')\n",
+        encoding="utf-8")
+    fake_pipeline.chmod(0o755)
+    inherited_env.update({
+        "SPARK_TEST_ENV_CAPTURE": str(capture_path),
+        "GLM52_PREFILL_KV_FROM_EMBEDDINGS": "1",
+        "GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16": "1",
+        "GLM52_EXACT_PP13_STAGE_SLICE": "1",
+        "GLM52_PIPELINE_OUTPUT_HIDDEN_BF16": "/tmp/poison.bf16",
+    })
+    completed = run_prompt_tool(
+        root,
+        output_dir,
+        "101,202,303,404,505",
+        ["--run-full-prompt-sequence", "--pipeline-script", str(fake_pipeline)],
+        env=inherited_env)
+    assert completed.returncode == 0
+    assert "glm52_prompt_pipeline_semantics=exact_pp13_prompt_sequence_preflight" in completed.stdout
+    captured_env = capture_path.read_text(encoding="utf-8")
+    assert "GLM52_PREFILL_KV_FROM_EMBEDDINGS=\n" in captured_env
+    assert "GLM52_WRITE_INPUT_EMBEDDING_HIDDEN_BF16=\n" in captured_env
+    assert "GLM52_EXACT_PP13_STAGE_SLICE=\n" in captured_env
+    assert "GLM52_PIPELINE_OUTPUT_HIDDEN_BF16=\n" in captured_env
+    assert "GLM52_LOCAL_PIPELINE_INPUT_TOKEN_ID=505\n" in captured_env
+    assert "GLM52_LOCAL_PIPELINE_PROMPT_SEQUENCE=1\n" in captured_env
+    assert "GLM52_PREFILL_TOKEN_IDS_FILE=" in captured_env
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_tail_window_artifacts(root)
@@ -244,6 +292,7 @@ def main() -> None:
     test_c_prefill_dryrun_tokenizes_prompt_text_when_built(root)
     test_local_pipeline_gate_prefill_only(root)
     test_long_prompt_pipeline_refuses_tail_collapse(root)
+    test_pipeline_run_scrubs_validation_env(root)
 
 
 if __name__ == "__main__":

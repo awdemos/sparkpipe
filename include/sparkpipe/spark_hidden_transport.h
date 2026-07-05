@@ -31,6 +31,10 @@ extern "C" {
     "/sys/class/infiniband"
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_STATISTICS_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportPersistentRingStatistics))
+#define SPARK_HIDDEN_TRANSPORT_DYNAMIC_LIBRARY_BYTES \
+    ((uint32_t)sizeof(SparkHiddenTransportDynamicLibrary))
+#define SPARK_HIDDEN_TRANSPORT_INTERFACE_SYMBOL \
+    "SparkHiddenTransportGetInterface"
 
 #define SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_CONNECTION 0x00000001u
 #define SPARK_HIDDEN_TRANSPORT_CAP_DEVICE_POINTER_IO 0x00000002u
@@ -165,6 +169,17 @@ typedef struct SparkHiddenTransportInterface
     SparkHiddenTransportSendBatchFunction send_batch;
 } SparkHiddenTransportInterface;
 
+typedef const SparkHiddenTransportInterface *(*SparkHiddenTransportGetInterfaceFunction)(
+    void);
+
+typedef struct SparkHiddenTransportDynamicLibrary
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    void *dynamic_library;
+    SparkHiddenTransportInterface transport_interface;
+} SparkHiddenTransportDynamicLibrary;
+
 SparkStatus SparkHiddenTransportValidateEndpoint(
     const SparkHiddenTransportEndpoint *endpoint);
 SparkStatus SparkHiddenTransportValidatePacket(
@@ -177,6 +192,12 @@ SparkStatus SparkHiddenTransportValidatePacketBatch(
 SparkStatus SparkHiddenTransportValidateInterface(
     const SparkHiddenTransportInterface *transport_interface,
     uint32_t required_capability_flags);
+SparkStatus SparkHiddenTransportLoadInterfaceFromSharedObject(
+    const char *shared_object_path,
+    uint32_t required_capability_flags,
+    SparkHiddenTransportDynamicLibrary *library);
+void SparkHiddenTransportUnloadInterface(
+    SparkHiddenTransportDynamicLibrary *library);
 
 SparkStatus SparkHiddenTransportOpen(
     const SparkHiddenTransportEndpoint *endpoint,

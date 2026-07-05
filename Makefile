@@ -8,6 +8,14 @@ LDFLAGS ?=
 LDLIBS ?= -ldl -pthread
 CUDA_ARCH ?= sm_121a
 NVCCFLAGS ?= -O3 --use_fast_math -arch=$(CUDA_ARCH)
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+SHARED_LIBRARY_FLAGS ?= -dynamiclib
+SHARED_LIBRARY_EXT ?= dylib
+else
+SHARED_LIBRARY_FLAGS ?= -shared
+SHARED_LIBRARY_EXT ?= so
+endif
 SPARKPIPE_B12X_AOT_ENV ?= $(HOME)/.config/sparkpipe/glm52_b12x_aot_env.sh
 B12X_AOT_TOKENS ?= 1,2,4,8,16,32,64,96,128,256,512,1024
 B12X_AOT_WARMUP ?= 5
@@ -53,6 +61,7 @@ COMMON_SOURCES := \
     src/spark_glm52_dspark.c \
     src/spark_glm52_stage_plan.c \
     src/spark_glm52_production_topology.c \
+    src/spark_glm52_pp13_runtime.c \
     src/spark_glm52_scheduler.c \
     src/spark_glm52_prefix_cache.c \
     src/spark_glm52_request_api.c \
@@ -60,7 +69,9 @@ COMMON_SOURCES := \
     src/spark_tokenizer.c \
     src/spark_glm52_text_prompt.c \
     src/spark_glm52_prompt_pipeline.c \
-    src/spark_glm52_serving_engine.c
+    src/spark_glm52_serving_engine.c \
+    src/spark_glm52_service.c \
+    src/spark_glm52_compat_api.c
 
 COMPILER_SOURCES := \
     src/spark_sha256.c \
@@ -86,6 +97,7 @@ TOOL_NAMES := \
     sparkpipe_driver_inspect \
     sparkpipe_glm52_prefill_dryrun \
     sparkpipe_hidden_transport_preflight \
+    sparkpipe_glm52_pp13_rank_gate \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
     sparkpipe_tokenizer_benchmark
@@ -99,6 +111,7 @@ TEST_NAMES := \
     test_glm52_dspark \
     test_glm52_stage_plan \
     test_glm52_production_topology \
+    test_glm52_pp13_runtime \
     test_glm52_scheduler \
     test_glm52_prefix_cache \
     test_glm52_request_api \
@@ -106,11 +119,14 @@ TEST_NAMES := \
     test_tokenizer \
     test_glm52_prompt_pipeline \
     test_glm52_serving_engine \
+    test_glm52_service \
+    test_glm52_compat_api \
     test_model_description \
     test_module_library \
     test_driver_compiler \
     test_orchestrator \
-    test_glm52_resident_decode_stage_firmware
+    test_glm52_resident_decode_stage_firmware \
+    test_glm52_resident_decode_stage_production_runner
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
@@ -136,6 +152,8 @@ TEST_MODULE_ARCHIVES := \
     build/test_modules/module_affine.a
 TEST_MODULE_LINK_UNITS := $(TEST_MODULE_OBJECTS) $(TEST_MODULE_ARCHIVES)
 TEST_MODULE_DEPENDENCIES := $(TEST_MODULE_OBJECTS:.o=.d)
+TEST_HIDDEN_TRANSPORT_MODULE := \
+    build/test_modules/libhidden_transport_module.$(SHARED_LIBRARY_EXT)
 TEST_VALIDATOR := build/test_module_validator
 GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY := \
     build/glm52_resident_decode_stage_test
@@ -204,6 +222,9 @@ build/sparkpipe_glm52_prefill_dryrun: tools/sparkpipe_glm52_prefill_dryrun.c $(C
 build/sparkpipe_hidden_transport_preflight: tools/sparkpipe_hidden_transport_preflight.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_glm52_pp13_rank_gate: tools/sparkpipe_glm52_pp13_rank_gate.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/sparkpipe_cuda_host_dmabuf_verbs_preflight: tools/sparkpipe_cuda_host_dmabuf_verbs_preflight.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -I$(CUDA_HOME)/include $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcuda -libverbs $(LDLIBS) -o $@
 
@@ -245,6 +266,9 @@ build/test_modules/module_affine_helper.o: tests/fixtures/module_affine_helper.c
 build/test_modules/module_affine.a: build/test_modules/module_affine_entry.o build/test_modules/module_affine_helper.o
 	$(AR) rcs $@ $^
 
+$(TEST_HIDDEN_TRANSPORT_MODULE): tests/fixtures/hidden_transport_module.c | build/test_modules
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_VALIDATOR): tests/fixtures/module_validator.c | build
 	$(CC) $(CFLAGS) $< -o $@
 
@@ -262,8 +286,8 @@ $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE): $(GLM52_RESIDENT_DECODE_STAGE_TEST_
 build/test_json: tests/test_json.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_hidden_transport: tests/test_hidden_transport.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/test_hidden_transport: tests/test_hidden_transport.c $(COMMON_LIBRARY) $(TEST_HIDDEN_TRANSPORT_MODULE)
+	$(CC) $(CPPFLAGS) -Itests -DSPARK_TEST_HIDDEN_TRANSPORT_MODULE_PATH=\"$(TEST_HIDDEN_TRANSPORT_MODULE)\" $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_kv_cache: tests/test_glm52_kv_cache.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -275,6 +299,9 @@ build/test_glm52_dspark: tests/test_glm52_dspark.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_production_topology: tests/test_glm52_production_topology.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_pp13_runtime: tests/test_glm52_pp13_runtime.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_scheduler: tests/test_glm52_scheduler.c $(COMMON_LIBRARY)
@@ -301,6 +328,12 @@ build/test_glm52_prompt_pipeline: tests/test_glm52_prompt_pipeline.c $(COMMON_LI
 build/test_glm52_serving_engine: tests/test_glm52_serving_engine.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_glm52_service: tests/test_glm52_service.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_compat_api: tests/test_glm52_compat_api.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -316,6 +349,9 @@ build/test_orchestrator: tests/test_orchestrator.c $(TEST_SUPPORT_OBJECT) $(TEST
 
 build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decode_stage_firmware.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h tests/fixtures/glm52_resident_decode_stage_fake_backend.h $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE) $(TEST_SUPPORT_OBJECT) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Itests/fixtures -Imodules/glm52_resident_decode_stage/include $(CFLAGS) $< $(TEST_SUPPORT_OBJECT) $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_resident_decode_stage_production_runner: tests/test_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 test: $(TEST_BINARIES) build/sparkpipe_glm52_prefill_dryrun
 	@set -e; \

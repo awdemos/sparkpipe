@@ -91,6 +91,8 @@ SparkStatus SparkGlm52Sm121FlashInferB12xMoeCreate(
     const SparkGlm52Sm121FlashInferB12xMoeRecipe *recipe,
     void **state_out);
 
+uint64_t SparkGlm52Sm121FlashInferB12xMoeActiveKernelManifestHashLow64(void);
+
 SparkStatus SparkGlm52Sm121FlashInferB12xMoeLaunch(
     void *state,
     const SparkGlm52Sm121FlashInferB12xMoeArguments *arguments);
