@@ -1738,7 +1738,7 @@ static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(
 	state->device_kv_view.physical_block_indices =
 		state->device_physical_block_indices;
 	state->device_kv_view.lane_physical_block_counts =
-		state->device_lane_physical_block_counts;
+		state->host_lane_physical_block_counts;
 	state->device_kv_view.host_physical_block_indices =
 		state->host_physical_block_indices;
 	return SPARK_STATUS_OK;
@@ -1889,7 +1889,7 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	state->device_kv_view.physical_block_indices =
 		state->device_physical_block_indices;
 	state->device_kv_view.lane_physical_block_counts =
-		state->device_lane_physical_block_counts;
+		state->host_lane_physical_block_counts;
 	state->device_kv_view.host_physical_block_indices =
 		state->host_physical_block_indices;
 	memset(&dispatch,0,sizeof(dispatch));
