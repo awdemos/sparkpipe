@@ -817,6 +817,18 @@ static int32_t SparkGlm52Pp13ServiceBackendCreateListenSocket(
 	return fd;
 }
 
+static void SparkGlm52Pp13ServiceBackendDriverCompletion(
+	void *completion_context,
+	const SparkModelDriverCompletion *completion)
+{
+	SparkGlm52Pp13ServiceBackendState *state;
+
+	state = (SparkGlm52Pp13ServiceBackendState *)completion_context;
+	if (state == 0 || completion == 0)
+		return;
+	state->rank0_runtime_ready = 1u;
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendLoadDriver(
 	SparkGlm52Pp13ServiceBackendState *state,
 	const SparkGlm52ServiceBackendConfiguration *configuration,
@@ -843,6 +855,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendLoadDriver(
 	create_request.node_id = state->rank_plan.host_name;
 	create_request.node_target = configuration->node_target;
 	create_request.node_context = state->builder_result.node_context;
+	create_request.completion_function =
+		SparkGlm52Pp13ServiceBackendDriverCompletion;
+	create_request.completion_context = state;
 	status = state->loaded_driver.interface->create(
 		&create_request,
 		&state->driver_instance);
