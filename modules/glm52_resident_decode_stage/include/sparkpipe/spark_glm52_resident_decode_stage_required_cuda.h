@@ -363,6 +363,65 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBlackwellQuantizedTensorCore
     uint32_t active_sequence_count,
     void *cuda_stream);
 
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageBindDsaKvFragmentTransportPlan(
+    SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedBlockBuild(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const uint32_t *selected_token_indices,
+    const uint32_t *context_lengths,
+    const uint32_t *positions,
+    const uint32_t *first_block_token_offsets,
+    uint32_t *selected_block_indices,
+    uint32_t *selected_block_counts,
+    uint32_t *selection_epoch_by_layer,
+    uint32_t layer_index,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedKvFragmentPrefetch(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *prefetch_plan,
+    const uint32_t *selected_block_indices,
+    const uint32_t *selected_block_counts,
+    const uint32_t *block_table,
+    uint32_t active_sequence_count,
+    uint32_t selected_block_stride,
+    uint32_t selected_block_capacity,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    void *producer_cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedKvFragmentSave(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *save_plan,
+    const uint32_t *selected_block_indices,
+    const uint32_t *selected_block_counts,
+    const uint32_t *block_table,
+    uint32_t active_sequence_count,
+    uint32_t selected_block_stride,
+    uint32_t selected_block_capacity,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    void *producer_cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaKvFragmentSaveWrittenSlots(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *save_plan,
+    const uint32_t *positions,
+    const uint32_t *first_block_token_offsets,
+    const uint32_t *block_table,
+    uint32_t active_sequence_count,
+    uint32_t kv_block_token_count,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    void *producer_cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageQueryDsaSelectedKvFragmentPrefetch(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *prefetch_plan);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageWaitForDsaSelectedKvFragmentPrefetch(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *prefetch_plan,
+    void *consumer_cuda_stream);
+
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareExportSelectedTokens(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     uint32_t source_layer_index,
@@ -375,6 +434,36 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareImportSelectedT
     const void *selected_token_sideband,
     uint32_t source_layer_index,
     uint32_t active_sequence_count,
+    void *cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareSelectTopkFromScores(
+    float *dsa_token_scores,
+    const uint32_t *context_lengths,
+    uint32_t *sparse_token_indices,
+    uint32_t active_sequence_count,
+    uint32_t dsa_candidate_count,
+    uint32_t selected_token_count,
+    void *cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareDecodeSelection(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t active_sequence_count,
+    void *cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaKeyIndexCacheStore(
+    const void *raw_key_index_bf16,
+    const void *key_norm_weight_bf16,
+    const void *key_norm_bias_bf16,
+    const uint32_t *positions,
+    const uint32_t *slot_mapping,
+    const float *cos_table,
+    const float *sin_table,
+    void *key_index_cache_bf16,
+    uint32_t row_count,
+    uint32_t position_count,
+    uint32_t cache_token_capacity,
+    float epsilon,
     void *cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunch(

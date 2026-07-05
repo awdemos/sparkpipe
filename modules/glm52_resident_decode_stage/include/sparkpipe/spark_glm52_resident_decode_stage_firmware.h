@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 23u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 24u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION 6144u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT 64u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION 512u
@@ -406,6 +406,79 @@ typedef enum SparkGlm52ResidentDecodeStageSparseIndexMode
     SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL = 3,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED = 4
 } SparkGlm52ResidentDecodeStageSparseIndexMode;
+
+
+
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_ABI_VERSION 1u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_MAX_PAYLOADS 8u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_ENABLED 0x00000001u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_MLA_LATENT 0x00000002u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_KEY_NOPE 0x00000004u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_VALUE 0x00000008u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_DSA_INDEX_KEY 0x00000010u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_FP8_SCALE 0x00000020u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_STREAM_ORDERED 0x00000001u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_DEVICE_POINTERS 0x00000002u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_SELECTED_BLOCKS 0x00000004u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_DEDUP_BY_EPOCH 0x00000008u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_ASYNC_EVENT_READY 0x00000010u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_REQUIRED_CAPABILITIES \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_STREAM_ORDERED | \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_DEVICE_POINTERS | \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_SELECTED_BLOCKS | \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_DEDUP_BY_EPOCH | \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_ASYNC_EVENT_READY)
+
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload))
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan))
+
+typedef struct SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t flags;
+    uint32_t reserved0;
+    uint64_t source_block_stride_bytes;
+    uint64_t destination_block_stride_bytes;
+    uint64_t transfer_bytes;
+    const void *source_base;
+    void *destination_base;
+} SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload;
+
+typedef struct SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t capability_flags;
+    uint32_t payload_count;
+    uint32_t physical_block_count;
+    uint32_t maximum_active_sequence_count;
+    uint32_t selected_block_stride;
+    uint32_t selected_block_capacity;
+    uint64_t transport_epoch;
+    const uint32_t *source_physical_block_indices_by_destination;
+    const uint32_t *destination_physical_block_indices_by_source;
+    uint64_t *requested_epoch_by_physical_block;
+    uint64_t *ready_epoch_by_physical_block;
+    uint32_t *written_logical_block_indices;
+    uint32_t *written_logical_block_counts;
+    uint32_t written_logical_block_stride;
+    uint32_t reserved1;
+    const uint64_t *source_fragment_keys_by_physical_block;
+    const uint64_t *expected_fragment_keys_by_destination;
+    uint32_t *copied_block_count_device;
+    uint32_t *duplicate_block_count_device;
+    uint32_t *invalid_block_count_device;
+    uint32_t *key_mismatch_count_device;
+    void *selection_ready_event;
+    void *transport_ready_event;
+    void *transport_stream;
+    uint64_t validated_maximum_latency_ns;
+    SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload payloads[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_MAX_PAYLOADS];
+} SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan;
 
 typedef enum SparkGlm52ResidentDecodeStageLaunchCheckMode
 {
@@ -958,6 +1031,15 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     const void *key_index_cache_bf16;
     const float *index_head_weights_f32;
     float index_softmax_scale;
+    uint32_t *selected_block_indices_by_layer;
+    uint32_t *selected_block_counts_by_layer;
+    uint32_t *dsa_selection_epoch_by_layer;
+    uint32_t dsa_selected_block_stride;
+    uint32_t dsa_selected_block_capacity;
+    uint32_t dsa_selected_block_layer_count;
+    uint32_t reserved3;
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *dsa_kv_fragment_prefetch_plan;
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *dsa_kv_fragment_save_plan;
 
 } SparkGlm52ResidentDecodeStageNodeContext;
 
