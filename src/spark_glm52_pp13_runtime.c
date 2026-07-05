@@ -1,0 +1,458 @@
+#include "sparkpipe/spark_glm52_pp13_runtime.h"
+
+#include <limits.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+
+static SparkStatus SparkGlm52Pp13RuntimeReport(
+    char *error_buffer,
+    uint32_t error_buffer_bytes,
+    SparkStatus status,
+    const char *message)
+{
+    if (error_buffer != 0 && error_buffer_bytes != 0u)
+    {
+        if (message == 0)
+        {
+            error_buffer[0] = '\0';
+        }
+        else
+        {
+            (void)snprintf(error_buffer, error_buffer_bytes, "%s", message);
+        }
+    }
+    return status;
+}
+
+static uint32_t SparkGlm52Pp13RuntimePathIsPresent(const char *path)
+{
+    struct stat path_status;
+
+    if (path == 0 || path[0] == '\0')
+    {
+        return 0u;
+    }
+    return stat(path, &path_status) == 0 && path_status.st_size > 0 ? 1u : 0u;
+}
+
+static SparkStatus SparkGlm52Pp13RuntimeFormatRoute(
+    const char *left,
+    const char *right,
+    char *route_name,
+    uint32_t route_name_bytes)
+{
+    int written;
+
+    if (left == 0 || right == 0 || route_name == 0 || route_name_bytes == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    written = snprintf(route_name, route_name_bytes, "%s_to_%s_hidden", left, right);
+    if (written < 0 || (uint32_t)written >= route_name_bytes)
+    {
+        route_name[0] = '\0';
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static void SparkGlm52Pp13RuntimeInitializeEndpoint(
+    SparkHiddenTransportEndpoint *endpoint,
+    uint32_t max_active_sequence_count,
+    const char *route_name)
+{
+    memset(endpoint, 0, sizeof(*endpoint));
+    endpoint->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
+    endpoint->capability_flags =
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS;
+    endpoint->hidden_dimension = SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION;
+    endpoint->bytes_per_sequence =
+        SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE;
+    endpoint->max_active_sequence_count = max_active_sequence_count;
+    endpoint->max_packet_bytes =
+        (uint64_t)endpoint->bytes_per_sequence *
+        (uint64_t)endpoint->max_active_sequence_count;
+    endpoint->transport_module_id =
+        SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID;
+    endpoint->route_name = route_name;
+}
+
+SparkStatus SparkGlm52Pp13RuntimeBuildFixedStagePlan(
+    SparkGlm52StagePlan *stage_plan,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    uint32_t stage_index;
+
+    if (stage_plan == 0)
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "stage plan is null");
+    }
+    memset(stage_plan, 0, sizeof(*stage_plan));
+    stage_plan->abi_version = SPARK_GLM52_STAGE_PLAN_ABI_VERSION;
+    stage_plan->descriptor_bytes = SPARK_GLM52_STAGE_PLAN_DESCRIPTOR_BYTES;
+    stage_plan->stage_count = SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT;
+    for (stage_index = 0u;
+         stage_index < SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT;
+         ++stage_index)
+    {
+        stage_plan->stages[stage_index].first_layer_index =
+            stage_index * SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE;
+        stage_plan->stages[stage_index].layer_count =
+            SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE;
+        stage_plan->stages[stage_index].flags =
+            SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN |
+            SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_OUTPUT_HIDDEN;
+    }
+    stage_plan->stages[0u].flags |=
+        SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_DENSE_PREFIX;
+    stage_plan->stages[SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT - 1u].flags =
+        SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN |
+        SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN;
+    return SparkGlm52StagePlanValidate(
+        stage_plan,
+        error_buffer,
+        error_buffer_bytes);
+}
+
+SparkStatus SparkGlm52Pp13RuntimeRankHostName(
+    uint32_t rank_index,
+    char *host_name,
+    uint32_t host_name_bytes)
+{
+    int written;
+
+    if (host_name == 0 || host_name_bytes == 0u ||
+        rank_index >= SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (rank_index < 10u)
+    {
+        written = snprintf(host_name, host_name_bytes, "spark%u", rank_index);
+    }
+    else
+    {
+        written = snprintf(host_name, host_name_bytes, "spark%c",
+            (int)('a' + (rank_index - 10u)));
+    }
+    if (written < 0 || (uint32_t)written >= host_name_bytes)
+    {
+        host_name[0] = '\0';
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
+    uint32_t rank_index,
+    uint32_t max_active_sequence_count,
+    uint32_t port_base,
+    SparkGlm52Pp13RuntimeRankPlan *rank_plan,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    SparkGlm52StagePlan stage_plan;
+    SparkStatus status;
+
+    if (rank_plan == 0 || max_active_sequence_count == 0u ||
+        rank_index >= SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT ||
+        port_base > (65535u - SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT))
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "PP13 rank-plan arguments are invalid");
+    }
+    status = SparkGlm52Pp13RuntimeBuildFixedStagePlan(
+        &stage_plan,
+        error_buffer,
+        error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    memset(rank_plan, 0, sizeof(*rank_plan));
+    rank_plan->abi_version = SPARK_GLM52_PP13_RUNTIME_ABI_VERSION;
+    rank_plan->descriptor_bytes =
+        SPARK_GLM52_PP13_RUNTIME_RANK_PLAN_DESCRIPTOR_BYTES;
+    rank_plan->rank_index = rank_index;
+    rank_plan->first_layer_index =
+        stage_plan.stages[rank_index].first_layer_index;
+    rank_plan->layer_count = stage_plan.stages[rank_index].layer_count;
+    rank_plan->previous_rank_index = UINT32_MAX;
+    rank_plan->next_rank_index = UINT32_MAX;
+    rank_plan->listen_port = port_base + rank_index;
+    rank_plan->next_port = 0u;
+    rank_plan->max_active_sequence_count = max_active_sequence_count;
+    rank_plan->hidden_dimension = SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION;
+    rank_plan->bytes_per_sequence =
+        SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE;
+    rank_plan->quantization_mode = SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE;
+    rank_plan->max_packet_bytes =
+        (uint64_t)rank_plan->bytes_per_sequence *
+        (uint64_t)rank_plan->max_active_sequence_count;
+    status = SparkGlm52Pp13RuntimeRankHostName(
+        rank_index,
+        rank_plan->host_name,
+        sizeof(rank_plan->host_name));
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (rank_index > 0u)
+    {
+        rank_plan->flags |= SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS;
+        rank_plan->previous_rank_index = rank_index - 1u;
+        status = SparkGlm52Pp13RuntimeRankHostName(
+            rank_plan->previous_rank_index,
+            rank_plan->previous_host_name,
+            sizeof(rank_plan->previous_host_name));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52Pp13RuntimeFormatRoute(
+            rank_plan->previous_host_name,
+            rank_plan->host_name,
+            rank_plan->input_route_name,
+            sizeof(rank_plan->input_route_name));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        SparkGlm52Pp13RuntimeInitializeEndpoint(
+            &rank_plan->input_endpoint,
+            max_active_sequence_count,
+            rank_plan->input_route_name);
+    }
+    if (rank_index + 1u < SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT)
+    {
+        rank_plan->flags |= SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT;
+        rank_plan->next_rank_index = rank_index + 1u;
+        rank_plan->next_port = port_base + rank_plan->next_rank_index;
+        status = SparkGlm52Pp13RuntimeRankHostName(
+            rank_plan->next_rank_index,
+            rank_plan->next_host_name,
+            sizeof(rank_plan->next_host_name));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52Pp13RuntimeFormatRoute(
+            rank_plan->host_name,
+            rank_plan->next_host_name,
+            rank_plan->output_route_name,
+            sizeof(rank_plan->output_route_name));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        SparkGlm52Pp13RuntimeInitializeEndpoint(
+            &rank_plan->output_endpoint,
+            max_active_sequence_count,
+            rank_plan->output_route_name);
+    }
+    if ((stage_plan.stages[rank_index].flags &
+            SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN) != 0u)
+    {
+        rank_plan->flags |= SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE;
+    }
+    if ((stage_plan.stages[rank_index].flags &
+            SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_DENSE_PREFIX) != 0u)
+    {
+        rank_plan->flags |= SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_DENSE_PREFIX;
+    }
+    return SparkGlm52Pp13RuntimeValidateRankPlan(
+        rank_plan,
+        error_buffer,
+        error_buffer_bytes);
+}
+
+SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
+    const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    SparkStatus status;
+
+    if (rank_plan == 0 ||
+        rank_plan->abi_version != SPARK_GLM52_PP13_RUNTIME_ABI_VERSION ||
+        rank_plan->descriptor_bytes !=
+            SPARK_GLM52_PP13_RUNTIME_RANK_PLAN_DESCRIPTOR_BYTES ||
+        rank_plan->rank_index >= SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT ||
+        (rank_plan->flags & ~SPARK_GLM52_PP13_RUNTIME_RANK_KNOWN_FLAGS) != 0u ||
+        rank_plan->first_layer_index !=
+            rank_plan->rank_index * SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE ||
+        rank_plan->layer_count != SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE ||
+        rank_plan->host_name[0] == '\0' ||
+        rank_plan->max_active_sequence_count == 0u ||
+        rank_plan->hidden_dimension != SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION ||
+        rank_plan->bytes_per_sequence !=
+            SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE ||
+        rank_plan->quantization_mode !=
+            SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE ||
+        rank_plan->max_packet_bytes !=
+            ((uint64_t)rank_plan->bytes_per_sequence *
+             (uint64_t)rank_plan->max_active_sequence_count))
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "PP13 rank plan is invalid");
+    }
+    if ((rank_plan->flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u)
+    {
+        status = SparkHiddenTransportValidateEndpoint(&rank_plan->input_endpoint);
+        if (status != SPARK_STATUS_OK)
+        {
+            return SparkGlm52Pp13RuntimeReport(
+                error_buffer,
+                error_buffer_bytes,
+                status,
+                "PP13 input transport endpoint is invalid");
+        }
+    }
+    if ((rank_plan->flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u)
+    {
+        status = SparkHiddenTransportValidateEndpoint(&rank_plan->output_endpoint);
+        if (status != SPARK_STATUS_OK)
+        {
+            return SparkGlm52Pp13RuntimeReport(
+                error_buffer,
+                error_buffer_bytes,
+                status,
+                "PP13 output transport endpoint is invalid");
+        }
+    }
+    if (rank_plan->rank_index == 0u &&
+        (rank_plan->flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (rank_plan->rank_index + 1u == SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT &&
+        (rank_plan->flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SparkGlm52Pp13RuntimeReport(
+        error_buffer,
+        error_buffer_bytes,
+        SPARK_STATUS_OK,
+        "");
+}
+
+SparkStatus SparkGlm52Pp13RuntimeBuildFp8PackPath(
+    const char *pack_root,
+    uint32_t layer_index,
+    char *pack_path,
+    uint32_t pack_path_bytes)
+{
+    int written;
+
+    if (pack_root == 0 || pack_root[0] == '\0' || pack_path == 0 ||
+        pack_path_bytes == 0u ||
+        layer_index >= SPARK_GLM52_STAGE_PLAN_LAYER_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    written = snprintf(
+        pack_path,
+        pack_path_bytes,
+        "%s/glm52_layer_%04u_fp8_moe.spfp8",
+        pack_root,
+        layer_index);
+    if (written < 0 || (uint32_t)written >= pack_path_bytes)
+    {
+        pack_path[0] = '\0';
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
+    const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
+    const char *pack_root,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    char pack_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
+    char manifest_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
+    SparkStatus status;
+    uint32_t layer_index;
+    int written;
+
+    status = SparkGlm52Pp13RuntimeValidateRankPlan(
+        rank_plan,
+        error_buffer,
+        error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (pack_root == 0 || pack_root[0] == '\0')
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "FP8 pack root is empty");
+    }
+    written = snprintf(
+        manifest_path,
+        sizeof(manifest_path),
+        "%s/%s",
+        pack_root,
+        SPARK_GLM52_PP13_RUNTIME_FP8_PACK_MANIFEST);
+    if (written < 0 || (uint32_t)written >= sizeof(manifest_path))
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    if (!SparkGlm52Pp13RuntimePathIsPresent(manifest_path))
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_NOT_FOUND,
+            "FP8 resident pack manifest is missing");
+    }
+    for (layer_index = rank_plan->first_layer_index;
+         layer_index < rank_plan->first_layer_index + rank_plan->layer_count;
+         ++layer_index)
+    {
+        if (layer_index < SPARK_GLM52_STAGE_PLAN_FIRST_ROUTED_LAYER)
+        {
+            continue;
+        }
+        status = SparkGlm52Pp13RuntimeBuildFp8PackPath(
+            pack_root,
+            layer_index,
+            pack_path,
+            sizeof(pack_path));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        if (!SparkGlm52Pp13RuntimePathIsPresent(pack_path))
+        {
+            return SparkGlm52Pp13RuntimeReport(
+                error_buffer,
+                error_buffer_bytes,
+                SPARK_STATUS_NOT_FOUND,
+                "FP8 resident layer pack is missing");
+        }
+    }
+    return SparkGlm52Pp13RuntimeReport(
+        error_buffer,
+        error_buffer_bytes,
+        SPARK_STATUS_OK,
+        "");
+}
