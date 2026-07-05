@@ -1245,7 +1245,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 		(uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) *
 		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT;
 	workspace_bytes =
-		(candidates * sizeof(float)) + (candidates * sizeof(uint32_t));
+		(candidates * sizeof(float)) + (candidates * sizeof(uint32_t)) + 15u;
 	status = SparkGlm52Pp13BuilderCudaAlloc(
 		state,
 		&state->final_epilogue_workspace,
