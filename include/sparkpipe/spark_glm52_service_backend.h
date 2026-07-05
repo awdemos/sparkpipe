@@ -1,0 +1,98 @@
+#pragma once
+
+#include <stdint.h>
+
+#include "sparkpipe/spark_glm52_service.h"
+#include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_tokenizer.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 1u
+#define SPARK_GLM52_SERVICE_BACKEND_INTERFACE_BYTES \
+	((uint32_t)sizeof(SparkGlm52ServiceBackendInterface))
+#define SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES \
+	((uint32_t)sizeof(SparkGlm52ServiceBackendConfiguration))
+#define SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES \
+	((uint32_t)sizeof(SparkGlm52ServiceBackendView))
+#define SPARK_GLM52_SERVICE_BACKEND_DYNAMIC_LIBRARY_BYTES \
+	((uint32_t)sizeof(SparkGlm52ServiceBackendDynamicLibrary))
+#define SPARK_GLM52_SERVICE_BACKEND_INTERFACE_SYMBOL \
+	"SparkGlm52ServiceBackendGetInterface"
+
+#define SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_SERVICE_RUNTIME 0x00000001u
+#define SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME 0x00000002u
+#define SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_TOKENIZER 0x00000004u
+#define SPARK_GLM52_SERVICE_BACKEND_REQUIRED_PRODUCTION_CAPS \
+	(SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_SERVICE_RUNTIME | \
+	 SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME)
+
+typedef struct SparkGlm52ServiceBackendConfiguration
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t flags;
+	uint32_t reserved0;
+} SparkGlm52ServiceBackendConfiguration;
+
+typedef struct SparkGlm52ServiceBackendView
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t backend_ready;
+	uint32_t pp13_ready;
+	uint32_t max_context_tokens;
+	uint32_t production_contract_flags;
+	SparkGlm52ServiceRuntime *service;
+	const SparkTokenizer *tokenizer;
+} SparkGlm52ServiceBackendView;
+
+typedef SparkStatus (*SparkGlm52ServiceBackendInitializeFunction)(
+	const SparkGlm52ServiceBackendConfiguration *configuration,
+	void **backend_state);
+typedef void (*SparkGlm52ServiceBackendDestroyFunction)(
+	void *backend_state);
+typedef SparkStatus (*SparkGlm52ServiceBackendGetViewFunction)(
+	void *backend_state,
+	SparkGlm52ServiceBackendView *view);
+typedef SparkStatus (*SparkGlm52ServiceBackendPumpFunction)(
+	void *backend_state,
+	uint32_t max_dispatch_steps,
+	SparkGlm52ServiceStats *stats_out);
+
+typedef struct SparkGlm52ServiceBackendInterface
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t capability_flags;
+	uint32_t reserved0;
+	SparkGlm52ServiceBackendInitializeFunction initialize;
+	SparkGlm52ServiceBackendDestroyFunction destroy;
+	SparkGlm52ServiceBackendGetViewFunction get_view;
+	SparkGlm52ServiceBackendPumpFunction pump;
+} SparkGlm52ServiceBackendInterface;
+
+typedef const SparkGlm52ServiceBackendInterface *(*SparkGlm52ServiceBackendGetInterfaceFunction)(
+	void);
+
+typedef struct SparkGlm52ServiceBackendDynamicLibrary
+{
+	void *dynamic_library;
+	SparkGlm52ServiceBackendInterface backend_interface;
+} SparkGlm52ServiceBackendDynamicLibrary;
+
+SparkStatus SparkGlm52ServiceBackendValidateInterface(
+	const SparkGlm52ServiceBackendInterface *backend_interface,
+	uint32_t required_capability_flags);
+SparkStatus SparkGlm52ServiceBackendLoadInterfaceFromSharedObject(
+	const char *shared_object_path,
+	uint32_t required_capability_flags,
+	SparkGlm52ServiceBackendDynamicLibrary *library);
+void SparkGlm52ServiceBackendUnloadInterface(
+	SparkGlm52ServiceBackendDynamicLibrary *library);
+
+#ifdef __cplusplus
+}
+#endif

@@ -71,6 +71,7 @@ COMMON_SOURCES := \
     src/spark_glm52_prompt_pipeline.c \
     src/spark_glm52_serving_engine.c \
     src/spark_glm52_service.c \
+    src/spark_glm52_service_backend.c \
     src/spark_glm52_compat_api.c \
     src/spark_glm52_http_gateway.c
 
@@ -123,6 +124,7 @@ TEST_NAMES := \
     test_glm52_prompt_pipeline \
     test_glm52_serving_engine \
     test_glm52_service \
+    test_glm52_service_backend \
     test_glm52_compat_api \
     test_glm52_http_gateway \
     test_model_description \
@@ -158,6 +160,8 @@ TEST_MODULE_LINK_UNITS := $(TEST_MODULE_OBJECTS) $(TEST_MODULE_ARCHIVES)
 TEST_MODULE_DEPENDENCIES := $(TEST_MODULE_OBJECTS:.o=.d)
 TEST_HIDDEN_TRANSPORT_MODULE := \
     build/test_modules/libhidden_transport_module.$(SHARED_LIBRARY_EXT)
+TEST_SERVICE_BACKEND_MODULE := \
+    build/test_modules/libglm52_service_backend_module.$(SHARED_LIBRARY_EXT)
 TEST_VALIDATOR := build/test_module_validator
 GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY := \
     build/glm52_resident_decode_stage_test
@@ -279,6 +283,9 @@ build/test_modules/module_affine.a: build/test_modules/module_affine_entry.o bui
 $(TEST_HIDDEN_TRANSPORT_MODULE): tests/fixtures/hidden_transport_module.c | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
+$(TEST_SERVICE_BACKEND_MODULE): tests/fixtures/glm52_service_backend_module.c | build/test_modules
+	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_VALIDATOR): tests/fixtures/module_validator.c | build
 	$(CC) $(CFLAGS) $< -o $@
 
@@ -340,6 +347,9 @@ build/test_glm52_serving_engine: tests/test_glm52_serving_engine.c $(COMMON_LIBR
 
 build/test_glm52_service: tests/test_glm52_service.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_service_backend: tests/test_glm52_service_backend.c $(COMMON_LIBRARY) $(TEST_SERVICE_BACKEND_MODULE)
+	$(CC) $(CPPFLAGS) -Itests -DTEST_SERVICE_BACKEND_MODULE_PATH=\"$(TEST_SERVICE_BACKEND_MODULE)\" $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_compat_api: tests/test_glm52_compat_api.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

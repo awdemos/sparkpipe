@@ -8,22 +8,37 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "sparkpipe/spark_glm52_service_backend.h"
 #include "sparkpipe/spark_glm52_http_gateway.h"
 
 #define SPARK_GLM52_GATEWAY_REQUEST_BYTES (SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_UPLOAD_BYTES + (1024u * 1024u))
 #define SPARK_GLM52_GATEWAY_RESPONSE_BYTES (128u * 1024u)
+#define SPARK_GLM52_GATEWAY_COMPAT_TEXT_BYTES SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_UPLOAD_BYTES
 #define SPARK_GLM52_GATEWAY_DEFAULT_PORT 8080u
+#define SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS 256u
 
 typedef struct SparkGlm52GatewayConfig
 {
 	const char *bind_address;
 	const char *api_key;
 	const char *api_key_file;
+	const char *service_backend_path;
 	char api_key_storage[256];
 	uint32_t port;
-	uint32_t backend_ready;
-	uint32_t pp13_ready;
+	uint32_t require_service_backend;
+	uint32_t pump_steps;
 } SparkGlm52GatewayConfig;
+
+typedef struct SparkGlm52GatewayRuntime
+{
+	SparkGlm52GatewayConfig configuration;
+	SparkGlm52ServiceBackendDynamicLibrary service_backend_library;
+	void *service_backend_state;
+	SparkGlm52ServiceBackendView service_backend_view;
+	SparkGlm52ServiceClientId service_client_id;
+	uint64_t next_client_request_id;
+	uint32_t service_backend_attached;
+} SparkGlm52GatewayRuntime;
 
 static void SparkGlm52GatewayInitializeConfig(
 	SparkGlm52GatewayConfig *configuration)
@@ -31,6 +46,7 @@ static void SparkGlm52GatewayInitializeConfig(
 	memset(configuration,0,sizeof(*configuration));
 	configuration->bind_address = "127.0.0.1";
 	configuration->port = SPARK_GLM52_GATEWAY_DEFAULT_PORT;
+	configuration->pump_steps = SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS;
 }
 
 static int32_t SparkGlm52GatewayParseU32(const char *text,uint32_t *value_out)
@@ -94,17 +110,30 @@ static int32_t SparkGlm52GatewayApplyArgument(
 		*index += 1;
 		return 0;
 	}
-	if (strcmp(argv[*index],"--backend-ready") == 0)
+	if (strcmp(argv[*index],"--service-backend-so") == 0)
 	{
-		configuration->backend_ready = 1u;
+		if ((*index + 1) >= argc)
+			return -5;
+		configuration->service_backend_path = argv[*index + 1];
+		configuration->require_service_backend = 1u;
+		*index += 1;
 		return 0;
 	}
-	if (strcmp(argv[*index],"--pp13-ready") == 0)
+	if (strcmp(argv[*index],"--require-service-backend") == 0)
 	{
-		configuration->pp13_ready = 1u;
+		configuration->require_service_backend = 1u;
 		return 0;
 	}
-	return -5;
+	if (strcmp(argv[*index],"--pump-steps") == 0)
+	{
+		if ((*index + 1) >= argc ||
+			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0)
+			return -6;
+		configuration->pump_steps = parsed;
+		*index += 1;
+		return 0;
+	}
+	return -7;
 }
 
 static int32_t SparkGlm52GatewayLoadApiKeyFile(
@@ -150,6 +179,82 @@ static int32_t SparkGlm52GatewayParseArguments(
 			return -1;
 	}
 	return 0;
+}
+
+static int32_t SparkGlm52GatewayRefreshBackendView(
+	SparkGlm52GatewayRuntime *runtime)
+{
+	SparkStatus status;
+
+	if (runtime == 0 || runtime->service_backend_attached == 0u)
+		return -1;
+	status = runtime->service_backend_library.backend_interface.get_view(
+		runtime->service_backend_state,
+		&runtime->service_backend_view);
+	if (status != SPARK_STATUS_OK)
+		return -2;
+	if (runtime->service_backend_view.abi_version !=
+		SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION ||
+		runtime->service_backend_view.descriptor_bytes !=
+		SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES ||
+		runtime->service_backend_view.service == 0 ||
+		runtime->service_backend_view.backend_ready == 0u ||
+		runtime->service_backend_view.pp13_ready == 0u)
+		return -3;
+	return 0;
+}
+
+static int32_t SparkGlm52GatewayAttachServiceBackend(
+	SparkGlm52GatewayRuntime *runtime)
+{
+	SparkGlm52ServiceBackendConfiguration backend_configuration;
+	SparkStatus status;
+
+	if (runtime == 0)
+		return -1;
+	if (runtime->configuration.service_backend_path == 0)
+		return runtime->configuration.require_service_backend != 0u ? -2 : 0;
+	status = SparkGlm52ServiceBackendLoadInterfaceFromSharedObject(
+		runtime->configuration.service_backend_path,
+		SPARK_GLM52_SERVICE_BACKEND_REQUIRED_PRODUCTION_CAPS,
+		&runtime->service_backend_library);
+	if (status != SPARK_STATUS_OK)
+		return -3;
+	memset(&backend_configuration,0,sizeof(backend_configuration));
+	backend_configuration.abi_version =
+		SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION;
+	backend_configuration.descriptor_bytes =
+		SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES;
+	status = runtime->service_backend_library.backend_interface.initialize(
+		&backend_configuration,
+		&runtime->service_backend_state);
+	if (status != SPARK_STATUS_OK || runtime->service_backend_state == 0)
+		return -4;
+	runtime->service_backend_attached = 1u;
+	if (SparkGlm52GatewayRefreshBackendView(runtime) < 0)
+		return -5;
+	status = SparkGlm52ServiceRegisterClient(
+		runtime->service_backend_view.service,
+		1u,
+		&runtime->service_client_id);
+	if (status != SPARK_STATUS_OK || runtime->service_client_id == 0u)
+		return -6;
+	runtime->next_client_request_id = 1u;
+	return 0;
+}
+
+static void SparkGlm52GatewayDestroyServiceBackend(
+	SparkGlm52GatewayRuntime *runtime)
+{
+	if (runtime == 0)
+		return;
+	if (runtime->service_backend_state != 0 &&
+		runtime->service_backend_library.backend_interface.destroy != 0)
+		runtime->service_backend_library.backend_interface.destroy(
+			runtime->service_backend_state);
+	runtime->service_backend_state = 0;
+	runtime->service_backend_attached = 0u;
+	SparkGlm52ServiceBackendUnloadInterface(&runtime->service_backend_library);
 }
 
 static int32_t SparkGlm52GatewayCreateListenSocket(
@@ -395,12 +500,17 @@ static SparkStatus SparkGlm52GatewayBuildBadRequest(
 }
 
 static SparkStatus SparkGlm52GatewayBuildResponse(
-	const SparkGlm52GatewayConfig *configuration,
+	SparkGlm52GatewayRuntime *runtime,
 	const SparkGlm52HttpGatewayRequest *request,
 	SparkGlm52HttpGatewayResponse *response)
 {
+	static char compat_text[SPARK_GLM52_GATEWAY_COMPAT_TEXT_BYTES];
+	SparkGlm52CompatTextRequest compat_request;
+	SparkGlm52ServiceSubmitResult submit_result;
+	SparkGlm52ServiceStats service_stats;
 	uint32_t route;
 	uint32_t stream;
+	SparkStatus status;
 
 	route = SparkGlm52HttpGatewayRoute(request);
 	if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_CORS_PREFLIGHT)
@@ -408,27 +518,66 @@ static SparkStatus SparkGlm52GatewayBuildResponse(
 	if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_DEMO_UI)
 		return SparkGlm52HttpGatewayBuildDemoUi(response);
 	if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_HEALTH)
+	{
+		memset(&service_stats,0,sizeof(service_stats));
+		if (runtime->service_backend_attached != 0u &&
+			SparkGlm52GatewayRefreshBackendView(runtime) == 0)
+		{
+			(void)SparkGlm52ServiceGetStats(
+				runtime->service_backend_view.service,
+				&service_stats);
+		}
 		return SparkGlm52HttpGatewayBuildServiceHealth(
 			response,
-			0,
-			configuration->backend_ready,
-			configuration->pp13_ready,
-			SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS,
-			0u);
+			runtime->service_backend_attached != 0u ? &service_stats : 0,
+			runtime->service_backend_view.backend_ready,
+			runtime->service_backend_view.pp13_ready,
+			runtime->service_backend_view.max_context_tokens != 0u ?
+				runtime->service_backend_view.max_context_tokens :
+				SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS,
+			runtime->service_backend_view.production_contract_flags);
+	}
 	if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_NONE)
 		return SparkGlm52HttpGatewayBuildNotFound(response);
 	if (SparkGlm52HttpGatewayAuthorizationMatches(
 			request,
-			configuration->api_key) == 0u)
+			runtime->configuration.api_key) == 0u)
 		return SparkGlm52HttpGatewayBuildUnauthorized(response);
 	stream = SparkGlm52HttpGatewayBodyRequestsStream(
 		request->body,
 		request->body_bytes);
+	if (runtime->service_backend_attached == 0u ||
+		SparkGlm52GatewayRefreshBackendView(runtime) < 0)
+		return SparkGlm52HttpGatewayBuildBackendUnavailable(response,stream);
+	SparkGlm52CompatInitializeTextRequest(
+		&compat_request,
+		compat_text,
+		sizeof(compat_text));
+	memset(&submit_result,0,sizeof(submit_result));
+	status = SparkGlm52HttpGatewaySubmitJsonToService(
+		runtime->service_backend_view.service,
+		request,
+		runtime->service_client_id,
+		runtime->next_client_request_id,
+		&compat_request,
+		&submit_result,
+		response);
+	if (status == SPARK_STATUS_OK)
+	{
+		runtime->next_client_request_id += 1u;
+		if (runtime->next_client_request_id == 0u)
+			runtime->next_client_request_id = 1u;
+		(void)runtime->service_backend_library.backend_interface.pump(
+			runtime->service_backend_state,
+			runtime->configuration.pump_steps,
+			&service_stats);
+		return SPARK_STATUS_OK;
+	}
 	return SparkGlm52HttpGatewayBuildBackendUnavailable(response,stream);
 }
 
 static int32_t SparkGlm52GatewayServeOne(
-	const SparkGlm52GatewayConfig *configuration,
+	SparkGlm52GatewayRuntime *runtime,
 	int32_t client_fd)
 {
 	static char request_buffer[SPARK_GLM52_GATEWAY_REQUEST_BYTES];
@@ -457,7 +606,7 @@ static int32_t SparkGlm52GatewayServeOne(
 	}
 	else
 	{
-		status = SparkGlm52GatewayBuildResponse(configuration,&request,&response);
+		status = SparkGlm52GatewayBuildResponse(runtime,&request,&response);
 		if (status != SPARK_STATUS_OK)
 			(void)SparkGlm52HttpGatewayBuildBackendUnavailable(&response,0u);
 	}
@@ -466,38 +615,47 @@ static int32_t SparkGlm52GatewayServeOne(
 
 int main(int argc,char **argv)
 {
-	SparkGlm52GatewayConfig configuration;
+	SparkGlm52GatewayRuntime runtime;
 	int32_t listen_fd;
 	int32_t client_fd;
 
 	(void)signal(SIGPIPE,SIG_IGN);
-	SparkGlm52GatewayInitializeConfig(&configuration);
-	if (SparkGlm52GatewayParseArguments(&configuration,argc,argv) < 0)
+	memset(&runtime,0,sizeof(runtime));
+	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
+	if (SparkGlm52GatewayParseArguments(&runtime.configuration,argc,argv) < 0)
 	{
-		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--backend-ready] [--pp13-ready]\n",argv[0]);
+		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n]\n",argv[0]);
 		return 2;
 	}
-	if (SparkGlm52GatewayLoadApiKeyFile(&configuration) < 0)
+	if (SparkGlm52GatewayLoadApiKeyFile(&runtime.configuration) < 0)
 	{
 		fprintf(stderr,"api key file failed\n");
 		return 2;
 	}
-	listen_fd = SparkGlm52GatewayCreateListenSocket(&configuration);
+	if (SparkGlm52GatewayAttachServiceBackend(&runtime) < 0)
+	{
+		fprintf(stderr,"service backend attach failed\n");
+		SparkGlm52GatewayDestroyServiceBackend(&runtime);
+		return 2;
+	}
+	listen_fd = SparkGlm52GatewayCreateListenSocket(&runtime.configuration);
 	if (listen_fd < 0)
 	{
 		fprintf(stderr,"listen failed: %s\n",strerror(errno));
+		SparkGlm52GatewayDestroyServiceBackend(&runtime);
 		return 3;
 	}
 	fprintf(stderr,"sparkpipe glm52 gateway listening on %s:%u\n",
-		configuration.bind_address,
-		configuration.port);
+		runtime.configuration.bind_address,
+		runtime.configuration.port);
 	for (;;)
 	{
 		client_fd = accept(listen_fd,0,0);
 		if (client_fd < 0)
 			continue;
-		(void)SparkGlm52GatewayServeOne(&configuration,client_fd);
+		(void)SparkGlm52GatewayServeOne(&runtime,client_fd);
 		close(client_fd);
 	}
+	SparkGlm52GatewayDestroyServiceBackend(&runtime);
 	return 0;
 }

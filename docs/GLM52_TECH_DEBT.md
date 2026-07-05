@@ -24,12 +24,15 @@ PP13 rank-plan API
 resident decode-stage production runner API
 resident PP13 rank daemon
 sparkc to spark0 final completion event route
+HTTP/SSE gateway production service-backend ABI
 ```
 
 Missing:
 
 ```text
-attach HTTP/SSE gateway to the production C service runtime
+production service-backend shared object that owns the C service runtime
+service-backend prefill callback mapped to PP13 rank runner submissions
+service-backend decode callback mapped to PP13 rank runner submissions
 authentication and tenant policy above the C API
 public schema examples for final OpenAI and Anthropic responses
 versioned API compatibility tests for external callers
