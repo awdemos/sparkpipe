@@ -39,6 +39,7 @@ typedef struct SparkGlm52ServiceBackendConfiguration
 	uint32_t port_base;
 	uint32_t reserved0;
 	const char *fp8_pack_root;
+	const char *stagepack_root;
 	const char *transport_shared_object_path;
 	const char *driver_shared_object_path;
 	const char *node_context_builder_shared_object_path;

@@ -24,6 +24,7 @@ typedef struct SparkGlm52GatewayConfig
 	const char *api_key_file;
 	const char *service_backend_path;
 	const char *fp8_pack_root;
+	const char *stagepack_root;
 	const char *transport_shared_object_path;
 	const char *driver_shared_object_path;
 	const char *node_context_builder_shared_object_path;
@@ -158,10 +159,18 @@ static int32_t SparkGlm52GatewayApplyArgument(
 		*index += 1;
 		return 0;
 	}
-	if (strcmp(argv[*index],"--transport-so") == 0)
+	if (strcmp(argv[*index],"--stagepack-root") == 0)
 	{
 		if ((*index + 1) >= argc)
 			return -8;
+		configuration->stagepack_root = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--transport-so") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -9;
 		configuration->transport_shared_object_path = argv[*index + 1];
 		*index += 1;
 		return 0;
@@ -169,7 +178,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--driver-so") == 0)
 	{
 		if ((*index + 1) >= argc)
-			return -9;
+			return -10;
 		configuration->driver_shared_object_path = argv[*index + 1];
 		*index += 1;
 		return 0;
@@ -177,7 +186,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--node-context-builder-so") == 0)
 	{
 		if ((*index + 1) >= argc)
-			return -10;
+			return -11;
 		configuration->node_context_builder_shared_object_path =
 			argv[*index + 1];
 		*index += 1;
@@ -186,7 +195,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--embedding-pack") == 0)
 	{
 		if ((*index + 1) >= argc)
-			return -11;
+			return -12;
 		configuration->embedding_pack_path = argv[*index + 1];
 		*index += 1;
 		return 0;
@@ -194,7 +203,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--program") == 0)
 	{
 		if ((*index + 1) >= argc)
-			return -12;
+			return -13;
 		configuration->driver_program_name = argv[*index + 1];
 		*index += 1;
 		return 0;
@@ -361,6 +370,8 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 		runtime->configuration.max_active_sequence_count;
 	backend_configuration.port_base = runtime->configuration.port_base;
 	backend_configuration.fp8_pack_root = runtime->configuration.fp8_pack_root;
+	backend_configuration.stagepack_root =
+		runtime->configuration.stagepack_root;
 	backend_configuration.transport_shared_object_path =
 		runtime->configuration.transport_shared_object_path;
 	backend_configuration.driver_shared_object_path =
@@ -778,7 +789,7 @@ int main(int argc,char **argv)
 	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
 	if (SparkGlm52GatewayParseArguments(&runtime.configuration,argc,argv) < 0)
 	{
-		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--fp8-pack-root dir] [--transport-so path] [--driver-so path] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path]\n",argv[0]);
+		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--fp8-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path]\n",argv[0]);
 		return 2;
 	}
 	if (SparkGlm52GatewayLoadApiKeyFile(&runtime.configuration) < 0)

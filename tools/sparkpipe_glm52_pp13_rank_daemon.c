@@ -25,6 +25,7 @@
 typedef struct SparkGlm52Pp13DaemonConfig
 {
     const char *fp8_pack_root;
+    const char *stagepack_root;
     const char *transport_shared_object_path;
     const char *driver_path;
     const char *node_context_builder_shared_object_path;
@@ -168,10 +169,18 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
         *index += 1;
         return 0;
     }
-    if (strcmp(argv[*index],"--transport-so") == 0)
+    if (strcmp(argv[*index],"--stagepack-root") == 0)
     {
         if ((*index + 1) >= argc)
             return -3;
+        configuration->stagepack_root = argv[*index + 1];
+        *index += 1;
+        return 0;
+    }
+    if (strcmp(argv[*index],"--transport-so") == 0)
+    {
+        if ((*index + 1) >= argc)
+            return -4;
         configuration->transport_shared_object_path = argv[*index + 1];
         *index += 1;
         return 0;
@@ -179,7 +188,7 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
     if (strcmp(argv[*index],"--driver-so") == 0)
     {
         if ((*index + 1) >= argc)
-            return -4;
+            return -5;
         configuration->driver_path = argv[*index + 1];
         *index += 1;
         return 0;
@@ -187,7 +196,7 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
     if (strcmp(argv[*index],"--node-context-builder-so") == 0)
     {
         if ((*index + 1) >= argc)
-            return -5;
+            return -6;
         configuration->node_context_builder_shared_object_path =
             argv[*index + 1];
         *index += 1;
@@ -196,7 +205,7 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
     if (strcmp(argv[*index],"--embedding-pack") == 0)
     {
         if ((*index + 1) >= argc)
-            return -6;
+            return -7;
         configuration->embedding_pack_path = argv[*index + 1];
         *index += 1;
         return 0;
@@ -204,7 +213,7 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
     if (strcmp(argv[*index],"--program") == 0)
     {
         if ((*index + 1) >= argc)
-            return -7;
+            return -8;
         configuration->program_name = argv[*index + 1];
         *index += 1;
         return 0;
@@ -269,6 +278,7 @@ static int32_t SparkGlm52Pp13DaemonParseArguments(
     }
     if (configuration->rank_is_set == 0u ||
         configuration->fp8_pack_root == 0 ||
+        configuration->stagepack_root == 0 ||
         configuration->transport_shared_object_path == 0 ||
         configuration->driver_path == 0 ||
         configuration->node_context_builder_shared_object_path == 0 ||
@@ -531,6 +541,7 @@ static SparkStatus SparkGlm52Pp13DaemonBuildNodeContext(
         configuration->max_active_sequence_count;
     builder_configuration.port_base = configuration->port_base;
     builder_configuration.fp8_pack_root = configuration->fp8_pack_root;
+    builder_configuration.stagepack_root = configuration->stagepack_root;
     builder_configuration.embedding_pack_path =
         configuration->embedding_pack_path;
     builder_configuration.node_target = configuration->node_target;
@@ -1086,6 +1097,7 @@ static void SparkGlm52Pp13DaemonPrintReady(
         runtime->rank_plan.first_layer_index,
         runtime->rank_plan.layer_count);
     printf("fp8_pack_root=%s\n",configuration->fp8_pack_root);
+    printf("stagepack_root=%s\n",configuration->stagepack_root);
     printf("transport_so=%s\n",configuration->transport_shared_object_path);
     printf("driver_so=%s\n",configuration->driver_path);
     printf("node_context_builder_so=%s\n",
@@ -1127,7 +1139,7 @@ int main(int argc,char **argv)
     if (SparkGlm52Pp13DaemonParseArguments(&configuration,argc,argv) < 0)
     {
         fprintf(stderr,
-            "usage: %s --rank n --fp8-pack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host]\n",
+            "usage: %s --rank n --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host]\n",
             argv[0]);
         return 2;
     }

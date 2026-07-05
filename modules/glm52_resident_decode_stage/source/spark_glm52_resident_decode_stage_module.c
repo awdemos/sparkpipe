@@ -162,6 +162,8 @@ static bool SparkGlm52ResidentDecodeStageProjectionModeUsesQuantizedPlan(
     return node_context->projection_mode ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_NVFP4_E2M1 ||
         node_context->projection_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3 ||
+        node_context->projection_mode ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_MXFP4_E2M1;
 }
 

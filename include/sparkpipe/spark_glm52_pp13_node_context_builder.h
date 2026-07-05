@@ -43,6 +43,7 @@ typedef struct SparkGlm52Pp13NodeContextBuilderConfiguration
 	uint32_t reserved0;
 	uint32_t reserved1;
 	const char *fp8_pack_root;
+	const char *stagepack_root;
 	const char *embedding_pack_path;
 	const char *node_target;
 	const SparkGlm52Pp13RuntimeRankPlan *rank_plan;

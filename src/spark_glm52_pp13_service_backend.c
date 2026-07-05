@@ -704,6 +704,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildNodeContext(
 	builder_configuration.port_base =
 		SparkGlm52Pp13ServiceBackendPortBase(configuration);
 	builder_configuration.fp8_pack_root = configuration->fp8_pack_root;
+	builder_configuration.stagepack_root = configuration->stagepack_root;
 	builder_configuration.embedding_pack_path =
 		configuration->embedding_pack_path;
 	builder_configuration.node_target = configuration->node_target;
@@ -898,6 +899,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 		configuration->fp8_pack_root,
 		state,
 		"FP8 pack root is missing");
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendRequireText(
+			configuration->stagepack_root,
+			state,
+			"GLM52 stagepack root is missing");
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13ServiceBackendRequireText(
 			configuration->transport_shared_object_path,
