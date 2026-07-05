@@ -4350,6 +4350,128 @@ void SparkGlm52ResidentDecodeStageMoeRouterTopKFromLogitsKernel(
     }
 }
 
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
+void SparkGlm52ResidentDecodeStageBenchmarkForceExpertCoverageKernel(
+    uint32_t *__restrict__ topk_expert_ids,
+    float *__restrict__ topk_weights,
+    uint32_t active_sequence_count,
+    uint32_t expert_count,
+    uint32_t top_k,
+    uint32_t forced_expert_count,
+    float routed_scaling_factor)
+{
+    uint64_t route_index;
+    uint64_t route_count;
+    float route_weight;
+
+    route_index =
+        ((uint64_t)blockIdx.x * (uint64_t)blockDim.x) +
+        (uint64_t)threadIdx.x;
+    route_count = (uint64_t)active_sequence_count * (uint64_t)top_k;
+    if (topk_expert_ids == 0 || topk_weights == 0 || route_index >= route_count ||
+        expert_count == 0u || top_k == 0u || forced_expert_count == 0u)
+    {
+        return;
+    }
+    if (forced_expert_count > expert_count)
+    {
+        forced_expert_count = expert_count;
+    }
+    topk_expert_ids[route_index] = (uint32_t)(route_index % forced_expert_count);
+    route_weight = routed_scaling_factor / (float)top_k;
+    topk_weights[route_index] = route_weight;
+}
+
+static uint32_t SparkGlm52ResidentDecodeStageBenchmarkForcedExpertCoverage(
+    uint32_t active_sequence_count,
+    uint32_t expert_count,
+    uint32_t top_k)
+{
+    const char *text;
+    char *end_pointer;
+    unsigned long value;
+    uint64_t route_count;
+
+    text = getenv("GLM52_BENCHMARK_FORCE_EXPERT_COVERAGE");
+    if (text == 0 || text[0] == '\0' || active_sequence_count == 0u ||
+        expert_count == 0u || top_k == 0u)
+    {
+        return 0u;
+    }
+    value = strtoul(text, &end_pointer, 10);
+    if (end_pointer == text || value == 0ul)
+    {
+        return 0u;
+    }
+    route_count = (uint64_t)active_sequence_count * (uint64_t)top_k;
+    if (route_count > (uint64_t)UINT32_MAX)
+    {
+        route_count = (uint64_t)UINT32_MAX;
+    }
+    if (value > (unsigned long)expert_count)
+    {
+        value = (unsigned long)expert_count;
+    }
+    if (value > (unsigned long)route_count)
+    {
+        value = (unsigned long)route_count;
+    }
+    return (uint32_t)value;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeForceBenchmarkExpertCoverage(
+    uint32_t *topk_expert_ids,
+    float *topk_weights,
+    uint32_t active_sequence_count,
+    uint32_t expert_count,
+    uint32_t top_k,
+    float routed_scaling_factor,
+    cudaStream_t cuda_stream,
+    const char *path_name)
+{
+    cudaError_t cuda_status;
+    uint32_t forced_expert_count;
+    uint64_t route_count;
+
+    forced_expert_count = SparkGlm52ResidentDecodeStageBenchmarkForcedExpertCoverage(
+        active_sequence_count,
+        expert_count,
+        top_k);
+    if (forced_expert_count == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    route_count = (uint64_t)active_sequence_count * (uint64_t)top_k;
+    SparkGlm52ResidentDecodeStageBenchmarkForceExpertCoverageKernel<<<
+        (uint32_t)((route_count +
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS - 1u) /
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        topk_expert_ids,
+        topk_weights,
+        active_sequence_count,
+        expert_count,
+        top_k,
+        forced_expert_count,
+        routed_scaling_factor);
+    cuda_status = cudaPeekAtLastError();
+    if (cuda_status != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    fprintf(
+        stderr,
+        "benchmark_forced_expert_coverage path=%s tokens=%u active_experts=%u of=%u routes=%llu\n",
+        path_name != 0 ? path_name : "unknown",
+        active_sequence_count,
+        forced_expert_count,
+        expert_count,
+        (unsigned long long)route_count);
+    return SPARK_STATUS_OK;
+}
+
 
 static __global__ void SparkGlm52ResidentDecodeStageSiluMulKernel(
     const uint16_t *__restrict__ gate_bf16,
@@ -9140,6 +9262,20 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedExte
         return SPARK_STATUS_INTERNAL_ERROR;
     }
 
+    status = SparkGlm52ResidentDecodeStageMaybeForceBenchmarkExpertCoverage(
+        pipeline_slot->moe_topk_expert_ids,
+        pipeline_slot->moe_topk_weights,
+        active_sequence_count,
+        node_context->moe_expert_count,
+        node_context->moe_top_k,
+        node_context->moe_routed_scaling_factor,
+        cuda_stream,
+        "fp8_grouped_moe");
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+
     status = SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedRouteBuild(
         pipeline_slot->moe_topk_expert_ids,
         pipeline_slot->moe_topk_weights,
@@ -9352,6 +9488,20 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedRefe
     if (cuda_status != cudaSuccess)
     {
         return SPARK_STATUS_INTERNAL_ERROR;
+    }
+
+    status = SparkGlm52ResidentDecodeStageMaybeForceBenchmarkExpertCoverage(
+        pipeline_slot->moe_topk_expert_ids,
+        pipeline_slot->moe_topk_weights,
+        active_sequence_count,
+        node_context->moe_expert_count,
+        node_context->moe_top_k,
+        node_context->moe_routed_scaling_factor,
+        cuda_stream,
+        "fp8_grouped_moe");
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
     }
 
     status = SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedRouteBuild(
