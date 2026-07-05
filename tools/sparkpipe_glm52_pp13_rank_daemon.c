@@ -782,9 +782,9 @@ static void SparkGlm52Pp13DaemonHandleWork(
         runtime->rank_plan.max_active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
     if (status == SPARK_STATUS_OK)
-        status = SparkGlm52Pp13DaemonForwardWork(runtime,packet);
-    if (status == SPARK_STATUS_OK)
         status = SparkGlm52Pp13DaemonSubmitWork(runtime,packet);
+    if (status == SPARK_STATUS_OK)
+        status = SparkGlm52Pp13DaemonForwardWork(runtime,packet);
     if (status == SPARK_STATUS_OK)
     {
         runtime->work_receive_count += 1u;
