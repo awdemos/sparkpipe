@@ -963,7 +963,15 @@ static SparkStatus SparkGlm52Pp13ServiceBackendLoadDriver(
 		&state->loaded_driver,
 		configuration->driver_program_name);
 	if (state->program == 0)
+	{
+		SparkSetError(
+			error_buffer,
+			error_buffer_bytes,
+			"driver program '%s' not found",
+			configuration->driver_program_name != 0 ?
+				configuration->driver_program_name : "");
 		return SPARK_STATUS_NOT_FOUND;
+	}
 	memset(&create_request,0,sizeof(create_request));
 	create_request.node_id = state->rank_plan.host_name;
 	create_request.node_target = configuration->node_target;
@@ -975,9 +983,22 @@ static SparkStatus SparkGlm52Pp13ServiceBackendLoadDriver(
 		&create_request,
 		&state->driver_instance);
 	if (status != SPARK_STATUS_OK)
+	{
+		SparkSetError(
+			error_buffer,
+			error_buffer_bytes,
+			"driver create failed status=%d",
+			(int32_t)status);
 		return status;
+	}
 	if (state->driver_instance == 0)
+	{
+		SparkSetError(
+			error_buffer,
+			error_buffer_bytes,
+			"driver create returned null instance");
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	return SPARK_STATUS_OK;
 }
 
