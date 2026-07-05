@@ -62,6 +62,7 @@ COMMON_SOURCES := \
     src/spark_glm52_stage_plan.c \
     src/spark_glm52_production_topology.c \
     src/spark_glm52_pp13_runtime.c \
+    src/spark_glm52_pp13_node_context_builder.c \
     src/spark_glm52_scheduler.c \
     src/spark_glm52_prefix_cache.c \
     src/spark_glm52_request_api.c \

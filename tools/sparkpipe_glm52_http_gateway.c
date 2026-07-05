@@ -26,6 +26,8 @@ typedef struct SparkGlm52GatewayConfig
 	const char *fp8_pack_root;
 	const char *transport_shared_object_path;
 	const char *driver_shared_object_path;
+	const char *node_context_builder_shared_object_path;
+	const char *embedding_pack_path;
 	const char *driver_program_name;
 	const char *node_target;
 	const char *tokenizer_path;
@@ -172,10 +174,27 @@ static int32_t SparkGlm52GatewayApplyArgument(
 		*index += 1;
 		return 0;
 	}
-	if (strcmp(argv[*index],"--program") == 0)
+	if (strcmp(argv[*index],"--node-context-builder-so") == 0)
 	{
 		if ((*index + 1) >= argc)
 			return -10;
+		configuration->node_context_builder_shared_object_path =
+			argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--embedding-pack") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -11;
+		configuration->embedding_pack_path = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--program") == 0)
+	{
+		if ((*index + 1) >= argc)
+			return -12;
 		configuration->driver_program_name = argv[*index + 1];
 		*index += 1;
 		return 0;
@@ -183,7 +202,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--node-target") == 0)
 	{
 		if ((*index + 1) >= argc)
-			return -11;
+			return -13;
 		configuration->node_target = argv[*index + 1];
 		*index += 1;
 		return 0;
@@ -191,7 +210,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--tokenizer") == 0)
 	{
 		if ((*index + 1) >= argc)
-			return -12;
+			return -14;
 		configuration->tokenizer_path = argv[*index + 1];
 		*index += 1;
 		return 0;
@@ -200,7 +219,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	{
 		if ((*index + 1) >= argc ||
 			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0)
-			return -13;
+			return -15;
 		configuration->max_active_sequence_count = parsed;
 		*index += 1;
 		return 0;
@@ -209,7 +228,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	{
 		if ((*index + 1) >= argc ||
 			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0)
-			return -14;
+			return -16;
 		configuration->port_base = parsed;
 		*index += 1;
 		return 0;
@@ -217,7 +236,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--final-event-bind") == 0)
 	{
 		if ((*index + 1) >= argc)
-			return -15;
+			return -17;
 		configuration->final_event_bind_address = argv[*index + 1];
 		*index += 1;
 		return 0;
@@ -225,12 +244,12 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--final-event-return-host") == 0)
 	{
 		if ((*index + 1) >= argc)
-			return -16;
+			return -18;
 		configuration->final_event_return_host = argv[*index + 1];
 		*index += 1;
 		return 0;
 	}
-	return -17;
+	return -19;
 }
 
 static int32_t SparkGlm52GatewayLoadApiKeyFile(
@@ -346,6 +365,10 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 		runtime->configuration.transport_shared_object_path;
 	backend_configuration.driver_shared_object_path =
 		runtime->configuration.driver_shared_object_path;
+	backend_configuration.node_context_builder_shared_object_path =
+		runtime->configuration.node_context_builder_shared_object_path;
+	backend_configuration.embedding_pack_path =
+		runtime->configuration.embedding_pack_path;
 	backend_configuration.driver_program_name =
 		runtime->configuration.driver_program_name;
 	backend_configuration.node_target = runtime->configuration.node_target;
@@ -755,7 +778,7 @@ int main(int argc,char **argv)
 	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
 	if (SparkGlm52GatewayParseArguments(&runtime.configuration,argc,argv) < 0)
 	{
-		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n]\n",argv[0]);
+		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--fp8-pack-root dir] [--transport-so path] [--driver-so path] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path]\n",argv[0]);
 		return 2;
 	}
 	if (SparkGlm52GatewayLoadApiKeyFile(&runtime.configuration) < 0)
