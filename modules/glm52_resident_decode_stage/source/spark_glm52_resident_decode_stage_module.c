@@ -2199,6 +2199,15 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
           node_context->dsa_indexshare_source_layer_index >=
             node_context->dsa_indexshare_group_end_layer_exclusive)) ||
+        (node_context->sparse_index_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL &&
+         (node_context->dsa_index_head_count == 0u ||
+          node_context->dsa_index_head_dimension == 0u ||
+          node_context->dsa_index_head_count > 256u ||
+          node_context->dsa_index_head_dimension > 256u ||
+          node_context->key_index_cache_bf16 == 0 ||
+          !isfinite(node_context->index_softmax_scale) ||
+          node_context->index_softmax_scale <= 0.0f)) ||
         !isfinite(node_context->qk_scale) ||
         node_context->qk_scale <= 0.0f ||
         !isfinite(node_context->rms_norm_epsilon) ||
@@ -2336,6 +2345,14 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         if (status != SPARK_STATUS_OK)
         {
             return status;
+        }
+        if (node_context->sparse_index_mode ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL &&
+            !SparkGlm52ResidentDecodeStagePointerIsAligned(
+                node_context->pipeline_slots[pipeline_slot_index].query_index_heads_bf16,
+                2u))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (node_context->projection_mode !=
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_LOWERED_BF16 &&

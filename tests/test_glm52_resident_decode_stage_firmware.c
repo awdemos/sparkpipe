@@ -221,6 +221,7 @@ static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
         pipeline_slots[pipeline_slot_index].block_table = U32Storage;
         pipeline_slots[pipeline_slot_index].context_lengths = U32Storage;
         pipeline_slots[pipeline_slot_index].first_block_token_offsets = U32Storage;
+        pipeline_slots[pipeline_slot_index].query_index_heads_bf16 = Bf16Storage;
         pipeline_slots[pipeline_slot_index].dsa_token_scores = F32Storage;
         pipeline_slots[pipeline_slot_index].sparse_token_indices = U32Storage;
         pipeline_slots[pipeline_slot_index].rotated_query_rope_bf16 = Bf16Storage;
@@ -270,6 +271,11 @@ static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
     node_context->rms_norm_epsilon = 0.000001f;
     node_context->cos_table = CosTableStorage;
     node_context->sin_table = SinTableStorage;
+    node_context->key_index_cache_bf16 = Bf16Storage;
+    node_context->index_head_weights_f32 = F32Storage;
+    node_context->index_softmax_scale = 1.0f;
+    node_context->dsa_index_head_count = 1u;
+    node_context->dsa_index_head_dimension = 1u;
     node_context->mla_cache_bf16 = MlaCacheStorage;
     node_context->key_nope_cache_bf16 = KeyNopeCacheStorage;
     node_context->value_cache_bf16 = ValueCacheStorage;
@@ -334,6 +340,76 @@ static SparkStatus SparkTestStageSliceLaunchPlaceholder(
     assert(cuda_stream != 0);
     return SPARK_STATUS_OK;
 }
+
+static void SparkTestGlm52ResidentDecodeStageDsaIndexShareFullRequiresScoreInputs(void)
+{
+    static uint16_t Bf16ScoreStorage[8];
+    static uint32_t U32ScoreStorage[8];
+    SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[2];
+    SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
+    SparkGlm52ResidentDecodeStageNodeContext node_context;
+    SparkFirmwareModuleConfiguration configuration;
+    SparkFirmwareModuleHostServices host_services;
+    SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
+    void *module_state;
+
+    SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
+        &node_context,
+        pipeline_slots,
+        fake_streams);
+    node_context.sparse_index_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL;
+    node_context.layer_index = 4u;
+    node_context.dsa_indexshare_source_layer_index = 4u;
+    node_context.dsa_indexshare_group_end_layer_exclusive = 8u;
+    node_context.dsa_indexshare_selected_token_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+    node_context.dsa_indexshare_layer_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT;
+    node_context.selected_token_indices_by_layer = U32ScoreStorage;
+
+    memset(&completion_state, 0, sizeof(completion_state));
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    memset(&host_services, 0, sizeof(host_services));
+    host_services.completion_function =
+        SparkGlm52ResidentDecodeStageTestCompletion;
+    host_services.completion_context = &completion_state;
+    host_services.node_context = &node_context;
+
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_OK);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
+
+    node_context.key_index_cache_bf16 = 0;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    node_context.key_index_cache_bf16 = Bf16ScoreStorage;
+    pipeline_slots[0].query_index_heads_bf16 = 0;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    node_context.sparse_index_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED;
+    node_context.key_index_cache_bf16 = 0;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_OK);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
+}
+
 
 static void SparkTestInitializeStageSlicePlan(
     SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan)
@@ -3024,6 +3100,7 @@ int main(void)
     SparkTestGlm52ResidentDecodeStageBuiltInQuantizedProjectionValidation();
     SparkTestGlm52ResidentDecodeStageFp8DenseMlpPlanValidation();
     SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation();
+    SparkTestGlm52ResidentDecodeStageDsaIndexShareFullRequiresScoreInputs();
     SparkTestGlm52ResidentDecodeStageBulkPrefillSubmit();
     SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit();
     SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge();
