@@ -2072,11 +2072,29 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 			&state->runner,
 			&dispatch);
 		if (status != SPARK_STATUS_OK)
+		{
+			fprintf(
+				stderr,
+				"pp13_builder_prefill_runner status=%u token_offset=%u position=%u token_id=%u\n",
+				status,
+				token_offset,
+				position,
+				token_id);
 			return status;
+		}
 		status = SparkGlm52Pp13BuilderCudaStatus(
 			cudaStreamSynchronize(state->stream));
 		if (status != SPARK_STATUS_OK)
+		{
+			fprintf(
+				stderr,
+				"pp13_builder_prefill_sync status=%u token_offset=%u position=%u token_id=%u\n",
+				status,
+				token_offset,
+				position,
+				token_id);
 			return status;
+		}
 	}
 	return SPARK_STATUS_OK;
 }
