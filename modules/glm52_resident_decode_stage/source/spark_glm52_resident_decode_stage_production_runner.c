@@ -228,24 +228,24 @@ static SparkStatus SparkGlm52ProductionRunnerAdmit(
         &decision);
     if ( status != SPARK_STATUS_OK )
         return status;
-	if ( decision.accepted == 0u )
-	{
-		runner->stats.last_admission_rejection = decision.rejection_reason;
-		runner->stats.rejected_count += 1u;
-		fprintf(
-			stderr,
-			"production_runner_admit_reject reason=%u request=%llu sequence=%llu position=%llu active=%u tokens=%u flags=0x%08x available=%u pressure=%u\n",
-			decision.rejection_reason,
-			(unsigned long long)request.request_id,
-			(unsigned long long)request.sequence_id,
-			(unsigned long long)request.sequence_position,
-			request.active_slot_count,
-			request.new_token_count,
-			request.frame_flags,
-			decision.available_dispatch_slot_count,
-			decision.private_queue_pressure);
-		return SPARK_STATUS_BUSY;
-	}
+    if ( decision.accepted == 0u )
+    {
+        runner->stats.last_admission_rejection = decision.rejection_reason;
+        runner->stats.rejected_count += 1u;
+        fprintf(
+            stderr,
+            "production_runner_admit_reject reason=%u request=%llu sequence=%llu position=%llu active=%u tokens=%u flags=0x%08x available=%u pressure=%u\n",
+            decision.rejection_reason,
+            (unsigned long long)request.request_id,
+            (unsigned long long)request.sequence_id,
+            (unsigned long long)request.sequence_position,
+            request.active_slot_count,
+            request.new_token_count,
+            request.frame_flags,
+            decision.available_dispatch_slot_count,
+            decision.private_queue_pressure);
+        return SPARK_STATUS_BUSY;
+    }
     runner->stats.admitted_count += 1u;
     frame->flags |= SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID;
     frame->driver_dispatch_slot = decision.driver_dispatch_slot;
