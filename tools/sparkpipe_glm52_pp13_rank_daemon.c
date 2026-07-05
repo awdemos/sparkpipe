@@ -23,6 +23,8 @@
 #define SPARK_GLM52_PP13_DAEMON_DEFAULT_PROGRAM "glm52.pp13.rank.production"
 #define SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_MAGIC 0x35454650u
 #define SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY 2048u
+#define SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_HASH_SLOTS 4096u
+#define SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT UINT32_MAX
 
 typedef struct SparkGlm52Pp13DaemonConfig
 {
@@ -64,12 +66,15 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     uint8_t work_read_buffer[SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES];
     uint32_t work_read_offset;
     SparkGlm52Pp13WorkControlPacket work_queue[SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY];
+    uint32_t work_queue_hash_heads[SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_HASH_SLOTS];
+    uint32_t work_queue_hash_next[SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY];
     uint32_t work_queue_head;
     uint32_t work_queue_count;
     uint64_t work_receive_count;
     uint64_t work_forward_count;
     uint64_t work_submit_count;
     uint64_t work_error_count;
+    uint64_t work_duplicate_count;
     uint8_t final_event_read_buffer[128];
     uint32_t final_event_read_offset;
     uint64_t final_event_send_count;
@@ -775,21 +780,157 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
         runtime);
 }
 
+static uint32_t SparkGlm52Pp13DaemonWorkPacketHash(
+    const SparkGlm52Pp13WorkControlPacket *packet)
+{
+    uint64_t hash;
+
+    if (packet == 0)
+        return 0u;
+    hash = packet->request_id;
+    hash ^= (packet->sequence_id * 0x9e3779b97f4a7c15ull);
+    hash ^= (packet->sequence_position * 0xbf58476d1ce4e5b9ull);
+    hash ^= ((uint64_t)packet->pipeline_slot << 32);
+    hash ^= ((uint64_t)packet->active_sequence_count << 48);
+    return (uint32_t)(hash ^ (hash >> 32u));
+}
+
+static uint32_t SparkGlm52Pp13DaemonWorkPacketMatches(
+    const SparkGlm52Pp13WorkControlPacket *left,
+    const SparkGlm52Pp13WorkControlPacket *right)
+{
+    if (left == 0 || right == 0)
+        return 0u;
+    return left->request_id == right->request_id &&
+        left->sequence_id == right->sequence_id &&
+        left->sequence_position == right->sequence_position &&
+        left->pipeline_slot == right->pipeline_slot &&
+        left->active_sequence_count == right->active_sequence_count &&
+        left->new_token_count == right->new_token_count;
+}
+
+static void SparkGlm52Pp13DaemonInitializeWorkQueue(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    uint32_t slot_index;
+
+    if (runtime == 0)
+        return;
+    for (slot_index = 0u;
+         slot_index < SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_HASH_SLOTS;
+         ++slot_index)
+        runtime->work_queue_hash_heads[slot_index] =
+            SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT;
+    for (slot_index = 0u;
+         slot_index < SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
+         ++slot_index)
+        runtime->work_queue_hash_next[slot_index] =
+            SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT;
+}
+
+static uint32_t SparkGlm52Pp13DaemonFindQueuedWorkSlot(
+    SparkGlm52Pp13DaemonRuntime *runtime,
+    const SparkGlm52Pp13WorkControlPacket *packet)
+{
+    uint32_t hash_slot;
+    uint32_t slot_index;
+
+    if (runtime == 0 || packet == 0)
+        return SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT;
+    hash_slot = SparkGlm52Pp13DaemonWorkPacketHash(packet) %
+        SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_HASH_SLOTS;
+    slot_index = runtime->work_queue_hash_heads[hash_slot];
+    while (slot_index != SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT)
+    {
+        if (slot_index >= SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY)
+            return SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT;
+        if (SparkGlm52Pp13DaemonWorkPacketMatches(
+                &runtime->work_queue[slot_index],
+                packet) != 0u)
+            return slot_index;
+        slot_index = runtime->work_queue_hash_next[slot_index];
+    }
+    return SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT;
+}
+
+static void SparkGlm52Pp13DaemonInsertQueuedWorkHash(
+    SparkGlm52Pp13DaemonRuntime *runtime,
+    uint32_t queue_slot)
+{
+    uint32_t hash_slot;
+
+    if (runtime == 0 ||
+        queue_slot >= SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY)
+        return;
+    hash_slot =
+        SparkGlm52Pp13DaemonWorkPacketHash(&runtime->work_queue[queue_slot]) %
+        SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_HASH_SLOTS;
+    runtime->work_queue_hash_next[queue_slot] =
+        runtime->work_queue_hash_heads[hash_slot];
+    runtime->work_queue_hash_heads[hash_slot] = queue_slot;
+}
+
+static void SparkGlm52Pp13DaemonRemoveQueuedWorkHash(
+    SparkGlm52Pp13DaemonRuntime *runtime,
+    uint32_t queue_slot)
+{
+    uint32_t hash_slot;
+    uint32_t slot_index;
+    uint32_t previous_slot;
+
+    if (runtime == 0 ||
+        queue_slot >= SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY)
+        return;
+    hash_slot =
+        SparkGlm52Pp13DaemonWorkPacketHash(&runtime->work_queue[queue_slot]) %
+        SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_HASH_SLOTS;
+    slot_index = runtime->work_queue_hash_heads[hash_slot];
+    previous_slot = SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT;
+    while (slot_index != SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT)
+    {
+        if (slot_index == queue_slot)
+        {
+            if (previous_slot == SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT)
+                runtime->work_queue_hash_heads[hash_slot] =
+                    runtime->work_queue_hash_next[slot_index];
+            else
+                runtime->work_queue_hash_next[previous_slot] =
+                    runtime->work_queue_hash_next[slot_index];
+            runtime->work_queue_hash_next[slot_index] =
+                SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT;
+            return;
+        }
+        if (slot_index >= SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY)
+            return;
+        previous_slot = slot_index;
+        slot_index = runtime->work_queue_hash_next[slot_index];
+    }
+}
+
 static SparkStatus SparkGlm52Pp13DaemonQueueWork(
     SparkGlm52Pp13DaemonRuntime *runtime,
     const SparkGlm52Pp13WorkControlPacket *packet)
 {
     uint32_t tail;
+    uint32_t existing_slot;
 
     if (runtime == 0 || packet == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
+    runtime->work_receive_count += 1u;
+    existing_slot = SparkGlm52Pp13DaemonFindQueuedWorkSlot(runtime,packet);
+    if (existing_slot != SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT)
+    {
+        runtime->work_queue[existing_slot] = *packet;
+        runtime->work_duplicate_count += 1u;
+        return SPARK_STATUS_OK;
+    }
     if (runtime->work_queue_count >= SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY)
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     tail = (runtime->work_queue_head + runtime->work_queue_count) %
         SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
     runtime->work_queue[tail] = *packet;
+    SparkGlm52Pp13DaemonInsertQueuedWorkHash(runtime,tail);
     runtime->work_queue_count += 1u;
-    runtime->work_receive_count += 1u;
     return SPARK_STATUS_OK;
 }
 
@@ -798,6 +939,7 @@ static void SparkGlm52Pp13DaemonPopWork(
 {
     if (runtime == 0 || runtime->work_queue_count == 0u)
         return;
+    SparkGlm52Pp13DaemonRemoveQueuedWorkHash(runtime,runtime->work_queue_head);
     runtime->work_queue_head = (runtime->work_queue_head + 1u) %
         SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
     runtime->work_queue_count -= 1u;
@@ -806,8 +948,22 @@ static void SparkGlm52Pp13DaemonPopWork(
 static void SparkGlm52Pp13DaemonDeferWork(
     SparkGlm52Pp13DaemonRuntime *runtime)
 {
+    SparkGlm52Pp13WorkControlPacket packet;
+    uint32_t old_head;
+    uint32_t tail;
+
     if (runtime == 0 || runtime->work_queue_count <= 1u)
         return;
+    old_head = runtime->work_queue_head;
+    if (runtime->work_queue_count < SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY)
+    {
+        tail = (runtime->work_queue_head + runtime->work_queue_count) %
+            SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
+        packet = runtime->work_queue[old_head];
+        SparkGlm52Pp13DaemonRemoveQueuedWorkHash(runtime,old_head);
+        runtime->work_queue[tail] = packet;
+        SparkGlm52Pp13DaemonInsertQueuedWorkHash(runtime,tail);
+    }
     runtime->work_queue_head = (runtime->work_queue_head + 1u) %
         SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
 }
@@ -1054,6 +1210,7 @@ static SparkStatus SparkGlm52Pp13DaemonInitialize(
     runtime->work_output_socket_fd = -1;
     runtime->final_event_listen_fd = -1;
     runtime->final_event_socket_fd = -1;
+    SparkGlm52Pp13DaemonInitializeWorkQueue(runtime);
     SparkLoadedModelDriverReset(&runtime->loaded_driver);
     status = SparkGlm52Pp13RuntimeBuildRankPlan(
         configuration->rank_index,
@@ -1240,6 +1397,8 @@ static void SparkGlm52Pp13DaemonPrintReady(
         (unsigned long long)runtime->work_forward_count);
     printf("work_submitted=%llu\n",
         (unsigned long long)runtime->work_submit_count);
+    printf("work_duplicates=%llu\n",
+        (unsigned long long)runtime->work_duplicate_count);
     printf("work_errors=%llu\n",
         (unsigned long long)runtime->work_error_count);
     printf("final_event_listen=%d\n",runtime->final_event_listen_fd);
