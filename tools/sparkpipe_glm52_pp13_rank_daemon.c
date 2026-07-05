@@ -143,6 +143,19 @@ static void SparkGlm52Pp13DaemonSetDefaultError(
     snprintf(error_buffer,error_buffer_bytes,"%s",message);
 }
 
+static void SparkGlm52Pp13DaemonSetStatusError(
+    char *error_buffer,
+    uint32_t error_buffer_bytes,
+    const char *message,
+    SparkStatus status)
+{
+    if (error_buffer == 0 || error_buffer_bytes == 0u ||
+        error_buffer[0] != '\0')
+        return;
+    snprintf(error_buffer,error_buffer_bytes,"%s status=%d",
+        message,(int32_t)status);
+}
+
 static int32_t SparkGlm52Pp13DaemonApplyArgument(
     SparkGlm52Pp13DaemonConfig *configuration,
     int argc,
@@ -502,12 +515,25 @@ static SparkStatus SparkGlm52Pp13DaemonLoadDriver(
         error_buffer,
         error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetStatusError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to dlopen/validate GLM52 model driver",
+            status);
         return status;
+    }
     runtime->program = SparkFindLoadedModelDriverProgram(
         &runtime->loaded_driver,
         configuration->program_name);
     if (runtime->program == 0)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "decode program not found in GLM52 model driver");
         return SPARK_STATUS_NOT_FOUND;
+    }
     memset(&create_request,0,sizeof(create_request));
     create_request.node_id = runtime->rank_plan.host_name;
     create_request.node_target = configuration->node_target;
@@ -518,9 +544,22 @@ static SparkStatus SparkGlm52Pp13DaemonLoadDriver(
         &create_request,
         &runtime->driver_instance);
     if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52Pp13DaemonSetStatusError(
+            error_buffer,
+            error_buffer_bytes,
+            "GLM52 model driver create failed",
+            status);
         return status;
+    }
     if (runtime->driver_instance == 0)
+    {
+        SparkGlm52Pp13DaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "GLM52 model driver returned NULL instance");
         return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     return SPARK_STATUS_OK;
 }
 
