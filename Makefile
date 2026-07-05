@@ -281,7 +281,7 @@ $(HIDDEN_TRANSPORT_TCP_CUDA): modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBR
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "hidden_transport_tcp_cuda skipped: nvcc unavailable"; \
 	else \
-		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -ldl -pthread -o $@; \
+		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@; \
 	fi
 
 hidden_transport_tcp_cuda: $(HIDDEN_TRANSPORT_TCP_CUDA)
