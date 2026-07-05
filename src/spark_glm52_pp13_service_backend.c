@@ -261,14 +261,27 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 	if (state->builder_library.builder_interface.prefill == 0 ||
 		state->builder_state == 0)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	fprintf(
+		stderr,
+		"pp13_prefill dispatch_kind=%u active=%u lanes=%u offset=%u tokens=%u\n",
+		prefill_dispatch->dispatch_kind,
+		prefill_dispatch->active_sequence_count,
+		prefill_dispatch->lane_count,
+		prefill_dispatch->prompt_token_offset,
+		prefill_dispatch->prompt_token_count);
 	status = SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 		state,
 		prefill_dispatch);
 	if (status != SPARK_STATUS_OK)
+	{
+		fprintf(stderr,"pp13_prefill_forward status=%u\n",status);
 		return status;
-	return state->builder_library.builder_interface.prefill(
+	}
+	status = state->builder_library.builder_interface.prefill(
 		state->builder_state,
 		prefill_dispatch);
+	fprintf(stderr,"pp13_prefill_builder status=%u\n",status);
+	return status;
 }
 
 static int32_t SparkGlm52Pp13ServiceBackendSetNonblocking(int32_t fd)
@@ -534,17 +547,30 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
 	if (state->builder_library.builder_interface.decode == 0 ||
 		state->builder_state == 0)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	fprintf(
+		stderr,
+		"pp13_decode kind=%u requests=%u active=%u\n",
+		decode_dispatch->dispatch_kind,
+		decode_dispatch->request_count,
+		decode_dispatch->active_sequence_count);
 	status = SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 		state,
 		decode_dispatch);
 	if (status != SPARK_STATUS_OK)
+	{
+		fprintf(stderr,"pp13_decode_forward status=%u\n",status);
 		return status;
+	}
 	status = state->builder_library.builder_interface.decode(
 		state->builder_state,
 		decode_dispatch,
 		decode_result);
 	if (status != SPARK_STATUS_OK)
+	{
+		fprintf(stderr,"pp13_decode_builder status=%u\n",status);
 		return status;
+	}
+	fprintf(stderr,"pp13_decode_wait_final begin\n");
 	return SparkGlm52Pp13ServiceBackendWaitForDecodeFinalEvents(
 		state,
 		decode_dispatch,
