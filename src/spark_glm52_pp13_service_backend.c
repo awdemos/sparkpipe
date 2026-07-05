@@ -1256,11 +1256,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 			"GLM52 PP13 node-context builder shared object is missing");
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13ServiceBackendRequireText(
-			configuration->embedding_pack_path,
-			state,
-			"GLM52 embedding pack is missing");
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13ServiceBackendRequireText(
 			configuration->driver_program_name,
 			state,
 			"GLM52 driver program name is missing");
