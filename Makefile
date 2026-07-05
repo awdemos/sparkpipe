@@ -1,10 +1,10 @@
 CC ?= cc
 AR ?= ar
 NVCC ?= nvcc
-CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3 -g
+CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3 -g -pthread
 CPPFLAGS ?= -Iinclude -Isrc
 LDFLAGS ?=
-LDLIBS ?= -ldl
+LDLIBS ?= -ldl -pthread
 CUDA_ARCH ?= sm_121a
 NVCCFLAGS ?= -O3 --use_fast_math -arch=$(CUDA_ARCH)
 SPARKPIPE_B12X_AOT_ENV ?= $(HOME)/.config/sparkpipe/glm52_b12x_aot_env.sh
@@ -54,6 +54,7 @@ COMMON_SOURCES := \
     src/spark_glm52_scheduler.c \
     src/spark_glm52_prefix_cache.c \
     src/spark_glm52_request_api.c \
+    src/spark_glm52_long_context.c \
     src/spark_tokenizer.c \
     src/spark_glm52_text_prompt.c \
     src/spark_glm52_prompt_pipeline.c \
@@ -83,7 +84,8 @@ TOOL_NAMES := \
     sparkpipe_driver_inspect \
     sparkpipe_glm52_prefill_dryrun \
     sparkpipe_glm52_tokenize \
-    sparkpipe_tokenize_prompt
+    sparkpipe_tokenize_prompt \
+    sparkpipe_tokenizer_benchmark
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
@@ -96,6 +98,7 @@ TEST_NAMES := \
     test_glm52_scheduler \
     test_glm52_prefix_cache \
     test_glm52_request_api \
+    test_glm52_long_context \
     test_tokenizer \
     test_glm52_prompt_pipeline \
     test_glm52_serving_engine \
@@ -198,6 +201,9 @@ build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(COMMON_LIBRAR
 build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_tokenizer_benchmark: tools/sparkpipe_tokenizer_benchmark.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 $(TEST_SUPPORT_OBJECT): tests/test_support.c tests/test_support.h $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -MMD -MP -c tests/test_support.c -o $@
 
@@ -255,6 +261,10 @@ build/test_glm52_prefix_cache: tests/test_glm52_prefix_cache.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_request_api: tests/test_glm52_request_api.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+
+build/test_glm52_long_context: tests/test_glm52_long_context.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 

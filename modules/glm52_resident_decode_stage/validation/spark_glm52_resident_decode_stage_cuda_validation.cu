@@ -236,6 +236,12 @@ typedef struct SparkValidationDeviceBuffers
     uint16_t *dense_gate_weight_bf16;
     uint16_t *dense_up_weight_bf16;
     uint16_t *dense_down_weight_bf16;
+    uint8_t *dense_gate_weight_fp8_e4m3;
+    float *dense_gate_weight_scale_inv_f32;
+    uint8_t *dense_up_weight_fp8_e4m3;
+    float *dense_up_weight_scale_inv_f32;
+    uint8_t *dense_down_weight_fp8_e4m3;
+    float *dense_down_weight_scale_inv_f32;
     uint16_t *moe_router_weight_bf16;
     uint8_t *routed_gate_weight_payload_u8;
     uint8_t *routed_up_weight_payload_u8;
@@ -1388,6 +1394,62 @@ static bool SparkValidationLoadLayer0DenseBf16Fixture(
     }
     fixture->ready = 1u;
     fprintf(stderr, "layer0_dense_bf16_fixture_ready=1 model_dir=%s dense_layer_index=%u bytes=%llu\n", model_directory, layer_index, (unsigned long long)fixture->copied_bytes);
+    return true;
+}
+
+static bool SparkValidationLoadLayer0DenseFp8Fixture(
+    SparkValidationDeviceBuffers *buffers,
+    const char *model_directory,
+    uint32_t layer_index,
+    SparkValidationLayer0DenseBf16Fixture *fixture)
+{
+    const uint64_t norm_shape[1] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t gate_up_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    const uint64_t gate_up_scale_shape[2] = {96u, 48u};
+    const uint64_t down_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION};
+    const uint64_t down_scale_shape[2] = {48u, 96u};
+    char norm_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char gate_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char gate_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char up_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char up_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char down_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+    char down_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
+
+    memset(fixture, 0, sizeof(*fixture));
+    if (layer_index >= SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT)
+    {
+        fprintf(stderr, "GLM52_DENSE_LAYER_INDEX must be 0..%u\n", SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT - 1u);
+        return false;
+    }
+    if (!SparkValidationBuildLayerTensorName(norm_name, sizeof(norm_name), layer_index, "post_attention_layernorm.weight") ||
+        !SparkValidationBuildLayerTensorName(gate_name, sizeof(gate_name), layer_index, "mlp.gate_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(gate_scale_name, sizeof(gate_scale_name), layer_index, "mlp.gate_proj.weight_scale_inv") ||
+        !SparkValidationBuildLayerTensorName(up_name, sizeof(up_name), layer_index, "mlp.up_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(up_scale_name, sizeof(up_scale_name), layer_index, "mlp.up_proj.weight_scale_inv") ||
+        !SparkValidationBuildLayerTensorName(down_name, sizeof(down_name), layer_index, "mlp.down_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(down_scale_name, sizeof(down_scale_name), layer_index, "mlp.down_proj.weight_scale_inv"))
+    {
+        fprintf(stderr, "dense FP8 layer tensor name is too long\n");
+        return false;
+    }
+    if (!SparkValidationCopyBf16TensorToDevice(model_directory, norm_name, norm_shape, 1u, buffers->post_attention_norm_weight_bf16, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, gate_name, gate_up_shape, 2u, buffers->dense_gate_weight_fp8_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationCopyF32TensorToDevice(model_directory, gate_scale_name, gate_up_scale_shape, 2u, buffers->dense_gate_weight_scale_inv_f32, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, up_name, gate_up_shape, 2u, buffers->dense_up_weight_fp8_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationCopyF32TensorToDevice(model_directory, up_scale_name, gate_up_scale_shape, 2u, buffers->dense_up_weight_scale_inv_f32, &fixture->copied_bytes) ||
+        !SparkValidationCopyF8E4m3TensorToDevice(model_directory, down_name, down_shape, 2u, buffers->dense_down_weight_fp8_e4m3, &fixture->copied_bytes) ||
+        !SparkValidationCopyF32TensorToDevice(model_directory, down_scale_name, down_scale_shape, 2u, buffers->dense_down_weight_scale_inv_f32, &fixture->copied_bytes))
+    {
+        return false;
+    }
+    fixture->ready = 1u;
+    fprintf(stderr, "layer0_dense_fp8_fixture_ready=1 model_dir=%s dense_layer_index=%u bytes=%llu\n", model_directory, layer_index, (unsigned long long)fixture->copied_bytes);
     return true;
 }
 
@@ -2858,6 +2920,10 @@ static bool SparkValidationAllocateDeviceBuffers(
     uint64_t moe_route_hidden_count;
     uint64_t moe_gate_weight_count;
     uint64_t moe_down_weight_count;
+    uint64_t dense_gate_up_weight_count;
+    uint64_t dense_down_weight_count;
+    uint64_t dense_gate_up_scale_count;
+    uint64_t dense_down_scale_count;
     uint64_t moe_router_weight_count;
     uint64_t routed_gate_up_payload_count;
     uint64_t routed_gate_up_scale_count;
@@ -2972,6 +3038,26 @@ static bool SparkValidationAllocateDeviceBuffers(
         SPARK_VALIDATION_MOE_BOUND_EXPERT_COUNT *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+    dense_gate_up_weight_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+    dense_down_weight_count =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION;
+    dense_gate_up_scale_count =
+        (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION +
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK) *
+        (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION +
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK);
+    dense_down_scale_count =
+        (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION +
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK) *
+        (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION +
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK);
     moe_router_weight_count =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
@@ -3071,6 +3157,12 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->dense_gate_weight_bf16, moe_gate_weight_count * 2u, "cudaMalloc moe_gate_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_up_weight_bf16, moe_gate_weight_count * 2u, "cudaMalloc moe_up_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_down_weight_bf16, moe_down_weight_count * 2u, "cudaMalloc moe_down_weight") &&
+        SparkValidationAllocateZeroed((void **)&buffers->dense_gate_weight_fp8_e4m3, dense_gate_up_weight_count, "cudaMalloc dense_gate_weight_fp8") &&
+        SparkValidationAllocateZeroed((void **)&buffers->dense_gate_weight_scale_inv_f32, dense_gate_up_scale_count * 4u, "cudaMalloc dense_gate_scale") &&
+        SparkValidationAllocateZeroed((void **)&buffers->dense_up_weight_fp8_e4m3, dense_gate_up_weight_count, "cudaMalloc dense_up_weight_fp8") &&
+        SparkValidationAllocateZeroed((void **)&buffers->dense_up_weight_scale_inv_f32, dense_gate_up_scale_count * 4u, "cudaMalloc dense_up_scale") &&
+        SparkValidationAllocateZeroed((void **)&buffers->dense_down_weight_fp8_e4m3, dense_down_weight_count, "cudaMalloc dense_down_weight_fp8") &&
+        SparkValidationAllocateZeroed((void **)&buffers->dense_down_weight_scale_inv_f32, dense_down_scale_count * 4u, "cudaMalloc dense_down_scale") &&
         SparkValidationAllocateZeroed((void **)&buffers->moe_router_weight_bf16, moe_router_weight_count * 2u, "cudaMalloc moe_router_weight") &&
         SparkValidationAllocateZeroed((void **)&buffers->routed_gate_weight_payload_u8, routed_gate_up_payload_count, "cudaMalloc routed_gate_weight_payload") &&
         SparkValidationAllocateZeroed((void **)&buffers->routed_up_weight_payload_u8, routed_gate_up_payload_count, "cudaMalloc routed_up_weight_payload") &&
@@ -3496,6 +3588,18 @@ static void SparkValidationConfigureNode(
     node_context->dense_gate_weight_bf16 = buffers->dense_gate_weight_bf16;
     node_context->dense_up_weight_bf16 = buffers->dense_up_weight_bf16;
     node_context->dense_down_weight_bf16 = buffers->dense_down_weight_bf16;
+    node_context->dense_gate_weight_fp8_e4m3 =
+        buffers->dense_gate_weight_fp8_e4m3;
+    node_context->dense_gate_weight_scale_inv_f32 =
+        buffers->dense_gate_weight_scale_inv_f32;
+    node_context->dense_up_weight_fp8_e4m3 =
+        buffers->dense_up_weight_fp8_e4m3;
+    node_context->dense_up_weight_scale_inv_f32 =
+        buffers->dense_up_weight_scale_inv_f32;
+    node_context->dense_down_weight_fp8_e4m3 =
+        buffers->dense_down_weight_fp8_e4m3;
+    node_context->dense_down_weight_scale_inv_f32 =
+        buffers->dense_down_weight_scale_inv_f32;
     node_context->final_norm_weight_bf16 = buffers->final_norm_weight_bf16;
     node_context->restricted_lm_head_weight_bf16 =
         buffers->restricted_lm_head_weight_bf16;
@@ -8389,11 +8493,18 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
     }
     if (use_dense_mlp != 0u)
     {
-        if (!SparkValidationLoadLayer0DenseBf16Fixture(
-                buffers,
-                model_directory,
-                layer_index,
-                &dense_fixture) ||
+        if (!(model_quantization ==
+                SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8
+                ? SparkValidationLoadLayer0DenseFp8Fixture(
+                    buffers,
+                    model_directory,
+                    layer_index,
+                    &dense_fixture)
+                : SparkValidationLoadLayer0DenseBf16Fixture(
+                    buffers,
+                    model_directory,
+                    layer_index,
+                    &dense_fixture)) ||
             !SparkValidationBindDenseLayerCache(
                 buffers,
                 node_context,
@@ -8405,6 +8516,16 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN;
+        if (model_quantization ==
+            SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8)
+        {
+            node_context->model_quantization_mode =
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
+            node_context->reserved_execution_flags |=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
+            node_context->mlp_execution_mode =
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE;
+        }
     }
     else
     {
