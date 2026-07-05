@@ -12,6 +12,7 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_required_cuda.h"
+#include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_glm52_stagepack.h"
 
 #define SPARK_GLM52_PP13_BUILDER_LAYER_COUNT 6u
@@ -1037,9 +1038,13 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 {
 	uint64_t candidates;
 	uint64_t workspace_bytes;
+	uint32_t batch_bucket;
 	SparkStatus status;
+	batch_bucket =
+		SparkGlm52StagePlanSelectBatchBucket(
+			state->rank_plan.max_active_sequence_count);
 	candidates =
-		(uint64_t)state->rank_plan.max_active_sequence_count *
+		(uint64_t)batch_bucket *
 		(uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) *
 		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT;
 	workspace_bytes =
@@ -1064,7 +1069,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 	state->exact_plan.stage_index = state->rank_plan.rank_index;
 	state->exact_plan.first_layer_index = state->rank_plan.first_layer_index;
 	state->exact_plan.layer_count = state->rank_plan.layer_count;
-	state->exact_plan.batch_bucket = state->rank_plan.max_active_sequence_count;
+	state->exact_plan.batch_bucket = batch_bucket;
 	state->exact_plan.maximum_active_sequence_count =
 		state->rank_plan.max_active_sequence_count;
 	state->exact_plan.capability_flags =
