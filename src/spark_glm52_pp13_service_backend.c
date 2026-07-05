@@ -272,17 +272,18 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 		prefill_dispatch->lane_count,
 		prefill_dispatch->prompt_token_offset,
 		prefill_dispatch->prompt_token_count);
-	status = state->builder_library.builder_interface.prefill(
-		state->builder_state,
-		prefill_dispatch);
-	fprintf(stderr,"pp13_prefill_builder status=%u\n",status);
-	if (status != SPARK_STATUS_OK)
-		return status;
 	status = SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 		state,
 		prefill_dispatch);
 	if (status != SPARK_STATUS_OK)
+	{
 		fprintf(stderr,"pp13_prefill_forward status=%u\n",status);
+		return status;
+	}
+	status = state->builder_library.builder_interface.prefill(
+		state->builder_state,
+		prefill_dispatch);
+	fprintf(stderr,"pp13_prefill_builder status=%u\n",status);
 	return status;
 }
 
@@ -555,6 +556,14 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
 		decode_dispatch->dispatch_kind,
 		decode_dispatch->request_count,
 		decode_dispatch->active_sequence_count);
+	status = SparkGlm52Pp13ServiceBackendForwardDecodeWork(
+		state,
+		decode_dispatch);
+	if (status != SPARK_STATUS_OK)
+	{
+		fprintf(stderr,"pp13_decode_forward status=%u\n",status);
+		return status;
+	}
 	status = state->builder_library.builder_interface.decode(
 		state->builder_state,
 		decode_dispatch,
@@ -562,14 +571,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
 	if (status != SPARK_STATUS_OK)
 	{
 		fprintf(stderr,"pp13_decode_builder status=%u\n",status);
-		return status;
-	}
-	status = SparkGlm52Pp13ServiceBackendForwardDecodeWork(
-		state,
-		decode_dispatch);
-	if (status != SPARK_STATUS_OK)
-	{
-		fprintf(stderr,"pp13_decode_forward status=%u\n",status);
 		return status;
 	}
 	fprintf(stderr,"pp13_decode_wait_final begin\n");
