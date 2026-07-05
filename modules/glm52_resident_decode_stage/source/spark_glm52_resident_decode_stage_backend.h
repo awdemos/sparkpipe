@@ -16,6 +16,9 @@ typedef struct SparkGlm52ResidentDecodeStageBackendCompletion
 {
     SparkGlm52ResidentDecodeStageBackendCompletionFunction function;
     void *context;
+    uint32_t requested_token_count;
+    uint32_t token_count;
+    uint32_t token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
 } SparkGlm52ResidentDecodeStageBackendCompletion;
 
 SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(

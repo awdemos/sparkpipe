@@ -21,6 +21,72 @@ static void CUDART_CB SparkGlm52ResidentDecodeStageCudaCompletion(
     }
 }
 
+static SparkStatus SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t final_token_stage,
+    uint32_t active_sequence_count,
+    SparkGlm52ResidentDecodeStageBackendCompletion *completion,
+    cudaStream_t cuda_stream)
+{
+    uint32_t token_count;
+    cudaError_t cuda_status;
+
+    if (final_token_stage == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (pipeline_slot == 0 || completion == 0 ||
+        active_sequence_count == 0u ||
+        pipeline_slot->restricted_selected_token_ids == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    token_count = completion->requested_token_count;
+    if (token_count == 0u)
+    {
+        token_count = 1u;
+    }
+    if (token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
+    {
+        token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
+    }
+    if (token_count >
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
+    {
+        token_count =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u;
+    }
+    cuda_status = cudaMemcpyAsync(
+        &completion->token_ids[0u],
+        pipeline_slot->restricted_selected_token_ids,
+        sizeof(uint32_t),
+        cudaMemcpyDeviceToHost,
+        cuda_stream);
+    if (cuda_status != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (token_count > 1u)
+    {
+        if (pipeline_slot->mtp_committed_token_ids == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        cuda_status = cudaMemcpyAsync(
+            &completion->token_ids[1u],
+            pipeline_slot->mtp_committed_token_ids,
+            (size_t)(token_count - 1u) * sizeof(uint32_t),
+            cudaMemcpyDeviceToHost,
+            cuda_stream);
+        if (cuda_status != cudaSuccess)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+    }
+    completion->token_count = token_count;
+    return SPARK_STATUS_OK;
+}
+
 extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendVerifyRequiredCudaModules(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
@@ -86,6 +152,18 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
                 cudaGetErrorString(cuda_status));
             return SPARK_STATUS_INTERNAL_ERROR;
         }
+    }
+
+    status = SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
+        pipeline_slot,
+        final_token_stage,
+        active_sequence_count,
+        completion,
+        (cudaStream_t)cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        cudaStreamSynchronize((cudaStream_t)cuda_stream);
+        return status;
     }
 
     cuda_status = cudaLaunchHostFunc(

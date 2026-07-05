@@ -48,7 +48,7 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     SparkGlm52ResidentDecodeStageProductionRunner runner;
     int32_t final_event_listen_fd;
     int32_t final_event_socket_fd;
-    uint8_t final_event_read_buffer[64];
+    uint8_t final_event_read_buffer[128];
     uint32_t final_event_read_offset;
     uint64_t final_event_send_count;
     uint64_t final_event_receive_count;
@@ -66,8 +66,9 @@ typedef struct SparkGlm52Pp13DaemonFinalEvent
     uint32_t program_id;
     uint32_t driver_dispatch_slot;
     uint32_t accepted_token_count;
-    uint32_t reserved0;
-    uint32_t reserved1;
+    uint32_t completion_flags;
+    uint32_t token_count;
+    uint32_t token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
     uint64_t request_id;
     uint64_t sequence_id;
     uint64_t sequence_position;
@@ -379,6 +380,12 @@ static void SparkGlm52Pp13DaemonCompletion(
     event.program_id = completion->program_id;
     event.driver_dispatch_slot = completion->driver_dispatch_slot;
     event.accepted_token_count = completion->accepted_token_count;
+    event.completion_flags = completion->completion_flags;
+    event.token_count = completion->token_count;
+    if (event.token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
+        event.token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
+    memcpy(event.token_ids,completion->token_ids,
+        event.token_count * sizeof(event.token_ids[0u]));
     event.request_id = completion->request_id;
     event.sequence_id = completion->sequence_id;
     event.sequence_position = completion->sequence_position;
@@ -558,6 +565,8 @@ static void SparkGlm52Pp13DaemonPublishFinalEvent(
     SparkGlm52Pp13DaemonRuntime *runtime,
     const SparkGlm52Pp13DaemonFinalEvent *event)
 {
+    uint32_t token_index;
+
     if (event->magic != SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_MAGIC ||
         event->descriptor_bytes != (uint32_t)sizeof(*event))
     {
@@ -565,13 +574,25 @@ static void SparkGlm52Pp13DaemonPublishFinalEvent(
         return;
     }
     runtime->final_event_receive_count += 1u;
-    printf("glm52_pp13_final_event=1 request=%llu sequence=%llu position=%llu status=%u accepted=%u service_ns=%llu\n",
+    printf("glm52_pp13_final_event=1 request=%llu sequence=%llu position=%llu status=%u accepted=%u token_count=%u service_ns=%llu",
         (unsigned long long)event->request_id,
         (unsigned long long)event->sequence_id,
         (unsigned long long)event->sequence_position,
         event->status,
         event->accepted_token_count,
+        event->token_count,
         (unsigned long long)event->service_time_ns);
+    if ((event->completion_flags & SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) != 0u)
+    {
+        for (token_index = 0u;
+             token_index < event->token_count &&
+                token_index < SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
+             ++token_index)
+        {
+            printf(" token%u=%u",token_index,event->token_ids[token_index]);
+        }
+    }
+    printf("\n");
     fflush(stdout);
 }
 
