@@ -420,7 +420,32 @@ static SparkStatus SparkHiddenTcpCudaPostReceive(
         header.sideband_kind != packet->sideband_kind ||
         header.sideband_bytes_per_sequence != packet->sideband_bytes_per_sequence ||
         sizeof(header) + hidden_bytes + sideband_bytes > state->host_buffer_bytes)
+    {
+        fprintf(stderr,
+            "hidden_tcp_receive_header_mismatch route=%s local=%d source=%d sink=%d magic=%08x active=%u/%u hidden=%u/%u bytes=%u/%u seq=%llu/%llu token=%llu/%llu sidekind=%u/%u sidebytes=%u/%u payload=%llu cap=%llu\n",
+            state->endpoint.route_name,
+            state->local_rank,
+            state->source_rank,
+            state->sink_rank,
+            header.magic,
+            header.active_sequence_count,
+            packet->active_sequence_count,
+            header.hidden_dimension,
+            packet->hidden_dimension,
+            header.bytes_per_sequence,
+            packet->bytes_per_sequence,
+            (unsigned long long)header.sequence_id,
+            (unsigned long long)packet->sequence_id,
+            (unsigned long long)header.token_index,
+            (unsigned long long)packet->token_index,
+            header.sideband_kind,
+            packet->sideband_kind,
+            header.sideband_bytes_per_sequence,
+            packet->sideband_bytes_per_sequence,
+            (unsigned long long)(sizeof(header) + hidden_bytes + sideband_bytes),
+            (unsigned long long)state->host_buffer_bytes);
         return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     if (SparkHiddenTcpCudaReadAll(state->socket_fd,state->host_buffer,
             hidden_bytes + sideband_bytes) < 0)
         return SPARK_STATUS_IO_ERROR;
