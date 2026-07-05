@@ -59,6 +59,10 @@ The service backend is a shared object loaded by the gateway. It receives all
 PP13 production paths through the backend configuration and exposes the first
 missing production blocker through `/health`.
 
+The PP13 service backend owns the C service runtime, scheduler, request API,
+prefix cache, KV arena, tokenizer handle, and final-event listener. It does not
+run Python, shell scripts, or file handoff in the request path.
+
 Current strict behavior:
 
 ```text
@@ -67,6 +71,17 @@ pp13_ready=1 means requests may enter the production PP13 service
 pp13_ready=0 means requests fail closed with backend_unavailable
 first_blocker names the first missing production component
 ```
+
+Current expected blocker until the last device-driver bridge lands:
+
+```text
+rank0 token-id input bridge is not connected to distributed PP13 driver
+```
+
+That is not a gateway or API problem. It means Spark0 can accept service state
+and final-stage events, but it still lacks the production C/CUDA bridge that
+converts request token IDs into prefill/decode frames for the resident PP13
+rank runner.
 
 Supported endpoints:
 
@@ -109,7 +124,7 @@ Until the PP13 backend is attached, the gateway returns fail-closed errors:
 
 It does not fabricate tokens. A backend may be attached and still return
 `pp13_ready=0` if the production rank runner, tokenizer, transport, driver, or
-service submission path is incomplete.
+rank0 token-id driver bridge is incomplete.
 
 ## Public sparkpipe.ai Access
 

@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -19,6 +20,20 @@
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_DEFAULT_MAX_ACTIVE 1024u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_DEFAULT_PORT_BASE 52100u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_MAGIC 0x35454650u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY 128u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_CLIENT_CAPACITY 128u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_MAP_CAPACITY 128u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS 65536u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_TOKENS 512u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT \
+	(SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS / \
+	 SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS)
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_PREFIX_BINDING_COUNT \
+	(SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT + \
+	 SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY)
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_EVENT_CAPACITY 16384u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_METADATA_KEY_BASE 0x100000000ull
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_METADATA_VALUE_BASE 0x200000000ull
 
 typedef struct SparkGlm52Pp13ServiceBackendState
 {
@@ -31,6 +46,25 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	const SparkModelDriverProgramDescriptor *program;
 	SparkGlm52ResidentDecodeStageProductionRunner runner;
 	SparkTokenizer tokenizer;
+	SparkGlm52KvCacheArena kv_arena;
+	SparkGlm52PrefixCache prefix_cache;
+	SparkGlm52Scheduler scheduler;
+	SparkGlm52RequestApi request_api;
+	SparkGlm52ServingEngine serving_engine;
+	SparkGlm52ServiceRuntime service;
+	SparkGlm52KvCacheBlock *kv_blocks;
+	SparkGlm52PrefixCacheEntry *prefix_entries;
+	SparkGlm52PrefixCacheSequenceBinding *prefix_bindings;
+	SparkGlm52RequestApiSlot *request_slots;
+	SparkGlm52ServingRequestRecord *request_records;
+	uint32_t *request_token_storage;
+	SparkGlm52ServingEvent *serving_events;
+	uint32_t *host_prefill_token_ids;
+	uint32_t *host_physical_block_indices;
+	uint32_t *lane_physical_block_counts;
+	SparkGlm52ServiceClientSession *client_sessions;
+	SparkGlm52ServiceRequestMap *request_maps;
+	SparkGlm52ServiceEvent *service_events;
 	int32_t final_event_listen_fd;
 	int32_t final_event_socket_fd;
 	uint64_t final_event_receive_count;
@@ -40,6 +74,7 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	uint32_t initialized;
 	uint32_t tokenizer_ready;
 	uint32_t rank0_runtime_ready;
+	uint32_t service_runtime_ready;
 	char first_blocker[SPARK_GLM52_SERVICE_BACKEND_BLOCKER_BYTES];
 } SparkGlm52Pp13ServiceBackendState;
 
@@ -86,12 +121,70 @@ static SparkStatus SparkGlm52Pp13ServiceBackendRequireText(
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52Pp13ServiceBackendAlloc(
+	void **pointer,
+	uint64_t count,
+	uint64_t element_bytes)
+{
+	if (pointer == 0 || count == 0u || element_bytes == 0u ||
+		count > UINT64_MAX / element_bytes)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	*pointer = calloc((size_t)count,(size_t)element_bytes);
+	if (*pointer == 0)
+		return SPARK_STATUS_INTERNAL_ERROR;
+	return SPARK_STATUS_OK;
+}
+
+static void SparkGlm52Pp13ServiceBackendFreeStorage(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	if (state == 0)
+		return;
+	free(state->kv_blocks);
+	free(state->prefix_entries);
+	free(state->prefix_bindings);
+	free(state->request_slots);
+	free(state->request_records);
+	free(state->request_token_storage);
+	free(state->serving_events);
+	free(state->host_prefill_token_ids);
+	free(state->host_physical_block_indices);
+	free(state->lane_physical_block_counts);
+	free(state->client_sessions);
+	free(state->request_maps);
+	free(state->service_events);
+	state->kv_blocks = 0;
+	state->prefix_entries = 0;
+	state->prefix_bindings = 0;
+	state->request_slots = 0;
+	state->request_records = 0;
+	state->request_token_storage = 0;
+	state->serving_events = 0;
+	state->host_prefill_token_ids = 0;
+	state->host_physical_block_indices = 0;
+	state->lane_physical_block_counts = 0;
+	state->client_sessions = 0;
+	state->request_maps = 0;
+	state->service_events = 0;
+}
+
 static uint32_t SparkGlm52Pp13ServiceBackendMaxActive(
 	const SparkGlm52ServiceBackendConfiguration *configuration)
 {
 	if (configuration->max_active_sequence_count != 0u)
 		return configuration->max_active_sequence_count;
 	return SPARK_GLM52_PP13_SERVICE_BACKEND_DEFAULT_MAX_ACTIVE;
+}
+
+static uint32_t SparkGlm52Pp13ServiceBackendServiceLaneCapacity(
+	const SparkGlm52ServiceBackendConfiguration *configuration)
+{
+	uint32_t max_active;
+
+	max_active = SparkGlm52Pp13ServiceBackendMaxActive(configuration);
+	if (max_active > SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY)
+		return SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY;
+	return max_active;
 }
 
 static uint32_t SparkGlm52Pp13ServiceBackendPortBase(
@@ -133,6 +226,353 @@ static SparkStatus SparkGlm52Pp13ServiceBackendLoadTokenizer(
 	}
 	state->tokenizer_ready = 1u;
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendUnavailablePrefill(
+	void *context,
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+{
+	SparkGlm52Pp13ServiceBackendState *state;
+
+	state = (SparkGlm52Pp13ServiceBackendState *)context;
+	if (state == 0 || prefill_dispatch == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	SparkGlm52Pp13ServiceBackendSetBlocker(
+		state,
+		"rank0 token-id prefill input bridge is not connected to PP13 driver");
+	return SPARK_STATUS_MODULE_NOT_VALIDATED;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendUnavailableDecode(
+	void *context,
+	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+	SparkGlm52ServingDecodeResult *decode_result)
+{
+	SparkGlm52Pp13ServiceBackendState *state;
+
+	state = (SparkGlm52Pp13ServiceBackendState *)context;
+	if (state == 0 || decode_dispatch == 0 || decode_result == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	SparkGlm52Pp13ServiceBackendSetBlocker(
+		state,
+		"rank0 token-id decode input bridge is not connected to PP13 driver");
+	return SPARK_STATUS_MODULE_NOT_VALIDATED;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendAllocateCacheStorage(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	SparkStatus status;
+
+	status = SparkGlm52Pp13ServiceBackendAlloc(
+		(void **)&state->kv_blocks,
+		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT,
+		sizeof(state->kv_blocks[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->prefix_entries,
+			SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT,
+			sizeof(state->prefix_entries[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->prefix_bindings,
+			SPARK_GLM52_PP13_SERVICE_BACKEND_PREFIX_BINDING_COUNT,
+			sizeof(state->prefix_bindings[0]));
+	return status;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendAllocateRequestStorage(
+	SparkGlm52Pp13ServiceBackendState *state,
+	uint32_t lane_capacity)
+{
+	SparkStatus status;
+
+	status = SparkGlm52Pp13ServiceBackendAlloc(
+		(void **)&state->request_slots,
+		SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY,
+		sizeof(state->request_slots[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->request_records,
+			SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY,
+			sizeof(state->request_records[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->request_token_storage,
+			(uint64_t)SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY *
+				SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS,
+			sizeof(state->request_token_storage[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->serving_events,
+			SPARK_GLM52_PP13_SERVICE_BACKEND_EVENT_CAPACITY,
+			sizeof(state->serving_events[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->host_prefill_token_ids,
+			(uint64_t)lane_capacity *
+				SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_TOKENS,
+			sizeof(state->host_prefill_token_ids[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->host_physical_block_indices,
+			(uint64_t)lane_capacity *
+				SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT,
+			sizeof(state->host_physical_block_indices[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->lane_physical_block_counts,
+			lane_capacity,
+			sizeof(state->lane_physical_block_counts[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->client_sessions,
+			SPARK_GLM52_PP13_SERVICE_BACKEND_CLIENT_CAPACITY,
+			sizeof(state->client_sessions[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->request_maps,
+			SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_MAP_CAPACITY,
+			sizeof(state->request_maps[0]));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAlloc(
+			(void **)&state->service_events,
+			SPARK_GLM52_PP13_SERVICE_BACKEND_EVENT_CAPACITY,
+			sizeof(state->service_events[0]));
+	return status;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendAllocateServiceStorage(
+	SparkGlm52Pp13ServiceBackendState *state,
+	uint32_t lane_capacity)
+{
+	SparkStatus status;
+
+	status = SparkGlm52Pp13ServiceBackendAllocateCacheStorage(state);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendAllocateRequestStorage(
+			state,
+			lane_capacity);
+	if (status != SPARK_STATUS_OK)
+		SparkGlm52Pp13ServiceBackendFreeStorage(state);
+	return status;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendInitializeKvArena(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	SparkGlm52KvCacheConfiguration kv_configuration;
+
+	memset(&kv_configuration,0,sizeof(kv_configuration));
+	kv_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+	kv_configuration.descriptor_bytes =
+		SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	kv_configuration.physical_block_count =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT;
+	kv_configuration.block_token_count =
+		SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+	kv_configuration.layer_count = SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
+	kv_configuration.kv_head_count = 8u;
+	kv_configuration.head_dim = 128u;
+	kv_configuration.bytes_per_scalar = 2u;
+	kv_configuration.key_device_base =
+		(void *)(uintptr_t)SPARK_GLM52_PP13_SERVICE_BACKEND_METADATA_KEY_BASE;
+	kv_configuration.value_device_base =
+		(void *)(uintptr_t)SPARK_GLM52_PP13_SERVICE_BACKEND_METADATA_VALUE_BASE;
+	kv_configuration.blocks = state->kv_blocks;
+	return SparkGlm52KvCacheArenaInitialize(
+		&state->kv_arena,
+		&kv_configuration);
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendInitializePrefixCache(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	SparkGlm52PrefixCacheConfiguration prefix_configuration;
+
+	memset(&prefix_configuration,0,sizeof(prefix_configuration));
+	prefix_configuration.abi_version = SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
+	prefix_configuration.descriptor_bytes =
+		SPARK_GLM52_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	prefix_configuration.block_token_count =
+		SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+	prefix_configuration.entry_count =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT;
+	prefix_configuration.physical_block_count =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT;
+	prefix_configuration.sequence_binding_count =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_PREFIX_BINDING_COUNT;
+	prefix_configuration.entries = state->prefix_entries;
+	prefix_configuration.sequence_bindings = state->prefix_bindings;
+	prefix_configuration.kv_cache_arena = &state->kv_arena;
+	return SparkGlm52PrefixCacheInitialize(
+		&state->prefix_cache,
+		&prefix_configuration);
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendInitializeScheduler(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	SparkGlm52SchedulerConfiguration scheduler_configuration;
+
+	memset(&scheduler_configuration,0,sizeof(scheduler_configuration));
+	scheduler_configuration.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+	scheduler_configuration.descriptor_bytes =
+		SPARK_GLM52_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES;
+	scheduler_configuration.spark_count = SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT;
+	scheduler_configuration.queue_depth_per_spark = 2u;
+	scheduler_configuration.measured_profile_id =
+		SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701;
+	scheduler_configuration.quantization_mode =
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
+	scheduler_configuration.max_prefill_tokens_per_step =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_TOKENS;
+	scheduler_configuration.prefix_cache = &state->prefix_cache;
+	return SparkGlm52SchedulerInitialize(
+		&state->scheduler,
+		&scheduler_configuration);
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRequestApi(
+	SparkGlm52Pp13ServiceBackendState *state,
+	uint32_t lane_capacity)
+{
+	SparkGlm52RequestApiConfiguration request_api_configuration;
+
+	memset(&request_api_configuration,0,sizeof(request_api_configuration));
+	request_api_configuration.abi_version =
+		SPARK_GLM52_REQUEST_API_ABI_VERSION;
+	request_api_configuration.descriptor_bytes =
+		SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES;
+	request_api_configuration.configuration_flags =
+		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING |
+		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING |
+		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING |
+		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION |
+		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+	request_api_configuration.request_capacity =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY;
+	request_api_configuration.prefetch_lane_count =
+		SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
+	request_api_configuration.decode_batch_target = lane_capacity;
+	request_api_configuration.scheduler = &state->scheduler;
+	request_api_configuration.request_slots = state->request_slots;
+	return SparkGlm52RequestApiInitialize(
+		&state->request_api,
+		&request_api_configuration);
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendInitializeServingEngine(
+	SparkGlm52Pp13ServiceBackendState *state,
+	uint32_t lane_capacity)
+{
+	SparkGlm52ServingEngineConfiguration serving_configuration;
+
+	memset(&serving_configuration,0,sizeof(serving_configuration));
+	serving_configuration.abi_version =
+		SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
+	serving_configuration.descriptor_bytes =
+		SPARK_GLM52_SERVING_ENGINE_CONFIGURATION_DESCRIPTOR_BYTES;
+	serving_configuration.runtime_contract_flags =
+		SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS;
+	serving_configuration.default_output_token_budget = 1024u;
+	serving_configuration.default_max_prefill_tokens_per_step =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_TOKENS;
+	serving_configuration.max_context_tokens =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS;
+	serving_configuration.request_api = &state->request_api;
+	serving_configuration.tokenizer = &state->tokenizer;
+	serving_configuration.request_records = state->request_records;
+	serving_configuration.request_record_capacity =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY;
+	serving_configuration.request_token_storage =
+		state->request_token_storage;
+	serving_configuration.request_token_stride =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS;
+	serving_configuration.event_ring = state->serving_events;
+	serving_configuration.event_ring_capacity =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_EVENT_CAPACITY;
+	serving_configuration.host_prefill_token_ids =
+		state->host_prefill_token_ids;
+	serving_configuration.host_prefill_token_stride =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_TOKENS;
+	serving_configuration.host_prefill_lane_capacity = lane_capacity;
+	serving_configuration.host_physical_block_indices =
+		state->host_physical_block_indices;
+	serving_configuration.kv_block_lane_stride =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT;
+	serving_configuration.kv_block_lane_capacity =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_COUNT;
+	serving_configuration.lane_physical_block_counts =
+		state->lane_physical_block_counts;
+	serving_configuration.lane_count_capacity = lane_capacity;
+	serving_configuration.prefill_function =
+		SparkGlm52Pp13ServiceBackendUnavailablePrefill;
+	serving_configuration.decode_function =
+		SparkGlm52Pp13ServiceBackendUnavailableDecode;
+	serving_configuration.callback_context = state;
+	return SparkGlm52ServingEngineInitialize(
+		&state->serving_engine,
+		&serving_configuration);
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendInitializeService(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	SparkGlm52ServiceConfiguration service_configuration;
+
+	memset(&service_configuration,0,sizeof(service_configuration));
+	service_configuration.abi_version = SPARK_GLM52_SERVICE_ABI_VERSION;
+	service_configuration.descriptor_bytes =
+		SPARK_GLM52_SERVICE_CONFIGURATION_DESCRIPTOR_BYTES;
+	service_configuration.serving_engine = &state->serving_engine;
+	service_configuration.client_sessions = state->client_sessions;
+	service_configuration.client_session_capacity =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_CLIENT_CAPACITY;
+	service_configuration.request_maps = state->request_maps;
+	service_configuration.request_map_capacity =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_MAP_CAPACITY;
+	service_configuration.event_ring = state->service_events;
+	service_configuration.event_ring_capacity =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_EVENT_CAPACITY;
+	return SparkGlm52ServiceInitialize(
+		&state->service,
+		&service_configuration);
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendInitializeServiceRuntime(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52ServiceBackendConfiguration *configuration)
+{
+	uint32_t lane_capacity;
+	SparkStatus status;
+
+	lane_capacity =
+		SparkGlm52Pp13ServiceBackendServiceLaneCapacity(configuration);
+	if (lane_capacity == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13ServiceBackendAllocateServiceStorage(
+		state,
+		lane_capacity);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendInitializeKvArena(state);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendInitializePrefixCache(state);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendInitializeScheduler(state);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendInitializeRequestApi(
+			state,
+			lane_capacity);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendInitializeServingEngine(
+			state,
+			lane_capacity);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendInitializeService(state);
+	if (status == SPARK_STATUS_OK)
+		state->service_runtime_ready = 1u;
+	return status;
 }
 
 static int32_t SparkGlm52Pp13ServiceBackendCreateListenSocket(
@@ -335,9 +775,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 			error_buffer,
 			"failed to make final-event listener nonblocking");
 	state->rank0_runtime_ready = 1u;
-	SparkGlm52Pp13ServiceBackendSetBlocker(
-		state,
-		"service submit path is not yet mapped to PP13 rank0 runner requests");
 	return SPARK_STATUS_OK;
 }
 
@@ -396,9 +833,23 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 			state,
 			configuration);
 	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendInitializeServiceRuntime(
+			state,
+			configuration);
+	if (status == SPARK_STATUS_OK)
 		(void)SparkGlm52Pp13ServiceBackendInitializeRank0(
 			state,
 			configuration);
+	if (status != SPARK_STATUS_OK)
+		SparkGlm52Pp13ServiceBackendSetBlocker(
+			state,
+			"PP13 service runtime failed to initialize");
+	if (state->service_runtime_ready != 0u &&
+		state->rank0_runtime_ready != 0u &&
+		state->first_blocker[0] == '\0')
+		SparkGlm52Pp13ServiceBackendSetBlocker(
+			state,
+			"rank0 token-id input bridge is not connected to distributed PP13 driver");
 	return SPARK_STATUS_OK;
 }
 
@@ -421,6 +872,7 @@ static void SparkGlm52Pp13ServiceBackendDestroy(void *backend_state)
 	SparkHiddenTransportClose(state->output_transport_session);
 	SparkHiddenTransportUnloadInterface(&state->transport_library);
 	SparkTokenizerDestroy(&state->tokenizer);
+	SparkGlm52Pp13ServiceBackendFreeStorage(state);
 	memset(state,0,sizeof(*state));
 }
 
@@ -437,11 +889,13 @@ static SparkStatus SparkGlm52Pp13ServiceBackendGetView(
 	view->abi_version = SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION;
 	view->descriptor_bytes = SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES;
 	view->backend_ready = state->initialized != 0u ? 1u : 0u;
-	view->pp13_ready = 0u;
-	view->max_context_tokens = SPARK_GLM52_SERVING_DEFAULT_MAX_CONTEXT_TOKENS;
+	view->pp13_ready = state->service_runtime_ready != 0u &&
+		state->rank0_runtime_ready != 0u &&
+		state->first_blocker[0] == '\0' ? 1u : 0u;
+	view->max_context_tokens = SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS;
 	view->production_contract_flags =
 		SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS;
-	view->service = 0;
+	view->service = state->service_runtime_ready != 0u ? &state->service : 0;
 	view->tokenizer = state->tokenizer_ready != 0u ? &state->tokenizer : 0;
 	view->first_blocker = state->first_blocker;
 	return SPARK_STATUS_OK;
@@ -523,7 +977,19 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 			state->final_event_receive_error_count += 1u;
 	}
 	if (stats_out != 0)
-		memset(stats_out,0,sizeof(*stats_out));
+	{
+		if (state->service_runtime_ready != 0u)
+			(void)SparkGlm52ServiceGetStats(&state->service,stats_out);
+		else
+			memset(stats_out,0,sizeof(*stats_out));
+	}
+	if (state->service_runtime_ready != 0u &&
+		state->rank0_runtime_ready != 0u &&
+		state->first_blocker[0] == '\0')
+		return SparkGlm52ServicePump(
+			&state->service,
+			max_dispatch_steps,
+			stats_out);
 	(void)max_dispatch_steps;
 	return SPARK_STATUS_OK;
 }
@@ -533,6 +999,7 @@ static const SparkGlm52ServiceBackendInterface SparkGlm52Pp13ServiceBackendInter
 	SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION,
 	SPARK_GLM52_SERVICE_BACKEND_INTERFACE_BYTES,
 	SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME |
+		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_SERVICE_RUNTIME |
 		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_TOKENIZER,
 	0u,
 	SparkGlm52Pp13ServiceBackendInitialize,
