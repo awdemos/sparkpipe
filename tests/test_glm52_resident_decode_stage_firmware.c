@@ -222,6 +222,8 @@ static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
         pipeline_slots[pipeline_slot_index].context_lengths = U32Storage;
         pipeline_slots[pipeline_slot_index].first_block_token_offsets = U32Storage;
         pipeline_slots[pipeline_slot_index].query_index_heads_bf16 = Bf16Storage;
+        pipeline_slots[pipeline_slot_index].current_key_index_bf16 = Bf16Storage;
+        pipeline_slots[pipeline_slot_index].index_head_weights_bf16 = Bf16Storage;
         pipeline_slots[pipeline_slot_index].dsa_token_scores = F32Storage;
         pipeline_slots[pipeline_slot_index].sparse_token_indices = U32Storage;
         pipeline_slots[pipeline_slot_index].rotated_query_rope_bf16 = Bf16Storage;
@@ -274,8 +276,15 @@ static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
     node_context->key_index_cache_bf16 = Bf16Storage;
     node_context->index_head_weights_f32 = F32Storage;
     node_context->index_softmax_scale = 1.0f;
-    node_context->dsa_index_head_count = 1u;
-    node_context->dsa_index_head_dimension = 1u;
+    node_context->dsa_index_head_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT;
+    node_context->dsa_index_head_dimension =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_DIMENSION;
+    node_context->index_query_weight_bf16 = Bf16Storage;
+    node_context->index_key_weight_bf16 = Bf16Storage;
+    node_context->index_weights_proj_weight_bf16 = Bf16Storage;
+    node_context->index_key_norm_weight_bf16 = Bf16Storage;
+    node_context->index_key_norm_bias_bf16 = Bf16Storage;
     node_context->mla_cache_bf16 = MlaCacheStorage;
     node_context->key_nope_cache_bf16 = KeyNopeCacheStorage;
     node_context->value_cache_bf16 = ValueCacheStorage;
@@ -399,6 +408,31 @@ static void SparkTestGlm52ResidentDecodeStageDsaIndexShareFullRequiresScoreInput
         &host_services,
         &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
 
+    pipeline_slots[0].query_index_heads_bf16 = Bf16ScoreStorage;
+    pipeline_slots[0].current_key_index_bf16 = 0;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    pipeline_slots[0].current_key_index_bf16 = Bf16ScoreStorage;
+    pipeline_slots[0].index_head_weights_bf16 = 0;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    pipeline_slots[0].index_head_weights_bf16 = Bf16ScoreStorage;
+    node_context.index_key_norm_bias_bf16 = 0;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    node_context.index_key_norm_bias_bf16 = Bf16ScoreStorage;
     node_context.sparse_index_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED;
     node_context.key_index_cache_bf16 = 0;
