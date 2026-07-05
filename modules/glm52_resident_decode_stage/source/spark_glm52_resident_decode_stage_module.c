@@ -3878,7 +3878,8 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED,
         memory_order_release);
 
-    if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
+    if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u &&
+        prefill_frame_view != 0)
     {
         if (state->stage_slice_layer_count != 0u)
         {
@@ -3903,6 +3904,26 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
                 frame->new_token_count,
                 runtime_kv_block_table,
                 prefill_frame_view,
+                &pending_completion->backend_completion);
+        }
+    }
+    else if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
+    {
+        if (state->stage_slice_layer_count == 0u)
+        {
+            status = SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        else
+        {
+            status = SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
+                state->stage_slice_plan,
+                state->stage_slice_node_contexts,
+                state->stage_slice_layer_count,
+                pipeline_slot_index,
+                frame->active_slot_count,
+                0u,
+                runtime_kv_block_table,
+                frame_context,
                 &pending_completion->backend_completion);
         }
     }

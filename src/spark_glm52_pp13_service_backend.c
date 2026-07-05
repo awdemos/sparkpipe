@@ -113,6 +113,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendWaitForDecodeFinalEvents(
 	SparkGlm52Pp13ServiceBackendState *state,
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
 	SparkGlm52ServingDecodeResult *decode_result);
+static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch);
 
 static void SparkGlm52Pp13ServiceBackendSetBlocker(
 	SparkGlm52Pp13ServiceBackendState *state,
@@ -250,6 +253,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
 {
 	SparkGlm52Pp13ServiceBackendState *state;
+	SparkStatus status;
 
 	state = (SparkGlm52Pp13ServiceBackendState *)context;
 	if (state == 0 || prefill_dispatch == 0)
@@ -257,6 +261,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 	if (state->builder_library.builder_interface.prefill == 0 ||
 		state->builder_state == 0)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	status = SparkGlm52Pp13ServiceBackendForwardPrefillWork(
+		state,
+		prefill_dispatch);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	return state->builder_library.builder_interface.prefill(
 		state->builder_state,
 		prefill_dispatch);
@@ -375,6 +384,40 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52Pp13ServiceBackendBuildPrefillWorkPacket(
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
+	uint32_t token_offset,
+	SparkGlm52Pp13WorkControlPacket *packet)
+{
+	uint32_t position;
+	if (prefill_dispatch == 0 || packet == 0 ||
+		prefill_dispatch->request_dispatch == 0 ||
+		prefill_dispatch->prefill_view == 0 ||
+		prefill_dispatch->kv_block_table_view == 0 ||
+		prefill_dispatch->lane_count != 1u ||
+		prefill_dispatch->active_sequence_count != 1u ||
+		prefill_dispatch->prefill_view->lane_count != 1u ||
+		token_offset >= prefill_dispatch->prompt_token_count)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	position = prefill_dispatch->prompt_token_offset + token_offset;
+	memset(packet,0,sizeof(*packet));
+	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
+	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
+	packet->descriptor_bytes = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES;
+	packet->flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL;
+	packet->request_id = prefill_dispatch->request_dispatch->request_ids[0u];
+	packet->sequence_id = prefill_dispatch->request_dispatch->sequence_ids[0u];
+	packet->sequence_position = position;
+	packet->active_sequence_count = 1u;
+	packet->new_token_count = 1u;
+	packet->priority = prefill_dispatch->request_dispatch->highest_priority;
+	packet->block_token_count = SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+	packet->kv_block_table_token_count = position + 1u;
+	packet->max_blocks_per_sequence =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_MAX_BLOCKS_PER_SEQUENCE;
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendEnsureWorkOutputSocket(
 	SparkGlm52Pp13ServiceBackendState *state)
 {
@@ -397,6 +440,50 @@ static SparkStatus SparkGlm52Pp13ServiceBackendEnsureWorkOutputSocket(
 		close(state->work_output_socket_fd);
 		state->work_output_socket_fd = -1;
 		return SPARK_STATUS_INTERNAL_ERROR;
+	}
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+{
+	SparkGlm52Pp13WorkControlPacket packet;
+	SparkStatus status;
+	uint32_t token_offset;
+	if (state == 0 || prefill_dispatch == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((state->rank_plan.flags &
+			SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
+		return SPARK_STATUS_OK;
+	status = SparkGlm52Pp13ServiceBackendEnsureWorkOutputSocket(state);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	for (token_offset = 0u;
+		 token_offset < prefill_dispatch->prompt_token_count;
+		 ++token_offset)
+	{
+		status = SparkGlm52Pp13ServiceBackendBuildPrefillWorkPacket(
+			prefill_dispatch,
+			token_offset,
+			&packet);
+		if (status != SPARK_STATUS_OK)
+			return status;
+		status = SparkGlm52Pp13WorkControlValidatePacket(
+			&packet,
+			state->rank_plan.max_active_sequence_count,
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
+		if (status != SPARK_STATUS_OK)
+			return status;
+		if (SparkGlm52Pp13ServiceBackendWriteAll(
+				state->work_output_socket_fd,
+				&packet,
+				sizeof(packet)) < 0)
+		{
+			close(state->work_output_socket_fd);
+			state->work_output_socket_fd = -1;
+			return SPARK_STATUS_ROUTE_NOT_FOUND;
+		}
 	}
 	return SPARK_STATUS_OK;
 }
