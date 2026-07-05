@@ -1002,6 +1002,17 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 		status = SparkGlm52Pp13BuilderLoadLayerWeights(state,layer,layer_index);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus("load_layer_weights",layer_index,status);
+	SparkGlm52Pp13BuilderWireLayer(state,layer,layer_index);
+	if (layer_offset > 0u)
+		layer->slot.input_hidden_bf16 =
+			state->layers[layer_offset - 1u].layer_output_hidden;
+	status = SparkGlm52Pp13BuilderBindLayerPlans(state,layer,layer_index);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13BuilderReportStatus("bind_layer_plans",layer_index,status);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderBindFp8Moe(state,layer,layer_index);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13BuilderReportStatus("bind_fp8_moe",layer_index,status);
 	if (status == SPARK_STATUS_OK &&
 		(state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) != 0u &&
 		layer_offset + 1u == state->rank_plan.layer_count)
@@ -1019,20 +1030,12 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 			status = SparkGlm52Pp13BuilderLoadLmHeadRestricted(
 				state,
 				&layer->restricted_lm_head_weight);
+		layer->node.final_norm_weight_bf16 = layer->final_norm_weight;
+		layer->node.restricted_lm_head_weight_bf16 =
+			layer->restricted_lm_head_weight;
 	}
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus("load_final_outputs",layer_index,status);
-	SparkGlm52Pp13BuilderWireLayer(state,layer,layer_index);
-	if (layer_offset > 0u)
-		layer->slot.input_hidden_bf16 =
-			state->layers[layer_offset - 1u].layer_output_hidden;
-	status = SparkGlm52Pp13BuilderBindLayerPlans(state,layer,layer_index);
-	if (status != SPARK_STATUS_OK)
-		return SparkGlm52Pp13BuilderReportStatus("bind_layer_plans",layer_index,status);
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderBindFp8Moe(state,layer,layer_index);
-	if (status != SPARK_STATUS_OK)
-		return SparkGlm52Pp13BuilderReportStatus("bind_fp8_moe",layer_index,status);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Sm121RequiredDecodeStageInitialize(&layer->node);
 	if (status != SPARK_STATUS_OK)
