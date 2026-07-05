@@ -13783,11 +13783,23 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         active_sequence_count == 0u ||
         active_sequence_count > node_context->max_active_sequence_count)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_invalid_shape\n");
+        }
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (node_context->mlp_execution_mode !=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "dense_mlp_fp8_not_selected layer=%u mode=%u\n",
+                node_context->layer_index,
+                node_context->mlp_execution_mode);
+        }
         return SPARK_STATUS_NOT_FOUND;
     }
     if (pipeline_slot->post_attention_normalized_hidden_bf16 == 0 ||
@@ -13797,6 +13809,20 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         pipeline_slot->post_attention_hidden_bf16 == 0 ||
         node_context->dense_intermediate_dimension == 0u)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "dense_mlp_fp8_missing_buffers layer=%u norm=%p gate=%p up=%p inter=%p out=%p residual=%p dense_i=%u\n",
+                node_context->layer_index,
+                pipeline_slot->post_attention_normalized_hidden_bf16,
+                pipeline_slot->moe_gate_bf16,
+                pipeline_slot->moe_up_bf16,
+                pipeline_slot->moe_intermediate_bf16,
+                pipeline_slot->layer_output_hidden_bf16,
+                pipeline_slot->post_attention_hidden_bf16,
+                node_context->dense_intermediate_dimension);
+        }
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -13828,6 +13854,19 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
             down_plan,
             &down_view))
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "dense_mlp_fp8_plan_not_found layer=%u gate=%p up=%p down=%p linear_count=%u active=%u dense_i=%u\n",
+                node_context->layer_index,
+                (const void *)gate_plan,
+                (const void *)up_plan,
+                (const void *)down_plan,
+                node_context->linear_plan_count,
+                active_sequence_count,
+                node_context->dense_intermediate_dimension);
+        }
         return SPARK_STATUS_NOT_FOUND;
     }
 
@@ -13839,6 +13878,19 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         down_view->scale_block_size !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "dense_mlp_fp8_plan_invalid layer=%u gate_f32=%u up_f32=%u down_f32=%u gate_scale=%u up_scale=%u down_scale=%u\n",
+                node_context->layer_index,
+                gate_plan->output_is_f32,
+                up_plan->output_is_f32,
+                down_plan->output_is_f32,
+                gate_view->scale_block_size,
+                up_view->scale_block_size,
+                down_view->scale_block_size);
+        }
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -13853,6 +13905,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         &shared_activation_amax_f32);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_workspace_hidden status=%d\n",(int)status);
+        }
         return status;
     }
 
@@ -13867,6 +13923,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         (void *)cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_quant_hidden status=%d\n",(int)status);
+        }
         return status;
     }
     status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
@@ -13875,6 +13935,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_quant_hidden_launch status=%d\n",(int)status);
+        }
         return status;
     }
 
@@ -13889,6 +13953,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         (void *)cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_gate status=%d\n",(int)status);
+        }
         return status;
     }
     status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
@@ -13897,6 +13965,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_gate_launch status=%d\n",(int)status);
+        }
         return status;
     }
 
@@ -13911,6 +13983,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         (void *)cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_up status=%d\n",(int)status);
+        }
         return status;
     }
     status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
@@ -13919,6 +13995,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_up_launch status=%d\n",(int)status);
+        }
         return status;
     }
 
@@ -13933,6 +14013,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         &down_activation_amax_f32);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_workspace_down status=%d\n",(int)status);
+        }
         return status;
     }
 
@@ -13949,6 +14033,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         (void *)cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_silu_quant status=%d\n",(int)status);
+        }
         return status;
     }
     status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
@@ -13957,6 +14045,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_silu_quant_launch status=%d\n",(int)status);
+        }
         return status;
     }
 
@@ -13971,6 +14063,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         (void *)cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_down status=%d\n",(int)status);
+        }
         return status;
     }
     status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
@@ -13979,6 +14075,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_down_launch status=%d\n",(int)status);
+        }
         return status;
     }
 
@@ -14000,6 +14100,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(stderr,"dense_mlp_fp8_residual_launch status=%d\n",(int)status);
+        }
         return status;
     }
     return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
