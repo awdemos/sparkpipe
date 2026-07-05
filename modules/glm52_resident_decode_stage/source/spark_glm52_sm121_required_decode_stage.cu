@@ -3239,6 +3239,7 @@ static __global__ void SparkGlm52ResidentDecodeStageDsaKvFragmentPrefetchKernel(
     uint32_t destination_physical_block_index;
     uint32_t source_physical_block_index;
     uint32_t payload_index;
+    __shared__ uint32_t transport_block_claimed;
 
     selected_entry_index = blockIdx.x;
     sequence_index = selected_entry_index / selected_block_capacity;
@@ -3303,15 +3304,20 @@ static __global__ void SparkGlm52ResidentDecodeStageDsaKvFragmentPrefetchKernel(
             return;
         }
     }
-    if (SparkGlm52ResidentDecodeStageTryClaimTransportBlock(
+    if (threadIdx.x == 0u)
+    {
+        transport_block_claimed = SparkGlm52ResidentDecodeStageTryClaimTransportBlock(
             requested_epoch_by_physical_block,
             destination_physical_block_index,
-            transport_epoch) == 0u)
-    {
-        if (threadIdx.x == 0u && duplicate_block_count_device != 0)
+            transport_epoch);
+        if (transport_block_claimed == 0u && duplicate_block_count_device != 0)
         {
             atomicAdd(duplicate_block_count_device, 1u);
         }
+    }
+    __syncthreads();
+    if (transport_block_claimed == 0u)
+    {
         return;
     }
 
@@ -3380,6 +3386,7 @@ static __global__ void SparkGlm52ResidentDecodeStageDsaKvFragmentSaveKernel(
     uint32_t source_physical_block_index;
     uint32_t destination_physical_block_index;
     uint32_t payload_index;
+    __shared__ uint32_t transport_block_claimed;
 
     selected_entry_index = blockIdx.x;
     sequence_index = selected_entry_index / selected_block_capacity;
@@ -3444,15 +3451,20 @@ static __global__ void SparkGlm52ResidentDecodeStageDsaKvFragmentSaveKernel(
             return;
         }
     }
-    if (SparkGlm52ResidentDecodeStageTryClaimTransportBlock(
+    if (threadIdx.x == 0u)
+    {
+        transport_block_claimed = SparkGlm52ResidentDecodeStageTryClaimTransportBlock(
             requested_epoch_by_physical_block,
             source_physical_block_index,
-            transport_epoch) == 0u)
-    {
-        if (threadIdx.x == 0u && duplicate_block_count_device != 0)
+            transport_epoch);
+        if (transport_block_claimed == 0u && duplicate_block_count_device != 0)
         {
             atomicAdd(duplicate_block_count_device, 1u);
         }
+    }
+    __syncthreads();
+    if (transport_block_claimed == 0u)
+    {
         return;
     }
 
