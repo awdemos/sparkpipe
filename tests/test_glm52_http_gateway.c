@@ -95,12 +95,14 @@ static void SparkTestHttpGatewayBuildsServiceHealth(void)
         1u,
         1u,
         1048576u,
-        SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS) ==
+        SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS,
+        "none") ==
         SPARK_STATUS_OK);
     assert(response.status_code == 200u);
     assert(strstr(body, "\"max_context_tokens\":1048576") != 0);
     assert(strstr(body, "\"connected_clients\":2") != 0);
     assert(strstr(body, "\"jit_prefetch_dispatches\":5") != 0);
+    assert(strstr(body, "\"first_blocker\":\"none\"") != 0);
 }
 
 static void SparkTestHttpGatewayFormatsTokenEvent(void)

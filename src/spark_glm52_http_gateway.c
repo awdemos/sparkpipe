@@ -368,10 +368,13 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
     uint32_t backend_ready,
     uint32_t pp13_ready,
     uint32_t max_context_tokens,
-    uint32_t production_contract_flags)
+    uint32_t production_contract_flags,
+    const char *first_blocker)
 {
     SparkGlm52ServiceStats empty_stats;
     const SparkGlm52ServiceStats *stats_view;
+    char escaped_blocker[512];
+    uint32_t escaped_blocker_bytes;
     int32_t written;
 
     if (response == 0 || response->body == 0)
@@ -380,6 +383,20 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
     }
     memset(&empty_stats, 0, sizeof(empty_stats));
     stats_view = stats != 0 ? stats : &empty_stats;
+    escaped_blocker_bytes = 0u;
+    if (first_blocker == 0)
+    {
+        first_blocker = "";
+    }
+    if (SparkGlm52HttpAppendJsonEscapedBytes(
+            escaped_blocker,
+            sizeof(escaped_blocker),
+            &escaped_blocker_bytes,
+            first_blocker,
+            (uint32_t)strlen(first_blocker)) != SPARK_STATUS_OK)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
     written = snprintf(
         response->body,
         response->body_capacity,
@@ -397,7 +414,8 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         "\"jit_prefetch_dispatches\":%llu,"
         "\"jit_prefetch_blocks\":%llu,"
         "\"async_jit_prefetch_starts\":%llu,"
-        "\"async_jit_prefetch_completions\":%llu"
+        "\"async_jit_prefetch_completions\":%llu,"
+        "\"first_blocker\":\"%s\""
         "}\n",
         backend_ready != 0u ? 1u : 0u,
         pp13_ready != 0u ? 1u : 0u,
@@ -411,7 +429,8 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         (unsigned long long)stats_view->serving_stats.jit_prefetch_dispatch_count,
         (unsigned long long)stats_view->serving_stats.jit_prefetch_block_count,
         (unsigned long long)stats_view->serving_stats.async_jit_prefetch_start_count,
-        (unsigned long long)stats_view->serving_stats.async_jit_prefetch_completion_count);
+        (unsigned long long)stats_view->serving_stats.async_jit_prefetch_completion_count,
+        escaped_blocker);
     if (written < 0)
     {
         return SPARK_STATUS_INTERNAL_ERROR;
