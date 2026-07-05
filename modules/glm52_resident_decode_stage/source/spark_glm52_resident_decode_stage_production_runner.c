@@ -136,6 +136,13 @@ static void SparkGlm52ProductionRunnerBuildFrameContext(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW;
         frame_context->prefill_view = dispatch->prefill_view;
     }
+    if ( dispatch->mtp_draft_token_budgets != 0 )
+    {
+        frame_context->flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS;
+        frame_context->mtp_draft_token_budgets =
+            dispatch->mtp_draft_token_budgets;
+    }
     if ( dispatch->hidden_input_transport_session != 0 )
     {
         frame_context->flags |=
