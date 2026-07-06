@@ -1277,6 +1277,10 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 		return SparkGlm52Pp13BuilderReportStatus("bind_layer_plans",layer_index,status);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Sm121RequiredDecodeStageInitialize(&layer->node);
+	layer->node.reserved_execution_flags &=
+		~SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_DSA_KV_FRAGMENT_TRANSPORT;
+	layer->node.dsa_kv_fragment_prefetch_plan = 0;
+	layer->node.dsa_kv_fragment_save_plan = 0;
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus("required_stage_initialize",layer_index,status);
 	if (status == SPARK_STATUS_OK)
