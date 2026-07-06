@@ -102,6 +102,31 @@ static void SparkTestGlm52ProductionTopologyPp13Sideband(void)
     assert((topology.topology_flags &
         SPARK_GLM52_PRODUCTION_TOPOLOGY_FLAG_MLA_COMPRESSED_KV_CACHE) != 0u);
     assert(topology.mla_cache_element_count == 576u);
+    {
+        uint32_t tap_count, sideband_index;
+        uint32_t expected_export_stages[5] = { 1u, 3u, 6u, 9u, 11u };
+
+        tap_count = 0u;
+        for (sideband_index = 0u;
+             sideband_index < topology.indexshare_sideband_count;
+             ++sideband_index)
+        {
+            const SparkGlm52ProductionTopologyIndexShareSideBand *tap =
+                &topology.indexshare_sidebands[sideband_index];
+            if ((tap->flags &
+                    SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP) == 0u)
+            {
+                continue;
+            }
+            assert(tap_count < 5u);
+            assert(tap->export_stage_index == expected_export_stages[tap_count]);
+            assert(tap->import_stage_index == topology.stage_count - 1u);
+            assert(tap->payload_bytes ==
+                (uint64_t)64u * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u);
+            tap_count += 1u;
+        }
+        assert(tap_count == 5u);
+    }
     sideband = SparkTestFindSidebandForSourceLayer(&topology, 10u);
     assert(sideband != 0);
     assert(sideband->source_layer_index == 10u);

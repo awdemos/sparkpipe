@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_stage_plan.h"
+#include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
@@ -17,7 +18,8 @@ extern "C" {
 #define SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT 3u
 #define SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET 3u
 #define SPARK_GLM52_PRODUCTION_TOPOLOGY_MAX_INDEXSHARE_SIDEBANDS \
-    (SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT - 1u)
+    ((SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT - 1u) + \
+     SPARK_GLM52_DSPARK_AUX_LAYER_COUNT)
 
 #define SPARK_GLM52_PRODUCTION_TOPOLOGY_FLAG_OFFICIAL_DSA_INDEXSHARE \
     0x00000001u
@@ -37,6 +39,8 @@ extern "C" {
     0x00000001u
 #define SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DEVICE_TO_DEVICE \
     0x00000002u
+#define SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP \
+    0x00000004u
 
 typedef struct SparkGlm52ProductionTopologyIndexShareSideBand
 {
