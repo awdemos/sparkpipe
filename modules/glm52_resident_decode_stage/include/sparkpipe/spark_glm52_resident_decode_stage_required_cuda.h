@@ -455,6 +455,40 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareImportSelectedT
     uint32_t active_sequence_count,
     void *cuda_stream);
 
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaKeyIndexBlockSummaryBuild(
+    const void *key_index_cache_bf16,
+    const void *dirty_block_flags,
+    void *key_index_block_min_bf16,
+    void *key_index_block_max_bf16,
+    uint32_t physical_block_count,
+    uint32_t block_token_count,
+    uint32_t cache_token_capacity,
+    uint32_t index_head_dimension,
+    void *cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareBlockUpperBoundMask(
+    const void *query_index_heads_bf16,
+    const void *index_head_weights_bf16,
+    const void *key_index_block_min_bf16,
+    const void *key_index_block_max_bf16,
+    const uint32_t *block_table,
+    const uint32_t *context_lengths,
+    const uint32_t *first_block_token_offsets,
+    const float *minimum_required_scores_f32,
+    float *block_upper_bounds_f32,
+    uint8_t *candidate_block_flags_u8,
+    uint32_t *candidate_block_counts,
+    uint32_t active_sequence_count,
+    uint32_t logical_block_capacity,
+    uint32_t index_head_count,
+    uint32_t index_head_dimension,
+    uint32_t block_token_count,
+    uint32_t kv_block_count,
+    float index_softmax_scale,
+    float conservative_score_epsilon,
+    void *cuda_stream);
+
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareSelectTopkFromScores(
     float *dsa_token_scores,
     const uint32_t *context_lengths,

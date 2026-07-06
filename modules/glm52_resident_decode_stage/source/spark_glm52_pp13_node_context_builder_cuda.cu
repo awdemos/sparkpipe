@@ -122,6 +122,9 @@ typedef struct SparkGlm52Pp13BuilderLayer
 	void *key_nope_cache;
 	void *value_cache;
 	void *key_index_cache;
+	void *key_index_block_min;
+	void *key_index_block_max;
+	void *dsa_summary_dirty_flags;
 } SparkGlm52Pp13BuilderLayer;
 
 typedef struct SparkGlm52Pp13BuilderState
@@ -819,11 +822,17 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ALLOC_FIELD(key_nope_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION,2u);
 	ALLOC_FIELD(value_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,2u);
 	ALLOC_FIELD(key_index_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ALLOC_FIELD(key_index_block_min,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ALLOC_FIELD(key_index_block_max,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ALLOC_FIELD(dsa_summary_dirty_flags,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS,1u);
 	ZERO_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
 	ZERO_FIELD(mla_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,2u);
 	ZERO_FIELD(key_nope_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION,2u);
 	ZERO_FIELD(value_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,2u);
 	ZERO_FIELD(key_index_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ZERO_FIELD(key_index_block_min,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ZERO_FIELD(key_index_block_max,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
+	ZERO_FIELD(dsa_summary_dirty_flags,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS,1u);
 #undef ALLOC_FIELD
 #undef ZERO_FIELD
 	return SPARK_STATUS_OK;
@@ -1039,6 +1048,9 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->index_key_norm_weight_bf16 = layer->index_key_norm_weight;
 	node->index_key_norm_bias_bf16 = layer->index_key_norm_bias;
 	node->key_index_cache_bf16 = layer->key_index_cache;
+	node->key_index_block_min_bf16 = layer->key_index_block_min;
+	node->key_index_block_max_bf16 = layer->key_index_block_max;
+	node->dsa_summary_dirty_flags_u8 = (uint8_t *)layer->dsa_summary_dirty_flags;
 	node->selected_token_indices_by_layer = (uint32_t *)state->selected_token_indices_by_layer;
 	node->selected_block_indices_by_layer = (uint32_t *)state->selected_block_indices_by_layer;
 	node->selected_block_counts_by_layer = (uint32_t *)state->selected_block_counts_by_layer;
