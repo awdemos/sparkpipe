@@ -3,7 +3,8 @@
 #include <string.h>
 
 static const uint32_t SparkGlm52DsparkDefaultAuxLayerIds[
-    SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] = { 8u, 23u, 39u, 55u, 70u };
+    SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] =
+    SPARK_GLM52_DSPARK_AUX_LAYER_IDS_INITIALIZER;
 
 SparkStatus SparkGlm52DsparkBuildDefaultModelContract(
     SparkGlm52DsparkModelContract *model_contract)

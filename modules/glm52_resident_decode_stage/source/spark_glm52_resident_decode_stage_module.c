@@ -3359,7 +3359,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapPlanInlin
     const SparkGlm52DsparkHiddenTapPlan *tap_plan)
 {
     static const uint32_t ExpectedTargetLayers[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] =
-        { 8u, 23u, 39u, 55u, 70u };
+        SPARK_GLM52_DSPARK_AUX_LAYER_IDS_INITIALIZER;
     uint32_t tap_index;
 
     if (tap_plan == 0 ||
