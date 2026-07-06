@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 3u
+#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 4u
 #define SPARK_GLM52_SERVICE_BACKEND_INTERFACE_BYTES \
 	((uint32_t)sizeof(SparkGlm52ServiceBackendInterface))
 #define SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES \
@@ -26,9 +26,15 @@ extern "C" {
 #define SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_SERVICE_RUNTIME 0x00000001u
 #define SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME 0x00000002u
 #define SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_TOKENIZER 0x00000004u
+#define SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_POLL_DESCRIPTORS 0x00000008u
+#define SPARK_GLM52_SERVICE_BACKEND_POLL_DESCRIPTOR_BYTES \
+	((uint32_t)sizeof(SparkGlm52ServiceBackendPollDescriptor))
+#define SPARK_GLM52_SERVICE_BACKEND_POLL_READ 0x00000001u
+#define SPARK_GLM52_SERVICE_BACKEND_POLL_WRITE 0x00000002u
 #define SPARK_GLM52_SERVICE_BACKEND_REQUIRED_PRODUCTION_CAPS \
 	(SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_SERVICE_RUNTIME | \
-	 SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME)
+	 SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME | \
+	 SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_POLL_DESCRIPTORS)
 
 typedef struct SparkGlm52ServiceBackendConfiguration
 {
@@ -64,6 +70,14 @@ typedef struct SparkGlm52ServiceBackendView
 	const char *first_blocker;
 } SparkGlm52ServiceBackendView;
 
+typedef struct SparkGlm52ServiceBackendPollDescriptor
+{
+	uint32_t descriptor_bytes;
+	uint32_t events;
+	int32_t fd;
+	uint32_t reserved0;
+} SparkGlm52ServiceBackendPollDescriptor;
+
 typedef SparkStatus (*SparkGlm52ServiceBackendInitializeFunction)(
 	const SparkGlm52ServiceBackendConfiguration *configuration,
 	void **backend_state);
@@ -76,6 +90,11 @@ typedef SparkStatus (*SparkGlm52ServiceBackendPumpFunction)(
 	void *backend_state,
 	uint32_t max_dispatch_steps,
 	SparkGlm52ServiceStats *stats_out);
+typedef SparkStatus (*SparkGlm52ServiceBackendGetPollDescriptorsFunction)(
+	void *backend_state,
+	SparkGlm52ServiceBackendPollDescriptor *descriptors,
+	uint32_t descriptor_capacity,
+	uint32_t *descriptor_count_out);
 
 typedef struct SparkGlm52ServiceBackendInterface
 {
@@ -87,6 +106,7 @@ typedef struct SparkGlm52ServiceBackendInterface
 	SparkGlm52ServiceBackendDestroyFunction destroy;
 	SparkGlm52ServiceBackendGetViewFunction get_view;
 	SparkGlm52ServiceBackendPumpFunction pump;
+	SparkGlm52ServiceBackendGetPollDescriptorsFunction get_poll_descriptors;
 } SparkGlm52ServiceBackendInterface;
 
 typedef const SparkGlm52ServiceBackendInterface *(*SparkGlm52ServiceBackendGetInterfaceFunction)(

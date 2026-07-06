@@ -3637,13 +3637,16 @@ static SparkStatus SparkGlm52ResidentDecodeStagePrepareHiddenTransportPacket(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     *packet_out = *source_packet;
-    if (packet_out->hidden_bf16 == 0)
+    packet_out->hidden_bf16 = expected_hidden_bf16;
+    packet_out->cuda_stream = pipeline_slot->cuda_stream;
+    if ((packet_out->flags &
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) != 0u &&
+        packet_out->sideband_payload == 0)
     {
-        packet_out->hidden_bf16 = expected_hidden_bf16;
-    }
-    if (packet_out->cuda_stream == 0)
-    {
-        packet_out->cuda_stream = pipeline_slot->cuda_stream;
+        packet_out->flags &=
+            ~SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
+        packet_out->sideband_kind = 0u;
+        packet_out->sideband_bytes_per_sequence = 0u;
     }
     if (packet_out->abi_version != SPARK_HIDDEN_TRANSPORT_ABI_VERSION ||
         packet_out->descriptor_bytes != SPARK_HIDDEN_TRANSPORT_PACKET_BYTES ||

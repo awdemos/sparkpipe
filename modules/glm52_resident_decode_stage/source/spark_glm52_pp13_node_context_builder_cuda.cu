@@ -588,7 +588,7 @@ static SparkStatus SparkGlm52Pp13BuilderLoadLmHeadRestricted(
 			&spec,
 			&region);
 	bytes =
-		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT *
+		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
 		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2ull;
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderCudaAlloc(state,device_out,bytes);
@@ -685,7 +685,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTables(
 		free(sin_host);
 	}
 	tokens = (uint32_t *)malloc(
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT *
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
 		sizeof(uint32_t));
 	if (status != SPARK_STATUS_OK || tokens == 0)
 	{
@@ -693,14 +693,14 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTables(
 		return status == SPARK_STATUS_OK ? SPARK_STATUS_CAPACITY_EXCEEDED : status;
 	}
 	for (index = 0u;
-		 index < SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT;
+		 index < SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT;
 		 ++index)
 		tokens[index] = index;
 	status = SparkGlm52Pp13BuilderCopyU32ToDevice(
 		state,
 		&state->restricted_token_ids,
 		tokens,
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT);
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT);
 	free(tokens);
 	return status;
 }

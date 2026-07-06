@@ -18,7 +18,8 @@
 #define SPARK_GLM52_GATEWAY_DEFAULT_PORT 8080u
 #define SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS 256u
 #define SPARK_GLM52_GATEWAY_STREAM_POLL_COUNT 90000u
-#define SPARK_GLM52_GATEWAY_STREAM_SLEEP_US 1000u
+#define SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY 8u
+#define SPARK_GLM52_GATEWAY_STREAM_WAIT_MS 1000u
 
 typedef struct SparkGlm52GatewayConfig
 {
@@ -430,6 +431,75 @@ static void SparkGlm52GatewayPumpService(SparkGlm52GatewayRuntime *runtime)
 		SparkGlm52GatewayLogServiceEvents(runtime);
 }
 
+static int16_t SparkGlm52GatewayPollEventsFromBackend(uint32_t backend_events)
+{
+	int16_t events;
+
+	events = 0;
+	if ((backend_events & SPARK_GLM52_SERVICE_BACKEND_POLL_READ) != 0u)
+		events |= POLLIN;
+	if ((backend_events & SPARK_GLM52_SERVICE_BACKEND_POLL_WRITE) != 0u)
+		events |= POLLOUT;
+	return events;
+}
+
+static uint32_t SparkGlm52GatewayAppendBackendPollFds(
+	SparkGlm52GatewayRuntime *runtime,
+	struct pollfd *fds,
+	uint32_t fd_capacity,
+	uint32_t fd_count)
+{
+	SparkGlm52ServiceBackendPollDescriptor descriptors[
+		SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY];
+	uint32_t descriptor_count;
+	uint32_t descriptor_index;
+	int16_t events;
+
+	if (runtime == 0 || fds == 0 ||
+		runtime->service_backend_attached == 0u ||
+		runtime->service_backend_library.backend_interface.get_poll_descriptors == 0)
+		return fd_count;
+	descriptor_count = 0u;
+	if (runtime->service_backend_library.backend_interface.get_poll_descriptors(
+			runtime->service_backend_state,
+			descriptors,
+			SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY,
+			&descriptor_count) != SPARK_STATUS_OK)
+		return fd_count;
+	for (descriptor_index = 0u;
+		 descriptor_index < descriptor_count && fd_count < fd_capacity;
+		 ++descriptor_index)
+	{
+		events = SparkGlm52GatewayPollEventsFromBackend(
+			descriptors[descriptor_index].events);
+		if (descriptors[descriptor_index].fd < 0 || events == 0)
+			continue;
+		memset(&fds[fd_count],0,sizeof(fds[fd_count]));
+		fds[fd_count].fd = descriptors[descriptor_index].fd;
+		fds[fd_count].events = events;
+		fd_count += 1u;
+	}
+	return fd_count;
+}
+
+static void SparkGlm52GatewayWaitForBackendEvents(
+	SparkGlm52GatewayRuntime *runtime,
+	uint32_t timeout_ms)
+{
+	struct pollfd fds[SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY];
+	uint32_t fd_count;
+
+	fd_count = 0u;
+	fd_count = SparkGlm52GatewayAppendBackendPollFds(
+		runtime,
+		fds,
+		SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY,
+		fd_count);
+	if (fd_count == 0u)
+		return;
+	(void)poll(fds,fd_count,(int32_t)timeout_ms);
+}
+
 static int32_t SparkGlm52GatewayEnsureServiceClient(
 	SparkGlm52GatewayRuntime *runtime)
 {
@@ -645,7 +715,9 @@ static SparkStatus SparkGlm52GatewayDrainStreamResponse(
 			if (SparkGlm52GatewayServiceEventIsTerminal(&event) != 0u)
 				return SPARK_STATUS_OK;
 		}
-		(void)poll(0,0,SPARK_GLM52_GATEWAY_STREAM_SLEEP_US / 1000u);
+		SparkGlm52GatewayWaitForBackendEvents(
+			runtime,
+			SPARK_GLM52_GATEWAY_STREAM_WAIT_MS);
 	}
 	return SPARK_STATUS_BUSY;
 }
@@ -1027,10 +1099,11 @@ static int32_t SparkGlm52GatewayServeOne(
 int main(int argc,char **argv)
 {
 	SparkGlm52GatewayRuntime runtime;
-	struct pollfd poll_fds[1];
+	struct pollfd poll_fds[SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY + 1u];
 	int32_t listen_fd;
 	int32_t client_fd;
 	int32_t poll_result;
+	uint32_t fd_count;
 
 	(void)signal(SIGPIPE,SIG_IGN);
 	memset(&runtime,0,sizeof(runtime));
@@ -1065,17 +1138,23 @@ int main(int argc,char **argv)
 	{
 		SparkGlm52GatewayPumpService(&runtime);
 		memset(poll_fds,0,sizeof(poll_fds));
+		fd_count = 0u;
 		poll_fds[0].fd = listen_fd;
 		poll_fds[0].events = POLLIN;
-		poll_result = poll(poll_fds,1u,5);
+		fd_count = 1u;
+		fd_count = SparkGlm52GatewayAppendBackendPollFds(
+			&runtime,
+			poll_fds,
+			SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY + 1u,
+			fd_count);
+		poll_result = poll(poll_fds,fd_count,-1);
 		if (poll_result < 0)
 		{
 			if (errno == EINTR)
 				continue;
 			break;
 		}
-		if (poll_result == 0 ||
-			(poll_fds[0].revents & POLLIN) == 0)
+		if ((poll_fds[0].revents & POLLIN) == 0)
 			continue;
 		client_fd = accept(listen_fd,0,0);
 		if (client_fd < 0)

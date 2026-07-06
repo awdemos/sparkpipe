@@ -391,6 +391,11 @@ SparkStatus SparkGlm52ServingEnginePump(
     uint32_t max_dispatch_steps,
     SparkGlm52ServingStats *stats);
 
+SparkStatus SparkGlm52ServingEngineCompleteDecodeDispatch(
+    SparkGlm52ServingEngine *engine,
+    SparkGlm52RequestApiDispatch *dispatch,
+    SparkGlm52ServingDecodeResult *decode_result);
+
 SparkStatus SparkGlm52ServingEnginePopEvent(
     SparkGlm52ServingEngine *engine,
     SparkGlm52ServingEvent *event_out);

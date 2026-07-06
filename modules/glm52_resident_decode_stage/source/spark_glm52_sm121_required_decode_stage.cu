@@ -6606,7 +6606,8 @@ void SparkGlm52ResidentDecodeStageFusedFinalTokenCandidateKernel(
     if (sequence_index >= active_sequence_count ||
         row_index > SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT ||
         group_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT ||
-        token_offset >= SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_SIZE)
+        token_offset >= SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_SIZE ||
+        restricted_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT)
     {
         return;
     }
@@ -6707,7 +6708,8 @@ void SparkGlm52ResidentDecodeStageFusedFinalTokenCandidateKernel(
             partial_sums[token_offset][7u];
         token_scores[token_offset] = token_score;
         token_ids[token_offset] = restricted_token_ids[restricted_index];
-        if (row_index == 0u && restricted_logits != 0)
+        if (row_index == 0u && restricted_logits != 0 &&
+            restricted_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT)
         {
             restricted_logits[
                 ((uint64_t)sequence_index *
@@ -6770,158 +6772,173 @@ static __global__ void SparkGlm52ResidentDecodeStageFusedFinalTokenCommitKernel(
     uint32_t *__restrict__ mtp_event_counters,
     uint32_t active_sequence_count)
 {
-    __shared__ float shared_scores[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u]
-        [SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT];
-    __shared__ uint32_t shared_tokens[SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u]
-        [SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT];
+    __shared__ float shared_scores[SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    __shared__ uint32_t shared_tokens[SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
     uint32_t sequence_index;
     uint32_t row_index;
-    uint32_t group_index;
-    uint32_t stride;
+    uint32_t thread_index;
+    uint32_t accepting;
+    uint32_t draft_budget;
 
     sequence_index = blockIdx.x;
-    group_index = threadIdx.x;
-    if (sequence_index >= active_sequence_count ||
-        group_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT)
+    thread_index = threadIdx.x;
+    if (sequence_index >= active_sequence_count)
     {
         return;
     }
+    accepting = 1u;
+    draft_budget = SparkGlm52ResidentDecodeStageMtpDraftBudgetForSequence(
+        mtp_draft_token_budgets,
+        sequence_index);
     for (row_index = 0u;
          row_index <= SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
          ++row_index)
     {
-        uint64_t candidate_index;
+        float best_score;
+        uint32_t best_token;
+        uint32_t group_index;
+        uint32_t stride;
 
-        candidate_index =
-            ((((uint64_t)sequence_index *
-               (uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u)) +
-              (uint64_t)row_index) *
-             (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT) +
-            (uint64_t)group_index;
-        shared_scores[row_index][group_index] = candidate_scores[candidate_index];
-        shared_tokens[row_index][group_index] = candidate_tokens[candidate_index];
-    }
-    __syncthreads();
-
-    for (stride = SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT >> 1u;
-         stride != 0u;
-         stride >>= 1u)
-    {
-        if (group_index < stride)
+        best_score = -3.4028234663852886e+38f;
+        best_token = UINT32_MAX;
+        for (group_index = thread_index;
+             group_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT;
+             group_index += blockDim.x)
         {
-            for (row_index = 0u;
-                 row_index <= SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
-                 ++row_index)
+            uint64_t candidate_index;
+            float score;
+            uint32_t token;
+
+            candidate_index =
+                ((((uint64_t)sequence_index *
+                   (uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u)) +
+                  (uint64_t)row_index) *
+                 (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT) +
+                (uint64_t)group_index;
+            score = candidate_scores[candidate_index];
+            token = candidate_tokens[candidate_index];
+            if (SparkGlm52ResidentDecodeStageFinalCandidateIsBetter(
+                    score,
+                    token,
+                    best_score,
+                    best_token))
+            {
+                best_score = score;
+                best_token = token;
+            }
+        }
+        shared_scores[thread_index] = best_score;
+        shared_tokens[thread_index] = best_token;
+        __syncthreads();
+        for (stride = blockDim.x >> 1u; stride != 0u; stride >>= 1u)
+        {
+            if (thread_index < stride)
             {
                 float other_score;
                 uint32_t other_token;
 
-                other_score = shared_scores[row_index][group_index + stride];
-                other_token = shared_tokens[row_index][group_index + stride];
+                other_score = shared_scores[thread_index + stride];
+                other_token = shared_tokens[thread_index + stride];
                 if (SparkGlm52ResidentDecodeStageFinalCandidateIsBetter(
                         other_score,
                         other_token,
-                        shared_scores[row_index][group_index],
-                        shared_tokens[row_index][group_index]))
+                        shared_scores[thread_index],
+                        shared_tokens[thread_index]))
                 {
-                    shared_scores[row_index][group_index] = other_score;
-                    shared_tokens[row_index][group_index] = other_token;
+                    shared_scores[thread_index] = other_score;
+                    shared_tokens[thread_index] = other_token;
+                }
+            }
+            __syncthreads();
+        }
+        if (thread_index == 0u)
+        {
+            if (row_index == 0u)
+            {
+                restricted_selected_token_ids[sequence_index] = shared_tokens[0u];
+                restricted_selected_token_scores[sequence_index] = shared_scores[0u];
+            }
+            else
+            {
+                uint32_t mtp_row_index;
+                uint32_t draft_index;
+                uint32_t draft_token;
+                uint32_t accepted;
+
+                draft_index = row_index - 1u;
+                mtp_row_index =
+                    (sequence_index *
+                     SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT) +
+                    draft_index;
+                draft_token = shared_tokens[0u];
+                mtp_draft_token_ids[mtp_row_index] = draft_token;
+                if (draft_index >= draft_budget)
+                {
+                    mtp_accept_mask[mtp_row_index] = 0u;
+                    mtp_committed_token_ids[mtp_row_index] =
+                        SPARK_GLM52_RESIDENT_DECODE_STAGE_CANCELLED_TOKEN_ID;
+                }
+                else if (mtp_target_token_ids == 0)
+                {
+                    mtp_accept_mask[mtp_row_index] = 0u;
+                    mtp_committed_token_ids[mtp_row_index] =
+                        SPARK_GLM52_RESIDENT_DECODE_STAGE_CANCELLED_TOKEN_ID;
+                }
+                else
+                {
+                    accepted = accepting != 0u &&
+                        draft_token == mtp_target_token_ids[mtp_row_index]
+                        ? 1u
+                        : 0u;
+                    mtp_accept_mask[mtp_row_index] = accepted;
+                    if (accepted != 0u)
+                    {
+                        mtp_committed_token_ids[mtp_row_index] = draft_token;
+                        atomicAdd(
+                            &mtp_event_counters[
+                                SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_ACCEPTED],
+                            1u);
+                        atomicAdd(
+                            &mtp_event_counters[
+                                SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_COMMITTED],
+                            1u);
+                    }
+                    else if (accepting != 0u)
+                    {
+                        uint32_t rejected_suffix_count;
+                        uint32_t cancelled_suffix_count;
+
+                        rejected_suffix_count = draft_budget - draft_index;
+                        cancelled_suffix_count = rejected_suffix_count - 1u;
+                        mtp_committed_token_ids[mtp_row_index] =
+                            mtp_target_token_ids[mtp_row_index];
+                        atomicAdd(
+                            &mtp_event_counters[
+                                SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_REJECTED],
+                            rejected_suffix_count);
+                        atomicAdd(
+                            &mtp_event_counters[
+                                SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_COMMITTED],
+                            1u);
+                        atomicAdd(
+                            &mtp_event_counters[
+                                SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_ROLLBACK],
+                            rejected_suffix_count);
+                        atomicAdd(
+                            &mtp_event_counters[
+                                SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_CANCELLED],
+                            cancelled_suffix_count);
+                        accepting = 0u;
+                    }
+                    else
+                    {
+                        mtp_committed_token_ids[mtp_row_index] =
+                            SPARK_GLM52_RESIDENT_DECODE_STAGE_CANCELLED_TOKEN_ID;
+                    }
                 }
             }
         }
         __syncthreads();
-    }
-
-    if (group_index == 0u)
-    {
-        uint32_t accepting;
-        uint32_t draft_index;
-        uint32_t draft_budget;
-
-        restricted_selected_token_ids[sequence_index] = shared_tokens[0u][0u];
-        restricted_selected_token_scores[sequence_index] = shared_scores[0u][0u];
-        draft_budget = SparkGlm52ResidentDecodeStageMtpDraftBudgetForSequence(
-            mtp_draft_token_budgets,
-            sequence_index);
-        accepting = 1u;
-        for (draft_index = 0u;
-             draft_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
-             ++draft_index)
-        {
-            uint32_t mtp_row_index;
-            uint32_t draft_token;
-            uint32_t accepted;
-
-            mtp_row_index =
-                (sequence_index *
-                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT) +
-                draft_index;
-            draft_token = shared_tokens[draft_index + 1u][0u];
-            mtp_draft_token_ids[mtp_row_index] = draft_token;
-            if (draft_index >= draft_budget)
-            {
-                mtp_accept_mask[mtp_row_index] = 0u;
-                mtp_committed_token_ids[mtp_row_index] =
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_CANCELLED_TOKEN_ID;
-                continue;
-            }
-            if (mtp_target_token_ids == 0)
-            {
-                mtp_accept_mask[mtp_row_index] = 0u;
-                mtp_committed_token_ids[mtp_row_index] =
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_CANCELLED_TOKEN_ID;
-                continue;
-            }
-            accepted = accepting != 0u &&
-                draft_token == mtp_target_token_ids[mtp_row_index]
-                ? 1u
-                : 0u;
-            mtp_accept_mask[mtp_row_index] = accepted;
-            if (accepted != 0u)
-            {
-                mtp_committed_token_ids[mtp_row_index] = draft_token;
-                atomicAdd(
-                    &mtp_event_counters[
-                        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_ACCEPTED],
-                    1u);
-                atomicAdd(
-                    &mtp_event_counters[
-                        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_COMMITTED],
-                    1u);
-            }
-            else if (accepting != 0u)
-            {
-                uint32_t rejected_suffix_count;
-                uint32_t cancelled_suffix_count;
-
-                rejected_suffix_count = draft_budget - draft_index;
-                cancelled_suffix_count = rejected_suffix_count - 1u;
-                mtp_committed_token_ids[mtp_row_index] =
-                    mtp_target_token_ids[mtp_row_index];
-                atomicAdd(
-                    &mtp_event_counters[
-                        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_REJECTED],
-                    rejected_suffix_count);
-                atomicAdd(
-                    &mtp_event_counters[
-                        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_COMMITTED],
-                    1u);
-                atomicAdd(
-                    &mtp_event_counters[
-                        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_ROLLBACK],
-                    rejected_suffix_count);
-                atomicAdd(
-                    &mtp_event_counters[
-                        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_CANCELLED],
-                    cancelled_suffix_count);
-                accepting = 0u;
-            }
-            else
-            {
-                mtp_committed_token_ids[mtp_row_index] =
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_CANCELLED_TOKEN_ID;
-            }
-        }
     }
 }
 
@@ -15802,7 +15819,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFusedFinalTokenEpil
 
     SparkGlm52ResidentDecodeStageFusedFinalTokenCommitKernel<<<
         active_sequence_count,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
         0u,
         cuda_stream>>>(
         candidate_scores,
@@ -16944,7 +16961,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeImportStageSliceIndexShareS
     packet = &frame_context->hidden_input_packet;
     if (!SparkGlm52ResidentDecodeStagePacketHasIndexShareSideband(packet))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        return SPARK_STATUS_OK;
     }
     first_layer_index = SparkGlm52ResidentDecodeStageStageSliceFirstLayerIndex(
         layer_node_contexts,
@@ -16980,7 +16997,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeImportStageSliceIndexShareS
             active_sequence_count);
         if (status != SPARK_STATUS_OK)
         {
-            return status;
+            continue;
         }
         layer_cache = SparkGlm52ResidentDecodeStageDsaIndexShareLayerCache(
             layer_node_context,
@@ -16999,9 +17016,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeImportStageSliceIndexShareS
         imported_source_layer_index =
             layer_node_context->dsa_indexshare_source_layer_index;
     }
-    return imported_source_layer_index == UINT32_MAX
-        ? SPARK_STATUS_INVALID_ARGUMENT
-        : SPARK_STATUS_OK;
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageMaybeExportStageSliceIndexShareSideband(
@@ -17031,7 +17046,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeExportStageSliceIndexShareS
     packet = &frame_context->hidden_output_packet;
     if (!SparkGlm52ResidentDecodeStagePacketHasIndexShareSideband(packet))
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        return SPARK_STATUS_OK;
     }
     stage_end_layer_exclusive =
         SparkGlm52ResidentDecodeStageStageSliceEndLayerExclusive(
@@ -17066,7 +17081,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeExportStageSliceIndexShareS
             active_sequence_count);
         if (status != SPARK_STATUS_OK)
         {
-            return status;
+            continue;
         }
         layer_cache = SparkGlm52ResidentDecodeStageDsaIndexShareLayerCache(
             layer_node_context,
@@ -17085,9 +17100,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeExportStageSliceIndexShareS
         exported_source_layer_index =
             layer_node_context->dsa_indexshare_source_layer_index;
     }
-    return exported_source_layer_index == UINT32_MAX
-        ? SPARK_STATUS_INVALID_ARGUMENT
-        : SPARK_STATUS_OK;
+    return SPARK_STATUS_OK;
 }
 
 static bool SparkGlm52ResidentDecodeStageFrameContextHasDsparkHiddenTaps(

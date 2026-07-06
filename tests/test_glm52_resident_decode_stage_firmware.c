@@ -2337,7 +2337,11 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFinalTokenEpilogueValidation
     SparkModelDriverFrame frame;
     void *module_state;
     uint32_t layer_index;
-    uint8_t final_epilogue_workspace[4096];
+    static uint8_t final_epilogue_workspace[
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT *
+         (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) *
+         8u *
+         (sizeof(float) + sizeof(uint32_t))) + 64u];
     uint32_t capability_flags;
 
     SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
@@ -2702,7 +2706,11 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeB12xValidation(
 
 static void SparkTestGlm52ResidentDecodeStageFinalStageRequiresBuiltInEpilogueWorkspace(void)
 {
-    static uint8_t FinalEpilogueWorkspace[4096u];
+    static uint8_t FinalEpilogueWorkspace[
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT *
+         (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) *
+         8u *
+         (sizeof(float) + sizeof(uint32_t))) + 64u];
     SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[2];
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
     SparkGlm52ResidentDecodeStageNodeContext node_contexts[6];

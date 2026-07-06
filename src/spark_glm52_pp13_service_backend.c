@@ -41,8 +41,10 @@
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_EVENT_CAPACITY 16384u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_METADATA_KEY_BASE 0x100000000ull
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_METADATA_VALUE_BASE 0x200000000ull
-#define SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_POLL_MS 10
-#define SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_POLL_COUNT 3000u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY 128u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE 0u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE 1u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY 4096u
 
 typedef struct SparkGlm52Pp13ServiceBackendFinalEvent
 {
@@ -60,6 +62,15 @@ typedef struct SparkGlm52Pp13ServiceBackendFinalEvent
 	uint64_t sequence_position;
 	uint64_t service_time_ns;
 } SparkGlm52Pp13ServiceBackendFinalEvent;
+
+typedef struct SparkGlm52Pp13ServiceBackendPendingDecode
+{
+	uint32_t state;
+	uint32_t done_count;
+	uint8_t lane_done[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+	SparkGlm52RequestApiDispatch dispatch;
+	SparkGlm52ServingDecodeResult result;
+} SparkGlm52Pp13ServiceBackendPendingDecode;
 
 typedef struct SparkGlm52Pp13ServiceBackendState
 {
@@ -103,6 +114,13 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	uint64_t final_event_receive_error_count;
 	uint32_t last_final_event_token_count;
 	uint32_t last_final_event_token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
+	SparkGlm52Pp13WorkControlPacket work_queue[
+		SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY];
+	uint32_t work_queue_head;
+	uint32_t work_queue_count;
+	uint32_t work_queue_write_offset;
+	SparkGlm52Pp13ServiceBackendPendingDecode pending_decodes[
+		SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY];
 	uint32_t initialized;
 	uint32_t tokenizer_ready;
 	uint32_t rank0_runtime_ready;
@@ -112,10 +130,16 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 
 static SparkGlm52Pp13ServiceBackendState SparkGlm52Pp13ServiceBackendSingleton;
 
-static SparkStatus SparkGlm52Pp13ServiceBackendWaitForDecodeFinalEvents(
+static SparkStatus SparkGlm52Pp13ServiceBackendRegisterPendingDecode(
 	SparkGlm52Pp13ServiceBackendState *state,
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
-	SparkGlm52ServingDecodeResult *decode_result);
+	const SparkGlm52ServingDecodeResult *decode_result,
+	SparkGlm52Pp13ServiceBackendPendingDecode **pending_out);
+static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52Pp13ServiceBackendFinalEvent *event);
+static SparkStatus SparkGlm52Pp13ServiceBackendPumpWorkOutput(
+	SparkGlm52Pp13ServiceBackendState *state);
 static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 	SparkGlm52Pp13ServiceBackendState *state,
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch);
@@ -335,33 +359,87 @@ static int32_t SparkGlm52Pp13ServiceBackendConnectSocket(
 	return fd;
 }
 
-static int32_t SparkGlm52Pp13ServiceBackendWriteAll(
-	int32_t fd,
-	const void *buffer,
-	uint32_t buffer_bytes)
+static uint32_t SparkGlm52Pp13ServiceBackendWorkQueueTail(
+	const SparkGlm52Pp13ServiceBackendState *state)
 {
-	const uint8_t *cursor;
-	uint32_t offset;
+	return (state->work_queue_head + state->work_queue_count) %
+		SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendEnqueueWorkPacket(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52Pp13WorkControlPacket *packet)
+{
+	uint32_t tail;
+
+	if (state == 0 || packet == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((state->rank_plan.flags &
+			SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
+		return SPARK_STATUS_OK;
+	if (state->work_queue_count >=
+		SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	tail = SparkGlm52Pp13ServiceBackendWorkQueueTail(state);
+	state->work_queue[tail] = *packet;
+	state->work_queue_count += 1u;
+	return SPARK_STATUS_OK;
+}
+
+static void SparkGlm52Pp13ServiceBackendDropWorkOutputSocket(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	if (state == 0)
+		return;
+	if (state->work_output_socket_fd >= 0)
+		close(state->work_output_socket_fd);
+	state->work_output_socket_fd = -1;
+	state->work_queue_write_offset = 0u;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendFlushWorkOutput(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	SparkGlm52Pp13WorkControlPacket *packet;
+	uint32_t remaining;
 	ssize_t written;
 
-	if (fd < 0 || buffer == 0)
-		return -1;
-	cursor = (const uint8_t *)buffer;
-	offset = 0u;
-	while (offset < buffer_bytes)
+	if (state == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((state->rank_plan.flags &
+			SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u ||
+		state->work_queue_count == 0u)
+		return SPARK_STATUS_OK;
+	while (state->work_queue_count != 0u)
 	{
-		written = write(fd,cursor + offset,buffer_bytes - offset);
+		packet = &state->work_queue[state->work_queue_head];
+		remaining = ((uint32_t)sizeof(*packet)) -
+			state->work_queue_write_offset;
+		written = write(
+			state->work_output_socket_fd,
+			((const uint8_t *)packet) + state->work_queue_write_offset,
+			remaining);
 		if (written < 0)
 		{
 			if (errno == EINTR)
 				continue;
-			return -2;
+			if (errno == EAGAIN || errno == EWOULDBLOCK)
+				return SPARK_STATUS_BUSY;
+			SparkGlm52Pp13ServiceBackendDropWorkOutputSocket(state);
+			return SPARK_STATUS_ROUTE_NOT_FOUND;
 		}
 		if (written == 0)
-			return -3;
-		offset += (uint32_t)written;
+			return SPARK_STATUS_BUSY;
+		state->work_queue_write_offset += (uint32_t)written;
+		if (state->work_queue_write_offset != (uint32_t)sizeof(*packet))
+			continue;
+		state->work_queue_write_offset = 0u;
+		state->work_queue_head =
+			(state->work_queue_head + 1u) %
+			SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY;
+		state->work_queue_count -= 1u;
 	}
-	return 0;
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
@@ -474,6 +552,23 @@ static SparkStatus SparkGlm52Pp13ServiceBackendEnsureWorkOutputSocket(
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52Pp13ServiceBackendPumpWorkOutput(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	SparkStatus status;
+
+	if (state == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((state->rank_plan.flags &
+			SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u ||
+		state->work_queue_count == 0u)
+		return SPARK_STATUS_OK;
+	status = SparkGlm52Pp13ServiceBackendEnsureWorkOutputSocket(state);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	return SparkGlm52Pp13ServiceBackendFlushWorkOutput(state);
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 	SparkGlm52Pp13ServiceBackendState *state,
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
@@ -505,23 +600,13 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
 		if (status != SPARK_STATUS_OK)
 			return status;
-		if (SparkGlm52Pp13ServiceBackendWriteAll(
-				state->work_output_socket_fd,
-				&packet,
-				sizeof(packet)) < 0)
-		{
-			if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
-				fprintf(
-					stderr,
-					"pp13_prefill_work_write_failed fd=%d token_offset=%u errno=%d\n",
-					state->work_output_socket_fd,
-					token_offset,
-					errno);
-			close(state->work_output_socket_fd);
-			state->work_output_socket_fd = -1;
-			return SPARK_STATUS_ROUTE_NOT_FOUND;
-		}
+		status = SparkGlm52Pp13ServiceBackendEnqueueWorkPacket(state,&packet);
+		if (status != SPARK_STATUS_OK)
+			return status;
 	}
+	status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
+	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+		return status;
 	return SPARK_STATUS_OK;
 }
 
@@ -545,21 +630,12 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 	status = SparkGlm52Pp13ServiceBackendEnsureWorkOutputSocket(state);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	if (SparkGlm52Pp13ServiceBackendWriteAll(
-			state->work_output_socket_fd,
-			&packet,
-			sizeof(packet)) < 0)
-	{
-		if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
-			fprintf(
-				stderr,
-				"pp13_decode_work_write_failed fd=%d errno=%d\n",
-				state->work_output_socket_fd,
-				errno);
-		close(state->work_output_socket_fd);
-		state->work_output_socket_fd = -1;
-		return SPARK_STATUS_ROUTE_NOT_FOUND;
-	}
+	status = SparkGlm52Pp13ServiceBackendEnqueueWorkPacket(state,&packet);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
+	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+		return status;
 	return SPARK_STATUS_OK;
 }
 
@@ -569,6 +645,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
 	SparkGlm52ServingDecodeResult *decode_result)
 {
 	SparkGlm52Pp13ServiceBackendState *state;
+	SparkGlm52Pp13ServiceBackendPendingDecode *pending;
 	SparkStatus status;
 
 	state = (SparkGlm52Pp13ServiceBackendState *)context;
@@ -592,19 +669,29 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
 		fprintf(stderr,"pp13_decode_builder status=%u\n",status);
 		return status;
 	}
+	pending = 0;
+	status = SparkGlm52Pp13ServiceBackendRegisterPendingDecode(
+		state,
+		decode_dispatch,
+		decode_result,
+		&pending);
+	if (status != SPARK_STATUS_OK)
+	{
+		fprintf(stderr,"pp13_decode_pending status=%u\n",status);
+		return status;
+	}
 	status = SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 		state,
 		decode_dispatch);
 	if (status != SPARK_STATUS_OK)
 	{
+		if (pending != 0)
+			memset(pending,0,sizeof(*pending));
 		fprintf(stderr,"pp13_decode_forward status=%u\n",status);
 		return status;
 	}
-	fprintf(stderr,"pp13_decode_wait_final begin\n");
-	return SparkGlm52Pp13ServiceBackendWaitForDecodeFinalEvents(
-		state,
-		decode_dispatch,
-		decode_result);
+	fprintf(stderr,"pp13_decode_pending_final begin\n");
+	return SPARK_STATUS_BUSY;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendAllocateCacheStorage(
@@ -1497,58 +1584,134 @@ static SparkStatus SparkGlm52Pp13ServiceBackendReadFinalEvent(
 }
 
 static int32_t SparkGlm52Pp13ServiceBackendFindDecodeLane(
-	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+	const SparkGlm52RequestApiDispatch *decode_dispatch,
 	const SparkGlm52Pp13ServiceBackendFinalEvent *event)
 {
 	uint32_t lane_index;
 
-	if (decode_dispatch == 0 || decode_dispatch->request_dispatch == 0 ||
-		event == 0)
+	if (decode_dispatch == 0 || event == 0)
 		return -1;
 	for (lane_index = 0u;
 		 lane_index < decode_dispatch->request_count;
 		 ++lane_index)
 	{
-		if (decode_dispatch->request_dispatch->request_ids[lane_index] ==
-				event->request_id &&
-			decode_dispatch->request_dispatch->sequence_ids[lane_index] ==
-				event->sequence_id)
+		if (decode_dispatch->request_ids[lane_index] == event->request_id &&
+			decode_dispatch->sequence_ids[lane_index] == event->sequence_id)
 			return (int32_t)lane_index;
 	}
 	return -2;
 }
 
-static SparkStatus SparkGlm52Pp13ServiceBackendApplyDecodeFinalEvent(
-	SparkGlm52Pp13ServiceBackendState *state,
-	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
-	const SparkGlm52Pp13ServiceBackendFinalEvent *event,
-	SparkGlm52ServingDecodeResult *decode_result,
-	uint8_t *lane_done,
-	uint32_t *done_count)
+static SparkGlm52Pp13ServiceBackendPendingDecode *SparkGlm52Pp13ServiceBackendFindFreePendingDecode(
+	SparkGlm52Pp13ServiceBackendState *state)
 {
-	uint32_t lane_index;
-	uint32_t token_count;
+	uint32_t index;
+
+	if (state == 0)
+		return 0;
+	for (index = 0u;
+		 index < SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY;
+		 ++index)
+	{
+		if (state->pending_decodes[index].state ==
+			SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE)
+			return &state->pending_decodes[index];
+	}
+	return 0;
+}
+
+static SparkGlm52Pp13ServiceBackendPendingDecode *SparkGlm52Pp13ServiceBackendFindPendingDecodeForEvent(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52Pp13ServiceBackendFinalEvent *event,
+	uint32_t *lane_index_out)
+{
+	uint32_t index;
 	int32_t lane;
 
-	if (state == 0 || decode_dispatch == 0 || event == 0 ||
-		decode_result == 0 || lane_done == 0 || done_count == 0)
+	if (state == 0 || event == 0 || lane_index_out == 0)
+		return 0;
+	for (index = 0u;
+		 index < SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY;
+		 ++index)
+	{
+		if (state->pending_decodes[index].state !=
+			SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE)
+			continue;
+		lane = SparkGlm52Pp13ServiceBackendFindDecodeLane(
+			&state->pending_decodes[index].dispatch,
+			event);
+		if (lane >= 0)
+		{
+			*lane_index_out = (uint32_t)lane;
+			return &state->pending_decodes[index];
+		}
+	}
+	return 0;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendRegisterPendingDecode(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+	const SparkGlm52ServingDecodeResult *decode_result,
+	SparkGlm52Pp13ServiceBackendPendingDecode **pending_out)
+{
+	SparkGlm52Pp13ServiceBackendPendingDecode *pending;
+
+	if (state == 0 || decode_dispatch == 0 || decode_result == 0 ||
+		decode_dispatch->request_dispatch == 0 || pending_out == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	pending = SparkGlm52Pp13ServiceBackendFindFreePendingDecode(state);
+	if (pending == 0)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	memset(pending,0,sizeof(*pending));
+	pending->state =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE;
+	pending->dispatch = *decode_dispatch->request_dispatch;
+	pending->result = *decode_result;
+	*pending_out = pending;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingDecode(
+	SparkGlm52Pp13ServiceBackendState *state,
+	SparkGlm52Pp13ServiceBackendPendingDecode *pending)
+{
+	SparkStatus status;
+
+	if (state == 0 || pending == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52ServingEngineCompleteDecodeDispatch(
+		&state->serving_engine,
+		&pending->dispatch,
+		&pending->result);
+	memset(pending,0,sizeof(*pending));
+	return status;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52Pp13ServiceBackendFinalEvent *event)
+{
+	SparkGlm52Pp13ServiceBackendPendingDecode *pending;
+	uint32_t lane_index;
+	uint32_t token_count;
+
+	if (state == 0 || event == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	SparkGlm52Pp13ServiceBackendRecordFinalEvent(state,event);
 	if (event->magic != SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_MAGIC ||
-		event->descriptor_bytes != (uint32_t)sizeof(*event))
-		return SPARK_STATUS_VALIDATION_FAILED;
-	if (event->status != (uint32_t)SPARK_STATUS_OK)
-		return SPARK_STATUS_VALIDATION_FAILED;
-	if ((event->completion_flags &
+		event->descriptor_bytes != (uint32_t)sizeof(*event) ||
+		event->status != (uint32_t)SPARK_STATUS_OK ||
+		(event->completion_flags &
 			SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u)
 		return SPARK_STATUS_VALIDATION_FAILED;
-	lane = SparkGlm52Pp13ServiceBackendFindDecodeLane(
-		decode_dispatch,
-		event);
-	if (lane < 0)
-		return SPARK_STATUS_OK;
-	lane_index = (uint32_t)lane;
-	if (lane_done[lane_index] != 0u)
+	pending = SparkGlm52Pp13ServiceBackendFindPendingDecodeForEvent(
+		state,
+		event,
+		&lane_index);
+	if (pending == 0)
+		return SPARK_STATUS_NOT_FOUND;
+	if (pending->lane_done[lane_index] != 0u)
 		return SPARK_STATUS_DUPLICATE;
 	token_count = event->token_count;
 	if (token_count == 0u ||
@@ -1556,90 +1719,15 @@ static SparkStatus SparkGlm52Pp13ServiceBackendApplyDecodeFinalEvent(
 		token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
 		return SPARK_STATUS_VALIDATION_FAILED;
 	memcpy(
-		decode_result->token_ids[lane_index],
+		pending->result.token_ids[lane_index],
 		event->token_ids,
-		token_count * sizeof(decode_result->token_ids[lane_index][0u]));
-	decode_result->token_counts[lane_index] = token_count;
-	lane_done[lane_index] = 1u;
-	*done_count += 1u;
-	return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkGlm52Pp13ServiceBackendPollFinalEvent(
-	SparkGlm52Pp13ServiceBackendState *state)
-{
-	struct pollfd poll_fds[1];
-	int32_t fd;
-	int32_t result;
-
-	if (state == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (state->final_event_socket_fd >= 0)
-		fd = state->final_event_socket_fd;
-	else
-		fd = state->final_event_listen_fd;
-	if (fd < 0)
-		return SPARK_STATUS_ROUTE_NOT_FOUND;
-	memset(poll_fds,0,sizeof(poll_fds));
-	poll_fds[0].fd = fd;
-	poll_fds[0].events = POLLIN;
-	result = poll(
-		poll_fds,
-		1u,
-		SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_POLL_MS);
-	if (result < 0 && errno != EINTR)
-		return SPARK_STATUS_IO_ERROR;
-	return SPARK_STATUS_BUSY;
-}
-
-static SparkStatus SparkGlm52Pp13ServiceBackendWaitForDecodeFinalEvents(
-	SparkGlm52Pp13ServiceBackendState *state,
-	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
-	SparkGlm52ServingDecodeResult *decode_result)
-{
-	SparkGlm52Pp13ServiceBackendFinalEvent event;
-	uint8_t lane_done[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
-	uint32_t done_count;
-	uint32_t poll_count;
-	SparkStatus status;
-
-	if (state == 0 || decode_dispatch == 0 || decode_result == 0 ||
-		decode_dispatch->request_dispatch == 0 ||
-		decode_dispatch->request_count == 0u ||
-		decode_dispatch->request_count >
-			SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	memset(lane_done,0,sizeof(lane_done));
-	done_count = 0u;
-	state->last_final_event_token_count = 0u;
-	for (poll_count = 0u;
-		 poll_count < SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_POLL_COUNT;
-		 ++poll_count)
-	{
-		status = SparkGlm52Pp13ServiceBackendReadFinalEvent(state,&event);
-		if (status == SPARK_STATUS_OK)
-		{
-			status = SparkGlm52Pp13ServiceBackendApplyDecodeFinalEvent(
-				state,
-				decode_dispatch,
-				&event,
-				decode_result,
-				lane_done,
-				&done_count);
-			if (status != SPARK_STATUS_OK)
-				return status;
-			if (done_count == decode_dispatch->request_count)
-				return SPARK_STATUS_OK;
-			continue;
-		}
-		if (status != SPARK_STATUS_BUSY)
-			return status;
-		status = SparkGlm52Pp13ServiceBackendPollFinalEvent(state);
-		if (status != SPARK_STATUS_BUSY && status != SPARK_STATUS_OK)
-			return status;
-	}
-	state->final_event_receive_error_count += 1u;
-	return SPARK_STATUS_BUSY;
+		token_count * sizeof(pending->result.token_ids[lane_index][0u]));
+	pending->result.token_counts[lane_index] = token_count;
+	pending->lane_done[lane_index] = 1u;
+	pending->done_count += 1u;
+	if (pending->done_count != pending->dispatch.request_count)
+		return SPARK_STATUS_BUSY;
+	return SparkGlm52Pp13ServiceBackendCompletePendingDecode(state,pending);
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendPump(
@@ -1650,13 +1738,25 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 	SparkGlm52Pp13ServiceBackendState *state;
 	SparkGlm52Pp13ServiceBackendFinalEvent event;
 	SparkStatus event_status;
+	SparkStatus work_status;
 
 	state = (SparkGlm52Pp13ServiceBackendState *)backend_state;
 	if (state == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	work_status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
+	if (work_status != SPARK_STATUS_OK && work_status != SPARK_STATUS_BUSY)
+		state->final_event_receive_error_count += 1u;
 	event_status = SparkGlm52Pp13ServiceBackendReadFinalEvent(state,&event);
 	if (event_status == SPARK_STATUS_OK)
-		SparkGlm52Pp13ServiceBackendRecordFinalEvent(state,&event);
+	{
+		event_status = SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
+			state,
+			&event);
+		if (event_status != SPARK_STATUS_OK &&
+			event_status != SPARK_STATUS_BUSY &&
+			event_status != SPARK_STATUS_NOT_FOUND)
+			state->final_event_receive_error_count += 1u;
+	}
 	else if (event_status != SPARK_STATUS_BUSY)
 		state->final_event_receive_error_count += 1u;
 	if (stats_out != 0)
@@ -1677,18 +1777,65 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52Pp13ServiceBackendGetPollDescriptors(
+	void *backend_state,
+	SparkGlm52ServiceBackendPollDescriptor *descriptors,
+	uint32_t descriptor_capacity,
+	uint32_t *descriptor_count_out)
+{
+	SparkGlm52Pp13ServiceBackendState *state;
+	uint32_t descriptor_count;
+	int32_t fd;
+
+	state = (SparkGlm52Pp13ServiceBackendState *)backend_state;
+	if (state == 0 || descriptor_count_out == 0 ||
+		(descriptor_capacity != 0u && descriptors == 0))
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	descriptor_count = 0u;
+	if (state->final_event_socket_fd >= 0)
+		fd = state->final_event_socket_fd;
+	else
+		fd = state->final_event_listen_fd;
+	if (fd >= 0 && descriptor_count < descriptor_capacity)
+	{
+		memset(&descriptors[descriptor_count],0,sizeof(descriptors[descriptor_count]));
+		descriptors[descriptor_count].descriptor_bytes =
+			SPARK_GLM52_SERVICE_BACKEND_POLL_DESCRIPTOR_BYTES;
+		descriptors[descriptor_count].fd = fd;
+		descriptors[descriptor_count].events =
+			SPARK_GLM52_SERVICE_BACKEND_POLL_READ;
+		descriptor_count += 1u;
+	}
+	if (state->work_output_socket_fd >= 0 &&
+		state->work_queue_count != 0u &&
+		descriptor_count < descriptor_capacity)
+	{
+		memset(&descriptors[descriptor_count],0,sizeof(descriptors[descriptor_count]));
+		descriptors[descriptor_count].descriptor_bytes =
+			SPARK_GLM52_SERVICE_BACKEND_POLL_DESCRIPTOR_BYTES;
+		descriptors[descriptor_count].fd = state->work_output_socket_fd;
+		descriptors[descriptor_count].events =
+			SPARK_GLM52_SERVICE_BACKEND_POLL_WRITE;
+		descriptor_count += 1u;
+	}
+	*descriptor_count_out = descriptor_count;
+	return SPARK_STATUS_OK;
+}
+
 static const SparkGlm52ServiceBackendInterface SparkGlm52Pp13ServiceBackendInterface =
 {
 	SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION,
 	SPARK_GLM52_SERVICE_BACKEND_INTERFACE_BYTES,
 	SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME |
 		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_SERVICE_RUNTIME |
-		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_TOKENIZER,
+		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_TOKENIZER |
+		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_POLL_DESCRIPTORS,
 	0u,
 	SparkGlm52Pp13ServiceBackendInitialize,
 	SparkGlm52Pp13ServiceBackendDestroy,
 	SparkGlm52Pp13ServiceBackendGetView,
-	SparkGlm52Pp13ServiceBackendPump
+	SparkGlm52Pp13ServiceBackendPump,
+	SparkGlm52Pp13ServiceBackendGetPollDescriptors
 };
 
 const SparkGlm52ServiceBackendInterface *SparkGlm52ServiceBackendGetInterface(void)

@@ -1562,14 +1562,11 @@ static SparkStatus SparkGlm52ServingCompleteBudgetFinishedRequests(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingInvokeDecode(
+SparkStatus SparkGlm52ServingEngineCompleteDecodeDispatch(
     SparkGlm52ServingEngine *engine,
-    SparkGlm52RequestApiDispatch *dispatch)
+    SparkGlm52RequestApiDispatch *dispatch,
+    SparkGlm52ServingDecodeResult *decode_result)
 {
-    SparkGlm52KvBlockTableView block_table_view;
-    SparkGlm52RequestApiDecodeDispatchView decode_view;
-    SparkGlm52ServingDecodeDispatch decode_dispatch;
-    SparkGlm52ServingDecodeResult decode_result;
     SparkGlm52ServingRequestHandle finish_handles[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     uint32_t mtp_draft_token_ids[
@@ -1579,31 +1576,16 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     uint32_t finish_handle_count;
     SparkStatus status;
 
-    status = SparkGlm52ServingBuildDecodeDispatch(
-        engine,
-        dispatch,
-        &block_table_view,
-        &decode_view,
-        &decode_dispatch);
+    if (engine == 0 || dispatch == 0 || decode_result == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52ServingValidateEngine(engine);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-
-    SparkGlm52ServingInitializeDecodeResult(
-        &decode_result,
-        dispatch->request_count,
-        SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE);
-    status = engine->decode_function(
-        engine->callback_context,
-        &decode_dispatch,
-        &decode_result);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-
-    status = SparkGlm52ServingValidateDecodeResult(dispatch, &decode_result);
+    status = SparkGlm52ServingValidateDecodeResult(dispatch, decode_result);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1611,14 +1593,14 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     status = SparkGlm52ServingResolveSpeculativeDecode(
         engine,
         dispatch,
-        &decode_result);
+        decode_result);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
     status = SparkGlm52ServingClampSpeculativeVerifyDecodeResult(
         dispatch,
-        &decode_result);
+        decode_result);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1626,7 +1608,7 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     mtp_draft_token_count = 0u;
     status = SparkGlm52ServingCaptureMtpDraftTokens(
         dispatch,
-        &decode_result,
+        decode_result,
         mtp_draft_token_ids,
         SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT,
         &mtp_draft_token_count);
@@ -1634,7 +1616,7 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     {
         return status;
     }
-    status = SparkGlm52ServingResolveMtpDecode(dispatch, &decode_result);
+    status = SparkGlm52ServingResolveMtpDecode(dispatch, decode_result);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1642,14 +1624,13 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     status = SparkGlm52ServingPublishDecodeEvents(
         engine,
         dispatch,
-        &decode_result,
+        decode_result,
         finish_handles,
         &finish_handle_count);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-
     engine->stats.decode_dispatch_count += 1u;
     status = SparkGlm52RequestApiCompleteDispatch(engine->request_api, dispatch);
     if (status != SPARK_STATUS_OK)
@@ -1686,6 +1667,46 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
         return status;
     }
     return SparkGlm52ServingCompleteBudgetFinishedRequests(engine, dispatch);
+}
+
+static SparkStatus SparkGlm52ServingInvokeDecode(
+    SparkGlm52ServingEngine *engine,
+    SparkGlm52RequestApiDispatch *dispatch)
+{
+    SparkGlm52KvBlockTableView block_table_view;
+    SparkGlm52RequestApiDecodeDispatchView decode_view;
+    SparkGlm52ServingDecodeDispatch decode_dispatch;
+    SparkGlm52ServingDecodeResult decode_result;
+    SparkStatus status;
+
+    status = SparkGlm52ServingBuildDecodeDispatch(
+        engine,
+        dispatch,
+        &block_table_view,
+        &decode_view,
+        &decode_dispatch);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+
+    SparkGlm52ServingInitializeDecodeResult(
+        &decode_result,
+        dispatch->request_count,
+        SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE);
+    status = engine->decode_function(
+        engine->callback_context,
+        &decode_dispatch,
+        &decode_result);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+
+    return SparkGlm52ServingEngineCompleteDecodeDispatch(
+        engine,
+        dispatch,
+        &decode_result);
 }
 
 static SparkStatus SparkGlm52ServingCompletePrefillDispatch(
@@ -1803,6 +1824,19 @@ SparkStatus SparkGlm52ServingEnginePump(
 
         if (status != SPARK_STATUS_OK)
         {
+            if (status == SPARK_STATUS_BUSY &&
+                (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
+                 dispatch.kind ==
+                    SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH))
+            {
+                engine->stats.last_status = status;
+                SparkGlm52ServingRefreshStats(engine);
+                if (stats != 0)
+                {
+                    *stats = engine->stats;
+                }
+                return status;
+            }
             if (dispatch_was_completed_by_decode_path == 0u)
             {
                 (void)SparkGlm52RequestApiCancelDispatch(

@@ -24,6 +24,10 @@ SparkStatus SparkGlm52ServiceBackendValidateInterface(
 		backend_interface->get_view == 0 ||
 		backend_interface->pump == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((backend_interface->capability_flags &
+			SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_POLL_DESCRIPTORS) != 0u &&
+		backend_interface->get_poll_descriptors == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	return SPARK_STATUS_OK;
 }
 

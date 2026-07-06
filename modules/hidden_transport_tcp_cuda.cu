@@ -111,6 +111,23 @@ static uint32_t SparkHiddenTcpCudaHeaderHash(
     return (uint32_t)(hash ^ (hash >> 32));
 }
 
+static uint64_t SparkHiddenTcpCudaPayloadHash(
+    const uint8_t *payload,
+    uint64_t payload_bytes)
+{
+    uint64_t hash;
+    uint64_t index;
+    if (payload == 0)
+        return 0u;
+    hash = 1469598103934665603ull;
+    for (index = 0u; index < payload_bytes; ++index)
+    {
+        hash ^= (uint64_t)payload[index];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
 static uint32_t SparkHiddenTcpCudaPacketHash(
     const SparkHiddenTransportPacket *packet)
 {
@@ -378,6 +395,8 @@ static SparkStatus SparkHiddenTcpCudaCopyPayloadToPacket(
     uint64_t hidden_bytes,
     uint64_t sideband_bytes)
 {
+    uint64_t hidden_hash;
+    uint64_t sideband_hash;
     if (state == 0 || packet == 0 || payload == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
     if (cudaMemcpyAsync((void *)packet->hidden_bf16,payload,
@@ -392,6 +411,23 @@ static SparkStatus SparkHiddenTcpCudaCopyPayloadToPacket(
         return SPARK_STATUS_IO_ERROR;
     if (cudaStreamSynchronize((cudaStream_t)packet->cuda_stream) != cudaSuccess)
         return SPARK_STATUS_IO_ERROR;
+    if (state->debug_enabled != 0u)
+    {
+        hidden_hash = SparkHiddenTcpCudaPayloadHash(payload,hidden_bytes);
+        sideband_hash = SparkHiddenTcpCudaPayloadHash(
+            payload + hidden_bytes,
+            sideband_bytes);
+        fprintf(stderr,
+            "hidden_tcp_deliver seq=%llu token=%llu active=%u sideband_kind=%u hidden_hash=%016llx sideband_hash=%016llx hidden_bytes=%llu sideband_bytes=%llu\n",
+            (unsigned long long)packet->sequence_id,
+            (unsigned long long)packet->token_index,
+            packet->active_sequence_count,
+            packet->sideband_kind,
+            (unsigned long long)hidden_hash,
+            (unsigned long long)sideband_hash,
+            (unsigned long long)hidden_bytes,
+            (unsigned long long)sideband_bytes);
+    }
     memset(&state->completion,0,sizeof(state->completion));
     state->completion.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     state->completion.descriptor_bytes = SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
@@ -611,6 +647,50 @@ static void SparkHiddenTcpCudaAbortIncomingFrame(SparkHiddenTcpCudaState *state)
     SparkHiddenTcpCudaClearIncomingFrame(state);
 }
 
+static SparkStatus SparkHiddenTcpCudaStoreIncomingFramePending(
+    SparkHiddenTcpCudaState *state)
+{
+    SparkHiddenTcpCudaPendingPacket *pending;
+    SparkStatus status;
+    uint64_t payload_bytes;
+    uint64_t hidden_hash;
+    uint64_t sideband_hash;
+    if (state == 0 || state->incoming_payload == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    payload_bytes = state->incoming_hidden_bytes + state->incoming_sideband_bytes;
+    pending = SparkHiddenTcpCudaReservePendingPacket(state);
+    if (pending == 0)
+        return SPARK_STATUS_BUSY;
+    pending->header = state->incoming_header;
+    pending->hidden_bytes = state->incoming_hidden_bytes;
+    pending->sideband_bytes = state->incoming_sideband_bytes;
+    memcpy(pending->payload,state->incoming_payload,(size_t)payload_bytes);
+    status = SparkHiddenTcpCudaInsertPendingPacket(state,pending);
+    if (status == SPARK_STATUS_OK && state->debug_enabled != 0u)
+    {
+        hidden_hash = SparkHiddenTcpCudaPayloadHash(
+            pending->payload,
+            pending->hidden_bytes);
+        sideband_hash = SparkHiddenTcpCudaPayloadHash(
+            pending->payload + pending->hidden_bytes,
+            pending->sideband_bytes);
+        fprintf(stderr,
+            "hidden_tcp_pending_store seq=%llu token=%llu active=%u sideband_kind=%u hidden_hash=%016llx sideband_hash=%016llx hidden_bytes=%llu sideband_bytes=%llu\n",
+            (unsigned long long)pending->header.sequence_id,
+            (unsigned long long)pending->header.token_index,
+            pending->header.active_sequence_count,
+            pending->header.sideband_kind,
+            (unsigned long long)hidden_hash,
+            (unsigned long long)sideband_hash,
+            (unsigned long long)pending->hidden_bytes,
+            (unsigned long long)pending->sideband_bytes);
+    }
+    if (status != SPARK_STATUS_OK)
+        SparkHiddenTcpCudaReleasePendingPacket(state,pending);
+    SparkHiddenTcpCudaClearIncomingFrame(state);
+    return status;
+}
+
 static SparkStatus SparkHiddenTcpCudaBeginIncomingPayload(
     SparkHiddenTcpCudaState *state,
     SparkHiddenTransportPacket *packet)
@@ -725,15 +805,22 @@ static SparkStatus SparkHiddenTcpCudaProgressIncomingFrame(
     }
     if (state->incoming_matches_request != 0u)
     {
-        status = SparkHiddenTcpCudaCopyPayloadToPacket(
-            state,
-            packet,
-            state->incoming_payload,
-            state->incoming_hidden_bytes,
-            state->incoming_sideband_bytes);
-        SparkHiddenTcpCudaClearIncomingFrame(state);
-        if (status == SPARK_STATUS_OK)
-            *delivered = 1u;
+        if (SparkHiddenTcpCudaHeaderMatchesPacket(
+                &state->incoming_header,
+                packet) != 0u)
+        {
+            status = SparkHiddenTcpCudaCopyPayloadToPacket(
+                state,
+                packet,
+                state->incoming_payload,
+                state->incoming_hidden_bytes,
+                state->incoming_sideband_bytes);
+            SparkHiddenTcpCudaClearIncomingFrame(state);
+            if (status == SPARK_STATUS_OK)
+                *delivered = 1u;
+            return status;
+        }
+        status = SparkHiddenTcpCudaStoreIncomingFramePending(state);
         return status;
     }
     if (state->incoming_pending_index >= state->pending_depth)
@@ -893,6 +980,8 @@ static SparkStatus SparkHiddenTcpCudaSend(
     SparkHiddenTcpCudaState *state;
     uint64_t hidden_bytes;
     uint64_t sideband_bytes;
+    uint64_t hidden_hash;
+    uint64_t sideband_hash;
     uint64_t offset;
     uint64_t transferred;
     uint64_t remaining;
@@ -947,13 +1036,21 @@ static SparkStatus SparkHiddenTcpCudaSend(
         state->outgoing_active = 1u;
         if (state->debug_enabled != 0u)
         {
+            hidden_hash = SparkHiddenTcpCudaPayloadHash(
+                state->host_buffer + sizeof(state->outgoing_header),
+                hidden_bytes);
+            sideband_hash = SparkHiddenTcpCudaPayloadHash(
+                state->host_buffer + sizeof(state->outgoing_header) + hidden_bytes,
+                sideband_bytes);
             fprintf(stderr,
-                "hidden_tcp_send_header seq=%llu token=%llu active=%u sideband_kind=%u sideband_bps=%u hidden_bytes=%llu sideband_bytes=%llu total=%llu\n",
+                "hidden_tcp_send_header seq=%llu token=%llu active=%u sideband_kind=%u sideband_bps=%u hidden_hash=%016llx sideband_hash=%016llx hidden_bytes=%llu sideband_bytes=%llu total=%llu\n",
                 (unsigned long long)state->outgoing_header.sequence_id,
                 (unsigned long long)state->outgoing_header.token_index,
                 state->outgoing_header.active_sequence_count,
                 state->outgoing_header.sideband_kind,
                 state->outgoing_header.sideband_bytes_per_sequence,
+                (unsigned long long)hidden_hash,
+                (unsigned long long)sideband_hash,
                 (unsigned long long)hidden_bytes,
                 (unsigned long long)sideband_bytes,
                 (unsigned long long)state->outgoing_bytes);
@@ -1067,6 +1164,79 @@ static SparkStatus SparkHiddenTcpCudaPoll(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkHiddenTcpCudaAppendPollDescriptor(
+    SparkHiddenTransportPollDescriptor *descriptors,
+    uint32_t descriptor_capacity,
+    uint32_t *descriptor_count,
+    int fd,
+    uint32_t events)
+{
+    SparkHiddenTransportPollDescriptor *descriptor;
+    if (descriptor_count == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (fd < 0 || events == 0u)
+        return SPARK_STATUS_OK;
+    if (*descriptor_count >= descriptor_capacity || descriptors == 0)
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    descriptor = &descriptors[*descriptor_count];
+    memset(descriptor,0,sizeof(*descriptor));
+    descriptor->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    descriptor->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_POLL_DESCRIPTOR_BYTES;
+    descriptor->fd = fd;
+    descriptor->events = events;
+    *descriptor_count += 1u;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenTcpCudaGetPollDescriptors(
+    void *transport_state,
+    SparkHiddenTransportPollDescriptor *descriptors,
+    uint32_t descriptor_capacity,
+    uint32_t *descriptor_count_out)
+{
+    SparkHiddenTcpCudaState *state;
+    SparkStatus status;
+    uint32_t descriptor_count;
+    if (transport_state == 0 || descriptor_count_out == 0 ||
+        (descriptors == 0 && descriptor_capacity != 0u))
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    state = (SparkHiddenTcpCudaState *)transport_state;
+    descriptor_count = 0u;
+    if (state->is_sender != 0u && state->outgoing_active != 0u)
+    {
+        status = SparkHiddenTcpCudaAppendPollDescriptor(
+            descriptors,
+            descriptor_capacity,
+            &descriptor_count,
+            state->socket_fd,
+            SPARK_HIDDEN_TRANSPORT_POLL_WRITE);
+    }
+    else if (state->is_sender != 0u)
+        status = SPARK_STATUS_OK;
+    else if (state->socket_fd >= 0)
+    {
+        status = SparkHiddenTcpCudaAppendPollDescriptor(
+            descriptors,
+            descriptor_capacity,
+            &descriptor_count,
+            state->socket_fd,
+            SPARK_HIDDEN_TRANSPORT_POLL_READ);
+    }
+    else
+    {
+        status = SparkHiddenTcpCudaAppendPollDescriptor(
+            descriptors,
+            descriptor_capacity,
+            &descriptor_count,
+            state->listen_fd,
+            SPARK_HIDDEN_TRANSPORT_POLL_READ);
+    }
+    if (status != SPARK_STATUS_OK)
+        return status;
+    *descriptor_count_out = descriptor_count;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkHiddenTcpCudaSendBatch(
     void *transport_state,
     const SparkHiddenTransportPacket *packets,
@@ -1112,7 +1282,8 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
     transport_interface.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     transport_interface.descriptor_bytes = SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES;
     transport_interface.capability_flags =
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PIPELINE_HOST_STAGED_CAPS;
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PIPELINE_HOST_STAGED_CAPS |
+        SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS;
     transport_interface.initialize = SparkHiddenTcpCudaInitialize;
     transport_interface.destroy = SparkHiddenTcpCudaDestroy;
     transport_interface.post_receive = SparkHiddenTcpCudaPostReceive;
@@ -1120,5 +1291,6 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
     transport_interface.poll = SparkHiddenTcpCudaPoll;
     transport_interface.post_receive_batch = SparkHiddenTcpCudaPostReceiveBatch;
     transport_interface.send_batch = SparkHiddenTcpCudaSendBatch;
+    transport_interface.get_poll_descriptors = SparkHiddenTcpCudaGetPollDescriptors;
     return &transport_interface;
 }

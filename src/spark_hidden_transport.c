@@ -29,6 +29,15 @@ static uint32_t SparkHiddenTransportSessionCanUseBatchSubmission(
         session->transport_interface.send_batch != 0;
 }
 
+static uint32_t SparkHiddenTransportSessionCanUsePollDescriptors(
+    const SparkHiddenTransportSession *session)
+{
+    return session != 0 &&
+        (session->transport_interface.capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS) != 0u &&
+        session->transport_interface.get_poll_descriptors != 0;
+}
+
 static uint32_t SparkHiddenTransportCapabilitiesAreSimulationOnly(
     uint32_t capability_flags)
 {
@@ -587,6 +596,57 @@ SparkStatus SparkHiddenTransportPoll(
         completion->transfer_bytes > session->endpoint.max_packet_bytes)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkHiddenTransportGetPollDescriptors(
+    SparkHiddenTransportSession *session,
+    SparkHiddenTransportPollDescriptor *descriptors,
+    uint32_t descriptor_capacity,
+    uint32_t *descriptor_count_out)
+{
+    SparkStatus status;
+    uint32_t descriptor_index;
+
+    if (session == 0 || descriptor_count_out == 0 ||
+        (descriptors == 0 && descriptor_capacity != 0u))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *descriptor_count_out = 0u;
+    if (SparkHiddenTransportSessionCanUsePollDescriptors(session) == 0u)
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    status = session->transport_interface.get_poll_descriptors(
+        session->transport_state,
+        descriptors,
+        descriptor_capacity,
+        descriptor_count_out);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (*descriptor_count_out > descriptor_capacity)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    for (descriptor_index = 0u;
+         descriptor_index < *descriptor_count_out;
+         ++descriptor_index)
+    {
+        if (descriptors[descriptor_index].abi_version !=
+                SPARK_HIDDEN_TRANSPORT_ABI_VERSION ||
+            descriptors[descriptor_index].descriptor_bytes !=
+                SPARK_HIDDEN_TRANSPORT_POLL_DESCRIPTOR_BYTES ||
+            descriptors[descriptor_index].fd < 0 ||
+            (descriptors[descriptor_index].events &
+                ~(SPARK_HIDDEN_TRANSPORT_POLL_READ |
+                  SPARK_HIDDEN_TRANSPORT_POLL_WRITE)) != 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
     }
     return SPARK_STATUS_OK;
 }
