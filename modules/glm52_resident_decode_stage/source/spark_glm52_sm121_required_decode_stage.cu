@@ -4523,6 +4523,7 @@ void SparkGlm52ResidentDecodeStageDsaScoreWarpCandidateKernel(
     const uint16_t *__restrict__ query_index_heads_bf16,
     const uint16_t *__restrict__ key_index_cache_bf16,
     const uint16_t *__restrict__ index_head_weights_bf16,
+    const uint32_t *__restrict__ row_sequence_indices,
     const uint32_t *__restrict__ block_table,
     const uint32_t *__restrict__ context_lengths,
     const uint32_t *__restrict__ first_block_token_offsets,
@@ -4566,10 +4567,15 @@ void SparkGlm52ResidentDecodeStageDsaScoreWarpCandidateKernel(
     }
 
     context_length = context_lengths[sequence_index];
-    first_block_token_offset = first_block_token_offsets[sequence_index];
+    first_block_token_offset = first_block_token_offsets[
+        row_sequence_indices != 0
+            ? row_sequence_indices[sequence_index]
+            : sequence_index];
     cache_slot_index = SparkGlm52ResidentDecodeStageWarpResolveCacheSlot(
         block_table,
-        sequence_index,
+        row_sequence_indices != 0
+            ? row_sequence_indices[sequence_index]
+            : sequence_index,
         candidate_index,
         first_block_token_offset,
         block_token_count,
@@ -5056,6 +5062,7 @@ void SparkGlm52ResidentDecodeStageAbsorbedAttentionKernel(
     uint16_t *__restrict__ query_latent_bf16,
     const uint16_t *__restrict__ rotated_query_rope_bf16,
     const uint16_t *__restrict__ mla_cache_bf16,
+    const uint32_t *__restrict__ row_sequence_indices,
     const uint32_t *__restrict__ block_table,
     const uint32_t *__restrict__ context_lengths,
     const uint32_t *__restrict__ first_block_token_offsets,
@@ -5099,7 +5106,10 @@ void SparkGlm52ResidentDecodeStageAbsorbedAttentionKernel(
     warp_index = threadIdx.x / SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES;
     head_index = head_group_begin + warp_index;
     context_length = context_lengths[sequence_index];
-    first_block_token_offset = first_block_token_offsets[sequence_index];
+    first_block_token_offset = first_block_token_offsets[
+        row_sequence_indices != 0
+            ? row_sequence_indices[sequence_index]
+            : sequence_index];
     query_row_index =
         ((uint64_t)sequence_index *
          (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT) +
@@ -5175,7 +5185,9 @@ void SparkGlm52ResidentDecodeStageAbsorbedAttentionKernel(
             {
                 cache_slot_index = SparkGlm52ResidentDecodeStageWarpResolveCacheSlot(
                     block_table,
-                    sequence_index,
+                    row_sequence_indices != 0
+                        ? row_sequence_indices[sequence_index]
+                        : sequence_index,
                     token_index,
                     first_block_token_offset,
                     block_token_count,
@@ -13559,6 +13571,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareScore(
         (const uint16_t *)pipeline_slot->query_index_heads_bf16,
         (const uint16_t *)node_context->key_index_cache_bf16,
         (const uint16_t *)pipeline_slot->index_head_weights_bf16,
+        0,
         pipeline_slot->block_table,
         pipeline_slot->context_lengths,
         pipeline_slot->first_block_token_offsets,
@@ -16008,6 +16021,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchAbsorbedLatentAttention(
         (uint16_t *)pipeline_slot->query_latent_bf16,
         (const uint16_t *)pipeline_slot->rotated_query_rope_bf16,
         (const uint16_t *)node_context->mla_cache_bf16,
+        0,
         pipeline_slot->block_table,
         pipeline_slot->context_lengths,
         pipeline_slot->first_block_token_offsets,
