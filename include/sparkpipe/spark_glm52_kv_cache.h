@@ -314,8 +314,7 @@ typedef struct SparkGlm52KvBlockTableView
     const uint32_t *physical_block_indices;
     const uint32_t *lane_physical_block_counts;
     const uint32_t *host_physical_block_indices;
-    uint32_t reserved0;
-    uint32_t reserved1;
+    const uint32_t *host_lane_physical_block_counts;
 } SparkGlm52KvBlockTableView;
 
 typedef struct SparkGlm52KvCacheArena

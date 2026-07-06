@@ -3237,12 +3237,11 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
         runtime_kv_block_table->physical_block_indices == 0 ||
         runtime_kv_block_table->lane_physical_block_counts == 0 ||
         runtime_kv_block_table->host_physical_block_indices == 0 ||
-        runtime_kv_block_table->reserved0 != 0u ||
-        runtime_kv_block_table->reserved1 != 0u)
+        runtime_kv_block_table->host_lane_physical_block_counts == 0)
     {
         fprintf(
             stderr,
-            "resident_kv_table_invalid layer=%u abi=%u bytes=%u block_tokens=%u expected_block_tokens=%u lanes=%u active=%u max_active=%u stride=%u expected_stride=%u capacity=%u expected_capacity=%u phys=%p counts=%p host=%p reserved=%u/%u\n",
+            "resident_kv_table_invalid layer=%u abi=%u bytes=%u block_tokens=%u expected_block_tokens=%u lanes=%u active=%u max_active=%u stride=%u expected_stride=%u capacity=%u expected_capacity=%u phys=%p counts=%p host=%p\n",
             node_context->layer_index,
             runtime_kv_block_table->abi_version,
             runtime_kv_block_table->descriptor_bytes,
@@ -3257,9 +3256,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
             node_context->max_blocks_per_sequence,
             (const void *)runtime_kv_block_table->physical_block_indices,
             (const void *)runtime_kv_block_table->lane_physical_block_counts,
-            (const void *)runtime_kv_block_table->host_physical_block_indices,
-            runtime_kv_block_table->reserved0,
-            runtime_kv_block_table->reserved1);
+            (const void *)runtime_kv_block_table->host_physical_block_indices);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -3270,7 +3267,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
         uint32_t lane_block_count;
 
         lane_block_count =
-            runtime_kv_block_table->lane_physical_block_counts[lane_index];
+            runtime_kv_block_table->host_lane_physical_block_counts[lane_index];
         if (lane_block_count > runtime_kv_block_table->lane_capacity)
         {
             fprintf(

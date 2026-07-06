@@ -5314,6 +5314,7 @@ SparkStatus SparkGlm52RequestApiBuildDispatchKvBlockTableView(
         execution_physical_block_indices : host_physical_block_indices;
     block_table_view->lane_physical_block_counts = lane_physical_block_counts;
     block_table_view->host_physical_block_indices = host_physical_block_indices;
+    block_table_view->host_lane_physical_block_counts = lane_physical_block_counts;
 
     return SPARK_STATUS_OK;
 }

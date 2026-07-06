@@ -1928,6 +1928,8 @@ static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(
 		state->device_lane_physical_block_counts;
 	state->device_kv_view.host_physical_block_indices =
 		state->host_physical_block_indices;
+	state->device_kv_view.host_lane_physical_block_counts =
+		state->host_lane_physical_block_counts;
 	return SPARK_STATUS_OK;
 }
 
@@ -2180,6 +2182,8 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 		state->device_lane_physical_block_counts;
 	state->device_kv_view.host_physical_block_indices =
 		state->host_physical_block_indices;
+	state->device_kv_view.host_lane_physical_block_counts =
+		state->host_lane_physical_block_counts;
 	status = SparkGlm52Pp13BuilderUploadDecodePositions(
 		state,
 		work_packet->active_sequence_count,

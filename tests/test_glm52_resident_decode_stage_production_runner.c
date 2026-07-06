@@ -122,6 +122,7 @@ static void SparkTestProductionRunnerInitializeKvTable(void)
     TestKvTable.physical_block_indices = TestPhysicalBlockIndices;
     TestKvTable.lane_physical_block_counts = TestLaneBlockCounts;
     TestKvTable.host_physical_block_indices = TestPhysicalBlockIndices;
+    TestKvTable.host_lane_physical_block_counts = TestLaneBlockCounts;
 }
 
 static void SparkTestProductionRunnerInitializeRunner(
