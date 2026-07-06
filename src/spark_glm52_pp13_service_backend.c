@@ -471,8 +471,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendStartWorkOutputSocket(
 static SparkStatus SparkGlm52Pp13ServiceBackendCheckWorkOutputConnect(
 	SparkGlm52Pp13ServiceBackendState *state)
 {
+	struct pollfd connect_poll;
 	socklen_t error_bytes;
-	int32_t error;
+	int32_t error, poll_result;
 
 	if (state == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -480,6 +481,18 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCheckWorkOutputConnect(
 		return SPARK_STATUS_BUSY;
 	if (state->work_output_socket_connecting == 0u)
 		return SPARK_STATUS_OK;
+	memset(&connect_poll,0,sizeof(connect_poll));
+	connect_poll.fd = state->work_output_socket_fd;
+	connect_poll.events = POLLOUT;
+	poll_result = poll(&connect_poll,1,0);
+	if (poll_result < 0)
+	{
+		SparkGlm52Pp13ServiceBackendDropWorkOutputSocket(state);
+		return SparkGlm52Pp13ServiceBackendStartWorkOutputSocket(state);
+	}
+	if (poll_result == 0 ||
+		(connect_poll.revents & (POLLOUT | POLLERR | POLLHUP)) == 0)
+		return SPARK_STATUS_BUSY;
 	error = 0;
 	error_bytes = (socklen_t)sizeof(error);
 	if (getsockopt(
@@ -495,6 +508,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCheckWorkOutputConnect(
 	if (error == 0)
 	{
 		state->work_output_socket_connecting = 0u;
+		if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+			fprintf(
+				stderr,
+				"pp13_work_connected fd=%d\n",
+				state->work_output_socket_fd);
 		return SPARK_STATUS_OK;
 	}
 	if (error == EINPROGRESS || error == EALREADY)
