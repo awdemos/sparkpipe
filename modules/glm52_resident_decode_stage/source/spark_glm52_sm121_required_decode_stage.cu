@@ -12139,22 +12139,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
         }
         return plan_is_required ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK;
     }
-    if (active_sequence_count != linear_plan->maximum_active_sequence_count)
-    {
-        if (plan_is_required && getenv("GLM52_LINEAR_DEBUG") != 0)
-        {
-            fprintf(
-                stderr,
-                "linear_plan_active_mismatch index=%u in=%u out=%u active=%u max=%u kind=%u\n",
-                plan_index,
-                input_dimension,
-                output_dimension,
-                active_sequence_count,
-                linear_plan->maximum_active_sequence_count,
-                linear_plan->plan_kind);
-        }
-        return plan_is_required ? SPARK_STATUS_INVALID_ARGUMENT : SPARK_STATUS_OK;
-    }
     if (plan_was_launched != 0)
     {
         *plan_was_launched = true;
