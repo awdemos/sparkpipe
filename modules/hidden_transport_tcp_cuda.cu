@@ -18,8 +18,6 @@
 #define SPARK_HIDDEN_TCP_CUDA_HOST_BYTES 32u
 #define SPARK_HIDDEN_TCP_CUDA_DEFAULT_PORT_BASE 52100u
 #define SPARK_HIDDEN_TCP_CUDA_DEFAULT_PORT_OFFSET 1000u
-#define SPARK_HIDDEN_TCP_CUDA_CONNECT_ATTEMPTS 600u
-#define SPARK_HIDDEN_TCP_CUDA_CONNECT_SLEEP_US 100000u
 #define SPARK_HIDDEN_TCP_CUDA_DEFAULT_PENDING_DEPTH 2048u
 #define SPARK_HIDDEN_TCP_CUDA_DEFAULT_PENDING_HASH_SLOTS 4096u
 #define SPARK_HIDDEN_TCP_CUDA_NO_PENDING UINT32_MAX
@@ -57,6 +55,7 @@ typedef struct SparkHiddenTcpCudaState
     uint32_t is_sender;
     int listen_fd;
     int socket_fd;
+    uint32_t socket_connecting;
     uint8_t *host_buffer;
     uint64_t host_buffer_bytes;
     SparkHiddenTcpCudaPendingPacket *pending_packets;
@@ -198,6 +197,16 @@ static int SparkHiddenTcpCudaCloseFd(int fd)
     return -1;
 }
 
+static void SparkHiddenTcpCudaCloseSocket(SparkHiddenTcpCudaState *state)
+{
+    if (state == 0)
+        return;
+    if (state->socket_fd >= 0)
+        close(state->socket_fd);
+    state->socket_fd = -1;
+    state->socket_connecting = 0u;
+}
+
 static int32_t SparkHiddenTcpCudaSetNonblocking(int fd)
 {
     int flags;
@@ -232,35 +241,89 @@ static int SparkHiddenTcpCudaListen(uint32_t port)
     return fd;
 }
 
-static int SparkHiddenTcpCudaConnectOnce(const char *host,uint32_t port)
+static SparkStatus SparkHiddenTcpCudaFinishConnect(SparkHiddenTcpCudaState *state)
+{
+    socklen_t error_bytes;
+    int error;
+    if (state == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (state->socket_fd < 0)
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    if (state->socket_connecting == 0u)
+        return SPARK_STATUS_OK;
+    error = 0;
+    error_bytes = sizeof(error);
+    if (getsockopt(state->socket_fd,SOL_SOCKET,SO_ERROR,
+            &error,&error_bytes) < 0)
+    {
+        SparkHiddenTcpCudaCloseSocket(state);
+        return SPARK_STATUS_BUSY;
+    }
+    if (error == 0)
+    {
+        state->socket_connecting = 0u;
+        return SPARK_STATUS_OK;
+    }
+    if (error == EINPROGRESS || error == EALREADY ||
+        error == EWOULDBLOCK || error == EAGAIN)
+        return SPARK_STATUS_BUSY;
+    SparkHiddenTcpCudaCloseSocket(state);
+    return SPARK_STATUS_BUSY;
+}
+
+static SparkStatus SparkHiddenTcpCudaBeginConnect(
+    SparkHiddenTcpCudaState *state,
+    const char *host,
+    uint32_t port)
 {
     struct addrinfo hints;
     struct addrinfo *result;
     struct addrinfo *entry;
     char port_text[16];
+    SparkStatus status;
     int fd;
-    fd = -1;
+    int connect_result;
+    if (state == 0 || host == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (state->socket_fd >= 0)
+        return SparkHiddenTcpCudaFinishConnect(state);
     memset(&hints,0,sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     snprintf(port_text,sizeof(port_text),"%u",port);
     if (getaddrinfo(host,port_text,&hints,&result) != 0)
-        return -1;
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    status = SPARK_STATUS_ROUTE_NOT_FOUND;
     for (entry = result; entry != 0; entry = entry->ai_next)
     {
         fd = socket(entry->ai_family,entry->ai_socktype,entry->ai_protocol);
         if (fd < 0)
             continue;
-        if (connect(fd,entry->ai_addr,entry->ai_addrlen) == 0)
+        if (SparkHiddenTcpCudaSetNonblocking(fd) < 0)
         {
-            (void)SparkHiddenTcpCudaSetNonblocking(fd);
+            close(fd);
+            continue;
+        }
+        connect_result = connect(fd,entry->ai_addr,entry->ai_addrlen);
+        if (connect_result == 0)
+        {
+            state->socket_fd = fd;
+            state->socket_connecting = 0u;
+            status = SPARK_STATUS_OK;
+            break;
+        }
+        if (errno == EINPROGRESS || errno == EALREADY ||
+            errno == EWOULDBLOCK || errno == EAGAIN)
+        {
+            state->socket_fd = fd;
+            state->socket_connecting = 1u;
+            status = SPARK_STATUS_BUSY;
             break;
         }
         close(fd);
-        fd = -1;
     }
     freeaddrinfo(result);
-    return fd;
+    return status;
 }
 
 static SparkStatus SparkHiddenTcpCudaReadSome(
@@ -308,31 +371,6 @@ static SparkStatus SparkHiddenTcpCudaWriteSome(
             return SPARK_STATUS_IO_ERROR;
         *bytes_written = (uint64_t)wrote;
         return SPARK_STATUS_OK;
-    }
-}
-
-static SparkStatus SparkHiddenTcpCudaWaitWritable(int fd)
-{
-    struct pollfd poll_fd;
-    int result;
-    if (fd < 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    memset(&poll_fd,0,sizeof(poll_fd));
-    poll_fd.fd = fd;
-    poll_fd.events = POLLOUT;
-    for (;;)
-    {
-        result = poll(&poll_fd,1u,1000);
-        if (result < 0 && errno == EINTR)
-            continue;
-        if (result < 0)
-            return SPARK_STATUS_IO_ERROR;
-        if (result == 0)
-            return SPARK_STATUS_BUSY;
-        if ((poll_fd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
-            return SPARK_STATUS_IO_ERROR;
-        if ((poll_fd.revents & POLLOUT) != 0)
-            return SPARK_STATUS_OK;
     }
 }
 
@@ -706,8 +744,7 @@ static SparkStatus SparkHiddenTcpCudaBeginIncomingPayload(
         &state->incoming_sideband_bytes);
     if (status != SPARK_STATUS_OK)
     {
-        close(state->socket_fd);
-        state->socket_fd = -1;
+        SparkHiddenTcpCudaCloseSocket(state);
         SparkHiddenTcpCudaAbortIncomingFrame(state);
         return SPARK_STATUS_BUSY;
     }
@@ -771,8 +808,7 @@ static SparkStatus SparkHiddenTcpCudaProgressIncomingFrame(
             return SPARK_STATUS_BUSY;
         if (status != SPARK_STATUS_OK)
         {
-            close(state->socket_fd);
-            state->socket_fd = -1;
+            SparkHiddenTcpCudaCloseSocket(state);
             SparkHiddenTcpCudaAbortIncomingFrame(state);
             return SPARK_STATUS_BUSY;
         }
@@ -796,8 +832,7 @@ static SparkStatus SparkHiddenTcpCudaProgressIncomingFrame(
             return SPARK_STATUS_BUSY;
         if (status != SPARK_STATUS_OK)
         {
-            close(state->socket_fd);
-            state->socket_fd = -1;
+            SparkHiddenTcpCudaCloseSocket(state);
             SparkHiddenTcpCudaAbortIncomingFrame(state);
             return SPARK_STATUS_BUSY;
         }
@@ -842,28 +877,29 @@ static SparkStatus SparkHiddenTcpCudaEnsureSocket(SparkHiddenTcpCudaState *state
 {
     const char *host;
     int fd;
+    if (state == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
     if (state->socket_fd >= 0)
-        return SPARK_STATUS_OK;
+        return SparkHiddenTcpCudaFinishConnect(state);
     if (state->is_sender != 0u)
     {
         host = getenv("SPARKPIPE_PP13_TRANSPORT_HOST_OVERRIDE");
         if (host == 0 || host[0] == '\0')
             host = state->sink_host;
-        state->socket_fd = SparkHiddenTcpCudaConnectOnce(
+        return SparkHiddenTcpCudaBeginConnect(
+            state,
             host,
             state->port_base + (uint32_t)state->sink_rank);
     }
-    else
-    {
-        fd = accept(state->listen_fd,0,0);
-        if (fd < 0 && (errno == EINTR ||
-                errno == EAGAIN ||
-                errno == EWOULDBLOCK))
-            return SPARK_STATUS_BUSY;
-        state->socket_fd = fd;
-        if (state->socket_fd >= 0)
-            (void)SparkHiddenTcpCudaSetNonblocking(state->socket_fd);
-    }
+    fd = accept(state->listen_fd,0,0);
+    if (fd < 0 && (errno == EINTR ||
+            errno == EAGAIN ||
+            errno == EWOULDBLOCK))
+        return SPARK_STATUS_BUSY;
+    state->socket_fd = fd;
+    state->socket_connecting = 0u;
+    if (state->socket_fd >= 0)
+        (void)SparkHiddenTcpCudaSetNonblocking(state->socket_fd);
     return state->socket_fd >= 0 ? SPARK_STATUS_OK : SPARK_STATUS_ROUTE_NOT_FOUND;
 }
 
@@ -995,6 +1031,8 @@ static SparkStatus SparkHiddenTcpCudaSend(
     status = SparkHiddenTcpCudaEnsureSocket(state);
     if (status == SPARK_STATUS_ROUTE_NOT_FOUND)
         return SPARK_STATUS_BUSY;
+    if (status == SPARK_STATUS_BUSY)
+        return SPARK_STATUS_BUSY;
     if (status != SPARK_STATUS_OK)
         return status;
     if (state->outgoing_active == 0u)
@@ -1071,16 +1109,10 @@ static SparkStatus SparkHiddenTcpCudaSend(
             remaining,
             &transferred);
         if (status == SPARK_STATUS_BUSY)
-        {
-            status = SparkHiddenTcpCudaWaitWritable(state->socket_fd);
-            if (status == SPARK_STATUS_OK)
-                continue;
-            return status;
-        }
+            return SPARK_STATUS_BUSY;
         if (status != SPARK_STATUS_OK)
         {
-            close(state->socket_fd);
-            state->socket_fd = -1;
+            SparkHiddenTcpCudaCloseSocket(state);
             state->outgoing_active = 0u;
             state->outgoing_offset = 0u;
             state->outgoing_bytes = 0u;
@@ -1202,7 +1234,8 @@ static SparkStatus SparkHiddenTcpCudaGetPollDescriptors(
         return SPARK_STATUS_INVALID_ARGUMENT;
     state = (SparkHiddenTcpCudaState *)transport_state;
     descriptor_count = 0u;
-    if (state->is_sender != 0u && state->outgoing_active != 0u)
+    if (state->is_sender != 0u &&
+        (state->outgoing_active != 0u || state->socket_connecting != 0u))
     {
         status = SparkHiddenTcpCudaAppendPollDescriptor(
             descriptors,
