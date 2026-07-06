@@ -2255,7 +2255,9 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 
 static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	void *builder_state,
-	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
+	SparkGlm52Pp13NodeContextBuilderIdlePumpFunction idle_pump_function,
+	void *idle_pump_context)
 {
 	SparkGlm52Pp13BuilderState *state;
 	SparkGlm52ResidentDecodeStageProductionRunnerDispatch dispatch;
@@ -2392,6 +2394,8 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 				break;
 			(void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
 				&state->runner);
+			if (idle_pump_function != 0)
+				(void)idle_pump_function(idle_pump_context);
 			usleep(200u);
 		}
 		if (status != SPARK_STATUS_OK)
@@ -2431,6 +2435,8 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 				token_id);
 			return status;
 		}
+		if (idle_pump_function != 0)
+			(void)idle_pump_function(idle_pump_context);
 	}
 	return SPARK_STATUS_OK;
 }

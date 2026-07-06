@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 1u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 2u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_INTERFACE_SYMBOL \
 	"SparkGlm52Pp13NodeContextBuilderGetInterface"
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_BYTES \
@@ -81,9 +81,13 @@ typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderAttachDriverFunction)(
 	void *driver_instance,
 	const SparkModelDriverProgramDescriptor *program,
 	SparkHiddenTransportSession *output_transport_session);
+typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderIdlePumpFunction)(
+	void *idle_pump_context);
 typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderPrefillFunction)(
 	void *builder_state,
-	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch);
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
+	SparkGlm52Pp13NodeContextBuilderIdlePumpFunction idle_pump_function,
+	void *idle_pump_context);
 typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderDecodeFunction)(
 	void *builder_state,
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
