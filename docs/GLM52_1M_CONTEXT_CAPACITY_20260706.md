@@ -98,3 +98,61 @@ multiplier: 2-3x decode on top of everything above.
 4. Absorbed attention v2 (64 heads/block, dynamic smem): 4x fewer latent
    bytes in the now-default decode path.
 5. Web-side work resumes after 1-3, per the stated priority.
+
+
+## Addendum: DSA-sparse prefill implementation blueprint (grounded 2026-07-06)
+
+Grounding completed this session. The indexer tensors loaded by the builder
+(indexer.wq_b [index_query_dim x query_a_dim], indexer.wk
+[index_key_dim=128 x hidden], indexer.weights_proj, indexer.k_norm) are the
+published lightning-indexer architecture, and the semantic reference for
+prefill selection is the repo's own decode scoring: the prefill kernel must
+compute the identical per-head weighted formula per query row that
+DsaScoreWarpCandidateKernel (sole score launch site, .cu:13554) computes for
+the single decode query. Only one scoring launch exists; the 17xxx-region
+DSA functions are per-kernel launcher wrappers; the production prefill
+attention is still the full-causal WMMA kernel. The N^2 stands.
+
+The 14 TB objection dissolves under selection locality: adjacent prefill
+queries' top-2048 sets overlap heavily, so per-query latent gathers hit L2
+and DRAM traffic collapses toward union-once per chunk (working set per
+1024-query chunk ~ a few thousand unique rows x 1152 B, well inside L2).
+Therefore v1 implements EXACT per-query semantics with the simple kernel -
+no tile-union approximation - and spark2 measures whether locality delivers.
+
+Pipeline per prefill chunk of C tokens at positions [p, p+C), reusing the
+absorbed decode machinery with row = query:
+
+1. Index keys for the chunk tokens are already written to the pooled
+   key_index_cache by the existing prefill-side DsaKeyNormRopeStore path
+   (launcher wrapper present; verify the call site writes during prefill -
+   decode correctness already requires it).
+2. New DsaScorePrefillTileKernel: grid (candidate_span, query_row_in_tile,
+   sequence), body = the decode score math with the query pointer offset
+   per row and the causal candidate bound = the row's absolute position.
+   Writes a [tile_rows x context] score workspace (16 rows x
+   SPARK_GLM52_KV_CONTEXT_TOKENS x 4 B = 64 MB builder allocation).
+3. DsaSelectRadixTopkKernel reused per row (its launcher at the 17828-area
+   wrapper) over the workspace rows, emitting per-row selected indices
+   (16 x 2048 x 4 B).
+4. Absorbed attention per tile: AbsorbedQueryProjectKernel over the chunk's
+   query rows (active_sequence_count = C), then AbsorbedAttentionKernel
+   with the tile's rows presented as sequences (per-row sparse indices,
+   context_lengths[row] = position), then AbsorbedValueApplyKernel once per
+   chunk. Prefill needs its own C-row staging for query_latent/rope/output
+   (the decode slot buffers are b-sized and live during interleaved decode):
+   C=1024 rows x 64 x 512 x 2 B = 64 MB latent staging + 8 MB rope + 32 MB
+   output, builder-allocated.
+5. Hook: a reserved_execution_flags bit routes the bulk-prefill attention
+   branch to the new orchestrator; OPT-IN until the long-context needle
+   gate passes on spark2, full-causal WMMA remains the default and the
+   fallback.
+
+Cost model at 1M: indexer O(N^2) at 128-dim fp8-weight dots ~ tens of
+seconds once; attention O(N x 2048) absorbed; versus minutes-to-hours of
+full-causal 512-dim x 64-head attention. Validation: (a) short-context
+equivalence - with context < 2048 the selection is the full prefix, so
+sparse prefill must reproduce the dense prefill hidden within tolerance
+(tests/test_glm52_exact_pp13_prefill_hidden.py comparison mode), (b)
+long-context needle retrieval at 32k/128k versus the dense path, (c) TTFT
+measurement at 64k before/after.
