@@ -25,6 +25,7 @@
 #define SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_MAGIC 0x35454650u
 #define SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY 2048u
 #define SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_HASH_SLOTS 4096u
+#define SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_QUEUE_CAPACITY 2048u
 #define SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT UINT32_MAX
 #define SPARK_GLM52_PP13_DAEMON_POLL_FD_CAPACITY 32u
 #define SPARK_GLM52_PP13_DAEMON_WORK_STATE_READY 0u
@@ -52,6 +53,23 @@ typedef struct SparkGlm52Pp13DaemonConfig
     uint32_t max_active_sequence_count;
     uint32_t port_base;
 } SparkGlm52Pp13DaemonConfig;
+
+typedef struct SparkGlm52Pp13DaemonFinalEvent
+{
+    uint32_t magic;
+    uint32_t descriptor_bytes;
+    uint32_t status;
+    uint32_t program_id;
+    uint32_t driver_dispatch_slot;
+    uint32_t accepted_token_count;
+    uint32_t completion_flags;
+    uint32_t token_count;
+    uint32_t token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
+    uint64_t request_id;
+    uint64_t sequence_id;
+    uint64_t sequence_position;
+    uint64_t service_time_ns;
+} SparkGlm52Pp13DaemonFinalEvent;
 
 typedef struct SparkGlm52Pp13DaemonRuntime
 {
@@ -90,6 +108,10 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     uint64_t work_wake_count;
     uint8_t final_event_read_buffer[128];
     uint32_t final_event_read_offset;
+    SparkGlm52Pp13DaemonFinalEvent final_event_queue[
+        SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_QUEUE_CAPACITY];
+    uint32_t final_event_queue_head;
+    uint32_t final_event_queue_count;
     int32_t wake_pipe_read_fd;
     int32_t wake_pipe_write_fd;
     uint64_t wake_signal_count;
@@ -101,23 +123,6 @@ typedef struct SparkGlm52Pp13DaemonRuntime
 } SparkGlm52Pp13DaemonRuntime;
 
 static volatile sig_atomic_t SparkGlm52Pp13DaemonRunning = 1;
-
-typedef struct SparkGlm52Pp13DaemonFinalEvent
-{
-    uint32_t magic;
-    uint32_t descriptor_bytes;
-    uint32_t status;
-    uint32_t program_id;
-    uint32_t driver_dispatch_slot;
-    uint32_t accepted_token_count;
-    uint32_t completion_flags;
-    uint32_t token_count;
-    uint32_t token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
-    uint64_t request_id;
-    uint64_t sequence_id;
-    uint64_t sequence_position;
-    uint64_t service_time_ns;
-} SparkGlm52Pp13DaemonFinalEvent;
 
 static void SparkGlm52Pp13DaemonSignal(int signal_number)
 {
@@ -648,6 +653,36 @@ static void SparkGlm52Pp13DaemonSignalWake(
         runtime->wake_drop_count += 1u;
 }
 
+static SparkStatus SparkGlm52Pp13DaemonQueueFinalEvent(
+    SparkGlm52Pp13DaemonRuntime *runtime,
+    const SparkGlm52Pp13DaemonFinalEvent *event)
+{
+    uint32_t tail;
+
+    if (runtime == 0 || event == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (runtime->final_event_queue_count >=
+        SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_QUEUE_CAPACITY)
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    tail =
+        (runtime->final_event_queue_head + runtime->final_event_queue_count) %
+        SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_QUEUE_CAPACITY;
+    runtime->final_event_queue[tail] = *event;
+    runtime->final_event_queue_count += 1u;
+    return SPARK_STATUS_OK;
+}
+
+static void SparkGlm52Pp13DaemonPopFinalEvent(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    if (runtime == 0 || runtime->final_event_queue_count == 0u)
+        return;
+    runtime->final_event_queue_head =
+        (runtime->final_event_queue_head + 1u) %
+        SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_QUEUE_CAPACITY;
+    runtime->final_event_queue_count -= 1u;
+}
+
 static uint32_t SparkGlm52Pp13DaemonDrainWakePipe(
     SparkGlm52Pp13DaemonRuntime *runtime)
 {
@@ -687,11 +722,6 @@ static void SparkGlm52Pp13DaemonCompletion(
             SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u ||
         completion->token_count == 0u)
         return;
-    if (runtime->final_event_socket_fd < 0)
-    {
-        runtime->final_event_send_error_count += 1u;
-        return;
-    }
     memset(&event,0,sizeof(event));
     event.magic = SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_MAGIC;
     event.descriptor_bytes = (uint32_t)sizeof(event);
@@ -709,15 +739,12 @@ static void SparkGlm52Pp13DaemonCompletion(
     event.sequence_id = completion->sequence_id;
     event.sequence_position = completion->sequence_position;
     event.service_time_ns = completion->service_time_ns;
-    if (SparkGlm52Pp13DaemonWriteAll(
-            runtime->final_event_socket_fd,
-            &event,
-            sizeof(event)) < 0)
+    if (SparkGlm52Pp13DaemonQueueFinalEvent(runtime,&event) != SPARK_STATUS_OK)
     {
         runtime->final_event_send_error_count += 1u;
         return;
     }
-    runtime->final_event_send_count += 1u;
+    SparkGlm52Pp13DaemonSignalWake(runtime);
 }
 
 static SparkStatus SparkGlm52Pp13DaemonLoadTransport(
@@ -1443,15 +1470,57 @@ static SparkStatus SparkGlm52Pp13DaemonOpenFinalEventPath(
     }
     if ((runtime->rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) != 0u)
-    {
-        runtime->final_event_socket_fd =
-            SparkGlm52Pp13DaemonConnectSocket(
-                configuration->final_event_return_host,
-                runtime->final_event_route.connect_port);
-        if (runtime->final_event_socket_fd < 0)
-            return SPARK_STATUS_ROUTE_NOT_FOUND;
-    }
+        (void)configuration;
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13DaemonEnsureFinalEventSocket(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    if (runtime == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if ((runtime->rank_plan.flags &
+        SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u)
+        return SPARK_STATUS_OK;
+    if (runtime->final_event_socket_fd >= 0)
+        return SPARK_STATUS_OK;
+    runtime->final_event_socket_fd =
+        SparkGlm52Pp13DaemonConnectSocket(
+            runtime->final_event_route.sink_host_name,
+            runtime->final_event_route.connect_port);
+    if (runtime->final_event_socket_fd < 0)
+        return SPARK_STATUS_BUSY;
+    return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkGlm52Pp13DaemonPumpFinalEventSend(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    const SparkGlm52Pp13DaemonFinalEvent *event;
+    SparkStatus status;
+
+    if (runtime == 0 ||
+        (runtime->rank_plan.flags &
+            SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u ||
+        runtime->final_event_queue_count == 0u)
+        return 0u;
+    status = SparkGlm52Pp13DaemonEnsureFinalEventSocket(runtime);
+    if (status != SPARK_STATUS_OK)
+        return 0u;
+    event = &runtime->final_event_queue[runtime->final_event_queue_head];
+    if (SparkGlm52Pp13DaemonWriteAll(
+            runtime->final_event_socket_fd,
+            event,
+            sizeof(*event)) < 0)
+    {
+        close(runtime->final_event_socket_fd);
+        runtime->final_event_socket_fd = -1;
+        runtime->final_event_send_error_count += 1u;
+        return 0u;
+    }
+    SparkGlm52Pp13DaemonPopFinalEvent(runtime);
+    runtime->final_event_send_count += 1u;
+    return 1u;
 }
 
 static uint32_t SparkGlm52Pp13DaemonAcceptFinalEventSocket(
@@ -1522,7 +1591,8 @@ static uint32_t SparkGlm52Pp13DaemonPumpFinalEvents(
     uint32_t remaining;
     uint32_t progress;
 
-    progress = SparkGlm52Pp13DaemonAcceptFinalEventSocket(runtime);
+    progress = SparkGlm52Pp13DaemonPumpFinalEventSend(runtime);
+    progress |= SparkGlm52Pp13DaemonAcceptFinalEventSocket(runtime);
     if (runtime->final_event_listen_fd < 0 ||
         runtime->final_event_socket_fd < 0)
         return progress;
@@ -1792,6 +1862,7 @@ static void SparkGlm52Pp13DaemonPrintReady(
         (unsigned long long)runtime->final_event_send_count);
     printf("final_event_received=%llu\n",
         (unsigned long long)runtime->final_event_receive_count);
+    printf("final_event_queued=%u\n",runtime->final_event_queue_count);
     fflush(stdout);
 }
 
