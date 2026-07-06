@@ -11903,7 +11903,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchStageSlicePlan(
             final_token_stage,
             runtime_kv_block_table,
             0,
-            (void *)cuda_stream);
+            (void *)cuda_stream,
+            0);
     }
     if (status != SPARK_STATUS_OK)
     {
@@ -18913,7 +18914,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
-    void *cuda_stream)
+    void *cuda_stream,
+    void *backend_completion)
 {
     const SparkGlm52ResidentDecodeStageExactStageSlicePlan *exact_stage_slice_plan;
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
@@ -18993,7 +18995,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         return SparkGlm52ResidentDecodeStageEnqueueCompletion(
             typed_cuda_stream,
             first_cuda_slot_state,
-            0);
+            (SparkGlm52ResidentDecodeStageBackendCompletion *)backend_completion);
     }
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
@@ -19149,7 +19151,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
         first_cuda_slot_state,
         graph_capture_active,
         graph_specialization_signature,
-        0);
+        (SparkGlm52ResidentDecodeStageBackendCompletion *)backend_completion);
     if (getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
     {
         fprintf(
@@ -19170,7 +19172,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
-    void *cuda_stream)
+    void *cuda_stream,
+    void *backend_completion)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
     const SparkGlm52ResidentDecodeStageNodeContext *layer_node_context;
@@ -19222,7 +19225,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
             final_token_stage,
             runtime_kv_block_table,
             frame_context,
-            cuda_stream);
+            cuda_stream,
+            backend_completion);
         if (getenv("GLM52_STAGE_SLICE_PLAN_DEBUG") != 0)
         {
             fprintf(
@@ -19285,7 +19289,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
         return SparkGlm52ResidentDecodeStageEnqueueCompletion(
             typed_cuda_stream,
             first_cuda_slot_state,
-            0);
+            (SparkGlm52ResidentDecodeStageBackendCompletion *)backend_completion);
     }
 
     graph_specialization_signature =
@@ -19318,7 +19322,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
         return SparkGlm52ResidentDecodeStageEnqueueCompletion(
             typed_cuda_stream,
             first_cuda_slot_state,
-            0);
+            (SparkGlm52ResidentDecodeStageBackendCompletion *)backend_completion);
     }
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
@@ -19444,7 +19448,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
         first_cuda_slot_state,
         graph_capture_active,
         graph_specialization_signature,
-        0);
+        (SparkGlm52ResidentDecodeStageBackendCompletion *)backend_completion);
 }
 
 

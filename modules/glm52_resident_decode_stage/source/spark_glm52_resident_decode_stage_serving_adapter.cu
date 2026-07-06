@@ -839,7 +839,8 @@ static SparkStatus SparkGlm52ServingAdapterLaunchDecodeStep(
         adapter->final_token_stage,
         decode_dispatch->kv_block_table_view,
         frame_context,
-        stream);
+        stream,
+        0);
 }
 
 static SparkStatus SparkGlm52ServingAdapterDecodeMtpVerify(

@@ -502,7 +502,8 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
-    void *cuda_stream);
+    void *cuda_stream,
+    void *backend_completion);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSlice(
     const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan,
@@ -513,7 +514,8 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSlice(
     uint32_t final_token_stage,
     const SparkGlm52KvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
-    void *cuda_stream);
+    void *cuda_stream,
+    void *backend_completion);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
