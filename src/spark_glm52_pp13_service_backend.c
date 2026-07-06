@@ -1950,6 +1950,64 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 	return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkGlm52Pp13ServiceBackendTransportPollEvents(
+	uint32_t transport_events)
+{
+	uint32_t events;
+
+	events = 0u;
+	if ((transport_events & SPARK_HIDDEN_TRANSPORT_POLL_READ) != 0u)
+		events |= SPARK_GLM52_SERVICE_BACKEND_POLL_READ;
+	if ((transport_events & SPARK_HIDDEN_TRANSPORT_POLL_WRITE) != 0u)
+		events |= SPARK_GLM52_SERVICE_BACKEND_POLL_WRITE;
+	return events;
+}
+
+static void SparkGlm52Pp13ServiceBackendAppendOutputTransportPollDescriptors(
+	SparkGlm52Pp13ServiceBackendState *state,
+	SparkGlm52ServiceBackendPollDescriptor *descriptors,
+	uint32_t descriptor_capacity,
+	uint32_t *descriptor_count)
+{
+	SparkHiddenTransportPollDescriptor transport_descriptors[4];
+	SparkStatus status;
+	uint32_t transport_count;
+	uint32_t transport_index;
+	uint32_t events;
+
+	if (state == 0 || descriptors == 0 || descriptor_count == 0 ||
+		state->output_transport_session == 0)
+		return;
+	transport_count = 0u;
+	status = SparkHiddenTransportGetPollDescriptors(
+		state->output_transport_session,
+		transport_descriptors,
+		4u,
+		&transport_count);
+	if (status != SPARK_STATUS_OK)
+		return;
+	for (transport_index = 0u;
+		 transport_index < transport_count &&
+		 *descriptor_count < descriptor_capacity;
+		 ++transport_index)
+	{
+		events = SparkGlm52Pp13ServiceBackendTransportPollEvents(
+			transport_descriptors[transport_index].events);
+		if (transport_descriptors[transport_index].fd < 0 || events == 0u)
+			continue;
+		memset(
+			&descriptors[*descriptor_count],
+			0,
+			sizeof(descriptors[*descriptor_count]));
+		descriptors[*descriptor_count].descriptor_bytes =
+			SPARK_GLM52_SERVICE_BACKEND_POLL_DESCRIPTOR_BYTES;
+		descriptors[*descriptor_count].fd =
+			transport_descriptors[transport_index].fd;
+		descriptors[*descriptor_count].events = events;
+		*descriptor_count += 1u;
+	}
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendGetPollDescriptors(
 	void *backend_state,
 	SparkGlm52ServiceBackendPollDescriptor *descriptors,
@@ -1991,6 +2049,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendGetPollDescriptors(
 			SPARK_GLM52_SERVICE_BACKEND_POLL_WRITE;
 		descriptor_count += 1u;
 	}
+	SparkGlm52Pp13ServiceBackendAppendOutputTransportPollDescriptors(
+		state,
+		descriptors,
+		descriptor_capacity,
+		&descriptor_count);
 	*descriptor_count_out = descriptor_count;
 	return SPARK_STATUS_OK;
 }
