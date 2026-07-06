@@ -76,7 +76,7 @@ def test_serial_prefill_progresses_runner_after_each_token(root: Path) -> None:
     function_body = source[start:end]
     assert sync_call in function_body
     assert progress_call in function_body
-    assert function_body.index(progress_call) > function_body.index(sync_call)
+    assert function_body.index(progress_call, function_body.index(sync_call)) > function_body.index(sync_call)
 
 
 def main() -> None:

@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/types.h>
 
 #include "sparkpipe/spark_glm52_resident_decode_stage_fp8_moe_plan.h"
@@ -2256,6 +2257,7 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	SparkGlm52ResidentDecodeStageProductionRunnerDispatch dispatch;
 	SparkGlm52Pp13WorkControlPacket work_packet;
 	uint32_t token_offset;
+	uint32_t submit_retry;
 	uint32_t position;
 	uint32_t token_id;
 	uint32_t block_count;
@@ -2377,9 +2379,17 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 			state->output_sideband,
 			SparkGlm52Pp13BuilderNeedsOutputSideband(state),
 			&dispatch.hidden_output_packet);
-		status = SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
-			&state->runner,
-			&dispatch);
+		for (submit_retry = 0u; submit_retry < 25000u; ++submit_retry)
+		{
+			status = SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
+				&state->runner,
+				&dispatch);
+			if (status != SPARK_STATUS_BUSY)
+				break;
+			(void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
+				&state->runner);
+			usleep(200u);
+		}
 		if (status != SPARK_STATUS_OK)
 		{
 			fprintf(
