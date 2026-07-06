@@ -316,6 +316,7 @@ int main(int argc,char **argv)
     uint8_t *host_scratch;
     void *hidden_device;
     void *sideband_device;
+    cudaStream_t stream;
     uint64_t hidden_bytes;
     uint64_t sideband_bytes;
     uint64_t lap;
@@ -382,7 +383,9 @@ int main(int argc,char **argv)
     host_scratch = (uint8_t *)malloc((size_t)(hidden_bytes + sideband_bytes));
     hidden_device = 0;
     sideband_device = 0;
+    stream = 0;
     if (host_pattern == 0 || host_scratch == 0 ||
+        cudaStreamCreate(&stream) != cudaSuccess ||
         cudaMalloc(&hidden_device,(size_t)hidden_bytes) != cudaSuccess ||
         (sideband_bytes != 0u &&
          cudaMalloc(&sideband_device,(size_t)sideband_bytes) != cudaSuccess))
@@ -420,14 +423,14 @@ int main(int argc,char **argv)
                 return 1;
             }
             SparkRingCheckBuildPacket(&configuration,lap,hidden_device,
-                sideband_device,0,&packet);
+                sideband_device,stream,&packet);
             lap_start_ms = SparkRingCheckMonotonicMs();
             status = SparkRingCheckPumpUntilOk(SparkRingCheckSendAdapter,
                 output_session,&packet,configuration.timeout_ms,"send");
             if (status != SPARK_STATUS_OK)
                 return 1;
             SparkRingCheckBuildPacket(&configuration,lap,hidden_device,
-                sideband_device,0,&packet);
+                sideband_device,stream,&packet);
             status = SparkRingCheckPumpUntilOk(SparkHiddenTransportPostReceive,
                 input_session,&packet,configuration.timeout_ms,"receive");
             if (status != SPARK_STATUS_OK)
@@ -454,7 +457,7 @@ int main(int argc,char **argv)
         else
         {
             SparkRingCheckBuildPacket(&configuration,lap,hidden_device,
-                sideband_device,0,&packet);
+                sideband_device,stream,&packet);
             status = SparkRingCheckPumpUntilOk(SparkHiddenTransportPostReceive,
                 input_session,&packet,configuration.timeout_ms,"receive");
             if (status != SPARK_STATUS_OK)
@@ -469,7 +472,7 @@ int main(int argc,char **argv)
                     lap) != SPARK_STATUS_OK)
                 return 1;
             SparkRingCheckBuildPacket(&configuration,lap,hidden_device,
-                sideband_device,0,&packet);
+                sideband_device,stream,&packet);
             status = SparkRingCheckPumpUntilOk(SparkRingCheckSendAdapter,
                 output_session,&packet,configuration.timeout_ms,"send");
             if (status != SPARK_STATUS_OK)
@@ -489,5 +492,6 @@ int main(int argc,char **argv)
             configuration.rank,configuration.laps);
     SparkHiddenTransportClose(input_session);
     SparkHiddenTransportClose(output_session);
+    (void)cudaStreamDestroy(stream);
     return 0;
 }
