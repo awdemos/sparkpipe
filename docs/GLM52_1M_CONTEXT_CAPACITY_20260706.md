@@ -156,3 +156,46 @@ sparse prefill must reproduce the dense prefill hidden within tolerance
 (tests/test_glm52_exact_pp13_prefill_hidden.py comparison mode), (b)
 long-context needle retrieval at 32k/128k versus the dense path, (c) TTFT
 measurement at 64k before/after.
+
+
+## Implementation part 1 landed + a blocking finding for the needle test
+
+Landed (inert until the orchestrator consumes them): the
+EXECUTION_DSA_SPARSE_PREFILL flag, node-context buffer fields, and the
+builder's state-level prefill staging (scores 16 x CONTEXT_TOKENS f32,
+per-row selected/context/sequence arrays, chunk staging for query_a /
+index heads / index weights / normalized hidden / low-column scratch,
+row capacity 1024). Zero behavior change; both TUs gated, host tests
+green.
+
+BLOCKING FINDING, independent of sparse prefill: index keys are written
+ONLY by the decode-step indexer (LaunchDsaIndexerDecode is the sole
+caller of the key store; no prefill variant exists). Prefilled tokens
+therefore have no entries in key_index_cache. The old 2048-window
+config masked this (PRESELECTED prefix selection never read keys), but
+with the pooled capacity, decode DSA selection over long prefilled
+context scores against unwritten keys. The >2048 needle test will fail
+on THIS before it tests anything else, unless run in PRESELECTED mode.
+The fix is the same prefill indexer pass sparse prefill needs anyway
+(chunk-row key projection + KeyNormRopeStore over prompt positions and
+slots), which is step one of part 2.
+
+Part 2 remaining, specified: (a) refactor LaunchDsaIndexerDecode to take
+its six buffer pointers + row count (decode passes slot fields, prefill
+passes the new staging + prompt buffers; key store needs a per-row
+prompt slot mapping - either a small fill kernel from block table +
+prompt positions or a keystore-kernel block-table resolve variant);
+(b) add const uint32_t *row_sequence_indices (NULL = identity) to
+DsaScoreWarpCandidateKernel and AbsorbedAttentionKernel, applied only
+to block_table/first_block_token_offset resolution - all other indexing
+already means "row"; (c) the orchestrator: per chunk, indexer pass,
+AbsorbedQueryProject in place on prompt_query_latent (rows are already
+(seq x stride + token) x 64 + head at 512-wide with nope in [0,192) -
+verified identical to the decode layout), then per 16-row tile at
+share-source layers: score into the staging (per-row causal bound via
+row context lengths), radix per row (kernel reused verbatim - grid is
+already one block per row), absorbed attention with tile-offset
+pointers, selected indices persisted across the share group's layers;
+UvApply once per chunk into prompt_attention_output; (d) hook in the
+bulk-prefill attention branch behind the flag, WMMA full-causal remains
+default and fallback.

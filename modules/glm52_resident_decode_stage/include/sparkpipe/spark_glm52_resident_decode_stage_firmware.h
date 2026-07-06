@@ -123,6 +123,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_HIDDEN_TRANSPORT_INPUT 0x00080000u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_HIDDEN_TRANSPORT_OUTPUT 0x00100000u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FP8_KV_CACHE 0x00200000u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_DSA_SPARSE_PREFILL 0x01000000u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_PERSISTENT_HIDDEN_TRANSPORT \
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_HIDDEN_TRANSPORT_INPUT | \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_HIDDEN_TRANSPORT_OUTPUT)
@@ -1035,6 +1036,16 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     const void *index_weights_proj_weight_bf16;
     const void *index_key_norm_weight_bf16;
     const void *index_key_norm_bias_bf16;
+    float *dsa_prefill_scores_f32;
+    uint32_t *dsa_prefill_selected_u32;
+    uint32_t *dsa_prefill_row_context_lengths_u32;
+    uint32_t *dsa_prefill_row_sequences_u32;
+    void *dsa_prefill_query_a_bf16;
+    void *dsa_prefill_query_index_heads_bf16;
+    void *dsa_prefill_index_weights_bf16;
+    void *dsa_prefill_normalized_hidden_bf16;
+    void *dsa_prefill_low_scratch_bf16;
+    uint32_t dsa_prefill_row_capacity;
     const void *key_index_cache_bf16;
     const float *index_head_weights_f32;
     float index_softmax_scale;
