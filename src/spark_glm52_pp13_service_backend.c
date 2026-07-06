@@ -1919,6 +1919,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 	work_status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
 	if (work_status != SPARK_STATUS_OK && work_status != SPARK_STATUS_BUSY)
 		state->final_event_receive_error_count += 1u;
+	if (state->rank0_runtime_ready != 0u)
+		(void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
+			&state->runner);
 	event_status = SparkGlm52Pp13ServiceBackendReadFinalEvent(state,&event);
 	if (event_status == SPARK_STATUS_OK)
 	{

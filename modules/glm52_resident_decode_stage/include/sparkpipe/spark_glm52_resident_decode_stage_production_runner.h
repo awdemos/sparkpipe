@@ -123,6 +123,9 @@ SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
     SparkGlm52ResidentDecodeStageProductionRunner *runner,
     const SparkGlm52ResidentDecodeStageProductionRunnerDispatch *dispatch);
 
+SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerProgress(
+    SparkGlm52ResidentDecodeStageProductionRunner *runner);
+
 SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerGetStats(
     const SparkGlm52ResidentDecodeStageProductionRunner *runner,
     SparkGlm52ResidentDecodeStageProductionRunnerStats *stats_out);

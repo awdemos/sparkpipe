@@ -1905,6 +1905,8 @@ int main(int argc,char **argv)
         progress = 0u;
         progress |= SparkGlm52Pp13DaemonDrainWakePipe(&runtime);
         progress |= SparkGlm52Pp13DaemonPumpWorkControl(&runtime);
+        (void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
+            &runtime.runner);
         progress |= SparkGlm52Pp13DaemonPumpQueuedWork(&runtime);
         progress |= SparkGlm52Pp13DaemonPumpFinalEvents(&runtime);
         if (progress == 0u)
