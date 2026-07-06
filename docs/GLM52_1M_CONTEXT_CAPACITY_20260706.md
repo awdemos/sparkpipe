@@ -199,3 +199,37 @@ pointers, selected indices persisted across the share group's layers;
 UvApply once per chunk into prompt_attention_output; (d) hook in the
 bulk-prefill attention branch behind the flag, WMMA full-causal remains
 default and fallback.
+
+
+## Superseding finding: decode candidate space is capped at 2048
+
+The builder sets node->dsa_candidate_count to SELECTED_TOKEN_COUNT
+(spark_glm52_pp13_node_context_builder_cuda.cu:953), and the radix
+select clamps context_length to it. Decode DSA selection therefore
+scores only the FIRST 2048 tokens of any context - a needle past 2048
+is invisible by construction, independent of the index-key gap. The old
+32-block window made this consistent; under pooled 1M capacity it is
+the correctness wall for long-context decode.
+
+The decode fix is not a constant bump: the per-slot dsa_token_scores
+buffer uses a uniform seq-major stride of dsa_candidate_count, and
+1M x B1024 is 4TB. It needs per-sequence score offsets (prefix sums of
+context lengths, pool-bounded at 16MB total) plus a service-driven
+per-step candidate bound, and belongs to its own effort.
+
+Prefill is fixed on this branch: the sparse-prefill orchestrator now
+derives its candidate bound from the chunk extent
+(prompt_token_offset + prompt_token_stride, validated against
+KV_CONTEXT_TOKENS), so selection spans the full prefix and launch grids
+scale with actual context.
+
+## Indexer pass decoupled from the sparse flag
+
+LaunchDsaPrefillIndexerPass (RowSetup + attention-norm + q_a + the
+shared indexer rows core) now runs on every index-share FULL layer
+during paged bulk prefill, flag or no flag. Prefilled tokens get index
+keys unconditionally, unblocking decode DSA over prefilled context by
+default; SHARED layers skip it and reuse the group's row arrays and
+selections from the state-level staging. The sparse attention
+orchestrator consumes the pass outputs and starts at the absorbed
+project.
