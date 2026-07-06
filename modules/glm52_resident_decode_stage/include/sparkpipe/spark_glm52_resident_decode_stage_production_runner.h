@@ -80,6 +80,9 @@ typedef struct SparkGlm52ResidentDecodeStageProductionRunnerDispatch
     uint32_t reserved0;
     SparkModelDriverResidencyToken residency;
     const uint32_t *mtp_draft_token_budgets;
+    const SparkGlm52DsparkHiddenTapPlan *dspark_hidden_tap_plan;
+    void *const *dspark_hidden_tap_outputs_bf16;
+    uint64_t dspark_hidden_tap_lane_stride_bytes;
     const SparkGlm52KvBlockTableView *kv_block_table;
     const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_view;
     SparkHiddenTransportSession *hidden_input_transport_session;

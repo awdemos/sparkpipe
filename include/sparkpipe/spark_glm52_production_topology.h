@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_glm52_dspark.h"
+#include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
@@ -102,6 +103,18 @@ SparkStatus SparkGlm52ProductionTopologyBuild(
     SparkGlm52ProductionTopology *topology,
     char *error_buffer,
     uint32_t error_buffer_bytes);
+
+SparkStatus SparkGlm52ProductionTopologyHopSidebandLayout(
+    const SparkGlm52ProductionTopology *topology,
+    uint32_t export_stage_index,
+    uint32_t *sideband_kind_bits_out,
+    uint32_t *sideband_bytes_per_sequence_out);
+
+SparkStatus SparkGlm52ProductionTopologyArmHopSidebandPacket(
+    const SparkGlm52ProductionTopology *topology,
+    uint32_t export_stage_index,
+    void *sideband_payload,
+    SparkHiddenTransportPacket *packet);
 
 SparkStatus SparkGlm52ProductionTopologyValidate(
     const SparkGlm52ProductionTopology *topology,
