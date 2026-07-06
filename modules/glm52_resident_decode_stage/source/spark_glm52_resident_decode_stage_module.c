@@ -2854,6 +2854,17 @@ static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
         &completion);
     if (pending_completion->hidden_output_transport_active != 0u)
     {
+        if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "stage_complete_send sequence=%llu position=%llu slot=%u session=%p bytes=%u\n",
+                (unsigned long long)pending_completion->sequence_id,
+                (unsigned long long)pending_completion->sequence_position,
+                pending_completion->driver_dispatch_slot,
+                (void *)pending_completion->hidden_output_transport_session,
+                pending_completion->hidden_output_packet.bytes_per_sequence);
+        }
         if (pending_completion->hidden_output_send_function == 0)
         {
             completion.status = SPARK_STATUS_INVALID_ARGUMENT;
@@ -2863,6 +2874,15 @@ static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
             completion.status = pending_completion->hidden_output_send_function(
                 pending_completion->hidden_output_transport_session,
                 &pending_completion->hidden_output_packet);
+            if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+            {
+                fprintf(
+                    stderr,
+                    "stage_complete_send_status status=%d sequence=%llu position=%llu\n",
+                    (int32_t)completion.status,
+                    (unsigned long long)pending_completion->sequence_id,
+                    (unsigned long long)pending_completion->sequence_position);
+            }
         }
     }
     completion.residency = pending_completion->residency;
@@ -3739,6 +3759,17 @@ static SparkStatus SparkGlm52ResidentDecodeStagePrepareOutputHiddenTransport(
     *transport_session_out = frame_context->hidden_output_transport_session;
     *transport_send_function_out = frame_context->hidden_output_send_function;
     *transport_active_out = 1u;
+    if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+    {
+        fprintf(
+            stderr,
+            "stage_prepare_output_hidden slot=%u active=%u session=%p bytes=%u device=%p\n",
+            pipeline_slot_index,
+            active_sequence_count,
+            (void *)frame_context->hidden_output_transport_session,
+            transport_packet_out->bytes_per_sequence,
+            transport_packet_out->hidden_bf16);
+    }
     return SPARK_STATUS_OK;
 }
 

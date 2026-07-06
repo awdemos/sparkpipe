@@ -1915,8 +1915,10 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	dispatch.new_token_count = work_packet->new_token_count;
 	dispatch.pipeline_slot = work_packet->pipeline_slot;
 	dispatch.kv_block_table = &state->device_kv_view;
-	dispatch.mtp_draft_token_budgets =
-		(const uint32_t *)state->layers[0].mtp_draft_token_budgets;
+	if ((work_packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP) != 0u &&
+		work_packet->mtp_draft_token_count != 0u)
+		dispatch.mtp_draft_token_budgets =
+			(const uint32_t *)state->layers[0].mtp_draft_token_budgets;
 	dispatch.hidden_input_transport_session = input_transport_session;
 	dispatch.hidden_output_transport_session = output_transport_session;
 	SparkGlm52Pp13BuilderBuildPacket(
@@ -2232,8 +2234,9 @@ static SparkStatus SparkGlm52Pp13BuilderDecode(
 	dispatch.new_token_count = mtp_budget + 1u;
 	dispatch.pipeline_slot = 0u;
 	dispatch.kv_block_table = &state->device_kv_view;
-	dispatch.mtp_draft_token_budgets =
-		(const uint32_t *)state->layers[0].mtp_draft_token_budgets;
+	if (mtp_budget != 0u)
+		dispatch.mtp_draft_token_budgets =
+			(const uint32_t *)state->layers[0].mtp_draft_token_budgets;
 	dispatch.hidden_output_transport_session = state->output_transport_session;
 	memset(&work_packet,0,sizeof(work_packet));
 	work_packet.magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;

@@ -72,7 +72,7 @@ static void SparkGlm52Pp13RuntimeInitializeEndpoint(
         SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE;
     endpoint->max_active_sequence_count = max_active_sequence_count;
     endpoint->max_packet_bytes =
-        (uint64_t)endpoint->bytes_per_sequence *
+        (uint64_t)SPARK_GLM52_PP13_RUNTIME_MAX_TRANSPORT_BYTES_PER_SEQUENCE *
         (uint64_t)endpoint->max_active_sequence_count;
     endpoint->transport_module_id =
         SPARK_HIDDEN_TRANSPORT_TCP_CUDA_HOST_MODULE_ID;
@@ -197,7 +197,7 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
         SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE;
     rank_plan->quantization_mode = SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE;
     rank_plan->max_packet_bytes =
-        (uint64_t)rank_plan->bytes_per_sequence *
+        (uint64_t)SPARK_GLM52_PP13_RUNTIME_MAX_TRANSPORT_BYTES_PER_SEQUENCE *
         (uint64_t)rank_plan->max_active_sequence_count;
     status = SparkGlm52Pp13RuntimeRankHostName(
         rank_index,
@@ -300,7 +300,7 @@ SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
         rank_plan->quantization_mode !=
             SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE ||
         rank_plan->max_packet_bytes !=
-            ((uint64_t)rank_plan->bytes_per_sequence *
+            ((uint64_t)SPARK_GLM52_PP13_RUNTIME_MAX_TRANSPORT_BYTES_PER_SEQUENCE *
              (uint64_t)rank_plan->max_active_sequence_count))
     {
         return SparkGlm52Pp13RuntimeReport(

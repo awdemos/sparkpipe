@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -290,6 +291,31 @@ static SparkStatus SparkHiddenTcpCudaWriteSome(
             return SPARK_STATUS_IO_ERROR;
         *bytes_written = (uint64_t)wrote;
         return SPARK_STATUS_OK;
+    }
+}
+
+static SparkStatus SparkHiddenTcpCudaWaitWritable(int fd)
+{
+    struct pollfd poll_fd;
+    int result;
+    if (fd < 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    memset(&poll_fd,0,sizeof(poll_fd));
+    poll_fd.fd = fd;
+    poll_fd.events = POLLOUT;
+    for (;;)
+    {
+        result = poll(&poll_fd,1u,1000);
+        if (result < 0 && errno == EINTR)
+            continue;
+        if (result < 0)
+            return SPARK_STATUS_IO_ERROR;
+        if (result == 0)
+            return SPARK_STATUS_BUSY;
+        if ((poll_fd.revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+            return SPARK_STATUS_IO_ERROR;
+        if ((poll_fd.revents & POLLOUT) != 0)
+            return SPARK_STATUS_OK;
     }
 }
 
@@ -948,7 +974,12 @@ static SparkStatus SparkHiddenTcpCudaSend(
             remaining,
             &transferred);
         if (status == SPARK_STATUS_BUSY)
-            return SPARK_STATUS_BUSY;
+        {
+            status = SparkHiddenTcpCudaWaitWritable(state->socket_fd);
+            if (status == SPARK_STATUS_OK)
+                continue;
+            return status;
+        }
         if (status != SPARK_STATUS_OK)
         {
             close(state->socket_fd);

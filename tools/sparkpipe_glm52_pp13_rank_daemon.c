@@ -437,6 +437,10 @@ static void SparkGlm52Pp13DaemonCompletion(
     if ((runtime->rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u)
         return;
+    if ((completion->completion_flags &
+            SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u ||
+        completion->token_count == 0u)
+        return;
     if (runtime->final_event_socket_fd < 0)
     {
         runtime->final_event_send_error_count += 1u;

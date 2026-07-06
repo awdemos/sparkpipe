@@ -446,10 +446,22 @@ static SparkStatus SparkGlm52Pp13ServiceBackendEnsureWorkOutputSocket(
 		return SPARK_STATUS_OK;
 	if (state->work_output_socket_fd >= 0)
 		return SPARK_STATUS_OK;
+	if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+		fprintf(
+			stderr,
+			"pp13_work_connect host=%s port=%u\n",
+			state->rank_plan.next_host_name,
+			state->rank_plan.next_port);
 	state->work_output_socket_fd =
 		SparkGlm52Pp13ServiceBackendConnectSocket(
 			state->rank_plan.next_host_name,
 			state->rank_plan.next_port);
+	if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+		fprintf(
+			stderr,
+			"pp13_work_connect_result fd=%d errno=%d\n",
+			state->work_output_socket_fd,
+			errno);
 	if (state->work_output_socket_fd < 0)
 		return SPARK_STATUS_ROUTE_NOT_FOUND;
 	if (SparkGlm52Pp13ServiceBackendSetNonblocking(
@@ -498,6 +510,13 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 				&packet,
 				sizeof(packet)) < 0)
 		{
+			if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+				fprintf(
+					stderr,
+					"pp13_prefill_work_write_failed fd=%d token_offset=%u errno=%d\n",
+					state->work_output_socket_fd,
+					token_offset,
+					errno);
 			close(state->work_output_socket_fd);
 			state->work_output_socket_fd = -1;
 			return SPARK_STATUS_ROUTE_NOT_FOUND;
@@ -531,6 +550,12 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 			&packet,
 			sizeof(packet)) < 0)
 	{
+		if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+			fprintf(
+				stderr,
+				"pp13_decode_work_write_failed fd=%d errno=%d\n",
+				state->work_output_socket_fd,
+				errno);
 		close(state->work_output_socket_fd);
 		state->work_output_socket_fd = -1;
 		return SPARK_STATUS_ROUTE_NOT_FOUND;
@@ -773,8 +798,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRequestApi(
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING |
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING |
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING |
-		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION |
-		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION;
 	request_api_configuration.request_capacity =
 		SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY;
 	request_api_configuration.prefetch_lane_count =

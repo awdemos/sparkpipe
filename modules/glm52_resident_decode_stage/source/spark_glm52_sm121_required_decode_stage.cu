@@ -15606,6 +15606,16 @@ static SparkStatus SparkGlm52ResidentDecodeStageFinishSubmit(
         }
         cuda_slot_state->graph_replay_count += 1u;
     }
+    if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+    {
+        fprintf(
+            stderr,
+            "stage_finish_submit graph_capture=%u signature=%llu completion=%p function=%p\n",
+            graph_capture_active,
+            (unsigned long long)graph_specialization_signature,
+            (void *)completion,
+            completion != 0 ? (void *)completion->function : 0);
+    }
     return SparkGlm52ResidentDecodeStageEnqueueCompletion(
         cuda_stream,
         cuda_slot_state,
@@ -15661,6 +15671,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFusedFinalTokenTail(
         cuda_stream);
     return status;
 }
+
+static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+    const char *phase_name,
+    SparkStatus status);
 
 static bool SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
     const SparkGlm52ResidentDecodeStageExactStageSlicePlan *exact_stage_slice_plan)
@@ -15721,6 +15735,31 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFusedFinalTokenEpil
         pipeline_slot->mtp_committed_token_ids == 0 ||
         pipeline_slot->mtp_event_counters == 0)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "final_epilogue_reject exact=%p workspace=%p workspace_bytes=%llu active=%u max=%u mtp_plan=%p mtp_launch=%p lm_head=%p mtp_weight=%p mtp_scale=%p token_ids=%p norm=%p draft_hidden=%p selected_ids=%p selected_scores=%p draft_ids=%p accept=%p committed=%p counters=%p\n",
+                (const void *)exact_stage_slice_plan,
+                exact_stage_slice_plan != 0 ? exact_stage_slice_plan->workspace : 0,
+                exact_stage_slice_plan != 0 ? (unsigned long long)exact_stage_slice_plan->workspace_bytes : 0ull,
+                active_sequence_count,
+                exact_stage_slice_plan != 0 ? exact_stage_slice_plan->maximum_active_sequence_count : 0u,
+                node_context != 0 ? (const void *)node_context->mtp_draft_plan : 0,
+                node_context != 0 && node_context->mtp_draft_plan != 0 ? node_context->mtp_draft_plan->launch_function : 0,
+                node_context != 0 ? node_context->restricted_lm_head_weight_bf16 : 0,
+                node_context != 0 ? node_context->mtp_mxfp4_weight_payload_u8 : 0,
+                node_context != 0 ? node_context->mtp_mxfp4_scale_e8m0_u8 : 0,
+                node_context != 0 ? node_context->restricted_token_ids : 0,
+                pipeline_slot != 0 ? pipeline_slot->normalized_hidden_bf16 : 0,
+                pipeline_slot != 0 ? pipeline_slot->mtp_draft_hidden_bf16 : 0,
+                pipeline_slot != 0 ? pipeline_slot->restricted_selected_token_ids : 0,
+                pipeline_slot != 0 ? pipeline_slot->restricted_selected_token_scores : 0,
+                pipeline_slot != 0 ? pipeline_slot->mtp_draft_token_ids : 0,
+                pipeline_slot != 0 ? pipeline_slot->mtp_accept_mask : 0,
+                pipeline_slot != 0 ? pipeline_slot->mtp_committed_token_ids : 0,
+                pipeline_slot != 0 ? pipeline_slot->mtp_event_counters : 0);
+        }
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -15756,7 +15795,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFusedFinalTokenEpil
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "final_norm",
+            status);
     }
 
     SparkGlm52ResidentDecodeStageFusedFinalTokenCommitKernel<<<
@@ -16483,7 +16524,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
             active_sequence_count);
         if (status != SPARK_STATUS_OK)
         {
-            return status;
+            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+                "built_in_final_epilogue",
+                status);
         }
     }
     else if (mtp_requested)
@@ -16496,7 +16539,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
             active_sequence_count);
         if (status != SPARK_STATUS_OK)
         {
-            return status;
+            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+                "restricted_logits",
+                status);
         }
 
         status = SparkGlm52ResidentDecodeStageLaunchMtpDraft(
@@ -16507,7 +16552,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
             active_sequence_count);
         if (status != SPARK_STATUS_OK)
         {
-            return status;
+            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+                "mtp_draft",
+                status);
         }
 
         status = SparkGlm52ResidentDecodeStageLaunchFusedFinalTokenTail(
@@ -16519,7 +16566,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
             active_sequence_count);
         if (status != SPARK_STATUS_OK)
         {
-            return status;
+            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+                "fused_final_token_tail",
+                status);
         }
     }
     else
@@ -16532,7 +16581,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
             active_sequence_count);
         if (status != SPARK_STATUS_OK)
         {
-            return status;
+            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+                "restricted_logits",
+                status);
         }
         status = SparkGlm52ResidentDecodeStageLaunchRestrictedArgmax(
             node_context,
@@ -16542,7 +16593,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
             active_sequence_count);
         if (status != SPARK_STATUS_OK)
         {
-            return status;
+            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+                "restricted_argmax",
+                status);
         }
     }
 
