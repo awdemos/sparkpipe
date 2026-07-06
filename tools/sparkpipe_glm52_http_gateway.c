@@ -1154,14 +1154,17 @@ int main(int argc,char **argv)
 				continue;
 			break;
 		}
-		if ((poll_fds[0].revents & POLLIN) == 0)
-			continue;
-		client_fd = accept(listen_fd,0,0);
-		if (client_fd < 0)
-			continue;
-		(void)SparkGlm52GatewayServeOne(&runtime,client_fd);
-		close(client_fd);
 		SparkGlm52GatewayPumpService(&runtime);
+		if ((poll_fds[0].revents & POLLIN) != 0)
+		{
+			client_fd = accept(listen_fd,0,0);
+			if (client_fd >= 0)
+			{
+				(void)SparkGlm52GatewayServeOne(&runtime,client_fd);
+				close(client_fd);
+				SparkGlm52GatewayPumpService(&runtime);
+			}
+		}
 	}
 	SparkGlm52GatewayDestroyServiceBackend(&runtime);
 	return 0;
