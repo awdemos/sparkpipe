@@ -46,3 +46,37 @@ DSPARK_HIDDEN_TAP). The topology test asserts the exact tap mapping.
 4. Validation precondition: the MTP end-to-end gate (acceptance > 0,
    committed == greedy) must pass on spark2 before any dspark
    throughput claim; the verify path shares that machinery.
+
+
+## Dispatcher layer landed; the remaining seam is the work-packet protocol
+
+The dispatcher primitives are now in place. Any packet builder arms a
+hop with one call - SparkGlm52ProductionTopologyArmHopSidebandPacket
+sets the sideband flag, kind bits, per-sequence bytes, and payload
+pointer from the topology descriptors (or clears the sideband when the
+hop carries none), with HopSidebandLayout as the sizing half for
+allocation. Region order matches the firmware layout by construction
+(descriptor order: index-share first, taps in aux order). The topology
+test asserts kind bits and byte floors for every hop against the
+expected in-flight tap counts 0,1,1,2,2,2,3,3,3,4,4,5.
+
+The production runner dispatch now carries the tap plan, the five tap
+output pointers, and the lane stride; BuildFrameContext plumbs them
+and raises FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS, so the final rank
+points the outputs at the draft backend arena lanes from
+TapOutputPointers and imports land there with no further code.
+
+Remaining seam, one layer: the service-to-daemon work-packet protocol.
+The service backend is the head-side scheduler - it consumes request
+API dispatches, builds work packets (BuildDecodeWorkPacket at
+src/spark_glm52_pp13_service_backend.c:553 from the decode lane view),
+and forwards them over sockets (ForwardDecodeWork:693). Speculative
+verify needs: a verify work-packet kind carrying draft token ids and
+confidences per lane, the daemon-side handler mapping it to a runner
+dispatch with FRAME_FLAG_SPECULATIVE_VERIFY and new_token_count up to
+the block size, the tap-capture flag on decode work packets, draft
+backend staging and Draft invocation on the final rank when taps
+arrive, and completion accounting back through
+SparkGlm52RequestApiCompleteDispatch. Validation precondition
+unchanged: the MTP end-to-end gate on spark2 before any dspark
+throughput claim.

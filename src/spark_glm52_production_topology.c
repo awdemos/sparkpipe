@@ -364,6 +364,107 @@ SparkStatus SparkGlm52ProductionTopologyBuild(
         error_buffer_bytes);
 }
 
+SparkStatus SparkGlm52ProductionTopologyHopSidebandLayout(
+    const SparkGlm52ProductionTopology *topology,
+    uint32_t export_stage_index,
+    uint32_t *sideband_kind_bits_out,
+    uint32_t *sideband_bytes_per_sequence_out)
+{
+    const SparkGlm52ProductionTopologyIndexShareSideBand *sideband;
+    uint32_t sideband_index;
+    uint32_t kind_bits;
+    uint64_t bytes_per_sequence;
+
+    if (topology == 0 || sideband_kind_bits_out == 0 ||
+        sideband_bytes_per_sequence_out == 0 ||
+        export_stage_index >= topology->stage_count ||
+        topology->active_sequence_capacity == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    kind_bits = 0u;
+    bytes_per_sequence = 0ull;
+    for (sideband_index = 0u;
+         sideband_index < topology->indexshare_sideband_count;
+         ++sideband_index)
+    {
+        sideband = &topology->indexshare_sidebands[sideband_index];
+        if (export_stage_index < sideband->export_stage_index ||
+            export_stage_index >= sideband->import_stage_index)
+        {
+            continue;
+        }
+        if (sideband->payload_bytes %
+                (uint64_t)topology->active_sequence_capacity != 0ull)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        bytes_per_sequence += sideband->payload_bytes /
+            (uint64_t)topology->active_sequence_capacity;
+        if ((sideband->flags &
+                SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_SELECTED_TOKEN_INDICES) != 0u)
+        {
+            kind_bits |=
+                SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_INDEXSHARE_SELECTED_TOKENS;
+        }
+        if ((sideband->flags &
+                SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP) != 0u)
+        {
+            kind_bits |=
+                SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_DSPARK_HIDDEN_TAP;
+        }
+    }
+    if (bytes_per_sequence > (uint64_t)UINT32_MAX)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *sideband_kind_bits_out = kind_bits;
+    *sideband_bytes_per_sequence_out = (uint32_t)bytes_per_sequence;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52ProductionTopologyArmHopSidebandPacket(
+    const SparkGlm52ProductionTopology *topology,
+    uint32_t export_stage_index,
+    void *sideband_payload,
+    SparkHiddenTransportPacket *packet)
+{
+    SparkStatus status;
+    uint32_t sideband_kind_bits;
+    uint32_t sideband_bytes_per_sequence;
+
+    if (packet == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52ProductionTopologyHopSidebandLayout(
+        topology,
+        export_stage_index,
+        &sideband_kind_bits,
+        &sideband_bytes_per_sequence);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (sideband_bytes_per_sequence == 0u)
+    {
+        packet->flags &= ~SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
+        packet->sideband_payload = 0;
+        packet->sideband_kind = SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_NONE;
+        packet->sideband_bytes_per_sequence = 0u;
+        return SPARK_STATUS_OK;
+    }
+    if (sideband_payload == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    packet->flags |= SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
+    packet->sideband_payload = sideband_payload;
+    packet->sideband_kind = sideband_kind_bits;
+    packet->sideband_bytes_per_sequence = sideband_bytes_per_sequence;
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkGlm52ProductionTopologyValidate(
     const SparkGlm52ProductionTopology *topology,
     char *error_buffer,
