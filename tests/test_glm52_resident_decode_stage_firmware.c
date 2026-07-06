@@ -1905,6 +1905,28 @@ static void SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit(void)
     assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 96u);
     assert(completion_state.completion_count == 1u);
     assert(completion_state.completions[0].accepted_token_count == 96u);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.request_id = 1303u;
+    frame.sequence_id = 18003u;
+    frame.sequence_position = 7u;
+    frame.active_slot_count = 1u;
+    frame.new_token_count = 1u;
+    frame.program_id = 1u;
+    frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+    frame.scalar[SPARK_GLM52_RESIDENT_DECODE_STAGE_PIPELINE_SLOT_SCALAR_INDEX] =
+        0u;
+    assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
+        SPARK_STATUS_OK);
+    assert(fake_streams[0].submit_count == 2u);
+    assert(fake_streams[0].last_active_sequence_count == 1u);
+    assert(fake_streams[0].last_stage_slice_layer_count == 2u);
+    assert(fake_streams[0].last_bulk_prefill_layer_count == 2u);
+    assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 7u);
+    assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 1u);
+    assert(fake_streams[0].last_prefill_frame_view == 0);
+    assert(completion_state.completion_count == 2u);
+    assert(completion_state.completions[1u].accepted_token_count == 1u);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
 }
 

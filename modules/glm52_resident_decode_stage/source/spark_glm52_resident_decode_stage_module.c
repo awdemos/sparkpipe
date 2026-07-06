@@ -4065,10 +4065,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED,
         memory_order_release);
 
-    if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u &&
-        prefill_frame_view != 0)
+    if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
     {
-        if (state->stage_slice_layer_count != 0u)
+        if (state->stage_slice_layer_count != 0u &&
+            SparkGlm52ResidentDecodeStageStageSliceBulkPrefillSupportsPrompt(
+                state,
+                frame->new_token_count))
         {
             status = SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
                 state->stage_slice_node_contexts,
@@ -4081,7 +4083,10 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
                 prefill_frame_view,
                 &pending_completion->backend_completion);
         }
-        else
+        else if (state->stage_slice_layer_count == 0u &&
+                 SparkGlm52ResidentDecodeStageBulkPrefillPlanSupportsPrompt(
+                    state->node_context,
+                    frame->new_token_count))
         {
             status = SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
                 state->node_context,
@@ -4093,14 +4098,8 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
                 prefill_frame_view,
                 &pending_completion->backend_completion);
         }
-    }
-    else if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
-    {
-        if (state->stage_slice_layer_count == 0u)
-        {
-            status = SPARK_STATUS_INVALID_ARGUMENT;
-        }
-        else
+        else if (state->stage_slice_layer_count != 0u &&
+                 frame->new_token_count == 1u)
         {
             status = SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
                 state->stage_slice_plan,
@@ -4112,6 +4111,10 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
                 runtime_kv_block_table,
                 frame_context,
                 &pending_completion->backend_completion);
+        }
+        else
+        {
+            status = SPARK_STATUS_INVALID_ARGUMENT;
         }
     }
     else if (state->stage_slice_layer_count != 0u)
