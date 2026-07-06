@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #define _POSIX_C_SOURCE 200112L
 
 #include <arpa/inet.h>
@@ -5,6 +6,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -36,6 +38,8 @@
 #define SPARK_GLM52_PP13_DAEMON_POLL_KIND_OUTPUT_TRANSPORT 0x00000008u
 #define SPARK_GLM52_PP13_DAEMON_POLL_KIND_COMPLETION_WAKE 0x00000010u
 #define SPARK_GLM52_PP13_DAEMON_POLL_KIND_WORK_OUTPUT 0x00000020u
+#define SPARK_GLM52_PP13_DAEMON_POLL_KIND_TIMER 0x00000040u
+#define SPARK_GLM52_PP13_DAEMON_CONNECT_RETRY_NS 250000ull
 
 typedef struct SparkGlm52Pp13DaemonConfig
 {
@@ -91,10 +95,12 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     int32_t work_output_socket_fd;
     uint32_t work_output_connecting;
     uint32_t work_output_write_offset;
+    uint64_t work_output_retry_mono_ns;
     int32_t final_event_listen_fd;
     int32_t final_event_socket_fd;
     uint32_t final_event_socket_connecting;
     uint32_t final_event_write_offset;
+    uint64_t final_event_retry_mono_ns;
     uint8_t work_read_buffer[SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES];
     uint32_t work_read_offset;
     SparkGlm52Pp13WorkControlPacket work_queue[SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY];
@@ -121,6 +127,7 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     int32_t wake_pipe_write_fd;
     uint64_t wake_signal_count;
     uint64_t wake_drop_count;
+    uint64_t timer_wake_count;
     uint64_t final_event_send_count;
     uint64_t final_event_receive_count;
     uint64_t final_event_send_error_count;
@@ -387,6 +394,73 @@ static int32_t SparkGlm52Pp13DaemonSetNonblocking(int32_t fd)
     return 0;
 }
 
+static uint64_t SparkGlm52Pp13DaemonMonotonicNs(void)
+{
+    struct timespec timestamp;
+
+    if (clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0)
+        return 0u;
+    return ((uint64_t)timestamp.tv_sec * 1000000000ull) +
+        (uint64_t)timestamp.tv_nsec;
+}
+
+static void SparkGlm52Pp13DaemonConfigureTcpSocket(int32_t fd)
+{
+    int32_t option;
+
+    if (fd < 0)
+        return;
+    option = 1;
+    (void)setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&option,sizeof(option));
+    (void)setsockopt(fd,SOL_SOCKET,SO_KEEPALIVE,&option,sizeof(option));
+}
+
+static uint64_t SparkGlm52Pp13DaemonMinNonzeroNs(
+    uint64_t left,
+    uint64_t right)
+{
+    if (left == 0u)
+        return right;
+    if (right == 0u)
+        return left;
+    return left < right ? left : right;
+}
+
+static uint64_t SparkGlm52Pp13DaemonNextTimerNs(
+    const SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    uint64_t next_ns;
+
+    if (runtime == 0)
+        return 0u;
+    next_ns = 0u;
+    if (runtime->work_queue_count != 0u)
+        next_ns = SparkGlm52Pp13DaemonMinNonzeroNs(
+            next_ns,
+            runtime->work_output_retry_mono_ns);
+    if (runtime->final_event_queue_count != 0u)
+        next_ns = SparkGlm52Pp13DaemonMinNonzeroNs(
+            next_ns,
+            runtime->final_event_retry_mono_ns);
+    return next_ns;
+}
+
+#if !defined(__linux__)
+static int32_t SparkGlm52Pp13DaemonPollTimeoutMs(uint64_t timeout_ns)
+{
+    uint64_t timeout_ms;
+
+    if (timeout_ns == 0u)
+        return -1;
+    timeout_ms = ((timeout_ns + 999999ull) / 1000000ull);
+    if (timeout_ms == 0u)
+        timeout_ms = 1u;
+    if (timeout_ms > 0x7fffffffull)
+        timeout_ms = 0x7fffffffull;
+    return (int32_t)timeout_ms;
+}
+#endif
+
 static int32_t SparkGlm52Pp13DaemonAppendPollFd(
     struct pollfd *fds,
     uint32_t *fd_kinds,
@@ -465,7 +539,8 @@ static void SparkGlm52Pp13DaemonAppendTransportPollFds(
 }
 
 static uint32_t SparkGlm52Pp13DaemonWaitForEvents(
-    SparkGlm52Pp13DaemonRuntime *runtime)
+    SparkGlm52Pp13DaemonRuntime *runtime,
+    uint64_t timeout_ns)
 {
     struct pollfd fds[SPARK_GLM52_PP13_DAEMON_POLL_FD_CAPACITY];
     uint32_t fd_kinds[SPARK_GLM52_PP13_DAEMON_POLL_FD_CAPACITY];
@@ -473,6 +548,11 @@ static uint32_t SparkGlm52Pp13DaemonWaitForEvents(
     uint32_t fd_index;
     uint32_t event_mask;
     int32_t result;
+#if defined(__linux__)
+    struct timespec timeout;
+    struct timespec *timeout_pointer;
+#endif
+
     if (runtime == 0)
         return 0u;
     fd_count = 0u;
@@ -558,12 +638,28 @@ static uint32_t SparkGlm52Pp13DaemonWaitForEvents(
         SPARK_GLM52_PP13_DAEMON_POLL_KIND_OUTPUT_TRANSPORT);
     if (fd_count == 0u)
         return 0u;
+#if defined(__linux__)
+    timeout_pointer = 0;
+    if (timeout_ns != 0u)
+    {
+        timeout.tv_sec = (time_t)(timeout_ns / 1000000000ull);
+        timeout.tv_nsec = (long)(timeout_ns % 1000000000ull);
+        timeout_pointer = &timeout;
+    }
+#endif
     for (;;)
     {
-        result = poll(fds,fd_count,-1);
+#if defined(__linux__)
+        result = ppoll(fds,fd_count,timeout_pointer,0);
+#else
+        result = poll(fds,fd_count,
+            SparkGlm52Pp13DaemonPollTimeoutMs(timeout_ns));
+#endif
         if (result < 0 && errno == EINTR)
             return 0u;
-        if (result <= 0)
+        if (result == 0)
+            return SPARK_GLM52_PP13_DAEMON_POLL_KIND_TIMER;
+        if (result < 0)
             return 0u;
         event_mask = 0u;
         for (fd_index = 0u; fd_index < fd_count; ++fd_index)
@@ -609,6 +705,7 @@ static int32_t SparkGlm52Pp13DaemonStartConnect(
             fd = -1;
             continue;
         }
+        SparkGlm52Pp13DaemonConfigureTcpSocket(fd);
         connect_status = connect(fd,entry->ai_addr,entry->ai_addrlen);
         if (connect_status == 0)
             break;
@@ -649,6 +746,7 @@ static SparkStatus SparkGlm52Pp13DaemonFinishConnect(
     if (error_value == 0)
     {
         *connecting = 0u;
+        SparkGlm52Pp13DaemonConfigureTcpSocket(*fd);
         return SPARK_STATUS_OK;
     }
     close(*fd);
@@ -1062,6 +1160,7 @@ static uint32_t SparkGlm52Pp13DaemonAcceptWorkSocket(
         runtime->work_error_count += 1u;
         return 0u;
     }
+    SparkGlm52Pp13DaemonConfigureTcpSocket(fd);
     runtime->work_input_socket_fd = fd;
     return 1u;
 }
@@ -1069,20 +1168,41 @@ static uint32_t SparkGlm52Pp13DaemonAcceptWorkSocket(
 static SparkStatus SparkGlm52Pp13DaemonEnsureWorkOutputSocket(
     SparkGlm52Pp13DaemonRuntime *runtime)
 {
+    SparkStatus status;
+    uint64_t now_ns;
+
     if ((runtime->rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
         return SPARK_STATUS_OK;
     if (runtime->work_output_socket_fd >= 0)
-        return SparkGlm52Pp13DaemonFinishConnect(
+    {
+        status = SparkGlm52Pp13DaemonFinishConnect(
             &runtime->work_output_socket_fd,
             &runtime->work_output_connecting);
+        if (status == SPARK_STATUS_OK)
+            runtime->work_output_retry_mono_ns = 0u;
+        else if (runtime->work_output_socket_fd < 0)
+            runtime->work_output_retry_mono_ns =
+                SparkGlm52Pp13DaemonMonotonicNs() +
+                SPARK_GLM52_PP13_DAEMON_CONNECT_RETRY_NS;
+        return status;
+    }
+    now_ns = SparkGlm52Pp13DaemonMonotonicNs();
+    if (runtime->work_output_retry_mono_ns != 0u &&
+        now_ns < runtime->work_output_retry_mono_ns)
+        return SPARK_STATUS_BUSY;
     runtime->work_output_socket_fd =
         SparkGlm52Pp13DaemonStartConnect(
             runtime->rank_plan.next_host_name,
             runtime->rank_plan.next_port,
             &runtime->work_output_connecting);
     if (runtime->work_output_socket_fd < 0)
+    {
+        runtime->work_output_retry_mono_ns =
+            now_ns + SPARK_GLM52_PP13_DAEMON_CONNECT_RETRY_NS;
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
+    runtime->work_output_retry_mono_ns = 0u;
     return runtime->work_output_connecting == 0u ?
         SPARK_STATUS_OK : SPARK_STATUS_BUSY;
 }
@@ -1557,22 +1677,43 @@ static SparkStatus SparkGlm52Pp13DaemonOpenFinalEventPath(
 static SparkStatus SparkGlm52Pp13DaemonEnsureFinalEventSocket(
     SparkGlm52Pp13DaemonRuntime *runtime)
 {
+    SparkStatus status;
+    uint64_t now_ns;
+
     if (runtime == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
     if ((runtime->rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u)
         return SPARK_STATUS_OK;
     if (runtime->final_event_socket_fd >= 0)
-        return SparkGlm52Pp13DaemonFinishConnect(
+    {
+        status = SparkGlm52Pp13DaemonFinishConnect(
             &runtime->final_event_socket_fd,
             &runtime->final_event_socket_connecting);
+        if (status == SPARK_STATUS_OK)
+            runtime->final_event_retry_mono_ns = 0u;
+        else if (runtime->final_event_socket_fd < 0)
+            runtime->final_event_retry_mono_ns =
+                SparkGlm52Pp13DaemonMonotonicNs() +
+                SPARK_GLM52_PP13_DAEMON_CONNECT_RETRY_NS;
+        return status;
+    }
+    now_ns = SparkGlm52Pp13DaemonMonotonicNs();
+    if (runtime->final_event_retry_mono_ns != 0u &&
+        now_ns < runtime->final_event_retry_mono_ns)
+        return SPARK_STATUS_BUSY;
     runtime->final_event_socket_fd =
         SparkGlm52Pp13DaemonStartConnect(
             runtime->final_event_route.sink_host_name,
             runtime->final_event_route.connect_port,
             &runtime->final_event_socket_connecting);
     if (runtime->final_event_socket_fd < 0)
+    {
+        runtime->final_event_retry_mono_ns =
+            now_ns + SPARK_GLM52_PP13_DAEMON_CONNECT_RETRY_NS;
         return SPARK_STATUS_BUSY;
+    }
+    runtime->final_event_retry_mono_ns = 0u;
     return runtime->final_event_socket_connecting == 0u ?
         SPARK_STATUS_OK : SPARK_STATUS_BUSY;
 }
@@ -1636,6 +1777,7 @@ static uint32_t SparkGlm52Pp13DaemonAcceptFinalEventSocket(
         runtime->final_event_receive_error_count += 1u;
         return 0u;
     }
+    SparkGlm52Pp13DaemonConfigureTcpSocket(fd);
     runtime->final_event_socket_fd = fd;
     return 1u;
 }
@@ -1948,6 +2090,8 @@ static void SparkGlm52Pp13DaemonPrintReady(
         (unsigned long long)runtime->wake_signal_count);
     printf("wake_dropped=%llu\n",
         (unsigned long long)runtime->wake_drop_count);
+    printf("timer_wakes=%llu\n",
+        (unsigned long long)runtime->timer_wake_count);
     printf("final_event_listen=%d\n",runtime->final_event_listen_fd);
     printf("final_event_socket=%d\n",runtime->final_event_socket_fd);
     printf("final_event_sent=%llu\n",
@@ -1966,6 +2110,9 @@ int main(int argc,char **argv)
     SparkStatus status;
     uint32_t event_mask;
     uint32_t progress;
+    uint64_t timeout_ns;
+    uint64_t next_timer_ns;
+    uint64_t now_ns;
 
     SparkGlm52Pp13DaemonInitializeConfig(&configuration);
     if (SparkGlm52Pp13DaemonParseArguments(&configuration,argc,argv) < 0)
@@ -2003,14 +2150,29 @@ int main(int argc,char **argv)
         progress |= SparkGlm52Pp13DaemonPumpFinalEvents(&runtime);
         if (progress == 0u)
         {
-            event_mask = SparkGlm52Pp13DaemonWaitForEvents(&runtime);
+            timeout_ns = 0u;
+            next_timer_ns = SparkGlm52Pp13DaemonNextTimerNs(&runtime);
+            if (next_timer_ns != 0u)
+            {
+                now_ns = SparkGlm52Pp13DaemonMonotonicNs();
+                timeout_ns = next_timer_ns > now_ns ?
+                    next_timer_ns - now_ns : 1u;
+            }
+            event_mask = SparkGlm52Pp13DaemonWaitForEvents(
+                &runtime,
+                timeout_ns);
             if ((event_mask &
                 (SPARK_GLM52_PP13_DAEMON_POLL_KIND_INPUT_TRANSPORT |
                  SPARK_GLM52_PP13_DAEMON_POLL_KIND_OUTPUT_TRANSPORT |
                  SPARK_GLM52_PP13_DAEMON_POLL_KIND_WORK_OUTPUT |
                  SPARK_GLM52_PP13_DAEMON_POLL_KIND_FINAL_EVENT |
-                 SPARK_GLM52_PP13_DAEMON_POLL_KIND_COMPLETION_WAKE)) != 0u)
+                 SPARK_GLM52_PP13_DAEMON_POLL_KIND_COMPLETION_WAKE |
+                 SPARK_GLM52_PP13_DAEMON_POLL_KIND_TIMER)) != 0u)
+            {
+                if ((event_mask & SPARK_GLM52_PP13_DAEMON_POLL_KIND_TIMER) != 0u)
+                    runtime.timer_wake_count += 1u;
                 SparkGlm52Pp13DaemonWakeDeferredWork(&runtime);
+            }
         }
     }
     SparkGlm52Pp13DaemonDestroy(&runtime);
