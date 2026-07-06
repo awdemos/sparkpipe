@@ -88,9 +88,18 @@ typedef struct SparkHiddenTcpCudaState
 
 static int32_t SparkHiddenTcpCudaRankFromHost(const char *host)
 {
+    uint32_t tail;
+    char extra;
+
     if (host == 0 || host[0] != 's' || host[1] != 'p' || host[2] != 'a' ||
         host[3] != 'r' || host[4] != 'k' || host[5] == '\0')
+    {
+        extra = '\0';
+        if (sscanf(host,"10.10.100.%u%c",&tail,&extra) == 1 &&
+            tail >= 10u && tail <= 22u)
+            return (int32_t)(tail - 10u);
         return -1;
+    }
     if (host[5] >= '0' && host[5] <= '9' && host[6] == '\0')
         return (int32_t)(host[5] - '0');
     if (host[5] >= 'a' && host[5] <= 'c' && host[6] == '\0')
