@@ -243,6 +243,8 @@ static uint32_t SparkGlm52Pp13LoopbackConnectOutput(SparkGlm52Pp13LoopbackRuntim
 	uint32_t next_rank;
 	if (rt->output_fd >= 0)
 		return 0u;
+	if (rt->output_active == 0u && rt->launched != 0u)
+		return 0u;
 	next_rank = (rt->config.rank_index + 1u) %
 		SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT;
 	if (SparkGlm52Pp13RuntimeRankHostName(next_rank,host,sizeof(host)) !=
