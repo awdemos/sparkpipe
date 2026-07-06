@@ -114,6 +114,7 @@ TOOL_NAMES := \
     sparkpipe_glm52_prefill_dryrun \
     sparkpipe_hidden_transport_preflight \
     sparkpipe_glm52_pp13_rank_gate \
+    sparkpipe_glm52_pp13_loopback_probe \
     sparkpipe_glm52_pp13_rank_daemon \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
@@ -249,6 +250,9 @@ build/sparkpipe_hidden_transport_preflight: tools/sparkpipe_hidden_transport_pre
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_pp13_rank_gate: tools/sparkpipe_glm52_pp13_rank_gate.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_glm52_pp13_loopback_probe: tools/sparkpipe_glm52_pp13_loopback_probe.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_cuda_host_dmabuf_verbs_preflight: tools/sparkpipe_cuda_host_dmabuf_verbs_preflight.c $(COMMON_LIBRARY)

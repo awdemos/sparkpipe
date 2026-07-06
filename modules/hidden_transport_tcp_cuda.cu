@@ -80,6 +80,7 @@ typedef struct SparkHiddenTcpCudaState
     uint64_t outgoing_bytes;
     uint64_t outgoing_offset;
     uint32_t outgoing_active;
+    uint32_t debug_enabled;
     char source_host[SPARK_HIDDEN_TCP_CUDA_HOST_BYTES];
     char sink_host[SPARK_HIDDEN_TCP_CUDA_HOST_BYTES];
 } SparkHiddenTcpCudaState;
@@ -135,6 +136,13 @@ static uint32_t SparkHiddenTcpCudaParseUintEnv(const char *name,uint32_t fallbac
     if (end == value || *end != '\0' || parsed > 65535ul)
         return fallback;
     return (uint32_t)parsed;
+}
+
+static uint32_t SparkHiddenTcpCudaDebugEnabled(void)
+{
+    const char *value;
+    value = getenv("SPARKPIPE_HIDDEN_TCP_DEBUG");
+    return value != 0 && value[0] != '\0' && strcmp(value,"0") != 0;
 }
 
 static SparkStatus SparkHiddenTcpCudaParseRoute(
@@ -599,6 +607,21 @@ static SparkStatus SparkHiddenTcpCudaBeginIncomingPayload(
     }
     state->incoming_payload_bytes =
         state->incoming_hidden_bytes + state->incoming_sideband_bytes;
+    if (state->debug_enabled != 0u)
+    {
+        fprintf(stderr,
+            "hidden_tcp_recv_header seq=%llu token=%llu active=%u sideband_kind=%u sideband_bps=%u hidden_bytes=%llu sideband_bytes=%llu match=%u\n",
+            (unsigned long long)state->incoming_header.sequence_id,
+            (unsigned long long)state->incoming_header.token_index,
+            state->incoming_header.active_sequence_count,
+            state->incoming_header.sideband_kind,
+            state->incoming_header.sideband_bytes_per_sequence,
+            (unsigned long long)state->incoming_hidden_bytes,
+            (unsigned long long)state->incoming_sideband_bytes,
+            SparkHiddenTcpCudaHeaderMatchesPacket(
+                &state->incoming_header,
+                packet));
+    }
     if (SparkHiddenTcpCudaHeaderMatchesPacket(&state->incoming_header,packet) != 0u)
     {
         state->incoming_matches_request = 1u;
@@ -800,6 +823,7 @@ static SparkStatus SparkHiddenTcpCudaInitialize(
     state->pending_payload_bytes = state->host_buffer_bytes -
         sizeof(SparkHiddenTcpCudaHeader);
     state->host_buffer = (uint8_t *)malloc((size_t)state->host_buffer_bytes);
+    state->debug_enabled = SparkHiddenTcpCudaDebugEnabled();
     if (state->host_buffer == 0)
     {
         if (state->listen_fd >= 0)
@@ -895,6 +919,19 @@ static SparkStatus SparkHiddenTcpCudaSend(
             sizeof(state->outgoing_header) + hidden_bytes + sideband_bytes;
         state->outgoing_offset = 0u;
         state->outgoing_active = 1u;
+        if (state->debug_enabled != 0u)
+        {
+            fprintf(stderr,
+                "hidden_tcp_send_header seq=%llu token=%llu active=%u sideband_kind=%u sideband_bps=%u hidden_bytes=%llu sideband_bytes=%llu total=%llu\n",
+                (unsigned long long)state->outgoing_header.sequence_id,
+                (unsigned long long)state->outgoing_header.token_index,
+                state->outgoing_header.active_sequence_count,
+                state->outgoing_header.sideband_kind,
+                state->outgoing_header.sideband_bytes_per_sequence,
+                (unsigned long long)hidden_bytes,
+                (unsigned long long)sideband_bytes,
+                (unsigned long long)state->outgoing_bytes);
+        }
     }
     else if (SparkHiddenTcpCudaHeaderMatchesPacket(
             &state->outgoing_header,
