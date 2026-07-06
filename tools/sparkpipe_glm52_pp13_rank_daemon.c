@@ -107,6 +107,7 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     uint32_t work_queue_hash_heads[SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_HASH_SLOTS];
     uint32_t work_queue_hash_next[SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY];
     uint32_t work_queue_submitted[SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY];
+    uint32_t work_queue_forwarded[SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY];
     uint32_t work_queue_state[SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY];
     uint32_t work_queue_head;
     uint32_t work_queue_count;
@@ -1303,6 +1304,7 @@ static void SparkGlm52Pp13DaemonInitializeWorkQueue(
         runtime->work_queue_hash_next[slot_index] =
             SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT;
         runtime->work_queue_submitted[slot_index] = 0u;
+        runtime->work_queue_forwarded[slot_index] = 0u;
         runtime->work_queue_state[slot_index] =
             SPARK_GLM52_PP13_DAEMON_WORK_STATE_READY;
     }
@@ -1403,6 +1405,7 @@ static SparkStatus SparkGlm52Pp13DaemonQueueWork(
         if (runtime->work_queue_submitted[existing_slot] == 0u)
         {
             runtime->work_queue[existing_slot] = *packet;
+            runtime->work_queue_forwarded[existing_slot] = 0u;
             runtime->work_queue_state[existing_slot] =
                 SPARK_GLM52_PP13_DAEMON_WORK_STATE_READY;
         }
@@ -1415,6 +1418,7 @@ static SparkStatus SparkGlm52Pp13DaemonQueueWork(
         SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
     runtime->work_queue[tail] = *packet;
     runtime->work_queue_submitted[tail] = 0u;
+    runtime->work_queue_forwarded[tail] = 0u;
     runtime->work_queue_state[tail] =
         SPARK_GLM52_PP13_DAEMON_WORK_STATE_READY;
     SparkGlm52Pp13DaemonInsertQueuedWorkHash(runtime,tail);
@@ -1429,6 +1433,7 @@ static void SparkGlm52Pp13DaemonPopWork(
         return;
     SparkGlm52Pp13DaemonRemoveQueuedWorkHash(runtime,runtime->work_queue_head);
     runtime->work_queue_submitted[runtime->work_queue_head] = 0u;
+    runtime->work_queue_forwarded[runtime->work_queue_head] = 0u;
     runtime->work_queue_state[runtime->work_queue_head] =
         SPARK_GLM52_PP13_DAEMON_WORK_STATE_READY;
     runtime->work_queue_head = (runtime->work_queue_head + 1u) %
@@ -1455,9 +1460,12 @@ static void SparkGlm52Pp13DaemonDeferWork(
         runtime->work_queue[tail] = packet;
         runtime->work_queue_submitted[tail] =
             runtime->work_queue_submitted[old_head];
+        runtime->work_queue_forwarded[tail] =
+            runtime->work_queue_forwarded[old_head];
         runtime->work_queue_state[tail] =
             runtime->work_queue_state[old_head];
         runtime->work_queue_submitted[old_head] = 0u;
+        runtime->work_queue_forwarded[old_head] = 0u;
         runtime->work_queue_state[old_head] =
             SPARK_GLM52_PP13_DAEMON_WORK_STATE_READY;
         SparkGlm52Pp13DaemonInsertQueuedWorkHash(runtime,tail);
@@ -1497,6 +1505,7 @@ static uint32_t SparkGlm52Pp13DaemonPumpQueuedWork(
     SparkGlm52Pp13WorkControlPacket *packet;
     SparkStatus status;
     uint32_t queue_slot;
+    uint32_t forward_done;
     uint32_t attempts;
 
     if (runtime == 0 || runtime->work_queue_count == 0u)
@@ -1513,74 +1522,78 @@ static uint32_t SparkGlm52Pp13DaemonPumpQueuedWork(
             SparkGlm52Pp13DaemonDeferWork(runtime);
             continue;
         }
-    if (runtime->work_queue_submitted[queue_slot] == 0u)
-    {
-        status = SparkGlm52Pp13DaemonEnsureWorkOutputSocket(runtime);
-        if (status != SPARK_STATUS_OK)
+        forward_done =
+            ((runtime->rank_plan.flags &
+              SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u ||
+             runtime->work_queue_forwarded[queue_slot] != 0u)
+                ? 1u : 0u;
+        if (forward_done == 0u)
         {
-            runtime->work_queue_state[queue_slot] =
-                SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING;
-            runtime->work_deferred_count += 1u;
-            SparkGlm52Pp13DaemonDeferWork(runtime);
-            continue;
+            status = SparkGlm52Pp13DaemonForwardWork(runtime,packet);
+            if (status == SPARK_STATUS_OK)
+            {
+                runtime->work_queue_forwarded[queue_slot] = 1u;
+                forward_done = 1u;
+            }
+            else if (status == SPARK_STATUS_BUSY ||
+                     status == SPARK_STATUS_ROUTE_NOT_FOUND)
+            {
+                runtime->work_queue_state[queue_slot] =
+                    SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING;
+                runtime->work_deferred_count += 1u;
+                SparkGlm52Pp13DaemonDeferWork(runtime);
+                continue;
+            }
+            else
+            {
+                runtime->work_error_count += 1u;
+                fprintf(stderr,
+                    "rank_work_forward_failed status=%u request=%llu sequence=%llu position=%llu queued=%u\n",
+                    (uint32_t)status,
+                    (unsigned long long)packet->request_id,
+                    (unsigned long long)packet->sequence_id,
+                    (unsigned long long)packet->sequence_position,
+                    runtime->work_queue_count);
+                SparkGlm52Pp13DaemonPopWork(runtime);
+                return 1u;
+            }
         }
-        status = SparkGlm52Pp13DaemonSubmitWork(runtime,packet);
-        if (status == SPARK_STATUS_OK)
+        if (runtime->work_queue_submitted[queue_slot] == 0u)
         {
-            runtime->work_submit_count += 1u;
-            runtime->work_queue_submitted[queue_slot] = 1u;
-            return 1u;
+            status = SparkGlm52Pp13DaemonSubmitWork(runtime,packet);
+            if (status == SPARK_STATUS_OK)
+            {
+                runtime->work_submit_count += 1u;
+                runtime->work_queue_submitted[queue_slot] = 1u;
+            }
+            else if (status == SPARK_STATUS_BUSY)
+            {
+                runtime->work_queue_state[queue_slot] =
+                    SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING;
+                runtime->work_deferred_count += 1u;
+                SparkGlm52Pp13DaemonDeferWork(runtime);
+                continue;
+            }
+            else
+            {
+                runtime->work_error_count += 1u;
+                fprintf(stderr,
+                    "rank_work_submit_failed status=%u request=%llu sequence=%llu position=%llu queued=%u\n",
+                    (uint32_t)status,
+                    (unsigned long long)packet->request_id,
+                    (unsigned long long)packet->sequence_id,
+                    (unsigned long long)packet->sequence_position,
+                    runtime->work_queue_count);
+                SparkGlm52Pp13DaemonPopWork(runtime);
+                return 1u;
+            }
         }
-        else if (status == SPARK_STATUS_BUSY)
+        if (forward_done != 0u &&
+            runtime->work_queue_submitted[queue_slot] != 0u)
         {
-            runtime->work_queue_state[queue_slot] =
-                SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING;
-            runtime->work_deferred_count += 1u;
-            SparkGlm52Pp13DaemonDeferWork(runtime);
-            continue;
-        }
-        else
-        {
-            runtime->work_error_count += 1u;
-            fprintf(stderr,
-                "rank_work_submit_failed status=%u request=%llu sequence=%llu position=%llu queued=%u\n",
-                (uint32_t)status,
-                (unsigned long long)packet->request_id,
-                (unsigned long long)packet->sequence_id,
-                (unsigned long long)packet->sequence_position,
-                runtime->work_queue_count);
             SparkGlm52Pp13DaemonPopWork(runtime);
             return 1u;
         }
-    }
-    status = SparkGlm52Pp13DaemonForwardWork(runtime,packet);
-    if (status == SPARK_STATUS_OK)
-    {
-        SparkGlm52Pp13DaemonPopWork(runtime);
-        return 1u;
-    }
-    else if (status == SPARK_STATUS_BUSY ||
-             status == SPARK_STATUS_ROUTE_NOT_FOUND)
-    {
-        runtime->work_queue_state[queue_slot] =
-            SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING;
-        runtime->work_deferred_count += 1u;
-        SparkGlm52Pp13DaemonDeferWork(runtime);
-        continue;
-    }
-    else
-    {
-        runtime->work_error_count += 1u;
-        fprintf(stderr,
-            "rank_work_submit_failed status=%u request=%llu sequence=%llu position=%llu queued=%u\n",
-            (uint32_t)status,
-            (unsigned long long)packet->request_id,
-            (unsigned long long)packet->sequence_id,
-            (unsigned long long)packet->sequence_position,
-            runtime->work_queue_count);
-        SparkGlm52Pp13DaemonPopWork(runtime);
-        return 1u;
-    }
     }
     return 0u;
 }
