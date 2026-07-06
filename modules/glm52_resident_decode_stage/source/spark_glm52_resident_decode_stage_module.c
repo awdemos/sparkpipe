@@ -59,6 +59,7 @@ typedef struct SparkGlm52ResidentDecodeStagePendingCompletion
     uint32_t program_id;
     uint32_t driver_dispatch_slot;
     uint32_t accepted_token_count;
+    atomic_uint backend_completion_ready;
     atomic_uint_fast64_t dispatch_generation;
     SparkModelDriverResidencyToken residency;
     SparkHiddenTransportSession *hidden_output_transport_session;
@@ -71,7 +72,8 @@ enum
 {
     SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE = 0u,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_RESERVED = 1u,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED = 2u
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED = 2u,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_COMPLETING = 3u
 };
 
 struct SparkGlm52ResidentDecodeStageState
@@ -2781,6 +2783,10 @@ static void SparkGlm52ResidentDecodeStageReleaseSlot(
     pending_completion->hidden_output_send_function = 0;
     memset(&pending_completion->hidden_output_packet, 0, sizeof(pending_completion->hidden_output_packet));
     pending_completion->hidden_output_transport_active = 0u;
+    atomic_store_explicit(
+        &pending_completion->backend_completion_ready,
+        0u,
+        memory_order_release);
     atomic_fetch_add_explicit(
         &pending_completion->dispatch_generation,
         1u,
@@ -2820,27 +2826,34 @@ static uint32_t SparkGlm52ResidentDecodeStageNormalizeCompletionTokens(
     return token_index;
 }
 
-static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
+static void SparkGlm52ResidentDecodeStageTryComplete(
+    SparkGlm52ResidentDecodeStagePendingCompletion *pending_completion)
 {
-    SparkGlm52ResidentDecodeStagePendingCompletion *pending_completion;
     SparkGlm52ResidentDecodeStageState *state;
     SparkModelDriverCompletion completion;
+    unsigned int expected_state;
 
-    pending_completion =
-        (SparkGlm52ResidentDecodeStagePendingCompletion *)completion_context;
     if (pending_completion == 0 || pending_completion->owner == 0)
     {
         return;
     }
     state = pending_completion->owner;
     if (atomic_load_explicit(
-            &pending_completion->state,
-            memory_order_acquire) !=
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED)
+            &pending_completion->backend_completion_ready,
+            memory_order_acquire) == 0u)
     {
         return;
     }
-
+    expected_state = SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED;
+    if (!atomic_compare_exchange_strong_explicit(
+            &pending_completion->state,
+            &expected_state,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_COMPLETING,
+            memory_order_acq_rel,
+            memory_order_relaxed))
+    {
+        return;
+    }
     memset(&completion, 0, sizeof(completion));
     completion.request_id = pending_completion->request_id;
     completion.sequence_id = pending_completion->sequence_id;
@@ -2884,6 +2897,14 @@ static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
                     (unsigned long long)pending_completion->sequence_position);
             }
         }
+        if (completion.status == SPARK_STATUS_BUSY)
+        {
+            atomic_store_explicit(
+                &pending_completion->state,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED,
+                memory_order_release);
+            return;
+        }
     }
     completion.residency = pending_completion->residency;
     completion.device_memcpy_bytes = 0u;
@@ -2899,6 +2920,23 @@ static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
         1u,
         memory_order_relaxed);
     state->completion_function(state->completion_context, &completion);
+}
+
+static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
+{
+    SparkGlm52ResidentDecodeStagePendingCompletion *pending_completion;
+
+    pending_completion =
+        (SparkGlm52ResidentDecodeStagePendingCompletion *)completion_context;
+    if (pending_completion == 0)
+    {
+        return;
+    }
+    atomic_store_explicit(
+        &pending_completion->backend_completion_ready,
+        1u,
+        memory_order_release);
+    SparkGlm52ResidentDecodeStageTryComplete(pending_completion);
 }
 
 SparkStatus SparkGlm52ResidentDecodeStageInitialize(
@@ -3020,6 +3058,7 @@ SparkStatus SparkGlm52ResidentDecodeStageInitialize(
         atomic_init(
             &pending_completion->state,
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE);
+        atomic_init(&pending_completion->backend_completion_ready, 0u);
         atomic_init(&pending_completion->dispatch_generation, 1u);
         pending_completion->owner = state;
         pending_completion->backend_completion.function =
@@ -3053,6 +3092,24 @@ static uint32_t SparkGlm52ResidentDecodeStageCountSlotsInState(
         }
     }
     return matching_slot_count;
+}
+
+static void SparkGlm52ResidentDecodeStageProgressPendingCompletions(
+    SparkGlm52ResidentDecodeStageState *state)
+{
+    uint32_t pipeline_slot_index;
+
+    if (state == 0)
+    {
+        return;
+    }
+    for (pipeline_slot_index = 0u;
+         pipeline_slot_index < state->pipeline_slot_count;
+         ++pipeline_slot_index)
+    {
+        SparkGlm52ResidentDecodeStageTryComplete(
+            &state->pending_completions[pipeline_slot_index]);
+    }
 }
 
 static uint32_t SparkGlm52ResidentDecodeStageFindAvailableSlot(
@@ -3939,6 +3996,10 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
     pending_completion->residency = frame->residency;
     pending_completion->hidden_output_transport_session = 0;
     pending_completion->hidden_output_send_function = 0;
+    atomic_store_explicit(
+        &pending_completion->backend_completion_ready,
+        0u,
+        memory_order_release);
     pending_completion->backend_completion.requested_token_count =
         pending_completion->accepted_token_count;
     pending_completion->backend_completion.token_count = 0u;
@@ -4260,6 +4321,7 @@ SparkStatus SparkGlm52ResidentDecodeStageSnapshot(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    SparkGlm52ResidentDecodeStageProgressPendingCompletions(state);
     available_slot_count = SparkGlm52ResidentDecodeStageCountSlotsInState(
         state,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE);

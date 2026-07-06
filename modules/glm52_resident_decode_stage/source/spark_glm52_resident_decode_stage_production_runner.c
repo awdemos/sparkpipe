@@ -343,6 +343,22 @@ SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
     return status;
 }
 
+SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerProgress(
+    SparkGlm52ResidentDecodeStageProductionRunner *runner)
+{
+    SparkModelDriverRuntimeSnapshot snapshot;
+
+    if ( runner == 0 ||
+        runner->driver_interface == 0 ||
+        runner->driver_interface->snapshot == 0 )
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    memset(&snapshot,0,sizeof(snapshot));
+    return runner->driver_interface->snapshot(
+        runner->driver_instance,
+        runner->program_id,
+        &snapshot);
+}
+
 SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerGetStats(
     const SparkGlm52ResidentDecodeStageProductionRunner *runner,
     SparkGlm52ResidentDecodeStageProductionRunnerStats *stats_out)
