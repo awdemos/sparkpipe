@@ -44,6 +44,9 @@ extern "C" {
 #define SPARK_GLM52_SERVICE_MAX_TEXT_BYTES (64u * 1024u * 1024u)
 #define SPARK_GLM52_SERVICE_MAX_TOKEN_FRAME_COUNT \
     (SPARK_GLM52_SCHEDULER_MAX_CONTEXT_TOKENS)
+#define SPARK_GLM52_SERVICE_CLIENT_HASH_SLOTS 1024u
+#define SPARK_GLM52_SERVICE_REQUEST_MAP_HASH_SLOTS 4096u
+#define SPARK_GLM52_SERVICE_NO_HASH_SLOT UINT32_MAX
 
 #define SPARK_GLM52_SERVICE_CONFIGURATION_FLAG_AUTO_RELEASE_COMPLETED_MAPPINGS \
     0x00000001u
@@ -105,6 +108,8 @@ typedef struct SparkGlm52ServiceClientSession
     uint64_t user_cookie;
     uint64_t accepted_request_count;
     uint64_t completed_request_count;
+    uint32_t client_hash_next;
+    uint32_t reserved0;
 } SparkGlm52ServiceClientSession;
 
 typedef struct SparkGlm52ServiceRequestMap
@@ -118,6 +123,8 @@ typedef struct SparkGlm52ServiceRequestMap
     uint64_t serving_request_id;
     uint64_t sequence_id;
     SparkGlm52ServingRequestHandle serving_request_handle;
+    uint32_t client_request_hash_next;
+    uint32_t serving_handle_hash_next;
 } SparkGlm52ServiceRequestMap;
 
 typedef struct SparkGlm52ServiceEvent
@@ -244,6 +251,11 @@ typedef struct SparkGlm52ServiceRuntime
     uint32_t event_write_index;
     uint32_t event_count;
     uint32_t dropped_event_count;
+    uint32_t client_hash_heads[SPARK_GLM52_SERVICE_CLIENT_HASH_SLOTS];
+    uint32_t client_request_hash_heads[
+        SPARK_GLM52_SERVICE_REQUEST_MAP_HASH_SLOTS];
+    uint32_t serving_handle_hash_heads[
+        SPARK_GLM52_SERVICE_REQUEST_MAP_HASH_SLOTS];
     SparkGlm52ServiceStats stats;
 } SparkGlm52ServiceRuntime;
 

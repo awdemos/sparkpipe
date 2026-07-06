@@ -122,6 +122,8 @@ extern "C" {
 #define SPARK_GLM52_SERVING_PUMP_FLAG_STOP_AFTER_ONE_DISPATCH 0x00000001u
 #define SPARK_GLM52_SERVING_PUMP_KNOWN_FLAGS \
     SPARK_GLM52_SERVING_PUMP_FLAG_STOP_AFTER_ONE_DISPATCH
+#define SPARK_GLM52_SERVING_RECORD_HASH_SLOTS 4096u
+#define SPARK_GLM52_SERVING_NO_RECORD_SLOT UINT32_MAX
 
 typedef uint64_t SparkGlm52ServingRequestHandle;
 
@@ -140,6 +142,8 @@ typedef struct SparkGlm52ServingRequestRecord
     uint64_t request_id;
     uint64_t sequence_id;
     SparkGlm52ServingRequestHandle request_handle;
+    uint32_t handle_hash_next;
+    uint32_t reserved1;
     uint32_t *token_ids;
 } SparkGlm52ServingRequestRecord;
 
@@ -351,6 +355,8 @@ typedef struct SparkGlm52ServingEngine
     void *callback_context;
     uint32_t stop_token_ids[SPARK_GLM52_SERVING_MAX_STOP_TOKEN_IDS];
     uint32_t stop_token_id_count;
+    uint32_t request_handle_hash_heads[
+        SPARK_GLM52_SERVING_RECORD_HASH_SLOTS];
     SparkGlm52ServingStats stats;
 } SparkGlm52ServingEngine;
 

@@ -41,6 +41,7 @@ static void SparkGlm52ServiceInitializeClientSession(
     client_session->descriptor_bytes =
         SPARK_GLM52_SERVICE_CLIENT_SESSION_DESCRIPTOR_BYTES;
     client_session->state = SPARK_GLM52_SERVICE_CLIENT_STATE_FREE;
+    client_session->client_hash_next = SPARK_GLM52_SERVICE_NO_HASH_SLOT;
 }
 
 static void SparkGlm52ServiceInitializeRequestMap(
@@ -51,6 +52,84 @@ static void SparkGlm52ServiceInitializeRequestMap(
     request_map->descriptor_bytes =
         SPARK_GLM52_SERVICE_REQUEST_MAP_DESCRIPTOR_BYTES;
     request_map->state = SPARK_GLM52_SERVICE_REQUEST_STATE_FREE;
+    request_map->client_request_hash_next =
+        SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    request_map->serving_handle_hash_next =
+        SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+}
+
+static uint32_t SparkGlm52ServiceHash64(
+    uint64_t value,
+    uint32_t slot_count)
+{
+    uint64_t hash;
+
+    hash = value;
+    hash ^= (hash >> 33u);
+    hash *= 0xff51afd7ed558ccdull;
+    hash ^= (hash >> 33u);
+    return (uint32_t)(hash % slot_count);
+}
+
+static uint32_t SparkGlm52ServiceHashClientRequest(
+    SparkGlm52ServiceClientId client_id,
+    SparkGlm52ServiceRequestId client_request_id)
+{
+    uint64_t hash;
+
+    hash = client_id ^ (client_request_id + 0x9e3779b97f4a7c15ull +
+        (client_id << 6u) + (client_id >> 2u));
+    return SparkGlm52ServiceHash64(
+        hash,
+        SPARK_GLM52_SERVICE_REQUEST_MAP_HASH_SLOTS);
+}
+
+static uint32_t SparkGlm52ServiceClientIndex(
+    const SparkGlm52ServiceRuntime *service,
+    const SparkGlm52ServiceClientSession *client_session)
+{
+    uint64_t byte_offset;
+    uint64_t client_index;
+
+    if (service == 0 || client_session == 0 ||
+        service->client_sessions == 0 ||
+        client_session < service->client_sessions ||
+        client_session >=
+            &service->client_sessions[service->client_session_capacity])
+    {
+        return SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    }
+    byte_offset = (uint64_t)((uintptr_t)client_session -
+        (uintptr_t)service->client_sessions);
+    client_index = byte_offset / (uint64_t)sizeof(*client_session);
+    if (client_index >= service->client_session_capacity)
+    {
+        return SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    }
+    return (uint32_t)client_index;
+}
+
+static uint32_t SparkGlm52ServiceRequestMapIndex(
+    const SparkGlm52ServiceRuntime *service,
+    const SparkGlm52ServiceRequestMap *request_map)
+{
+    uint64_t byte_offset;
+    uint64_t request_index;
+
+    if (service == 0 || request_map == 0 || service->request_maps == 0 ||
+        request_map < service->request_maps ||
+        request_map >= &service->request_maps[service->request_map_capacity])
+    {
+        return SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    }
+    byte_offset = (uint64_t)((uintptr_t)request_map -
+        (uintptr_t)service->request_maps);
+    request_index = byte_offset / (uint64_t)sizeof(*request_map);
+    if (request_index >= service->request_map_capacity)
+    {
+        return SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    }
+    return (uint32_t)request_index;
 }
 
 static void SparkGlm52ServiceInitializeEvent(
@@ -77,19 +156,172 @@ static SparkStatus SparkGlm52ServiceValidateRuntime(
     return SPARK_STATUS_OK;
 }
 
+static void SparkGlm52ServiceInsertClientHash(
+    SparkGlm52ServiceRuntime *service,
+    SparkGlm52ServiceClientSession *client_session)
+{
+    uint32_t client_index;
+    uint32_t hash_slot;
+
+    client_index = SparkGlm52ServiceClientIndex(service, client_session);
+    if (client_index == SPARK_GLM52_SERVICE_NO_HASH_SLOT ||
+        client_session->client_id == 0u)
+    {
+        return;
+    }
+    hash_slot = SparkGlm52ServiceHash64(
+        client_session->client_id,
+        SPARK_GLM52_SERVICE_CLIENT_HASH_SLOTS);
+    client_session->client_hash_next = service->client_hash_heads[hash_slot];
+    service->client_hash_heads[hash_slot] = client_index;
+}
+
+static void SparkGlm52ServiceRemoveClientHash(
+    SparkGlm52ServiceRuntime *service,
+    SparkGlm52ServiceClientSession *client_session)
+{
+    uint32_t client_index;
+    uint32_t hash_slot;
+    uint32_t current_index;
+    uint32_t previous_index;
+
+    client_index = SparkGlm52ServiceClientIndex(service, client_session);
+    if (client_index == SPARK_GLM52_SERVICE_NO_HASH_SLOT ||
+        client_session->client_id == 0u)
+    {
+        return;
+    }
+    hash_slot = SparkGlm52ServiceHash64(
+        client_session->client_id,
+        SPARK_GLM52_SERVICE_CLIENT_HASH_SLOTS);
+    current_index = service->client_hash_heads[hash_slot];
+    previous_index = SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    while (current_index != SPARK_GLM52_SERVICE_NO_HASH_SLOT)
+    {
+        if (current_index == client_index)
+        {
+            if (previous_index == SPARK_GLM52_SERVICE_NO_HASH_SLOT)
+            {
+                service->client_hash_heads[hash_slot] =
+                    service->client_sessions[current_index].client_hash_next;
+            }
+            else
+            {
+                service->client_sessions[previous_index].client_hash_next =
+                    service->client_sessions[current_index].client_hash_next;
+            }
+            service->client_sessions[current_index].client_hash_next =
+                SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+            return;
+        }
+        previous_index = current_index;
+        current_index = service->client_sessions[current_index].client_hash_next;
+    }
+}
+
+static void SparkGlm52ServiceInsertRequestMapHash(
+    SparkGlm52ServiceRuntime *service,
+    SparkGlm52ServiceRequestMap *request_map)
+{
+    uint32_t request_index;
+    uint32_t hash_slot;
+
+    request_index = SparkGlm52ServiceRequestMapIndex(service, request_map);
+    if (request_index == SPARK_GLM52_SERVICE_NO_HASH_SLOT)
+    {
+        return;
+    }
+    hash_slot = SparkGlm52ServiceHashClientRequest(
+        request_map->client_id,
+        request_map->client_request_id);
+    request_map->client_request_hash_next =
+        service->client_request_hash_heads[hash_slot];
+    service->client_request_hash_heads[hash_slot] = request_index;
+    hash_slot = SparkGlm52ServiceHash64(
+        request_map->serving_request_handle,
+        SPARK_GLM52_SERVICE_REQUEST_MAP_HASH_SLOTS);
+    request_map->serving_handle_hash_next =
+        service->serving_handle_hash_heads[hash_slot];
+    service->serving_handle_hash_heads[hash_slot] = request_index;
+}
+
+static void SparkGlm52ServiceRemoveRequestMapHash(
+    SparkGlm52ServiceRuntime *service,
+    SparkGlm52ServiceRequestMap *request_map)
+{
+    uint32_t request_index;
+    uint32_t hash_slot;
+    uint32_t current_index;
+    uint32_t previous_index;
+
+    request_index = SparkGlm52ServiceRequestMapIndex(service, request_map);
+    if (request_index == SPARK_GLM52_SERVICE_NO_HASH_SLOT)
+    {
+        return;
+    }
+    hash_slot = SparkGlm52ServiceHashClientRequest(
+        request_map->client_id,
+        request_map->client_request_id);
+    current_index = service->client_request_hash_heads[hash_slot];
+    previous_index = SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    while (current_index != SPARK_GLM52_SERVICE_NO_HASH_SLOT)
+    {
+        if (current_index == request_index)
+        {
+            if (previous_index == SPARK_GLM52_SERVICE_NO_HASH_SLOT)
+                service->client_request_hash_heads[hash_slot] =
+                    service->request_maps[current_index].client_request_hash_next;
+            else
+                service->request_maps[previous_index].client_request_hash_next =
+                    service->request_maps[current_index].client_request_hash_next;
+            break;
+        }
+        previous_index = current_index;
+        current_index =
+            service->request_maps[current_index].client_request_hash_next;
+    }
+    hash_slot = SparkGlm52ServiceHash64(
+        request_map->serving_request_handle,
+        SPARK_GLM52_SERVICE_REQUEST_MAP_HASH_SLOTS);
+    current_index = service->serving_handle_hash_heads[hash_slot];
+    previous_index = SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    while (current_index != SPARK_GLM52_SERVICE_NO_HASH_SLOT)
+    {
+        if (current_index == request_index)
+        {
+            if (previous_index == SPARK_GLM52_SERVICE_NO_HASH_SLOT)
+                service->serving_handle_hash_heads[hash_slot] =
+                    service->request_maps[current_index].serving_handle_hash_next;
+            else
+                service->request_maps[previous_index].serving_handle_hash_next =
+                    service->request_maps[current_index].serving_handle_hash_next;
+            break;
+        }
+        previous_index = current_index;
+        current_index =
+            service->request_maps[current_index].serving_handle_hash_next;
+    }
+    request_map->client_request_hash_next = SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    request_map->serving_handle_hash_next = SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+}
+
 static SparkGlm52ServiceClientSession *SparkGlm52ServiceFindClient(
     SparkGlm52ServiceRuntime *service,
     SparkGlm52ServiceClientId client_id)
 {
+    uint32_t hash_slot;
     uint32_t client_index;
 
     if (client_id == 0u)
     {
         return 0;
     }
-    for (client_index = 0u;
-         client_index < service->client_session_capacity;
-         ++client_index)
+    hash_slot = SparkGlm52ServiceHash64(
+        client_id,
+        SPARK_GLM52_SERVICE_CLIENT_HASH_SLOTS);
+    client_index = service->client_hash_heads[hash_slot];
+    while (client_index != SPARK_GLM52_SERVICE_NO_HASH_SLOT &&
+           client_index < service->client_session_capacity)
     {
         SparkGlm52ServiceClientSession *client_session;
 
@@ -99,6 +331,7 @@ static SparkGlm52ServiceClientSession *SparkGlm52ServiceFindClient(
         {
             return client_session;
         }
+        client_index = client_session->client_hash_next;
     }
     return 0;
 }
@@ -144,15 +377,17 @@ static SparkGlm52ServiceRequestMap *SparkGlm52ServiceFindRequestMapByClientReque
     SparkGlm52ServiceClientId client_id,
     SparkGlm52ServiceRequestId client_request_id)
 {
+    uint32_t hash_slot;
     uint32_t request_index;
 
     if (client_id == 0u || client_request_id == 0u)
     {
         return 0;
     }
-    for (request_index = 0u;
-         request_index < service->request_map_capacity;
-         ++request_index)
+    hash_slot = SparkGlm52ServiceHashClientRequest(client_id, client_request_id);
+    request_index = service->client_request_hash_heads[hash_slot];
+    while (request_index != SPARK_GLM52_SERVICE_NO_HASH_SLOT &&
+           request_index < service->request_map_capacity)
     {
         SparkGlm52ServiceRequestMap *request_map;
 
@@ -163,6 +398,7 @@ static SparkGlm52ServiceRequestMap *SparkGlm52ServiceFindRequestMapByClientReque
         {
             return request_map;
         }
+        request_index = request_map->client_request_hash_next;
     }
     return 0;
 }
@@ -171,15 +407,19 @@ static SparkGlm52ServiceRequestMap *SparkGlm52ServiceFindRequestMapByServingHand
     SparkGlm52ServiceRuntime *service,
     SparkGlm52ServingRequestHandle serving_request_handle)
 {
+    uint32_t hash_slot;
     uint32_t request_index;
 
     if (serving_request_handle == 0u)
     {
         return 0;
     }
-    for (request_index = 0u;
-         request_index < service->request_map_capacity;
-         ++request_index)
+    hash_slot = SparkGlm52ServiceHash64(
+        serving_request_handle,
+        SPARK_GLM52_SERVICE_REQUEST_MAP_HASH_SLOTS);
+    request_index = service->serving_handle_hash_heads[hash_slot];
+    while (request_index != SPARK_GLM52_SERVICE_NO_HASH_SLOT &&
+           request_index < service->request_map_capacity)
     {
         SparkGlm52ServiceRequestMap *request_map;
 
@@ -189,6 +429,7 @@ static SparkGlm52ServiceRequestMap *SparkGlm52ServiceFindRequestMapByServingHand
         {
             return request_map;
         }
+        request_index = request_map->serving_handle_hash_next;
     }
     return 0;
 }
@@ -348,6 +589,7 @@ static void SparkGlm52ServiceReleaseCompletedMappingsIfRequested(
         if (request_map->state == SPARK_GLM52_SERVICE_REQUEST_STATE_COMPLETED ||
             request_map->state == SPARK_GLM52_SERVICE_REQUEST_STATE_CANCELLED)
         {
+            SparkGlm52ServiceRemoveRequestMapHash(service, request_map);
             SparkGlm52ServiceInitializeRequestMap(request_map);
         }
     }
@@ -561,6 +803,7 @@ SparkStatus SparkGlm52ServiceInitialize(
     uint32_t client_index;
     uint32_t request_index;
     uint32_t event_index;
+    uint32_t hash_index;
     SparkStatus status;
 
     if (service == 0)
@@ -591,6 +834,22 @@ SparkStatus SparkGlm52ServiceInitialize(
     service->event_ring = configuration->event_ring;
     service->event_ring_capacity = configuration->event_ring_capacity;
 
+    for (hash_index = 0u;
+         hash_index < SPARK_GLM52_SERVICE_CLIENT_HASH_SLOTS;
+         ++hash_index)
+    {
+        service->client_hash_heads[hash_index] =
+            SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    }
+    for (hash_index = 0u;
+         hash_index < SPARK_GLM52_SERVICE_REQUEST_MAP_HASH_SLOTS;
+         ++hash_index)
+    {
+        service->client_request_hash_heads[hash_index] =
+            SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+        service->serving_handle_hash_heads[hash_index] =
+            SPARK_GLM52_SERVICE_NO_HASH_SLOT;
+    }
     for (client_index = 0u;
          client_index < service->client_session_capacity;
          ++client_index)
@@ -639,6 +898,7 @@ SparkStatus SparkGlm52ServiceRegisterClient(
         service->next_generated_client_id = 1u;
     }
     client_session->user_cookie = user_cookie;
+    SparkGlm52ServiceInsertClientHash(service, client_session);
     *client_id_out = client_session->client_id;
     status = SparkGlm52ServicePushClientEvent(
         service,
@@ -683,6 +943,7 @@ SparkStatus SparkGlm52ServiceDisconnectClient(
             request_map->state = SPARK_GLM52_SERVICE_REQUEST_STATE_CANCELLED;
         }
     }
+    SparkGlm52ServiceRemoveClientHash(service, client_session);
     SparkGlm52ServiceInitializeClientSession(client_session);
     status = SparkGlm52ServicePushClientEvent(
         service,
@@ -809,6 +1070,7 @@ SparkStatus SparkGlm52ServiceSubmitTokenIds(
     request_map->serving_request_id = serving_result.request_id;
     request_map->sequence_id = serving_result.sequence_id;
     request_map->serving_request_handle = serving_result.request_handle;
+    SparkGlm52ServiceInsertRequestMapHash(service, request_map);
     client_session = SparkGlm52ServiceFindClient(service, request->client_id);
     if (client_session != 0)
     {
@@ -884,6 +1146,7 @@ SparkStatus SparkGlm52ServiceSubmitText(
     request_map->serving_request_id = serving_result.request_id;
     request_map->sequence_id = serving_result.sequence_id;
     request_map->serving_request_handle = serving_result.request_handle;
+    SparkGlm52ServiceInsertRequestMapHash(service, request_map);
     client_session = SparkGlm52ServiceFindClient(service, request->client_id);
     if (client_session != 0)
     {

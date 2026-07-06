@@ -181,8 +181,103 @@ static void SparkGlm52ServingInitializeRequestRecord(
     record->abi_version = SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
     record->descriptor_bytes = SPARK_GLM52_SERVING_REQUEST_RECORD_DESCRIPTOR_BYTES;
     record->state = SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_FREE;
+    record->handle_hash_next = SPARK_GLM52_SERVING_NO_RECORD_SLOT;
     record->token_ids = token_storage;
     record->token_capacity = token_capacity;
+}
+
+static uint32_t SparkGlm52ServingHashHandle(
+    SparkGlm52ServingRequestHandle request_handle)
+{
+    uint64_t hash;
+
+    hash = request_handle;
+    hash ^= (hash >> 33u);
+    hash *= 0xff51afd7ed558ccdull;
+    hash ^= (hash >> 33u);
+    return (uint32_t)(hash % SPARK_GLM52_SERVING_RECORD_HASH_SLOTS);
+}
+
+static uint32_t SparkGlm52ServingRecordIndex(
+    const SparkGlm52ServingEngine *engine,
+    const SparkGlm52ServingRequestRecord *record)
+{
+    uint64_t byte_offset;
+    uint64_t record_index;
+
+    if (engine == 0 || record == 0 || engine->request_records == 0 ||
+        record < engine->request_records ||
+        record >= &engine->request_records[engine->request_record_capacity])
+    {
+        return SPARK_GLM52_SERVING_NO_RECORD_SLOT;
+    }
+    byte_offset =
+        (uint64_t)((uintptr_t)record - (uintptr_t)engine->request_records);
+    record_index = byte_offset / (uint64_t)sizeof(*record);
+    if (record_index >= engine->request_record_capacity)
+    {
+        return SPARK_GLM52_SERVING_NO_RECORD_SLOT;
+    }
+    return (uint32_t)record_index;
+}
+
+static void SparkGlm52ServingInsertRecordHash(
+    SparkGlm52ServingEngine *engine,
+    SparkGlm52ServingRequestRecord *record)
+{
+    uint32_t record_index;
+    uint32_t hash_slot;
+
+    record_index = SparkGlm52ServingRecordIndex(engine, record);
+    if (record_index == SPARK_GLM52_SERVING_NO_RECORD_SLOT ||
+        record->request_handle == SPARK_GLM52_REQUEST_API_INVALID_HANDLE)
+    {
+        return;
+    }
+    hash_slot = SparkGlm52ServingHashHandle(record->request_handle);
+    record->handle_hash_next = engine->request_handle_hash_heads[hash_slot];
+    engine->request_handle_hash_heads[hash_slot] = record_index;
+}
+
+static void SparkGlm52ServingRemoveRecordHash(
+    SparkGlm52ServingEngine *engine,
+    SparkGlm52ServingRequestRecord *record)
+{
+    uint32_t record_index;
+    uint32_t hash_slot;
+    uint32_t current_index;
+    uint32_t previous_index;
+
+    record_index = SparkGlm52ServingRecordIndex(engine, record);
+    if (record_index == SPARK_GLM52_SERVING_NO_RECORD_SLOT ||
+        record->request_handle == SPARK_GLM52_REQUEST_API_INVALID_HANDLE)
+    {
+        return;
+    }
+    hash_slot = SparkGlm52ServingHashHandle(record->request_handle);
+    current_index = engine->request_handle_hash_heads[hash_slot];
+    previous_index = SPARK_GLM52_SERVING_NO_RECORD_SLOT;
+    while (current_index != SPARK_GLM52_SERVING_NO_RECORD_SLOT)
+    {
+        if (current_index == record_index)
+        {
+            if (previous_index == SPARK_GLM52_SERVING_NO_RECORD_SLOT)
+            {
+                engine->request_handle_hash_heads[hash_slot] =
+                    engine->request_records[current_index].handle_hash_next;
+            }
+            else
+            {
+                engine->request_records[previous_index].handle_hash_next =
+                    engine->request_records[current_index].handle_hash_next;
+            }
+            engine->request_records[current_index].handle_hash_next =
+                SPARK_GLM52_SERVING_NO_RECORD_SLOT;
+            return;
+        }
+        previous_index = current_index;
+        current_index = engine->request_records[current_index].handle_hash_next;
+    }
 }
 
 static void SparkGlm52ServingInitializeEvent(
@@ -285,6 +380,7 @@ SparkStatus SparkGlm52ServingEngineInitialize(
 {
     uint32_t record_index;
     uint32_t stop_index;
+    uint32_t hash_index;
     SparkStatus status;
 
     if (engine == 0)
@@ -342,6 +438,13 @@ SparkStatus SparkGlm52ServingEngineInitialize(
         engine->stop_token_ids[stop_index] = configuration->stop_token_ids[stop_index];
     }
 
+    for (hash_index = 0u;
+         hash_index < SPARK_GLM52_SERVING_RECORD_HASH_SLOTS;
+         ++hash_index)
+    {
+        engine->request_handle_hash_heads[hash_index] =
+            SPARK_GLM52_SERVING_NO_RECORD_SLOT;
+    }
     for (record_index = 0u;
          record_index < engine->request_record_capacity;
          ++record_index)
@@ -400,15 +503,17 @@ static SparkGlm52ServingRequestRecord *SparkGlm52ServingFindRecordByHandle(
     SparkGlm52ServingEngine *engine,
     SparkGlm52ServingRequestHandle request_handle)
 {
+    uint32_t hash_slot;
     uint32_t record_index;
 
     if (request_handle == SPARK_GLM52_REQUEST_API_INVALID_HANDLE)
     {
         return 0;
     }
-    for (record_index = 0u;
-         record_index < engine->request_record_capacity;
-         ++record_index)
+    hash_slot = SparkGlm52ServingHashHandle(request_handle);
+    record_index = engine->request_handle_hash_heads[hash_slot];
+    while (record_index != SPARK_GLM52_SERVING_NO_RECORD_SLOT &&
+           record_index < engine->request_record_capacity)
     {
         SparkGlm52ServingRequestRecord *record;
 
@@ -418,6 +523,7 @@ static SparkGlm52ServingRequestRecord *SparkGlm52ServingFindRecordByHandle(
         {
             return record;
         }
+        record_index = record->handle_hash_next;
     }
     return 0;
 }
@@ -604,6 +710,7 @@ static SparkStatus SparkGlm52ServingSubmitPreparedRecord(
     record->request_id = request_id;
     record->sequence_id = sequence_id;
     record->request_handle = request_handle;
+    SparkGlm52ServingInsertRecordHash(engine, record);
     engine->stats.submitted_request_count += 1u;
     engine->stats.accepted_request_count += 1u;
 
@@ -1836,6 +1943,7 @@ SparkStatus SparkGlm52ServingEngineReleaseCompletedRequest(
     }
     token_ids = record->token_ids;
     token_capacity = record->token_capacity;
+    SparkGlm52ServingRemoveRecordHash(engine, record);
     SparkGlm52ServingInitializeRequestRecord(
         record,
         token_ids,
