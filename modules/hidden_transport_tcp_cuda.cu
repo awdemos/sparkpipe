@@ -263,14 +263,28 @@ static int SparkHiddenTcpCudaListen(uint32_t port)
 
 static SparkStatus SparkHiddenTcpCudaFinishConnect(SparkHiddenTcpCudaState *state)
 {
+    struct pollfd connect_poll;
     socklen_t error_bytes;
     int error;
+    int poll_result;
     if (state == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
     if (state->socket_fd < 0)
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     if (state->socket_connecting == 0u)
         return SPARK_STATUS_OK;
+    memset(&connect_poll,0,sizeof(connect_poll));
+    connect_poll.fd = state->socket_fd;
+    connect_poll.events = POLLOUT;
+    poll_result = poll(&connect_poll,1,0);
+    if (poll_result < 0)
+    {
+        SparkHiddenTcpCudaCloseSocket(state);
+        return SPARK_STATUS_BUSY;
+    }
+    if (poll_result == 0 ||
+        (connect_poll.revents & (POLLOUT | POLLERR | POLLHUP)) == 0)
+        return SPARK_STATUS_BUSY;
     error = 0;
     error_bytes = sizeof(error);
     if (getsockopt(state->socket_fd,SOL_SOCKET,SO_ERROR,
@@ -283,11 +297,22 @@ static SparkStatus SparkHiddenTcpCudaFinishConnect(SparkHiddenTcpCudaState *stat
     {
         state->socket_connecting = 0u;
         SparkHiddenTcpCudaConfigureSocket(state->socket_fd);
+        if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+            fprintf(stderr,
+                "tcp_send_connected fd=%d sink=%s\n",
+                state->socket_fd,
+                state->sink_host);
         return SPARK_STATUS_OK;
     }
     if (error == EINPROGRESS || error == EALREADY ||
         error == EWOULDBLOCK || error == EAGAIN)
         return SPARK_STATUS_BUSY;
+    if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+        fprintf(stderr,
+            "tcp_send_connect_drop fd=%d so_error=%d sink=%s\n",
+            state->socket_fd,
+            error,
+            state->sink_host);
     SparkHiddenTcpCudaCloseSocket(state);
     return SPARK_STATUS_BUSY;
 }
@@ -830,6 +855,11 @@ static SparkStatus SparkHiddenTcpCudaProgressIncomingFrame(
             return SPARK_STATUS_BUSY;
         if (status != SPARK_STATUS_OK)
         {
+            if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+                fprintf(stderr,
+                    "tcp_recv_close fd=%d header_offset=%llu\n",
+                    state->socket_fd,
+                    (unsigned long long)state->incoming_header_offset);
             SparkHiddenTcpCudaCloseSocket(state);
             SparkHiddenTcpCudaAbortIncomingFrame(state);
             return SPARK_STATUS_BUSY;
@@ -944,6 +974,11 @@ static SparkStatus SparkHiddenTcpCudaEnsureSocket(SparkHiddenTcpCudaState *state
         (void)SparkHiddenTcpCudaSetNonblocking(state->socket_fd);
         SparkHiddenTcpCudaConfigureSocket(state->socket_fd);
     }
+    if (state->socket_fd >= 0 &&
+        getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+        fprintf(stderr,
+            "tcp_recv_accept fd=%d\n",
+            state->socket_fd);
     return state->socket_fd >= 0 ? SPARK_STATUS_OK : SPARK_STATUS_ROUTE_NOT_FOUND;
 }
 
@@ -1156,6 +1191,13 @@ static SparkStatus SparkHiddenTcpCudaSend(
             return SPARK_STATUS_BUSY;
         if (status != SPARK_STATUS_OK)
         {
+            if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+                fprintf(stderr,
+                    "tcp_send_close fd=%d errno=%d written=%llu of=%llu\n",
+                    state->socket_fd,
+                    errno,
+                    (unsigned long long)state->outgoing_offset,
+                    (unsigned long long)state->outgoing_bytes);
             SparkHiddenTcpCudaCloseSocket(state);
             state->outgoing_active = 0u;
             state->outgoing_offset = 0u;
