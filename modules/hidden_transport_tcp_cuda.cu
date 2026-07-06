@@ -875,8 +875,27 @@ static SparkStatus SparkHiddenTcpCudaProgressIncomingFrame(
             SparkHiddenTcpCudaClearIncomingFrame(state);
             if (status == SPARK_STATUS_OK)
                 *delivered = 1u;
+            if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+                fprintf(stderr,
+                    "tcp_frame_delivered seq=%llu pos=%llu active=%u sk=%u sb=%u\n",
+                    (unsigned long long)state->incoming_header.sequence_id,
+                    (unsigned long long)state->incoming_header.token_index,
+                    state->incoming_header.active_sequence_count,
+                    state->incoming_header.sideband_kind,
+                    state->incoming_header.sideband_bytes_per_sequence);
             return status;
         }
+        if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+            fprintf(stderr,
+                "tcp_frame_parked have_seq=%llu have_pos=%llu have_sk=%u have_sb=%u want_seq=%llu want_pos=%llu want_sk=%u want_sb=%u\n",
+                (unsigned long long)state->incoming_header.sequence_id,
+                (unsigned long long)state->incoming_header.token_index,
+                state->incoming_header.sideband_kind,
+                state->incoming_header.sideband_bytes_per_sequence,
+                (unsigned long long)packet->sequence_id,
+                (unsigned long long)packet->token_index,
+                packet->sideband_kind,
+                packet->sideband_bytes_per_sequence);
         status = SparkHiddenTcpCudaStoreIncomingFramePending(state);
         return status;
     }
