@@ -158,6 +158,8 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint32_t *dsa_prefill_selected;
 	uint32_t *dsa_prefill_row_context_lengths;
 	uint32_t *dsa_prefill_row_sequences;
+	uint32_t *dsa_prefill_row_slots;
+	void *dsa_prefill_key_scratch;
 	void *dsa_prefill_query_a;
 	void *dsa_prefill_query_index_heads;
 	void *dsa_prefill_index_weights;
@@ -676,6 +678,12 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTables(
 	status = SparkGlm52Pp13BuilderCudaAlloc(state,(void **)&state->dsa_prefill_row_sequences,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * sizeof(uint32_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,(void **)&state->dsa_prefill_row_slots,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * sizeof(uint32_t));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_key_scratch,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION * 2u);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_query_a,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION * 2u);
 	if (status != SPARK_STATUS_OK)
 		return status;
@@ -688,7 +696,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTables(
 	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_normalized_hidden,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_low_scratch,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION * 2u);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_low_scratch,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * (SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION + SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) * 2u);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->cos_table,table_bytes);
@@ -984,6 +992,8 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->dsa_prefill_selected_u32 = state->dsa_prefill_selected;
 	node->dsa_prefill_row_context_lengths_u32 = state->dsa_prefill_row_context_lengths;
 	node->dsa_prefill_row_sequences_u32 = state->dsa_prefill_row_sequences;
+	node->dsa_prefill_row_slots_u32 = state->dsa_prefill_row_slots;
+	node->dsa_prefill_key_scratch_bf16 = state->dsa_prefill_key_scratch;
 	node->dsa_prefill_query_a_bf16 = state->dsa_prefill_query_a;
 	node->dsa_prefill_query_index_heads_bf16 = state->dsa_prefill_query_index_heads;
 	node->dsa_prefill_index_weights_bf16 = state->dsa_prefill_index_weights;
