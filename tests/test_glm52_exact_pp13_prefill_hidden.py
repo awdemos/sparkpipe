@@ -31,10 +31,21 @@ def test_exact_pp13_final_stage_can_run_hidden_only(root: Path) -> None:
     assert allowed_contract in source
 
 
+def test_pp13_rank_capacity_is_not_fixed_batch(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    reserved_block_start = source.index("node->reserved_execution_flags =")
+    reserved_block_end = source.index("if ((state->rank_plan.flags &", reserved_block_start)
+    reserved_block = source[reserved_block_start:reserved_block_end]
+    assert "SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FIXED_ACTIVE_BATCH" not in reserved_block
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_final_stage_has_hidden_only_builtin_launcher(root)
     test_exact_pp13_final_stage_can_run_hidden_only(root)
+    test_pp13_rank_capacity_is_not_fixed_batch(root)
 
 
 if __name__ == "__main__":
