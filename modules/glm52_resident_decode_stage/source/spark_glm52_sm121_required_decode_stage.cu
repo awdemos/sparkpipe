@@ -13114,6 +13114,17 @@ static uint32_t SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(
     return enabled_payload_count != 0u;
 }
 
+static uint32_t SparkGlm52ResidentDecodeStageDsaTransportRequired(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    if (node_context == 0)
+    {
+        return 0u;
+    }
+    return (node_context->reserved_execution_flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_DSA_KV_FRAGMENT_TRANSPORT) != 0u;
+}
+
 static SparkGlm52ResidentDecodeStageDsaKvFragmentTransportKernelPayloads SparkGlm52ResidentDecodeStageBuildDsaTransportKernelPayloads(
     const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan)
 {
@@ -13232,7 +13243,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaSelectedBlockBuildForLa
             layer_index);
     if (selected_block_indices_for_layer == 0 &&
         selected_block_counts_for_layer == 0 &&
-        node_context->dsa_kv_fragment_prefetch_plan == 0)
+        SparkGlm52ResidentDecodeStageDsaTransportRequired(node_context) == 0u)
     {
         return SPARK_STATUS_OK;
     }
@@ -13287,11 +13298,15 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeLaunchDsaKvFragmentPrefetch
     const uint32_t *selected_block_counts_for_layer;
 
     if (node_context == 0 || pipeline_slot == 0 ||
-        node_context->dsa_kv_fragment_prefetch_plan == 0)
+        SparkGlm52ResidentDecodeStageDsaTransportRequired(node_context) == 0u)
     {
         return SPARK_STATUS_OK;
     }
     prefetch_plan = node_context->dsa_kv_fragment_prefetch_plan;
+    if (SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(prefetch_plan) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     selected_block_indices_for_layer =
         SparkGlm52ResidentDecodeStageDsaIndexShareLayerBlockCache(
             node_context,
@@ -13327,9 +13342,14 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeLaunchDsaKvFragmentSaveWrit
     uint32_t kv_block_token_count;
 
     if (node_context == 0 || pipeline_slot == 0 ||
-        node_context->dsa_kv_fragment_save_plan == 0)
+        SparkGlm52ResidentDecodeStageDsaTransportRequired(node_context) == 0u)
     {
         return SPARK_STATUS_OK;
+    }
+    if (SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(
+            node_context->dsa_kv_fragment_save_plan) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (pipeline_slot->positions == 0 || pipeline_slot->block_table == 0)
     {
@@ -13354,9 +13374,15 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeWaitForDsaKvFragmentPrefetc
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     cudaStream_t cuda_stream)
 {
-    if (node_context == 0 || node_context->dsa_kv_fragment_prefetch_plan == 0)
+    if (node_context == 0 ||
+        SparkGlm52ResidentDecodeStageDsaTransportRequired(node_context) == 0u)
     {
         return SPARK_STATUS_OK;
+    }
+    if (SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(
+            node_context->dsa_kv_fragment_prefetch_plan) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (node_context->sparse_index_mode !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL &&
@@ -15446,6 +15472,7 @@ static uint64_t SparkGlm52ResidentDecodeStageMixFp8KvCachePlanGraphSignature(
 
 static uint64_t SparkGlm52ResidentDecodeStageMixDsaKvFragmentTransportPlanGraphSignature(
     uint64_t signature,
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan)
 {
     uint32_t payload_index;
@@ -15453,8 +15480,15 @@ static uint64_t SparkGlm52ResidentDecodeStageMixDsaKvFragmentTransportPlanGraphS
 
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
         signature,
+        SparkGlm52ResidentDecodeStageDsaTransportRequired(node_context));
+    if (SparkGlm52ResidentDecodeStageDsaTransportRequired(node_context) == 0u)
+    {
+        return signature;
+    }
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+        signature,
         SparkGlm52ResidentDecodeStagePointerGraphSignature(transport_plan));
-    if (transport_plan == 0)
+    if (SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(transport_plan) == 0u)
     {
         return signature;
     }
@@ -15622,8 +15656,8 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeGraphSignature(
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->dsa_selected_block_stride);
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->dsa_selected_block_capacity);
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->dsa_selected_block_layer_count);
-    signature = SparkGlm52ResidentDecodeStageMixDsaKvFragmentTransportPlanGraphSignature(signature, node_context->dsa_kv_fragment_prefetch_plan);
-    signature = SparkGlm52ResidentDecodeStageMixDsaKvFragmentTransportPlanGraphSignature(signature, node_context->dsa_kv_fragment_save_plan);
+    signature = SparkGlm52ResidentDecodeStageMixDsaKvFragmentTransportPlanGraphSignature(signature, node_context, node_context->dsa_kv_fragment_prefetch_plan);
+    signature = SparkGlm52ResidentDecodeStageMixDsaKvFragmentTransportPlanGraphSignature(signature, node_context, node_context->dsa_kv_fragment_save_plan);
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_query_weight_bf16));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_query_weight_fp8_e4m3));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->index_query_weight_scale_inv_f32));

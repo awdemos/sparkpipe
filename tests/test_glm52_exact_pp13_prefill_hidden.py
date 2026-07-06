@@ -41,11 +41,22 @@ def test_pp13_rank_capacity_is_not_fixed_batch(root: Path) -> None:
     assert "SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FIXED_ACTIVE_BATCH" not in reserved_block
 
 
+def test_pp13_rank_does_not_enable_dsa_fragment_transport(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    assert ("~SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_DSA_KV_FRAGMENT_TRANSPORT"
+            in source)
+    assert "layer->node.dsa_kv_fragment_prefetch_plan = 0;" in source
+    assert "layer->node.dsa_kv_fragment_save_plan = 0;" in source
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_final_stage_has_hidden_only_builtin_launcher(root)
     test_exact_pp13_final_stage_can_run_hidden_only(root)
     test_pp13_rank_capacity_is_not_fixed_batch(root)
+    test_pp13_rank_does_not_enable_dsa_fragment_transport(root)
 
 
 if __name__ == "__main__":
