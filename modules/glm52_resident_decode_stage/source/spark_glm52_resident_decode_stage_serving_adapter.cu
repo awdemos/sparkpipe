@@ -245,12 +245,13 @@ static SparkStatus SparkGlm52ServingAdapterValidateKvCoverage(
         kv_block_table->physical_block_indices == 0 ||
         kv_block_table->host_physical_block_indices == 0 ||
         kv_block_table->lane_physical_block_counts == 0 ||
+        kv_block_table->host_lane_physical_block_counts == 0 ||
         lane_index >= kv_block_table->lane_count)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     block_index = position / kv_block_table->block_token_count;
-    if (block_index >= kv_block_table->lane_physical_block_counts[lane_index] ||
+    if (block_index >= kv_block_table->host_lane_physical_block_counts[lane_index] ||
         block_index >= kv_block_table->lane_stride)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;

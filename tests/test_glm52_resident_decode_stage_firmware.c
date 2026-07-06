@@ -2965,6 +2965,7 @@ static void SparkTestGlm52ResidentDecodeStagePagedBulkPrefillPlanWithoutLaunchFu
     kv_block_table_view.physical_block_indices = PhysicalBlockIndices;
     kv_block_table_view.host_physical_block_indices = PhysicalBlockIndices;
     kv_block_table_view.lane_physical_block_counts = LaneBlockCounts;
+    kv_block_table_view.host_lane_physical_block_counts = LaneBlockCounts;
 
     SparkTestInitializePrefillFrameContext(
         &frame_context,
@@ -3070,6 +3071,7 @@ static void SparkTestGlm52ResidentDecodeStageRuntimeKvBlockTableSubmit(void)
     kv_block_table_view.physical_block_indices = physical_block_indices;
     kv_block_table_view.lane_physical_block_counts = lane_block_counts;
     kv_block_table_view.host_physical_block_indices = physical_block_indices;
+    kv_block_table_view.host_lane_physical_block_counts = lane_block_counts;
 
     memset(&frame_context, 0, sizeof(frame_context));
     frame_context.abi_version =

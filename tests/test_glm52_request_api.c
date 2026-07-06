@@ -1120,6 +1120,7 @@ static void SparkTestRequestApiCohortsArbitrarySharedPrefixWithSuffixes(void)
     assert(block_table_view.host_physical_block_indices ==
         &batch_block_tables[0u][0u]);
     assert(block_table_view.lane_physical_block_counts == batch_block_counts);
+    assert(block_table_view.host_lane_physical_block_counts == batch_block_counts);
     for (request_index = 0u; request_index < 7u; ++request_index)
     {
         assert(batch_block_counts[request_index] == 3u);

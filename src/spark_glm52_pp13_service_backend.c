@@ -657,6 +657,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 	SparkGlm52Pp13WorkControlPacket packet;
 	SparkStatus status;
 	uint32_t token_offset;
+	uint32_t flush_retry;
 	if (state == 0 || prefill_dispatch == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((state->rank_plan.flags &
@@ -682,10 +683,17 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 		if (status != SPARK_STATUS_OK)
 			return status;
 	}
-	status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
-	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
-		return status;
-	return SPARK_STATUS_OK;
+	for (flush_retry = 0u; flush_retry < 3000u; ++flush_retry)
+	{
+		status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
+		if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+			return status;
+		if (state->work_queue_count == 0u)
+			return SPARK_STATUS_OK;
+		(void)poll(0,0,1);
+	}
+	fprintf(stderr,"pp13_prefill_forward_flush_stalled queued=%u\n",state->work_queue_count);
+	return SPARK_STATUS_IO_ERROR;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(

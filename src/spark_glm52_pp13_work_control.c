@@ -229,6 +229,7 @@ SparkStatus SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 	view->physical_block_indices = state->physical_block_indices;
 	view->lane_physical_block_counts = state->lane_physical_block_counts;
 	view->host_physical_block_indices = state->physical_block_indices;
+	view->host_lane_physical_block_counts = state->lane_physical_block_counts;
 	return SPARK_STATUS_OK;
 }
 
