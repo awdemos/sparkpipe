@@ -17306,14 +17306,288 @@ SparkGlm52ResidentDecodeStageGetCudaSlotState(
     return &node_context->cuda_pipeline_slot_states[pipeline_slot_index];
 }
 
+static bool SparkGlm52ResidentDecodeStagePacketHasDsparkHiddenTapSideband(
+    const SparkHiddenTransportPacket *packet)
+{
+    return packet != 0 &&
+        (packet->flags &
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) != 0u &&
+        (packet->sideband_kind &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_TRANSPORT_SIDEBAND_DSPARK_HIDDEN_TAP) != 0u;
+}
+
+static uint64_t SparkGlm52ResidentDecodeStageDsparkTapRegionBytes(
+    uint32_t active_sequence_count)
+{
+    return (uint64_t)active_sequence_count *
+        (uint64_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2ull;
+}
+
+static uint64_t SparkGlm52ResidentDecodeStageDsparkTapPayloadBaseOffset(
+    const SparkHiddenTransportPacket *packet,
+    uint32_t active_sequence_count)
+{
+    if ((packet->sideband_kind &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_TRANSPORT_SIDEBAND_INDEXSHARE_SELECTED_TOKENS) != 0u)
+    {
+        return (uint64_t)active_sequence_count *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT *
+            sizeof(uint32_t);
+    }
+    return 0ull;
+}
+
+static uint32_t SparkGlm52ResidentDecodeStageDsparkTapInFlightSlot(
+    const SparkGlm52DsparkHiddenTapPlan *tap_plan,
+    uint32_t stage_index_exclusive,
+    uint32_t tap_index)
+{
+    uint32_t slot;
+    uint32_t probe_index;
+
+    slot = 0u;
+    for (probe_index = 0u; probe_index < tap_index; ++probe_index)
+    {
+        if (tap_plan->tap_stages[probe_index].stage_index <
+            stage_index_exclusive)
+        {
+            slot += 1u;
+        }
+    }
+    return slot;
+}
+
+static uint32_t SparkGlm52ResidentDecodeStageDsparkTapInFlightCount(
+    const SparkGlm52DsparkHiddenTapPlan *tap_plan,
+    uint32_t stage_index_exclusive)
+{
+    return SparkGlm52ResidentDecodeStageDsparkTapInFlightSlot(
+        tap_plan,
+        stage_index_exclusive,
+        SPARK_GLM52_DSPARK_AUX_LAYER_COUNT);
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeCarryDsparkHiddenTaps(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    uint32_t layer_count,
+    uint32_t active_sequence_count,
+    cudaStream_t cuda_stream)
+{
+    const SparkHiddenTransportPacket *input_packet;
+    const SparkHiddenTransportPacket *output_packet;
+    const SparkGlm52DsparkHiddenTapPlan *tap_plan;
+    uint32_t stage_index;
+    uint32_t inbound_tap_count;
+    uint64_t carry_bytes;
+    uint64_t input_base_offset;
+    uint64_t output_base_offset;
+
+    if (frame_context == 0 || layer_count == 0u ||
+        layer_node_contexts[0] == 0 ||
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    output_packet = &frame_context->hidden_output_packet;
+    if (!SparkGlm52ResidentDecodeStagePacketHasDsparkHiddenTapSideband(
+            output_packet) ||
+        output_packet->sideband_payload == 0)
+    {
+        return SPARK_STATUS_OK;
+    }
+    tap_plan = frame_context->dspark_hidden_tap_plan;
+    if (tap_plan == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    stage_index = layer_node_contexts[0]->layer_index /
+        tap_plan->pp_stage_layer_count;
+    inbound_tap_count = SparkGlm52ResidentDecodeStageDsparkTapInFlightCount(
+        tap_plan,
+        stage_index);
+    if (inbound_tap_count == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if ((frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    input_packet = &frame_context->hidden_input_packet;
+    if (!SparkGlm52ResidentDecodeStagePacketHasDsparkHiddenTapSideband(
+            input_packet) ||
+        input_packet->sideband_payload == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    input_base_offset = SparkGlm52ResidentDecodeStageDsparkTapPayloadBaseOffset(
+        input_packet,
+        active_sequence_count);
+    output_base_offset = SparkGlm52ResidentDecodeStageDsparkTapPayloadBaseOffset(
+        output_packet,
+        active_sequence_count);
+    carry_bytes = (uint64_t)inbound_tap_count *
+        SparkGlm52ResidentDecodeStageDsparkTapRegionBytes(active_sequence_count);
+    if (cudaMemcpyAsync(
+            (void *)((uint8_t *)(uintptr_t)output_packet->sideband_payload +
+                output_base_offset),
+            (const void *)((const uint8_t *)input_packet->sideband_payload +
+                input_base_offset),
+            carry_bytes,
+            cudaMemcpyDeviceToDevice,
+            cuda_stream) != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeExportDsparkHiddenTap(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    const SparkGlm52ResidentDecodeStageNodeContext *layer_node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *layer_pipeline_slot,
+    uint32_t active_sequence_count,
+    cudaStream_t cuda_stream)
+{
+    const SparkHiddenTransportPacket *output_packet;
+    const SparkGlm52DsparkHiddenTapPlan *tap_plan;
+    uint32_t tap_index;
+    uint32_t stage_index;
+    uint64_t region_offset;
+
+    if (frame_context == 0 ||
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    output_packet = &frame_context->hidden_output_packet;
+    if (!SparkGlm52ResidentDecodeStagePacketHasDsparkHiddenTapSideband(
+            output_packet) ||
+        output_packet->sideband_payload == 0)
+    {
+        return SPARK_STATUS_OK;
+    }
+    tap_plan = frame_context->dspark_hidden_tap_plan;
+    if (tap_plan == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (tap_index = 0u;
+         tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+         ++tap_index)
+    {
+        if (tap_plan->tap_stages[tap_index].target_layer_index ==
+            layer_node_context->layer_index)
+        {
+            break;
+        }
+    }
+    if (tap_index >= SPARK_GLM52_DSPARK_AUX_LAYER_COUNT)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (layer_pipeline_slot->layer_output_hidden_bf16 == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    stage_index = tap_plan->tap_stages[tap_index].stage_index;
+    region_offset = SparkGlm52ResidentDecodeStageDsparkTapPayloadBaseOffset(
+        output_packet,
+        active_sequence_count) +
+        ((uint64_t)SparkGlm52ResidentDecodeStageDsparkTapInFlightSlot(
+            tap_plan,
+            stage_index + 1u,
+            tap_index) *
+         SparkGlm52ResidentDecodeStageDsparkTapRegionBytes(
+             active_sequence_count));
+    if (cudaMemcpyAsync(
+            (void *)((uint8_t *)(uintptr_t)output_packet->sideband_payload +
+                region_offset),
+            layer_pipeline_slot->layer_output_hidden_bf16,
+            SparkGlm52ResidentDecodeStageDsparkTapRegionBytes(
+                active_sequence_count),
+            cudaMemcpyDeviceToDevice,
+            cuda_stream) != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeImportDsparkHiddenTaps(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    uint32_t active_sequence_count,
+    cudaStream_t cuda_stream)
+{
+    const SparkHiddenTransportPacket *input_packet;
+    const SparkGlm52DsparkHiddenTapPlan *tap_plan;
+    uint64_t base_offset;
+    uint64_t region_bytes;
+    uint32_t tap_index;
+
+    if (frame_context == 0 ||
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS) == 0u ||
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    input_packet = &frame_context->hidden_input_packet;
+    if (!SparkGlm52ResidentDecodeStagePacketHasDsparkHiddenTapSideband(
+            input_packet) ||
+        input_packet->sideband_payload == 0)
+    {
+        return SPARK_STATUS_OK;
+    }
+    tap_plan = frame_context->dspark_hidden_tap_plan;
+    if (tap_plan == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    base_offset = SparkGlm52ResidentDecodeStageDsparkTapPayloadBaseOffset(
+        input_packet,
+        active_sequence_count);
+    region_bytes = SparkGlm52ResidentDecodeStageDsparkTapRegionBytes(
+        active_sequence_count);
+    for (tap_index = 0u;
+         tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
+         ++tap_index)
+    {
+        if (frame_context->dspark_hidden_tap_output_bf16[tap_index] == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        if (cudaMemcpy2DAsync(
+                frame_context->dspark_hidden_tap_output_bf16[tap_index],
+                (size_t)frame_context->dspark_hidden_tap_lane_stride_bytes,
+                (const void *)((const uint8_t *)input_packet->sideband_payload +
+                    base_offset +
+                    ((uint64_t)tap_index * region_bytes)),
+                (size_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u,
+                (size_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u,
+                active_sequence_count,
+                cudaMemcpyDeviceToDevice,
+                cuda_stream) != cudaSuccess)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
 static bool SparkGlm52ResidentDecodeStagePacketHasIndexShareSideband(
     const SparkHiddenTransportPacket *packet)
 {
     return packet != 0 &&
         (packet->flags &
             SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) != 0u &&
-        packet->sideband_kind ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_TRANSPORT_SIDEBAND_INDEXSHARE_SELECTED_TOKENS;
+        (packet->sideband_kind &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_TRANSPORT_SIDEBAND_INDEXSHARE_SELECTED_TOKENS) != 0u;
 }
 
 static bool SparkGlm52ResidentDecodeStageFrameContextHasInputIndexShareSideband(
@@ -17357,7 +17631,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateIndexShareSidebandPacket
     if (expected_bytes_per_sequence == 0u ||
         expected_bytes_per_sequence > UINT32_MAX ||
         packet->sideband_payload == 0 ||
-        packet->sideband_bytes_per_sequence !=
+        packet->sideband_bytes_per_sequence <
             (uint32_t)expected_bytes_per_sequence)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -20030,6 +20304,24 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
         return status;
     }
 
+    status = SparkGlm52ResidentDecodeStageMaybeImportDsparkHiddenTaps(
+        frame_context,
+        active_sequence_count,
+        typed_cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageMaybeCarryDsparkHiddenTaps(
+        frame_context,
+        layer_node_contexts,
+        layer_count,
+        active_sequence_count,
+        typed_cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     for (layer_offset = 0u; layer_offset < layer_count; ++layer_offset)
     {
         layer_node_context = layer_node_contexts[layer_offset];
@@ -20063,6 +20355,21 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
             hidden_output_only,
             0,
             frame_context);
+        if (status != SPARK_STATUS_OK)
+        {
+            if (graph_capture_active != 0u)
+            {
+                SparkGlm52ResidentDecodeStageAbortGraphCapture(
+                    typed_cuda_stream);
+            }
+            return status;
+        }
+        status = SparkGlm52ResidentDecodeStageMaybeExportDsparkHiddenTap(
+            frame_context,
+            layer_node_context,
+            layer_pipeline_slot,
+            active_sequence_count,
+            typed_cuda_stream);
         if (status != SPARK_STATUS_OK)
         {
             if (graph_capture_active != 0u)
