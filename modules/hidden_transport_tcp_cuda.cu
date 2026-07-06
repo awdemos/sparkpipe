@@ -8,6 +8,7 @@
 #include <string.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <netinet/tcp.h>
 #include <unistd.h>
 
 #include <cuda_runtime_api.h>
@@ -220,6 +221,16 @@ static int32_t SparkHiddenTcpCudaSetNonblocking(int fd)
     return 0;
 }
 
+static void SparkHiddenTcpCudaConfigureSocket(int fd)
+{
+    int value;
+    if (fd < 0)
+        return;
+    value = 1;
+    (void)setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&value,sizeof(value));
+    (void)setsockopt(fd,SOL_SOCKET,SO_KEEPALIVE,&value,sizeof(value));
+}
+
 static int SparkHiddenTcpCudaListen(uint32_t port)
 {
     struct sockaddr_in address;
@@ -262,6 +273,7 @@ static SparkStatus SparkHiddenTcpCudaFinishConnect(SparkHiddenTcpCudaState *stat
     if (error == 0)
     {
         state->socket_connecting = 0u;
+        SparkHiddenTcpCudaConfigureSocket(state->socket_fd);
         return SPARK_STATUS_OK;
     }
     if (error == EINPROGRESS || error == EALREADY ||
@@ -304,6 +316,7 @@ static SparkStatus SparkHiddenTcpCudaBeginConnect(
             close(fd);
             continue;
         }
+        SparkHiddenTcpCudaConfigureSocket(fd);
         connect_result = connect(fd,entry->ai_addr,entry->ai_addrlen);
         if (connect_result == 0)
         {
@@ -899,7 +912,10 @@ static SparkStatus SparkHiddenTcpCudaEnsureSocket(SparkHiddenTcpCudaState *state
     state->socket_fd = fd;
     state->socket_connecting = 0u;
     if (state->socket_fd >= 0)
+    {
         (void)SparkHiddenTcpCudaSetNonblocking(state->socket_fd);
+        SparkHiddenTcpCudaConfigureSocket(state->socket_fd);
+    }
     return state->socket_fd >= 0 ? SPARK_STATUS_OK : SPARK_STATUS_ROUTE_NOT_FOUND;
 }
 

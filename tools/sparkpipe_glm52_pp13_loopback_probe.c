@@ -503,15 +503,6 @@ static void SparkGlm52Pp13LoopbackWaitForEvents(
 	}
 }
 
-static int64_t SparkGlm52Pp13LoopbackSignedDelta(
-	uint64_t left,
-	uint64_t right)
-{
-	if (left >= right)
-		return (int64_t)(left - right);
-	return -((int64_t)(right - left));
-}
-
 static void SparkGlm52Pp13LoopbackPrintComplete(
 	const SparkGlm52Pp13LoopbackPacket *packet)
 {
@@ -536,22 +527,6 @@ static void SparkGlm52Pp13LoopbackPrintComplete(
 			index,
 			packet->ranks[index],
 			(unsigned long long)packet->wall_ns[index]);
-	for (index=0u; index<packet->hop_count; index++)
-	{
-		uint64_t target_wall_ns;
-		int64_t offset_ns;
-		target_wall_ns = packet->created_wall_ns +
-			((uint64_t)(index + 1u) * average_hop_ns);
-		offset_ns = SparkGlm52Pp13LoopbackSignedDelta(
-			target_wall_ns,
-			packet->wall_ns[index]);
-		printf("loopback_clock_hint index=%u rank=%u target_wall_ns=%llu observed_wall_ns=%llu offset_ns=%lld\n",
-			index,
-			packet->ranks[index],
-			(unsigned long long)target_wall_ns,
-			(unsigned long long)packet->wall_ns[index],
-			(long long)offset_ns);
-	}
 	fflush(stdout);
 }
 
