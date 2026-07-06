@@ -2178,6 +2178,19 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 				token_id);
 			return status;
 		}
+		status = SparkGlm52ResidentDecodeStageProductionRunnerProgress(
+			&state->runner);
+		if (status != SPARK_STATUS_OK)
+		{
+			fprintf(
+				stderr,
+				"pp13_builder_prefill_progress status=%u token_offset=%u position=%u token_id=%u\n",
+				status,
+				token_offset,
+				position,
+				token_id);
+			return status;
+		}
 	}
 	return SPARK_STATUS_OK;
 }

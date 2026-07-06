@@ -65,6 +65,20 @@ def test_prebound_linear_plan_accepts_smaller_active_count(root: Path) -> None:
     assert "active_sequence_count != linear_plan->maximum_active_sequence_count" not in function_body
 
 
+def test_serial_prefill_progresses_runner_after_each_token(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    sync_call = "cudaStreamSynchronize(state->stream)"
+    progress_call = "SparkGlm52ResidentDecodeStageProductionRunnerProgress("
+    start = source.index("static SparkStatus SparkGlm52Pp13BuilderPrefill(")
+    end = source.index("static SparkStatus SparkGlm52Pp13BuilderDecode(", start)
+    function_body = source[start:end]
+    assert sync_call in function_body
+    assert progress_call in function_body
+    assert function_body.index(progress_call) > function_body.index(sync_call)
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_final_stage_has_hidden_only_builtin_launcher(root)
@@ -72,6 +86,7 @@ def main() -> None:
     test_pp13_rank_capacity_is_not_fixed_batch(root)
     test_pp13_rank_does_not_enable_dsa_fragment_transport(root)
     test_prebound_linear_plan_accepts_smaller_active_count(root)
+    test_serial_prefill_progresses_runner_after_each_token(root)
 
 
 if __name__ == "__main__":
