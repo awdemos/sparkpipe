@@ -283,6 +283,17 @@ static SparkStatus SparkGlm52Pp13ServiceBackendLoadTokenizer(
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52Pp13ServiceBackendPrefillIdlePump(
+	void *idle_pump_context)
+{
+	SparkGlm52Pp13ServiceBackendState *state;
+
+	state = (SparkGlm52Pp13ServiceBackendState *)idle_pump_context;
+	if (state == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 	void *context,
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
@@ -314,7 +325,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 	}
 	status = state->builder_library.builder_interface.prefill(
 		state->builder_state,
-		prefill_dispatch);
+		prefill_dispatch,
+		SparkGlm52Pp13ServiceBackendPrefillIdlePump,
+		state);
 	fprintf(stderr,"pp13_prefill_builder status=%u\n",status);
 	return status;
 }
@@ -517,6 +530,12 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCheckWorkOutputConnect(
 	}
 	if (error == EINPROGRESS || error == EALREADY)
 		return SPARK_STATUS_BUSY;
+	if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+		fprintf(
+			stderr,
+			"pp13_work_connect_drop fd=%d so_error=%d\n",
+			state->work_output_socket_fd,
+			error);
 	SparkGlm52Pp13ServiceBackendDropWorkOutputSocket(state);
 	return SparkGlm52Pp13ServiceBackendStartWorkOutputSocket(state);
 }
@@ -549,6 +568,12 @@ static SparkStatus SparkGlm52Pp13ServiceBackendFlushWorkOutput(
 				continue;
 			if (errno == EAGAIN || errno == EWOULDBLOCK)
 				return SPARK_STATUS_BUSY;
+			if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+				fprintf(
+					stderr,
+					"pp13_work_flush_drop fd=%d errno=%d\n",
+					state->work_output_socket_fd,
+					errno);
 			SparkGlm52Pp13ServiceBackendDropWorkOutputSocket(state);
 			return SPARK_STATUS_ROUTE_NOT_FOUND;
 		}
@@ -675,7 +700,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 	SparkGlm52Pp13WorkControlPacket packet;
 	SparkStatus status;
 	uint32_t token_offset;
-	uint32_t flush_retry;
 	if (state == 0 || prefill_dispatch == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((state->rank_plan.flags &
@@ -701,17 +725,10 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 		if (status != SPARK_STATUS_OK)
 			return status;
 	}
-	for (flush_retry = 0u; flush_retry < 3000u; ++flush_retry)
-	{
-		status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
-		if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
-			return status;
-		if (state->work_queue_count == 0u)
-			return SPARK_STATUS_OK;
-		(void)poll(0,0,1);
-	}
-	fprintf(stderr,"pp13_prefill_forward_flush_stalled queued=%u\n",state->work_queue_count);
-	return SPARK_STATUS_IO_ERROR;
+	status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
+	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+		return status;
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(
