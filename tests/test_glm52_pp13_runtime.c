@@ -23,13 +23,13 @@ static void SparkTestGlm52Pp13RuntimeRankPlan(void)
 
     assert(SparkGlm52Pp13RuntimeRankHostName(
         0u,host_name,sizeof(host_name)) == SPARK_STATUS_OK);
-    assert(strcmp(host_name,"spark0") == 0);
+    assert(strcmp(host_name,"10.10.100.10") == 0);
     assert(SparkGlm52Pp13RuntimeRankHostName(
         10u,host_name,sizeof(host_name)) == SPARK_STATUS_OK);
-    assert(strcmp(host_name,"sparka") == 0);
+    assert(strcmp(host_name,"10.10.100.20") == 0);
     assert(SparkGlm52Pp13RuntimeRankHostName(
         12u,host_name,sizeof(host_name)) == SPARK_STATUS_OK);
-    assert(strcmp(host_name,"sparkc") == 0);
+    assert(strcmp(host_name,"10.10.100.22") == 0);
     assert(SparkGlm52Pp13RuntimeBuildRankPlan(
         0u,1024u,52100u,&rank_plan,error_buffer,sizeof(error_buffer)) ==
             SPARK_STATUS_OK);
@@ -41,8 +41,9 @@ static void SparkTestGlm52Pp13RuntimeRankPlan(void)
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_DENSE_PREFIX) != 0u);
     assert((rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) == 0u);
-    assert(strcmp(rank_plan.next_host_name,"spark1") == 0);
-    assert(strcmp(rank_plan.output_route_name,"spark0_to_spark1_hidden") == 0);
+    assert(strcmp(rank_plan.next_host_name,"10.10.100.11") == 0);
+    assert(strcmp(rank_plan.output_route_name,
+        "10.10.100.10_to_10.10.100.11_hidden") == 0);
     assert(rank_plan.quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT);
     assert(SparkGlm52Pp13RuntimeBuildRankPlan(
@@ -56,8 +57,9 @@ static void SparkTestGlm52Pp13RuntimeRankPlan(void)
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) != 0u);
     assert((rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u);
-    assert(strcmp(rank_plan.previous_host_name,"sparkb") == 0);
-    assert(strcmp(rank_plan.input_route_name,"sparkb_to_sparkc_hidden") == 0);
+    assert(strcmp(rank_plan.previous_host_name,"10.10.100.21") == 0);
+    assert(strcmp(rank_plan.input_route_name,
+        "10.10.100.21_to_10.10.100.22_hidden") == 0);
 }
 
 static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
@@ -110,9 +112,10 @@ static void SparkTestGlm52Pp13RuntimeFinalEventRoute(void)
     assert(route.sink_rank_index == 0u);
     assert(route.listen_port == 52300u);
     assert(route.connect_port == 52300u);
-    assert(strcmp(route.source_host_name,"sparkc") == 0);
-    assert(strcmp(route.sink_host_name,"spark0") == 0);
-    assert(strcmp(route.route_name,"sparkc_to_spark0_final_events") == 0);
+    assert(strcmp(route.source_host_name,"10.10.100.22") == 0);
+    assert(strcmp(route.sink_host_name,"10.10.100.10") == 0);
+    assert(strcmp(route.route_name,
+        "10.10.100.22_to_10.10.100.10_final_events") == 0);
     assert(SparkGlm52Pp13RuntimeValidateFinalEventRoute(
         &route,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
     route.sink_rank_index = 1u;

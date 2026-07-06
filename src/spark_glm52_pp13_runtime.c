@@ -133,15 +133,8 @@ SparkStatus SparkGlm52Pp13RuntimeRankHostName(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (rank_index < 10u)
-    {
-        written = snprintf(host_name, host_name_bytes, "spark%u", rank_index);
-    }
-    else
-    {
-        written = snprintf(host_name, host_name_bytes, "spark%c",
-            (int)('a' + (rank_index - 10u)));
-    }
+    written = snprintf(host_name, host_name_bytes, "10.10.100.%u",
+        10u + rank_index);
     if (written < 0 || (uint32_t)written >= host_name_bytes)
     {
         host_name[0] = '\0';
@@ -530,9 +523,10 @@ SparkStatus SparkGlm52Pp13RuntimeValidateFinalEventRoute(
         route->sink_rank_index != 0u ||
         route->listen_port == 0u ||
         route->connect_port != route->listen_port ||
-        strcmp(route->source_host_name,"sparkc") != 0 ||
-        strcmp(route->sink_host_name,"spark0") != 0 ||
-        strcmp(route->route_name,"sparkc_to_spark0_final_events") != 0)
+        strcmp(route->source_host_name,"10.10.100.22") != 0 ||
+        strcmp(route->sink_host_name,"10.10.100.10") != 0 ||
+        strcmp(route->route_name,
+            "10.10.100.22_to_10.10.100.10_final_events") != 0)
     {
         return SparkGlm52Pp13RuntimeReport(
             error_buffer,
