@@ -233,3 +233,44 @@ default; SHARED layers skip it and reuse the group's row arrays and
 selections from the state-level staging. The sparse attention
 orchestrator consumes the pass outputs and starts at the absorbed
 project.
+
+
+## Branch-and-bound DSA pre-score filtering (proposal adopted)
+
+Adopted the other dev's summary + bound layer onto this branch after
+verification: the per-head interval bound is a true upper bound of the
+decode score formula (negative head weights contribute at most zero and
+are correctly omitted), the ordered-BF16 min/max compares are exact
+over cache values, block indexing matches ResolveCacheSlot
+((first_block_token_offset + token) / block_tokens against the
+per-sequence table row), and candidate counts are zeroed per launch.
+Excluded from the zip: module/production-runner serving changes,
+which belong to a separate effort.
+
+Fixes applied on adoption: the summary builder gained a dirty-flag
+parameter (null = full rebuild) because the full-scan launcher cannot
+run per step; the shared indexer rows core now marks dirty blocks from
+the slot mapping after every key store (covers decode and prefill from
+one site), and the prefill indexer pass rebuilds dirty summaries and
+clears the flags per chunk. Summary buffers are per layer and sized by
+the PHYSICAL pool (65536 blocks, 16 MiB min+max per layer), not the
+16384 per-context logical blocks in the proposal's estimate. Stale or
+unwritten slots can only loosen bounds, never break exactness.
+
+Third independent 2048 wall found and fixed while integrating: the
+service backend hardcoded MAX_BLOCKS_PER_SEQUENCE 32u, capping
+allocator growth at 2048 tokens regardless of the builder capacity.
+Now derived from SPARK_GLM52_KV_CONTEXT_TOKENS /
+SPARK_GLM52_KV_BLOCK_TOKENS, with block tokens single-sourced in
+kv_cache.h and the firmware constant deriving from it. The ifndef
+guard around the capacity constants is removed.
+
+The masked exact scorer (next step) must NOT write -FLT_MAX into a
+dense per-candidate row: that preserves the uniform-stride score
+buffer and the 4 TB wall. It must compact surviving blocks into a
+candidate token list, score into a compact row, and radix-select over
+it with an index indirection back to absolute tokens. The seed
+threshold comes from exactly scoring the previous IndexShare selection
+and taking the kth score, which keeps pruning exact. Decode-side
+summary maintenance is already in place via the mark-dirty site in the
+indexer core; the decode rebuild call lands with the masked scorer.

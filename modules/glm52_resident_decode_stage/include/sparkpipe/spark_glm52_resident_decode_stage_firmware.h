@@ -48,7 +48,8 @@ extern "C" {
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION 4096u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS 64u
+#include "sparkpipe/spark_glm52_kv_cache.h"
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS SPARK_GLM52_KV_BLOCK_TOKENS
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT 2048u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT 32u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_DIMENSION 128u
@@ -1044,6 +1045,9 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t *dsa_prefill_row_sequences_u32;
     uint32_t *dsa_prefill_row_positions_u32;
     void *dsa_prefill_key_scratch_bf16;
+    void *key_index_block_min_bf16;
+    void *key_index_block_max_bf16;
+    uint8_t *dsa_summary_dirty_flags_u8;
     void *dsa_prefill_query_a_bf16;
     void *dsa_prefill_query_index_heads_bf16;
     void *dsa_prefill_index_weights_bf16;
