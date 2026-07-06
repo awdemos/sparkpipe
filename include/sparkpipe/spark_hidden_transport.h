@@ -8,7 +8,7 @@
 extern "C" {
 #endif
 
-#define SPARK_HIDDEN_TRANSPORT_ABI_VERSION 2u
+#define SPARK_HIDDEN_TRANSPORT_ABI_VERSION 3u
 #define SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportInterface))
 #define SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES \
@@ -25,6 +25,8 @@ extern "C" {
     "spark.hidden_transport.gpudirect_rdma.verbs.v1"
 #define SPARK_HIDDEN_TRANSPORT_CUDA_HOST_DMABUF_VERBS_MODULE_ID \
     "spark.hidden_transport.cuda_host_dmabuf.verbs.v1"
+#define SPARK_HIDDEN_TRANSPORT_TCP_CUDA_HOST_MODULE_ID \
+    "spark.hidden_transport.tcp.cuda_host.v1"
 #define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_PEERMEM_SYSFS_PATH \
     "/sys/module/nvidia_peermem"
 #define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_INFINIBAND_SYSFS_PATH \
@@ -33,6 +35,8 @@ extern "C" {
     ((uint32_t)sizeof(SparkHiddenTransportPersistentRingStatistics))
 #define SPARK_HIDDEN_TRANSPORT_DYNAMIC_LIBRARY_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportDynamicLibrary))
+#define SPARK_HIDDEN_TRANSPORT_POLL_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkHiddenTransportPollDescriptor))
 #define SPARK_HIDDEN_TRANSPORT_INTERFACE_SYMBOL \
     "SparkHiddenTransportGetInterface"
 
@@ -44,7 +48,11 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_CAP_NO_FILE_TRANSPORT 0x00000020u
 #define SPARK_HIDDEN_TRANSPORT_CAP_NO_SHELL_TRANSPORT 0x00000040u
 #define SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION 0x00000080u
+#define SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS 0x00000100u
 #define SPARK_HIDDEN_TRANSPORT_CAP_SIMULATION_ONLY 0x80000000u
+
+#define SPARK_HIDDEN_TRANSPORT_POLL_READ 0x00000001u
+#define SPARK_HIDDEN_TRANSPORT_POLL_WRITE 0x00000002u
 
 #define SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS \
     (SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_CONNECTION | \
@@ -68,6 +76,17 @@ extern "C" {
 
 #define SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SIMULATION_CAPS \
     (SPARK_HIDDEN_TRANSPORT_REQUIRED_SIMULATION_CAPS | \
+     SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION)
+
+#define SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS \
+    (SPARK_HIDDEN_TRANSPORT_CAP_PERSISTENT_CONNECTION | \
+     SPARK_HIDDEN_TRANSPORT_CAP_DEVICE_POINTER_IO | \
+     SPARK_HIDDEN_TRANSPORT_CAP_STREAM_ORDERED | \
+     SPARK_HIDDEN_TRANSPORT_CAP_NO_FILE_TRANSPORT | \
+     SPARK_HIDDEN_TRANSPORT_CAP_NO_SHELL_TRANSPORT)
+
+#define SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PIPELINE_HOST_STAGED_CAPS \
+    (SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS | \
      SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION)
 
 #define SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 0x00000001u
@@ -132,6 +151,14 @@ typedef struct SparkHiddenTransportPersistentRingStatistics
     uint32_t queue_depth;
 } SparkHiddenTransportPersistentRingStatistics;
 
+typedef struct SparkHiddenTransportPollDescriptor
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    int32_t fd;
+    uint32_t events;
+} SparkHiddenTransportPollDescriptor;
+
 typedef SparkStatus (*SparkHiddenTransportInitializeFunction)(
     const SparkHiddenTransportEndpoint *endpoint,
     void **transport_state);
@@ -153,6 +180,11 @@ typedef SparkStatus (*SparkHiddenTransportSendBatchFunction)(
     void *transport_state,
     const SparkHiddenTransportPacket *packets,
     uint32_t packet_count);
+typedef SparkStatus (*SparkHiddenTransportGetPollDescriptorsFunction)(
+    void *transport_state,
+    SparkHiddenTransportPollDescriptor *descriptors,
+    uint32_t descriptor_capacity,
+    uint32_t *descriptor_count_out);
 
 typedef struct SparkHiddenTransportInterface
 {
@@ -167,6 +199,7 @@ typedef struct SparkHiddenTransportInterface
     SparkHiddenTransportPollFunction poll;
     SparkHiddenTransportPostReceiveBatchFunction post_receive_batch;
     SparkHiddenTransportSendBatchFunction send_batch;
+    SparkHiddenTransportGetPollDescriptorsFunction get_poll_descriptors;
 } SparkHiddenTransportInterface;
 
 typedef const SparkHiddenTransportInterface *(*SparkHiddenTransportGetInterfaceFunction)(
@@ -222,6 +255,11 @@ SparkStatus SparkHiddenTransportSendBatch(
 SparkStatus SparkHiddenTransportPoll(
     SparkHiddenTransportSession *session,
     SparkHiddenTransportCompletion *completion);
+SparkStatus SparkHiddenTransportGetPollDescriptors(
+    SparkHiddenTransportSession *session,
+    SparkHiddenTransportPollDescriptor *descriptors,
+    uint32_t descriptor_capacity,
+    uint32_t *descriptor_count_out);
 SparkStatus SparkHiddenTransportPersistentRingGetInterface(
     SparkHiddenTransportInterface *transport_interface);
 SparkStatus SparkHiddenTransportPersistentRingGetStatistics(

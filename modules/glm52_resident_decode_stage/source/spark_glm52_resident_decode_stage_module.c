@@ -4,6 +4,7 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,6 +22,29 @@
 extern SparkStatus SparkGlm52ResidentDecodeStageBackendVerifyRequiredCudaModules(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context);
 #endif
+
+static void SparkGlm52ResidentDecodeStageReportValidationFailure(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const char *check,
+    SparkStatus status)
+{
+    if (node_context == 0)
+    {
+        fprintf(stderr,"glm52_module_validation layer=none check=%s status=%d\n",
+            check,(int32_t)status);
+        return;
+    }
+    fprintf(stderr,
+        "glm52_module_validation layer=%u check=%s status=%d mode=%u projection=%u mlp=%u sparse=%u flags=0x%08x\n",
+        node_context->layer_index,
+        check,
+        (int32_t)status,
+        node_context->model_quantization_mode,
+        node_context->projection_mode,
+        node_context->mlp_execution_mode,
+        node_context->sparse_index_mode,
+        node_context->reserved_execution_flags);
+}
 
 typedef struct SparkGlm52ResidentDecodeStageState SparkGlm52ResidentDecodeStageState;
 
@@ -161,6 +185,8 @@ static bool SparkGlm52ResidentDecodeStageProjectionModeUsesQuantizedPlan(
 {
     return node_context->projection_mode ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_NVFP4_E2M1 ||
+        node_context->projection_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3 ||
         node_context->projection_mode ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_MXFP4_E2M1;
 }
@@ -1620,12 +1646,20 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
         if (!SparkGlm52ResidentDecodeStageProjectionBackendIsPrebound(
                 node_context))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "fast_projection_backend",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         status = SparkValidateGlm52ResidentDecodeStageRequiredProjectionAndOutputPlans(
             node_context);
         if (status != SPARK_STATUS_OK)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "fast_projection_plans",
+                status);
             return status;
         }
     }
@@ -1635,6 +1669,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
         node_context->attention_execution_mode !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_attention_mode",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1642,6 +1680,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_GRAPH_REPLAY) &&
         node_context->enable_cuda_graph_replay == 0u)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_graph_replay",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1650,6 +1692,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
         node_context->sparse_index_mode !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_PRESELECTED)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_sparse_indices",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1664,12 +1710,20 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
                 node_context->mlp_execution_mode !=
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE)
             {
+                SparkGlm52ResidentDecodeStageReportValidationFailure(
+                    node_context,
+                    "fast_dense_mlp_mode",
+                    SPARK_STATUS_INVALID_ARGUMENT);
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
             status = SparkValidateGlm52ResidentDecodeStageRequiredDenseMlpPlans(
                 node_context);
             if (status != SPARK_STATUS_OK)
             {
+                SparkGlm52ResidentDecodeStageReportValidationFailure(
+                    node_context,
+                    "fast_dense_mlp_plans",
+                    status);
                 return status;
             }
         }
@@ -1678,18 +1732,30 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             node_context->mlp_execution_mode !=
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "fast_b12x_moe_mode",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsRequiredForLayer(
                 node_context) &&
             !SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsUsable(node_context))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "fast_b12x_moe_plan",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (node_context->layer_progression_mode ==
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK &&
             !SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(node_context))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "fast_fp8_moe_plan",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
     }
@@ -1698,6 +1764,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MOE_ROUTER) &&
         !SparkGlm52ResidentDecodeStageRouterLinearPlanIsProductionFast(node_context))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_router_plan",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1710,12 +1780,20 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
             SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_restricted_logits",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageMtpDraftRequired(node_context) &&
         !SparkGlm52ResidentDecodeStageMtpDraftPlanIsUsable(
             node_context->mtp_draft_plan))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_mtp_plan",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1726,6 +1804,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
          node_context->phase_clock_mode !=
              SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DISABLED))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_debug_sync",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1733,6 +1815,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_BULK_PREFILL) &&
         !SparkGlm52ResidentDecodeStageBulkPrefillPlanIsUsable(node_context))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_bulk_prefill",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -1740,6 +1826,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageFastPathContract(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_VALIDATED_LATENCY) &&
         node_context->validated_stage_latency_ns == 0u)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_latency",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     return SPARK_STATUS_OK;
@@ -2173,6 +2263,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->abi_version !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "abi",
+            SPARK_STATUS_ABI_MISMATCH);
         return SPARK_STATUS_ABI_MISMATCH;
     }
     hidden_output_only =
@@ -2273,6 +2367,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             2u) ||
         node_context->pipeline_slots == 0)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "base",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageEffectiveModelQuantizationMode(
@@ -2281,6 +2379,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->projection_mode !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fp8_projection_mode",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -2291,6 +2393,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             !SparkGlm52ResidentDecodeStageMtpDraftPlanIsUsable(
                 node_context->mtp_draft_plan)))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "mtp_draft_plan",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -2305,6 +2411,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
              node_context->restricted_token_ids,
              4u)))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "final_output_pointers",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (hidden_output_only == 0u &&
@@ -2316,6 +2426,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
              node_context->mtp_mxfp4_scale_e8m0_u8,
              1u)))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "mtp_weight_pointers",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -2325,18 +2439,30 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
          node_context->linear_plan_count <
              SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "linear_plan_table",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (node_context->mlp_execution_mode ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE &&
         !SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsUsable(node_context))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "b12x_moe_plan",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (node_context->mlp_execution_mode ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE &&
         !SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(node_context))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fp8_moe_plan",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -2345,6 +2471,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->model_quantization_mode ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_AUTO)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "model_quantization",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -2352,21 +2482,37 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FP8_KV_CACHE) &&
         !SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(node_context))
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fp8_kv_cache_plan",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkValidateGlm52ResidentDecodeStageFastPathContract(
             node_context) != SPARK_STATUS_OK)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "fast_path_contract",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkValidateGlm52ResidentDecodeStageProjectionPointers(
             node_context) != SPARK_STATUS_OK)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "projection_pointers",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (SparkValidateGlm52ResidentDecodeStageLayerPointers(
             node_context) != SPARK_STATUS_OK)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "layer_pointers",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -2379,6 +2525,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->max_blocks_per_sequence >
             node_context->kv_block_count)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "kv_capacity",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -2386,6 +2536,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
     {
         if (node_context->cuda_pipeline_slot_states == 0)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "cuda_slot_states",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
     }
@@ -2400,6 +2554,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             &node_context->pipeline_slots[pipeline_slot_index]);
         if (status != SPARK_STATUS_OK)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "pipeline_slot",
+                status);
             return status;
         }
         if (node_context->sparse_index_mode ==
@@ -2414,6 +2572,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
                  node_context->pipeline_slots[pipeline_slot_index].index_head_weights_bf16,
                  2u)))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "dsa_pipeline_slot",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (node_context->projection_mode !=
@@ -2422,6 +2584,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
                 &node_context->pipeline_slots[pipeline_slot_index]) !=
                 SPARK_STATUS_OK)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "raw_pipeline_slot",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (node_context->layer_progression_mode !=
@@ -2430,6 +2596,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
                 &node_context->pipeline_slots[pipeline_slot_index]) !=
                 SPARK_STATUS_OK)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "moe_pipeline_slot",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (SparkGlm52ResidentDecodeStageRequiresNvfp4RouteSlotCache(
@@ -2438,6 +2608,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
                 node_context->pipeline_slots[pipeline_slot_index].moe_bound_expert_slots,
                 4u))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "route_slot_cache",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -2447,12 +2621,20 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
                 node_context->pipeline_slots[pipeline_slot_index].moe_router_logits,
                 4u))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "router_logits_slot",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (node_context->cuda_pipeline_slot_states != 0 &&
             node_context->cuda_pipeline_slot_states[pipeline_slot_index].abi_version !=
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_SLOT_STATE_ABI_VERSION)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "cuda_slot_state_abi",
+                SPARK_STATUS_ABI_MISMATCH);
             return SPARK_STATUS_ABI_MISMATCH;
         }
     }
@@ -2473,6 +2655,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageSliceNodeContext(
 
     if (slice_node_context == 0 || first_node_context == 0)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            0,
+            "slice_null",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     *first_node_context = 0;
@@ -2487,12 +2673,20 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageSliceNodeContext(
         slice_node_context->reserved != 0u ||
         slice_node_context->layer_node_contexts == 0)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            0,
+            "slice_base",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
     reference_node_context = slice_node_context->layer_node_contexts[0];
     if (reference_node_context == 0)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            0,
+            "slice_reference",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     stage_slice_plan_is_usable =
@@ -2505,6 +2699,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageSliceNodeContext(
     if (slice_node_context->stage_slice_plan != 0 &&
         !stage_slice_plan_is_usable)
     {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            reference_node_context,
+            "slice_plan",
+            SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     requires_builtin_fused_stage_moe =
@@ -2519,12 +2717,20 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageSliceNodeContext(
             layer_node_context);
         if (status != SPARK_STATUS_OK)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                layer_node_context,
+                "slice_layer",
+                status);
             return status;
         }
         if (requires_builtin_fused_stage_moe &&
             !SparkGlm52ResidentDecodeStageLayerSupportsBuiltInFusedStageMoe(
                 layer_node_context))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                layer_node_context,
+                "slice_fused_moe",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (layer_node_context->pipeline_slot_count !=
@@ -2534,6 +2740,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageSliceNodeContext(
             layer_node_context->enable_cuda_graph_replay !=
                 reference_node_context->enable_cuda_graph_replay)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                layer_node_context,
+                "slice_layer_shape",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (!stage_slice_plan_is_usable &&
@@ -2542,6 +2752,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageSliceNodeContext(
                 layer_node_context,
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FULL_STAGE_PLAN)))
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                layer_node_context,
+                "slice_full_stage_plan",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
@@ -2549,6 +2763,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageSliceNodeContext(
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_STAGE_SLICE_PLAN) &&
             !stage_slice_plan_is_usable)
         {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                layer_node_context,
+                "slice_required_plan",
+                SPARK_STATUS_INVALID_ARGUMENT);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
     }
@@ -2636,6 +2854,17 @@ static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
         &completion);
     if (pending_completion->hidden_output_transport_active != 0u)
     {
+        if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "stage_complete_send sequence=%llu position=%llu slot=%u session=%p bytes=%u\n",
+                (unsigned long long)pending_completion->sequence_id,
+                (unsigned long long)pending_completion->sequence_position,
+                pending_completion->driver_dispatch_slot,
+                (void *)pending_completion->hidden_output_transport_session,
+                pending_completion->hidden_output_packet.bytes_per_sequence);
+        }
         if (pending_completion->hidden_output_send_function == 0)
         {
             completion.status = SPARK_STATUS_INVALID_ARGUMENT;
@@ -2645,6 +2874,15 @@ static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
             completion.status = pending_completion->hidden_output_send_function(
                 pending_completion->hidden_output_transport_session,
                 &pending_completion->hidden_output_packet);
+            if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+            {
+                fprintf(
+                    stderr,
+                    "stage_complete_send_status status=%d sequence=%llu position=%llu\n",
+                    (int32_t)completion.status,
+                    (unsigned long long)pending_completion->sequence_id,
+                    (unsigned long long)pending_completion->sequence_position);
+            }
         }
     }
     completion.residency = pending_completion->residency;
@@ -2871,6 +3109,10 @@ static bool SparkGlm52ResidentDecodeStageFrameShapeIsSupported(
         }
         if (state->stage_slice_layer_count != 0u)
         {
+            if (frame->new_token_count == 1u)
+            {
+                return true;
+            }
             return SparkGlm52ResidentDecodeStageStageSliceBulkPrefillSupportsPrompt(
                 state,
                 frame->new_token_count);
@@ -2941,6 +3183,26 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
         runtime_kv_block_table->reserved0 != 0u ||
         runtime_kv_block_table->reserved1 != 0u)
     {
+        fprintf(
+            stderr,
+            "resident_kv_table_invalid layer=%u abi=%u bytes=%u block_tokens=%u expected_block_tokens=%u lanes=%u active=%u max_active=%u stride=%u expected_stride=%u capacity=%u expected_capacity=%u phys=%p counts=%p host=%p reserved=%u/%u\n",
+            node_context->layer_index,
+            runtime_kv_block_table->abi_version,
+            runtime_kv_block_table->descriptor_bytes,
+            runtime_kv_block_table->block_token_count,
+            expected_block_token_count,
+            runtime_kv_block_table->lane_count,
+            active_sequence_count,
+            node_context->max_active_sequence_count,
+            runtime_kv_block_table->lane_stride,
+            node_context->max_blocks_per_sequence,
+            runtime_kv_block_table->lane_capacity,
+            node_context->max_blocks_per_sequence,
+            (const void *)runtime_kv_block_table->physical_block_indices,
+            (const void *)runtime_kv_block_table->lane_physical_block_counts,
+            (const void *)runtime_kv_block_table->host_physical_block_indices,
+            runtime_kv_block_table->reserved0,
+            runtime_kv_block_table->reserved1);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -2954,10 +3216,24 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
             runtime_kv_block_table->lane_physical_block_counts[lane_index];
         if (lane_block_count > runtime_kv_block_table->lane_capacity)
         {
+            fprintf(
+                stderr,
+                "resident_kv_table_invalid layer=%u lane=%u count=%u capacity=%u\n",
+                node_context->layer_index,
+                lane_index,
+                lane_block_count,
+                runtime_kv_block_table->lane_capacity);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (lane_index >= active_sequence_count && lane_block_count != 0u)
         {
+            fprintf(
+                stderr,
+                "resident_kv_table_invalid layer=%u inactive_lane=%u count=%u active=%u\n",
+                node_context->layer_index,
+                lane_index,
+                lane_block_count,
+                active_sequence_count);
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         for (block_index = 0u; block_index < lane_block_count; ++block_index)
@@ -2972,6 +3248,16 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
                     runtime_kv_block_table->block_token_count >
                     node_context->cache_token_capacity)
             {
+                fprintf(
+                    stderr,
+                    "resident_kv_table_invalid layer=%u lane=%u block=%u physical=%u kv_blocks=%u block_tokens=%u capacity=%u\n",
+                    node_context->layer_index,
+                    lane_index,
+                    block_index,
+                    physical_block_index,
+                    node_context->kv_block_count,
+                    runtime_kv_block_table->block_token_count,
+                    node_context->cache_token_capacity);
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
         }
@@ -3351,13 +3637,16 @@ static SparkStatus SparkGlm52ResidentDecodeStagePrepareHiddenTransportPacket(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     *packet_out = *source_packet;
-    if (packet_out->hidden_bf16 == 0)
+    packet_out->hidden_bf16 = expected_hidden_bf16;
+    packet_out->cuda_stream = pipeline_slot->cuda_stream;
+    if ((packet_out->flags &
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) != 0u &&
+        packet_out->sideband_payload == 0)
     {
-        packet_out->hidden_bf16 = expected_hidden_bf16;
-    }
-    if (packet_out->cuda_stream == 0)
-    {
-        packet_out->cuda_stream = pipeline_slot->cuda_stream;
+        packet_out->flags &=
+            ~SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
+        packet_out->sideband_kind = 0u;
+        packet_out->sideband_bytes_per_sequence = 0u;
     }
     if (packet_out->abi_version != SPARK_HIDDEN_TRANSPORT_ABI_VERSION ||
         packet_out->descriptor_bytes != SPARK_HIDDEN_TRANSPORT_PACKET_BYTES ||
@@ -3473,6 +3762,17 @@ static SparkStatus SparkGlm52ResidentDecodeStagePrepareOutputHiddenTransport(
     *transport_session_out = frame_context->hidden_output_transport_session;
     *transport_send_function_out = frame_context->hidden_output_send_function;
     *transport_active_out = 1u;
+    if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
+    {
+        fprintf(
+            stderr,
+            "stage_prepare_output_hidden slot=%u active=%u session=%p bytes=%u device=%p\n",
+            pipeline_slot_index,
+            active_sequence_count,
+            (void *)frame_context->hidden_output_transport_session,
+            transport_packet_out->bytes_per_sequence,
+            transport_packet_out->hidden_bf16);
+    }
     return SPARK_STATUS_OK;
 }
 
@@ -3503,6 +3803,13 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=shape flags=0x%08x active=%u tokens=%u position=%llu\n",
+            frame->flags,
+            frame->active_slot_count,
+            frame->new_token_count,
+            (unsigned long long)frame->sequence_position);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -3518,6 +3825,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=frame_context status=%d flags=0x%08x user_context=%p\n",
+            (int32_t)status,
+            frame->flags,
+            frame->user_context);
         return status;
     }
 
@@ -3532,6 +3845,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=kv_table status=%d flags=0x%08x frame_context=%p\n",
+            (int32_t)status,
+            frame->flags,
+            (const void *)frame_context);
         return status;
     }
 
@@ -3545,6 +3864,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=prefill_view status=%d flags=0x%08x frame_context=%p\n",
+            (int32_t)status,
+            frame->flags,
+            (const void *)frame_context);
         return status;
     }
 
@@ -3564,6 +3889,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=pipeline_slot slot=%llu slot_count=%u flags=0x%08x\n",
+            (unsigned long long)pipeline_slot_value,
+            state->pipeline_slot_count,
+            frame->flags);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
@@ -3633,6 +3964,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=input_transport status=%d slot=%u flags=0x%08x\n",
+            (int32_t)status,
+            pipeline_slot_index,
+            frame->flags);
         return status;
     }
 
@@ -3652,6 +3989,13 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=output_transport status=%d slot=%u flags=0x%08x out_session=%p\n",
+            (int32_t)status,
+            pipeline_slot_index,
+            frame->flags,
+            frame_context != 0 ? (void *)frame_context->hidden_output_transport_session : 0);
         return status;
     }
 
@@ -3660,7 +4004,8 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED,
         memory_order_release);
 
-    if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
+    if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u &&
+        prefill_frame_view != 0)
     {
         if (state->stage_slice_layer_count != 0u)
         {
@@ -3685,6 +4030,26 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
                 frame->new_token_count,
                 runtime_kv_block_table,
                 prefill_frame_view,
+                &pending_completion->backend_completion);
+        }
+    }
+    else if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
+    {
+        if (state->stage_slice_layer_count == 0u)
+        {
+            status = SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        else
+        {
+            status = SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
+                state->stage_slice_plan,
+                state->stage_slice_node_contexts,
+                state->stage_slice_layer_count,
+                pipeline_slot_index,
+                frame->active_slot_count,
+                0u,
+                runtime_kv_block_table,
+                frame_context,
                 &pending_completion->backend_completion);
         }
     }
@@ -3717,6 +4082,17 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
+        fprintf(
+            stderr,
+            "resident_stage_execute_reject step=backend_submit status=%d slot=%u flags=0x%08x active=%u tokens=%u prefill_view=%p stage_layers=%u final=%u\n",
+            (int32_t)status,
+            pipeline_slot_index,
+            frame->flags,
+            frame->active_slot_count,
+            frame->new_token_count,
+            (const void *)prefill_frame_view,
+            state->stage_slice_layer_count,
+            state->stage_slice_final_token_stage);
         return status;
     }
 
@@ -3761,16 +4137,20 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
             memory_order_relaxed);
         return SPARK_STATUS_OK;
     }
-    if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
-    {
-        bool prefill_shape_supported;
+	if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
+	{
+		bool prefill_shape_supported;
 
-        if (state->stage_slice_layer_count != 0u)
-        {
-            prefill_shape_supported =
-                SparkGlm52ResidentDecodeStageStageSliceBulkPrefillSupportsPrompt(
-                    state,
-                    request->new_token_count);
+		if (state->stage_slice_layer_count != 0u && request->new_token_count == 1u)
+		{
+			prefill_shape_supported = true;
+		}
+		else if (state->stage_slice_layer_count != 0u)
+		{
+			prefill_shape_supported =
+				SparkGlm52ResidentDecodeStageStageSliceBulkPrefillSupportsPrompt(
+					state,
+					request->new_token_count);
         }
         else
         {

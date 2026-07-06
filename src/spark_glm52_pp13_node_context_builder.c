@@ -1,6 +1,7 @@
 #include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
 
 #include <dlfcn.h>
+#include <stdio.h>
 #include <string.h>
 
 SparkStatus SparkGlm52Pp13NodeContextBuilderValidateInterface(
@@ -74,12 +75,20 @@ SparkStatus SparkGlm52Pp13NodeContextBuilderLoadInterfaceFromSharedObject(
 	memset(library,0,sizeof(*library));
 	dynamic_library = dlopen(shared_object_path,RTLD_NOW | RTLD_LOCAL);
 	if (dynamic_library == 0)
+	{
+		fprintf(stderr,"pp13_builder_dlopen path=%s error=%s\n",
+			shared_object_path,dlerror());
 		return SPARK_STATUS_NOT_FOUND;
+	}
 	get_interface = (SparkGlm52Pp13NodeContextBuilderGetInterfaceFunction)dlsym(
 		dynamic_library,
 		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_INTERFACE_SYMBOL);
 	if (get_interface == 0)
 	{
+		fprintf(stderr,"pp13_builder_dlsym path=%s symbol=%s error=%s\n",
+			shared_object_path,
+			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_INTERFACE_SYMBOL,
+			dlerror());
 		dlclose(dynamic_library);
 		return SPARK_STATUS_NOT_FOUND;
 	}

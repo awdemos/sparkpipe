@@ -253,7 +253,7 @@ SparkStatus SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateFromPackFile
 	cudaError_t cuda_status;
 
 	if (binding == 0 || create_info == 0 || create_info->pack_path == 0 ||
-		create_info->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PLAN_ABI_VERSION ||
+		create_info->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_ABI_VERSION ||
 		create_info->reserved != 0u ||
 		create_info->maximum_active_sequence_count == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;

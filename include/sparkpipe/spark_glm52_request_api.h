@@ -100,6 +100,8 @@ extern "C" {
 #define SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT 6u
 
 #define SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY 8u
+#define SPARK_GLM52_REQUEST_API_SLOT_HASH_SLOTS 4096u
+#define SPARK_GLM52_REQUEST_API_NO_SLOT UINT32_MAX
 
 typedef uint64_t SparkGlm52RequestApiHandle;
 
@@ -159,6 +161,8 @@ typedef struct SparkGlm52RequestApiSlot
     uint64_t committed_prefix_hash;
     uint64_t handle;
     uint64_t submission_order;
+    uint32_t handle_hash_next;
+    uint32_t reserved1;
     const uint32_t *prompt_token_ids;
     uint32_t mtp_draft_token_count;
     uint32_t mtp_draft_token_ids[SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
@@ -355,6 +359,8 @@ typedef struct SparkGlm52RequestApi
     uint64_t mtp_accepted_draft_token_count;
     uint64_t mtp_committed_token_count;
     uint64_t mtp_rejected_token_count;
+    uint32_t slot_handle_hash_heads[
+        SPARK_GLM52_REQUEST_API_SLOT_HASH_SLOTS];
     SparkGlm52RequestApiPendingPrefetch pending_prefetches[
         SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY];
 } SparkGlm52RequestApi;

@@ -22,6 +22,10 @@ extern "C" {
 	(SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP)
 
+#define SPARK_GLM52_PP13_KV_ENTRY_MISSING 0u
+#define SPARK_GLM52_PP13_KV_ENTRY_IN_FLIGHT 1u
+#define SPARK_GLM52_PP13_KV_ENTRY_RESIDENT 2u
+
 typedef struct SparkGlm52Pp13WorkControlPacket
 {
 	uint32_t magic;
@@ -52,6 +56,10 @@ typedef struct SparkGlm52Pp13WorkControlKvState
 	uint32_t physical_block_capacity;
 	uint32_t *physical_block_indices;
 	uint32_t *lane_physical_block_counts;
+	uint8_t *physical_block_states;
+	uint32_t missing_block_count;
+	uint32_t in_flight_block_count;
+	uint32_t resident_block_count;
 } SparkGlm52Pp13WorkControlKvState;
 
 SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
@@ -64,7 +72,8 @@ SparkStatus SparkGlm52Pp13WorkControlInitializeKvState(
 	uint32_t lane_stride,
 	uint32_t block_token_count,
 	uint32_t *physical_block_indices,
-	uint32_t *lane_physical_block_counts);
+	uint32_t *lane_physical_block_counts,
+	uint8_t *physical_block_states);
 uint32_t SparkGlm52Pp13WorkControlBlockCount(
 	uint32_t token_count,
 	uint32_t block_token_count);
@@ -72,6 +81,12 @@ SparkStatus SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 	const SparkGlm52Pp13WorkControlPacket *packet,
 	SparkGlm52Pp13WorkControlKvState *state,
 	SparkGlm52KvBlockTableView *view);
+SparkStatus SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
+	const SparkGlm52Pp13WorkControlPacket *packet,
+	SparkGlm52Pp13WorkControlKvState *state);
+SparkStatus SparkGlm52Pp13WorkControlCancelHostKvBlockTable(
+	const SparkGlm52Pp13WorkControlPacket *packet,
+	SparkGlm52Pp13WorkControlKvState *state);
 
 #ifdef __cplusplus
 }

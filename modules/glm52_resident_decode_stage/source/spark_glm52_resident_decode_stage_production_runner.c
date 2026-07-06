@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include <string.h>
 
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
@@ -136,6 +137,13 @@ static void SparkGlm52ProductionRunnerBuildFrameContext(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW;
         frame_context->prefill_view = dispatch->prefill_view;
     }
+    if ( dispatch->mtp_draft_token_budgets != 0 )
+    {
+        frame_context->flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS;
+        frame_context->mtp_draft_token_budgets =
+            dispatch->mtp_draft_token_budgets;
+    }
     if ( dispatch->hidden_input_transport_session != 0 )
     {
         frame_context->flags |=
@@ -224,6 +232,18 @@ static SparkStatus SparkGlm52ProductionRunnerAdmit(
     {
         runner->stats.last_admission_rejection = decision.rejection_reason;
         runner->stats.rejected_count += 1u;
+        fprintf(
+            stderr,
+            "production_runner_admit_reject reason=%u request=%llu sequence=%llu position=%llu active=%u tokens=%u flags=0x%08x available=%u pressure=%u\n",
+            decision.rejection_reason,
+            (unsigned long long)request.request_id,
+            (unsigned long long)request.sequence_id,
+            (unsigned long long)request.sequence_position,
+            request.active_slot_count,
+            request.new_token_count,
+            request.frame_flags,
+            decision.available_dispatch_slot_count,
+            decision.private_queue_pressure);
         return SPARK_STATUS_BUSY;
     }
     runner->stats.admitted_count += 1u;
@@ -279,6 +299,19 @@ SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
     {
         runner->stats.last_status = (uint32_t)status;
         runner->stats.rejected_count += 1u;
+        fprintf(
+            stderr,
+            "production_runner_validate_reject status=%d flags=0x%08x active=%u tokens=%u slot=%u kv=%p in_session=%p out_session=%p prefill_view=%p runner_flags=0x%08x\n",
+            (int32_t)status,
+            dispatch != 0 ? dispatch->flags : 0u,
+            dispatch != 0 ? dispatch->active_sequence_count : 0u,
+            dispatch != 0 ? dispatch->new_token_count : 0u,
+            dispatch != 0 ? dispatch->pipeline_slot : 0u,
+            dispatch != 0 ? (const void *)dispatch->kv_block_table : 0,
+            dispatch != 0 ? (void *)dispatch->hidden_input_transport_session : 0,
+            dispatch != 0 ? (void *)dispatch->hidden_output_transport_session : 0,
+            dispatch != 0 ? (const void *)dispatch->prefill_view : 0,
+            runner->flags);
         return status;
     }
     SparkGlm52ProductionRunnerBuildFrameContext(runner, dispatch, &frame_context);
@@ -294,7 +327,19 @@ SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
     if ( status == SPARK_STATUS_OK )
         runner->stats.submitted_count += 1u;
     else
+    {
         runner->stats.submit_failed_count += 1u;
+        fprintf(
+            stderr,
+            "production_runner_submit_failed status=%d frame_flags=0x%08x active=%u tokens=%u slot=%u position=%llu frame_context=%p\n",
+            (int32_t)status,
+            frame.flags,
+            frame.active_slot_count,
+            frame.new_token_count,
+            frame.driver_dispatch_slot,
+            (unsigned long long)frame.sequence_position,
+            frame.user_context);
+    }
     return status;
 }
 

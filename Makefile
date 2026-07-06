@@ -16,6 +16,10 @@ else
 SHARED_LIBRARY_FLAGS ?= -shared
 SHARED_LIBRARY_EXT ?= so
 endif
+GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH :=
+ifneq ($(UNAME_S),Darwin)
+GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH := -Xlinker -rpath -Xlinker '$$ORIGIN/runtime_libs'
+endif
 SPARKPIPE_B12X_AOT_ENV ?= $(HOME)/.config/sparkpipe/glm52_b12x_aot_env.sh
 B12X_AOT_TOKENS ?= 1,2,4,8,16,32,64,96,128,256,512,1024
 B12X_AOT_WARMUP ?= 5
@@ -47,10 +51,16 @@ GLM52_STAGE_SWEEP_DRIVER_SO ?=
 GLM52_STAGE_SWEEP_VALIDATOR_CACHE_DIR ?= $(GLM52_STAGE_SWEEP_OUTPUT_DIR)/validators
 GLM52_STAGE_SWEEP_REQUIRED_CUDA_LINK_ARGS ?=
 GLM52_STAGE_SWEEP_FORCE_VALIDATOR_REBUILD ?= 0
+GLM52_REQUIRED_CUDA_LINK_ARGS ?=
+REQUIRED_CUDA_CC_ARGS ?=
 B12X_ADAPTER_ARCHIVE := $(abspath build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a)
 B12X_COMPILED_BACKEND_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a)
 B12X_GENERATED_KERNEL_TABLE_ARCHIVE := $(abspath build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a)
 B12X_RUNTIME_LINK_ARGS_FILE := $(abspath $(B12X_AOT_OUTPUT_DIR))/generated/runtime_link_args.txt
+GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(shell cat "$(B12X_RUNTIME_LINK_ARGS_FILE)" 2>/dev/null)
+GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS))
+GLM52_PP13_NODE_CONTEXT_BUILDER := build/libglm52_pp13_node_context_builder.$(SHARED_LIBRARY_EXT)
+HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
 
 COMMON_SOURCES := \
     src/spark_status.c \
@@ -104,6 +114,7 @@ TOOL_NAMES := \
     sparkpipe_glm52_prefill_dryrun \
     sparkpipe_hidden_transport_preflight \
     sparkpipe_glm52_pp13_rank_gate \
+    sparkpipe_glm52_pp13_loopback_probe \
     sparkpipe_glm52_pp13_rank_daemon \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
@@ -194,6 +205,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_spark2_accuracy_gate \
     glm52_spark2_local_pipeline_gate \
     glm52_pp13_service_backend \
+    glm52_pp13_node_context_builder \
     glm52_resident_decode_stage_firmware_package \
     tree_summary
 
@@ -240,6 +252,9 @@ build/sparkpipe_hidden_transport_preflight: tools/sparkpipe_hidden_transport_pre
 build/sparkpipe_glm52_pp13_rank_gate: tools/sparkpipe_glm52_pp13_rank_gate.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_glm52_pp13_loopback_probe: tools/sparkpipe_glm52_pp13_loopback_probe.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/sparkpipe_cuda_host_dmabuf_verbs_preflight: tools/sparkpipe_cuda_host_dmabuf_verbs_preflight.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -I$(CUDA_HOME)/include $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcuda -libverbs $(LDLIBS) -o $@
 
@@ -270,6 +285,35 @@ $(GLM52_PP13_SERVICE_BACKEND): src/spark_glm52_pp13_service_backend.c modules/gl
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) src/spark_glm52_pp13_service_backend.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 glm52_pp13_service_backend: $(GLM52_PP13_SERVICE_BACKEND)
+
+$(HIDDEN_TRANSPORT_TCP_CUDA): modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBRARY)
+	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
+		echo "hidden_transport_tcp_cuda skipped: nvcc unavailable"; \
+	else \
+		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@; \
+	fi
+
+hidden_transport_tcp_cuda: $(HIDDEN_TRANSPORT_TCP_CUDA)
+
+$(GLM52_STAGE_SWEEP_MODULE_ARCHIVE):
+	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
+		echo "glm52_resident_decode_stage archive skipped: nvcc unavailable"; \
+	else \
+		$(MAKE) -C modules/glm52_resident_decode_stage archive NVCC=$(NVCC) CUDA_ARCH=sm_121a; \
+	fi
+
+$(GLM52_PP13_NODE_CONTEXT_BUILDER): modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY)
+	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
+		echo "glm52_pp13_node_context_builder skipped: nvcc unavailable"; \
+	else \
+		if [ -z "$(GLM52_REQUIRED_CUDA_LINK_ARGS)" ] && [ ! -s "$(B12X_RUNTIME_LINK_ARGS_FILE)" ]; then \
+			echo "missing $(B12X_RUNTIME_LINK_ARGS_FILE); run make glm52_b12x_aot_compile first" >&2; \
+			exit 2; \
+		fi; \
+		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -lcublasLt -lcublas -lm -ldl $(GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH) $(GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS) -o $@; \
+	fi
+
+glm52_pp13_node_context_builder: $(GLM52_PP13_NODE_CONTEXT_BUILDER)
 
 $(TEST_SUPPORT_OBJECT): tests/test_support.c tests/test_support.h $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -MMD -MP -c tests/test_support.c -o $@

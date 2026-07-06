@@ -181,6 +181,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot;
     void *cuda_stream;
+    void *launch_completion;
     SparkStatus status;
     cudaError_t cuda_status;
 
@@ -210,6 +211,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    launch_completion = 0;
 
     status = SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
         stage_slice_plan,
@@ -220,10 +222,22 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         final_token_stage,
         runtime_kv_block_table,
         frame_context,
-        cuda_stream);
+        cuda_stream,
+        launch_completion);
     if (status != SPARK_STATUS_OK)
     {
         return status;
+    }
+
+    if (final_token_stage == 0u)
+    {
+        cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
+        if (cuda_status != cudaSuccess)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+        completion->function(completion->context);
+        return SPARK_STATUS_OK;
     }
 
     if (getenv("GLM52_STAGE_SLICE_DEBUG_SYNC") != 0)
@@ -251,16 +265,12 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         cudaStreamSynchronize((cudaStream_t)cuda_stream);
         return status;
     }
-
-    cuda_status = cudaLaunchHostFunc(
-        (cudaStream_t)cuda_stream,
-        SparkGlm52ResidentDecodeStageCudaCompletion,
-        completion);
+    cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
     if (cuda_status != cudaSuccess)
     {
-        cudaStreamSynchronize((cudaStream_t)cuda_stream);
         return SPARK_STATUS_INTERNAL_ERROR;
     }
+    completion->function(completion->context);
     return SPARK_STATUS_OK;
 }
 

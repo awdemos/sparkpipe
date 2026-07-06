@@ -272,6 +272,100 @@ static void SparkGlm52RequestApiInitializeSlot(
     slot->abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
     slot->descriptor_bytes = SPARK_GLM52_REQUEST_API_SLOT_DESCRIPTOR_BYTES;
     slot->state = SPARK_GLM52_REQUEST_API_STATE_FREE;
+    slot->handle_hash_next = SPARK_GLM52_REQUEST_API_NO_SLOT;
+}
+
+static uint32_t SparkGlm52RequestApiHashHandle(
+    SparkGlm52RequestApiHandle handle)
+{
+    uint64_t hash;
+
+    hash = handle;
+    hash ^= (hash >> 33u);
+    hash *= 0xff51afd7ed558ccdull;
+    hash ^= (hash >> 33u);
+    return (uint32_t)(hash % SPARK_GLM52_REQUEST_API_SLOT_HASH_SLOTS);
+}
+
+static uint32_t SparkGlm52RequestApiSlotIndex(
+    const SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiSlot *slot)
+{
+    uint64_t byte_offset;
+    uint64_t slot_index;
+
+    if (api == 0 || slot == 0 || api->request_slots == 0 ||
+        slot < api->request_slots ||
+        slot >= &api->request_slots[api->request_capacity])
+    {
+        return SPARK_GLM52_REQUEST_API_NO_SLOT;
+    }
+    byte_offset = (uint64_t)((uintptr_t)slot - (uintptr_t)api->request_slots);
+    slot_index = byte_offset / (uint64_t)sizeof(*slot);
+    if (slot_index >= api->request_capacity)
+    {
+        return SPARK_GLM52_REQUEST_API_NO_SLOT;
+    }
+    return (uint32_t)slot_index;
+}
+
+static void SparkGlm52RequestApiInsertSlotHash(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot *slot)
+{
+    uint32_t slot_index;
+    uint32_t hash_slot;
+
+    slot_index = SparkGlm52RequestApiSlotIndex(api, slot);
+    if (slot_index == SPARK_GLM52_REQUEST_API_NO_SLOT ||
+        slot->handle == SPARK_GLM52_REQUEST_API_INVALID_HANDLE)
+    {
+        return;
+    }
+    hash_slot = SparkGlm52RequestApiHashHandle(slot->handle);
+    slot->handle_hash_next = api->slot_handle_hash_heads[hash_slot];
+    api->slot_handle_hash_heads[hash_slot] = slot_index;
+}
+
+static void SparkGlm52RequestApiRemoveSlotHash(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot *slot)
+{
+    uint32_t slot_index;
+    uint32_t hash_slot;
+    uint32_t current_slot;
+    uint32_t previous_slot;
+
+    slot_index = SparkGlm52RequestApiSlotIndex(api, slot);
+    if (slot_index == SPARK_GLM52_REQUEST_API_NO_SLOT ||
+        slot->handle == SPARK_GLM52_REQUEST_API_INVALID_HANDLE)
+    {
+        return;
+    }
+    hash_slot = SparkGlm52RequestApiHashHandle(slot->handle);
+    current_slot = api->slot_handle_hash_heads[hash_slot];
+    previous_slot = SPARK_GLM52_REQUEST_API_NO_SLOT;
+    while (current_slot != SPARK_GLM52_REQUEST_API_NO_SLOT)
+    {
+        if (current_slot == slot_index)
+        {
+            if (previous_slot == SPARK_GLM52_REQUEST_API_NO_SLOT)
+            {
+                api->slot_handle_hash_heads[hash_slot] =
+                    api->request_slots[current_slot].handle_hash_next;
+            }
+            else
+            {
+                api->request_slots[previous_slot].handle_hash_next =
+                    api->request_slots[current_slot].handle_hash_next;
+            }
+            api->request_slots[current_slot].handle_hash_next =
+                SPARK_GLM52_REQUEST_API_NO_SLOT;
+            return;
+        }
+        previous_slot = current_slot;
+        current_slot = api->request_slots[current_slot].handle_hash_next;
+    }
 }
 
 
@@ -309,6 +403,7 @@ SparkStatus SparkGlm52RequestApiInitialize(
     const SparkGlm52RequestApiConfiguration *configuration)
 {
     uint32_t slot_index;
+    uint32_t hash_index;
     uint32_t configuration_flags;
     SparkStatus status;
 
@@ -352,6 +447,13 @@ SparkStatus SparkGlm52RequestApiInitialize(
         configuration->kv_prefetch_poll_function;
     api->dspark_speculator = configuration->dspark_speculator;
 
+    for (hash_index = 0u;
+         hash_index < SPARK_GLM52_REQUEST_API_SLOT_HASH_SLOTS;
+         ++hash_index)
+    {
+        api->slot_handle_hash_heads[hash_index] =
+            SPARK_GLM52_REQUEST_API_NO_SLOT;
+    }
     for (slot_index = 0u; slot_index < api->request_capacity; ++slot_index)
     {
         SparkGlm52RequestApiInitializeSlot(&api->request_slots[slot_index]);
@@ -382,13 +484,17 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindSlotByHandle(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiHandle handle)
 {
+    uint32_t hash_slot;
     uint32_t slot_index;
 
     if (handle == SPARK_GLM52_REQUEST_API_INVALID_HANDLE)
     {
         return 0;
     }
-    for (slot_index = 0u; slot_index < api->request_capacity; ++slot_index)
+    hash_slot = SparkGlm52RequestApiHashHandle(handle);
+    slot_index = api->slot_handle_hash_heads[hash_slot];
+    while (slot_index != SPARK_GLM52_REQUEST_API_NO_SLOT &&
+           slot_index < api->request_capacity)
     {
         SparkGlm52RequestApiSlot *slot;
 
@@ -398,6 +504,7 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindSlotByHandle(
         {
             return slot;
         }
+        slot_index = slot->handle_hash_next;
     }
     return 0;
 }
@@ -466,6 +573,7 @@ SparkStatus SparkGlm52RequestApiSubmit(
     slot->submission_order = api->submission_counter;
     api->submission_counter += 1u;
     slot->prompt_token_ids = request->prompt_token_ids;
+    SparkGlm52RequestApiInsertSlotHash(api, slot);
 
     api->queued_request_count += 1u;
     api->submitted_request_count += 1u;
@@ -5590,6 +5698,7 @@ SparkStatus SparkGlm52RequestApiReleaseCompletedRequest(
     {
         return status;
     }
+    SparkGlm52RequestApiRemoveSlotHash(api, slot);
     SparkGlm52RequestApiInitializeSlot(slot);
     return SPARK_STATUS_OK;
 }

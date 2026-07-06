@@ -54,6 +54,20 @@ static SparkStatus SparkTestServiceBackendPump(
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkTestServiceBackendGetPollDescriptors(
+	void *backend_state,
+	SparkGlm52ServiceBackendPollDescriptor *descriptors,
+	uint32_t descriptor_capacity,
+	uint32_t *descriptor_count_out)
+{
+	if (backend_state == 0 || descriptor_count_out == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	(void)descriptors;
+	(void)descriptor_capacity;
+	*descriptor_count_out = 0u;
+	return SPARK_STATUS_OK;
+}
+
 static const SparkGlm52ServiceBackendInterface SparkTestServiceBackendInterface =
 {
 	SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION,
@@ -63,7 +77,8 @@ static const SparkGlm52ServiceBackendInterface SparkTestServiceBackendInterface 
 	SparkTestServiceBackendInitialize,
 	SparkTestServiceBackendDestroy,
 	SparkTestServiceBackendGetView,
-	SparkTestServiceBackendPump
+	SparkTestServiceBackendPump,
+	SparkTestServiceBackendGetPollDescriptors
 };
 
 const SparkGlm52ServiceBackendInterface *SparkGlm52ServiceBackendGetInterface(void)
