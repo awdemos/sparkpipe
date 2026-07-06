@@ -362,7 +362,12 @@ static int32_t SparkGlm52Pp13LoopbackReadInput(SparkGlm52Pp13LoopbackRuntime *rt
 	if (got < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
 		return 0;
 	if (got <= 0)
-		return -1;
+	{
+		close(rt->input_fd);
+		rt->input_fd = -1;
+		rt->input_offset = 0u;
+		return 0;
+	}
 	rt->input_offset += (uint32_t)got;
 	return rt->input_offset == sizeof(rt->input_packet) ? 1 : 0;
 }
@@ -409,7 +414,13 @@ static int32_t SparkGlm52Pp13LoopbackWriteOutput(SparkGlm52Pp13LoopbackRuntime *
 	if (wrote < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
 		return 0;
 	if (wrote <= 0)
-		return -1;
+	{
+		close(rt->output_fd);
+		rt->output_fd = -1;
+		rt->output_connecting = 0u;
+		rt->output_offset = 0u;
+		return 1;
+	}
 	rt->output_offset += (uint32_t)wrote;
 	if (rt->output_offset < sizeof(rt->output_packet))
 		return 1;
@@ -547,12 +558,10 @@ static int32_t SparkGlm52Pp13LoopbackRun(SparkGlm52Pp13LoopbackRuntime *rt)
 				return 0;
 			}
 			if (queue_status < 0)
-				return -3;
+				continue;
 			progress = 1u;
 		}
 		write_status = SparkGlm52Pp13LoopbackWriteOutput(rt);
-		if (write_status < 0)
-			return -4;
 		if (write_status > 0)
 			progress = 1u;
 		if (progress == 0u)
@@ -605,5 +614,7 @@ int main(int argc,char **argv)
 		close(rt.output_fd);
 	if (rt.listen_fd >= 0)
 		close(rt.listen_fd);
+	if (result != 0)
+		fprintf(stderr,"loopback_failed rank=%u result=%d\n",rt.config.rank_index,result);
 	return result == 0 ? 0 : 1;
 }
