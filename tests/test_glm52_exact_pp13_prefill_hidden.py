@@ -51,12 +51,27 @@ def test_pp13_rank_does_not_enable_dsa_fragment_transport(root: Path) -> None:
     assert "layer->node.dsa_kv_fragment_save_plan = 0;" in source
 
 
+def test_prebound_linear_plan_accepts_smaller_active_count(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(")
+    end = source.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageLaunchMtpDraft(",
+        start)
+    function_body = source[start:end]
+    assert "linear_plan_active_mismatch" not in function_body
+    assert "active_sequence_count != linear_plan->maximum_active_sequence_count" not in function_body
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_final_stage_has_hidden_only_builtin_launcher(root)
     test_exact_pp13_final_stage_can_run_hidden_only(root)
     test_pp13_rank_capacity_is_not_fixed_batch(root)
     test_pp13_rank_does_not_enable_dsa_fragment_transport(root)
+    test_prebound_linear_plan_accepts_smaller_active_count(root)
 
 
 if __name__ == "__main__":
