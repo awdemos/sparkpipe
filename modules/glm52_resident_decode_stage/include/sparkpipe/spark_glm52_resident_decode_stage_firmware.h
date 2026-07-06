@@ -1040,7 +1040,7 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t *dsa_prefill_selected_u32;
     uint32_t *dsa_prefill_row_context_lengths_u32;
     uint32_t *dsa_prefill_row_sequences_u32;
-    uint32_t *dsa_prefill_row_slots_u32;
+    uint32_t *dsa_prefill_row_positions_u32;
     void *dsa_prefill_key_scratch_bf16;
     void *dsa_prefill_query_a_bf16;
     void *dsa_prefill_query_index_heads_bf16;

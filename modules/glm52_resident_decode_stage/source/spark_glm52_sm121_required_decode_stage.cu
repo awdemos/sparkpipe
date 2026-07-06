@@ -56,6 +56,7 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS \
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_WARPS * \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_PREFILL_TILE_ROWS 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_ABSORBED_OUT_TILE 32u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_ABSORBED_SEQ_TILE 8u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_ABSORBED_HEADS_PER_BLOCK 16u
@@ -13369,6 +13370,193 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeWaitForDsaKvFragmentPrefetc
         (void *)cuda_stream);
 }
 
+static __host__ __device__ __forceinline__ uint32_t SparkGlm52ResidentDecodeStagePagedPrefillLaneTokenCount(
+    const uint32_t *prompt_token_counts,
+    uint32_t sequence_index,
+    uint32_t prompt_token_count)
+{
+    if (prompt_token_counts == 0)
+    {
+        return prompt_token_count;
+    }
+    return prompt_token_counts[sequence_index] <= prompt_token_count
+        ? prompt_token_counts[sequence_index]
+        : prompt_token_count;
+}
+
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 4)
+void SparkGlm52ResidentDecodeStageDsaPrefillRowSetupKernel(
+    const uint32_t *__restrict__ prompt_positions,
+    const uint32_t *__restrict__ prompt_token_counts,
+    uint32_t *__restrict__ row_sequence_indices,
+    uint32_t *__restrict__ row_positions,
+    uint32_t *__restrict__ row_context_lengths,
+    uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
+    uint32_t prompt_token_count,
+    uint32_t prompt_token_stride)
+{
+    uint32_t row_index;
+    uint32_t sequence_index;
+    uint32_t local_token_index;
+    uint32_t lane_prompt_token_count;
+    uint32_t absolute_token_position;
+
+    row_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+    if (row_index >= active_sequence_count * prompt_token_stride)
+    {
+        return;
+    }
+    sequence_index = row_index / prompt_token_stride;
+    local_token_index = row_index - (sequence_index * prompt_token_stride);
+    lane_prompt_token_count =
+        SparkGlm52ResidentDecodeStagePagedPrefillLaneTokenCount(
+            prompt_token_counts,
+            sequence_index,
+            prompt_token_count);
+    row_sequence_indices[row_index] = sequence_index;
+    if (local_token_index >= lane_prompt_token_count)
+    {
+        row_positions[row_index] = 0u;
+        row_context_lengths[row_index] = 0u;
+        return;
+    }
+    absolute_token_position =
+        prompt_token_offset + prompt_positions[row_index];
+    row_positions[row_index] = absolute_token_position;
+    row_context_lengths[row_index] = absolute_token_position + 1u;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexerRows(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    const uint16_t *query_a_normalized_bf16,
+    const uint16_t *normalized_hidden_bf16,
+    uint16_t *query_index_heads_bf16,
+    uint16_t *current_key_index_bf16,
+    uint16_t *index_head_weights_bf16,
+    const uint32_t *positions,
+    const uint32_t *slot_mapping,
+    uint32_t row_count)
+{
+    SparkStatus status;
+    bool plan_is_required;
+
+    plan_is_required =
+        node_context->projection_backend_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT ||
+        node_context->projection_backend_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
+    if (node_context->index_query_weight_fp8_e4m3 != 0)
+    {
+        status = SparkGlm52ResidentDecodeStageLaunchLinearFp8(
+            node_context,
+            cuda_slot_state,
+            cuda_stream,
+            query_a_normalized_bf16,
+            node_context->index_query_weight_fp8_e4m3,
+            node_context->index_query_weight_scale_inv_f32,
+            query_index_heads_bf16,
+            row_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_QUERY,
+            plan_is_required);
+    }
+    else
+    {
+        status = SparkGlm52ResidentDecodeStageLaunchLinear(
+            node_context,
+            cuda_slot_state,
+            cuda_stream,
+            query_a_normalized_bf16,
+            (const uint16_t *)node_context->index_query_weight_bf16,
+            query_index_heads_bf16,
+            row_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_QUERY,
+            plan_is_required);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (node_context->index_key_weight_fp8_e4m3 != 0)
+    {
+        status = SparkGlm52ResidentDecodeStageLaunchLinearFp8(
+            node_context,
+            cuda_slot_state,
+            cuda_stream,
+            normalized_hidden_bf16,
+            node_context->index_key_weight_fp8_e4m3,
+            node_context->index_key_weight_scale_inv_f32,
+            current_key_index_bf16,
+            row_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_KEY,
+            plan_is_required);
+    }
+    else
+    {
+        status = SparkGlm52ResidentDecodeStageLaunchLinear(
+            node_context,
+            cuda_slot_state,
+            cuda_stream,
+            normalized_hidden_bf16,
+            (const uint16_t *)node_context->index_key_weight_bf16,
+            current_key_index_bf16,
+            row_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_KEY,
+            plan_is_required);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        normalized_hidden_bf16,
+        (const uint16_t *)node_context->index_weights_proj_weight_bf16,
+        index_head_weights_bf16,
+        row_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_WEIGHTS,
+        plan_is_required);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    SparkGlm52ResidentDecodeStageDsaKeyNormRopeStoreKernel<<<
+        row_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)current_key_index_bf16,
+        (const uint16_t *)node_context->index_key_norm_weight_bf16,
+        (const uint16_t *)node_context->index_key_norm_bias_bf16,
+        positions,
+        slot_mapping,
+        node_context->cos_table,
+        node_context->sin_table,
+        (uint16_t *)node_context->key_index_cache_bf16,
+        row_count,
+        node_context->position_count,
+        node_context->cache_token_capacity,
+        node_context->rms_norm_epsilon);
+    return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -13408,118 +13596,18 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    plan_is_required =
-        node_context->projection_backend_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT ||
-        node_context->projection_backend_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
-    if (node_context->index_query_weight_fp8_e4m3 != 0)
-    {
-        status = SparkGlm52ResidentDecodeStageLaunchLinearFp8(
-            node_context,
-            cuda_slot_state,
-            cuda_stream,
-            (const uint16_t *)pipeline_slot->raw_query_a_normalized_bf16,
-            node_context->index_query_weight_fp8_e4m3,
-            node_context->index_query_weight_scale_inv_f32,
-            (uint16_t *)pipeline_slot->query_index_heads_bf16,
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_QUERY,
-            plan_is_required);
-    }
-    else
-    {
-        status = SparkGlm52ResidentDecodeStageLaunchLinear(
-            node_context,
-            cuda_slot_state,
-            cuda_stream,
-            (const uint16_t *)pipeline_slot->raw_query_a_normalized_bf16,
-            (const uint16_t *)node_context->index_query_weight_bf16,
-            (uint16_t *)pipeline_slot->query_index_heads_bf16,
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_QUERY,
-            plan_is_required);
-    }
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    if (node_context->index_key_weight_fp8_e4m3 != 0)
-    {
-        status = SparkGlm52ResidentDecodeStageLaunchLinearFp8(
-            node_context,
-            cuda_slot_state,
-            cuda_stream,
-            (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
-            node_context->index_key_weight_fp8_e4m3,
-            node_context->index_key_weight_scale_inv_f32,
-            (uint16_t *)pipeline_slot->current_key_index_bf16,
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_KEY,
-            plan_is_required);
-    }
-    else
-    {
-        status = SparkGlm52ResidentDecodeStageLaunchLinear(
-            node_context,
-            cuda_slot_state,
-            cuda_stream,
-            (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
-            (const uint16_t *)node_context->index_key_weight_bf16,
-            (uint16_t *)pipeline_slot->current_key_index_bf16,
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_KEY,
-            plan_is_required);
-    }
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52ResidentDecodeStageLaunchLinear(
+    return SparkGlm52ResidentDecodeStageLaunchDsaIndexerRows(
         node_context,
         cuda_slot_state,
         cuda_stream,
+        (const uint16_t *)pipeline_slot->raw_query_a_normalized_bf16,
         (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
-        (const uint16_t *)node_context->index_weights_proj_weight_bf16,
+        (uint16_t *)pipeline_slot->query_index_heads_bf16,
+        (uint16_t *)pipeline_slot->current_key_index_bf16,
         (uint16_t *)pipeline_slot->index_head_weights_bf16,
-        active_sequence_count,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_WEIGHTS,
-        plan_is_required);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    SparkGlm52ResidentDecodeStageDsaKeyNormRopeStoreKernel<<<
-        active_sequence_count,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-        0u,
-        cuda_stream>>>(
-        (const uint16_t *)pipeline_slot->current_key_index_bf16,
-        (const uint16_t *)node_context->index_key_norm_weight_bf16,
-        (const uint16_t *)node_context->index_key_norm_bias_bf16,
         pipeline_slot->positions,
         pipeline_slot->slot_mapping,
-        node_context->cos_table,
-        node_context->sin_table,
-        (uint16_t *)node_context->key_index_cache_bf16,
-        active_sequence_count,
-        node_context->position_count,
-        node_context->cache_token_capacity,
-        node_context->rms_norm_epsilon);
-    return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
-        node_context,
-        cuda_slot_state,
-        cuda_stream);
+        active_sequence_count);
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareScore(
@@ -19542,25 +19630,358 @@ static uint32_t SparkGlm52ResidentDecodeStageBulkPrefillPlanIsPagedChunk(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_PAGED_REQUIRED_CAPABILITIES;
 }
 
-static __host__ __device__ __forceinline__ uint32_t SparkGlm52ResidentDecodeStagePagedPrefillLaneTokenCount(
-    const uint32_t *prompt_token_counts,
-    uint32_t sequence_index,
-    uint32_t prompt_token_count)
-{
-    if (prompt_token_counts == 0)
-    {
-        return prompt_token_count;
-    }
-    return prompt_token_counts[sequence_index] <= prompt_token_count
-        ? prompt_token_counts[sequence_index]
-        : prompt_token_count;
-}
-
 static __host__ __device__ __forceinline__ uint32_t SparkGlm52ResidentDecodeStagePagedPrefillTokenStride(
     uint32_t prompt_token_stride,
     uint32_t prompt_token_count)
 {
     return prompt_token_stride != 0u ? prompt_token_stride : prompt_token_count;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaSparsePrefillAttention(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    const uint16_t *prompt_hidden_bf16,
+    uint16_t *prompt_query_latent_bf16,
+    const uint16_t *prompt_rotated_query_rope_bf16,
+    uint16_t *prompt_attention_output_latent_bf16,
+    const uint32_t *prompt_positions,
+    const uint32_t *prompt_slot_mapping,
+    const uint32_t *prompt_token_counts,
+    const uint32_t *prompt_first_block_token_offsets,
+    const uint32_t *prompt_block_table,
+    uint32_t active_sequence_count,
+    uint32_t prompt_token_offset,
+    uint32_t prompt_token_count,
+    uint32_t prompt_token_stride,
+    uint32_t block_token_count,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    uint32_t cache_token_capacity)
+{
+    const SparkGlm52ResidentDecodeStageLinearPlan *kv_b_plan;
+    const SparkGlm52ResidentDecodeStageQuantizedLinearView *quantized_view;
+    dim3 project_grid;
+    dim3 commit_grid;
+    dim3 attention_grid;
+    dim3 value_grid;
+    uint64_t commit_element_count;
+    uint32_t row_count;
+    uint32_t tile_base;
+    uint32_t score_selection_active;
+    SparkStatus status;
+
+    if (node_context->dsa_prefill_scores_f32 == 0 ||
+        node_context->dsa_prefill_selected_u32 == 0 ||
+        node_context->dsa_prefill_row_context_lengths_u32 == 0 ||
+        node_context->dsa_prefill_row_sequences_u32 == 0 ||
+        node_context->dsa_prefill_row_positions_u32 == 0 ||
+        node_context->dsa_prefill_query_a_bf16 == 0 ||
+        node_context->dsa_prefill_query_index_heads_bf16 == 0 ||
+        node_context->dsa_prefill_index_weights_bf16 == 0 ||
+        node_context->dsa_prefill_normalized_hidden_bf16 == 0 ||
+        node_context->dsa_prefill_key_scratch_bf16 == 0 ||
+        node_context->dsa_prefill_low_scratch_bf16 == 0 ||
+        prompt_hidden_bf16 == 0 || prompt_query_latent_bf16 == 0 ||
+        prompt_rotated_query_rope_bf16 == 0 ||
+        prompt_attention_output_latent_bf16 == 0 ||
+        prompt_positions == 0 || prompt_slot_mapping == 0 ||
+        prompt_first_block_token_offsets == 0 || prompt_block_table == 0 ||
+        SparkGlm52ResidentDecodeStageExecutionRequiresFp8KvCacheCuda(
+            node_context) ||
+        node_context->mla_cache_bf16 == 0 ||
+        node_context->dsa_candidate_count == 0u ||
+        node_context->dsa_candidate_count > SPARK_GLM52_KV_CONTEXT_TOKENS)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    row_count = active_sequence_count * prompt_token_stride;
+    if (row_count == 0u ||
+        row_count > node_context->dsa_prefill_row_capacity)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    kv_b_plan = SparkGlm52ResidentDecodeStageGetLinearPlan(
+        node_context,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_B,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,
+        active_sequence_count);
+    if (kv_b_plan == 0 ||
+        !SparkGlm52ResidentDecodeStagePlanKindIsBlackwellQuantizedTensorCore(
+            kv_b_plan->plan_kind) ||
+        !SparkGlm52ResidentDecodeStageQuantizedLinearViewIsUsable(
+            kv_b_plan,
+            &quantized_view))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    SparkGlm52ResidentDecodeStageDsaPrefillRowSetupKernel<<<
+        SparkGlm52ResidentDecodeStageElementBlockCount(row_count),
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        prompt_positions,
+        prompt_token_counts,
+        node_context->dsa_prefill_row_sequences_u32,
+        node_context->dsa_prefill_row_positions_u32,
+        node_context->dsa_prefill_row_context_lengths_u32,
+        active_sequence_count,
+        prompt_token_offset,
+        prompt_token_count,
+        prompt_token_stride);
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchRmsNormDimension(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        prompt_hidden_bf16,
+        (const uint16_t *)node_context->attention_norm_weight_bf16,
+        (uint16_t *)node_context->dsa_prefill_normalized_hidden_bf16,
+        row_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchRawLinear(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)node_context->dsa_prefill_normalized_hidden_bf16,
+        (const uint16_t *)node_context->raw_query_a_weight_bf16,
+        node_context->raw_query_a_weight_fp8_e4m3,
+        node_context->raw_query_a_weight_scale_inv_f32,
+        (uint16_t *)node_context->dsa_prefill_query_a_bf16,
+        row_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageLaunchDsaIndexerRows(
+        node_context,
+        cuda_slot_state,
+        cuda_stream,
+        (const uint16_t *)node_context->dsa_prefill_query_a_bf16,
+        (const uint16_t *)node_context->dsa_prefill_normalized_hidden_bf16,
+        (uint16_t *)node_context->dsa_prefill_query_index_heads_bf16,
+        (uint16_t *)node_context->dsa_prefill_key_scratch_bf16,
+        (uint16_t *)node_context->dsa_prefill_index_weights_bf16,
+        node_context->dsa_prefill_row_positions_u32,
+        prompt_slot_mapping,
+        row_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    project_grid = dim3(
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ABSORBED_OUT_TILE,
+        1u);
+    SparkGlm52ResidentDecodeStageAbsorbedQueryProjectKernel<<<
+        project_grid,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)prompt_query_latent_bf16,
+        (const uint8_t *)quantized_view->weight_payload,
+        quantized_view->weight_scale,
+        prompt_query_latent_bf16,
+        (uint16_t *)node_context->dsa_prefill_low_scratch_bf16,
+        row_count,
+        quantized_view->weight_format,
+        quantized_view->scale_block_size);
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    commit_element_count =
+        (uint64_t)row_count *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION;
+    commit_grid = dim3(
+        (uint32_t)((commit_element_count +
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS - 1u) /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS),
+        1u,
+        1u);
+    SparkGlm52ResidentDecodeStageAbsorbedQueryCommitKernel<<<
+        commit_grid,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)node_context->dsa_prefill_low_scratch_bf16,
+        prompt_query_latent_bf16,
+        row_count);
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    score_selection_active =
+        node_context->sparse_index_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED
+        ? 0u
+        : 1u;
+    for (tile_base = 0u; tile_base < row_count;
+         tile_base += SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_PREFILL_TILE_ROWS)
+    {
+        uint32_t tile_rows;
+
+        tile_rows = row_count - tile_base;
+        if (tile_rows > SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_PREFILL_TILE_ROWS)
+        {
+            tile_rows = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_PREFILL_TILE_ROWS;
+        }
+        if (score_selection_active != 0u)
+        {
+            uint32_t candidate_group_count;
+            uint64_t score_work_group_count;
+
+            candidate_group_count =
+                (node_context->dsa_candidate_count +
+                 SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_CANDIDATES_PER_BLOCK - 1u) /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_CANDIDATES_PER_BLOCK;
+            score_work_group_count =
+                (uint64_t)tile_rows * (uint64_t)candidate_group_count;
+            SparkGlm52ResidentDecodeStageDsaScoreWarpCandidateKernel<<<
+                (uint32_t)score_work_group_count,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+                0u,
+                cuda_stream>>>(
+                (const uint16_t *)node_context->dsa_prefill_query_index_heads_bf16 +
+                    (uint64_t)tile_base *
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,
+                (const uint16_t *)node_context->key_index_cache_bf16,
+                (const uint16_t *)node_context->dsa_prefill_index_weights_bf16 +
+                    (uint64_t)tile_base *
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,
+                node_context->dsa_prefill_row_sequences_u32 + tile_base,
+                prompt_block_table,
+                node_context->dsa_prefill_row_context_lengths_u32 + tile_base,
+                prompt_first_block_token_offsets,
+                node_context->dsa_prefill_scores_f32,
+                tile_rows,
+                node_context->dsa_candidate_count,
+                candidate_group_count,
+                node_context->dsa_index_head_count,
+                node_context->dsa_index_head_dimension,
+                block_token_count,
+                max_blocks_per_sequence,
+                kv_block_count,
+                cache_token_capacity,
+                node_context->index_softmax_scale);
+            status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+                node_context,
+                cuda_slot_state,
+                cuda_stream);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
+            SparkGlm52ResidentDecodeStageDsaSelectRadixTopkKernel<<<
+                tile_rows,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+                0u,
+                cuda_stream>>>(
+                node_context->dsa_prefill_scores_f32,
+                node_context->dsa_prefill_row_context_lengths_u32 + tile_base,
+                node_context->dsa_prefill_selected_u32 +
+                    (uint64_t)tile_base *
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT,
+                tile_rows,
+                node_context->dsa_candidate_count,
+                SparkGlm52ResidentDecodeStageDsaIndexShareSelectedTokenCount(
+                    node_context));
+            status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+                node_context,
+                cuda_slot_state,
+                cuda_stream);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
+        }
+        attention_grid = dim3(
+            tile_rows,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_ABSORBED_HEADS_PER_BLOCK,
+            1u);
+        SparkGlm52ResidentDecodeStageAbsorbedAttentionKernel<<<
+            attention_grid,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ABSORBED_ATTENTION_THREADS,
+            0u,
+            cuda_stream>>>(
+            prompt_query_latent_bf16 +
+                (uint64_t)tile_base *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
+            (const uint16_t *)prompt_rotated_query_rope_bf16 +
+                (uint64_t)tile_base *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION,
+            (const uint16_t *)node_context->mla_cache_bf16,
+            node_context->dsa_prefill_row_sequences_u32 + tile_base,
+            prompt_block_table,
+            node_context->dsa_prefill_row_context_lengths_u32 + tile_base,
+            prompt_first_block_token_offsets,
+            node_context->dsa_prefill_selected_u32 +
+                (uint64_t)tile_base *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT,
+            block_token_count,
+            max_blocks_per_sequence,
+            kv_block_count,
+            cache_token_capacity,
+            node_context->qk_scale);
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    value_grid = dim3(
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ABSORBED_OUT_TILE,
+        1u);
+    SparkGlm52ResidentDecodeStageAbsorbedValueApplyKernel<<<
+        value_grid,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)prompt_query_latent_bf16,
+        (const uint8_t *)quantized_view->weight_payload,
+        quantized_view->weight_scale,
+        (uint16_t *)prompt_attention_output_latent_bf16,
+        row_count,
+        quantized_view->weight_format,
+        quantized_view->scale_block_size);
+    return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageValidatePagedChunkPrefillPlan(
@@ -20590,6 +21011,38 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill
     if ((bulk_prefill_plan->capability_flags &
             SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_PAGED_ATTENTION) != 0u)
     {
+        if ((node_context->reserved_execution_flags &
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_DSA_SPARSE_PREFILL) != 0u &&
+            node_context->dsa_prefill_scores_f32 != 0)
+        {
+            status = SparkGlm52ResidentDecodeStageLaunchDsaSparsePrefillAttention(
+                node_context,
+                pipeline_slot,
+                0,
+                typed_cuda_stream,
+                (const uint16_t *)effective_prompt_hidden_bf16,
+                (uint16_t *)effective_prompt_query_latent_bf16,
+                (const uint16_t *)effective_prompt_rotated_query_rope_bf16,
+                (uint16_t *)effective_prompt_attention_output_latent_bf16,
+                effective_prompt_positions,
+                effective_prompt_slot_mapping,
+                effective_prompt_token_counts,
+                effective_prompt_first_block_token_offsets,
+                effective_prompt_block_table,
+                active_sequence_count,
+                prompt_token_offset,
+                prompt_token_count,
+                effective_prompt_token_stride,
+                effective_block_token_count,
+                effective_max_blocks_per_sequence,
+                effective_kv_block_count,
+                effective_cache_token_capacity);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
+        }
+        else
         {
             dim3 wmma_attention_grid;
 
