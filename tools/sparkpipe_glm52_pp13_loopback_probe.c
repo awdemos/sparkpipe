@@ -6,12 +6,13 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <poll.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -22,7 +23,7 @@
 #define SPARK_GLM52_PP13_LOOPBACK_MAX_HOPS 16u
 #define SPARK_GLM52_PP13_LOOPBACK_DEFAULT_PORT_BASE 54100u
 #define SPARK_GLM52_PP13_LOOPBACK_DEFAULT_TIMEOUT_MS 30000u
-#define SPARK_GLM52_PP13_LOOPBACK_POLL_FD_CAPACITY 4u
+#define SPARK_GLM52_PP13_LOOPBACK_CONNECT_RETRY_NS 250000ull
 
 typedef struct SparkGlm52Pp13LoopbackPacket
 {
@@ -65,6 +66,7 @@ typedef struct SparkGlm52Pp13LoopbackRuntime
 	uint32_t output_connecting;
 	uint32_t launched;
 	uint32_t completed_count;
+	uint64_t next_connect_mono_ns;
 	SparkGlm52Pp13LoopbackPacket input_packet;
 	SparkGlm52Pp13LoopbackPacket output_packet;
 } SparkGlm52Pp13LoopbackRuntime;
@@ -287,11 +289,14 @@ static int32_t SparkGlm52Pp13LoopbackFinishConnect(
 	if (error_value == 0)
 	{
 		rt->output_connecting = 0u;
+		rt->next_connect_mono_ns = 0u;
 		return 1;
 	}
 	close(rt->output_fd);
 	rt->output_fd = -1;
 	rt->output_connecting = 0u;
+	rt->next_connect_mono_ns = SparkGlm52Pp13LoopbackMonoNs() +
+		SPARK_GLM52_PP13_LOOPBACK_CONNECT_RETRY_NS;
 	return 1;
 }
 
@@ -315,11 +320,16 @@ static uint32_t SparkGlm52Pp13LoopbackAcceptInput(SparkGlm52Pp13LoopbackRuntime 
 static uint32_t SparkGlm52Pp13LoopbackConnectOutput(SparkGlm52Pp13LoopbackRuntime *rt)
 {
 	char host[SPARK_GLM52_PP13_RUNTIME_HOST_NAME_BYTES];
+	uint64_t now_ns;
 	uint32_t next_rank;
 	uint32_t connecting;
 	if (rt->output_fd >= 0)
 		return 0u;
 	if (rt->output_active == 0u && rt->launched != 0u)
+		return 0u;
+	now_ns = SparkGlm52Pp13LoopbackMonoNs();
+	if (rt->next_connect_mono_ns != 0u &&
+		now_ns < rt->next_connect_mono_ns)
 		return 0u;
 	next_rank = (rt->config.rank_index + 1u) %
 		SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT;
@@ -332,6 +342,8 @@ static uint32_t SparkGlm52Pp13LoopbackConnectOutput(SparkGlm52Pp13LoopbackRuntim
 		rt->config.port_base + next_rank,
 		&connecting);
 	rt->output_connecting = connecting;
+	rt->next_connect_mono_ns = rt->output_fd >= 0 ? 0u :
+		now_ns + SPARK_GLM52_PP13_LOOPBACK_CONNECT_RETRY_NS;
 	return rt->output_fd >= 0 ? 1u : 0u;
 }
 
@@ -429,6 +441,8 @@ static int32_t SparkGlm52Pp13LoopbackWriteOutput(SparkGlm52Pp13LoopbackRuntime *
 		rt->output_fd = -1;
 		rt->output_connecting = 0u;
 		rt->output_offset = 0u;
+		rt->next_connect_mono_ns = SparkGlm52Pp13LoopbackMonoNs() +
+			SPARK_GLM52_PP13_LOOPBACK_CONNECT_RETRY_NS;
 		return 1;
 	}
 	rt->output_offset += (uint32_t)wrote;
@@ -444,65 +458,58 @@ static int32_t SparkGlm52Pp13LoopbackWriteOutput(SparkGlm52Pp13LoopbackRuntime *
 	return 1;
 }
 
-static int32_t SparkGlm52Pp13LoopbackAppendPollFd(
-	struct pollfd *fds,
-	uint32_t fd_capacity,
-	uint32_t *fd_count,
+static void SparkGlm52Pp13LoopbackAddSelectFd(
 	int32_t fd,
-	int16_t events)
+	fd_set *set,
+	int32_t *max_fd)
 {
-	if (fds == 0 || fd_count == 0)
-		return -1;
-	if (fd < 0 || events == 0)
-		return 0;
-	if (*fd_count >= fd_capacity)
-		return -2;
-	memset(&fds[*fd_count],0,sizeof(fds[*fd_count]));
-	fds[*fd_count].fd = fd;
-	fds[*fd_count].events = events;
-	*fd_count += 1u;
-	return 0;
+	if (fd < 0 || set == 0 || max_fd == 0)
+		return;
+	FD_SET(fd,set);
+	if (fd > *max_fd)
+		*max_fd = fd;
 }
 
 static void SparkGlm52Pp13LoopbackWaitForEvents(
 	SparkGlm52Pp13LoopbackRuntime *rt,
-	uint32_t timeout_ms)
+	uint64_t timeout_ns)
 {
-	struct pollfd fds[SPARK_GLM52_PP13_LOOPBACK_POLL_FD_CAPACITY];
-	uint32_t fd_count;
-	int32_t result;
-	fd_count = 0u;
+	struct timeval timeout;
+	fd_set read_fds;
+	fd_set write_fds;
+	int32_t max_fd;
+	FD_ZERO(&read_fds);
+	FD_ZERO(&write_fds);
+	max_fd = -1;
 	if (rt->input_fd < 0)
-		(void)SparkGlm52Pp13LoopbackAppendPollFd(
-			fds,
-			SPARK_GLM52_PP13_LOOPBACK_POLL_FD_CAPACITY,
-			&fd_count,
-			rt->listen_fd,
-			POLLIN);
+		SparkGlm52Pp13LoopbackAddSelectFd(rt->listen_fd,&read_fds,&max_fd);
 	if (rt->input_fd >= 0)
-		(void)SparkGlm52Pp13LoopbackAppendPollFd(
-			fds,
-			SPARK_GLM52_PP13_LOOPBACK_POLL_FD_CAPACITY,
-			&fd_count,
-			rt->input_fd,
-			POLLIN);
+		SparkGlm52Pp13LoopbackAddSelectFd(rt->input_fd,&read_fds,&max_fd);
 	if ((rt->output_active != 0u || rt->output_connecting != 0u) &&
 		rt->output_fd >= 0)
-		(void)SparkGlm52Pp13LoopbackAppendPollFd(
-			fds,
-			SPARK_GLM52_PP13_LOOPBACK_POLL_FD_CAPACITY,
-			&fd_count,
-			rt->output_fd,
-			POLLOUT);
-	if (fd_count == 0u)
+		SparkGlm52Pp13LoopbackAddSelectFd(rt->output_fd,&write_fds,&max_fd);
+	if (max_fd < 0)
 		return;
+	timeout.tv_sec = (time_t)(timeout_ns / 1000000000ull);
+	timeout.tv_usec = (suseconds_t)((timeout_ns % 1000000000ull) / 1000ull);
+	if (timeout_ns != 0u && timeout.tv_sec == 0 && timeout.tv_usec == 0)
+		timeout.tv_usec = 1;
 	for (;;)
 	{
-		result = poll(fds,fd_count,(int32_t)timeout_ms);
-		if (result < 0 && errno == EINTR)
+		if (select(max_fd + 1,&read_fds,&write_fds,0,&timeout) < 0 &&
+			errno == EINTR)
 			return;
 		return;
 	}
+}
+
+static int64_t SparkGlm52Pp13LoopbackSignedDelta(
+	uint64_t left,
+	uint64_t right)
+{
+	if (left >= right)
+		return (int64_t)(left - right);
+	return -((int64_t)(right - left));
 }
 
 static void SparkGlm52Pp13LoopbackPrintComplete(
@@ -529,6 +536,22 @@ static void SparkGlm52Pp13LoopbackPrintComplete(
 			index,
 			packet->ranks[index],
 			(unsigned long long)packet->wall_ns[index]);
+	for (index=0u; index<packet->hop_count; index++)
+	{
+		uint64_t target_wall_ns;
+		int64_t offset_ns;
+		target_wall_ns = packet->created_wall_ns +
+			((uint64_t)(index + 1u) * average_hop_ns);
+		offset_ns = SparkGlm52Pp13LoopbackSignedDelta(
+			target_wall_ns,
+			packet->wall_ns[index]);
+		printf("loopback_clock_hint index=%u rank=%u target_wall_ns=%llu observed_wall_ns=%llu offset_ns=%lld\n",
+			index,
+			packet->ranks[index],
+			(unsigned long long)target_wall_ns,
+			(unsigned long long)packet->wall_ns[index],
+			(long long)offset_ns);
+	}
 	fflush(stdout);
 }
 
@@ -536,16 +559,18 @@ static int32_t SparkGlm52Pp13LoopbackRun(SparkGlm52Pp13LoopbackRuntime *rt)
 {
 	uint64_t start_ns;
 	uint64_t now_ns;
-	uint64_t remaining_ms;
+	uint64_t deadline_ns;
+	uint64_t wait_ns;
 	int32_t read_status;
 	int32_t queue_status;
 	int32_t write_status;
 	uint32_t progress;
 	start_ns = SparkGlm52Pp13LoopbackMonoNs();
+	deadline_ns = start_ns + ((uint64_t)rt->config.timeout_ms * 1000000ull);
 	for (;;)
 	{
 		now_ns = SparkGlm52Pp13LoopbackMonoNs();
-		if ((now_ns - start_ns) > ((uint64_t)rt->config.timeout_ms * 1000000ull))
+		if (now_ns > deadline_ns)
 			return -1;
 		progress = 0u;
 		progress |= SparkGlm52Pp13LoopbackAcceptInput(rt);
@@ -581,15 +606,16 @@ static int32_t SparkGlm52Pp13LoopbackRun(SparkGlm52Pp13LoopbackRuntime *rt)
 		if (progress == 0u)
 		{
 			now_ns = SparkGlm52Pp13LoopbackMonoNs();
-			remaining_ms = ((uint64_t)rt->config.timeout_ms -
-				((now_ns - start_ns) / 1000000ull));
-			if (rt->output_fd < 0 &&
-				(rt->output_active != 0u || rt->launched == 0u) &&
-				remaining_ms > 1u)
-				remaining_ms = 1u;
-			if (remaining_ms > 1000u)
-				remaining_ms = 1000u;
-			SparkGlm52Pp13LoopbackWaitForEvents(rt,(uint32_t)remaining_ms);
+			if (now_ns > deadline_ns)
+				return -1;
+			wait_ns = deadline_ns - now_ns;
+			if (rt->next_connect_mono_ns != 0u &&
+				rt->next_connect_mono_ns > now_ns &&
+				rt->next_connect_mono_ns < deadline_ns)
+				wait_ns = rt->next_connect_mono_ns - now_ns;
+			if (wait_ns > 1000000000ull)
+				wait_ns = 1000000000ull;
+			SparkGlm52Pp13LoopbackWaitForEvents(rt,wait_ns);
 		}
 	}
 }
