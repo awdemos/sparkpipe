@@ -131,8 +131,48 @@ static void SparkTestReleaseParseResolveAndSync(void)
     assert(sync_result.changed_file_count == 0u);
 }
 
+static void SparkTestReleaseExampleResidentDeployment(void)
+{
+    SparkReleaseManifest manifest;
+    SparkReleaseNodeIdentity identity;
+    const SparkReleaseRole *role;
+    SparkReleaseResolvedRole resolved_role;
+
+    assert(SparkCreateDirectories(SPARK_TEST_RELEASE_ROOT "/example") == SPARK_STATUS_OK);
+    assert(SparkReleaseWriteExampleManifest(
+        SPARK_TEST_RELEASE_ROOT "/example/sparkpipe.json") == SPARK_STATUS_OK);
+    assert(SparkReleaseManifestLoadFile(
+        SPARK_TEST_RELEASE_ROOT "/example/sparkpipe.json",
+        &manifest) == SPARK_STATUS_OK);
+    assert(manifest.max_active_sequence_count == 512u);
+    assert(manifest.role_count == 3u);
+    SparkReleaseNodeIdentityInitialize(&identity);
+    assert(SparkCopyString(identity.host,sizeof(identity.host),"spark8") == SPARK_STATUS_OK);
+    identity.rank = 8u;
+    identity.rank_is_set = 1u;
+    identity.rank_count = 13u;
+    assert(SparkReleaseManifestFindRoleForNode(
+        &manifest,&identity,0,&role) == SPARK_STATUS_OK);
+    assert(strcmp(role->name,"pp13_cuda_residentd") == 0);
+    assert(SparkReleaseManifestFindRoleForNode(
+        &manifest,&identity,"pp13_rank_daemon",&role) == SPARK_STATUS_OK);
+    assert(SparkReleaseResolveRole(&manifest,&identity,role,&resolved_role) == SPARK_STATUS_OK);
+    assert(strstr(resolved_role.command,"/home/spark8/sparkpipe_runtime/bin/sparkpipe_glm52_pp13_rank_daemon") != 0);
+    assert(strcmp(resolved_role.arguments[1],"8") == 0);
+    assert(strstr(resolved_role.arguments[3],"/home/spark8/sparkpipe_state/cuda_resident_rank8.sock") != 0);
+    assert(strcmp(resolved_role.arguments[5],"512") == 0);
+    SparkReleaseNodeIdentityInitialize(&identity);
+    assert(SparkCopyString(identity.host,sizeof(identity.host),"spark0") == SPARK_STATUS_OK);
+    identity.rank = 0u;
+    identity.rank_is_set = 1u;
+    identity.rank_count = 13u;
+    assert(SparkReleaseManifestFindRoleForNode(
+        &manifest,&identity,"pp13_rank_daemon",&role) == SPARK_STATUS_NOT_FOUND);
+}
+
 int main(void)
 {
     SparkTestReleaseParseResolveAndSync();
+    SparkTestReleaseExampleResidentDeployment();
     return 0;
 }
