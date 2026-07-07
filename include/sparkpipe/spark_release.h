@@ -83,6 +83,7 @@ typedef struct SparkReleaseManifest
     char install_root[SPARK_RELEASE_MAX_STRING_BYTES];
     char state_root[SPARK_RELEASE_MAX_STRING_BYTES];
     uint32_t rank_count;
+    uint32_t max_active_sequence_count;
     uint32_t poll_interval_ms;
     uint32_t stop_grace_ms;
     uint32_t file_count;

@@ -472,6 +472,8 @@ SparkStatus SparkReleaseManifestParseText(
     if (status != SPARK_STATUS_OK) goto cleanup;
     status = SparkReleaseGetOptionalU32(&document,root_token_index,"rank_count",13u,&manifest->rank_count);
     if (status != SPARK_STATUS_OK) goto cleanup;
+    status = SparkReleaseGetOptionalU32(&document,root_token_index,"max_active_sequence_count",1024u,&manifest->max_active_sequence_count);
+    if (status != SPARK_STATUS_OK) goto cleanup;
     status = SparkReleaseGetOptionalU32(&document,root_token_index,"poll_interval_ms",SPARK_RELEASE_DEFAULT_POLL_INTERVAL_MS,&manifest->poll_interval_ms);
     if (status != SPARK_STATUS_OK) goto cleanup;
     status = SparkReleaseGetOptionalU32(&document,root_token_index,"stop_grace_ms",SPARK_RELEASE_DEFAULT_STOP_GRACE_MS,&manifest->stop_grace_ms);
@@ -802,6 +804,11 @@ static SparkStatus SparkReleaseExpandTemplate(
             status = SparkReleaseAppendU32(destination,destination_bytes,&offset,identity->rank_count != 0u ? identity->rank_count : manifest->rank_count);
             source_index += 12u;
         }
+        else if (strncmp(source + source_index,"{max_active}",12u) == 0)
+        {
+            status = SparkReleaseAppendU32(destination,destination_bytes,&offset,manifest->max_active_sequence_count);
+            source_index += 12u;
+        }
         else if (strncmp(source + source_index,"{release_id}",12u) == 0)
         {
             status = SparkReleaseAppendText(destination,destination_bytes,&offset,manifest->release_id);
@@ -1112,6 +1119,7 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "  \"install_root\": \"/home/{host}/sparkpipe_runtime\",\n"
         "  \"state_root\": \"/home/{host}/sparkpipe_state\",\n"
         "  \"rank_count\": 13,\n"
+        "  \"max_active_sequence_count\": 512,\n"
         "  \"poll_interval_ms\": 1000,\n"
         "  \"stop_grace_ms\": 5000,\n"
         "  \"files\": [\n"
@@ -1200,7 +1208,7 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "        \"--tokenizer\",\n"
         "        \"{install_root}/tokenizer/tokenizer.json\",\n"
         "        \"--max-active\",\n"
-        "        \"1024\",\n"
+        "        \"{max_active}\",\n"
         "        \"--port-base\",\n"
         "        \"52100\"\n"
         "      ],\n"
@@ -1236,35 +1244,13 @@ SparkStatus SparkReleaseWriteExampleManifest(const char *path)
         "        \"--embedding-pack\",\n"
         "        \"{install_root}/packs/embedding.sp\",\n"
         "        \"--max-active\",\n"
-        "        \"1024\",\n"
+        "        \"{max_active}\",\n"
         "        \"--port-base\",\n"
         "        \"52100\"\n"
         "      ],\n"
         "      \"env\": [\n"
         "        \"LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs\"\n"
         "      ]\n"
-        "    },\n"
-        "    {\n"
-        "      \"name\": \"pp13_rank_daemon\",\n"
-        "      \"selector\": \"rank\",\n"
-        "      \"command\": \"bin/sparkpipe_glm52_pp13_rank_daemon\",\n"
-        "      \"allow_resident_pack_cache\": false,\n"
-        "      \"argv\": [\n"
-        "        \"--rank\",\n"
-        "        \"{rank}\",\n"
-        "        \"--cuda-resident-socket\",\n"
-        "        \"{state_root}/cuda_resident_rank{rank}.sock\",\n"
-        "        \"--max-active\",\n"
-        "        \"1024\",\n"
-        "        \"--port-base\",\n"
-        "        \"52100\",\n"
-        "        \"--final-event-return-host\",\n"
-        "        \"spark0\"\n"
-        "      ],\n"
-        "      \"env\": [\n"
-        "        \"LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs\"\n"
-        "      ],\n"
-        "      \"restart_on_update\": true\n"
         "    }\n"
         "  ]\n"
         "}\n"

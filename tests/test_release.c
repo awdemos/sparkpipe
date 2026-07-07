@@ -14,7 +14,7 @@ static void SparkTestReleaseWriteFixtureFile(
     const char *text,
     char sha256[SPARK_SHA256_HEX_BYTES])
 {
-    assert(SparkReleaseWriteExampleManifest != 0);
+    assert(&SparkReleaseWriteExampleManifest != 0);
     assert(SparkWriteEntireFile(path,text,strlen(text)) == SPARK_STATUS_OK);
     assert(SparkSha256File(path,sha256) == SPARK_STATUS_OK);
 }
@@ -37,6 +37,7 @@ static void SparkTestReleaseBuildManifest(
         "  \"install_root\": \"%s/install/{host}\",\n"
         "  \"state_root\": \"%s/state/{host}\",\n"
         "  \"rank_count\": 13,\n"
+        "  \"max_active_sequence_count\": 512,\n"
         "  \"files\": [\n"
         "    {\"path\": \"bin/rank_daemon\", \"sha256\": \"%s\", \"executable\": true},\n"
         "    {\"path\": \"lib/backend.so\", \"sha256\": \"%s\"}\n"
@@ -47,7 +48,7 @@ static void SparkTestReleaseBuildManifest(
         "      \"selector\": \"rank\",\n"
         "      \"command\": \"bin/rank_daemon\",\n"
         "      \"pid_file\": \"{state_root}/run/{role}.pid\",\n"
-        "      \"argv\": [\"--rank\", \"{rank}\", \"--rank-hex\", \"{rank_hex}\", \"--root\", \"{install_root}\"],\n"
+        "      \"argv\": [\"--rank\", \"{rank}\", \"--rank-hex\", \"{rank_hex}\", \"--root\", \"{install_root}\", \"--max-active\", \"{max_active}\"],\n"
         "      \"env\": [\"LD_LIBRARY_PATH={install_root}/lib\"]\n"
         "    }\n"
         "  ]\n"
@@ -91,6 +92,7 @@ static void SparkTestReleaseParseResolveAndSync(void)
         SPARK_TEST_RELEASE_ROOT "/release/sparkpipe.json",
         &manifest) == SPARK_STATUS_OK);
     assert(manifest.generation == 42u);
+    assert(manifest.max_active_sequence_count == 512u);
     assert(manifest.file_count == 2u);
     assert(manifest.role_count == 1u);
 
@@ -105,6 +107,7 @@ static void SparkTestReleaseParseResolveAndSync(void)
     assert(strcmp(resolved_role.arguments[1],"11") == 0);
     assert(strcmp(resolved_role.arguments[3],"b") == 0);
     assert(strstr(resolved_role.arguments[5],"/install/sparkb") != 0);
+    assert(strcmp(resolved_role.arguments[7],"512") == 0);
     assert(strstr(resolved_role.environment[0],"/install/sparkb/lib") != 0);
     assert(SparkReleaseFormatResolvedCommandLine(&resolved_role,command_line,sizeof(command_line)) == SPARK_STATUS_OK);
     assert(strstr(command_line,"--rank 11") != 0);
