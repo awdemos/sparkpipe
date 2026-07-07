@@ -126,11 +126,12 @@ static void SparkTestInitializeEndpoint(
 static void SparkTestInitializeGpudirectEndpoint(
     SparkHiddenTransportEndpoint *endpoint)
 {
-    SparkTestInitializeEndpoint(endpoint);
-    endpoint->capability_flags =
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS;
-    endpoint->transport_module_id =
-        SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID;
+    SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
+        endpoint,
+        6144u,
+        128u,
+        200000u,
+        "spark2_to_sparka_hidden");
 }
 
 static void SparkTestInitializePacket(
@@ -501,6 +502,52 @@ static void SparkTestHiddenTransportLoadsProductionModule(void)
     assert(library.dynamic_library == 0);
 }
 
+
+
+static void SparkTestHiddenTransportOpensZeroCopyInterfaceFromHostPlan(void)
+{
+    SparkHiddenTransportEndpoint endpoint;
+    SparkHiddenTransportInterface transport_interface;
+    SparkHiddenTransportSession *session;
+
+    SparkTestInitializeEndpoint(&endpoint);
+    SparkTestInitializeTransportInterface(
+        &transport_interface,
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_ZERO_COPY_GPUDIRECT_CAPS);
+    transport_interface.post_receive_batch = TestHiddenTransportPostReceiveBatch;
+    transport_interface.send_batch = TestHiddenTransportSendBatch;
+    transport_interface.get_poll_descriptors = 0;
+    session = 0;
+    assert(SparkHiddenTransportOpen(
+        &endpoint,
+        &transport_interface,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
+        &session) == SPARK_STATUS_OK);
+    assert(session != 0);
+    SparkHiddenTransportClose(session);
+}
+
+static void SparkTestHiddenTransportValidatesZeroCopyGpudirectEndpoint(void)
+{
+    SparkHiddenTransportEndpoint endpoint;
+
+    SparkTestInitializeGpudirectEndpoint(&endpoint);
+    assert(SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(&endpoint) ==
+        SPARK_STATUS_OK);
+    endpoint.capability_flags &=
+        ~SPARK_HIDDEN_TRANSPORT_CAP_REGISTERED_DEVICE_MEMORY;
+    assert(SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(&endpoint) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    SparkTestInitializeGpudirectEndpoint(&endpoint);
+    endpoint.capability_flags |= SPARK_HIDDEN_TRANSPORT_CAP_SIMULATION_ONLY;
+    assert(SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(&endpoint) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    SparkTestInitializeGpudirectEndpoint(&endpoint);
+    endpoint.transport_module_id = SPARK_HIDDEN_TRANSPORT_TCP_CUDA_HOST_MODULE_ID;
+    assert(SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(&endpoint) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 static void SparkTestHiddenTransportGpudirectPreflight(void)
 {
     SparkHiddenTransportEndpoint endpoint;
@@ -550,6 +597,8 @@ int main(void)
     SparkTestHiddenTransportPersistentRingAccountsSidebandBytes();
     SparkTestHiddenTransportRejectsInvalidInterface();
     SparkTestHiddenTransportLoadsProductionModule();
+    SparkTestHiddenTransportOpensZeroCopyInterfaceFromHostPlan();
+    SparkTestHiddenTransportValidatesZeroCopyGpudirectEndpoint();
     SparkTestHiddenTransportGpudirectPreflight();
     return 0;
 }

@@ -7,23 +7,12 @@
 static void SparkPreflightInitializeEndpoint(
     SparkHiddenTransportEndpoint *endpoint)
 {
-    memset(endpoint, 0, sizeof(*endpoint));
-    endpoint->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-    endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
-    endpoint->capability_flags =
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS;
-    endpoint->hidden_dimension = 6144u;
-    endpoint->bytes_per_sequence =
-        endpoint->hidden_dimension *
-        SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
-    endpoint->max_active_sequence_count = 1024u;
-    endpoint->max_packet_bytes =
-        (uint64_t)endpoint->bytes_per_sequence *
-        (uint64_t)endpoint->max_active_sequence_count;
-    endpoint->validated_latency_ns = 0u;
-    endpoint->transport_module_id =
-        SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID;
-    endpoint->route_name = "sparkpipe_pp13_hidden_transport";
+    SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
+        endpoint,
+        6144u,
+        1024u,
+        0u,
+        "sparkpipe_pp13_hidden_transport");
 }
 
 static int SparkPreflightParseUint32(
