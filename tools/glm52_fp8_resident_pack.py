@@ -34,6 +34,7 @@ WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR = 1
 SCALE_LAYOUT_EXPERT_MAJOR_ROW_BLOCK_MAJOR = 1
 QUANT_MODE_FP8_E4M3 = 2
 OUTPUT_DTYPE_BF16 = 1
+DEFAULT_MAX_ACTIVE_SEQUENCE_COUNT = 1024
 REGION_W1_WEIGHT = 0
 REGION_W1_SCALE_INV = 1
 REGION_W2_WEIGHT = 2
@@ -148,14 +149,16 @@ def reserve_regions() -> List[Dict[str, int]]:
     return regions
 
 
-def pack_header(layer: int, regions: List[Dict[str, int]]) -> bytes:
+def pack_header(layer: int, regions: List[Dict[str, int]], max_active: int) -> bytes:
+    if max_active <= 0:
+        raise PackFailure("maximum active sequence count must be positive")
     prefix = struct.pack(
         "<16s16I",
         MAGIC,
         ABI_VERSION,
         HEADER_BYTES,
         layer,
-        128,
+        max_active,
         HIDDEN_DIMENSION,
         INTERMEDIATE_DIMENSION,
         EXPERT_COUNT,
@@ -177,6 +180,47 @@ def pack_header(layer: int, regions: List[Dict[str, int]]) -> bytes:
     if len(header) > HEADER_BYTES:
         raise PackFailure("FP8 pack header exceeds fixed header size")
     return header + (b"\0" * (HEADER_BYTES - len(header)))
+
+
+def existing_pack_fields(path: Path) -> Tuple[bytes, Tuple[int, ...]]:
+    with path.open("rb") as file:
+        header = file.read(80)
+    if len(header) != 80:
+        raise PackFailure(f"short FP8 pack header: {path}")
+    return header[:16], struct.unpack("<16I", header[16:80])
+
+
+def existing_pack_can_reuse(path: Path, layer: int, expected_bytes: int, max_active: int) -> bool:
+    if not path.exists() or path.stat().st_size != expected_bytes:
+        return False
+    magic, fields = existing_pack_fields(path)
+    if magic[:len(MAGIC)] != MAGIC:
+        return False
+    expected = (
+        ABI_VERSION,
+        HEADER_BYTES,
+        layer,
+        fields[3],
+        HIDDEN_DIMENSION,
+        INTERMEDIATE_DIMENSION,
+        EXPERT_COUNT,
+        TOP_K,
+        GATE_UP_ORDER_UP_GATE,
+        WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR,
+        SCALE_LAYOUT_EXPERT_MAJOR_ROW_BLOCK_MAJOR,
+        QUANT_MODE_FP8_E4M3,
+        OUTPUT_DTYPE_BF16,
+        CUDA_ARCHITECTURE_SM121,
+        0,
+        0,
+    )
+    if fields != expected:
+        return False
+    if fields[3] < max_active:
+        with path.open("r+b") as file:
+            file.seek(16 + (3 * 4))
+            file.write(struct.pack("<I", max_active))
+    return True
 
 
 def seek_region(file: BinaryIO, regions: List[Dict[str, int]], region_index: int) -> None:
@@ -237,6 +281,7 @@ def write_layer_pack(
     model_dir: Path,
     output_dir: Path,
     layer: int,
+    max_active: int,
     reuse: bool,
     allow_transposed_scales: bool,
 ) -> Dict[str, Any]:
@@ -245,8 +290,8 @@ def write_layer_pack(
     output_path = output_dir / f"glm52_layer_{layer:04d}_fp8_moe.spfp8"
     expected_bytes = regions[-1]["offset"] + regions[-1]["bytes"]
     try:
-        if reuse and output_path.exists() and output_path.stat().st_size == expected_bytes:
-            return {"layer": layer, "path": str(output_path), "bytes": expected_bytes, "reused": True}
+        if reuse and existing_pack_can_reuse(output_path, layer, expected_bytes, max_active):
+            return {"layer": layer, "path": str(output_path), "bytes": expected_bytes, "reused": True, "max_active": max_active}
         output_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(
             prefix=f".glm52_layer_{layer:04d}_",
@@ -255,7 +300,7 @@ def write_layer_pack(
             delete=False,
         ) as file:
             tmp_path = Path(file.name)
-            file.write(pack_header(layer, regions))
+            file.write(pack_header(layer, regions, max_active))
             seek_region(file, regions, REGION_W1_WEIGHT)
             for expert in range(EXPERT_COUNT):
                 write_tensor_bytes(
@@ -304,7 +349,7 @@ def write_layer_pack(
                     allow_transposed_scales,
                 )
         tmp_path.replace(output_path)
-        return {"layer": layer, "path": str(output_path), "bytes": expected_bytes, "reused": False}
+        return {"layer": layer, "path": str(output_path), "bytes": expected_bytes, "reused": False, "max_active": max_active}
     finally:
         reader.close()
 
@@ -318,12 +363,13 @@ def parse_layers(value: str) -> List[int]:
     return layers
 
 
-def worker(argument: Tuple[str, str, int, bool, bool]) -> Dict[str, Any]:
-    model_dir, output_dir, layer, reuse, allow_transposed_scales = argument
+def worker(argument: Tuple[str, str, int, int, bool, bool]) -> Dict[str, Any]:
+    model_dir, output_dir, layer, max_active, reuse, allow_transposed_scales = argument
     return write_layer_pack(
         Path(model_dir),
         Path(output_dir),
         layer,
+        max_active,
         reuse,
         allow_transposed_scales,
     )
@@ -347,17 +393,22 @@ def main() -> int:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--layers", required=True)
     parser.add_argument("--jobs", type=int, default=1)
+    parser.add_argument("--max-active", type=int, default=DEFAULT_MAX_ACTIVE_SEQUENCE_COUNT)
     parser.add_argument("--no-reuse", action="store_true")
     parser.add_argument("--allow-transposed-scales", action="store_true")
     args = parser.parse_args()
     layers = parse_layers(args.layers)
     jobs = max(1, int(args.jobs))
+    max_active = int(args.max_active)
+    if max_active <= 0:
+        raise PackFailure("--max-active must be positive")
     output_dir = Path(args.output_dir)
     tasks = [
         (
             args.model_dir,
             args.output_dir,
             layer,
+            max_active,
             not args.no_reuse,
             bool(args.allow_transposed_scales),
         )
@@ -376,6 +427,7 @@ def main() -> int:
             {
                 "format": "sparkpipe.glm52.fp8.resident_moe_pack.v1",
                 "model_dir": str(Path(args.model_dir)),
+                "max_active_sequence_count": max_active,
                 "allow_transposed_scales": bool(args.allow_transposed_scales),
                 "scale_layout": "expert_major_row_block_major_f32_scale_inv",
                 "layers": manifest_records,
