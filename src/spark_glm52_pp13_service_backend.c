@@ -1130,10 +1130,24 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 			&pending);
 		if (status != SPARK_STATUS_OK)
 			return status;
+		if (pending != 0 && pending->state ==
+			SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE)
+			return SPARK_STATUS_OK;
 		status = SparkGlm52Pp13ServiceBackendForwardDecodeWork(state,decode_dispatch);
 		if (status != SPARK_STATUS_OK)
+		{
+			if (pending != 0)
+				memset(pending,0,sizeof(*pending));
 			return status;
-		return SparkGlm52Pp13ServiceBackendSubmitDecodeToResident(state,decode_dispatch);
+		}
+		status = SparkGlm52Pp13ServiceBackendSubmitDecodeToResident(state,decode_dispatch);
+		if (status != SPARK_STATUS_OK)
+		{
+			if (pending != 0)
+				memset(pending,0,sizeof(*pending));
+			return status;
+		}
+		return SPARK_STATUS_BUSY;
 	}
 	if (state->builder_library.builder_interface.decode == 0 ||
 		state->builder_state == 0)
