@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import struct
+import tempfile
 
 
 def load_fp8_packer_module():
@@ -87,6 +88,21 @@ def main() -> int:
     else:
         raise AssertionError("short transposed FP8 scale layout was accepted")
     assert module.parse_layers("3,4;5") == [3, 4, 5]
+    regions = module.reserve_regions()
+    header = module.pack_header(7, regions, 1024)
+    fields = struct.unpack("<16I", header[16:80])
+    assert fields[2] == 7
+    assert fields[3] == 1024
+    assert module.DEFAULT_MAX_ACTIVE_SEQUENCE_COUNT == 1024
+    with tempfile.TemporaryDirectory() as temp_dir:
+        pack_path = Path(temp_dir) / "glm52_layer_0007_fp8_moe.spfp8"
+        pack_bytes = regions[-1]["offset"] + regions[-1]["bytes"]
+        with pack_path.open("wb") as file:
+            file.write(module.pack_header(7, regions, 128))
+            file.truncate(pack_bytes)
+        assert module.existing_pack_can_reuse(pack_path, 7, pack_bytes, 1024)
+        _, updated_fields = module.existing_pack_fields(pack_path)
+        assert updated_fields[3] == 1024
     return 0
 
 
