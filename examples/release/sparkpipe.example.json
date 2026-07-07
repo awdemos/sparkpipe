@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "generation": 1,
+  "release_id": "glm52-fp8-production-001",
+  "git_commit": "replace-with-main-hash",
+  "install_root": "/home/{host}/sparkpipe_runtime",
+  "state_root": "/home/{host}/sparkpipe_state",
+  "rank_count": 13,
+  "poll_interval_ms": 1000,
+  "stop_grace_ms": 5000,
+  "files": [
+    {"path": "bin/sparkpipe_glm52_http_gateway", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "executable": true},
+    {"path": "bin/sparkpipe_glm52_pp13_rank_daemon", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "executable": true},
+    {"path": "bin/sparkpipe_release_manager", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "executable": true},
+    {"path": "lib/libglm52_pp13_service_backend.so", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"path": "lib/libglm52_pp13_node_context_builder.so", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"path": "lib/libhidden_transport_tcp_cuda.so", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"path": "lib/glm5_2.fp8.so", "sha256": "0000000000000000000000000000000000000000000000000000000000000000"},
+    {"path": "tokenizer/tokenizer.json", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "restart_on_change": false}
+  ],
+  "roles": [
+    {
+      "name": "spark0_gateway",
+      "selector": "spark0",
+      "command": "bin/sparkpipe_glm52_http_gateway",
+      "argv": ["--bind", "0.0.0.0", "--port", "18080", "--require-service-backend", "--service-backend-so", "{install_root}/lib/libglm52_pp13_service_backend.so", "--fp8-pack-root", "{install_root}/packs/fp8", "--stagepack-root", "{install_root}/packs/stage", "--transport-so", "{install_root}/lib/libhidden_transport_tcp_cuda.so", "--driver-so", "{install_root}/lib/glm5_2.fp8.so", "--node-context-builder-so", "{install_root}/lib/libglm52_pp13_node_context_builder.so", "--tokenizer", "{install_root}/tokenizer/tokenizer.json", "--max-active", "1024", "--port-base", "52100"],
+      "env": ["LD_LIBRARY_PATH={install_root}/lib"]
+    },
+    {
+      "name": "pp13_rank_daemon",
+      "selector": "rank",
+      "command": "bin/sparkpipe_glm52_pp13_rank_daemon",
+      "allow_resident_pack_cache": true,
+      "argv": ["--rank", "{rank}", "--fp8-pack-root", "{install_root}/packs/fp8", "--stagepack-root", "{install_root}/packs/stage", "--transport-so", "{install_root}/lib/libhidden_transport_tcp_cuda.so", "--driver-so", "{install_root}/lib/glm5_2.fp8.so", "--node-context-builder-so", "{install_root}/lib/libglm52_pp13_node_context_builder.so", "--embedding-pack", "{install_root}/packs/embedding.sp", "--max-active", "1024", "--port-base", "52100", "--final-event-return-host", "spark0"],
+      "env": ["LD_LIBRARY_PATH={install_root}/lib"]
+    }
+  ]
+}
