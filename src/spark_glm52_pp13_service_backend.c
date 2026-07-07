@@ -115,6 +115,7 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	uint32_t work_output_socket_connecting;
 	int32_t cuda_resident_fd;
 	uint32_t cuda_resident_attached;
+	uint32_t trace_enabled;
 	uint64_t cuda_resident_retry_after_ns;
 	char cuda_resident_socket_path[108];
 	uint64_t cuda_resident_next_sequence_number;
@@ -599,7 +600,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefillIdlePump(
 	return SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
 }
 
-static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
+static SparkStatus SparkGlm52Pp13ServiceBackendPrefillInner(
 	void *context,
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
 {
@@ -1085,7 +1086,24 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
+static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
+	void *context,
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+{
+	SparkGlm52Pp13ServiceBackendState *trace_state;
+	SparkStatus status;
+	uint64_t trace_begin_ns;
+	trace_state = (SparkGlm52Pp13ServiceBackendState *)context;
+	trace_begin_ns = trace_state != 0 && trace_state->trace_enabled != 0u ? SparkGlm52Pp13ServiceBackendMonotonicNs() : 0u;
+	if (trace_begin_ns != 0u)
+		fprintf(stderr,"pp13_trace prefill_begin request=%llu offset=%u count=%u\n",(unsigned long long)(prefill_dispatch != 0 && prefill_dispatch->request_dispatch != 0 ? prefill_dispatch->request_dispatch->request_ids[0u] : 0u),prefill_dispatch != 0 ? prefill_dispatch->prompt_token_offset : 0u,prefill_dispatch != 0 ? prefill_dispatch->prompt_token_count : 0u);
+	status = SparkGlm52Pp13ServiceBackendPrefillInner(context, prefill_dispatch);
+	if (trace_begin_ns != 0u)
+		fprintf(stderr,"pp13_trace prefill_end status=%u dur_us=%llu\n",(uint32_t)status,(unsigned long long)((SparkGlm52Pp13ServiceBackendMonotonicNs() - trace_begin_ns) / 1000ull));
+	return status;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 	void *context,
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
 	SparkGlm52ServingDecodeResult *decode_result)
@@ -1161,6 +1179,24 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
 	}
 	fprintf(stderr,"pp13_decode_pending_final begin\n");
 	return SPARK_STATUS_BUSY;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
+	void *context,
+	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+	SparkGlm52ServingDecodeResult *decode_result)
+{
+	SparkGlm52Pp13ServiceBackendState *trace_state;
+	SparkStatus status;
+	uint64_t trace_begin_ns;
+	trace_state = (SparkGlm52Pp13ServiceBackendState *)context;
+	trace_begin_ns = trace_state != 0 && trace_state->trace_enabled != 0u ? SparkGlm52Pp13ServiceBackendMonotonicNs() : 0u;
+	if (trace_begin_ns != 0u)
+		fprintf(stderr,"pp13_trace decode_begin request=%llu\n",(unsigned long long)(decode_dispatch != 0 && decode_dispatch->request_dispatch != 0 ? decode_dispatch->request_dispatch->request_ids[0u] : 0u));
+	status = SparkGlm52Pp13ServiceBackendDecodeInner(context, decode_dispatch, decode_result);
+	if (trace_begin_ns != 0u)
+		fprintf(stderr,"pp13_trace decode_end status=%u dur_us=%llu\n",(uint32_t)status,(unsigned long long)((SparkGlm52Pp13ServiceBackendMonotonicNs() - trace_begin_ns) / 1000ull));
+	return status;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendAllocateCacheStorage(
@@ -1834,6 +1870,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		snprintf(state->cuda_resident_socket_path,sizeof(state->cuda_resident_socket_path),"%s",configuration->cuda_resident_socket_path);
 		state->cuda_resident_attached = 1u;
+		state->trace_enabled = getenv("SPARKPIPE_PP13_TRACE") != 0 ? 1u : 0u;
 		status = SparkGlm52Pp13ServiceBackendEnsureCudaResident(state);
 		if (status != SPARK_STATUS_OK)
 			fprintf(stderr,"pp13_resident_not_ready_at_start status=%u\n",(uint32_t)status);

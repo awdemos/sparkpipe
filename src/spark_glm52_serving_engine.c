@@ -1,5 +1,6 @@
 #include "sparkpipe/spark_glm52_serving_engine.h"
 
+#include <stdio.h>
 #include <string.h>
 
 static uint32_t SparkGlm52ServingNormalizeFlags(
@@ -1805,6 +1806,14 @@ SparkStatus SparkGlm52ServingEnginePump(
                 status = SparkGlm52ServingCompletePrefillDispatch(
                     engine,
                     &dispatch);
+                if (status != SPARK_STATUS_OK)
+                {
+                    fprintf(stderr,"serving_prefill_complete_failed status=%u request=%llu\n",(uint32_t)status,(unsigned long long)dispatch.request_ids[0u]);
+                }
+            }
+            else
+            {
+                fprintf(stderr,"serving_prefill_invoke_failed status=%u request=%llu\n",(uint32_t)status,(unsigned long long)dispatch.request_ids[0u]);
             }
         }
         else if (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
@@ -1815,6 +1824,10 @@ SparkStatus SparkGlm52ServingEnginePump(
             if (status == SPARK_STATUS_OK)
             {
                 dispatch_was_completed_by_decode_path = 1u;
+            }
+            else if (status != SPARK_STATUS_BUSY)
+            {
+                fprintf(stderr,"serving_decode_invoke_failed status=%u request=%llu\n",(uint32_t)status,(unsigned long long)dispatch.request_ids[0u]);
             }
         }
         else
