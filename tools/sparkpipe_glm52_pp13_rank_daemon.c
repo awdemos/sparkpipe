@@ -97,6 +97,7 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     const SparkModelDriverProgramDescriptor *program;
     SparkGlm52ResidentDecodeStageProductionRunner runner;
     int32_t cuda_resident_fd;
+    uint32_t trace_enabled;
     const char *cuda_resident_socket_path;
     uint64_t cuda_resident_retry_after_ns;
     uint64_t cuda_resident_next_sequence_number;
@@ -1289,13 +1290,19 @@ static void SparkGlm52Pp13DaemonCompletion(
         runtime->driver_inflight_count -= 1u;
     runtime->driver_completion_count += 1u;
     SparkGlm52Pp13DaemonSignalWake(runtime);
+    if (runtime->trace_enabled != 0u)
+        fprintf(stderr,"pp13_trace rank=%u completion request=%llu position=%llu flags=0x%x tokens=%u status=%u\n",runtime->rank_plan.rank_index,(unsigned long long)completion->request_id,(unsigned long long)completion->sequence_position,completion->completion_flags,completion->token_count,(uint32_t)completion->status);
     if ((runtime->rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u)
         return;
     if ((completion->completion_flags &
             SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u ||
         completion->token_count == 0u)
+    {
+        if (runtime->trace_enabled != 0u)
+            fprintf(stderr,"pp13_trace rank=%u final_event_skipped request=%llu position=%llu flags=0x%x tokens=%u\n",runtime->rank_plan.rank_index,(unsigned long long)completion->request_id,(unsigned long long)completion->sequence_position,completion->completion_flags,completion->token_count);
         return;
+    }
     memset(&event,0,sizeof(event));
     event.magic = SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_MAGIC;
     event.descriptor_bytes = (uint32_t)sizeof(event);
@@ -1697,9 +1704,11 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
 {
     SparkGlm52CudaResidentIpcSubmitWork submit_message;
     SparkStatus status;
+    uint64_t trace_begin_ns;
 
     if (runtime == 0 || packet == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
+    trace_begin_ns = runtime->trace_enabled != 0u ? SparkGlm52Pp13DaemonMonotonicNs() : 0u;
     if (runtime->cuda_resident_socket_path != 0)
     {
         status = SparkGlm52Pp13DaemonEnsureCudaResident(runtime);
@@ -1720,7 +1729,10 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
             return SPARK_STATUS_BUSY;
         }
         runtime->cuda_resident_submit_count += 1u;
-        return SparkGlm52Pp13DaemonAwaitResidentSubmitResult(runtime);
+        status = SparkGlm52Pp13DaemonAwaitResidentSubmitResult(runtime);
+        if (runtime->trace_enabled != 0u)
+            fprintf(stderr,"pp13_trace rank=%u work_submit request=%llu position=%llu status=%u dur_us=%llu\n",runtime->rank_plan.rank_index,(unsigned long long)packet->request_id,(unsigned long long)packet->sequence_position,(uint32_t)status,(unsigned long long)((SparkGlm52Pp13DaemonMonotonicNs() - trace_begin_ns) / 1000ull));
+        return status;
     }
     if (runtime->builder_state == 0 ||
         runtime->builder_library.builder_interface.submit_work == 0)
@@ -2365,6 +2377,7 @@ static SparkStatus SparkGlm52Pp13DaemonInitialize(
 
     memset(runtime,0,sizeof(*runtime));
     runtime->cuda_resident_fd = -1;
+    runtime->trace_enabled = getenv("SPARKPIPE_PP13_TRACE") != 0 ? 1u : 0u;
     runtime->work_listen_fd = -1;
     runtime->work_input_socket_fd = -1;
     runtime->work_output_socket_fd = -1;
