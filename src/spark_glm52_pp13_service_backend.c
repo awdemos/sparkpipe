@@ -300,6 +300,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 {
 	SparkGlm52Pp13ServiceBackendState *state;
 	SparkStatus status;
+	uint32_t drain_iteration;
 
 	state = (SparkGlm52Pp13ServiceBackendState *)context;
 	if (state == 0 || prefill_dispatch == 0)
@@ -329,7 +330,22 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 		SparkGlm52Pp13ServiceBackendPrefillIdlePump,
 		state);
 	fprintf(stderr,"pp13_prefill_builder status=%u\n",status);
-	return status;
+	if (status != SPARK_STATUS_OK)
+		return status;
+	for (drain_iteration = 0u; state->work_queue_count != 0u && drain_iteration < 25000u; ++drain_iteration)
+	{
+		status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
+		if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+			return status;
+		if (state->work_queue_count != 0u)
+			(void)poll(0,0,1);
+	}
+	if (state->work_queue_count != 0u)
+	{
+		fprintf(stderr,"pp13_prefill_drain_incomplete queued=%u\n",state->work_queue_count);
+		return SPARK_STATUS_IO_ERROR;
+	}
+	return SPARK_STATUS_OK;
 }
 
 static int32_t SparkGlm52Pp13ServiceBackendSetNonblocking(int32_t fd)
