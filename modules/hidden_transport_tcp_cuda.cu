@@ -719,10 +719,12 @@ static void SparkHiddenTcpCudaDestroyState(SparkHiddenTcpCudaState *state)
     for (slot_index = 0u;
          slot_index < SPARK_HIDDEN_TCP_CUDA_OUTGOING_DEPTH;
          ++slot_index)
-        free(state->outgoing_slots[slot_index].payload);
+        if (state->outgoing_slots[slot_index].payload != 0)
+            (void)cudaFreeHost(state->outgoing_slots[slot_index].payload);
     if (state->pending_packets != 0)
         for (slot_index = 0u; slot_index < state->pending_depth; ++slot_index)
-            free(state->pending_packets[slot_index].payload);
+            if (state->pending_packets[slot_index].payload != 0)
+                (void)cudaFreeHost(state->pending_packets[slot_index].payload);
     free(state->pending_packets);
     free(state->pending_hash_heads);
     free(state);
@@ -798,8 +800,11 @@ static SparkStatus SparkHiddenTcpCudaInitialize(
              slot_index < SPARK_HIDDEN_TCP_CUDA_OUTGOING_DEPTH;
              ++slot_index)
         {
-            state->outgoing_slots[slot_index].payload =
-                (uint8_t *)malloc((size_t)state->slot_payload_bytes);
+            if (cudaHostAlloc(
+                    (void **)&state->outgoing_slots[slot_index].payload,
+                    (size_t)state->slot_payload_bytes,
+                    cudaHostAllocDefault) != cudaSuccess)
+                state->outgoing_slots[slot_index].payload = 0;
             if (state->outgoing_slots[slot_index].payload == 0)
             {
                 SparkHiddenTcpCudaDestroyState(state);
@@ -820,8 +825,11 @@ static SparkStatus SparkHiddenTcpCudaInitialize(
         }
         for (slot_index = 0u; slot_index < state->pending_depth; ++slot_index)
         {
-            state->pending_packets[slot_index].payload =
-                (uint8_t *)malloc((size_t)state->slot_payload_bytes);
+            if (cudaHostAlloc(
+                    (void **)&state->pending_packets[slot_index].payload,
+                    (size_t)state->slot_payload_bytes,
+                    cudaHostAllocDefault) != cudaSuccess)
+                state->pending_packets[slot_index].payload = 0;
             if (state->pending_packets[slot_index].payload == 0)
             {
                 SparkHiddenTcpCudaDestroyState(state);
