@@ -40,6 +40,7 @@
 #define SPARK_GLM52_PP13_DAEMON_POLL_KIND_WORK_OUTPUT 0x00000020u
 #define SPARK_GLM52_PP13_DAEMON_POLL_KIND_TIMER 0x00000040u
 #define SPARK_GLM52_PP13_DAEMON_CONNECT_RETRY_NS 250000ull
+#define SPARK_GLM52_PP13_DAEMON_RUNNER_PROGRESS_NS 250000ull
 
 typedef struct SparkGlm52Pp13DaemonConfig
 {
@@ -118,6 +119,8 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     uint64_t work_duplicate_count;
     uint64_t work_deferred_count;
     uint64_t work_wake_count;
+    uint64_t driver_completion_count;
+    uint32_t driver_inflight_count;
     uint8_t final_event_read_buffer[128];
     uint32_t final_event_read_offset;
     SparkGlm52Pp13DaemonFinalEvent final_event_queue[
@@ -431,10 +434,14 @@ static uint64_t SparkGlm52Pp13DaemonNextTimerNs(
     const SparkGlm52Pp13DaemonRuntime *runtime)
 {
     uint64_t next_ns;
+    uint64_t now_ns;
 
     if (runtime == 0)
         return 0u;
+    now_ns = SparkGlm52Pp13DaemonMonotonicNs();
     next_ns = 0u;
+    if (runtime->driver_inflight_count != 0u)
+        next_ns = now_ns + SPARK_GLM52_PP13_DAEMON_RUNNER_PROGRESS_NS;
     if (runtime->work_queue_count != 0u)
         next_ns = SparkGlm52Pp13DaemonMinNonzeroNs(
             next_ns,
@@ -886,6 +893,9 @@ static void SparkGlm52Pp13DaemonCompletion(
     runtime = (SparkGlm52Pp13DaemonRuntime *)completion_context;
     if (runtime == 0 || completion == 0)
         return;
+    if (runtime->driver_inflight_count != 0u)
+        runtime->driver_inflight_count -= 1u;
+    runtime->driver_completion_count += 1u;
     SparkGlm52Pp13DaemonSignalWake(runtime);
     if ((runtime->rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u)
@@ -1565,6 +1575,7 @@ static uint32_t SparkGlm52Pp13DaemonPumpQueuedWork(
             {
                 runtime->work_submit_count += 1u;
                 runtime->work_queue_submitted[queue_slot] = 1u;
+                runtime->driver_inflight_count += 1u;
             }
             else if (status == SPARK_STATUS_BUSY)
             {
@@ -2101,6 +2112,9 @@ static void SparkGlm52Pp13DaemonPrintReady(
         (unsigned long long)runtime->work_error_count);
     printf("wake_signals=%llu\n",
         (unsigned long long)runtime->wake_signal_count);
+    printf("driver_inflight=%u\n",runtime->driver_inflight_count);
+    printf("driver_completions=%llu\n",
+        (unsigned long long)runtime->driver_completion_count);
     printf("wake_dropped=%llu\n",
         (unsigned long long)runtime->wake_drop_count);
     printf("timer_wakes=%llu\n",
@@ -2155,7 +2169,11 @@ int main(int argc,char **argv)
     while (SparkGlm52Pp13DaemonRunning != 0)
     {
         progress = 0u;
-        progress |= SparkGlm52Pp13DaemonDrainWakePipe(&runtime);
+        if (SparkGlm52Pp13DaemonDrainWakePipe(&runtime) != 0u)
+        {
+            progress = 1u;
+            SparkGlm52Pp13DaemonWakeDeferredWork(&runtime);
+        }
         progress |= SparkGlm52Pp13DaemonPumpWorkControl(&runtime);
         (void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
             &runtime.runner);
