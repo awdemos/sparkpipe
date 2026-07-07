@@ -279,7 +279,7 @@ build/sparkpipe_glm52_http_gateway: tools/sparkpipe_glm52_http_gateway.c $(COMMO
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_pp13_ring_check: tools/sparkpipe_glm52_pp13_ring_check.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tools/sparkpipe_glm52_pp13_ring_check.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lcudart -o $@
+	$(CC) $(CPPFLAGS) -I$(CUDA_HOME)/include $(CFLAGS) tools/sparkpipe_glm52_pp13_ring_check.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 $(LDLIBS) -lcudart -o $@
 
 build/sparkpipe_glm52_pp13_rank_daemon: tools/sparkpipe_glm52_pp13_rank_daemon.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tools/sparkpipe_glm52_pp13_rank_daemon.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
