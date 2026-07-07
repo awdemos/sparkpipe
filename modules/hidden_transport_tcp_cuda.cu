@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #define SPARK_HIDDEN_TCP_CUDA_MAGIC 0x53484354u
@@ -22,6 +23,7 @@
 #define SPARK_HIDDEN_TCP_CUDA_PENDING_DEPTH 8u
 #define SPARK_HIDDEN_TCP_CUDA_OUTGOING_DEPTH 8u
 #define SPARK_HIDDEN_TCP_CUDA_CONNECT_RETRY_MS 50u
+#define SPARK_HIDDEN_TCP_CUDA_DESTROY_DRAIN_TIMEOUT_MS 5000u
 
 typedef struct SparkHiddenTcpCudaHeader
 {
@@ -222,6 +224,45 @@ static int SparkHiddenTcpCudaCloseFd(int fd)
     if (fd >= 0)
         (void)close(fd);
     return -1;
+}
+
+static void SparkHiddenTcpCudaBuildDeadline(
+    struct timespec *deadline,
+    uint32_t timeout_ms)
+{
+    if (clock_gettime(CLOCK_REALTIME,deadline) != 0)
+    {
+        deadline->tv_sec = 0;
+        deadline->tv_nsec = 0;
+        return;
+    }
+    deadline->tv_sec += (time_t)(timeout_ms / 1000u);
+    deadline->tv_nsec += (long)((timeout_ms % 1000u) * 1000000u);
+    if (deadline->tv_nsec >= 1000000000L)
+    {
+        deadline->tv_sec += 1;
+        deadline->tv_nsec -= 1000000000L;
+    }
+}
+
+static void SparkHiddenTcpCudaWaitForOutgoingDrain(
+    SparkHiddenTcpCudaState *state)
+{
+    struct timespec deadline;
+    int wait_status;
+    if (state->is_sender == 0u)
+        return;
+    SparkHiddenTcpCudaBuildDeadline(&deadline,
+        SPARK_HIDDEN_TCP_CUDA_DESTROY_DRAIN_TIMEOUT_MS);
+    (void)pthread_mutex_lock(&state->lock);
+    while (state->outgoing_count != 0u && state->stop == 0u)
+    {
+        wait_status = pthread_cond_timedwait(&state->outgoing_cond,
+            &state->lock,&deadline);
+        if (wait_status == ETIMEDOUT)
+            break;
+    }
+    (void)pthread_mutex_unlock(&state->lock);
 }
 
 static void SparkHiddenTcpCudaConfigureSocket(int fd)
@@ -556,6 +597,7 @@ static void *SparkHiddenTcpCudaSenderMain(void *argument)
         state->outgoing_head = (state->outgoing_head + 1u) %
             SPARK_HIDDEN_TCP_CUDA_OUTGOING_DEPTH;
         state->outgoing_count -= 1u;
+        (void)pthread_cond_broadcast(&state->outgoing_cond);
         SparkHiddenTcpCudaSignalEvent(state);
     }
     (void)pthread_mutex_unlock(&state->lock);
@@ -656,6 +698,7 @@ static void SparkHiddenTcpCudaDestroyState(SparkHiddenTcpCudaState *state)
     uint32_t slot_index;
     if (state == 0)
         return;
+    SparkHiddenTcpCudaWaitForOutgoingDrain(state);
     state->stop = 1u;
     if (state->listen_fd >= 0)
         (void)shutdown(state->listen_fd,SHUT_RDWR);
