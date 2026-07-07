@@ -872,6 +872,7 @@ static SparkStatus SparkHiddenTcpCudaSend(
     SparkHiddenTcpCudaState *state;
     SparkHiddenTcpCudaOutgoingSlot *slot;
     SparkStatus status;
+    cudaError_t cuda_error;
     uint64_t hidden_bytes;
     uint64_t sideband_bytes;
     uint32_t slot_index;
@@ -889,8 +890,12 @@ static SparkStatus SparkHiddenTcpCudaSend(
     if (sizeof(SparkHiddenTcpCudaHeader) + hidden_bytes + sideband_bytes >
         state->slot_payload_bytes)
         return SPARK_STATUS_CAPACITY_EXCEEDED;
-    if (cudaStreamSynchronize((cudaStream_t)packet->cuda_stream) != cudaSuccess)
+    cuda_error = cudaStreamSynchronize((cudaStream_t)packet->cuda_stream);
+    if (cuda_error != cudaSuccess)
+    {
+        fprintf(stderr,"hidden_tcp_send_cuda_error stage=stream_sync cuda_error=%d name=%s seq=%llu token=%llu active=%u stream=%p hidden=%p hidden_bytes=%llu\n",(int)cuda_error,cudaGetErrorName(cuda_error),(unsigned long long)packet->sequence_id,(unsigned long long)packet->token_index,packet->active_sequence_count,packet->cuda_stream,(const void *)packet->hidden_bf16,(unsigned long long)hidden_bytes);
         return SPARK_STATUS_IO_ERROR;
+    }
     (void)pthread_mutex_lock(&state->lock);
     if (state->outgoing_count >= SPARK_HIDDEN_TCP_CUDA_OUTGOING_DEPTH)
     {
@@ -911,19 +916,22 @@ static SparkStatus SparkHiddenTcpCudaSend(
     slot->header.sideband_bytes_per_sequence =
         packet->sideband_bytes_per_sequence;
     memcpy(slot->payload,&slot->header,sizeof(slot->header));
-    if (cudaMemcpy(slot->payload + sizeof(slot->header),packet->hidden_bf16,
-            (size_t)hidden_bytes,cudaMemcpyDeviceToHost) != cudaSuccess)
+    cuda_error = cudaMemcpy(slot->payload + sizeof(slot->header),packet->hidden_bf16,(size_t)hidden_bytes,cudaMemcpyDeviceToHost);
+    if (cuda_error != cudaSuccess)
     {
         (void)pthread_mutex_unlock(&state->lock);
+        fprintf(stderr,"hidden_tcp_send_cuda_error stage=hidden_d2h cuda_error=%d name=%s seq=%llu token=%llu active=%u stream=%p hidden=%p hidden_bytes=%llu\n",(int)cuda_error,cudaGetErrorName(cuda_error),(unsigned long long)packet->sequence_id,(unsigned long long)packet->token_index,packet->active_sequence_count,packet->cuda_stream,(const void *)packet->hidden_bf16,(unsigned long long)hidden_bytes);
         return SPARK_STATUS_IO_ERROR;
     }
-    if (sideband_bytes != 0u &&
-        cudaMemcpy(slot->payload + sizeof(slot->header) + hidden_bytes,
-            packet->sideband_payload,(size_t)sideband_bytes,
-            cudaMemcpyDeviceToHost) != cudaSuccess)
+    if (sideband_bytes != 0u)
     {
-        (void)pthread_mutex_unlock(&state->lock);
-        return SPARK_STATUS_IO_ERROR;
+        cuda_error = cudaMemcpy(slot->payload + sizeof(slot->header) + hidden_bytes,packet->sideband_payload,(size_t)sideband_bytes,cudaMemcpyDeviceToHost);
+        if (cuda_error != cudaSuccess)
+        {
+            (void)pthread_mutex_unlock(&state->lock);
+            fprintf(stderr,"hidden_tcp_send_cuda_error stage=sideband_d2h cuda_error=%d name=%s seq=%llu token=%llu active=%u sideband=%p sideband_bytes=%llu\n",(int)cuda_error,cudaGetErrorName(cuda_error),(unsigned long long)packet->sequence_id,(unsigned long long)packet->token_index,packet->active_sequence_count,(const void *)packet->sideband_payload,(unsigned long long)sideband_bytes);
+            return SPARK_STATUS_IO_ERROR;
+        }
     }
     slot->bytes = sizeof(slot->header) + hidden_bytes + sideband_bytes;
     state->outgoing_count += 1u;
