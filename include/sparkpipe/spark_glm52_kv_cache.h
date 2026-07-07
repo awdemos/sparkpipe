@@ -35,9 +35,7 @@ extern "C" {
 #error kv context and pool token counts must be multiples of the kv block token count
 #endif
 
-#ifndef SPARK_GLM52_KV_CACHE_MAX_LAYER_COUNT
 #define SPARK_GLM52_KV_CACHE_MAX_LAYER_COUNT 256u
-#endif
 
 #define SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE 1u
 #define SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED 2u

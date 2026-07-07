@@ -103,26 +103,6 @@ static uint32_t SparkGlm52SchedulerNormalizeMeasuredProfileId(
     return measured_profile_id;
 }
 
-static uint32_t SparkGlm52SchedulerNormalizeConfigurationFlags(
-    uint32_t configuration_flags)
-{
-    if (configuration_flags == 0u)
-    {
-        return SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
-    }
-    return configuration_flags;
-}
-
-static uint32_t SparkGlm52SchedulerNormalizePrefillBlockTokens(
-    uint32_t prefix_cache_block_tokens)
-{
-    if (prefix_cache_block_tokens == 0u)
-    {
-        return SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
-    }
-    return prefix_cache_block_tokens;
-}
-
 static uint32_t SparkGlm52SchedulerNormalizeMaxPrefillTokensPerStep(
     uint32_t max_prefill_tokens_per_step,
     uint32_t prefix_cache_block_tokens)
@@ -655,53 +635,31 @@ static SparkStatus SparkGlm52SchedulerReject(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52SchedulerValidateConfiguration(
-    const SparkGlm52SchedulerConfiguration *configuration)
+static SparkStatus SparkGlm52SchedulerValidateConfiguration(const SparkGlm52SchedulerConfiguration *configuration)
 {
-    uint32_t configuration_flags;
-    uint32_t prefix_cache_block_tokens;
-
     if (configuration == 0)
-    {
         return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    configuration_flags = SparkGlm52SchedulerNormalizeConfigurationFlags(
-        configuration->configuration_flags);
-    prefix_cache_block_tokens = SparkGlm52SchedulerNormalizePrefillBlockTokens(
-        configuration->prefix_cache_block_tokens);
     if (configuration->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        configuration->descriptor_bytes !=
-            SPARK_GLM52_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES ||
+        configuration->descriptor_bytes != SPARK_GLM52_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES ||
         configuration->spark_count != SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT ||
         configuration->reserved != 0u ||
-        !SparkGlm52SchedulerQuantizationModeIsSupported(
-            configuration->quantization_mode) ||
-        !SparkGlm52SchedulerConfigurationFlagsAreValid(configuration_flags) ||
-        prefix_cache_block_tokens == 0u)
-    {
+        configuration->configuration_flags == 0u ||
+        configuration->prefix_cache_block_tokens == 0u ||
+        !SparkGlm52SchedulerQuantizationModeIsSupported(configuration->quantization_mode) ||
+        !SparkGlm52SchedulerConfigurationFlagsAreValid(configuration->configuration_flags))
         return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    if ((configuration_flags &
-            SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_PREFIX_CACHE) != 0u)
+    if ((configuration->configuration_flags & SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_PREFIX_CACHE) != 0u)
     {
         if (configuration->prefix_cache == 0 ||
-            configuration->prefix_cache->abi_version !=
-                SPARK_GLM52_PREFIX_CACHE_ABI_VERSION ||
-            configuration->prefix_cache->descriptor_bytes !=
-                SPARK_GLM52_PREFIX_CACHE_DESCRIPTOR_BYTES ||
-            configuration->prefix_cache->block_token_count !=
-                prefix_cache_block_tokens ||
+            configuration->prefix_cache->abi_version != SPARK_GLM52_PREFIX_CACHE_ABI_VERSION ||
+            configuration->prefix_cache->descriptor_bytes != SPARK_GLM52_PREFIX_CACHE_DESCRIPTOR_BYTES ||
+            configuration->prefix_cache->block_token_count != configuration->prefix_cache_block_tokens ||
             configuration->prefix_cache->entries == 0 ||
             configuration->prefix_cache->sequence_bindings == 0)
-        {
             return SPARK_STATUS_INVALID_ARGUMENT;
-        }
-        if ((configuration_flags &
-                SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_KV_CACHE_REQUIRED) != 0u &&
+        if ((configuration->configuration_flags & SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_KV_CACHE_REQUIRED) != 0u &&
             configuration->prefix_cache->kv_cache_arena == 0)
-        {
             return SPARK_STATUS_INVALID_ARGUMENT;
-        }
     }
     return SPARK_STATUS_OK;
 }
@@ -775,10 +733,8 @@ SparkStatus SparkGlm52SchedulerInitialize(
         configuration->measured_profile_id);
     quantization_mode = SparkGlm52SchedulerNormalizeQuantizationMode(
         configuration->quantization_mode);
-    configuration_flags = SparkGlm52SchedulerNormalizeConfigurationFlags(
-        configuration->configuration_flags);
-    prefix_cache_block_tokens = SparkGlm52SchedulerNormalizePrefillBlockTokens(
-        configuration->prefix_cache_block_tokens);
+    configuration_flags = configuration->configuration_flags;
+    prefix_cache_block_tokens = configuration->prefix_cache_block_tokens;
     max_prefill_tokens_per_step =
         SparkGlm52SchedulerNormalizeMaxPrefillTokensPerStep(
             configuration->max_prefill_tokens_per_step,

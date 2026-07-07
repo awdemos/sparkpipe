@@ -95,6 +95,10 @@ static void SparkTestInitializeSchedulerConfiguration(
     configuration->measured_profile_id =
         SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701;
     configuration->quantization_mode = quantization_mode;
+    configuration->configuration_flags =
+        SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
+    configuration->prefix_cache_block_tokens =
+        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
     configuration->prefix_cache = prefix_cache;
 }
 
