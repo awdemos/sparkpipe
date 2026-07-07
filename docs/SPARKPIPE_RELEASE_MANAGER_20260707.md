@@ -15,7 +15,7 @@ Example layout:
     lib/libglm52_pp13_service_backend.so
     lib/libglm52_pp13_node_context_builder.so
     lib/libhidden_transport_tcp_cuda.so
-    lib/glm5_2.fp8.so
+    lib/model_driver.so
     packs/fp8/...
     packs/stage/...
     tokenizer/tokenizer.json

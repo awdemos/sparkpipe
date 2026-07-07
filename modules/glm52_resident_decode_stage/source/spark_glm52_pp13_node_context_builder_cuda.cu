@@ -444,19 +444,24 @@ static SparkStatus SparkGlm52Pp13BuilderRememberAllocation(
 	return SparkGlm52Pp13BuilderRememberAllocationWithKind(state,pointer,0u);
 }
 
-static SparkStatus SparkGlm52Pp13BuilderCudaAlloc(
-	SparkGlm52Pp13BuilderState *state,
-	void **pointer_out,
-	uint64_t bytes)
+static SparkStatus SparkGlm52Pp13BuilderCudaAlloc(SparkGlm52Pp13BuilderState *state, void **pointer_out, uint64_t bytes)
 {
 	void *pointer;
+	size_t free_bytes, total_bytes;
 	SparkStatus status;
 	if (state == 0 || pointer_out == 0 || bytes == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	pointer = 0;
 	status = SparkGlm52Pp13BuilderCudaStatus(cudaMalloc(&pointer,(size_t)bytes));
 	if (status != SPARK_STATUS_OK)
+	{
+		free_bytes = 0u;
+		total_bytes = 0u;
+		if (cudaMemGetInfo(&free_bytes,&total_bytes) != cudaSuccess)
+			cudaGetLastError();
+		fprintf(stderr,"pp13_builder_cuda_alloc_failed requested_bytes=%llu free_bytes=%llu total_bytes=%llu\n",(unsigned long long)bytes,(unsigned long long)free_bytes,(unsigned long long)total_bytes);
 		return status;
+	}
 	status = SparkGlm52Pp13BuilderRememberAllocation(state,pointer);
 	if (status != SPARK_STATUS_OK)
 	{

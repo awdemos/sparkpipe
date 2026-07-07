@@ -7,7 +7,7 @@ This release adds a real CUDA-resident data-plane process for PP13 ranks.
 ```text
 sparkpipe_glm52_cuda_residentd
     long-lived CUDA owner
-    loads FP8 packs, node-context builder, hidden transport, and glm5_2.fp8 driver
+    loads FP8 packs, node-context builder, hidden transport, and the model_driver.so driver
     owns CUDA context, graphs, KV arenas, hidden transport sessions, and resident pack state
     accepts local Unix-socket work descriptors
     returns model-driver completions
@@ -32,7 +32,9 @@ bin/sparkpipe_glm52_cuda_residentd \
   --fp8-pack-root /home/spark7/sparkpipe_runtime/packs/fp8 \
   --stagepack-root /home/spark7/sparkpipe_runtime/packs/stage \
   --transport-so /home/spark7/sparkpipe_runtime/lib/libhidden_transport_tcp_cuda.so \
-  --driver-so /home/spark7/sparkpipe_runtime/lib/glm5_2.fp8.so \
+  --driver-so /home/spark7/sparkpipe_runtime/lib/model_driver.so \
+  --program decode \
+  --node-target cuda.sm121.glm52.resident_decode_stage.bf16 \
   --node-context-builder-so /home/spark7/sparkpipe_runtime/lib/libglm52_pp13_node_context_builder.so \
   --embedding-pack /home/spark7/sparkpipe_runtime/packs/embedding.sp \
   --max-active 1024 \
@@ -100,3 +102,27 @@ The hot path is currently Unix-socket binary messages. Once B1/B16/B128 are stab
 ## Ownership boundary
 
 `cuda_residentd` owns all CUDA-facing state. The control daemon should not load the node-context builder, model driver, hidden transport `.so`, CUDA packs, or CUDA graphs when `--cuda-resident-socket` is used.
+
+## Operational notes
+
+Driver artifact name: the driver `.so` is emitted by the driver compiler as
+`model_driver.so` (SPARK_DRIVER_SHARED_OBJECT_NAME). Earlier manifests and this
+doc referenced `glm5_2.fp8.so`, which is not a produced artifact; use
+`lib/model_driver.so`.
+
+`--program` value: the residentd, the old rank daemon, and the gateway all
+default `--program` to `glm52.pp13.rank.production` in source. The
+production-tested release used `--program decode`, which is the value shown
+above. The program string is resolved against whatever the loaded driver `.so`
+registers, so the correct value is deployment-specific; confirm against the
+driver actually shipped in the release rather than assuming the source default.
+
+spark0 resident init: the resident builder allocates fixed per-layer KV pools
+sized by SPARK_GLM52_KV_POOL_TOKENS (4194304) with no runtime override, so every
+rank reserves the same multi-GB pool per layer regardless of need. spark0 also
+hosts the gateway/control plane, so it has the least free device memory and is
+the only node that can fail `allocate_layer_buffers` partway through (observed at
+layer 4, status IO_ERROR). The builder now logs requested and free/total device
+bytes on any cudaMalloc failure (`pp13_builder_cuda_alloc_failed`); that line
+confirms or rules out exhaustion. A runtime pool-size override is the mitigation
+once the numbers confirm exhaustion, and is tracked separately.
