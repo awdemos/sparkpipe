@@ -61,6 +61,7 @@ GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B
 GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS))
 GLM52_PP13_NODE_CONTEXT_BUILDER := build/libglm52_pp13_node_context_builder.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
+HIDDEN_TRANSPORT_GDR_RDMA := build/libhidden_transport_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
 
 COMMON_SOURCES := \
     src/spark_status.c \
@@ -213,6 +214,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_spark2_accuracy_gate \
     glm52_spark2_local_pipeline_gate \
     glm52_pp13_service_backend \
+    hidden_transport_gpudirect_rdma_verbs \
     glm52_pp13_node_context_builder \
     glm52_resident_decode_stage_firmware_package \
     tree_summary
@@ -317,6 +319,19 @@ $(HIDDEN_TRANSPORT_TCP_CUDA): modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBR
 	fi
 
 hidden_transport_tcp_cuda: $(HIDDEN_TRANSPORT_TCP_CUDA)
+
+$(HIDDEN_TRANSPORT_GDR_RDMA): modules/hidden_transport_gpudirect_rdma_verbs.cu $(COMMON_LIBRARY)
+	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
+		echo "hidden_transport_gpudirect_rdma_verbs skipped: nvcc unavailable"; \
+	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
+		echo "hidden_transport_gpudirect_rdma_verbs skipped: CUDA headers unavailable"; \
+	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
+		echo "hidden_transport_gpudirect_rdma_verbs skipped: libibverbs headers unavailable"; \
+	else \
+		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc modules/hidden_transport_gpudirect_rdma_verbs.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
+	fi
+
+hidden_transport_gpudirect_rdma_verbs: $(HIDDEN_TRANSPORT_GDR_RDMA)
 
 $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE):
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \

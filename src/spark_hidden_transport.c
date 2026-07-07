@@ -53,6 +53,40 @@ static uint32_t SparkHiddenTransportCapabilitiesMeetProduction(
         SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS;
 }
 
+
+static uint32_t SparkHiddenTransportCapabilitiesMeetZeroCopyGpudirect(
+    uint32_t capability_flags)
+{
+    return (capability_flags &
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_ZERO_COPY_GPUDIRECT_CAPS) ==
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_ZERO_COPY_GPUDIRECT_CAPS;
+}
+
+static void SparkHiddenTransportBuildEffectiveEndpoint(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const SparkHiddenTransportInterface *transport_interface,
+    SparkHiddenTransportEndpoint *effective_endpoint)
+{
+    if (endpoint == 0 || effective_endpoint == 0)
+    {
+        return;
+    }
+    *effective_endpoint = *endpoint;
+    if (transport_interface != 0 &&
+        SparkHiddenTransportCapabilitiesMeetZeroCopyGpudirect(
+            transport_interface->capability_flags))
+    {
+        SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
+            effective_endpoint,
+            endpoint->hidden_dimension,
+            endpoint->max_active_sequence_count,
+            endpoint->validated_latency_ns,
+            endpoint->route_name);
+        effective_endpoint->bytes_per_sequence = endpoint->bytes_per_sequence;
+        effective_endpoint->max_packet_bytes = endpoint->max_packet_bytes;
+    }
+}
+
 static uint32_t SparkHiddenTransportCapabilitiesMeetSimulation(
     uint32_t capability_flags)
 {
@@ -381,6 +415,7 @@ SparkStatus SparkHiddenTransportOpen(
     SparkHiddenTransportSession **session_out)
 {
     SparkHiddenTransportSession *session;
+    SparkHiddenTransportEndpoint effective_endpoint;
     SparkStatus status;
 
     if (session_out == 0)
@@ -401,8 +436,18 @@ SparkStatus SparkHiddenTransportOpen(
     {
         return status;
     }
-    if ((transport_interface->capability_flags & endpoint->capability_flags) !=
-        endpoint->capability_flags)
+    SparkHiddenTransportBuildEffectiveEndpoint(
+        endpoint,
+        transport_interface,
+        &effective_endpoint);
+    status = SparkHiddenTransportValidateEndpoint(&effective_endpoint);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if ((transport_interface->capability_flags &
+            effective_endpoint.capability_flags) !=
+        effective_endpoint.capability_flags)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -412,7 +457,7 @@ SparkStatus SparkHiddenTransportOpen(
     {
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    session->endpoint = *endpoint;
+    session->endpoint = effective_endpoint;
     session->transport_interface = *transport_interface;
     status = session->transport_interface.initialize(
         &session->endpoint,
@@ -919,14 +964,40 @@ SparkStatus SparkHiddenTransportPersistentRingGetStatistics(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkHiddenTransportGpudirectRdmaVerbsPreflight(
-    const SparkHiddenTransportEndpoint *endpoint,
-    const char *peermem_sysfs_path,
-    const char *infiniband_sysfs_path)
+
+void SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
+    SparkHiddenTransportEndpoint *endpoint,
+    uint32_t hidden_dimension,
+    uint32_t max_active_sequence_count,
+    uint64_t validated_latency_ns,
+    const char *route_name)
+{
+    if (endpoint == 0)
+    {
+        return;
+    }
+    memset(endpoint, 0, sizeof(*endpoint));
+    endpoint->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
+    endpoint->capability_flags =
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_ZERO_COPY_GPUDIRECT_CAPS;
+    endpoint->hidden_dimension = hidden_dimension;
+    endpoint->bytes_per_sequence =
+        hidden_dimension * SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
+    endpoint->max_active_sequence_count = max_active_sequence_count;
+    endpoint->max_packet_bytes =
+        (uint64_t)endpoint->bytes_per_sequence *
+        (uint64_t)max_active_sequence_count;
+    endpoint->validated_latency_ns = validated_latency_ns;
+    endpoint->transport_module_id =
+        SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID;
+    endpoint->route_name = route_name;
+}
+
+SparkStatus SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(
+    const SparkHiddenTransportEndpoint *endpoint)
 {
     SparkStatus status;
-    const char *peermem_path;
-    const char *infiniband_path;
 
     status = SparkHiddenTransportValidateEndpoint(endpoint);
     if (status != SPARK_STATUS_OK)
@@ -940,10 +1011,32 @@ SparkStatus SparkHiddenTransportGpudirectRdmaVerbsPreflight(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((endpoint->capability_flags &
-            SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS) !=
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_PRODUCTION_CAPS)
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_ZERO_COPY_GPUDIRECT_CAPS) !=
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_ZERO_COPY_GPUDIRECT_CAPS)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((endpoint->capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_SIMULATION_ONLY) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const char *peermem_sysfs_path,
+    const char *infiniband_sysfs_path)
+{
+    SparkStatus status;
+    const char *peermem_path;
+    const char *infiniband_path;
+
+    status = SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(endpoint);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
     }
     peermem_path = peermem_sysfs_path;
     if (peermem_path == 0 || peermem_path[0] == '\0')
