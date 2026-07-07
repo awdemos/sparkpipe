@@ -40,9 +40,7 @@ extern "C" {
 #define SPARK_GLM52_PREFIX_CACHE_NO_PHYSICAL_BLOCK 0xffffffffu
 #define SPARK_GLM52_PREFIX_CACHE_NO_ENTRY 0xffffffffu
 
-#ifndef SPARK_GLM52_PREFIX_CACHE_MAX_BLOCK_TOKENS
 #define SPARK_GLM52_PREFIX_CACHE_MAX_BLOCK_TOKENS 256u
-#endif
 
 typedef struct SparkGlm52PrefixCacheEntry
 {

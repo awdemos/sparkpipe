@@ -100,6 +100,10 @@ static void SparkTestInitializePrefillBridgeFixture(
         SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701;
     scheduler_configuration.quantization_mode =
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
+    scheduler_configuration.configuration_flags =
+        SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
+    scheduler_configuration.prefix_cache_block_tokens =
+        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
     scheduler_configuration.prefix_cache = &fixture->prefix_cache;
     assert(SparkGlm52SchedulerInitialize(
         &fixture->scheduler,

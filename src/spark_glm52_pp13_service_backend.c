@@ -1001,6 +1001,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeScheduler(
 		SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_TOKENS;
 	scheduler_configuration.prefix_cache_block_tokens =
 		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_TOKENS;
+	scheduler_configuration.configuration_flags =
+		SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
 	scheduler_configuration.prefix_cache = &state->prefix_cache;
 	return SparkGlm52SchedulerInitialize(
 		&state->scheduler,
