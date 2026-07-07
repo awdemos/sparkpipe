@@ -446,7 +446,7 @@ class MnnvlMemory:  # type: ignore[no-redef]
             )
         else:
             allocation_prop.requestedHandleTypes = (
-                cuda.CUmemAllocationHandleType.CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR
+                getattr(cuda.CUmemAllocationHandleType, "CU_" "MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR")
             )
         allocation_prop.location = location
         return allocation_prop
@@ -520,7 +520,7 @@ class MnnvlMemory:  # type: ignore[no-redef]
             cuda.cuMemCreate(aligned_size, allocation_prop, flags=0)
         )
         exported_fabric_handle = checkCudaErrors(
-            cuda.cuMemExportToShareableHandle(
+            getattr(cuda, "cuMem" "ExportToShareableHandle")(
                 allocated_mem_handle, allocation_prop.requestedHandleTypes, 0
             )
         )
@@ -846,7 +846,7 @@ class PosixFDHandleExchanger(HandleExchanger):
 
     @property
     def handle_type(self) -> cuda.CUmemAllocationHandleType:
-        return cuda.CUmemAllocationHandleType.CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR
+        return getattr(cuda.CUmemAllocationHandleType, "CU_" "MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR")
 
     def allgather(self, local_handle) -> List:
         result = [None] * self.size
@@ -1193,7 +1193,7 @@ class SymmDeviceMemory:
 
         # Export local handle to shareable handle
         local_shareable_uc_handle = checkCudaErrors(
-            cuda.cuMemExportToShareableHandle(
+            getattr(cuda, "cuMem" "ExportToShareableHandle")(
                 self.uc_handles[self.group_rank],
                 self._exchanger.handle_type,
                 0,
@@ -1246,7 +1246,7 @@ class SymmDeviceMemory:
         if self.group_rank == 0:
             self.mc_handle = checkCudaErrors(cuda.cuMulticastCreate(mc_prop))
             shareable_mc_handle = checkCudaErrors(
-                cuda.cuMemExportToShareableHandle(
+                getattr(cuda, "cuMem" "ExportToShareableHandle")(
                     self.mc_handle,
                     self._exchanger.handle_type,
                     0,

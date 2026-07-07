@@ -7,7 +7,7 @@
 static void SparkPreflightInitializeEndpoint(
     SparkHiddenTransportEndpoint *endpoint)
 {
-    SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
+    SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
         endpoint,
         6144u,
         1024u,
@@ -38,7 +38,6 @@ static int SparkPreflightParseUint32(
 
 static int SparkPreflightApplyArgument(
     SparkHiddenTransportEndpoint *endpoint,
-    const char **peermem_path,
     const char **infiniband_path,
     int argc,
     char **argv,
@@ -53,10 +52,6 @@ static int SparkPreflightApplyArgument(
     if (strcmp(argv[*index], "--route") == 0)
     {
         endpoint->route_name = argv[*index + 1];
-    }
-    else if (strcmp(argv[*index], "--peermem-sysfs") == 0)
-    {
-        *peermem_path = argv[*index + 1];
     }
     else if (strcmp(argv[*index], "--infiniband-sysfs") == 0)
     {
@@ -93,18 +88,15 @@ int main(int argc, char **argv)
 {
     SparkHiddenTransportEndpoint endpoint;
     SparkStatus status;
-    const char *peermem_path;
     const char *infiniband_path;
     int index;
 
     SparkPreflightInitializeEndpoint(&endpoint);
-    peermem_path = 0;
     infiniband_path = 0;
     for (index = 1; index < argc; ++index)
     {
         if (SparkPreflightApplyArgument(
                 &endpoint,
-                &peermem_path,
                 &infiniband_path,
                 argc,
                 argv,
@@ -117,20 +109,18 @@ int main(int argc, char **argv)
     endpoint.max_packet_bytes =
         (uint64_t)endpoint.bytes_per_sequence *
         (uint64_t)endpoint.max_active_sequence_count;
-    status = SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+    status = SparkHiddenTransportSparkHostRdmaVerbsPreflight(
         &endpoint,
-        peermem_path,
         infiniband_path);
-    printf("gpudirect_rdma_verbs_preflight=%s\n", SparkStatusToString(status));
+    printf("spark_host_pinned_rdma_verbs_preflight=%s\n",
+        SparkStatusToString(status));
     printf("module=%s\n", endpoint.transport_module_id);
     printf("route=%s\n", endpoint.route_name);
     printf("hidden_dimension=%u\n", endpoint.hidden_dimension);
     printf("max_active_sequence_count=%u\n", endpoint.max_active_sequence_count);
-    printf("peermem_sysfs=%s\n",
-        peermem_path != 0 ? peermem_path :
-        SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_PEERMEM_SYSFS_PATH);
     printf("infiniband_sysfs=%s\n",
         infiniband_path != 0 ? infiniband_path :
-        SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_INFINIBAND_SYSFS_PATH);
+        SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_INFINIBAND_SYSFS_PATH);
+    printf("buffer_contract=cudaHostAllocMapped_cudaHostGetDevicePointer_ibv_reg_mr_host_pointer\n");
     return status == SPARK_STATUS_OK ? 0 : 1;
 }

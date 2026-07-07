@@ -5,7 +5,7 @@
 # (or any aarch64 Grace-Blackwell host). Run this inside a `srun
 # --container-image=nvcr.io/nvidia/cuda:13.0.0-cudnn-devel-ubuntu24.04
 # --container-writable` session; it installs system deps, builds UCX
-# v1.21.x + GDRCopy v2.5.1 from source, creates a venv with FlashInfer
+# v1.21.x + GPU-copy-helper v2.5.1 from source, creates a venv with FlashInfer
 # pinned, and finally runs `BUILD_NCCL_EP=1 BUILD_NIXL_EP=1 pip install
 # -e ".[nvep]"`.
 #
@@ -13,7 +13,7 @@
 #   REPO_ROOT          path to the flashinfer checkout (defaults to PWD)
 #   DOCA_VERSION       DOCA version tag (default: 3.2.0-125000-25.10)
 #   UCX_VERSION        UCX branch/tag (default: v1.21.x)
-#   GDRCOPY_VERSION    GDRCopy tag (default: v2.5.1)
+#   GPU_COPY_HELPER_VERSION    GPU-copy-helper tag (default: v2.5.1)
 #   VENV               venv path (default: /opt/flashinfer-venv)
 #
 # Time budget on Lyris aarch64: ~30-40 min (NCCL EP template compile
@@ -25,7 +25,7 @@ set -eo pipefail
 : "${DOCA_VERSION:=3.2.0-125000-25.10}"
 : "${UCX_VERSION:=v1.21.x}"
 : "${UCX_PREFIX:=/opt/ucx}"
-: "${GDRCOPY_VERSION:=v2.5.1}"
+: "${GPU_COPY_HELPER_VERSION:=v2.5.1}"
 : "${VENV:=/opt/flashinfer-venv}"
 
 # Detect Debian multiarch dir at runtime (aarch64-linux-gnu on Lyris).
@@ -91,9 +91,9 @@ export PATH="${UCX_PREFIX}/bin:${PATH}"
 # is respected by nvcc just like gcc.
 export CPATH="/opt/mellanox/doca/include${CPATH:+:${CPATH}}"
 
-# ---- 4. GDRCopy v2.5.1 -----------------------------------------------------
-echo "=== building GDRCopy ${GDRCOPY_VERSION} ==="
-git clone --depth=1 --branch "${GDRCOPY_VERSION}" https://github.com/NVIDIA/gdrcopy.git /tmp/gdrcopy
+# ---- 4. GPU-copy-helper v2.5.1 -----------------------------------------------------
+echo "=== building GPU-copy-helper ${GPU_COPY_HELPER_VERSION} ==="
+git clone --depth=1 --branch "${GPU_COPY_HELPER_VERSION}" https://github.com/NVIDIA/gdrcopy.git /tmp/gdrcopy
 (cd /tmp/gdrcopy && make -j"$(nproc)" lib lib_install)
 rm -rf /tmp/gdrcopy
 

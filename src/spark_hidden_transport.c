@@ -54,12 +54,12 @@ static uint32_t SparkHiddenTransportCapabilitiesMeetProduction(
 }
 
 
-static uint32_t SparkHiddenTransportCapabilitiesMeetZeroCopyGpudirect(
+static uint32_t SparkHiddenTransportCapabilitiesMeetSparkHostRdma(
     uint32_t capability_flags)
 {
     return (capability_flags &
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_ZERO_COPY_GPUDIRECT_CAPS) ==
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_ZERO_COPY_GPUDIRECT_CAPS;
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS) ==
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS;
 }
 
 static void SparkHiddenTransportBuildEffectiveEndpoint(
@@ -73,10 +73,10 @@ static void SparkHiddenTransportBuildEffectiveEndpoint(
     }
     *effective_endpoint = *endpoint;
     if (transport_interface != 0 &&
-        SparkHiddenTransportCapabilitiesMeetZeroCopyGpudirect(
+        SparkHiddenTransportCapabilitiesMeetSparkHostRdma(
             transport_interface->capability_flags))
     {
-        SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
+        SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
             effective_endpoint,
             endpoint->hidden_dimension,
             endpoint->max_active_sequence_count,
@@ -965,7 +965,7 @@ SparkStatus SparkHiddenTransportPersistentRingGetStatistics(
 }
 
 
-void SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
+void SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
     SparkHiddenTransportEndpoint *endpoint,
     uint32_t hidden_dimension,
     uint32_t max_active_sequence_count,
@@ -980,7 +980,7 @@ void SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
     endpoint->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
     endpoint->capability_flags =
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_ZERO_COPY_GPUDIRECT_CAPS;
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS;
     endpoint->hidden_dimension = hidden_dimension;
     endpoint->bytes_per_sequence =
         hidden_dimension * SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
@@ -990,11 +990,11 @@ void SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
         (uint64_t)max_active_sequence_count;
     endpoint->validated_latency_ns = validated_latency_ns;
     endpoint->transport_module_id =
-        SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID;
+        SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID;
     endpoint->route_name = route_name;
 }
 
-SparkStatus SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(
+SparkStatus SparkHiddenTransportValidateSparkHostRdmaEndpoint(
     const SparkHiddenTransportEndpoint *endpoint)
 {
     SparkStatus status;
@@ -1006,13 +1006,13 @@ SparkStatus SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(
     }
     if (!SparkHiddenTransportStringsEqual(
             endpoint->transport_module_id,
-            SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID))
+            SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((endpoint->capability_flags &
-            SPARK_HIDDEN_TRANSPORT_REQUIRED_ZERO_COPY_GPUDIRECT_CAPS) !=
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_ZERO_COPY_GPUDIRECT_CAPS)
+            SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS) !=
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -1024,35 +1024,23 @@ SparkStatus SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+SparkStatus SparkHiddenTransportSparkHostRdmaVerbsPreflight(
     const SparkHiddenTransportEndpoint *endpoint,
-    const char *peermem_sysfs_path,
     const char *infiniband_sysfs_path)
 {
     SparkStatus status;
-    const char *peermem_path;
     const char *infiniband_path;
 
-    status = SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(endpoint);
+    status = SparkHiddenTransportValidateSparkHostRdmaEndpoint(endpoint);
     if (status != SPARK_STATUS_OK)
     {
         return status;
-    }
-    peermem_path = peermem_sysfs_path;
-    if (peermem_path == 0 || peermem_path[0] == '\0')
-    {
-        peermem_path =
-            SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_PEERMEM_SYSFS_PATH;
     }
     infiniband_path = infiniband_sysfs_path;
     if (infiniband_path == 0 || infiniband_path[0] == '\0')
     {
         infiniband_path =
-            SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_INFINIBAND_SYSFS_PATH;
-    }
-    if (access(peermem_path, F_OK) != 0)
-    {
-        return SPARK_STATUS_NOT_FOUND;
+            SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_INFINIBAND_SYSFS_PATH;
     }
     if (access(infiniband_path, F_OK) != 0)
     {

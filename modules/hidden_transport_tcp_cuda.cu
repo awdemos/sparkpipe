@@ -1011,7 +1011,6 @@ static SparkStatus SparkHiddenTcpCudaPostReceive(
     SparkHiddenTcpCudaState *state;
     SparkHiddenTcpCudaPendingPacket *pending;
     SparkStatus status;
-    uint32_t pending_index;
     state = (SparkHiddenTcpCudaState *)transport_state;
     if (state == 0 || packet == 0 || state->is_sender != 0u)
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1021,13 +1020,6 @@ static SparkStatus SparkHiddenTcpCudaPostReceive(
     SparkHiddenTcpCudaDrainEvent(state);
     (void)pthread_mutex_lock(&state->lock);
     pending = SparkHiddenTcpCudaDetachPendingPacketLocked(state,packet);
-    if (pending == 0 && state->debug_enabled != 0u)
-    {
-        fprintf(stderr,"tcp_frame_want seq=%llu pos=%llu active=%u dim=%u bps=%u sk=%u sb=%u\n",(unsigned long long)packet->sequence_id,(unsigned long long)packet->token_index,packet->active_sequence_count,packet->hidden_dimension,packet->bytes_per_sequence,packet->sideband_kind,packet->sideband_bytes_per_sequence);
-        for (pending_index = 0u; pending_index < state->pending_depth; ++pending_index)
-            if (state->pending_packets[pending_index].active != 0u)
-                fprintf(stderr,"tcp_frame_pending idx=%u seq=%llu pos=%llu active=%u dim=%u bps=%u sk=%u sb=%u\n",pending_index,(unsigned long long)state->pending_packets[pending_index].header.sequence_id,(unsigned long long)state->pending_packets[pending_index].header.token_index,state->pending_packets[pending_index].header.active_sequence_count,state->pending_packets[pending_index].header.hidden_dimension,state->pending_packets[pending_index].header.bytes_per_sequence,state->pending_packets[pending_index].header.sideband_kind,state->pending_packets[pending_index].header.sideband_bytes_per_sequence);
-    }
     (void)pthread_mutex_unlock(&state->lock);
     if (pending == 0)
         return SPARK_STATUS_BUSY;

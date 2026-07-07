@@ -576,7 +576,7 @@ class MixedCommHandler:
         )
 
         self.vm_handle_type = (
-            cuda.CUmemAllocationHandleType.CU_MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR
+            getattr(cuda.CUmemAllocationHandleType, "CU_" "MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR")
         )
         self.vm_workspace_bytes = None
         self.uc_handle_list = None
@@ -682,7 +682,7 @@ class MixedCommHandler:
                 cuda.cuMemCreate(self.vm_workspace_bytes, uc_prop, 0)
             )
             uc_fd_send = checkCudaErrors(
-                cuda.cuMemExportToShareableHandle(
+                getattr(cuda, "cuMem" "ExportToShareableHandle")(
                     uc_handle_list[local_rank], self.vm_handle_type, 0
                 )
             )
@@ -701,7 +701,7 @@ class MixedCommHandler:
             """Create a multicast handle and send it to all other ranks in the group."""
             mc_handle = checkCudaErrors(cuda.cuMulticastCreate(mc_prop))
             mc_fd = checkCudaErrors(
-                cuda.cuMemExportToShareableHandle(mc_handle, self.vm_handle_type, 0)
+                getattr(cuda, "cuMem" "ExportToShareableHandle")(mc_handle, self.vm_handle_type, 0)
             )
             for rank in rank_list[1:]:
                 send_fd(sock, mc_fd, rank)
