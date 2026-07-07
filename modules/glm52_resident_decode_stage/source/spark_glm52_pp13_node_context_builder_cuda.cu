@@ -2268,6 +2268,7 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	uint32_t token_id;
 	uint32_t block_count;
 	uint64_t word_count;
+	const char *debug_enabled;
 	SparkStatus status;
 	state = (SparkGlm52Pp13BuilderState *)builder_state;
 	if (state == 0 || prefill_dispatch == 0 ||
@@ -2285,6 +2286,9 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 		prefill_dispatch->prompt_token_count >
 			SPARK_GLM52_PP13_BUILDER_MAX_PREFILL_TOKENS)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	debug_enabled = getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG");
+	if (debug_enabled != 0)
+		fprintf(stderr,"pp13_builder_prefill_begin offset=%u count=%u\n",prefill_dispatch->prompt_token_offset,prefill_dispatch->prompt_token_count);
 	status = SparkGlm52Pp13BuilderPrepareDeviceKvView(
 		state,
 		prefill_dispatch->kv_block_table_view);
@@ -2437,7 +2441,11 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 		}
 		if (idle_pump_function != 0)
 			(void)idle_pump_function(idle_pump_context);
+		if (debug_enabled != 0)
+			fprintf(stderr,"pp13_builder_prefill_submitted position=%u token_offset=%u busy_retries=%u\n",position,token_offset,submit_retry);
 	}
+	if (debug_enabled != 0)
+		fprintf(stderr,"pp13_builder_prefill_done offset=%u count=%u\n",prefill_dispatch->prompt_token_offset,prefill_dispatch->prompt_token_count);
 	return SPARK_STATUS_OK;
 }
 
