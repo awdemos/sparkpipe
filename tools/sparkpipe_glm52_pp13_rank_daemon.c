@@ -979,6 +979,8 @@ static SparkStatus SparkGlm52Pp13DaemonConnectCudaResident(
         return status;
     if (stats.state != SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_READY)
         return SPARK_STATUS_BUSY;
+    if (SparkGlm52Pp13DaemonSetNonblocking(fd) < 0)
+        return SPARK_STATUS_INTERNAL_ERROR;
     return SPARK_STATUS_OK;
 }
 
@@ -2621,6 +2623,7 @@ int main(int argc,char **argv)
             if ((event_mask &
                 (SPARK_GLM52_PP13_DAEMON_POLL_KIND_INPUT_TRANSPORT |
                  SPARK_GLM52_PP13_DAEMON_POLL_KIND_OUTPUT_TRANSPORT |
+                 SPARK_GLM52_PP13_DAEMON_POLL_KIND_WORK |
                  SPARK_GLM52_PP13_DAEMON_POLL_KIND_WORK_OUTPUT |
                  SPARK_GLM52_PP13_DAEMON_POLL_KIND_CUDA_RESIDENT |
                  SPARK_GLM52_PP13_DAEMON_POLL_KIND_FINAL_EVENT |
