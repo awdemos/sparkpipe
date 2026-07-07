@@ -61,7 +61,7 @@ GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B
 GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS))
 GLM52_PP13_NODE_CONTEXT_BUILDER := build/libglm52_pp13_node_context_builder.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
-HIDDEN_TRANSPORT_GDR_RDMA := build/libhidden_transport_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
+HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
 
 COMMON_SOURCES := \
     src/spark_status.c \
@@ -78,6 +78,7 @@ COMMON_SOURCES := \
     src/spark_glm52_production_topology.c \
     src/spark_glm52_pp13_runtime.c \
     src/spark_glm52_pp13_work_control.c \
+    src/spark_glm52_cuda_resident_ipc.c \
     src/spark_glm52_pp13_node_context_builder.c \
     src/spark_glm52_scheduler.c \
     src/spark_glm52_prefix_cache.c \
@@ -119,6 +120,7 @@ TOOL_NAMES := \
     sparkpipe_glm52_pp13_rank_gate \
     sparkpipe_glm52_pp13_loopback_probe \
     sparkpipe_glm52_pp13_rank_daemon \
+    sparkpipe_glm52_cuda_residentd \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
     sparkpipe_tokenizer_benchmark \
@@ -200,8 +202,6 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/libglm52_resident_decode_stage_test.a
 
 .PHONY: all clean test tools demo \
-    hidden_transport_cuda_host_dmabuf_verbs_preflight \
-    hidden_transport_cuda_host_dmabuf_rdma_smoke \
     cuda_glm52_resident_decode_stage \
     cuda_glm52_resident_decode_stage_publish \
     glm52_flashinfer_b12x_moe_adapter \
@@ -214,7 +214,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_spark2_accuracy_gate \
     glm52_spark2_local_pipeline_gate \
     glm52_pp13_service_backend \
-    hidden_transport_gpudirect_rdma_verbs \
+    hidden_transport_spark_host_rdma_verbs \
     glm52_pp13_node_context_builder \
     glm52_resident_decode_stage_firmware_package \
     tree_summary
@@ -265,17 +265,6 @@ build/sparkpipe_glm52_pp13_rank_gate: tools/sparkpipe_glm52_pp13_rank_gate.c $(C
 build/sparkpipe_glm52_pp13_loopback_probe: tools/sparkpipe_glm52_pp13_loopback_probe.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_cuda_host_dmabuf_verbs_preflight: tools/sparkpipe_cuda_host_dmabuf_verbs_preflight.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -I$(CUDA_HOME)/include $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcuda -libverbs $(LDLIBS) -o $@
-
-hidden_transport_cuda_host_dmabuf_verbs_preflight: build/sparkpipe_cuda_host_dmabuf_verbs_preflight
-	./build/sparkpipe_cuda_host_dmabuf_verbs_preflight
-
-build/sparkpipe_cuda_host_dmabuf_rdma_smoke: tools/sparkpipe_cuda_host_dmabuf_rdma_smoke.c
-	$(CC) $(CPPFLAGS) -I$(CUDA_HOME)/include $(CFLAGS) $< $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcuda -libverbs $(LDLIBS) -o $@
-
-hidden_transport_cuda_host_dmabuf_rdma_smoke: build/sparkpipe_cuda_host_dmabuf_rdma_smoke
-
 build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -306,6 +295,9 @@ build/sparkpipe_glm52_pp13_ring_check: tools/sparkpipe_glm52_pp13_ring_check.c $
 build/sparkpipe_glm52_pp13_rank_daemon: tools/sparkpipe_glm52_pp13_rank_daemon.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tools/sparkpipe_glm52_pp13_rank_daemon.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/sparkpipe_glm52_cuda_residentd: tools/sparkpipe_glm52_cuda_residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tools/sparkpipe_glm52_cuda_residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 $(GLM52_PP13_SERVICE_BACKEND): src/spark_glm52_pp13_service_backend.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) src/spark_glm52_pp13_service_backend.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -320,18 +312,18 @@ $(HIDDEN_TRANSPORT_TCP_CUDA): modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBR
 
 hidden_transport_tcp_cuda: $(HIDDEN_TRANSPORT_TCP_CUDA)
 
-$(HIDDEN_TRANSPORT_GDR_RDMA): modules/hidden_transport_gpudirect_rdma_verbs.cu $(COMMON_LIBRARY)
+$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): modules/hidden_transport_spark_host_rdma_verbs.cu $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "hidden_transport_gpudirect_rdma_verbs skipped: nvcc unavailable"; \
+		echo "hidden_transport_spark_host_rdma_verbs skipped: nvcc unavailable"; \
 	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
-		echo "hidden_transport_gpudirect_rdma_verbs skipped: CUDA headers unavailable"; \
+		echo "hidden_transport_spark_host_rdma_verbs skipped: CUDA headers unavailable"; \
 	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
-		echo "hidden_transport_gpudirect_rdma_verbs skipped: libibverbs headers unavailable"; \
+		echo "hidden_transport_spark_host_rdma_verbs skipped: libibverbs headers unavailable"; \
 	else \
-		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc modules/hidden_transport_gpudirect_rdma_verbs.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
+		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread -Iinclude -Isrc modules/hidden_transport_spark_host_rdma_verbs.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
 	fi
 
-hidden_transport_gpudirect_rdma_verbs: $(HIDDEN_TRANSPORT_GDR_RDMA)
+hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
 
 $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE):
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \

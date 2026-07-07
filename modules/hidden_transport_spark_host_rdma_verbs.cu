@@ -21,36 +21,36 @@
 #include <time.h>
 #include <unistd.h>
 
-#define SPARK_HIDDEN_GDR_CONTROL_MAGIC 0x53475055u
-#define SPARK_HIDDEN_GDR_CONTROL_VERSION 1u
-#define SPARK_HIDDEN_GDR_DEFAULT_CONTROL_PORT_BASE 55700u
-#define SPARK_HIDDEN_GDR_DEFAULT_LANE_COUNT 8u
-#define SPARK_HIDDEN_GDR_MAX_LANE_COUNT 32u
-#define SPARK_HIDDEN_GDR_MAX_PENDING_RECEIVE_COUNT 64u
-#define SPARK_HIDDEN_GDR_MAX_REMOTE_RECEIVE_COUNT 64u
-#define SPARK_HIDDEN_GDR_MR_CACHE_COUNT 64u
-#define SPARK_HIDDEN_GDR_CONNECT_RETRY_MS 50u
-#define SPARK_HIDDEN_GDR_CONTROL_HOST_BYTES 64u
-#define SPARK_HIDDEN_GDR_POLL_TIMEOUT_MS 1000u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_MAGIC 0x53475055u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_VERSION 1u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_CONTROL_PORT_BASE 55700u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_LANE_COUNT 8u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT 32u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT 64u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT 64u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT 64u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS 50u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES 64u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_POLL_TIMEOUT_MS 1000u
 
-#define SPARK_HIDDEN_GDR_CONTROL_HELLO 1u
-#define SPARK_HIDDEN_GDR_CONTROL_RECEIVE_READY 2u
-#define SPARK_HIDDEN_GDR_CONTROL_TRANSFER_COMPLETE 3u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HELLO 1u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_RECEIVE_READY 2u
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_TRANSFER_COMPLETE 3u
 
-#define SPARK_HIDDEN_GDR_WR_ID_REGION_HIDDEN 1ull
-#define SPARK_HIDDEN_GDR_WR_ID_REGION_SIDEBAND 2ull
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_REGION_HIDDEN 1ull
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_REGION_SIDEBAND 2ull
 
-#define SPARK_HIDDEN_GDR_NO_INDEX 0xffffffffu
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX 0xffffffffu
 
-typedef struct SparkHiddenGdrMemoryRegionDescriptor
+typedef struct SparkHiddenSparkHostRdmaMemoryRegionDescriptor
 {
     uint64_t address;
     uint64_t bytes;
     uint32_t rkey;
     uint32_t reserved;
-} SparkHiddenGdrMemoryRegionDescriptor;
+} SparkHiddenSparkHostRdmaMemoryRegionDescriptor;
 
-typedef struct SparkHiddenGdrControlMessage
+typedef struct SparkHiddenSparkHostRdmaControlMessage
 {
     uint32_t magic;
     uint32_t version;
@@ -62,48 +62,48 @@ typedef struct SparkHiddenGdrControlMessage
     uint32_t sideband_kind;
     uint32_t sideband_bytes_per_sequence;
     uint32_t reserved;
-    SparkHiddenGdrMemoryRegionDescriptor hidden;
-    SparkHiddenGdrMemoryRegionDescriptor sideband;
-} SparkHiddenGdrControlMessage;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor hidden;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor sideband;
+} SparkHiddenSparkHostRdmaControlMessage;
 
-typedef struct SparkHiddenGdrQueuePairWireInfo
+typedef struct SparkHiddenSparkHostRdmaQueuePairWireInfo
 {
     uint32_t qp_number;
     uint32_t packet_sequence_number;
     uint16_t lid;
     uint16_t reserved;
     uint8_t gid[16u];
-} SparkHiddenGdrQueuePairWireInfo;
+} SparkHiddenSparkHostRdmaQueuePairWireInfo;
 
-typedef struct SparkHiddenGdrLane
+typedef struct SparkHiddenSparkHostRdmaLane
 {
     struct ibv_cq *completion_queue;
     struct ibv_qp *queue_pair;
-    SparkHiddenGdrQueuePairWireInfo local_info;
-    SparkHiddenGdrQueuePairWireInfo remote_info;
-} SparkHiddenGdrLane;
+    SparkHiddenSparkHostRdmaQueuePairWireInfo local_info;
+    SparkHiddenSparkHostRdmaQueuePairWireInfo remote_info;
+} SparkHiddenSparkHostRdmaLane;
 
-typedef struct SparkHiddenGdrCachedMemoryRegion
+typedef struct SparkHiddenSparkHostRdmaCachedMemoryRegion
 {
     const void *pointer;
     uint64_t bytes;
     uint64_t last_use_epoch;
     struct ibv_mr *memory_region;
-} SparkHiddenGdrCachedMemoryRegion;
+} SparkHiddenSparkHostRdmaCachedMemoryRegion;
 
-typedef struct SparkHiddenGdrPendingReceive
+typedef struct SparkHiddenSparkHostRdmaPendingReceive
 {
     uint32_t active;
     uint32_t complete;
     uint32_t advertised;
     SparkHiddenTransportPacket packet_snapshot;
-    SparkHiddenGdrMemoryRegionDescriptor hidden_descriptor;
-    SparkHiddenGdrMemoryRegionDescriptor sideband_descriptor;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor hidden_descriptor;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor sideband_descriptor;
     struct ibv_mr *hidden_memory_region;
     struct ibv_mr *sideband_memory_region;
-} SparkHiddenGdrPendingReceive;
+} SparkHiddenSparkHostRdmaPendingReceive;
 
-typedef struct SparkHiddenGdrRemoteReceive
+typedef struct SparkHiddenSparkHostRdmaRemoteReceive
 {
     uint32_t active;
     uint32_t used;
@@ -112,11 +112,11 @@ typedef struct SparkHiddenGdrRemoteReceive
     uint32_t active_sequence_count;
     uint32_t sideband_kind;
     uint32_t sideband_bytes_per_sequence;
-    SparkHiddenGdrMemoryRegionDescriptor hidden_descriptor;
-    SparkHiddenGdrMemoryRegionDescriptor sideband_descriptor;
-} SparkHiddenGdrRemoteReceive;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor hidden_descriptor;
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor sideband_descriptor;
+} SparkHiddenSparkHostRdmaRemoteReceive;
 
-typedef struct SparkHiddenGdrState
+typedef struct SparkHiddenSparkHostRdmaState
 {
     SparkHiddenTransportEndpoint endpoint;
     int32_t local_rank;
@@ -131,22 +131,22 @@ typedef struct SparkHiddenGdrState
     int control_fd;
     int event_fd;
     uint32_t debug_enabled;
-    char source_host[SPARK_HIDDEN_GDR_CONTROL_HOST_BYTES];
-    char sink_host[SPARK_HIDDEN_GDR_CONTROL_HOST_BYTES];
+    char source_host[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES];
+    char sink_host[SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES];
     struct ibv_context *verbs_context;
     struct ibv_pd *protection_domain;
     union ibv_gid local_gid;
     uint16_t local_lid;
-    SparkHiddenGdrLane lanes[SPARK_HIDDEN_GDR_MAX_LANE_COUNT];
-    SparkHiddenGdrCachedMemoryRegion cached_regions[SPARK_HIDDEN_GDR_MR_CACHE_COUNT];
+    SparkHiddenSparkHostRdmaLane lanes[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
+    SparkHiddenSparkHostRdmaCachedMemoryRegion cached_regions[SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT];
     uint64_t memory_region_epoch;
-    SparkHiddenGdrPendingReceive pending_receives[SPARK_HIDDEN_GDR_MAX_PENDING_RECEIVE_COUNT];
-    SparkHiddenGdrRemoteReceive remote_receives[SPARK_HIDDEN_GDR_MAX_REMOTE_RECEIVE_COUNT];
+    SparkHiddenSparkHostRdmaPendingReceive pending_receives[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT];
+    SparkHiddenSparkHostRdmaRemoteReceive remote_receives[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
     SparkHiddenTransportCompletion completion;
     uint32_t completion_ready;
-} SparkHiddenGdrState;
+} SparkHiddenSparkHostRdmaState;
 
-static uint32_t SparkHiddenGdrParseUintEnv(
+static uint32_t SparkHiddenSparkHostRdmaParseUintEnv(
     const char *name,
     uint32_t fallback)
 {
@@ -168,7 +168,7 @@ static uint32_t SparkHiddenGdrParseUintEnv(
     return (uint32_t)value;
 }
 
-static int32_t SparkHiddenGdrParseIntEnv(
+static int32_t SparkHiddenSparkHostRdmaParseIntEnv(
     const char *name,
     int32_t fallback)
 {
@@ -191,7 +191,7 @@ static int32_t SparkHiddenGdrParseIntEnv(
     return (int32_t)value;
 }
 
-static int SparkHiddenGdrCloseFd(int fd)
+static int SparkHiddenSparkHostRdmaCloseFd(int fd)
 {
     if (fd >= 0)
     {
@@ -200,7 +200,7 @@ static int SparkHiddenGdrCloseFd(int fd)
     return -1;
 }
 
-static void SparkHiddenGdrSignalEvent(SparkHiddenGdrState *state)
+static void SparkHiddenSparkHostRdmaSignalEvent(SparkHiddenSparkHostRdmaState *state)
 {
     ssize_t written;
     uint64_t value;
@@ -217,7 +217,7 @@ static void SparkHiddenGdrSignalEvent(SparkHiddenGdrState *state)
     }
 }
 
-static void SparkHiddenGdrDrainEvent(SparkHiddenGdrState *state)
+static void SparkHiddenSparkHostRdmaDrainEvent(SparkHiddenSparkHostRdmaState *state)
 {
     uint64_t value;
 
@@ -230,7 +230,7 @@ static void SparkHiddenGdrDrainEvent(SparkHiddenGdrState *state)
     }
 }
 
-static SparkStatus SparkHiddenGdrSetNonblocking(int fd)
+static SparkStatus SparkHiddenSparkHostRdmaSetNonblocking(int fd)
 {
     int flags;
 
@@ -246,7 +246,7 @@ static SparkStatus SparkHiddenGdrSetNonblocking(int fd)
     return SPARK_STATUS_OK;
 }
 
-static void SparkHiddenGdrConfigureSocket(int fd)
+static void SparkHiddenSparkHostRdmaConfigureSocket(int fd)
 {
     int value;
 
@@ -259,7 +259,7 @@ static void SparkHiddenGdrConfigureSocket(int fd)
     (void)setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &value, sizeof(value));
 }
 
-static int SparkHiddenGdrListen(uint32_t port)
+static int SparkHiddenSparkHostRdmaListen(uint32_t port)
 {
     struct sockaddr_in address;
     int fd;
@@ -285,7 +285,7 @@ static int SparkHiddenGdrListen(uint32_t port)
     return fd;
 }
 
-static SparkStatus SparkHiddenGdrReadFull(
+static SparkStatus SparkHiddenSparkHostRdmaReadFull(
     int fd,
     void *buffer,
     uint64_t bytes)
@@ -312,7 +312,7 @@ static SparkStatus SparkHiddenGdrReadFull(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrWriteFull(
+static SparkStatus SparkHiddenSparkHostRdmaWriteFull(
     int fd,
     const void *buffer,
     uint64_t bytes)
@@ -339,7 +339,7 @@ static SparkStatus SparkHiddenGdrWriteFull(
     return SPARK_STATUS_OK;
 }
 
-static int32_t SparkHiddenGdrRankFromHost(const char *host)
+static int32_t SparkHiddenSparkHostRdmaRankFromHost(const char *host)
 {
     uint32_t tail;
     char extra;
@@ -367,7 +367,7 @@ static int32_t SparkHiddenGdrRankFromHost(const char *host)
     return -1;
 }
 
-static SparkStatus SparkHiddenGdrParseRoute(
+static SparkStatus SparkHiddenSparkHostRdmaParseRoute(
     const char *route_name,
     char *source_host,
     char *sink_host)
@@ -390,8 +390,8 @@ static SparkStatus SparkHiddenGdrParseRoute(
     source_bytes = (uint64_t)(middle - route_name);
     sink_bytes = (uint64_t)(suffix - (middle + 4));
     if (source_bytes == 0u || sink_bytes == 0u ||
-        source_bytes >= SPARK_HIDDEN_GDR_CONTROL_HOST_BYTES ||
-        sink_bytes >= SPARK_HIDDEN_GDR_CONTROL_HOST_BYTES)
+        source_bytes >= SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES ||
+        sink_bytes >= SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_HOST_BYTES)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
@@ -402,8 +402,8 @@ static SparkStatus SparkHiddenGdrParseRoute(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrConnectControl(
-    SparkHiddenGdrState *state)
+static SparkStatus SparkHiddenSparkHostRdmaConnectControl(
+    SparkHiddenSparkHostRdmaState *state)
 {
     struct addrinfo hints;
     struct addrinfo *result;
@@ -414,7 +414,7 @@ static SparkStatus SparkHiddenGdrConnectControl(
 
     if (state->is_sender == 0u)
     {
-        state->listen_fd = SparkHiddenGdrListen(
+        state->listen_fd = SparkHiddenSparkHostRdmaListen(
             state->control_port_base + (uint32_t)state->sink_rank);
         if (state->listen_fd < 0)
         {
@@ -426,7 +426,7 @@ static SparkStatus SparkHiddenGdrConnectControl(
             return SPARK_STATUS_IO_ERROR;
         }
         state->control_fd = fd;
-        SparkHiddenGdrConfigureSocket(state->control_fd);
+        SparkHiddenSparkHostRdmaConfigureSocket(state->control_fd);
         return SPARK_STATUS_OK;
     }
 
@@ -441,7 +441,7 @@ static SparkStatus SparkHiddenGdrConnectControl(
         result = 0;
         if (getaddrinfo(host, port_text, &hints, &result) != 0 || result == 0)
         {
-            (void)poll(0, 0, SPARK_HIDDEN_GDR_CONNECT_RETRY_MS);
+            (void)poll(0, 0, SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS);
             continue;
         }
         for (entry = result; entry != 0 && state->control_fd < 0;
@@ -456,7 +456,7 @@ static SparkStatus SparkHiddenGdrConnectControl(
             if (connect(fd, entry->ai_addr, entry->ai_addrlen) == 0)
             {
                 state->control_fd = fd;
-                SparkHiddenGdrConfigureSocket(state->control_fd);
+                SparkHiddenSparkHostRdmaConfigureSocket(state->control_fd);
             }
             else
             {
@@ -466,13 +466,13 @@ static SparkStatus SparkHiddenGdrConnectControl(
         freeaddrinfo(result);
         if (state->control_fd < 0)
         {
-            (void)poll(0, 0, SPARK_HIDDEN_GDR_CONNECT_RETRY_MS);
+            (void)poll(0, 0, SPARK_HIDDEN_SPARK_HOST_RDMA_CONNECT_RETRY_MS);
         }
     }
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrOpenVerbsDevice(SparkHiddenGdrState *state)
+static SparkStatus SparkHiddenSparkHostRdmaOpenVerbsDevice(SparkHiddenSparkHostRdmaState *state)
 {
     struct ibv_device **devices;
     struct ibv_device *selected_device;
@@ -481,7 +481,7 @@ static SparkStatus SparkHiddenGdrOpenVerbsDevice(SparkHiddenGdrState *state)
     int index;
     struct ibv_port_attr port_attributes;
 
-    requested_name = getenv("SPARKPIPE_HIDDEN_GDR_IB_DEVICE");
+    requested_name = getenv("SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_DEVICE");
     devices = ibv_get_device_list(&count);
     if (devices == 0 || count <= 0)
     {
@@ -526,9 +526,9 @@ static SparkStatus SparkHiddenGdrOpenVerbsDevice(SparkHiddenGdrState *state)
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrModifyQueuePairToInit(
-    SparkHiddenGdrState *state,
-    SparkHiddenGdrLane *lane)
+static SparkStatus SparkHiddenSparkHostRdmaModifyQueuePairToInit(
+    SparkHiddenSparkHostRdmaState *state,
+    SparkHiddenSparkHostRdmaLane *lane)
 {
     struct ibv_qp_attr attributes;
 
@@ -547,14 +547,14 @@ static SparkStatus SparkHiddenGdrModifyQueuePairToInit(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrCreateQueuePairs(SparkHiddenGdrState *state)
+static SparkStatus SparkHiddenSparkHostRdmaCreateQueuePairs(SparkHiddenSparkHostRdmaState *state)
 {
     struct ibv_qp_init_attr init_attributes;
     uint32_t lane_index;
 
     for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
     {
-        SparkHiddenGdrLane *lane;
+        SparkHiddenSparkHostRdmaLane *lane;
 
         lane = &state->lanes[lane_index];
         lane->completion_queue = ibv_create_cq(state->verbs_context, 128, 0,
@@ -577,7 +577,7 @@ static SparkStatus SparkHiddenGdrCreateQueuePairs(SparkHiddenGdrState *state)
         {
             return SPARK_STATUS_DRIVER_LOAD_ERROR;
         }
-        if (SparkHiddenGdrModifyQueuePairToInit(state, lane) !=
+        if (SparkHiddenSparkHostRdmaModifyQueuePairToInit(state, lane) !=
             SPARK_STATUS_OK)
         {
             return SPARK_STATUS_DRIVER_LOAD_ERROR;
@@ -593,11 +593,11 @@ static SparkStatus SparkHiddenGdrCreateQueuePairs(SparkHiddenGdrState *state)
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrExchangeQueuePairInfo(
-    SparkHiddenGdrState *state)
+static SparkStatus SparkHiddenSparkHostRdmaExchangeQueuePairInfo(
+    SparkHiddenSparkHostRdmaState *state)
 {
-    SparkHiddenGdrQueuePairWireInfo local_infos[SPARK_HIDDEN_GDR_MAX_LANE_COUNT];
-    SparkHiddenGdrQueuePairWireInfo remote_infos[SPARK_HIDDEN_GDR_MAX_LANE_COUNT];
+    SparkHiddenSparkHostRdmaQueuePairWireInfo local_infos[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
+    SparkHiddenSparkHostRdmaQueuePairWireInfo remote_infos[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT];
     uint32_t bytes;
     uint32_t lane_index;
     SparkStatus status;
@@ -609,22 +609,22 @@ static SparkStatus SparkHiddenGdrExchangeQueuePairInfo(
         local_infos[lane_index] = state->lanes[lane_index].local_info;
     }
     bytes = state->lane_count *
-        (uint32_t)sizeof(SparkHiddenGdrQueuePairWireInfo);
+        (uint32_t)sizeof(SparkHiddenSparkHostRdmaQueuePairWireInfo);
     if (state->is_sender != 0u)
     {
-        status = SparkHiddenGdrWriteFull(state->control_fd,
+        status = SparkHiddenSparkHostRdmaWriteFull(state->control_fd,
             &state->lane_count, sizeof(state->lane_count));
         if (status != SPARK_STATUS_OK)
         {
             return status;
         }
-        status = SparkHiddenGdrWriteFull(state->control_fd,
+        status = SparkHiddenSparkHostRdmaWriteFull(state->control_fd,
             local_infos, bytes);
         if (status != SPARK_STATUS_OK)
         {
             return status;
         }
-        status = SparkHiddenGdrReadFull(state->control_fd,
+        status = SparkHiddenSparkHostRdmaReadFull(state->control_fd,
             remote_infos, bytes);
         if (status != SPARK_STATUS_OK)
         {
@@ -636,7 +636,7 @@ static SparkStatus SparkHiddenGdrExchangeQueuePairInfo(
         uint32_t remote_lane_count;
 
         remote_lane_count = 0u;
-        status = SparkHiddenGdrReadFull(state->control_fd,
+        status = SparkHiddenSparkHostRdmaReadFull(state->control_fd,
             &remote_lane_count, sizeof(remote_lane_count));
         if (status != SPARK_STATUS_OK)
         {
@@ -646,13 +646,13 @@ static SparkStatus SparkHiddenGdrExchangeQueuePairInfo(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        status = SparkHiddenGdrReadFull(state->control_fd,
+        status = SparkHiddenSparkHostRdmaReadFull(state->control_fd,
             remote_infos, bytes);
         if (status != SPARK_STATUS_OK)
         {
             return status;
         }
-        status = SparkHiddenGdrWriteFull(state->control_fd,
+        status = SparkHiddenSparkHostRdmaWriteFull(state->control_fd,
             local_infos, bytes);
         if (status != SPARK_STATUS_OK)
         {
@@ -663,12 +663,12 @@ static SparkStatus SparkHiddenGdrExchangeQueuePairInfo(
     {
         state->lanes[lane_index].remote_info = remote_infos[lane_index];
     }
-    return SparkHiddenGdrSetNonblocking(state->control_fd);
+    return SparkHiddenSparkHostRdmaSetNonblocking(state->control_fd);
 }
 
-static SparkStatus SparkHiddenGdrModifyQueuePairToReady(
-    SparkHiddenGdrState *state,
-    SparkHiddenGdrLane *lane)
+static SparkStatus SparkHiddenSparkHostRdmaModifyQueuePairToReady(
+    SparkHiddenSparkHostRdmaState *state,
+    SparkHiddenSparkHostRdmaLane *lane)
 {
     struct ibv_qp_attr attributes;
     union ibv_gid remote_gid;
@@ -714,14 +714,14 @@ static SparkStatus SparkHiddenGdrModifyQueuePairToReady(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrReadyQueuePairs(SparkHiddenGdrState *state)
+static SparkStatus SparkHiddenSparkHostRdmaReadyQueuePairs(SparkHiddenSparkHostRdmaState *state)
 {
     uint32_t lane_index;
     SparkStatus status;
 
     for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
     {
-        status = SparkHiddenGdrModifyQueuePairToReady(state,
+        status = SparkHiddenSparkHostRdmaModifyQueuePairToReady(state,
             &state->lanes[lane_index]);
         if (status != SPARK_STATUS_OK)
         {
@@ -731,12 +731,12 @@ static SparkStatus SparkHiddenGdrReadyQueuePairs(SparkHiddenGdrState *state)
     return SPARK_STATUS_OK;
 }
 
-static void SparkHiddenGdrDeregisterCachedMemoryRegions(
-    SparkHiddenGdrState *state)
+static void SparkHiddenSparkHostRdmaDeregisterCachedMemoryRegions(
+    SparkHiddenSparkHostRdmaState *state)
 {
     uint32_t index;
 
-    for (index = 0u; index < SPARK_HIDDEN_GDR_MR_CACHE_COUNT; ++index)
+    for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT; ++index)
     {
         if (state->cached_regions[index].memory_region != 0)
         {
@@ -747,28 +747,74 @@ static void SparkHiddenGdrDeregisterCachedMemoryRegions(
     }
 }
 
-static SparkStatus SparkHiddenGdrGetCachedMemoryRegion(
-    SparkHiddenGdrState *state,
+
+static SparkStatus SparkHiddenSparkHostRdmaResolveMappedHostPointer(
+    const void *cuda_visible_pointer,
+    uint64_t bytes,
+    void **host_pointer_out)
+{
+    cudaPointerAttributes attributes;
+    cudaError_t cuda_status;
+
+    if (cuda_visible_pointer == 0 || bytes == 0u || host_pointer_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *host_pointer_out = 0;
+    memset(&attributes, 0, sizeof(attributes));
+    cuda_status = cudaPointerGetAttributes(&attributes, cuda_visible_pointer);
+    if (cuda_status != cudaSuccess)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+#if defined(CUDART_VERSION) && CUDART_VERSION >= 10000
+    if (attributes.hostPointer == 0 || attributes.devicePointer == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *host_pointer_out = attributes.hostPointer;
+#else
+    if (attributes.memoryType != cudaMemoryTypeHost)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *host_pointer_out = (void *)cuda_visible_pointer;
+#endif
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkHiddenSparkHostRdmaGetCachedMemoryRegion(
+    SparkHiddenSparkHostRdmaState *state,
     const void *pointer,
     uint64_t bytes,
-    struct ibv_mr **memory_region_out)
+    struct ibv_mr **memory_region_out,
+    void **registered_host_pointer_out)
 {
     uint32_t index;
     uint32_t best_index;
     uint64_t best_epoch;
     int access_flags;
     struct ibv_mr *memory_region;
+    void *host_pointer;
+    SparkStatus status;
 
     if (state == 0 || pointer == 0 || bytes == 0u ||
-        memory_region_out == 0)
+        memory_region_out == 0 || registered_host_pointer_out == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    status = SparkHiddenSparkHostRdmaResolveMappedHostPointer(
+        pointer, bytes, &host_pointer);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    *registered_host_pointer_out = host_pointer;
     state->memory_region_epoch += 1u;
-    for (index = 0u; index < SPARK_HIDDEN_GDR_MR_CACHE_COUNT; ++index)
+    for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT; ++index)
     {
         if (state->cached_regions[index].memory_region != 0 &&
-            state->cached_regions[index].pointer == pointer &&
+            state->cached_regions[index].pointer == host_pointer &&
             state->cached_regions[index].bytes == bytes)
         {
             state->cached_regions[index].last_use_epoch =
@@ -780,7 +826,7 @@ static SparkStatus SparkHiddenGdrGetCachedMemoryRegion(
 
     best_index = 0u;
     best_epoch = UINT64_MAX;
-    for (index = 0u; index < SPARK_HIDDEN_GDR_MR_CACHE_COUNT; ++index)
+    for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT; ++index)
     {
         if (state->cached_regions[index].memory_region == 0)
         {
@@ -803,13 +849,13 @@ static SparkStatus SparkHiddenGdrGetCachedMemoryRegion(
     access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
         IBV_ACCESS_REMOTE_WRITE;
     errno = 0;
-    memory_region = ibv_reg_mr(state->protection_domain, (void *)pointer,
+    memory_region = ibv_reg_mr(state->protection_domain, host_pointer,
         (size_t)bytes, access_flags);
     if (memory_region == 0)
     {
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
-    state->cached_regions[best_index].pointer = pointer;
+    state->cached_regions[best_index].pointer = host_pointer;
     state->cached_regions[best_index].bytes = bytes;
     state->cached_regions[best_index].last_use_epoch =
         state->memory_region_epoch;
@@ -818,15 +864,17 @@ static SparkStatus SparkHiddenGdrGetCachedMemoryRegion(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrRegisterReceiveRegion(
-    SparkHiddenGdrState *state,
+static SparkStatus SparkHiddenSparkHostRdmaRegisterReceiveRegion(
+    SparkHiddenSparkHostRdmaState *state,
     const void *pointer,
     uint64_t bytes,
-    SparkHiddenGdrMemoryRegionDescriptor *descriptor,
+    SparkHiddenSparkHostRdmaMemoryRegionDescriptor *descriptor,
     struct ibv_mr **memory_region_out)
 {
     int access_flags;
     struct ibv_mr *memory_region;
+    void *host_pointer;
+    SparkStatus status;
 
     if (descriptor == 0 || memory_region_out == 0)
     {
@@ -842,29 +890,35 @@ static SparkStatus SparkHiddenGdrRegisterReceiveRegion(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    status = SparkHiddenSparkHostRdmaResolveMappedHostPointer(
+        pointer, bytes, &host_pointer);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
         IBV_ACCESS_REMOTE_WRITE;
-    memory_region = ibv_reg_mr(state->protection_domain, (void *)pointer,
+    memory_region = ibv_reg_mr(state->protection_domain, host_pointer,
         (size_t)bytes, access_flags);
     if (memory_region == 0)
     {
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
-    descriptor->address = (uint64_t)(uintptr_t)pointer;
+    descriptor->address = (uint64_t)(uintptr_t)host_pointer;
     descriptor->bytes = bytes;
     descriptor->rkey = memory_region->rkey;
     *memory_region_out = memory_region;
     return SPARK_STATUS_OK;
 }
 
-static uint64_t SparkHiddenGdrPacketHiddenBytes(
+static uint64_t SparkHiddenSparkHostRdmaPacketHiddenBytes(
     const SparkHiddenTransportPacket *packet)
 {
     return (uint64_t)packet->bytes_per_sequence *
         (uint64_t)packet->active_sequence_count;
 }
 
-static uint64_t SparkHiddenGdrPacketSidebandBytes(
+static uint64_t SparkHiddenSparkHostRdmaPacketSidebandBytes(
     const SparkHiddenTransportPacket *packet)
 {
     if ((packet->flags &
@@ -876,8 +930,8 @@ static uint64_t SparkHiddenGdrPacketSidebandBytes(
         (uint64_t)packet->active_sequence_count;
 }
 
-static uint32_t SparkHiddenGdrRemoteReceiveMatchesPacket(
-    const SparkHiddenGdrRemoteReceive *receive,
+static uint32_t SparkHiddenSparkHostRdmaRemoteReceiveMatchesPacket(
+    const SparkHiddenSparkHostRdmaRemoteReceive *receive,
     const SparkHiddenTransportPacket *packet)
 {
     return receive != 0 && packet != 0 && receive->active != 0u &&
@@ -888,8 +942,8 @@ static uint32_t SparkHiddenGdrRemoteReceiveMatchesPacket(
         receive->sideband_bytes_per_sequence == packet->sideband_bytes_per_sequence;
 }
 
-static uint32_t SparkHiddenGdrPendingReceiveMatchesPacket(
-    const SparkHiddenGdrPendingReceive *receive,
+static uint32_t SparkHiddenSparkHostRdmaPendingReceiveMatchesPacket(
+    const SparkHiddenSparkHostRdmaPendingReceive *receive,
     const SparkHiddenTransportPacket *packet)
 {
     return receive != 0 && packet != 0 && receive->active != 0u &&
@@ -902,16 +956,16 @@ static uint32_t SparkHiddenGdrPendingReceiveMatchesPacket(
             packet->sideband_bytes_per_sequence;
 }
 
-static SparkHiddenGdrPendingReceive *SparkHiddenGdrFindPendingReceive(
-    SparkHiddenGdrState *state,
+static SparkHiddenSparkHostRdmaPendingReceive *SparkHiddenSparkHostRdmaFindPendingReceive(
+    SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportPacket *packet)
 {
     uint32_t index;
 
-    for (index = 0u; index < SPARK_HIDDEN_GDR_MAX_PENDING_RECEIVE_COUNT;
+    for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT;
          ++index)
     {
-        if (SparkHiddenGdrPendingReceiveMatchesPacket(
+        if (SparkHiddenSparkHostRdmaPendingReceiveMatchesPacket(
                 &state->pending_receives[index], packet) != 0u)
         {
             return &state->pending_receives[index];
@@ -920,12 +974,12 @@ static SparkHiddenGdrPendingReceive *SparkHiddenGdrFindPendingReceive(
     return 0;
 }
 
-static SparkHiddenGdrPendingReceive *SparkHiddenGdrReservePendingReceive(
-    SparkHiddenGdrState *state)
+static SparkHiddenSparkHostRdmaPendingReceive *SparkHiddenSparkHostRdmaReservePendingReceive(
+    SparkHiddenSparkHostRdmaState *state)
 {
     uint32_t index;
 
-    for (index = 0u; index < SPARK_HIDDEN_GDR_MAX_PENDING_RECEIVE_COUNT;
+    for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT;
          ++index)
     {
         if (state->pending_receives[index].active == 0u)
@@ -939,16 +993,16 @@ static SparkHiddenGdrPendingReceive *SparkHiddenGdrReservePendingReceive(
     return 0;
 }
 
-static SparkHiddenGdrRemoteReceive *SparkHiddenGdrFindRemoteReceive(
-    SparkHiddenGdrState *state,
+static SparkHiddenSparkHostRdmaRemoteReceive *SparkHiddenSparkHostRdmaFindRemoteReceive(
+    SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportPacket *packet)
 {
     uint32_t index;
 
-    for (index = 0u; index < SPARK_HIDDEN_GDR_MAX_REMOTE_RECEIVE_COUNT;
+    for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT;
          ++index)
     {
-        if (SparkHiddenGdrRemoteReceiveMatchesPacket(
+        if (SparkHiddenSparkHostRdmaRemoteReceiveMatchesPacket(
                 &state->remote_receives[index], packet) != 0u)
         {
             return &state->remote_receives[index];
@@ -957,14 +1011,14 @@ static SparkHiddenGdrRemoteReceive *SparkHiddenGdrFindRemoteReceive(
     return 0;
 }
 
-static SparkStatus SparkHiddenGdrInsertRemoteReceive(
-    SparkHiddenGdrState *state,
-    const SparkHiddenGdrControlMessage *message)
+static SparkStatus SparkHiddenSparkHostRdmaInsertRemoteReceive(
+    SparkHiddenSparkHostRdmaState *state,
+    const SparkHiddenSparkHostRdmaControlMessage *message)
 {
     uint32_t index;
-    SparkHiddenGdrRemoteReceive *receive;
+    SparkHiddenSparkHostRdmaRemoteReceive *receive;
 
-    for (index = 0u; index < SPARK_HIDDEN_GDR_MAX_REMOTE_RECEIVE_COUNT;
+    for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT;
          ++index)
     {
         if (state->remote_receives[index].active == 0u ||
@@ -987,23 +1041,23 @@ static SparkStatus SparkHiddenGdrInsertRemoteReceive(
     return SPARK_STATUS_BUSY;
 }
 
-static SparkStatus SparkHiddenGdrWriteControlMessage(
-    SparkHiddenGdrState *state,
-    SparkHiddenGdrControlMessage *message)
+static SparkStatus SparkHiddenSparkHostRdmaWriteControlMessage(
+    SparkHiddenSparkHostRdmaState *state,
+    SparkHiddenSparkHostRdmaControlMessage *message)
 {
     if (state == 0 || message == 0 || state->control_fd < 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    message->magic = SPARK_HIDDEN_GDR_CONTROL_MAGIC;
-    message->version = SPARK_HIDDEN_GDR_CONTROL_VERSION;
-    return SparkHiddenGdrWriteFull(state->control_fd, message,
+    message->magic = SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_MAGIC;
+    message->version = SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_VERSION;
+    return SparkHiddenSparkHostRdmaWriteFull(state->control_fd, message,
         sizeof(*message));
 }
 
-static SparkStatus SparkHiddenGdrReadControlMessageNonblocking(
-    SparkHiddenGdrState *state,
-    SparkHiddenGdrControlMessage *message)
+static SparkStatus SparkHiddenSparkHostRdmaReadControlMessageNonblocking(
+    SparkHiddenSparkHostRdmaState *state,
+    SparkHiddenSparkHostRdmaControlMessage *message)
 {
     ssize_t result;
     uint8_t *cursor;
@@ -1042,21 +1096,21 @@ static SparkStatus SparkHiddenGdrReadControlMessageNonblocking(
         }
         done += (uint64_t)result;
     }
-    if (message->magic != SPARK_HIDDEN_GDR_CONTROL_MAGIC ||
-        message->version != SPARK_HIDDEN_GDR_CONTROL_VERSION)
+    if (message->magic != SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_MAGIC ||
+        message->version != SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_VERSION)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     return SPARK_STATUS_OK;
 }
 
-static void SparkHiddenGdrMarkPendingReceiveComplete(
-    SparkHiddenGdrState *state,
-    const SparkHiddenGdrControlMessage *message)
+static void SparkHiddenSparkHostRdmaMarkPendingReceiveComplete(
+    SparkHiddenSparkHostRdmaState *state,
+    const SparkHiddenSparkHostRdmaControlMessage *message)
 {
     uint32_t index;
 
-    for (index = 0u; index < SPARK_HIDDEN_GDR_MAX_PENDING_RECEIVE_COUNT;
+    for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT;
          ++index)
     {
         if (state->pending_receives[index].active != 0u &&
@@ -1066,16 +1120,16 @@ static void SparkHiddenGdrMarkPendingReceiveComplete(
                 message->token_index)
         {
             state->pending_receives[index].complete = 1u;
-            SparkHiddenGdrSignalEvent(state);
+            SparkHiddenSparkHostRdmaSignalEvent(state);
             return;
         }
     }
 }
 
-static SparkStatus SparkHiddenGdrPumpControl(SparkHiddenGdrState *state)
+static SparkStatus SparkHiddenSparkHostRdmaPumpControl(SparkHiddenSparkHostRdmaState *state)
 {
     SparkStatus status;
-    SparkHiddenGdrControlMessage message;
+    SparkHiddenSparkHostRdmaControlMessage message;
 
     if (state == 0)
     {
@@ -1084,7 +1138,7 @@ static SparkStatus SparkHiddenGdrPumpControl(SparkHiddenGdrState *state)
     while (1)
     {
         memset(&message, 0, sizeof(message));
-        status = SparkHiddenGdrReadControlMessageNonblocking(state, &message);
+        status = SparkHiddenSparkHostRdmaReadControlMessageNonblocking(state, &message);
         if (status == SPARK_STATUS_BUSY)
         {
             return SPARK_STATUS_OK;
@@ -1093,18 +1147,18 @@ static SparkStatus SparkHiddenGdrPumpControl(SparkHiddenGdrState *state)
         {
             return status;
         }
-        if (message.type == SPARK_HIDDEN_GDR_CONTROL_RECEIVE_READY)
+        if (message.type == SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_RECEIVE_READY)
         {
-            status = SparkHiddenGdrInsertRemoteReceive(state, &message);
+            status = SparkHiddenSparkHostRdmaInsertRemoteReceive(state, &message);
             if (status != SPARK_STATUS_OK)
             {
                 return status;
             }
-            SparkHiddenGdrSignalEvent(state);
+            SparkHiddenSparkHostRdmaSignalEvent(state);
         }
-        else if (message.type == SPARK_HIDDEN_GDR_CONTROL_TRANSFER_COMPLETE)
+        else if (message.type == SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_TRANSFER_COMPLETE)
         {
-            SparkHiddenGdrMarkPendingReceiveComplete(state, &message);
+            SparkHiddenSparkHostRdmaMarkPendingReceiveComplete(state, &message);
         }
         else
         {
@@ -1113,8 +1167,8 @@ static SparkStatus SparkHiddenGdrPumpControl(SparkHiddenGdrState *state)
     }
 }
 
-static void SparkHiddenGdrBuildCompletion(
-    SparkHiddenGdrState *state,
+static void SparkHiddenSparkHostRdmaBuildCompletion(
+    SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportPacket *packet,
     SparkStatus status)
 {
@@ -1126,19 +1180,19 @@ static void SparkHiddenGdrBuildCompletion(
     state->completion.active_sequence_count = packet->active_sequence_count;
     state->completion.sequence_id = packet->sequence_id;
     state->completion.token_index = packet->token_index;
-    state->completion.transfer_bytes = SparkHiddenGdrPacketHiddenBytes(packet) +
-        SparkHiddenGdrPacketSidebandBytes(packet);
+    state->completion.transfer_bytes = SparkHiddenSparkHostRdmaPacketHiddenBytes(packet) +
+        SparkHiddenSparkHostRdmaPacketSidebandBytes(packet);
     state->completion.service_time_ns = 0u;
     state->completion_ready = 1u;
-    SparkHiddenGdrSignalEvent(state);
+    SparkHiddenSparkHostRdmaSignalEvent(state);
 }
 
-static SparkStatus SparkHiddenGdrAdvertiseReceive(
-    SparkHiddenGdrState *state,
+static SparkStatus SparkHiddenSparkHostRdmaAdvertiseReceive(
+    SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportPacket *packet,
-    SparkHiddenGdrPendingReceive *receive)
+    SparkHiddenSparkHostRdmaPendingReceive *receive)
 {
-    SparkHiddenGdrControlMessage message;
+    SparkHiddenSparkHostRdmaControlMessage message;
     SparkStatus status;
 
     if (state == 0 || packet == 0 || receive == 0)
@@ -1146,7 +1200,7 @@ static SparkStatus SparkHiddenGdrAdvertiseReceive(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     memset(&message, 0, sizeof(message));
-    message.type = SPARK_HIDDEN_GDR_CONTROL_RECEIVE_READY;
+    message.type = SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_RECEIVE_READY;
     message.sequence_id = packet->sequence_id;
     message.token_index = packet->token_index;
     message.active_sequence_count = packet->active_sequence_count;
@@ -1154,7 +1208,7 @@ static SparkStatus SparkHiddenGdrAdvertiseReceive(
     message.sideband_bytes_per_sequence = packet->sideband_bytes_per_sequence;
     message.hidden = receive->hidden_descriptor;
     message.sideband = receive->sideband_descriptor;
-    status = SparkHiddenGdrWriteControlMessage(state, &message);
+    status = SparkHiddenSparkHostRdmaWriteControlMessage(state, &message);
     if (status == SPARK_STATUS_OK)
     {
         receive->advertised = 1u;
@@ -1162,8 +1216,8 @@ static SparkStatus SparkHiddenGdrAdvertiseReceive(
     return status;
 }
 
-static void SparkHiddenGdrReleasePendingReceive(
-    SparkHiddenGdrPendingReceive *receive)
+static void SparkHiddenSparkHostRdmaReleasePendingReceive(
+    SparkHiddenSparkHostRdmaPendingReceive *receive)
 {
     if (receive == 0)
     {
@@ -1180,17 +1234,17 @@ static void SparkHiddenGdrReleasePendingReceive(
     memset(receive, 0, sizeof(*receive));
 }
 
-static SparkStatus SparkHiddenGdrPostReceive(
+static SparkStatus SparkHiddenSparkHostRdmaPostReceive(
     void *transport_state,
     SparkHiddenTransportPacket *packet)
 {
-    SparkHiddenGdrState *state;
-    SparkHiddenGdrPendingReceive *receive;
+    SparkHiddenSparkHostRdmaState *state;
+    SparkHiddenSparkHostRdmaPendingReceive *receive;
     SparkStatus status;
     uint64_t hidden_bytes;
     uint64_t sideband_bytes;
 
-    state = (SparkHiddenGdrState *)transport_state;
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
     if (state == 0 || packet == 0 || state->is_sender != 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1200,43 +1254,43 @@ static SparkStatus SparkHiddenGdrPostReceive(
     {
         return status;
     }
-    SparkHiddenGdrDrainEvent(state);
-    status = SparkHiddenGdrPumpControl(state);
+    SparkHiddenSparkHostRdmaDrainEvent(state);
+    status = SparkHiddenSparkHostRdmaPumpControl(state);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    receive = SparkHiddenGdrFindPendingReceive(state, packet);
+    receive = SparkHiddenSparkHostRdmaFindPendingReceive(state, packet);
     if (receive == 0)
     {
-        receive = SparkHiddenGdrReservePendingReceive(state);
+        receive = SparkHiddenSparkHostRdmaReservePendingReceive(state);
         if (receive == 0)
         {
             return SPARK_STATUS_BUSY;
         }
         receive->packet_snapshot = *packet;
-        hidden_bytes = SparkHiddenGdrPacketHiddenBytes(packet);
-        sideband_bytes = SparkHiddenGdrPacketSidebandBytes(packet);
-        status = SparkHiddenGdrRegisterReceiveRegion(state,
+        hidden_bytes = SparkHiddenSparkHostRdmaPacketHiddenBytes(packet);
+        sideband_bytes = SparkHiddenSparkHostRdmaPacketSidebandBytes(packet);
+        status = SparkHiddenSparkHostRdmaRegisterReceiveRegion(state,
             packet->hidden_bf16, hidden_bytes,
             &receive->hidden_descriptor, &receive->hidden_memory_region);
         if (status != SPARK_STATUS_OK)
         {
-            SparkHiddenGdrReleasePendingReceive(receive);
+            SparkHiddenSparkHostRdmaReleasePendingReceive(receive);
             return status;
         }
-        status = SparkHiddenGdrRegisterReceiveRegion(state,
+        status = SparkHiddenSparkHostRdmaRegisterReceiveRegion(state,
             packet->sideband_payload, sideband_bytes,
             &receive->sideband_descriptor, &receive->sideband_memory_region);
         if (status != SPARK_STATUS_OK)
         {
-            SparkHiddenGdrReleasePendingReceive(receive);
+            SparkHiddenSparkHostRdmaReleasePendingReceive(receive);
             return status;
         }
-        status = SparkHiddenGdrAdvertiseReceive(state, packet, receive);
+        status = SparkHiddenSparkHostRdmaAdvertiseReceive(state, packet, receive);
         if (status != SPARK_STATUS_OK)
         {
-            SparkHiddenGdrReleasePendingReceive(receive);
+            SparkHiddenSparkHostRdmaReleasePendingReceive(receive);
             return status;
         }
     }
@@ -1244,12 +1298,12 @@ static SparkStatus SparkHiddenGdrPostReceive(
     {
         return SPARK_STATUS_BUSY;
     }
-    SparkHiddenGdrBuildCompletion(state, packet, SPARK_STATUS_OK);
-    SparkHiddenGdrReleasePendingReceive(receive);
+    SparkHiddenSparkHostRdmaBuildCompletion(state, packet, SPARK_STATUS_OK);
+    SparkHiddenSparkHostRdmaReleasePendingReceive(receive);
     return SPARK_STATUS_OK;
 }
 
-static void SparkHiddenGdrPartitionRegion(
+static void SparkHiddenSparkHostRdmaPartitionRegion(
     uint64_t total_bytes,
     uint32_t lane_count,
     uint32_t lane_index,
@@ -1270,11 +1324,11 @@ static void SparkHiddenGdrPartitionRegion(
     *bytes_out = bytes;
 }
 
-static SparkStatus SparkHiddenGdrPostWriteForRegion(
-    SparkHiddenGdrState *state,
+static SparkStatus SparkHiddenSparkHostRdmaPostWriteForRegion(
+    SparkHiddenSparkHostRdmaState *state,
     const void *local_pointer,
     uint64_t local_bytes,
-    const SparkHiddenGdrMemoryRegionDescriptor *remote_descriptor,
+    const SparkHiddenSparkHostRdmaMemoryRegionDescriptor *remote_descriptor,
     struct ibv_mr *local_memory_region,
     uint64_t region_tag,
     uint32_t *posted_write_count_out)
@@ -1300,7 +1354,7 @@ static SparkStatus SparkHiddenGdrPostWriteForRegion(
         uint64_t offset;
         uint64_t bytes;
 
-        SparkHiddenGdrPartitionRegion(local_bytes, state->lane_count,
+        SparkHiddenSparkHostRdmaPartitionRegion(local_bytes, state->lane_count,
             lane_index, &offset, &bytes);
         if (bytes == 0u)
         {
@@ -1330,8 +1384,8 @@ static SparkStatus SparkHiddenGdrPostWriteForRegion(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrWaitForPostedWrites(
-    SparkHiddenGdrState *state,
+static SparkStatus SparkHiddenSparkHostRdmaWaitForPostedWrites(
+    SparkHiddenSparkHostRdmaState *state,
     uint32_t expected_write_count)
 {
     uint32_t completed_count;
@@ -1365,38 +1419,40 @@ static SparkStatus SparkHiddenGdrWaitForPostedWrites(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrSendCompletionMessage(
-    SparkHiddenGdrState *state,
+static SparkStatus SparkHiddenSparkHostRdmaSendCompletionMessage(
+    SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportPacket *packet,
     SparkStatus transfer_status)
 {
-    SparkHiddenGdrControlMessage message;
+    SparkHiddenSparkHostRdmaControlMessage message;
 
     memset(&message, 0, sizeof(message));
-    message.type = SPARK_HIDDEN_GDR_CONTROL_TRANSFER_COMPLETE;
+    message.type = SPARK_HIDDEN_SPARK_HOST_RDMA_CONTROL_TRANSFER_COMPLETE;
     message.status = (uint32_t)transfer_status;
     message.sequence_id = packet->sequence_id;
     message.token_index = packet->token_index;
     message.active_sequence_count = packet->active_sequence_count;
     message.sideband_kind = packet->sideband_kind;
     message.sideband_bytes_per_sequence = packet->sideband_bytes_per_sequence;
-    return SparkHiddenGdrWriteControlMessage(state, &message);
+    return SparkHiddenSparkHostRdmaWriteControlMessage(state, &message);
 }
 
-static SparkStatus SparkHiddenGdrSend(
+static SparkStatus SparkHiddenSparkHostRdmaSend(
     void *transport_state,
     const SparkHiddenTransportPacket *packet)
 {
-    SparkHiddenGdrState *state;
-    SparkHiddenGdrRemoteReceive *remote_receive;
+    SparkHiddenSparkHostRdmaState *state;
+    SparkHiddenSparkHostRdmaRemoteReceive *remote_receive;
     struct ibv_mr *hidden_memory_region;
     struct ibv_mr *sideband_memory_region;
+    void *hidden_host_pointer;
+    void *sideband_host_pointer;
     SparkStatus status;
     uint32_t posted_write_count;
     uint64_t hidden_bytes;
     uint64_t sideband_bytes;
 
-    state = (SparkHiddenGdrState *)transport_state;
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
     if (state == 0 || packet == 0 || state->is_sender == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1406,13 +1462,13 @@ static SparkStatus SparkHiddenGdrSend(
     {
         return status;
     }
-    SparkHiddenGdrDrainEvent(state);
-    status = SparkHiddenGdrPumpControl(state);
+    SparkHiddenSparkHostRdmaDrainEvent(state);
+    status = SparkHiddenSparkHostRdmaPumpControl(state);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    remote_receive = SparkHiddenGdrFindRemoteReceive(state, packet);
+    remote_receive = SparkHiddenSparkHostRdmaFindRemoteReceive(state, packet);
     if (remote_receive == 0)
     {
         return SPARK_STATUS_BUSY;
@@ -1422,10 +1478,10 @@ static SparkStatus SparkHiddenGdrSend(
         return SPARK_STATUS_IO_ERROR;
     }
 
-    hidden_bytes = SparkHiddenGdrPacketHiddenBytes(packet);
-    sideband_bytes = SparkHiddenGdrPacketSidebandBytes(packet);
-    status = SparkHiddenGdrGetCachedMemoryRegion(state, packet->hidden_bf16,
-        hidden_bytes, &hidden_memory_region);
+    hidden_bytes = SparkHiddenSparkHostRdmaPacketHiddenBytes(packet);
+    sideband_bytes = SparkHiddenSparkHostRdmaPacketSidebandBytes(packet);
+    status = SparkHiddenSparkHostRdmaGetCachedMemoryRegion(state, packet->hidden_bf16,
+        hidden_bytes, &hidden_memory_region, &hidden_host_pointer);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1433,18 +1489,18 @@ static SparkStatus SparkHiddenGdrSend(
     sideband_memory_region = 0;
     if (sideband_bytes != 0u)
     {
-        status = SparkHiddenGdrGetCachedMemoryRegion(state,
+        status = SparkHiddenSparkHostRdmaGetCachedMemoryRegion(state,
             packet->sideband_payload, sideband_bytes,
-            &sideband_memory_region);
+            &sideband_memory_region, &sideband_host_pointer);
         if (status != SPARK_STATUS_OK)
         {
             return status;
         }
     }
     posted_write_count = 0u;
-    status = SparkHiddenGdrPostWriteForRegion(state, packet->hidden_bf16,
+    status = SparkHiddenSparkHostRdmaPostWriteForRegion(state, hidden_host_pointer,
         hidden_bytes, &remote_receive->hidden_descriptor,
-        hidden_memory_region, SPARK_HIDDEN_GDR_WR_ID_REGION_HIDDEN,
+        hidden_memory_region, SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_REGION_HIDDEN,
         &posted_write_count);
     if (status != SPARK_STATUS_OK)
     {
@@ -1452,47 +1508,47 @@ static SparkStatus SparkHiddenGdrSend(
     }
     if (sideband_bytes != 0u)
     {
-        status = SparkHiddenGdrPostWriteForRegion(state,
-            packet->sideband_payload, sideband_bytes,
+        status = SparkHiddenSparkHostRdmaPostWriteForRegion(state,
+            sideband_host_pointer, sideband_bytes,
             &remote_receive->sideband_descriptor,
-            sideband_memory_region, SPARK_HIDDEN_GDR_WR_ID_REGION_SIDEBAND,
+            sideband_memory_region, SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_REGION_SIDEBAND,
             &posted_write_count);
         if (status != SPARK_STATUS_OK)
         {
             return status;
         }
     }
-    status = SparkHiddenGdrWaitForPostedWrites(state, posted_write_count);
+    status = SparkHiddenSparkHostRdmaWaitForPostedWrites(state, posted_write_count);
     if (status != SPARK_STATUS_OK)
     {
-        (void)SparkHiddenGdrSendCompletionMessage(state, packet, status);
+        (void)SparkHiddenSparkHostRdmaSendCompletionMessage(state, packet, status);
         return status;
     }
     remote_receive->used = 1u;
-    status = SparkHiddenGdrSendCompletionMessage(state, packet,
+    status = SparkHiddenSparkHostRdmaSendCompletionMessage(state, packet,
         SPARK_STATUS_OK);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    SparkHiddenGdrBuildCompletion(state, packet, SPARK_STATUS_OK);
+    SparkHiddenSparkHostRdmaBuildCompletion(state, packet, SPARK_STATUS_OK);
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrPoll(
+static SparkStatus SparkHiddenSparkHostRdmaPoll(
     void *transport_state,
     SparkHiddenTransportCompletion *completion)
 {
-    SparkHiddenGdrState *state;
+    SparkHiddenSparkHostRdmaState *state;
     SparkStatus status;
 
-    state = (SparkHiddenGdrState *)transport_state;
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
     if (state == 0 || completion == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    SparkHiddenGdrDrainEvent(state);
-    status = SparkHiddenGdrPumpControl(state);
+    SparkHiddenSparkHostRdmaDrainEvent(state);
+    status = SparkHiddenSparkHostRdmaPumpControl(state);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1510,7 +1566,7 @@ static SparkStatus SparkHiddenGdrPoll(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrAppendPollDescriptor(
+static SparkStatus SparkHiddenSparkHostRdmaAppendPollDescriptor(
     SparkHiddenTransportPollDescriptor *descriptors,
     uint32_t descriptor_capacity,
     uint32_t *descriptor_count,
@@ -1541,13 +1597,13 @@ static SparkStatus SparkHiddenGdrAppendPollDescriptor(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrGetPollDescriptors(
+static SparkStatus SparkHiddenSparkHostRdmaGetPollDescriptors(
     void *transport_state,
     SparkHiddenTransportPollDescriptor *descriptors,
     uint32_t descriptor_capacity,
     uint32_t *descriptor_count_out)
 {
-    SparkHiddenGdrState *state;
+    SparkHiddenSparkHostRdmaState *state;
     uint32_t descriptor_count;
     SparkStatus status;
 
@@ -1556,16 +1612,16 @@ static SparkStatus SparkHiddenGdrGetPollDescriptors(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    state = (SparkHiddenGdrState *)transport_state;
+    state = (SparkHiddenSparkHostRdmaState *)transport_state;
     descriptor_count = 0u;
-    status = SparkHiddenGdrAppendPollDescriptor(descriptors,
+    status = SparkHiddenSparkHostRdmaAppendPollDescriptor(descriptors,
         descriptor_capacity, &descriptor_count, state->event_fd,
         SPARK_HIDDEN_TRANSPORT_POLL_READ);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    status = SparkHiddenGdrAppendPollDescriptor(descriptors,
+    status = SparkHiddenSparkHostRdmaAppendPollDescriptor(descriptors,
         descriptor_capacity, &descriptor_count, state->control_fd,
         SPARK_HIDDEN_TRANSPORT_POLL_READ);
     if (status != SPARK_STATUS_OK)
@@ -1576,7 +1632,7 @@ static SparkStatus SparkHiddenGdrGetPollDescriptors(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrSendBatch(
+static SparkStatus SparkHiddenSparkHostRdmaSendBatch(
     void *transport_state,
     const SparkHiddenTransportPacket *packets,
     uint32_t packet_count)
@@ -1590,7 +1646,7 @@ static SparkStatus SparkHiddenGdrSendBatch(
     }
     for (packet_index = 0u; packet_index < packet_count; ++packet_index)
     {
-        status = SparkHiddenGdrSend(transport_state, &packets[packet_index]);
+        status = SparkHiddenSparkHostRdmaSend(transport_state, &packets[packet_index]);
         if (status != SPARK_STATUS_OK)
         {
             return status;
@@ -1599,7 +1655,7 @@ static SparkStatus SparkHiddenGdrSendBatch(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkHiddenGdrPostReceiveBatch(
+static SparkStatus SparkHiddenSparkHostRdmaPostReceiveBatch(
     void *transport_state,
     SparkHiddenTransportPacket *packets,
     uint32_t packet_count)
@@ -1613,7 +1669,7 @@ static SparkStatus SparkHiddenGdrPostReceiveBatch(
     }
     for (packet_index = 0u; packet_index < packet_count; ++packet_index)
     {
-        status = SparkHiddenGdrPostReceive(transport_state,
+        status = SparkHiddenSparkHostRdmaPostReceive(transport_state,
             &packets[packet_index]);
         if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
         {
@@ -1627,7 +1683,7 @@ static SparkStatus SparkHiddenGdrPostReceiveBatch(
     return SPARK_STATUS_OK;
 }
 
-static void SparkHiddenGdrDestroyState(SparkHiddenGdrState *state)
+static void SparkHiddenSparkHostRdmaDestroyState(SparkHiddenSparkHostRdmaState *state)
 {
     uint32_t lane_index;
     uint32_t receive_index;
@@ -1636,12 +1692,12 @@ static void SparkHiddenGdrDestroyState(SparkHiddenGdrState *state)
     {
         return;
     }
-    SparkHiddenGdrDeregisterCachedMemoryRegions(state);
+    SparkHiddenSparkHostRdmaDeregisterCachedMemoryRegions(state);
     for (receive_index = 0u;
-         receive_index < SPARK_HIDDEN_GDR_MAX_PENDING_RECEIVE_COUNT;
+         receive_index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT;
          ++receive_index)
     {
-        SparkHiddenGdrReleasePendingReceive(&state->pending_receives[receive_index]);
+        SparkHiddenSparkHostRdmaReleasePendingReceive(&state->pending_receives[receive_index]);
     }
     for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
     {
@@ -1662,17 +1718,17 @@ static void SparkHiddenGdrDestroyState(SparkHiddenGdrState *state)
     {
         ibv_close_device(state->verbs_context);
     }
-    state->control_fd = SparkHiddenGdrCloseFd(state->control_fd);
-    state->listen_fd = SparkHiddenGdrCloseFd(state->listen_fd);
-    state->event_fd = SparkHiddenGdrCloseFd(state->event_fd);
+    state->control_fd = SparkHiddenSparkHostRdmaCloseFd(state->control_fd);
+    state->listen_fd = SparkHiddenSparkHostRdmaCloseFd(state->listen_fd);
+    state->event_fd = SparkHiddenSparkHostRdmaCloseFd(state->event_fd);
     free(state);
 }
 
-static SparkStatus SparkHiddenGdrInitialize(
+static SparkStatus SparkHiddenSparkHostRdmaInitialize(
     const SparkHiddenTransportEndpoint *endpoint,
     void **transport_state)
 {
-    SparkHiddenGdrState *state;
+    SparkHiddenSparkHostRdmaState *state;
     SparkStatus status;
     uint32_t lane_count;
     const char *rank_text;
@@ -1681,12 +1737,12 @@ static SparkStatus SparkHiddenGdrInitialize(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(endpoint);
+    status = SparkHiddenTransportValidateSparkHostRdmaEndpoint(endpoint);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    state = (SparkHiddenGdrState *)calloc(1u, sizeof(*state));
+    state = (SparkHiddenSparkHostRdmaState *)calloc(1u, sizeof(*state));
     if (state == 0)
     {
         return SPARK_STATUS_INTERNAL_ERROR;
@@ -1695,94 +1751,94 @@ static SparkStatus SparkHiddenGdrInitialize(
     state->listen_fd = -1;
     state->control_fd = -1;
     state->event_fd = -1;
-    state->debug_enabled = getenv("SPARKPIPE_HIDDEN_GDR_DEBUG") != 0 ?
+    state->debug_enabled = getenv("SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DEBUG") != 0 ?
         1u : 0u;
-    lane_count = SparkHiddenGdrParseUintEnv("SPARKPIPE_HIDDEN_GDR_LANES",
-        SPARK_HIDDEN_GDR_DEFAULT_LANE_COUNT);
+    lane_count = SparkHiddenSparkHostRdmaParseUintEnv("SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_LANES",
+        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_LANE_COUNT);
     if (lane_count == 0u)
     {
         lane_count = 1u;
     }
-    if (lane_count > SPARK_HIDDEN_GDR_MAX_LANE_COUNT)
+    if (lane_count > SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT)
     {
-        lane_count = SPARK_HIDDEN_GDR_MAX_LANE_COUNT;
+        lane_count = SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT;
     }
     state->lane_count = lane_count;
-    state->control_port_base = SparkHiddenGdrParseUintEnv(
-        "SPARKPIPE_HIDDEN_GDR_CONTROL_PORT_BASE",
-        SPARK_HIDDEN_GDR_DEFAULT_CONTROL_PORT_BASE);
-    state->verbs_port = (uint8_t)SparkHiddenGdrParseUintEnv(
-        "SPARKPIPE_HIDDEN_GDR_IB_PORT", 1u);
-    state->gid_index = SparkHiddenGdrParseIntEnv(
-        "SPARKPIPE_HIDDEN_GDR_GID_INDEX", 0);
+    state->control_port_base = SparkHiddenSparkHostRdmaParseUintEnv(
+        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_CONTROL_PORT_BASE",
+        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_CONTROL_PORT_BASE);
+    state->verbs_port = (uint8_t)SparkHiddenSparkHostRdmaParseUintEnv(
+        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_PORT", 1u);
+    state->gid_index = SparkHiddenSparkHostRdmaParseIntEnv(
+        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_GID_INDEX", 0);
     rank_text = getenv("SPARKPIPE_PP13_TRANSPORT_RANK");
     if (rank_text == 0 || rank_text[0] == '\0')
     {
-        SparkHiddenGdrDestroyState(state);
+        SparkHiddenSparkHostRdmaDestroyState(state);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    state->local_rank = (int32_t)SparkHiddenGdrParseUintEnv(
+    state->local_rank = (int32_t)SparkHiddenSparkHostRdmaParseUintEnv(
         "SPARKPIPE_PP13_TRANSPORT_RANK", 1000u);
-    status = SparkHiddenGdrParseRoute(endpoint->route_name,
+    status = SparkHiddenSparkHostRdmaParseRoute(endpoint->route_name,
         state->source_host, state->sink_host);
     if (status != SPARK_STATUS_OK)
     {
-        SparkHiddenGdrDestroyState(state);
+        SparkHiddenSparkHostRdmaDestroyState(state);
         return status;
     }
-    state->source_rank = SparkHiddenGdrRankFromHost(state->source_host);
-    state->sink_rank = SparkHiddenGdrRankFromHost(state->sink_host);
+    state->source_rank = SparkHiddenSparkHostRdmaRankFromHost(state->source_host);
+    state->sink_rank = SparkHiddenSparkHostRdmaRankFromHost(state->sink_host);
     if (state->source_rank < 0 || state->sink_rank < 0)
     {
-        SparkHiddenGdrDestroyState(state);
+        SparkHiddenSparkHostRdmaDestroyState(state);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     state->is_sender = state->local_rank == state->source_rank ? 1u : 0u;
     if (state->is_sender == 0u && state->local_rank != state->sink_rank)
     {
-        SparkHiddenGdrDestroyState(state);
+        SparkHiddenSparkHostRdmaDestroyState(state);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     state->event_fd = eventfd(0u, EFD_NONBLOCK | EFD_CLOEXEC);
     if (state->event_fd < 0)
     {
-        SparkHiddenGdrDestroyState(state);
+        SparkHiddenSparkHostRdmaDestroyState(state);
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    status = SparkHiddenGdrOpenVerbsDevice(state);
+    status = SparkHiddenSparkHostRdmaOpenVerbsDevice(state);
     if (status != SPARK_STATUS_OK)
     {
-        SparkHiddenGdrDestroyState(state);
+        SparkHiddenSparkHostRdmaDestroyState(state);
         return status;
     }
-    status = SparkHiddenGdrCreateQueuePairs(state);
+    status = SparkHiddenSparkHostRdmaCreateQueuePairs(state);
     if (status != SPARK_STATUS_OK)
     {
-        SparkHiddenGdrDestroyState(state);
+        SparkHiddenSparkHostRdmaDestroyState(state);
         return status;
     }
-    status = SparkHiddenGdrConnectControl(state);
+    status = SparkHiddenSparkHostRdmaConnectControl(state);
     if (status != SPARK_STATUS_OK)
     {
-        SparkHiddenGdrDestroyState(state);
+        SparkHiddenSparkHostRdmaDestroyState(state);
         return status;
     }
-    status = SparkHiddenGdrExchangeQueuePairInfo(state);
+    status = SparkHiddenSparkHostRdmaExchangeQueuePairInfo(state);
     if (status != SPARK_STATUS_OK)
     {
-        SparkHiddenGdrDestroyState(state);
+        SparkHiddenSparkHostRdmaDestroyState(state);
         return status;
     }
-    status = SparkHiddenGdrReadyQueuePairs(state);
+    status = SparkHiddenSparkHostRdmaReadyQueuePairs(state);
     if (status != SPARK_STATUS_OK)
     {
-        SparkHiddenGdrDestroyState(state);
+        SparkHiddenSparkHostRdmaDestroyState(state);
         return status;
     }
     if (state->debug_enabled != 0u)
     {
         fprintf(stderr,
-            "hidden_gdr_ready route=%s rank=%d sender=%u lanes=%u\n",
+            "hidden_spark_host_rdma_ready route=%s rank=%d sender=%u lanes=%u\n",
             endpoint->route_name,
             state->local_rank,
             state->is_sender,
@@ -1792,9 +1848,9 @@ static SparkStatus SparkHiddenGdrInitialize(
     return SPARK_STATUS_OK;
 }
 
-static void SparkHiddenGdrDestroy(void *transport_state)
+static void SparkHiddenSparkHostRdmaDestroy(void *transport_state)
 {
-    SparkHiddenGdrDestroyState((SparkHiddenGdrState *)transport_state);
+    SparkHiddenSparkHostRdmaDestroyState((SparkHiddenSparkHostRdmaState *)transport_state);
 }
 
 extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface(void)
@@ -1805,14 +1861,14 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
     transport_interface.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     transport_interface.descriptor_bytes = SPARK_HIDDEN_TRANSPORT_INTERFACE_BYTES;
     transport_interface.capability_flags =
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_ZERO_COPY_GPUDIRECT_CAPS;
-    transport_interface.initialize = SparkHiddenGdrInitialize;
-    transport_interface.destroy = SparkHiddenGdrDestroy;
-    transport_interface.post_receive = SparkHiddenGdrPostReceive;
-    transport_interface.send = SparkHiddenGdrSend;
-    transport_interface.poll = SparkHiddenGdrPoll;
-    transport_interface.post_receive_batch = SparkHiddenGdrPostReceiveBatch;
-    transport_interface.send_batch = SparkHiddenGdrSendBatch;
-    transport_interface.get_poll_descriptors = SparkHiddenGdrGetPollDescriptors;
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS;
+    transport_interface.initialize = SparkHiddenSparkHostRdmaInitialize;
+    transport_interface.destroy = SparkHiddenSparkHostRdmaDestroy;
+    transport_interface.post_receive = SparkHiddenSparkHostRdmaPostReceive;
+    transport_interface.send = SparkHiddenSparkHostRdmaSend;
+    transport_interface.poll = SparkHiddenSparkHostRdmaPoll;
+    transport_interface.post_receive_batch = SparkHiddenSparkHostRdmaPostReceiveBatch;
+    transport_interface.send_batch = SparkHiddenSparkHostRdmaSendBatch;
+    transport_interface.get_poll_descriptors = SparkHiddenSparkHostRdmaGetPollDescriptors;
     return &transport_interface;
 }

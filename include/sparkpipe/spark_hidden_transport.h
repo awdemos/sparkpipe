@@ -21,15 +21,11 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH 1024u
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_MODULE_ID \
     "spark.hidden_transport.persistent_ring.device.v1"
-#define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_VERBS_MODULE_ID \
-    "spark.hidden_transport.gpudirect_rdma.verbs.v1"
-#define SPARK_HIDDEN_TRANSPORT_CUDA_HOST_DMABUF_VERBS_MODULE_ID \
-    "spark.hidden_transport.cuda_host_dmabuf.verbs.v1"
+#define SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID \
+    "spark.hidden_transport.spark_host_pinned_rdma.verbs.v1"
 #define SPARK_HIDDEN_TRANSPORT_TCP_CUDA_HOST_MODULE_ID \
     "spark.hidden_transport.tcp.cuda_host.v1"
-#define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_PEERMEM_SYSFS_PATH \
-    "/sys/module/nvidia_peermem"
-#define SPARK_HIDDEN_TRANSPORT_GPUDIRECT_RDMA_INFINIBAND_SYSFS_PATH \
+#define SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_INFINIBAND_SYSFS_PATH \
     "/sys/class/infiniband"
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_STATISTICS_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportPersistentRingStatistics))
@@ -49,8 +45,8 @@ extern "C" {
 #define SPARK_HIDDEN_TRANSPORT_CAP_NO_SHELL_TRANSPORT 0x00000040u
 #define SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION 0x00000080u
 #define SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS 0x00000100u
-#define SPARK_HIDDEN_TRANSPORT_CAP_GPUDIRECT_RDMA 0x00000200u
-#define SPARK_HIDDEN_TRANSPORT_CAP_REGISTERED_DEVICE_MEMORY 0x00000400u
+#define SPARK_HIDDEN_TRANSPORT_CAP_SPARK_HOST_PINNED_RDMA 0x00000200u
+#define SPARK_HIDDEN_TRANSPORT_CAP_CUDA_MAPPED_HOST_MEMORY 0x00000400u
 #define SPARK_HIDDEN_TRANSPORT_CAP_MULTI_LANE 0x00000800u
 #define SPARK_HIDDEN_TRANSPORT_CAP_REMOTE_COMPLETION_DOORBELL 0x00001000u
 #define SPARK_HIDDEN_TRANSPORT_CAP_SIMULATION_ONLY 0x80000000u
@@ -71,13 +67,14 @@ extern "C" {
     (SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS | \
      SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION)
 
-#define SPARK_HIDDEN_TRANSPORT_REQUIRED_ZERO_COPY_GPUDIRECT_CAPS \
-    (SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS | \
-     SPARK_HIDDEN_TRANSPORT_CAP_GPUDIRECT_RDMA | \
-     SPARK_HIDDEN_TRANSPORT_CAP_REGISTERED_DEVICE_MEMORY)
+#define SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS \
+    (SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS | \
+     SPARK_HIDDEN_TRANSPORT_CAP_NO_DEVICE_MEMCPY | \
+     SPARK_HIDDEN_TRANSPORT_CAP_SPARK_HOST_PINNED_RDMA | \
+     SPARK_HIDDEN_TRANSPORT_CAP_CUDA_MAPPED_HOST_MEMORY)
 
-#define SPARK_HIDDEN_TRANSPORT_RECOMMENDED_ZERO_COPY_GPUDIRECT_CAPS \
-    (SPARK_HIDDEN_TRANSPORT_REQUIRED_ZERO_COPY_GPUDIRECT_CAPS | \
+#define SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS \
+    (SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS | \
      SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION | \
      SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS | \
      SPARK_HIDDEN_TRANSPORT_CAP_MULTI_LANE | \
@@ -285,17 +282,16 @@ SparkStatus SparkHiddenTransportPersistentRingGetInterface(
 SparkStatus SparkHiddenTransportPersistentRingGetStatistics(
     SparkHiddenTransportSession *session,
     SparkHiddenTransportPersistentRingStatistics *statistics);
-void SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
+void SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
     SparkHiddenTransportEndpoint *endpoint,
     uint32_t hidden_dimension,
     uint32_t max_active_sequence_count,
     uint64_t validated_latency_ns,
     const char *route_name);
-SparkStatus SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(
+SparkStatus SparkHiddenTransportValidateSparkHostRdmaEndpoint(
     const SparkHiddenTransportEndpoint *endpoint);
-SparkStatus SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+SparkStatus SparkHiddenTransportSparkHostRdmaVerbsPreflight(
     const SparkHiddenTransportEndpoint *endpoint,
-    const char *peermem_sysfs_path,
     const char *infiniband_sysfs_path);
 
 #ifdef __cplusplus

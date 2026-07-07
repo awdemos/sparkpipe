@@ -9,6 +9,6 @@
   "max_active_sequence_count": 1024,
   "port_base": 52100,
   "require_pack_files": 1,
-  "require_gpudirect_preflight": 0,
+  "require_spark_host_rdma_preflight": 0,
   "generate_missing_runtime_files": 1
 }

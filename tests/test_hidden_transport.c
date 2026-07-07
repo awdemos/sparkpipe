@@ -123,10 +123,10 @@ static void SparkTestInitializeEndpoint(
     endpoint->route_name = "spark2_to_sparka";
 }
 
-static void SparkTestInitializeGpudirectEndpoint(
+static void SparkTestInitializeSparkHostRdmaEndpoint(
     SparkHiddenTransportEndpoint *endpoint)
 {
-    SparkHiddenTransportInitializeGpudirectRdmaEndpoint(
+    SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
         endpoint,
         6144u,
         128u,
@@ -513,7 +513,7 @@ static void SparkTestHiddenTransportOpensZeroCopyInterfaceFromHostPlan(void)
     SparkTestInitializeEndpoint(&endpoint);
     SparkTestInitializeTransportInterface(
         &transport_interface,
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_ZERO_COPY_GPUDIRECT_CAPS);
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS);
     transport_interface.post_receive_batch = TestHiddenTransportPostReceiveBatch;
     transport_interface.send_batch = TestHiddenTransportSendBatch;
     transport_interface.get_poll_descriptors = 0;
@@ -527,64 +527,51 @@ static void SparkTestHiddenTransportOpensZeroCopyInterfaceFromHostPlan(void)
     SparkHiddenTransportClose(session);
 }
 
-static void SparkTestHiddenTransportValidatesZeroCopyGpudirectEndpoint(void)
+static void SparkTestHiddenTransportValidatesSparkHostRdmaEndpoint(void)
 {
     SparkHiddenTransportEndpoint endpoint;
 
-    SparkTestInitializeGpudirectEndpoint(&endpoint);
-    assert(SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(&endpoint) ==
+    SparkTestInitializeSparkHostRdmaEndpoint(&endpoint);
+    assert(SparkHiddenTransportValidateSparkHostRdmaEndpoint(&endpoint) ==
         SPARK_STATUS_OK);
     endpoint.capability_flags &=
-        ~SPARK_HIDDEN_TRANSPORT_CAP_REGISTERED_DEVICE_MEMORY;
-    assert(SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(&endpoint) ==
+        ~SPARK_HIDDEN_TRANSPORT_CAP_CUDA_MAPPED_HOST_MEMORY;
+    assert(SparkHiddenTransportValidateSparkHostRdmaEndpoint(&endpoint) ==
         SPARK_STATUS_INVALID_ARGUMENT);
-    SparkTestInitializeGpudirectEndpoint(&endpoint);
+    SparkTestInitializeSparkHostRdmaEndpoint(&endpoint);
     endpoint.capability_flags |= SPARK_HIDDEN_TRANSPORT_CAP_SIMULATION_ONLY;
-    assert(SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(&endpoint) ==
+    assert(SparkHiddenTransportValidateSparkHostRdmaEndpoint(&endpoint) ==
         SPARK_STATUS_INVALID_ARGUMENT);
-    SparkTestInitializeGpudirectEndpoint(&endpoint);
+    SparkTestInitializeSparkHostRdmaEndpoint(&endpoint);
     endpoint.transport_module_id = SPARK_HIDDEN_TRANSPORT_TCP_CUDA_HOST_MODULE_ID;
-    assert(SparkHiddenTransportValidateZeroCopyGpudirectEndpoint(&endpoint) ==
+    assert(SparkHiddenTransportValidateSparkHostRdmaEndpoint(&endpoint) ==
         SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static void SparkTestHiddenTransportGpudirectPreflight(void)
+static void SparkTestHiddenTransportSparkHostRdmaPreflight(void)
 {
     SparkHiddenTransportEndpoint endpoint;
-    const char *peermem_path;
     const char *infiniband_path;
 
-    peermem_path = "build/test_hidden_transport_peermem";
     infiniband_path = "build/test_hidden_transport_infiniband";
-    rmdir(peermem_path);
     rmdir(infiniband_path);
 
-    SparkTestInitializeGpudirectEndpoint(&endpoint);
-    assert(SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+    SparkTestInitializeSparkHostRdmaEndpoint(&endpoint);
+    assert(SparkHiddenTransportSparkHostRdmaVerbsPreflight(
         &endpoint,
-        peermem_path,
-        infiniband_path) == SPARK_STATUS_NOT_FOUND);
-
-    assert(mkdir(peermem_path, 0777) == 0);
-    assert(SparkHiddenTransportGpudirectRdmaVerbsPreflight(
-        &endpoint,
-        peermem_path,
         infiniband_path) == SPARK_STATUS_ROUTE_NOT_FOUND);
 
     assert(mkdir(infiniband_path, 0777) == 0);
-    assert(SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+    assert(SparkHiddenTransportSparkHostRdmaVerbsPreflight(
         &endpoint,
-        peermem_path,
         infiniband_path) == SPARK_STATUS_OK);
 
-    endpoint.transport_module_id = "spark.hidden_transport.not_gpudirect.v1";
-    assert(SparkHiddenTransportGpudirectRdmaVerbsPreflight(
+    endpoint.transport_module_id = "spark.hidden_transport.not_spark_host_rdma.v1";
+    assert(SparkHiddenTransportSparkHostRdmaVerbsPreflight(
         &endpoint,
-        peermem_path,
         infiniband_path) == SPARK_STATUS_INVALID_ARGUMENT);
 
     rmdir(infiniband_path);
-    rmdir(peermem_path);
 }
 
 int main(void)
@@ -598,7 +585,7 @@ int main(void)
     SparkTestHiddenTransportRejectsInvalidInterface();
     SparkTestHiddenTransportLoadsProductionModule();
     SparkTestHiddenTransportOpensZeroCopyInterfaceFromHostPlan();
-    SparkTestHiddenTransportValidatesZeroCopyGpudirectEndpoint();
-    SparkTestHiddenTransportGpudirectPreflight();
+    SparkTestHiddenTransportValidatesSparkHostRdmaEndpoint();
+    SparkTestHiddenTransportSparkHostRdmaPreflight();
     return 0;
 }

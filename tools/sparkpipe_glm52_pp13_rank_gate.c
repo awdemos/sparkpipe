@@ -19,7 +19,7 @@ typedef struct SparkGlm52Pp13GateConfig
     uint32_t max_active_sequence_count;
     uint32_t port_base;
     uint32_t require_pack_files;
-    uint32_t require_gpudirect_preflight;
+    uint32_t require_spark_host_rdma_preflight;
     uint32_t generate_missing_runtime_files;
     uint32_t require_transport_shared_object;
 } SparkGlm52Pp13GateConfig;
@@ -58,7 +58,7 @@ static void SparkGlm52Pp13GateInitializeConfig(
         SPARK_GLM52_PP13_GATE_DEFAULT_MAX_ACTIVE;
     configuration->port_base = SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE;
     configuration->require_pack_files = 1u;
-    configuration->require_gpudirect_preflight = 0u;
+    configuration->require_spark_host_rdma_preflight = 0u;
     configuration->generate_missing_runtime_files = 1u;
     configuration->require_transport_shared_object = 0u;
 }
@@ -170,14 +170,14 @@ static SparkStatus SparkGlm52Pp13GateLoadConfigFile(
         return status;
     }
     configuration->require_pack_files = value != 0u ? 1u : 0u;
-    value = configuration->require_gpudirect_preflight;
+    value = configuration->require_spark_host_rdma_preflight;
     status = SparkGlm52Pp13GateGetOptionalU32(
-        document,root,"require_gpudirect_preflight",&value);
+        document,root,"require_spark_host_rdma_preflight",&value);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    configuration->require_gpudirect_preflight = value != 0u ? 1u : 0u;
+    configuration->require_spark_host_rdma_preflight = value != 0u ? 1u : 0u;
     value = configuration->generate_missing_runtime_files;
     status = SparkGlm52Pp13GateGetOptionalU32(
         document,root,"generate_missing_runtime_files",&value);
@@ -285,9 +285,9 @@ static int SparkGlm52Pp13GateApplyArgument(
         configuration->require_pack_files = 0u;
         return 0;
     }
-    if (strcmp(argv[*index],"--require-gpudirect-preflight") == 0)
+    if (strcmp(argv[*index],"--require-spark-host-rdma-preflight") == 0)
     {
-        configuration->require_gpudirect_preflight = 1u;
+        configuration->require_spark_host_rdma_preflight = 1u;
         return 0;
     }
     if (strcmp(argv[*index],"--no-generate-runtime-files") == 0)
@@ -701,18 +701,30 @@ int main(int argc,char **argv)
             sizeof(error_buffer));
     }
     transport_status = SPARK_STATUS_OK;
-    if (configuration.require_gpudirect_preflight != 0u)
+    if (configuration.require_spark_host_rdma_preflight != 0u)
     {
+        SparkHiddenTransportEndpoint preflight_endpoint;
+        const SparkHiddenTransportEndpoint *source_endpoint;
+        source_endpoint = 0;
         if ((rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u)
-        {
-            transport_status = SparkHiddenTransportGpudirectRdmaVerbsPreflight(
-                &rank_plan.output_endpoint,0,0);
-        }
+            source_endpoint = &rank_plan.output_endpoint;
         else if ((rank_plan.flags &
                 SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u)
+            source_endpoint = &rank_plan.input_endpoint;
+        if (source_endpoint != 0)
         {
-            transport_status = SparkHiddenTransportGpudirectRdmaVerbsPreflight(
-                &rank_plan.input_endpoint,0,0);
+            SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
+                &preflight_endpoint,
+                source_endpoint->hidden_dimension,
+                source_endpoint->max_active_sequence_count,
+                source_endpoint->validated_latency_ns,
+                source_endpoint->route_name);
+            preflight_endpoint.bytes_per_sequence =
+                source_endpoint->bytes_per_sequence;
+            preflight_endpoint.max_packet_bytes =
+                source_endpoint->max_packet_bytes;
+            transport_status = SparkHiddenTransportSparkHostRdmaVerbsPreflight(
+                &preflight_endpoint,0);
         }
     }
     transport_input_open_status = SPARK_STATUS_OK;
@@ -753,7 +765,7 @@ int main(int argc,char **argv)
         SparkHiddenTransportClose(output_transport_session);
         SparkHiddenTransportClose(input_transport_session);
         SparkHiddenTransportUnloadInterface(&transport_library);
-        fprintf(stderr,"GPUDirect transport preflight failed: %s\n",
+        fprintf(stderr,"Spark host-pinned RDMA transport preflight failed: %s\n",
             SparkStatusToString(transport_status));
         return 7;
     }

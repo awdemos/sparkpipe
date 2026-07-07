@@ -146,6 +146,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	SparkGlm52KvBlockTableView device_kv_view;
 	SparkGlm52Pp13NodeContextBuilderResult result;
 	void *allocations[SPARK_GLM52_PP13_BUILDER_MAX_ALLOCATIONS];
+	uint8_t allocation_is_host_mapped[SPARK_GLM52_PP13_BUILDER_MAX_ALLOCATIONS];
 	uint32_t allocation_count;
 	uint32_t *host_physical_block_indices;
 	uint32_t *host_lane_physical_block_counts;
@@ -420,17 +421,27 @@ static SparkStatus SparkGlm52Pp13BuilderReportStatus(
 	return status;
 }
 
-static SparkStatus SparkGlm52Pp13BuilderRememberAllocation(
+static SparkStatus SparkGlm52Pp13BuilderRememberAllocationWithKind(
 	SparkGlm52Pp13BuilderState *state,
-	void *pointer)
+	void *pointer,
+	uint32_t is_host_mapped)
 {
 	if (state == 0 || pointer == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (state->allocation_count >= SPARK_GLM52_PP13_BUILDER_MAX_ALLOCATIONS)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	state->allocations[state->allocation_count] = pointer;
+	state->allocation_is_host_mapped[state->allocation_count] =
+		is_host_mapped != 0u ? 1u : 0u;
 	state->allocation_count += 1u;
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderRememberAllocation(
+	SparkGlm52Pp13BuilderState *state,
+	void *pointer)
+{
+	return SparkGlm52Pp13BuilderRememberAllocationWithKind(state,pointer,0u);
 }
 
 static SparkStatus SparkGlm52Pp13BuilderCudaAlloc(
@@ -453,6 +464,46 @@ static SparkStatus SparkGlm52Pp13BuilderCudaAlloc(
 		return status;
 	}
 	*pointer_out = pointer;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderCudaHostMappedAlloc(
+	SparkGlm52Pp13BuilderState *state,
+	void **device_pointer_out,
+	uint64_t bytes)
+{
+	void *host_pointer;
+	void *device_pointer;
+	SparkStatus status;
+	if (state == 0 || device_pointer_out == 0 || bytes == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	host_pointer = 0;
+	device_pointer = 0;
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaHostAlloc(
+		&host_pointer,
+		(size_t)bytes,
+		cudaHostAllocMapped | cudaHostAllocPortable));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaHostGetDevicePointer(
+		&device_pointer,
+		host_pointer,
+		0));
+	if (status != SPARK_STATUS_OK)
+	{
+		cudaFreeHost(host_pointer);
+		return status;
+	}
+	status = SparkGlm52Pp13BuilderRememberAllocationWithKind(
+		state,
+		host_pointer,
+		1u);
+	if (status != SPARK_STATUS_OK)
+	{
+		cudaFreeHost(host_pointer);
+		return status;
+	}
+	*device_pointer_out = device_pointer;
 	return SPARK_STATUS_OK;
 }
 
@@ -804,14 +855,29 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 {
 	uint64_t b;
 	uint64_t route_count;
+	uint32_t layer_offset;
+	uint32_t input_crosses_rank_boundary;
+	uint32_t output_crosses_rank_boundary;
 	SparkStatus status;
 	b = state->rank_plan.max_active_sequence_count;
 	route_count = b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
+	layer_offset = (uint32_t)(layer - state->layers);
+	input_crosses_rank_boundary =
+		layer_offset == 0u &&
+		(state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u;
+	output_crosses_rank_boundary =
+		layer_offset + 1u == state->rank_plan.layer_count &&
+		(state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u;
 #define ALLOC_FIELD(field, count, bytes) \
 	do { status = SparkGlm52Pp13BuilderCudaAlloc(state,&layer->field,(uint64_t)(count) * (uint64_t)(bytes)); if (status != SPARK_STATUS_OK) return status; } while (0)
+#define ALLOC_FIELD_MAPPED(field, count, bytes) \
+	do { status = SparkGlm52Pp13BuilderCudaHostMappedAlloc(state,&layer->field,(uint64_t)(count) * (uint64_t)(bytes)); if (status != SPARK_STATUS_OK) return status; } while (0)
 #define ZERO_FIELD(field, count, bytes) \
 	do { status = SparkGlm52Pp13BuilderCudaZero(layer->field,(uint64_t)(count) * (uint64_t)(bytes)); if (status != SPARK_STATUS_OK) return status; } while (0)
-	ALLOC_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
+	if (input_crosses_rank_boundary != 0u)
+		ALLOC_FIELD_MAPPED(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
+	else
+		ALLOC_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
 	ALLOC_FIELD(normalized_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
 	ALLOC_FIELD(query_latent,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,2u);
 	ALLOC_FIELD(query_rope_input,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION,2u);
@@ -840,7 +906,10 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ALLOC_FIELD(moe_up,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,2u);
 	ALLOC_FIELD(moe_intermediate,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,2u);
 	ALLOC_FIELD(moe_route_output,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
-	ALLOC_FIELD(layer_output_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
+	if (output_crosses_rank_boundary != 0u)
+		ALLOC_FIELD_MAPPED(layer_output_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
+	else
+		ALLOC_FIELD(layer_output_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
 	ALLOC_FIELD(mtp_draft_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
 	ALLOC_FIELD(restricted_logits,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT,sizeof(float));
 	ALLOC_FIELD(restricted_selected_token_ids,b,sizeof(uint32_t));
@@ -874,6 +943,7 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ZERO_FIELD(key_index_block_max,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
 	ZERO_FIELD(dsa_summary_dirty_flags,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS,1u);
 #undef ALLOC_FIELD
+#undef ALLOC_FIELD_MAPPED
 #undef ZERO_FIELD
 	return SPARK_STATUS_OK;
 }
@@ -1603,9 +1673,19 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 			&state->dsa_selection_epoch_by_layer,
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT * sizeof(uint32_t));
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->input_sideband,sideband_bytes);
+	{
+		if ((state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u)
+			status = SparkGlm52Pp13BuilderCudaHostMappedAlloc(state,&state->input_sideband,sideband_bytes);
+		else
+			status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->input_sideband,sideband_bytes);
+	}
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->output_sideband,sideband_bytes);
+	{
+		if ((state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u)
+			status = SparkGlm52Pp13BuilderCudaHostMappedAlloc(state,&state->output_sideband,sideband_bytes);
+		else
+			status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->output_sideband,sideband_bytes);
+	}
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderCudaAlloc(
 			state,
@@ -1779,7 +1859,12 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 				&state->layers[index].fp8_moe_binding);
 	}
 	for (index = 0u; index < state->allocation_count; ++index)
-		cudaFree(state->allocations[index]);
+	{
+		if (state->allocation_is_host_mapped[index] != 0u)
+			cudaFreeHost(state->allocations[index]);
+		else
+			cudaFree(state->allocations[index]);
+	}
 	if (state->stream != 0)
 		cudaStreamDestroy(state->stream);
 	if (state->query_stream != 0)
