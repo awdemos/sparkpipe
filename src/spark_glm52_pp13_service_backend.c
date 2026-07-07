@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -114,6 +115,8 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	uint32_t work_output_socket_connecting;
 	int32_t cuda_resident_fd;
 	uint32_t cuda_resident_attached;
+	uint64_t cuda_resident_retry_after_ns;
+	char cuda_resident_socket_path[108];
 	uint64_t cuda_resident_next_sequence_number;
 	uint64_t cuda_resident_submit_count;
 	uint64_t cuda_resident_completion_count;
@@ -215,23 +218,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendResidentWriteFull(int32_t fd, con
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52Pp13ServiceBackendResidentReadFull(int32_t fd, void *buffer, uint32_t bytes)
-{
-	uint8_t *cursor;
-	uint32_t remaining;
-	ssize_t received;
-	cursor = (uint8_t *)buffer;
-	remaining = bytes;
-	while (remaining != 0u)
-	{
-		received = read(fd,cursor,(size_t)remaining);
-		if (received <= 0)
-			return SPARK_STATUS_IO_ERROR;
-		cursor += (uint32_t)received;
-		remaining -= (uint32_t)received;
-	}
-	return SPARK_STATUS_OK;
-}
 
 static SparkStatus SparkGlm52Pp13ServiceBackendResidentWriteMessage(SparkGlm52Pp13ServiceBackendState *state, uint32_t kind, const void *payload, uint32_t payload_bytes)
 {
@@ -248,7 +234,56 @@ static SparkStatus SparkGlm52Pp13ServiceBackendResidentWriteMessage(SparkGlm52Pp
 	return status;
 }
 
-static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(SparkGlm52Pp13ServiceBackendState *state, const SparkGlm52ServiceBackendConfiguration *configuration)
+static uint64_t SparkGlm52Pp13ServiceBackendMonotonicNs(void)
+{
+	struct timespec timestamp;
+	if (clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0)
+		return 0u;
+	return ((uint64_t)timestamp.tv_sec * 1000000000ull) + (uint64_t)timestamp.tv_nsec;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendResidentReadBounded(int32_t fd, void *buffer, uint32_t buffer_bytes, uint32_t timeout_ms)
+{
+	struct pollfd descriptor;
+	uint8_t *cursor;
+	uint32_t offset;
+	ssize_t got;
+	if (fd < 0 || buffer == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	cursor = (uint8_t *)buffer;
+	offset = 0u;
+	descriptor.fd = fd;
+	descriptor.events = POLLIN;
+	while (offset < buffer_bytes)
+	{
+		descriptor.revents = 0;
+		if (poll(&descriptor,1u,(int32_t)timeout_ms) <= 0)
+			return SPARK_STATUS_BUSY;
+		got = read(fd,cursor + offset,buffer_bytes - offset);
+		if (got > 0)
+		{
+			offset += (uint32_t)got;
+			continue;
+		}
+		if (got == 0)
+			return SPARK_STATUS_ROUTE_NOT_FOUND;
+		if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+			continue;
+		return SPARK_STATUS_ROUTE_NOT_FOUND;
+	}
+	return SPARK_STATUS_OK;
+}
+
+static void SparkGlm52Pp13ServiceBackendTeardownCudaResident(SparkGlm52Pp13ServiceBackendState *state, const char *reason)
+{
+	if (state == 0 || state->cuda_resident_fd < 0)
+		return;
+	fprintf(stderr,"pp13_resident_disconnected reason=%s\n",reason);
+	close(state->cuda_resident_fd);
+	state->cuda_resident_fd = -1;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(SparkGlm52Pp13ServiceBackendState *state, const char *socket_path)
 {
 	struct sockaddr_un address;
 	SparkGlm52CudaResidentIpcHello hello;
@@ -256,19 +291,19 @@ static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(SparkGlm52Pp1
 	SparkGlm52CudaResidentIpcStats stats;
 	SparkStatus status;
 	int32_t fd;
-	if (state == 0 || configuration == 0 || configuration->cuda_resident_socket_path == 0)
+	if (state == 0 || socket_path == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	fd = socket(AF_UNIX,SOCK_STREAM,0);
 	if (fd < 0)
 		return SPARK_STATUS_IO_ERROR;
 	memset(&address,0,sizeof(address));
 	address.sun_family = AF_UNIX;
-	if (strlen(configuration->cuda_resident_socket_path) >= sizeof(address.sun_path))
+	if (strlen(socket_path) >= sizeof(address.sun_path))
 	{
 		close(fd);
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	}
-	snprintf(address.sun_path,sizeof(address.sun_path),"%s",configuration->cuda_resident_socket_path);
+	snprintf(address.sun_path,sizeof(address.sun_path),"%s",socket_path);
 	if (connect(fd,(const struct sockaddr *)&address,sizeof(address)) != 0)
 	{
 		close(fd);
@@ -281,21 +316,45 @@ static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(SparkGlm52Pp1
 	hello.rank_count = SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT;
 	hello.process_id = (uint64_t)getpid();
 	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(state,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_HELLO,&hello,sizeof(hello));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendResidentReadBounded(fd,&header,sizeof(header),5000u);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52CudaResidentIpcValidateHeader(&header,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_HELLO_ACK,sizeof(stats));
+	if (status == SPARK_STATUS_OK && header.payload_bytes != sizeof(stats))
+		status = SPARK_STATUS_ABI_MISMATCH;
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13ServiceBackendResidentReadBounded(fd,&stats,sizeof(stats),5000u);
+	if (status == SPARK_STATUS_OK && stats.state != SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_READY)
+		status = SPARK_STATUS_BUSY;
 	if (status != SPARK_STATUS_OK)
+	{
+		close(fd);
+		state->cuda_resident_fd = -1;
 		return status;
-	status = SparkGlm52Pp13ServiceBackendResidentReadFull(fd,&header,sizeof(header));
-	if (status != SPARK_STATUS_OK)
-		return status;
-	status = SparkGlm52CudaResidentIpcValidateHeader(&header,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_HELLO_ACK,sizeof(stats));
-	if (status != SPARK_STATUS_OK)
-		return status;
-	if (header.payload_bytes != sizeof(stats))
-		return SPARK_STATUS_ABI_MISMATCH;
-	status = SparkGlm52Pp13ServiceBackendResidentReadFull(fd,&stats,sizeof(stats));
-	if (status != SPARK_STATUS_OK)
-		return status;
-	state->cuda_resident_attached = 1u;
+	}
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendEnsureCudaResident(SparkGlm52Pp13ServiceBackendState *state)
+{
+	uint64_t now_ns;
+	SparkStatus status;
+	if (state == 0 || state->cuda_resident_socket_path[0] == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (state->cuda_resident_fd >= 0)
+		return SPARK_STATUS_OK;
+	now_ns = SparkGlm52Pp13ServiceBackendMonotonicNs();
+	if (now_ns < state->cuda_resident_retry_after_ns)
+		return SPARK_STATUS_BUSY;
+	state->cuda_resident_retry_after_ns = now_ns + 250000000ull;
+	status = SparkGlm52Pp13ServiceBackendConnectCudaResident(state,state->cuda_resident_socket_path);
+	if (status == SPARK_STATUS_OK)
+	{
+		fprintf(stderr,"pp13_resident_connected\n");
+		return SPARK_STATUS_OK;
+	}
+	fprintf(stderr,"pp13_resident_connect_retry status=%u\n",(uint32_t)status);
+	return SPARK_STATUS_BUSY;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(SparkGlm52Pp13ServiceBackendState *state)
@@ -306,34 +365,44 @@ static SparkStatus SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(SparkGl
 	SparkStatus status;
 	for (;;)
 	{
-		status = SparkGlm52Pp13ServiceBackendResidentReadFull(state->cuda_resident_fd,&header,sizeof(header));
+		status = SparkGlm52Pp13ServiceBackendResidentReadBounded(state->cuda_resident_fd,&header,sizeof(header),180000u);
 		if (status != SPARK_STATUS_OK)
-			return status;
+		{
+			fprintf(stderr,"pp13_resident_await_failed step=header status=%u\n",(uint32_t)status);
+			SparkGlm52Pp13ServiceBackendTeardownCudaResident(state,"await_header");
+			return SPARK_STATUS_BUSY;
+		}
 		status = SparkGlm52CudaResidentIpcValidateHeader(&header,0u,SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_CONTROL_PAYLOAD_BYTES);
 		if (status != SPARK_STATUS_OK)
-			return status;
+		{
+			SparkGlm52Pp13ServiceBackendTeardownCudaResident(state,"await_header_invalid");
+			return SPARK_STATUS_BUSY;
+		}
 		if (header.kind == SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_RESULT)
 		{
-			if (header.payload_bytes != sizeof(submit_result))
-				return SPARK_STATUS_ABI_MISMATCH;
-			status = SparkGlm52Pp13ServiceBackendResidentReadFull(state->cuda_resident_fd,&submit_result,sizeof(submit_result));
-			if (status != SPARK_STATUS_OK)
-				return status;
+			if (header.payload_bytes != sizeof(submit_result) ||
+				SparkGlm52Pp13ServiceBackendResidentReadBounded(state->cuda_resident_fd,&submit_result,sizeof(submit_result),30000u) != SPARK_STATUS_OK)
+			{
+				SparkGlm52Pp13ServiceBackendTeardownCudaResident(state,"await_result_read");
+				return SPARK_STATUS_BUSY;
+			}
 			if (submit_result.status != (uint32_t)SPARK_STATUS_OK)
 				fprintf(stderr,"pp13_resident_submit_rejected status=%u blocker=%.*s\n",submit_result.status,(int32_t)sizeof(submit_result.stats.blocker),submit_result.stats.blocker);
 			return (SparkStatus)submit_result.status;
 		}
 		if (header.kind == SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_COMPLETION)
 		{
-			if (header.payload_bytes != sizeof(completion_message))
-				return SPARK_STATUS_ABI_MISMATCH;
-			status = SparkGlm52Pp13ServiceBackendResidentReadFull(state->cuda_resident_fd,&completion_message,sizeof(completion_message));
-			if (status != SPARK_STATUS_OK)
-				return status;
+			if (header.payload_bytes != sizeof(completion_message) ||
+				SparkGlm52Pp13ServiceBackendResidentReadBounded(state->cuda_resident_fd,&completion_message,sizeof(completion_message),30000u) != SPARK_STATUS_OK)
+			{
+				SparkGlm52Pp13ServiceBackendTeardownCudaResident(state,"await_completion_read");
+				return SPARK_STATUS_BUSY;
+			}
 			state->cuda_resident_completion_count += 1u;
 			continue;
 		}
-		return SPARK_STATUS_ABI_MISMATCH;
+		SparkGlm52Pp13ServiceBackendTeardownCudaResident(state,"await_unknown_kind");
+		return SPARK_STATUS_BUSY;
 	}
 }
 
@@ -359,7 +428,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitPrefillToResident(SparkGlm5
 {
 	static SparkGlm52CudaResidentIpcSubmitPrefill message;
 	SparkStatus status;
-	if (state == 0 || prefill_dispatch == 0 || state->cuda_resident_fd < 0 ||
+	if (state == 0 || prefill_dispatch == 0 ||
 		prefill_dispatch->request_dispatch == 0 ||
 		prefill_dispatch->host_token_ids == 0 ||
 		prefill_dispatch->prompt_token_count == 0u ||
@@ -376,9 +445,15 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitPrefillToResident(SparkGlm5
 	status = SparkGlm52Pp13ServiceBackendMarshalIngestKv(prefill_dispatch->kv_block_table_view,message.kv_physical_block_indices,&message.kv_lane_block_count,&message.kv_block_token_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(state,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_PREFILL,&message,sizeof(message));
+	status = SparkGlm52Pp13ServiceBackendEnsureCudaResident(state);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(state,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_PREFILL,&message,sizeof(message));
+	if (status != SPARK_STATUS_OK)
+	{
+		SparkGlm52Pp13ServiceBackendTeardownCudaResident(state,"submit_write");
+		return SPARK_STATUS_BUSY;
+	}
 	state->cuda_resident_submit_count += 1u;
 	return SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(state);
 }
@@ -388,7 +463,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitDecodeToResident(SparkGlm52
 	static SparkGlm52CudaResidentIpcSubmitDecode message;
 	const SparkGlm52RequestApiDecodeDispatchLaneView *lane;
 	SparkStatus status;
-	if (state == 0 || decode_dispatch == 0 || state->cuda_resident_fd < 0 ||
+	if (state == 0 || decode_dispatch == 0 ||
 		decode_dispatch->request_dispatch == 0 ||
 		decode_dispatch->decode_view == 0 ||
 		decode_dispatch->decode_view->lane_count != 1u)
@@ -407,9 +482,15 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitDecodeToResident(SparkGlm52
 	status = SparkGlm52Pp13ServiceBackendMarshalIngestKv(decode_dispatch->kv_block_table_view,message.kv_physical_block_indices,&message.kv_lane_block_count,&message.kv_block_token_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(state,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_DECODE,&message,sizeof(message));
+	status = SparkGlm52Pp13ServiceBackendEnsureCudaResident(state);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(state,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_DECODE,&message,sizeof(message));
+	if (status != SPARK_STATUS_OK)
+	{
+		SparkGlm52Pp13ServiceBackendTeardownCudaResident(state,"submit_write");
+		return SPARK_STATUS_BUSY;
+	}
 	state->cuda_resident_submit_count += 1u;
 	return SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(state);
 }
@@ -1748,11 +1829,21 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 		return SparkGlm52Pp13ServiceBackendRank0Fail(
 			state,status,error_buffer,"failed to validate rank0 FP8 packs");
 	if (configuration->cuda_resident_socket_path != 0)
-		status = SparkGlm52Pp13ServiceBackendConnectCudaResident(state,configuration);
+	{
+		if (strlen(configuration->cuda_resident_socket_path) >= sizeof(state->cuda_resident_socket_path))
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		snprintf(state->cuda_resident_socket_path,sizeof(state->cuda_resident_socket_path),"%s",configuration->cuda_resident_socket_path);
+		state->cuda_resident_attached = 1u;
+		status = SparkGlm52Pp13ServiceBackendEnsureCudaResident(state);
+		if (status != SPARK_STATUS_OK)
+			fprintf(stderr,"pp13_resident_not_ready_at_start status=%u\n",(uint32_t)status);
+	}
 	else
+	{
 		status = SparkGlm52Pp13ServiceBackendInitializeRank0LocalCuda(state,configuration,error_buffer);
-	if (status != SPARK_STATUS_OK)
-		return status;
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
 	status = SparkGlm52Pp13ServiceBackendOpenFinalEventListener(state,configuration,error_buffer);
 	if (status != SPARK_STATUS_OK)
 		return status;
