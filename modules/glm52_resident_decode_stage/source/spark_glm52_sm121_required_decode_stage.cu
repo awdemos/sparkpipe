@@ -14718,7 +14718,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
 }
 
-static SparkStatus SparkGlm52ResidentDecodeStageLaunchRequiredB12xMoe(
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchRequiredNvfp4Moe(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
@@ -15079,7 +15079,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPostAttentionMlp(
     if (node_context->layer_progression_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK)
     {
-        return SparkGlm52ResidentDecodeStageLaunchRequiredB12xMoe(
+        return SparkGlm52ResidentDecodeStageLaunchRequiredNvfp4Moe(
             node_context,
             pipeline_slot,
             cuda_slot_state,

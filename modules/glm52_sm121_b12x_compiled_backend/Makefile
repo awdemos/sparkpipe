@@ -1,5 +1,6 @@
 REPOSITORY_ROOT := $(abspath ../..)
 NVCC ?= nvcc
+CC ?= cc
 AR ?= ar
 CUDA_ARCH ?= sm_121a
 NVCCFLAGS ?= -std=c++17 -O3 -Xcompiler=-fPIC -Xcompiler=-fvisibility=hidden
@@ -12,14 +13,20 @@ GENERATED_SOURCE := $(GENERATED_DIRECTORY)/spark_glm52_sm121_b12x_generated_kern
 GENERATED_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_sm121_b12x_generated_kernel_table.o
 GENERATED_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_sm121_b12x_generated_kernel_table.a
 GENERATED_EXPORTED_OBJECTS := $(wildcard $(GENERATED_DIRECTORY)/objects/*.o)
+UNAVAILABLE_SOURCE := source/spark_glm52_sm121_b12x_generated_kernel_table_unavailable.c
+UNAVAILABLE_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_sm121_b12x_generated_kernel_table_unavailable.o
 
 -include $(GENERATED_FLAGS)
 
-.PHONY: archive generated_archive clean require_generated_source
+.PHONY: archive generated_archive unavailable_archive clean require_generated_source
 
 archive: $(BACKEND_ARCHIVE)
 
 generated_archive: require_generated_source $(GENERATED_ARCHIVE)
+
+unavailable_archive: $(UNAVAILABLE_OBJECT)
+	rm -f $(GENERATED_ARCHIVE)
+	$(AR) rcs $(GENERATED_ARCHIVE) $(UNAVAILABLE_OBJECT)
 
 $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
@@ -54,6 +61,9 @@ $(GENERATED_OBJECT): $(GENERATED_SOURCE) $(GENERATED_FLAGS) | $(BUILD_DIRECTORY)
 $(GENERATED_ARCHIVE): $(GENERATED_OBJECT) $(GENERATED_EXPORTED_OBJECTS)
 	rm -f $@
 	$(AR) rcs $@ $^
+
+$(UNAVAILABLE_OBJECT): $(UNAVAILABLE_SOURCE) include/sparkpipe/spark_glm52_sm121_b12x_generated_kernel_table.h | $(BUILD_DIRECTORY)
+	$(CC) -std=c11 -O3 -fPIC -fvisibility=hidden -I$(REPOSITORY_ROOT)/include -I../glm52_sm121_flashinfer_b12x_moe/include -Iinclude -c $(UNAVAILABLE_SOURCE) -o $@
 
 clean:
 	rm -rf $(BUILD_DIRECTORY)
