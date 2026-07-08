@@ -15316,6 +15316,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageEnqueueCompletion(
         completion);
     if (cuda_status != cudaSuccess)
     {
+        fprintf(stderr,"stage_completion_enqueue_failed code=%d name=%s\n",(int32_t)cuda_status,cudaGetErrorString(cuda_status));
         if (cuda_slot_state != 0)
         {
             cuda_slot_state->launch_error_count += 1u;
@@ -16066,6 +16067,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageFinishSubmit(
         cudaGraphDestroy(captured_graph);
         if (cuda_status != cudaSuccess)
         {
+            fprintf(stderr,"stage_graph_instantiate_failed signature=%llu code=%d name=%s\n",(unsigned long long)graph_specialization_signature,(int32_t)cuda_status,cudaGetErrorString(cuda_status));
             return SPARK_STATUS_INTERNAL_ERROR;
         }
         cuda_slot_state->cuda_graph_exec = (void *)captured_graph_exec;
@@ -16074,6 +16076,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageFinishSubmit(
         cuda_status = cudaGraphLaunch(captured_graph_exec, cuda_stream);
         if (cuda_status != cudaSuccess)
         {
+            fprintf(stderr,"stage_graph_launch_failed signature=%llu code=%d name=%s\n",(unsigned long long)graph_specialization_signature,(int32_t)cuda_status,cudaGetErrorString(cuda_status));
             cuda_slot_state->launch_error_count += 1u;
             cudaStreamSynchronize(cuda_stream);
             return SPARK_STATUS_INTERNAL_ERROR;
