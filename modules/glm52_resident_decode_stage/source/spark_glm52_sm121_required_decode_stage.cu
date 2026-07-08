@@ -16037,6 +16037,59 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeGraphSignature(
     return signature;
 }
 
+static uint32_t SparkGlm52ResidentDecodeStagePhaseHashEnabled(void)
+{
+    static int32_t enabled = -1;
+    if (enabled < 0)
+    {
+        enabled = getenv("SPARKPIPE_STAGE_PHASE_HASH") != 0 ? 1 : 0;
+    }
+    return (uint32_t)enabled;
+}
+
+static void SparkGlm52ResidentDecodeStagePhaseHashHidden(
+    const char *label,
+    uint32_t layer_index,
+    uint32_t graph_capture_active,
+    const void *device_hidden,
+    uint64_t bytes,
+    cudaStream_t cuda_stream)
+{
+    static uint8_t host_buffer[16384];
+    uint64_t hash;
+    uint64_t offset;
+    uint32_t zeros;
+    if (SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u ||
+        graph_capture_active != 0u ||
+        device_hidden == 0 || bytes == 0u || bytes > sizeof(host_buffer))
+    {
+        return;
+    }
+    if (cudaStreamSynchronize(cuda_stream) != cudaSuccess)
+    {
+        return;
+    }
+    if (cudaMemcpy(host_buffer, device_hidden, bytes,
+            cudaMemcpyDeviceToHost) != cudaSuccess)
+    {
+        return;
+    }
+    hash = 0xcbf29ce484222325ull;
+    zeros = 1u;
+    for (offset = 0u; offset < bytes; ++offset)
+    {
+        hash = (hash ^ (uint64_t)host_buffer[offset]) * 0x100000001b3ull;
+        if (host_buffer[offset] != 0u)
+        {
+            zeros = 0u;
+        }
+    }
+    fprintf(stderr,
+        "stage_phase_hash %s layer=%u hash=%016llx zeros=%u bytes=%llu\n",
+        label, layer_index, (unsigned long long)hash, zeros,
+        (unsigned long long)bytes);
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageFinishSubmit(
     cudaStream_t cuda_stream,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
@@ -17224,7 +17277,8 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
             completion);
     }
 
-    if (node_context->enable_cuda_graph_replay != 0u && cuda_slot_state != 0)
+    if (node_context->enable_cuda_graph_replay != 0u && cuda_slot_state != 0 &&
+        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u)
     {
         if (cuda_slot_state->cuda_graph_exec != 0 &&
             (cuda_slot_state->graph_active_sequence_count != active_sequence_count ||
@@ -19816,6 +19870,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchExactPp13StageSliceBody(
         {
             return status;
         }
+        SparkGlm52ResidentDecodeStagePhaseHashHidden(
+            "layer_out",
+            exact_stage_slice_plan->first_layer_index + layer_offset,
+            graph_capture_active,
+            layer_pipeline_slot->layer_output_hidden_bf16,
+            12288u,
+            cuda_stream);
         status = SparkGlm52ResidentDecodeStageMaybeCaptureDsparkHiddenTap(
             exact_stage_slice_plan,
             frame_context,
@@ -19926,7 +19987,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
     }
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
-        first_cuda_slot_state != 0)
+        first_cuda_slot_state != 0 &&
+        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u)
     {
         if (first_cuda_slot_state->cuda_graph_exec != 0 &&
             (first_cuda_slot_state->graph_active_sequence_count !=
@@ -20253,7 +20315,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
     }
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
-        first_cuda_slot_state != 0)
+        first_cuda_slot_state != 0 &&
+        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u)
     {
         if (first_cuda_slot_state->cuda_graph_exec != 0 &&
             (first_cuda_slot_state->graph_active_sequence_count !=
@@ -20363,6 +20426,13 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
             }
             return status;
         }
+        SparkGlm52ResidentDecodeStagePhaseHashHidden(
+            "layer_out",
+            layer_offset,
+            graph_capture_active,
+            layer_pipeline_slot->layer_output_hidden_bf16,
+            12288u,
+            typed_cuda_stream);
         status = SparkGlm52ResidentDecodeStageMaybeExportDsparkHiddenTap(
             frame_context,
             layer_node_context,
@@ -22480,7 +22550,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPre
     }
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
-        first_cuda_slot_state != 0)
+        first_cuda_slot_state != 0 &&
+        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u)
     {
         if (first_cuda_slot_state->cuda_graph_exec != 0 &&
             (first_cuda_slot_state->graph_active_sequence_count !=
