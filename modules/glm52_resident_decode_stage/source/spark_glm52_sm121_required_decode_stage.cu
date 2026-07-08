@@ -19679,6 +19679,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchBuiltinExactPp13StageSl
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     *plan_was_launched = false;
+    if (getenv("SPARKPIPE_DISABLE_BUILTIN_EXACT_PP13") != 0)
+    {
+        return SPARK_STATUS_OK;
+    }
     if (exact_stage_slice_plan == 0 ||
         (exact_stage_slice_plan->capability_flags &
             SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_PP13_AOT) == 0u)
