@@ -19873,7 +19873,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchExactPp13StageSliceBody(
         SparkGlm52ResidentDecodeStagePhaseHashHidden(
             "layer_out",
             exact_stage_slice_plan->first_layer_index + layer_offset,
-            graph_capture_active,
+            0u,
             layer_pipeline_slot->layer_output_hidden_bf16,
             12288u,
             cuda_stream);
