@@ -134,6 +134,8 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     uint64_t work_deferred_count;
     uint64_t work_wake_count;
     uint64_t driver_completion_count;
+    uint64_t driver_inflight_open_ns;
+    uint32_t driver_inflight_warned;
     uint32_t driver_inflight_count;
     uint8_t final_event_read_buffer[128];
     uint32_t final_event_read_offset;
@@ -1136,6 +1138,20 @@ static uint32_t SparkGlm52Pp13DaemonHandleCudaResidentMessage(
     return 0u;
 }
 
+static void SparkGlm52Pp13DaemonCheckInflightOverdue(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    uint64_t now_ns;
+    if (runtime == 0 || runtime->driver_inflight_count == 0u ||
+        runtime->driver_inflight_warned != 0u)
+        return;
+    now_ns = SparkGlm52Pp13DaemonMonotonicNs();
+    if (now_ns - runtime->driver_inflight_open_ns <= 30000000000ull)
+        return;
+    runtime->driver_inflight_warned = 1u;
+    fprintf(stderr,"rank_completion_overdue rank=%u inflight=%u age_s=%llu submitted=%llu completed=%llu\n",runtime->rank_plan.rank_index,runtime->driver_inflight_count,(unsigned long long)((now_ns - runtime->driver_inflight_open_ns) / 1000000000ull),(unsigned long long)runtime->cuda_resident_submit_count,(unsigned long long)runtime->driver_completion_count);
+}
+
 static uint32_t SparkGlm52Pp13DaemonPumpCudaResident(
     SparkGlm52Pp13DaemonRuntime *runtime)
 {
@@ -1288,6 +1304,10 @@ static void SparkGlm52Pp13DaemonCompletion(
         return;
     if (runtime->driver_inflight_count != 0u)
         runtime->driver_inflight_count -= 1u;
+    if (runtime->driver_inflight_count == 0u)
+        runtime->driver_inflight_warned = 0u;
+    else
+        runtime->driver_inflight_open_ns = SparkGlm52Pp13DaemonMonotonicNs();
     runtime->driver_completion_count += 1u;
     SparkGlm52Pp13DaemonSignalWake(runtime);
     if (runtime->trace_enabled != 0u)
@@ -2055,6 +2075,11 @@ static uint32_t SparkGlm52Pp13DaemonPumpQueuedWork(
             {
                 runtime->work_submit_count += 1u;
                 runtime->work_queue_submitted[queue_slot] = 1u;
+                if (runtime->driver_inflight_count == 0u)
+                {
+                    runtime->driver_inflight_open_ns = SparkGlm52Pp13DaemonMonotonicNs();
+                    runtime->driver_inflight_warned = 0u;
+                }
                 runtime->driver_inflight_count += 1u;
             }
             else if (status == SPARK_STATUS_BUSY)
@@ -2705,6 +2730,7 @@ int main(int argc,char **argv)
         }
         progress |= SparkGlm52Pp13DaemonPumpWorkControl(&runtime);
         progress |= SparkGlm52Pp13DaemonPumpCudaResident(&runtime);
+        SparkGlm52Pp13DaemonCheckInflightOverdue(&runtime);
         if (runtime.cuda_resident_fd < 0)
             (void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
                 &runtime.runner);
