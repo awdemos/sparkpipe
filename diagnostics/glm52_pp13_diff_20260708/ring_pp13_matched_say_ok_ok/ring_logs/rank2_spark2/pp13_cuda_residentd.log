@@ -1,0 +1,330 @@
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=1 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=1 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=2 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=3 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=1 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=2 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=3 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=1 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=2 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=3 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=1 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=2 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=3 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=1 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=2 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=3 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=1 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=2 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=3 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=1 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=2 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=3 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=1 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=2 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=3 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=1 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=2 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=3 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+tcp_recv_accept fd=35
+tcp_frame_delivered seq=2 pos=1 active=1 sk=1 sb=8192
+hidden_tcp_deliver seq=2 token=1 active=1 sideband_kind=1 hidden_hash=dc9b049d01771775 sideband_hash=c2d28d7f2d9ed64c hidden_bytes=12288 sideband_bytes=8192
+stage_prepare_output_hidden slot=0 active=1 session=0xc4e590f51b80 bytes=12288 device=0xf4005f600000
+tcp_frame_delivered seq=2 pos=2 active=1 sk=1 sb=8192
+stage_finish_submit graph_capture=1 signature=6621078252969541629 completion=(nil) function=(nil)
+stage_complete_send sequence=2 position=1 slot=0 session=0xc4e590f51b80 bytes=12288
+hidden_tcp_send_header seq=2 token=1 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=dc9b049d01771775 sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=2 position=1
+hidden_tcp_deliver seq=2 token=2 active=1 sideband_kind=1 hidden_hash=90b93d9fac09e5f0 sideband_hash=c2d28d7f2d9ed64c hidden_bytes=12288 sideband_bytes=8192
+stage_prepare_output_hidden slot=0 active=1 session=0xc4e590f51b80 bytes=12288 device=0xf4005f600000
+stage_finish_submit graph_capture=1 signature=3752933208930049452 completion=(nil) function=(nil)
+tcp_frame_delivered seq=2 pos=3 active=1 sk=1 sb=8192
+stage_complete_send sequence=2 position=2 slot=0 session=0xc4e590f51b80 bytes=12288
+hidden_tcp_send_header seq=2 token=2 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=90b93d9fac09e5f0 sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=2 position=2
+hidden_tcp_deliver seq=2 token=3 active=1 sideband_kind=1 hidden_hash=dc9b049d01771775 sideband_hash=c2d28d7f2d9ed64c hidden_bytes=12288 sideband_bytes=8192
+stage_prepare_output_hidden slot=0 active=1 session=0xc4e590f51b80 bytes=12288 device=0xf4005f600000
+stage_finish_submit graph_capture=1 signature=15435492980005881147 completion=(nil) function=(nil)
+stage_complete_send sequence=2 position=3 slot=0 session=0xc4e590f51b80 bytes=12288
+hidden_tcp_send_header seq=2 token=3 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=dc9b049d01771775 sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=2 position=3
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000003
+production_runner_submit_failed status=15 frame_flags=0x00000003 active=1 tokens=1 slot=0 position=4 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+tcp_frame_delivered seq=2 pos=4 active=1 sk=1 sb=8192
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+hidden_tcp_deliver seq=2 token=4 active=1 sideband_kind=1 hidden_hash=90b93d9fac09e5f0 sideband_hash=c2d28d7f2d9ed64c hidden_bytes=12288 sideband_bytes=8192
+stage_prepare_output_hidden slot=0 active=1 session=0xc4e590f51b80 bytes=12288 device=0xf4005f600000
+stage_finish_submit graph_capture=1 signature=7140834447959901370 completion=(nil) function=(nil)
+stage_complete_send sequence=2 position=4 slot=0 session=0xc4e590f51b80 bytes=12288
+hidden_tcp_send_header seq=2 token=4 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=90b93d9fac09e5f0 sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=2 position=4
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+resident_stage_execute_reject step=input_transport status=15 slot=0 flags=0x00000001
+production_runner_submit_failed status=15 frame_flags=0x00000001 active=1 tokens=1 slot=0 position=5 frame_context=0xfffffd135038
+cuda_residentd_submit_result_error rank=2 submit_work_failed status=15
+tcp_frame_delivered seq=2 pos=5 active=1 sk=1 sb=8192
+hidden_tcp_deliver seq=2 token=5 active=1 sideband_kind=1 hidden_hash=47596f40d1b96aae sideband_hash=c2d28d7f2d9ed64c hidden_bytes=12288 sideband_bytes=8192
+stage_prepare_output_hidden slot=0 active=1 session=0xc4e590f51b80 bytes=12288 device=0xf4005f600000
+stage_finish_submit graph_capture=1 signature=6422699329658065893 completion=(nil) function=(nil)
+stage_complete_send sequence=2 position=5 slot=0 session=0xc4e590f51b80 bytes=12288
+hidden_tcp_send_header seq=2 token=5 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=8ae10bc379bbc789 sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=2 position=5

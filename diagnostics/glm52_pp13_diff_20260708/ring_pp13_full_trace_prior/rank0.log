@@ -1,0 +1,48 @@
+glm52_cuda_residentd=1
+rank=0
+host=10.10.100.10
+socket=/home/spark0/sparkpipe_state/cuda_resident_rank0.sock
+stage=0:6
+fp8_pack_root=/home/spark0/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1
+transport_so=/home/spark0/sparkpipe_runtime/lib/libhidden_transport_tcp_cuda.so
+driver_so=/home/spark0/sparkpipe_runtime/lib/model_driver.so
+node_context_builder_so=/home/spark0/sparkpipe_runtime/lib/libglm52_pp13_node_context_builder.so
+state=ready
+tcp_send_connected fd=34 sink=10.10.100.11
+pp13_builder_prefill_begin offset=0 count=5
+stage_prepare_output_hidden slot=0 active=1 session=0xb82dea563700 bytes=12288 device=0xe1356aa00000
+stage_finish_submit graph_capture=1 signature=321169572073222739 completion=(nil) function=(nil)
+stage_complete_send sequence=1 position=0 slot=0 session=0xb82dea563700 bytes=12288
+hidden_tcp_send_header seq=1 token=0 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=5a7c9fcf6cc4b361 sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=1 position=0
+pp13_builder_prefill_submitted position=0 token_offset=0 busy_retries=0
+stage_prepare_output_hidden slot=0 active=1 session=0xb82dea563700 bytes=12288 device=0xe1356aa00000
+stage_finish_submit graph_capture=1 signature=14927647830928352080 completion=(nil) function=(nil)
+stage_complete_send sequence=1 position=1 slot=0 session=0xb82dea563700 bytes=12288
+hidden_tcp_send_header seq=1 token=1 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=5bf24261d596122c sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=1 position=1
+pp13_builder_prefill_submitted position=1 token_offset=1 busy_retries=0
+stage_prepare_output_hidden slot=0 active=1 session=0xb82dea563700 bytes=12288 device=0xe1356aa00000
+stage_finish_submit graph_capture=1 signature=14271963894671876177 completion=(nil) function=(nil)
+stage_complete_send sequence=1 position=2 slot=0 session=0xb82dea563700 bytes=12288
+hidden_tcp_send_header seq=1 token=2 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=86f8f70b0fa2bc5b sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=1 position=2
+pp13_builder_prefill_submitted position=2 token_offset=2 busy_retries=0
+stage_prepare_output_hidden slot=0 active=1 session=0xb82dea563700 bytes=12288 device=0xe1356aa00000
+stage_finish_submit graph_capture=1 signature=13625941319367448470 completion=(nil) function=(nil)
+stage_complete_send sequence=1 position=3 slot=0 session=0xb82dea563700 bytes=12288
+hidden_tcp_send_header seq=1 token=3 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=dc9b049d01771775 sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=1 position=3
+pp13_builder_prefill_submitted position=3 token_offset=3 busy_retries=0
+stage_prepare_output_hidden slot=0 active=1 session=0xb82dea563700 bytes=12288 device=0xe1356aa00000
+stage_finish_submit graph_capture=1 signature=15466882131494571447 completion=(nil) function=(nil)
+stage_complete_send sequence=1 position=4 slot=0 session=0xb82dea563700 bytes=12288
+hidden_tcp_send_header seq=1 token=4 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=120369d249ca391b sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=1 position=4
+pp13_builder_prefill_submitted position=4 token_offset=4 busy_retries=0
+pp13_builder_prefill_done offset=0 count=5
+stage_prepare_output_hidden slot=0 active=1 session=0xb82dea563700 bytes=12288 device=0xe1356aa00000
+stage_finish_submit graph_capture=1 signature=15005538878488307551 completion=(nil) function=(nil)
+stage_complete_send sequence=1 position=5 slot=0 session=0xb82dea563700 bytes=12288
+hidden_tcp_send_header seq=1 token=5 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=9c88d68ec1551af2 sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12328
+stage_complete_send_status status=0 sequence=1 position=5
