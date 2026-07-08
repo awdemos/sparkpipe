@@ -2352,6 +2352,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 	if (state == 0 || event == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	SparkGlm52Pp13ServiceBackendRecordFinalEvent(state,event);
+	if (state->trace_enabled != 0u)
+		fprintf(stderr,"pp13_trace final_event request=%llu sequence=%llu position=%llu flags=0x%x tokens=%u id0=%u status=%u\n",(unsigned long long)event->request_id,(unsigned long long)event->sequence_id,(unsigned long long)event->sequence_position,event->completion_flags,event->token_count,event->token_count != 0u ? event->token_ids[0u] : 0u,event->status);
 	if (event->magic != SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_MAGIC ||
 		event->descriptor_bytes != (uint32_t)sizeof(*event) ||
 		event->status != (uint32_t)SPARK_STATUS_OK ||
