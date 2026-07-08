@@ -106,6 +106,36 @@ static uint64_t SparkHiddenTcpCudaHashBytes(
     return hash;
 }
 
+static void SparkHiddenTcpCudaMaybeDumpPayload(
+    int32_t local_rank,
+    const char *direction,
+    uint64_t sequence_id,
+    uint64_t token_index,
+    const void *payload,
+    uint64_t bytes)
+{
+    static int32_t resolved = 0;
+    static const char *dump_dir = 0;
+    char path[256];
+    FILE *file;
+    if (resolved == 0)
+    {
+        dump_dir = getenv("SPARKPIPE_HIDDEN_DUMP_DIR");
+        resolved = 1;
+    }
+    if (dump_dir == 0 || payload == 0 || bytes == 0u)
+        return;
+    snprintf(path,sizeof(path),"%s/rank%d_%s_seq%llu_tok%llu.bin",
+        dump_dir,local_rank,direction,
+        (unsigned long long)sequence_id,
+        (unsigned long long)token_index);
+    file = fopen(path,"wb");
+    if (file == 0)
+        return;
+    (void)fwrite(payload,1u,(size_t)bytes,file);
+    (void)fclose(file);
+}
+
 static uint64_t SparkHiddenTcpCudaPayloadHash(
     const void *payload,
     uint64_t bytes)
@@ -478,6 +508,8 @@ static SparkStatus SparkHiddenTcpCudaCopyPayloadToPacket(
         return SPARK_STATUS_IO_ERROR;
     if (cudaStreamSynchronize((cudaStream_t)packet->cuda_stream) != cudaSuccess)
         return SPARK_STATUS_IO_ERROR;
+    SparkHiddenTcpCudaMaybeDumpPayload(state->local_rank,"rx",
+        packet->sequence_id,packet->token_index,payload,hidden_bytes);
     if (state->debug_enabled != 0u)
     {
         hidden_hash = SparkHiddenTcpCudaPayloadHash(payload,hidden_bytes);
@@ -984,6 +1016,9 @@ static SparkStatus SparkHiddenTcpCudaSend(
     state->outgoing_count += 1u;
     (void)pthread_cond_signal(&state->outgoing_cond);
     (void)pthread_mutex_unlock(&state->lock);
+    SparkHiddenTcpCudaMaybeDumpPayload(state->local_rank,"tx",
+        packet->sequence_id,packet->token_index,
+        slot->payload + sizeof(slot->header),hidden_bytes);
     if (state->debug_enabled != 0u)
         fprintf(stderr,
             "hidden_tcp_send_header seq=%llu token=%llu active=%u sideband_kind=%u sideband_bps=%u hidden_hash=%016llx sideband_hash=%016llx hidden_bytes=%llu sideband_bytes=%llu total=%llu\n",

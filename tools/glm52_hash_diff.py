@@ -83,6 +83,67 @@ def cross_diff(a, b):
     print("cross\tidentical")
     return 0
 
+
+def bf16_to_f32_list(data):
+    import struct
+    count = len(data) // 2
+    out = []
+    for i in range(count):
+        word = data[2 * i] | (data[2 * i + 1] << 8)
+        out.append(struct.unpack("<f", struct.pack("<I", word << 16))[0])
+    return out
+
+def numeric_stats(a, b):
+    import math
+    max_abs = 0.0
+    diff_sq = 0.0
+    ref_sq = 0.0
+    dot = 0.0
+    a_sq = 0.0
+    for x, y in zip(a, b):
+        d = x - y
+        if abs(d) > max_abs:
+            max_abs = abs(d)
+        diff_sq += d * d
+        ref_sq += y * y
+        dot += x * y
+        a_sq += x * x
+    rel_l2 = math.sqrt(diff_sq) / math.sqrt(ref_sq) if ref_sq > 0 else float("inf")
+    denom = math.sqrt(a_sq) * math.sqrt(ref_sq)
+    cos = dot / denom if denom > 0 else 0.0
+    return max_abs, rel_l2, cos
+
+def numeric_report(serial_dir, dump_dir):
+    import glob, os
+    row_bytes = 12288
+    findings = 0
+    for rank in range(12):
+        layer = 6 * rank + 5
+        serial_path = os.path.join(serial_dir, f"after_layer_{layer}.bf16")
+        if not os.path.exists(serial_path):
+            print(f"numeric\trank={rank}\tlayer={layer}\tserial_missing")
+            continue
+        serial = open(serial_path, "rb").read()
+        token_count = len(serial) // row_bytes
+        prev_rel = None
+        for token in range(token_count):
+            matches = sorted(glob.glob(os.path.join(dump_dir, f"rank{rank}_tx_seq*_tok{token}.bin")))
+            if not matches:
+                print(f"numeric\ttoken={token}\trank={rank}\tlayer={layer}\tring_dump_missing")
+                continue
+            ring = open(matches[-1], "rb").read()[:row_bytes]
+            a = bf16_to_f32_list(ring)
+            b = bf16_to_f32_list(serial[token * row_bytes:(token + 1) * row_bytes])
+            max_abs, rel_l2, cos = numeric_stats(a, b)
+            flag = ""
+            if prev_rel is not None and prev_rel > 0 and rel_l2 > 4.0 * prev_rel:
+                flag = "\tJUMP"
+                findings += 1
+            prev_rel = rel_l2
+            print(f"numeric\ttoken={token}\trank={rank}\tlayer={layer}\tmax_abs={max_abs:.6f}\trel_l2={rel_l2:.6f}\tcos={cos:.6f}{flag}")
+    print(f"numeric\tjumps={findings}")
+    return findings
+
 def selftest():
     import tempfile, os
     tx = "hidden_tcp_send_header seq=1 token=0 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=00000000000000aa sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12800\n"
@@ -108,6 +169,11 @@ def selftest():
     open(f"{d}/rz", "w").write(zline + pline_rx + pline_tx)
     zrun = load_run([f"5:{d}/rz"])
     assert chain_report(zrun) == 2
+    ones = bytes([0x80, 0x3f] * 4)
+    vals = bf16_to_f32_list(ones)
+    assert all(abs(v - 1.0) < 1e-6 for v in vals), vals
+    max_abs, rel_l2, cos = numeric_stats(vals, vals)
+    assert max_abs == 0.0 and rel_l2 == 0.0 and abs(cos - 1.0) < 1e-9
     print("selftest_ok")
 
 def main():
@@ -126,6 +192,8 @@ def main():
         bad += hop_integrity("b", b)
         bad += cross_diff(a, b)
         return 1 if bad != 0 else 0
+    if len(argv) == 3 and argv[0] == "--numeric":
+        return 1 if numeric_report(argv[1], argv[2]) != 0 else 0
     if argv and argv[0] == "--chain":
         a = load_run(argv[1:])
         chain_report(a)
@@ -133,7 +201,7 @@ def main():
     if argv and argv[0] == "--a":
         a = load_run(argv[1:])
         return 1 if hop_integrity("a", a) != 0 else 0
-    print("usage: glm52_hash_diff.py --a RANK:PATH... --b RANK:PATH... | --chain RANK:PATH... | --a RANK:PATH... | --selftest")
+    print("usage: glm52_hash_diff.py --a RANK:PATH... --b RANK:PATH... | --chain RANK:PATH... | --numeric SERIAL_DIR DUMP_DIR | --a RANK:PATH... | --selftest")
     return 2
 
 if __name__ == "__main__":
