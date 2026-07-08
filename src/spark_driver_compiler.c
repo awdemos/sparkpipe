@@ -25,7 +25,7 @@
 #if defined(__APPLE__)
 #define SPARK_DRIVER_FIXED_LINK_CONTRACT "-std=c11;-O3;-fPIC;-fvisibility=hidden;-fno-semantic-interposition;-dynamiclib;-Wl,-undefined,error;-Wl,-exported_symbol,_SparkModelDriverGetInterface"
 #else
-#define SPARK_DRIVER_FIXED_LINK_CONTRACT "-std=c11;-O3;-fPIC;-fvisibility=hidden;-fno-semantic-interposition;-shared;-Wl,-z,defs;-Wl,-O1;-Wl,--exclude-libs,ALL"
+#define SPARK_DRIVER_FIXED_LINK_CONTRACT "-std=c11;-O3;-fPIC;-fvisibility=hidden;-fno-semantic-interposition;-shared;-Wl,-z,defs;-Wl,-O1;-Wl,--exclude-libs,ALL;-Wl,-rpath,$ORIGIN/runtime_libs"
 #endif
 
 typedef struct SparkDriverBuildOperation
@@ -1184,7 +1184,7 @@ static SparkStatus SparkLinkGeneratedDriver(
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    argument_capacity = 16u + request->extra_compiler_argument_count + driver_image->unique_link_unit_count;
+    argument_capacity = 17u + request->extra_compiler_argument_count + driver_image->unique_link_unit_count;
     arguments = (char **)calloc(argument_capacity, sizeof(*arguments));
     if (arguments == 0)
     {
@@ -1207,6 +1207,7 @@ static SparkStatus SparkLinkGeneratedDriver(
     arguments[argument_index++] = "-Wl,-z,defs";
     arguments[argument_index++] = "-Wl,-O1";
     arguments[argument_index++] = "-Wl,--exclude-libs,ALL";
+    arguments[argument_index++] = "-Wl,-rpath,$ORIGIN/runtime_libs";
 #endif
     arguments[argument_index++] = include_argument;
     arguments[argument_index++] = (char *)generated_source_path;
