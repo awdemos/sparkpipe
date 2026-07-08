@@ -1,0 +1,28 @@
+{
+  "name": "glm52_pp13_serialized_vs_ring_diff_20260708",
+  "prompt": "Say OK. OK.",
+  "token_ids": [
+    45494,
+    10397,
+    13,
+    10397,
+    13
+  ],
+  "serialized_spark2": {
+    "runner": "/tmp/glm52_serial_diff/runner/glm52_resident_decode_stage_runner",
+    "stage_pack_dir": "/home/spark2/sparkpipe_artifacts/glm52_fp8_pp13_stagepacks_v1",
+    "fp8_stage_payload_root": "/home/spark2/models/sparkpipe/glm52_fp8_pp13_stage_payloads_v1",
+    "outputs": "diagnostics/glm52_pp13_diff_20260708/serialized_spark2"
+  },
+  "ring_matched_run": {
+    "prompt": "Say OK. OK.",
+    "http_prompt_tokens": 5,
+    "http_token_id": 0,
+    "http_text": "!",
+    "request_id": 5000000001,
+    "sequence_id": 2,
+    "rank2_comparison": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_matched_say_ok_ok/rank2_vs_serial_expected.tsv"
+  },
+  "finding": "In the matched run, rank2 RX for prompt positions 1-4 equals serialized embedding hashes and does not equal serialized after_layer_11 hashes; rank2 TX also does not equal serialized after_layer_17. This proves prefill hidden data is pass-through before/through rank2 in the ring path.",
+  "prior_full_ring_trace": "diagnostics/glm52_pp13_diff_20260708/ring_pp13_full_trace_prior shows a complete 13-rank traced chain where prompt tokens 0-4 pass through ranks 1-11 and decode token 5 transforms. It is included as full-ring equivalent evidence; the matched fresh run only had rank2 debug tracing enabled."
+}

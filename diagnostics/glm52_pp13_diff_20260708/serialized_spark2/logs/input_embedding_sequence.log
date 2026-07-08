@@ -1,0 +1,3 @@
+prompt_token_window_ready=1 path=/tmp/glm52_serial_diff/say_ok_ok_fp8_stagepayloads/tokens.txt source_tokens=5 context_tokens=10397,13,10397,13
+prompt_embedding_sequence_bf16_written=/tmp/glm52_serial_diff/say_ok_ok_fp8_stagepayloads/stage_input_embedding_sequence.bf16 token_count=5 bytes=61440 checksum64=570557291197368832 copied_embedding_bytes=61440
+glm52_resident_decode_stage validation passed fixture=input_embedding_sequence token_ids=/tmp/glm52_serial_diff/say_ok_ok_fp8_stagepayloads/tokens.txt total_submissions=0 total_us=0.000 maximum_us=0.000 pipeline_output_hidden=/tmp/glm52_serial_diff/say_ok_ok_fp8_stagepayloads/stage_input_embedding_sequence.bf16

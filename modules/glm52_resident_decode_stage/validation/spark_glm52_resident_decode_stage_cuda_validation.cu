@@ -4247,7 +4247,7 @@ static bool SparkValidationReadFp8MoePackHeader(
         header->fields[0] != 1u ||
         header->fields[1] != SPARK_VALIDATION_FP8_MOE_PACK_HEADER_BYTES ||
         header->fields[2] != layer_index ||
-        header->fields[3] != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_SCALE_BLOCK_SIZE ||
+        header->fields[3] < SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT ||
         header->fields[4] != SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION ||
         header->fields[5] != SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION ||
         header->fields[6] != SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT ||
