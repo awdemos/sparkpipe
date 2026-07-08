@@ -1337,7 +1337,7 @@ static void SparkGlm52Pp13DaemonCompletion(
     runtime->driver_completion_count += 1u;
     SparkGlm52Pp13DaemonSignalWake(runtime);
     if (runtime->trace_enabled != 0u)
-        fprintf(stderr,"pp13_trace rank=%u completion request=%llu position=%llu flags=0x%x tokens=%u status=%u\n",runtime->rank_plan.rank_index,(unsigned long long)completion->request_id,(unsigned long long)completion->sequence_position,completion->completion_flags,completion->token_count,(uint32_t)completion->status);
+        fprintf(stderr,"pp13_trace rank=%u completion request=%llu position=%llu flags=0x%x tokens=%u id0=%u status=%u\n",runtime->rank_plan.rank_index,(unsigned long long)completion->request_id,(unsigned long long)completion->sequence_position,completion->completion_flags,completion->token_count,completion->token_count != 0u ? completion->token_ids[0u] : 0u,(uint32_t)completion->status);
     if ((runtime->rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u)
         return;
