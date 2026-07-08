@@ -1659,6 +1659,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		sizeof(uint32_t);
 	selected_block_bytes =
 		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT *
+		max_active *
 		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT *
 		sizeof(uint32_t);
 	sideband_bytes =
@@ -1675,12 +1676,16 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		status = SparkGlm52Pp13BuilderCudaAlloc(
 			state,
 			&state->selected_block_counts_by_layer,
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT * sizeof(uint32_t));
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT *
+			max_active *
+			sizeof(uint32_t));
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderCudaAlloc(
 			state,
 			&state->dsa_selection_epoch_by_layer,
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT * sizeof(uint32_t));
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT *
+			max_active *
+			sizeof(uint32_t));
 	if (status == SPARK_STATUS_OK)
 	{
 		if ((state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u)
@@ -1741,6 +1746,18 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		status = SparkGlm52Pp13BuilderCudaZero(
 			state->selected_block_indices_by_layer,
 			selected_block_bytes);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaZero(
+			state->selected_block_counts_by_layer,
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT *
+			max_active *
+			sizeof(uint32_t));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaZero(
+			state->dsa_selection_epoch_by_layer,
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT *
+			max_active *
+			sizeof(uint32_t));
 	return status;
 }
 
