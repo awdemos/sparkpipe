@@ -466,6 +466,28 @@ static uint64_t SparkGlm52Pp13DaemonMinNonzeroNs(
     return left < right ? left : right;
 }
 
+static uint32_t SparkGlm52Pp13DaemonHasWaitingWork(
+    const SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    uint32_t slot_index;
+    uint32_t scan_index;
+
+    if (runtime == 0 || runtime->work_queue_count == 0u)
+        return 0u;
+    slot_index = runtime->work_queue_head;
+    for (scan_index = 0u;
+         scan_index < runtime->work_queue_count;
+         ++scan_index)
+    {
+        if (runtime->work_queue_state[slot_index] ==
+            SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING)
+            return 1u;
+        slot_index = (slot_index + 1u) %
+            SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
+    }
+    return 0u;
+}
+
 static uint64_t SparkGlm52Pp13DaemonNextTimerNs(
     const SparkGlm52Pp13DaemonRuntime *runtime)
 {
@@ -478,6 +500,10 @@ static uint64_t SparkGlm52Pp13DaemonNextTimerNs(
     next_ns = 0u;
     if (runtime->driver_inflight_count != 0u)
         next_ns = now_ns + SPARK_GLM52_PP13_DAEMON_RUNNER_PROGRESS_NS;
+    if (SparkGlm52Pp13DaemonHasWaitingWork(runtime) != 0u)
+        next_ns = SparkGlm52Pp13DaemonMinNonzeroNs(
+            next_ns,
+            now_ns + SPARK_GLM52_PP13_DAEMON_RUNNER_PROGRESS_NS);
     if (runtime->work_queue_count != 0u)
         next_ns = SparkGlm52Pp13DaemonMinNonzeroNs(
             next_ns,
