@@ -16037,6 +16037,15 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeGraphSignature(
     return signature;
 }
 
+static uint32_t SparkGlm52ResidentDecodeStageFrameIsPrefill(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context)
+{
+    return frame_context != 0 &&
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW) != 0u
+        ? 1u : 0u;
+}
+
 static uint32_t SparkGlm52ResidentDecodeStagePhaseHashEnabled(void)
 {
     static int32_t enabled = -1;
@@ -17255,6 +17264,7 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
     }
 
     if (node_context->enable_cuda_graph_replay != 0u &&
+        SparkGlm52ResidentDecodeStageFrameIsPrefill(frame_context) == 0u &&
         cuda_slot_state != 0 &&
         cuda_slot_state->cuda_graph_exec != 0 &&
         cuda_slot_state->graph_active_sequence_count == active_sequence_count &&
@@ -17278,7 +17288,8 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
     }
 
     if (node_context->enable_cuda_graph_replay != 0u && cuda_slot_state != 0 &&
-        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u)
+        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u &&
+        SparkGlm52ResidentDecodeStageFrameIsPrefill(frame_context) == 0u)
     {
         if (cuda_slot_state->cuda_graph_exec != 0 &&
             (cuda_slot_state->graph_active_sequence_count != active_sequence_count ||
@@ -19955,6 +19966,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
             frame_context);
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
+        SparkGlm52ResidentDecodeStageFrameIsPrefill(frame_context) == 0u &&
         first_cuda_slot_state != 0 &&
         first_cuda_slot_state->cuda_graph_exec != 0 &&
         first_cuda_slot_state->graph_active_sequence_count ==
@@ -19988,7 +20000,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
         first_cuda_slot_state != 0 &&
-        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u)
+        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u &&
+        SparkGlm52ResidentDecodeStageFrameIsPrefill(frame_context) == 0u)
     {
         if (first_cuda_slot_state->cuda_graph_exec != 0 &&
             (first_cuda_slot_state->graph_active_sequence_count !=
@@ -20291,6 +20304,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
             frame_context);
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
+        SparkGlm52ResidentDecodeStageFrameIsPrefill(frame_context) == 0u &&
         first_cuda_slot_state != 0 &&
         first_cuda_slot_state->cuda_graph_exec != 0 &&
         first_cuda_slot_state->graph_active_sequence_count ==
@@ -20316,7 +20330,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
         first_cuda_slot_state != 0 &&
-        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u)
+        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u &&
+        SparkGlm52ResidentDecodeStageFrameIsPrefill(frame_context) == 0u)
     {
         if (first_cuda_slot_state->cuda_graph_exec != 0 &&
             (first_cuda_slot_state->graph_active_sequence_count !=
@@ -22526,6 +22541,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPre
             prefill_frame_view);
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
+        false &&
         first_cuda_slot_state != 0 &&
         first_cuda_slot_state->cuda_graph_exec != 0 &&
         first_cuda_slot_state->graph_active_sequence_count ==
@@ -22551,7 +22567,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPre
 
     if (first_node_context->enable_cuda_graph_replay != 0u &&
         first_cuda_slot_state != 0 &&
-        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u)
+        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u &&
+        false)
     {
         if (first_cuda_slot_state->cuda_graph_exec != 0 &&
             (first_cuda_slot_state->graph_active_sequence_count !=
