@@ -4066,9 +4066,23 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
     if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
     {
         if (state->stage_slice_layer_count != 0u &&
-            SparkGlm52ResidentDecodeStageStageSliceBulkPrefillSupportsPrompt(
-                state,
-                frame->new_token_count))
+            frame->new_token_count == 1u)
+        {
+            status = SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
+                state->stage_slice_plan,
+                state->stage_slice_node_contexts,
+                state->stage_slice_layer_count,
+                pipeline_slot_index,
+                frame->active_slot_count,
+                0u,
+                runtime_kv_block_table,
+                frame_context,
+                &pending_completion->backend_completion);
+        }
+        else if (state->stage_slice_layer_count != 0u &&
+                 SparkGlm52ResidentDecodeStageStageSliceBulkPrefillSupportsPrompt(
+                    state,
+                    frame->new_token_count))
         {
             status = SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
                 state->stage_slice_node_contexts,
@@ -4094,20 +4108,6 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
                 frame->new_token_count,
                 runtime_kv_block_table,
                 prefill_frame_view,
-                &pending_completion->backend_completion);
-        }
-        else if (state->stage_slice_layer_count != 0u &&
-                 frame->new_token_count == 1u)
-        {
-            status = SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
-                state->stage_slice_plan,
-                state->stage_slice_node_contexts,
-                state->stage_slice_layer_count,
-                pipeline_slot_index,
-                frame->active_slot_count,
-                0u,
-                runtime_kv_block_table,
-                frame_context,
                 &pending_completion->backend_completion);
         }
         else
