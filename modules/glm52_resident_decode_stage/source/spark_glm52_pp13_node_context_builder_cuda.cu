@@ -233,7 +233,10 @@ static uint32_t SparkGlm52Pp13BuilderDsaGroupEnd(uint32_t source_layer_index)
 
 static SparkStatus SparkGlm52Pp13BuilderCudaStatus(cudaError_t status)
 {
-	return status == cudaSuccess ? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+	if (status == cudaSuccess)
+		return SPARK_STATUS_OK;
+	fprintf(stderr,"pp13_builder_cuda_error code=%d name=%s\n",(int32_t)status,cudaGetErrorString(status));
+	return SPARK_STATUS_IO_ERROR;
 }
 
 __global__ static void SparkGlm52Pp13BuilderBuildPrefillMetadataKernel(
