@@ -234,6 +234,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
         if (cuda_status != cudaSuccess)
         {
+            fprintf(stderr,"stage_slice_sync_failed slot=%u code=%d name=%s\n",pipeline_slot_index,(int32_t)cuda_status,cudaGetErrorString(cuda_status));
             return SPARK_STATUS_INTERNAL_ERROR;
         }
         completion->function(completion->context);
