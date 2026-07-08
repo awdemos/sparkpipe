@@ -1491,6 +1491,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 	uint64_t candidates;
 	uint64_t workspace_bytes;
 	uint32_t batch_bucket;
+	uint32_t capability_flags;
 	SparkStatus status;
 	batch_bucket =
 		SparkGlm52StagePlanSelectBatchBucketValue(
@@ -1513,6 +1514,9 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 		cudaEventCreate(&state->query_event) != cudaSuccess ||
 		cudaEventCreate(&state->kv_event) != cudaSuccess)
 		return SPARK_STATUS_IO_ERROR;
+	capability_flags =
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES &
+		~SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_QKV_BRANCH_OVERLAP;
 	memset(&state->exact_plan,0,sizeof(state->exact_plan));
 	state->exact_plan.abi_version =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXACT_STAGE_SLICE_PLAN_ABI_VERSION;
@@ -1524,8 +1528,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 	state->exact_plan.batch_bucket = batch_bucket;
 	state->exact_plan.maximum_active_sequence_count =
 		state->rank_plan.max_active_sequence_count;
-	state->exact_plan.capability_flags =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES;
+	state->exact_plan.capability_flags = capability_flags;
 	state->exact_plan.query_branch_stream = (void *)state->query_stream;
 	state->exact_plan.kv_branch_stream = (void *)state->kv_stream;
 	state->exact_plan.branch_ready_event = (void *)state->branch_ready_event;
@@ -1540,8 +1543,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 	state->stage_slice_plan.maximum_active_sequence_count =
 		state->rank_plan.max_active_sequence_count;
 	state->stage_slice_plan.maximum_layer_count = state->rank_plan.layer_count;
-	state->stage_slice_plan.capability_flags =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES;
+	state->stage_slice_plan.capability_flags = capability_flags;
 	state->stage_slice_plan.opaque_state = &state->exact_plan;
 	state->stage_slice_plan.workspace = state->final_epilogue_workspace;
 	state->stage_slice_plan.workspace_bytes = workspace_bytes;
