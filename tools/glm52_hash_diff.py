@@ -52,16 +52,19 @@ def selftest():
     tx = "hidden_tcp_send_header seq=1 token=0 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=00000000000000aa sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12800\n"
     rx = "hidden_tcp_deliver seq=1 token=0 active=1 sideband_kind=0 hidden_hash=00000000000000aa sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0\n"
     rx_bad = rx.replace("aa", "ab")
+    tx_bad = tx.replace("aa", "ab")
     d = tempfile.mkdtemp()
     open(f"{d}/r0", "w").write(tx)
     open(f"{d}/r1", "w").write(rx)
     open(f"{d}/r1b", "w").write(rx_bad)
+    open(f"{d}/r0b", "w").write(tx_bad)
     good = load_run([f"0:{d}/r0", f"1:{d}/r1"])
-    bad = load_run([f"0:{d}/r0", f"1:{d}/r1b"])
+    hop_bad = load_run([f"0:{d}/r0", f"1:{d}/r1b"])
+    tx_diverged = load_run([f"0:{d}/r0b", f"1:{d}/r1b"])
     assert hop_integrity("good", good) == 0
-    assert hop_integrity("bad", bad) == 1
+    assert hop_integrity("bad", hop_bad) == 1
     assert cross_diff(good, good) == 0
-    assert cross_diff(good, bad) == 1
+    assert cross_diff(good, tx_diverged) == 1
     print("selftest_ok")
 
 def main():
