@@ -179,7 +179,9 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
+    const SparkGlm52ResidentDecodeStageNodeContext *completion_node_context;
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot;
+    const SparkGlm52ResidentDecodeStagePipelineSlot *completion_pipeline_slot;
     void *cuda_stream;
     void *launch_completion;
     SparkStatus status;
@@ -206,8 +208,20 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     }
 
     pipeline_slot = &first_node_context->pipeline_slots[pipeline_slot_index];
+    completion_node_context = final_token_stage != 0u
+        ? layer_node_contexts[layer_count - 1u]
+        : first_node_context;
+    if (completion_node_context == 0 ||
+        completion_node_context->pipeline_slots == 0 ||
+        pipeline_slot_index >= completion_node_context->pipeline_slot_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    completion_pipeline_slot =
+        &completion_node_context->pipeline_slots[pipeline_slot_index];
     cuda_stream = pipeline_slot->cuda_stream;
-    if (cuda_stream == 0)
+    if (cuda_stream == 0 ||
+        completion_pipeline_slot->cuda_stream != cuda_stream)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -256,7 +270,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     }
 
     status = SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
-        pipeline_slot,
+        completion_pipeline_slot,
         final_token_stage,
         active_sequence_count,
         completion,

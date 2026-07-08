@@ -206,7 +206,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_DEPENDENCIES := \
 GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/libglm52_resident_decode_stage_test.a
 
-.PHONY: all clean test tools demo \
+.PHONY: all clean test tools demo FORCE \
     cuda_glm52_resident_decode_stage \
     cuda_glm52_resident_decode_stage_publish \
     glm52_flashinfer_b12x_moe_adapter \
@@ -330,7 +330,9 @@ $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): modules/hidden_transport_spark_host_rdma_ve
 
 hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
 
-$(GLM52_STAGE_SWEEP_MODULE_ARCHIVE):
+FORCE:
+
+$(GLM52_STAGE_SWEEP_MODULE_ARCHIVE): FORCE
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "glm52_resident_decode_stage archive skipped: nvcc unavailable"; \
 	else \
