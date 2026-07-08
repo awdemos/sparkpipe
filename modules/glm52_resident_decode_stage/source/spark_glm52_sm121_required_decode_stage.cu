@@ -17264,7 +17264,6 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
     }
 
     if (node_context->enable_cuda_graph_replay != 0u &&
-        SparkGlm52ResidentDecodeStageFrameIsPrefill(frame_context) == 0u &&
         cuda_slot_state != 0 &&
         cuda_slot_state->cuda_graph_exec != 0 &&
         cuda_slot_state->graph_active_sequence_count == active_sequence_count &&
@@ -17288,8 +17287,7 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(
     }
 
     if (node_context->enable_cuda_graph_replay != 0u && cuda_slot_state != 0 &&
-        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u &&
-        SparkGlm52ResidentDecodeStageFrameIsPrefill(frame_context) == 0u)
+        SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u)
     {
         if (cuda_slot_state->cuda_graph_exec != 0 &&
             (cuda_slot_state->graph_active_sequence_count != active_sequence_count ||
