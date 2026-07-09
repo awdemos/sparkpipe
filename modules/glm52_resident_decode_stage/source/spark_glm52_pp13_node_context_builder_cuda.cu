@@ -356,6 +356,29 @@ __global__ static void SparkGlm52Pp13BuilderBuildDecodeMetadataKernel(
 		(physical_block_index * block_token_count) + in_block_index;
 }
 
+__global__ static void SparkGlm52Pp13BuilderBuildDecodeSparseTokenIndicesKernel(
+	const uint32_t *__restrict__ decode_positions,
+	uint32_t lane_count,
+	uint32_t *__restrict__ sparse_token_indices)
+{
+	uint32_t global_index;
+	uint32_t lane_index;
+	uint32_t sparse_index;
+	uint32_t context_length;
+	global_index = (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x);
+	if (global_index >=
+		lane_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT)
+		return;
+	lane_index = global_index /
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+	sparse_index = global_index -
+		(lane_index * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT);
+	context_length = decode_positions[lane_index] + 1u;
+	sparse_token_indices[global_index] = sparse_index < context_length
+		? sparse_index
+		: SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
+}
+
 __global__ static void SparkGlm52Pp13BuilderBuildSerialPrefillMetadataKernel(
 	uint32_t absolute_position,
 	const uint32_t *__restrict__ block_table,
@@ -2073,6 +2096,7 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(
 	uint32_t active_sequence_count)
 {
 	uint32_t block_count;
+	uint32_t sparse_block_count;
 	uint32_t layer_offset;
 	SparkStatus status;
 
@@ -2081,6 +2105,11 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	block_count =
 		(active_sequence_count + SPARK_GLM52_PP13_BUILDER_THREADS - 1u) /
+		SPARK_GLM52_PP13_BUILDER_THREADS;
+	sparse_block_count = (
+		(active_sequence_count *
+		 SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT) +
+		SPARK_GLM52_PP13_BUILDER_THREADS - 1u) /
 		SPARK_GLM52_PP13_BUILDER_THREADS;
 	for (layer_offset = 0u;
 		 layer_offset < state->rank_plan.layer_count;
@@ -2101,6 +2130,17 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(
 				(uint32_t *)state->layers[layer_offset].slot_mapping,
 				(uint32_t *)state->layers[layer_offset].context_lengths,
 				(uint32_t *)state->layers[layer_offset].first_block_token_offsets);
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
+		if (status != SPARK_STATUS_OK)
+			return status;
+		SparkGlm52Pp13BuilderBuildDecodeSparseTokenIndicesKernel<<<
+			sparse_block_count,
+			SPARK_GLM52_PP13_BUILDER_THREADS,
+			0,
+			state->stream>>>(
+				(const uint32_t *)state->device_decode_positions,
+				active_sequence_count,
+				(uint32_t *)state->layers[layer_offset].sparse_token_indices);
 		status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
 		if (status != SPARK_STATUS_OK)
 			return status;
