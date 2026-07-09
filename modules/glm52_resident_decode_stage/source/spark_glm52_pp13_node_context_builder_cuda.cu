@@ -401,7 +401,7 @@ __global__ static void SparkGlm52Pp13BuilderBuildSerialPrefillMetadataKernel(
 		return;
 	block_index = absolute_position / block_token_count;
 	in_block_index = absolute_position - (block_index * block_token_count);
-	prompt_positions[lane_index] = 0u;
+	prompt_positions[lane_index] = absolute_position;
 	prompt_context_lengths[lane_index] = absolute_position + 1u;
 	prompt_first_block_token_offsets[lane_index] = 0u;
 	prompt_token_counts[lane_index] = 1u;
