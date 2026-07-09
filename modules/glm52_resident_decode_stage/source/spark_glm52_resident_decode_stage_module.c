@@ -3558,6 +3558,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageExtractRuntimeKvBlockTable(
     *runtime_kv_block_table_out = 0;
     runtime_kv_block_table_is_required =
         SparkGlm52ResidentDecodeStageStateRequiresRuntimeKvBlockTable(state);
+    if (runtime_kv_block_table_is_required == false)
+    {
+        return SPARK_STATUS_OK;
+    }
 
     if (frame_context == 0)
     {
