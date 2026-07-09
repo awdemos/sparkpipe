@@ -17297,8 +17297,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
     mtp_requested =
         SparkGlm52ResidentDecodeStageFrameContextHasMtpDraftBudgets(
             frame_context);
-    if (mtp_requested &&
-        SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
+    if (SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
             exact_stage_slice_plan))
     {
         status = SparkGlm52ResidentDecodeStageLaunchBuiltInFusedFinalTokenEpilogue(
