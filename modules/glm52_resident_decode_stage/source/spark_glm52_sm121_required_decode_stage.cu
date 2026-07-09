@@ -14550,6 +14550,72 @@ static bool SparkGlm52ResidentDecodeStageLinearPlanUsesFp8E4m3QuantizedView(
     return true;
 }
 
+static uint32_t SparkGlm52ResidentDecodeStageFp8AmaxProbeEnabled(void)
+{
+    static int32_t enabled = -1;
+
+    if (enabled < 0)
+    {
+        enabled = getenv("SPARKPIPE_FP8_AMAX_PROBE") != 0 ? 1 : 0;
+    }
+    return (uint32_t)enabled;
+}
+
+static void SparkGlm52ResidentDecodeStageMaybeProbeFp8Amax(
+    const char *label,
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const float *device_amax_f32,
+    uint64_t bytes,
+    cudaStream_t cuda_stream)
+{
+    static uint8_t host_buffer[16384];
+    cudaStreamCaptureStatus capture_status;
+    uint64_t hash;
+    uint64_t offset;
+    uint32_t zeros;
+
+    if (SparkGlm52ResidentDecodeStageFp8AmaxProbeEnabled() == 0u ||
+        label == 0 || node_context == 0 || node_context->layer_index != 2u ||
+        device_amax_f32 == 0 || bytes == 0u || bytes > sizeof(host_buffer) ||
+        cuda_stream == 0)
+    {
+        return;
+    }
+    if (cudaStreamIsCapturing(cuda_stream, &capture_status) == cudaSuccess &&
+        capture_status != cudaStreamCaptureStatusNone)
+    {
+        return;
+    }
+    if (cudaStreamSynchronize(cuda_stream) != cudaSuccess)
+    {
+        return;
+    }
+    if (cudaMemcpy(host_buffer, device_amax_f32, bytes,
+            cudaMemcpyDeviceToHost) != cudaSuccess)
+    {
+        return;
+    }
+    hash = 0xcbf29ce484222325ull;
+    zeros = 1u;
+    for (offset = 0u; offset < bytes; ++offset)
+    {
+        hash = (hash ^ (uint64_t)host_buffer[offset]) * 0x100000001b3ull;
+        if (host_buffer[offset] != 0u)
+        {
+            zeros = 0u;
+        }
+    }
+    fprintf(
+        stderr,
+        "fp8_amax_probe %s layer=%u hash=%016llx zeros=%u bytes=%llu ptr=%p\n",
+        label,
+        node_context->layer_index,
+        (unsigned long long)hash,
+        zeros,
+        (unsigned long long)bytes,
+        (const void *)device_amax_f32);
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStaging(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -14570,6 +14636,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
     float *down_activation_scale_f32;
     float *down_activation_amax_f32;
     uint64_t hidden_element_count;
+    uint64_t shared_amax_bytes;
     SparkStatus status;
 
     if (node_context == 0 || pipeline_slot == 0 || cuda_stream == 0 ||
@@ -14749,6 +14816,17 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         }
         return status;
     }
+    shared_amax_bytes =
+        (uint64_t)active_sequence_count *
+        (uint64_t)((SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION +
+            gate_view->scale_block_size - 1u) / gate_view->scale_block_size) *
+        (uint64_t)sizeof(float);
+    SparkGlm52ResidentDecodeStageMaybeProbeFp8Amax(
+        "shared_after_quant",
+        node_context,
+        shared_activation_amax_f32,
+        shared_amax_bytes,
+        cuda_stream);
 
     status = SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeightLinearPlan(
         gate_plan,
@@ -14779,6 +14857,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         }
         return status;
     }
+    SparkGlm52ResidentDecodeStageMaybeProbeFp8Amax(
+        "shared_after_gate",
+        node_context,
+        shared_activation_amax_f32,
+        shared_amax_bytes,
+        cuda_stream);
 
     status = SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeightLinearPlan(
         up_plan,
