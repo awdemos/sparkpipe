@@ -813,7 +813,8 @@ static SparkStatus SparkHiddenTcpCudaInitialize(
         free(state);
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
-    state->slot_payload_bytes = endpoint->max_packet_bytes;
+    state->slot_payload_bytes = endpoint->max_packet_bytes +
+        (uint64_t)sizeof(SparkHiddenTcpCudaHeader);
     state->pending_depth = SPARK_HIDDEN_TCP_CUDA_PENDING_DEPTH;
     state->pending_hash_slots = state->pending_depth * 2u;
     state->event_fd = eventfd(0u,EFD_NONBLOCK | EFD_CLOEXEC);

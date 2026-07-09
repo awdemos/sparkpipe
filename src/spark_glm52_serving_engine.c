@@ -1838,7 +1838,9 @@ SparkStatus SparkGlm52ServingEnginePump(
         if (status != SPARK_STATUS_OK)
         {
             if (status == SPARK_STATUS_BUSY &&
-                (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
+                (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
+                 dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH ||
+                 dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
                  dispatch.kind ==
                     SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH))
             {
