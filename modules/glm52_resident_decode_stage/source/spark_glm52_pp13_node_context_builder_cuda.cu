@@ -2098,6 +2098,7 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(
 	uint32_t block_count;
 	uint32_t sparse_block_count;
 	uint32_t layer_offset;
+	uint64_t block_table_bytes;
 	SparkStatus status;
 
 	if (state == 0 || active_sequence_count == 0u ||
@@ -2111,10 +2112,22 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(
 		 SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT) +
 		SPARK_GLM52_PP13_BUILDER_THREADS - 1u) /
 		SPARK_GLM52_PP13_BUILDER_THREADS;
+	block_table_bytes =
+		(uint64_t)state->rank_plan.max_active_sequence_count *
+		(uint64_t)SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE *
+		(uint64_t)sizeof(uint32_t);
 	for (layer_offset = 0u;
 		 layer_offset < state->rank_plan.layer_count;
 		 ++layer_offset)
 	{
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
+			state->layers[layer_offset].block_table,
+			state->device_physical_block_indices,
+			(size_t)block_table_bytes,
+			cudaMemcpyDeviceToDevice,
+			state->stream));
+		if (status != SPARK_STATUS_OK)
+			return status;
 		SparkGlm52Pp13BuilderBuildDecodeMetadataKernel<<<
 			block_count,
 			SPARK_GLM52_PP13_BUILDER_THREADS,
