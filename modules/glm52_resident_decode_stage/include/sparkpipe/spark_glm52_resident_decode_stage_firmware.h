@@ -1027,6 +1027,7 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t moe_norm_topk_prob;
     uint32_t kv_block_token_count;
     uint32_t layer_index;
+    void *device_probe_hash_slots;
     uint32_t dsa_indexshare_source_layer_index;
     uint32_t dsa_indexshare_group_end_layer_exclusive;
     uint32_t dsa_indexshare_selected_token_count;
