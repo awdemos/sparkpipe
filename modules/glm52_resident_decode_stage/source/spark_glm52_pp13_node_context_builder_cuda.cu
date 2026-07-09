@@ -345,7 +345,7 @@ __global__ static void SparkGlm52Pp13BuilderBuildDecodeMetadataKernel(
 	in_block_index = position - (block_index * block_token_count);
 	positions[lane_index] = position;
 	context_lengths[lane_index] = position + 1u;
-	first_block_token_offsets[lane_index] = position % block_token_count;
+	first_block_token_offsets[lane_index] = 0u;
 	if (block_index >= lane_block_counts[lane_index])
 	{
 		slot_mapping[lane_index] = SPARK_GLM52_PP13_BUILDER_INVALID_SLOT;
@@ -380,8 +380,7 @@ __global__ static void SparkGlm52Pp13BuilderBuildSerialPrefillMetadataKernel(
 	in_block_index = absolute_position - (block_index * block_token_count);
 	prompt_positions[lane_index] = 0u;
 	prompt_context_lengths[lane_index] = absolute_position + 1u;
-	prompt_first_block_token_offsets[lane_index] =
-		absolute_position % block_token_count;
+	prompt_first_block_token_offsets[lane_index] = 0u;
 	prompt_token_counts[lane_index] = 1u;
 	if (block_index >= lane_block_counts[lane_index])
 	{
