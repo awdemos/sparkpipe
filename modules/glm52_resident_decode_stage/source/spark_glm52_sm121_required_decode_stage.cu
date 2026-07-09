@@ -12057,11 +12057,30 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8Moe(
         fp8_moe_plan);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "fp8_moe_validate_failed layer=%u status=%d plan=%p\n",
+                node_context != 0 ? node_context->layer_index : 0xffffffffu,
+                (int)status,
+                (const void *)fp8_moe_plan);
+        }
         return status;
     }
     if (active_sequence_count > fp8_moe_plan->maximum_token_count ||
         active_sequence_count > fp8_moe_plan->maximum_active_sequence_count)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "fp8_moe_capacity_failed layer=%u active=%u max_token=%u max_active=%u\n",
+                node_context != 0 ? node_context->layer_index : 0xffffffffu,
+                active_sequence_count,
+                fp8_moe_plan->maximum_token_count,
+                fp8_moe_plan->maximum_active_sequence_count);
+        }
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
 
@@ -12073,6 +12092,15 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8Moe(
         active_sequence_count);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "fp8_moe_router_logits_failed layer=%u active=%u status=%d\n",
+                node_context != 0 ? node_context->layer_index : 0xffffffffu,
+                active_sequence_count,
+                (int)status);
+        }
         return status;
     }
 
@@ -12086,6 +12114,19 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8Moe(
         cuda_stream_pointer);
     if (status != SPARK_STATUS_OK)
     {
+        if (getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "fp8_moe_launch_function_failed layer=%u active=%u status=%d launch=%p opaque=%p max_token=%u max_active=%u\n",
+                node_context != 0 ? node_context->layer_index : 0xffffffffu,
+                active_sequence_count,
+                (int)status,
+                (const void *)launch_function,
+                fp8_moe_plan->opaque_state,
+                fp8_moe_plan->maximum_token_count,
+                fp8_moe_plan->maximum_active_sequence_count);
+        }
         return status;
     }
 
@@ -12436,6 +12477,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
     uint32_t active_sequence_count,
     cudaStream_t cuda_stream)
 {
+    SparkStatus status;
+
     if (linear_plan == 0 || input == 0 || output == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -12452,13 +12495,28 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        return launch_function(
+        status = launch_function(
             linear_plan,
             input,
             weight,
             output,
             active_sequence_count,
             (void *)cuda_stream);
+        if (status != SPARK_STATUS_OK && getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "prebound_linear_custom_failed kind=%u in=%u out=%u active=%u max=%u output_f32=%u custom=%p status=%d\n",
+                linear_plan->plan_kind,
+                linear_plan->input_dimension,
+                linear_plan->output_dimension,
+                active_sequence_count,
+                linear_plan->maximum_active_sequence_count,
+                linear_plan->output_is_f32,
+                linear_plan->custom_launch_function,
+                (int)status);
+        }
+        return status;
     }
     if (SparkGlm52ResidentDecodeStagePlanKindIsBlackwellQuantizedTensorCore(
             linear_plan->plan_kind))
@@ -12470,20 +12528,49 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
                 linear_plan->custom_launch_function;
         if (launch_function != 0)
         {
-            return launch_function(
+            status = launch_function(
                 linear_plan,
                 input,
                 weight,
                 output,
                 active_sequence_count,
                 (void *)cuda_stream);
+            if (status != SPARK_STATUS_OK && getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+            {
+                fprintf(
+                    stderr,
+                    "prebound_linear_quant_custom_failed kind=%u in=%u out=%u active=%u max=%u output_f32=%u custom=%p status=%d\n",
+                    linear_plan->plan_kind,
+                    linear_plan->input_dimension,
+                    linear_plan->output_dimension,
+                    active_sequence_count,
+                    linear_plan->maximum_active_sequence_count,
+                    linear_plan->output_is_f32,
+                    linear_plan->custom_launch_function,
+                    (int)status);
+            }
+            return status;
         }
-        return SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedTensorCoreLinearPlan(
+        status = SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedTensorCoreLinearPlan(
             linear_plan,
             input,
             output,
             active_sequence_count,
             cuda_stream);
+        if (status != SPARK_STATUS_OK && getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "prebound_linear_quant_builtin_failed kind=%u in=%u out=%u active=%u max=%u output_f32=%u status=%d\n",
+                linear_plan->plan_kind,
+                linear_plan->input_dimension,
+                linear_plan->output_dimension,
+                active_sequence_count,
+                linear_plan->maximum_active_sequence_count,
+                linear_plan->output_is_f32,
+                (int)status);
+        }
+        return status;
     }
 #if SPARK_GLM52_RESIDENT_DECODE_STAGE_ENABLE_CUBLASLT
     if (linear_plan->plan_kind ==
@@ -12524,6 +12611,23 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
             linear_plan->workspace,
             (size_t)linear_plan->workspace_bytes,
             cuda_stream);
+        if (cublas_status != CUBLAS_STATUS_SUCCESS &&
+            getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+        {
+            fprintf(
+                stderr,
+                "prebound_linear_cublaslt_failed kind=%u in=%u out=%u active=%u max=%u output_f32=%u cublas_status=%d algo=%p workspace=%p workspace_bytes=%llu\n",
+                linear_plan->plan_kind,
+                linear_plan->input_dimension,
+                linear_plan->output_dimension,
+                active_sequence_count,
+                linear_plan->maximum_active_sequence_count,
+                linear_plan->output_is_f32,
+                (int)cublas_status,
+                linear_plan->algorithm,
+                linear_plan->workspace,
+                (unsigned long long)linear_plan->workspace_bytes);
+        }
         return cublas_status == CUBLAS_STATUS_SUCCESS
             ? SPARK_STATUS_OK
             : SPARK_STATUS_INTERNAL_ERROR;
