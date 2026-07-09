@@ -258,6 +258,30 @@ static void SparkTestProductionRunnerCarriesPrefillView(void)
     assert(TestState.last_frame_context.prefill_view == &prefill_view);
 }
 
+static void SparkTestProductionRunnerCarriesPrefillFrameWithoutView(void)
+{
+    SparkGlm52ResidentDecodeStageProductionRunner runner;
+    SparkGlm52ResidentDecodeStageProductionRunnerDispatch dispatch;
+
+    memset(&TestState, 0, sizeof(TestState));
+    TestState.admit_accept = 1u;
+    SparkTestProductionRunnerInitializeKvTable();
+    SparkTestProductionRunnerInitializeRunner(
+        &runner,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DEFAULT_FLAGS);
+    SparkTestProductionRunnerInitializeDispatch(&dispatch);
+    dispatch.flags =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_PREFILL;
+    assert(SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
+        &runner,
+        &dispatch) == SPARK_STATUS_OK);
+    assert((TestState.last_frame.flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u);
+    assert((TestState.last_frame_context.flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME) != 0u);
+    assert((TestState.last_frame_context.flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW) == 0u);
+}
+
 static void SparkTestProductionRunnerRejectsAdmissionFailure(void)
 {
     SparkGlm52ResidentDecodeStageProductionRunner runner;
@@ -304,6 +328,7 @@ int main(void)
     SparkTestProductionRunnerSubmitsFrame();
     SparkTestProductionRunnerRejectsMissingTransport();
     SparkTestProductionRunnerCarriesPrefillView();
+    SparkTestProductionRunnerCarriesPrefillFrameWithoutView();
     SparkTestProductionRunnerRejectsAdmissionFailure();
     SparkTestProductionRunnerRejectsSlowProgram();
     return 0;

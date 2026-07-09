@@ -16281,7 +16281,8 @@ static uint32_t SparkGlm52ResidentDecodeStageFrameIsPrefill(
 {
     return frame_context != 0 &&
         (frame_context->flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW) != 0u
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW |
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME)) != 0u
         ? 1u : 0u;
 }
 
