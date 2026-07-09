@@ -2407,6 +2407,12 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 		&state->runner,
 		&dispatch);
 	if (status == SPARK_STATUS_OK)
+	{
+		status = SparkGlm52ResidentDecodeStageProductionRunnerWaitIdle(&state->runner,25000u);
+		if (status != SPARK_STATUS_OK)
+			fprintf(stderr,"pp13_builder_submit_drain_failed status=%u position=%llu\n",status,(unsigned long long)work_packet->sequence_position);
+	}
+	if (status == SPARK_STATUS_OK)
 		(void)SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
 			work_packet,
 			&state->kv_state);
