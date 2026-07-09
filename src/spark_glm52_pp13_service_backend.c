@@ -613,6 +613,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefillInner(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (state->cuda_resident_attached != 0u)
 	{
+		status = SparkGlm52Pp13ServiceBackendEnsureCudaResident(state);
+		if (status != SPARK_STATUS_OK)
+			return status;
 		status = SparkGlm52Pp13ServiceBackendForwardPrefillWork(state,prefill_dispatch);
 		if (status != SPARK_STATUS_OK)
 			return status;
