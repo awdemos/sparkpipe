@@ -2738,7 +2738,7 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	{
 		uint64_t probe_slots[8];
 		if (cudaMemcpy(probe_slots,state->device_probe_hash_slots,sizeof(probe_slots),cudaMemcpyDeviceToHost) == cudaSuccess)
-			fprintf(stderr,"fp8_device_probe layer2 amax=%016llx quant=%016llx gate=%016llx\n",(unsigned long long)probe_slots[0],(unsigned long long)probe_slots[1],(unsigned long long)probe_slots[2]);
+			fprintf(stderr,"fp8_device_probe layer2 amax=%016llx quant=%016llx gate=%016llx fbgate=%016llx fbinter=%016llx fbdown=%016llx\n",(unsigned long long)probe_slots[0],(unsigned long long)probe_slots[1],(unsigned long long)probe_slots[2],(unsigned long long)probe_slots[3],(unsigned long long)probe_slots[4],(unsigned long long)probe_slots[5]);
 	}
 	return SPARK_STATUS_OK;
 }

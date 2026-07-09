@@ -15140,6 +15140,18 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
     {
         return status;
     }
+    SparkGlm52ResidentDecodeStageDeviceHashProbe(
+        node_context,
+        pipeline_slot->moe_gate_bf16,
+        (uint64_t)active_sequence_count * (uint64_t)node_context->dense_intermediate_dimension * 2u,
+        3u,
+        cuda_stream);
+    SparkGlm52ResidentDecodeStageDeviceHashProbe(
+        node_context,
+        pipeline_slot->moe_intermediate_bf16,
+        (uint64_t)active_sequence_count * (uint64_t)node_context->dense_intermediate_dimension * 2u,
+        4u,
+        cuda_stream);
     status = SparkGlm52ResidentDecodeStageLaunchLinear(
         node_context,
         cuda_slot_state,
@@ -15156,6 +15168,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
     {
         return status;
     }
+    SparkGlm52ResidentDecodeStageDeviceHashProbe(
+        node_context,
+        pipeline_slot->layer_output_hidden_bf16,
+        (uint64_t)active_sequence_count * (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+        5u,
+        cuda_stream);
     hidden_element_count =
         (uint64_t)active_sequence_count *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
