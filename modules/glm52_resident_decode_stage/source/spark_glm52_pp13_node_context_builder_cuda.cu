@@ -161,6 +161,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	void *restricted_token_ids;
 	void *embedding_weight;
 	void *cos_table;
+	void *device_probe_hash_slots;
 	void *sin_table;
 	float *dsa_prefill_scores;
 	uint32_t *dsa_prefill_selected;
@@ -824,7 +825,9 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTables(
 	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_low_scratch,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * (SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION + SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) * 2u);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->cos_table,table_bytes);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->device_probe_hash_slots,64u);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->cos_table,table_bytes);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->sin_table,table_bytes);
 	if (status == SPARK_STATUS_OK)
@@ -1216,6 +1219,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->model_quantization_mode =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
 	node->layer_index = layer_index;
+	node->device_probe_hash_slots = state->device_probe_hash_slots;
 	node->kv_block_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
 	node->launch_check_mode = SPARK_GLM52_RESIDENT_DECODE_STAGE_LAUNCH_CHECK_NONE;
 	node->phase_clock_mode = SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DISABLED;
@@ -2730,6 +2734,12 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	if (debug_enabled != 0)
 		fprintf(stderr,"pp13_builder_prefill_done offset=%u count=%u\n",prefill_dispatch->prompt_token_offset,prefill_dispatch->prompt_token_count);
 	SparkGlm52Pp13BuilderMaybeProbeMlaSlots(state);
+	if (getenv("SPARKPIPE_FP8_AMAX_PROBE") != 0 && state->device_probe_hash_slots != 0)
+	{
+		uint64_t probe_slots[8];
+		if (cudaMemcpy(probe_slots,state->device_probe_hash_slots,sizeof(probe_slots),cudaMemcpyDeviceToHost) == cudaSuccess)
+			fprintf(stderr,"fp8_device_probe layer2 amax=%016llx quant=%016llx gate=%016llx\n",(unsigned long long)probe_slots[0],(unsigned long long)probe_slots[1],(unsigned long long)probe_slots[2]);
+	}
 	return SPARK_STATUS_OK;
 }
 

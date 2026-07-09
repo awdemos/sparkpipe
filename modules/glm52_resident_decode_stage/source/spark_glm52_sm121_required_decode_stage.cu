@@ -14561,6 +14561,44 @@ static uint32_t SparkGlm52ResidentDecodeStageFp8AmaxProbeEnabled(void)
     return (uint32_t)enabled;
 }
 
+static __global__ void SparkGlm52ResidentDecodeStageDeviceHashKernel(
+    const uint8_t *__restrict__ data,
+    uint64_t bytes,
+    uint32_t slot_index,
+    uint64_t *__restrict__ hash_slots)
+{
+    uint64_t hash;
+    uint64_t offset;
+
+    if (blockIdx.x != 0u || threadIdx.x != 0u)
+        return;
+    hash = 0xcbf29ce484222325ull;
+    for (offset = 0u; offset < bytes; ++offset)
+        hash = (hash ^ (uint64_t)data[offset]) * 0x100000001b3ull;
+    hash_slots[slot_index] = hash;
+}
+
+static void SparkGlm52ResidentDecodeStageDeviceHashProbe(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const void *device_data,
+    uint64_t bytes,
+    uint32_t slot_index,
+    cudaStream_t cuda_stream)
+{
+    if (SparkGlm52ResidentDecodeStageFp8AmaxProbeEnabled() == 0u ||
+        node_context == 0 || node_context->layer_index != 2u ||
+        node_context->device_probe_hash_slots == 0 ||
+        device_data == 0 || bytes == 0u || cuda_stream == 0)
+    {
+        return;
+    }
+    SparkGlm52ResidentDecodeStageDeviceHashKernel<<<1u, 1u, 0u, cuda_stream>>>(
+        (const uint8_t *)device_data,
+        bytes,
+        slot_index,
+        (uint64_t *)node_context->device_probe_hash_slots);
+}
+
 static void SparkGlm52ResidentDecodeStageMaybeProbeFp8Amax(
     const char *label,
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
@@ -14827,6 +14865,18 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         shared_activation_amax_f32,
         shared_amax_bytes,
         cuda_stream);
+    SparkGlm52ResidentDecodeStageDeviceHashProbe(
+        node_context,
+        shared_activation_amax_f32,
+        shared_amax_bytes,
+        0u,
+        cuda_stream);
+    SparkGlm52ResidentDecodeStageDeviceHashProbe(
+        node_context,
+        shared_activation_fp8_e4m3,
+        (uint64_t)active_sequence_count * (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+        1u,
+        cuda_stream);
 
     status = SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeightLinearPlan(
         gate_plan,
@@ -14862,6 +14912,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
         node_context,
         shared_activation_amax_f32,
         shared_amax_bytes,
+        cuda_stream);
+    SparkGlm52ResidentDecodeStageDeviceHashProbe(
+        node_context,
+        pipeline_slot->moe_gate_bf16,
+        (uint64_t)active_sequence_count * (uint64_t)node_context->dense_intermediate_dimension * 2u,
+        2u,
         cuda_stream);
 
     status = SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeightLinearPlan(
