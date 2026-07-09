@@ -7260,6 +7260,87 @@ static __global__ void SparkGlm52ResidentDecodeStageFusedFinalTokenCommitKernel(
     }
 }
 
+
+static __global__ void SparkGlm52ResidentDecodeStageFullVocabGreedyCommitKernel(
+    const float *__restrict__ candidate_scores,
+    const uint32_t *__restrict__ candidate_tokens,
+    uint32_t *__restrict__ restricted_selected_token_ids,
+    float *__restrict__ restricted_selected_token_scores,
+    uint32_t active_sequence_count)
+{
+    __shared__ float shared_scores[SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    __shared__ uint32_t shared_tokens[SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    uint32_t sequence_index;
+    uint32_t thread_index;
+    uint32_t group_index;
+    uint32_t stride;
+    float best_score;
+    uint32_t best_token;
+
+    sequence_index = blockIdx.x;
+    thread_index = threadIdx.x;
+    if (sequence_index >= active_sequence_count)
+    {
+        return;
+    }
+    best_score = -3.4028234663852886e+38f;
+    best_token = UINT32_MAX;
+    for (group_index = thread_index;
+         group_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT;
+         group_index += blockDim.x)
+    {
+        uint64_t candidate_index;
+        float score;
+        uint32_t token;
+
+        candidate_index =
+            ((uint64_t)sequence_index *
+             (uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) *
+             (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT) +
+            (uint64_t)group_index;
+        score = candidate_scores[candidate_index];
+        token = candidate_tokens[candidate_index];
+        if (SparkGlm52ResidentDecodeStageFinalCandidateIsBetter(
+                score,
+                token,
+                best_score,
+                best_token))
+        {
+            best_score = score;
+            best_token = token;
+        }
+    }
+    shared_scores[thread_index] = best_score;
+    shared_tokens[thread_index] = best_token;
+    __syncthreads();
+    for (stride = blockDim.x >> 1u; stride != 0u; stride >>= 1u)
+    {
+        if (thread_index < stride)
+        {
+            float other_score;
+            uint32_t other_token;
+
+            other_score = shared_scores[thread_index + stride];
+            other_token = shared_tokens[thread_index + stride];
+            if (SparkGlm52ResidentDecodeStageFinalCandidateIsBetter(
+                    other_score,
+                    other_token,
+                    shared_scores[thread_index],
+                    shared_tokens[thread_index]))
+            {
+                shared_scores[thread_index] = other_score;
+                shared_tokens[thread_index] = other_token;
+            }
+        }
+        __syncthreads();
+    }
+    if (thread_index == 0u)
+    {
+        restricted_selected_token_ids[sequence_index] = shared_tokens[0u];
+        restricted_selected_token_scores[sequence_index] = shared_scores[0u];
+    }
+}
+
 static uint32_t SparkGlm52ResidentDecodeStagePrepareBlockCount(
     uint32_t active_sequence_count)
 {
@@ -16457,6 +16538,92 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFusedFinalTokenTail(
     return status;
 }
 
+
+static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+    const char *phase_name,
+    SparkStatus status);
+
+static bool SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
+    const SparkGlm52ResidentDecodeStageExactStageSlicePlan *exact_stage_slice_plan);
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFullVocabGreedyFinalTokenEpilogue(
+    const SparkGlm52ResidentDecodeStageExactStageSlicePlan *exact_stage_slice_plan,
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count)
+{
+    uint64_t candidate_count;
+    float *candidate_scores;
+    uint32_t *candidate_tokens;
+    dim3 candidate_grid;
+    SparkStatus status;
+
+    if (!SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
+            exact_stage_slice_plan) ||
+        active_sequence_count == 0u ||
+        active_sequence_count > exact_stage_slice_plan->maximum_active_sequence_count ||
+        node_context->restricted_lm_head_weight_bf16 == 0 ||
+        node_context->restricted_token_ids == 0 ||
+        pipeline_slot->normalized_hidden_bf16 == 0 ||
+        pipeline_slot->restricted_selected_token_ids == 0 ||
+        pipeline_slot->restricted_selected_token_scores == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    candidate_count =
+        (uint64_t)exact_stage_slice_plan->maximum_active_sequence_count *
+        (uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT;
+    candidate_scores = (float *)exact_stage_slice_plan->workspace;
+    candidate_tokens = (uint32_t *)(candidate_scores + candidate_count);
+    candidate_grid = dim3(
+        active_sequence_count,
+        1u,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT);
+    SparkGlm52ResidentDecodeStageFusedFinalTokenCandidateKernel<<<
+        candidate_grid,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)pipeline_slot->normalized_hidden_bf16,
+        (const uint16_t *)node_context->restricted_lm_head_weight_bf16,
+        0,
+        0,
+        0,
+        node_context->restricted_token_ids,
+        pipeline_slot->restricted_logits,
+        candidate_scores,
+        candidate_tokens,
+        active_sequence_count);
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "full_vocab_greedy_candidate",
+            status);
+    }
+    SparkGlm52ResidentDecodeStageFullVocabGreedyCommitKernel<<<
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        candidate_scores,
+        candidate_tokens,
+        pipeline_slot->restricted_selected_token_ids,
+        pipeline_slot->restricted_selected_token_scores,
+        active_sequence_count);
+    status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+    return status;
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
     const char *phase_name,
     SparkStatus status);
@@ -17297,7 +17464,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
     mtp_requested =
         SparkGlm52ResidentDecodeStageFrameContextHasMtpDraftBudgets(
             frame_context);
-    if (SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
+    if (mtp_requested &&
+        SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
             exact_stage_slice_plan))
     {
         status = SparkGlm52ResidentDecodeStageLaunchBuiltInFusedFinalTokenEpilogue(
@@ -17311,6 +17479,23 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         {
             return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
                 "built_in_final_epilogue",
+                status);
+        }
+    }
+    else if (SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
+            exact_stage_slice_plan))
+    {
+        status = SparkGlm52ResidentDecodeStageLaunchBuiltInFullVocabGreedyFinalTokenEpilogue(
+            exact_stage_slice_plan,
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+                "full_vocab_greedy_final_epilogue",
                 status);
         }
     }
