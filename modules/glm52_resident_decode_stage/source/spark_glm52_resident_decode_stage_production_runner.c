@@ -131,12 +131,6 @@ static void SparkGlm52ProductionRunnerBuildFrameContext(
         dispatch->hidden_output_transport_session;
     frame_context->hidden_input_packet = dispatch->hidden_input_packet;
     frame_context->hidden_output_packet = dispatch->hidden_output_packet;
-    if ( (dispatch->flags &
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_PREFILL) != 0u )
-    {
-        frame_context->flags |=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME;
-    }
     if ( dispatch->prefill_view != 0 )
     {
         frame_context->flags |=
