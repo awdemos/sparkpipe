@@ -2451,6 +2451,79 @@ static void SparkGlm52Pp13BuilderMaybeProbeMlaSlots(SparkGlm52Pp13BuilderState *
 	}
 }
 
+static uint32_t SparkGlm52Pp13BuilderProbeHostSlot(
+	const SparkGlm52Pp13BuilderState *state,
+	uint32_t position,
+	uint32_t *physical_block_index_out)
+{
+	uint32_t block_index;
+	uint32_t block_token_index;
+	uint32_t block_token_count;
+	if (physical_block_index_out != 0)
+		*physical_block_index_out = SPARK_GLM52_PP13_BUILDER_INVALID_SLOT;
+	if (state == 0 || state->host_lane_physical_block_counts == 0 ||
+		state->host_physical_block_indices == 0 ||
+		state->device_kv_view.block_token_count == 0u)
+		return SPARK_GLM52_PP13_BUILDER_INVALID_SLOT;
+	block_token_count = state->device_kv_view.block_token_count;
+	block_index = position / block_token_count;
+	block_token_index = position - (block_index * block_token_count);
+	if (block_index >= state->host_lane_physical_block_counts[0u])
+		return SPARK_GLM52_PP13_BUILDER_INVALID_SLOT;
+	if (physical_block_index_out != 0)
+		*physical_block_index_out = state->host_physical_block_indices[block_index];
+	return (state->host_physical_block_indices[block_index] * block_token_count) +
+		block_token_index;
+}
+
+static void SparkGlm52Pp13BuilderMaybeProbePrefillKvState(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+{
+	uint32_t slot0,slot1,block0,block1,lane_blocks;
+	uint64_t request_id;
+	if (getenv("SPARKPIPE_MLA_SLOT_PROBE") == 0 || state == 0 ||
+		prefill_dispatch == 0 || prefill_dispatch->request_dispatch == 0)
+		return;
+	request_id = prefill_dispatch->request_dispatch->request_ids[0u];
+	lane_blocks = state->host_lane_physical_block_counts != 0 ?
+		state->host_lane_physical_block_counts[0u] : 0u;
+	slot0 = SparkGlm52Pp13BuilderProbeHostSlot(state,0u,&block0);
+	slot1 = SparkGlm52Pp13BuilderProbeHostSlot(state,1u,&block1);
+	fprintf(stderr,"pp13_kv_probe_entry request=%llu offset=%u count=%u kv_missing=%u kv_inflight=%u kv_resident=%u lane0_blocks=%u pos0_block=%u pos0_slot=%u pos1_block=%u pos1_slot=%u\n",
+		(unsigned long long)request_id,
+		prefill_dispatch->prompt_token_offset,
+		prefill_dispatch->prompt_token_count,
+		state->kv_state.missing_block_count,
+		state->kv_state.in_flight_block_count,
+		state->kv_state.resident_block_count,
+		lane_blocks,
+		block0,
+		slot0,
+		block1,
+		slot1);
+}
+
+static void SparkGlm52Pp13BuilderMaybeProbePrefillTokenSlot(
+	SparkGlm52Pp13BuilderState *state,
+	uint64_t request_id,
+	uint32_t token_offset,
+	uint32_t position)
+{
+	uint32_t slot_mapping;
+	if (getenv("SPARKPIPE_MLA_SLOT_PROBE") == 0 || state == 0 ||
+		state->device_prefill_slot_mapping == 0)
+		return;
+	slot_mapping = SPARK_GLM52_PP13_BUILDER_INVALID_SLOT;
+	if (cudaMemcpy(&slot_mapping,state->device_prefill_slot_mapping,sizeof(slot_mapping),cudaMemcpyDeviceToHost) != cudaSuccess)
+		return;
+	fprintf(stderr,"pp13_kv_probe_token request=%llu token_offset=%u position=%u device_slot_mapping=%u\n",
+		(unsigned long long)request_id,
+		token_offset,
+		position,
+		slot_mapping);
+}
+
 static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	void *builder_state,
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
@@ -2492,6 +2565,7 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 		prefill_dispatch->kv_block_table_view);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	SparkGlm52Pp13BuilderMaybeProbePrefillKvState(state,prefill_dispatch);
 	status = SparkGlm52Pp13BuilderUploadMtpBudget(state,1u,0u);
 	if (status != SPARK_STATUS_OK)
 		return status;
@@ -2528,6 +2602,11 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 				position);
 		if (status != SPARK_STATUS_OK)
 			return status;
+		SparkGlm52Pp13BuilderMaybeProbePrefillTokenSlot(
+			state,
+			prefill_dispatch->request_dispatch->request_ids[0u],
+			token_offset,
+			position);
 		word_count =
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u;
 		block_count = (uint32_t)(
