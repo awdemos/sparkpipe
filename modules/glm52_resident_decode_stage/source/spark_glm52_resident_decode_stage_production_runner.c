@@ -1,5 +1,7 @@
+#define _POSIX_C_SOURCE 200112L
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 
@@ -371,6 +373,38 @@ SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerProgress(
         runner->driver_instance,
         runner->program_id,
         &snapshot);
+}
+
+SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerWaitIdle(
+    SparkGlm52ResidentDecodeStageProductionRunner *runner,
+    uint32_t max_poll_count)
+{
+    SparkModelDriverRuntimeSnapshot snapshot;
+    SparkStatus status;
+    struct timespec sleep_interval;
+    uint32_t poll_index;
+
+    if ( runner == 0 ||
+        runner->driver_interface == 0 ||
+        runner->driver_interface->snapshot == 0 )
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    for (poll_index = 0u; poll_index < max_poll_count; ++poll_index)
+    {
+        memset(&snapshot,0,sizeof(snapshot));
+        status = runner->driver_interface->snapshot(
+            runner->driver_instance,
+            runner->program_id,
+            &snapshot);
+        if (status != SPARK_STATUS_OK)
+            return status;
+        if (snapshot.active_submission_count == 0u &&
+            snapshot.completed_count >= snapshot.submitted_count)
+            return SPARK_STATUS_OK;
+        sleep_interval.tv_sec = 0;
+        sleep_interval.tv_nsec = 200000;
+        (void)nanosleep(&sleep_interval,0);
+    }
+    return SPARK_STATUS_BUSY;
 }
 
 SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerGetStats(
