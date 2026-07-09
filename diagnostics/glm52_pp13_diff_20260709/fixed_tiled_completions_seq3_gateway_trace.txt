@@ -1,0 +1,24 @@
+pp13_resident_connected
+sparkpipe glm52 gateway listening on 0.0.0.0:18080
+gateway_pump status=0 service_last=0 serving_last=3 live=0 queued=0 prefill=0 decode=0 events=1
+pp13_trace prefill_begin request=5000000000 offset=0 count=5
+pp13_work_connect host=10.10.100.11 port=52101
+pp13_work_connect_result fd=7 connecting=1 errno=115
+pp13_trace prefill_end status=0 dur_us=207206
+pp13_trace decode_begin request=5000000000
+pp13_work_connected fd=7
+pp13_trace decode_end status=15 dur_us=4781
+pp13_trace final_event request=5000000000 sequence=1 position=5 flags=0x1 tokens=1 id0=0 status=0
+gateway_pump status=0 service_last=0 serving_last=3 live=0 queued=0 prefill=1 decode=1 events=0
+pp13_trace prefill_begin request=5000000001 offset=0 count=5
+pp13_trace prefill_end status=0 dur_us=173872
+pp13_trace decode_begin request=5000000001
+pp13_trace decode_end status=15 dur_us=2149
+pp13_trace final_event request=5000000001 sequence=2 position=5 flags=0x1 tokens=1 id0=0 status=0
+gateway_pump status=0 service_last=0 serving_last=3 live=0 queued=0 prefill=2 decode=2 events=0
+pp13_trace prefill_begin request=5000000002 offset=0 count=5
+pp13_trace prefill_end status=0 dur_us=175833
+pp13_trace decode_begin request=5000000002
+pp13_trace decode_end status=15 dur_us=2315
+pp13_trace final_event request=5000000002 sequence=3 position=5 flags=0x1 tokens=1 id0=0 status=0
+gateway_pump status=0 service_last=0 serving_last=3 live=0 queued=0 prefill=3 decode=3 events=0

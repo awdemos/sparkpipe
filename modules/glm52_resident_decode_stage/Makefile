@@ -16,6 +16,10 @@ B12X_MOE_PACK_VERIFY_REUSED_SHA256 ?= 0
 B12X_MOE_PACK_JOBS ?= 1
 B12X_MOE_PACK_PACKAGE_MODE ?= hardlink
 B12X_PACK_PYTHON ?= python3
+GLM52_REQUIRE_B12X_RESIDENT_PACK ?= 1
+ifeq ($(GLM52_REQUIRE_B12X_RESIDENT_PACK),1)
+GLM52_B12X_RESIDENT_PACK_PREREQ := b12x_resident_pack
+endif
 GLM52_VALIDATION_INPUT_TOKEN_ID ?= 1000
 GLM52_VALIDATION_MODE ?= dense_to_layer3_routed
 GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT ?= 1
@@ -185,7 +189,7 @@ else
 		$(if $(filter 1,$(B12X_MOE_PACK_VERIFY_REUSED_SHA256)),--verify-reused-sha256,)
 endif
 
-validate: require_sm121a require_latency_limit require_fast_model_dir require_validation_inputs prepare_validation_output b12x_resident_pack cold_archive
+validate: require_sm121a require_latency_limit require_fast_model_dir require_validation_inputs prepare_validation_output $(GLM52_B12X_RESIDENT_PACK_PREREQ) cold_archive
 	$(GLM52_VALIDATION_ENV) \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE)
@@ -195,7 +199,7 @@ validate_dsa_topk_parity: require_sm121a archive
 		bash validation/validate_glm52_dsa_topk_parity.sh \
 		$(MODULE_ARCHIVE)
 
-publish: require_sm121a require_latency_limit require_fast_model_dir require_validation_inputs prepare_validation_output b12x_resident_pack cold_archive
+publish: require_sm121a require_latency_limit require_fast_model_dir require_validation_inputs prepare_validation_output $(GLM52_B12X_RESIDENT_PACK_PREREQ) cold_archive
 	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
 	$(GLM52_VALIDATION_ENV) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
@@ -228,6 +232,7 @@ package: publish
 		--cc-arg -lstdc++ \
 		$(foreach arg,$(GLM52_REQUIRED_CUDA_LINK_ARGS),--cc-arg $(arg)) \
 		$(REQUIRED_CUDA_CC_ARGS)
+ifeq ($(GLM52_REQUIRE_B12X_RESIDENT_PACK),1)
 	mkdir -p $(PACKAGE_DIRECTORY)/artifacts/glm52_b12x_resident_moe
 	@set -e; \
 		case "$(B12X_MOE_PACK_PACKAGE_MODE)" in \
@@ -246,6 +251,7 @@ package: publish
 				exit 2; \
 				;; \
 		esac
+endif
 	$(GLM52_VALIDATION_ENV) \
 		validation/validate_glm52_resident_decode_stage_cuda.sh \
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE) \
