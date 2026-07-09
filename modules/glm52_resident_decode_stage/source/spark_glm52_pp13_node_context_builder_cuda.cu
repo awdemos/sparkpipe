@@ -2417,6 +2417,34 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	return status;
 }
 
+static uint64_t SparkGlm52Pp13BuilderProbeFnv64(const uint8_t *data,uint64_t bytes)
+{
+	uint64_t hash;
+	uint64_t offset;
+	hash = 0xcbf29ce484222325ull;
+	for (offset = 0u; offset < bytes; ++offset)
+		hash = (hash ^ (uint64_t)data[offset]) * 0x100000001b3ull;
+	return hash;
+}
+
+static void SparkGlm52Pp13BuilderMaybeProbeMlaSlots(SparkGlm52Pp13BuilderState *state)
+{
+	static uint8_t slot_host[SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS * 2u];
+	uint32_t slot_index;
+	uint64_t slot_bytes;
+	const uint8_t *cache_base;
+	if (getenv("SPARKPIPE_MLA_SLOT_PROBE") == 0 || state == 0 || state->layers[0].mla_cache == 0)
+		return;
+	slot_bytes = (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS * 2u;
+	cache_base = (const uint8_t *)state->layers[0].mla_cache;
+	for (slot_index = 0u; slot_index < 2u; ++slot_index)
+	{
+		if (cudaMemcpy(slot_host,cache_base + ((uint64_t)slot_index * slot_bytes),(size_t)slot_bytes,cudaMemcpyDeviceToHost) != cudaSuccess)
+			return;
+		fprintf(stderr,"mla_slot%u=%016llx mla_slot%u_rope_pair0=%016llx\n",slot_index,(unsigned long long)SparkGlm52Pp13BuilderProbeFnv64(slot_host,slot_bytes),slot_index,(unsigned long long)SparkGlm52Pp13BuilderProbeFnv64(slot_host + ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u),4u));
+	}
+}
+
 static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	void *builder_state,
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
@@ -2610,6 +2638,7 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	}
 	if (debug_enabled != 0)
 		fprintf(stderr,"pp13_builder_prefill_done offset=%u count=%u\n",prefill_dispatch->prompt_token_offset,prefill_dispatch->prompt_token_count);
+	SparkGlm52Pp13BuilderMaybeProbeMlaSlots(state);
 	return SPARK_STATUS_OK;
 }
 
