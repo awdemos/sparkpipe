@@ -2605,6 +2605,12 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 				token_id);
 			return status;
 		}
+		status = SparkGlm52ResidentDecodeStageProductionRunnerWaitIdle(&state->runner,25000u);
+		if (status != SPARK_STATUS_OK)
+		{
+			fprintf(stderr,"pp13_builder_prefill_drain status=%u position=%u\n",status,position);
+			return status;
+		}
 		status = SparkGlm52Pp13BuilderCudaStatus(
 			cudaStreamSynchronize(state->stream));
 		if (status != SPARK_STATUS_OK)

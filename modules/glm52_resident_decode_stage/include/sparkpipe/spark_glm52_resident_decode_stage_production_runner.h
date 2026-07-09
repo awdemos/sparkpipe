@@ -129,6 +129,10 @@ SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
 SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerProgress(
     SparkGlm52ResidentDecodeStageProductionRunner *runner);
 
+SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerWaitIdle(
+    SparkGlm52ResidentDecodeStageProductionRunner *runner,
+    uint32_t max_poll_count);
+
 SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerGetStats(
     const SparkGlm52ResidentDecodeStageProductionRunner *runner,
     SparkGlm52ResidentDecodeStageProductionRunnerStats *stats_out);
