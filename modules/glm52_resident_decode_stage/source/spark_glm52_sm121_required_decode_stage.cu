@@ -4065,7 +4065,7 @@ static __global__ void SparkGlm52ResidentDecodeStagePrepareKernel(
             input_offset =
                 (query_row_index *
                  (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION) +
-                ((uint64_t)rope_pair_index * 2u);
+                (uint64_t)rope_pair_index;
             if (position < position_count)
             {
                 table_offset =
@@ -4073,16 +4073,16 @@ static __global__ void SparkGlm52ResidentDecodeStagePrepareKernel(
                     (uint64_t)rope_pair_index;
                 SparkGlm52ResidentDecodeStageApplyRopePair(
                     query_rope_input_bf16[input_offset],
-                    query_rope_input_bf16[input_offset + 1u],
+                    query_rope_input_bf16[input_offset + (uint64_t)rope_pair_count],
                     cos_table[table_offset],
                     sin_table[table_offset],
                     &rotated_query_rope_bf16[input_offset],
-                    &rotated_query_rope_bf16[input_offset + 1u]);
+                    &rotated_query_rope_bf16[input_offset + (uint64_t)rope_pair_count]);
             }
             else
             {
                 rotated_query_rope_bf16[input_offset] = 0u;
-                rotated_query_rope_bf16[input_offset + 1u] = 0u;
+                rotated_query_rope_bf16[input_offset + (uint64_t)rope_pair_count] = 0u;
             }
         }
         else if (work_index <
@@ -4141,22 +4141,22 @@ static __global__ void SparkGlm52ResidentDecodeStagePrepareKernel(
                 input_offset =
                     ((uint64_t)sequence_index *
                      (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION) +
-                    ((uint64_t)rope_pair_index * 2u);
+                    (uint64_t)rope_pair_index;
                 cache_offset =
                     ((uint64_t)cache_slot_index *
                      (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) +
                     (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION +
-                    ((uint64_t)rope_pair_index * 2u);
+                    (uint64_t)rope_pair_index;
                 table_offset =
                     ((uint64_t)position * (uint64_t)rope_pair_count) +
                     (uint64_t)rope_pair_index;
                 SparkGlm52ResidentDecodeStageApplyRopePair(
                     key_rope_input_bf16[input_offset],
-                    key_rope_input_bf16[input_offset + 1u],
+                    key_rope_input_bf16[input_offset + (uint64_t)rope_pair_count],
                     cos_table[table_offset],
                     sin_table[table_offset],
                     &mla_cache_bf16[cache_offset],
-                    &mla_cache_bf16[cache_offset + 1u]);
+                    &mla_cache_bf16[cache_offset + (uint64_t)rope_pair_count]);
             }
         }
         if (work_index >= query_rope_work_count + cache_latent_work_count +
@@ -5069,7 +5069,11 @@ static __global__ void SparkGlm52ResidentDecodeStageDsaKeyNormRopeStoreKernel(
             uint16_t rotated0;
             uint16_t rotated1;
 
-            rope_pair_index = dimension_index >> 1u;
+            rope_pair_index = dimension_index <
+                (SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_ROPE_DIMENSION / 2u)
+                ? dimension_index
+                : dimension_index -
+                    (SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_ROPE_DIMENSION / 2u);
             position = positions[sequence_index];
             if (position < position_count)
             {
@@ -5078,13 +5082,15 @@ static __global__ void SparkGlm52ResidentDecodeStageDsaKeyNormRopeStoreKernel(
                      (uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_ROPE_DIMENSION / 2u)) +
                     (uint64_t)rope_pair_index;
                 SparkGlm52ResidentDecodeStageApplyRopePair(
-                    normalized_key[rope_pair_index * 2u],
-                    normalized_key[(rope_pair_index * 2u) + 1u],
+                    normalized_key[rope_pair_index],
+                    normalized_key[rope_pair_index +
+                        (SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_ROPE_DIMENSION / 2u)],
                     cos_table[table_offset],
                     sin_table[table_offset],
                     &rotated0,
                     &rotated1);
-                output_value = (dimension_index & 1u) == 0u
+                output_value = dimension_index <
+                    (SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_ROPE_DIMENSION / 2u)
                     ? rotated0
                     : rotated1;
             }
