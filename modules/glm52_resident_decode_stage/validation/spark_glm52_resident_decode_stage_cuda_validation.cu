@@ -8566,6 +8566,7 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
     uint32_t context_length,
     uint32_t check_outputs,
     uint32_t require_phase_clock,
+    uint32_t model_quantization,
     double *total_microseconds,
     double *maximum_observed_microseconds,
     uint32_t *submission_count)
@@ -8575,11 +8576,18 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
     uint32_t topk_expert_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
     float elapsed_microseconds;
 
-    if (!SparkValidationLoadLayer0AttentionBf16Fixture(
-            buffers,
-            model_directory,
-            layer_index,
-            &attention_fixture) ||
+    if (!(model_quantization ==
+            SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8
+            ? SparkValidationLoadLayer0AttentionFp8Fixture(
+                buffers,
+                model_directory,
+                layer_index,
+                &attention_fixture)
+            : SparkValidationLoadLayer0AttentionBf16Fixture(
+                buffers,
+                model_directory,
+                layer_index,
+                &attention_fixture)) ||
         !SparkValidationLoadRoutedLayerRouterBf16Fixture(
             buffers,
             model_directory,
@@ -8593,18 +8601,38 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
             buffers,
             position,
             slot_mapping,
-            context_length) ||
-        !SparkValidationBindB12xMoePlanForLayer(
-            buffers,
-            node_context,
-            layer_index))
+            context_length))
     {
         return false;
     }
-    SparkValidationEnableLayer3RoutedExpertNvfp4(
-        0,
-        buffers,
-        node_context);
+    if (model_quantization ==
+        SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8)
+    {
+        if (!SparkValidationBindFp8MoePlanForLayer(
+                buffers,
+                node_context,
+                layer_index))
+        {
+            return false;
+        }
+        SparkValidationEnableLayer3RoutedExpertFp8(
+            buffers,
+            node_context);
+    }
+    else
+    {
+        if (!SparkValidationBindB12xMoePlanForLayer(
+                buffers,
+                node_context,
+                layer_index))
+        {
+            return false;
+        }
+        SparkValidationEnableLayer3RoutedExpertNvfp4(
+            0,
+            buffers,
+            node_context);
+    }
     if (!SparkValidationRunSubmitOnce(
             node_context,
             cuda_stream,
@@ -8755,6 +8783,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
                         context_length,
                         0u,
                         1u,
+                        SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_NVFP4,
                         total_microseconds,
                         maximum_observed_microseconds,
                         submission_count))
@@ -8816,6 +8845,7 @@ static bool SparkValidationRunDenseChainLayer3RoutedTopK(
                 SPARK_VALIDATION_CONTEXT_LENGTH,
                 0u,
                 1u,
+                SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_NVFP4,
                 total_microseconds,
                 maximum_observed_microseconds,
                 submission_count))
@@ -8840,6 +8870,7 @@ static bool SparkValidationRunRoutedChainFromHidden(
     uint32_t routed_chain_layer_count,
     uint32_t final_token_stage,
     uint32_t require_phase_clock,
+    uint32_t model_quantization,
     double *total_microseconds,
     double *maximum_observed_microseconds,
     uint32_t *submission_count)
@@ -8888,6 +8919,7 @@ static bool SparkValidationRunRoutedChainFromHidden(
                 SPARK_VALIDATION_CONTEXT_LENGTH,
                 run_final_outputs,
                 require_phase_clock,
+                model_quantization,
                 total_microseconds,
                 maximum_observed_microseconds,
                 submission_count))
@@ -10609,13 +10641,22 @@ int main(int argc, char **argv)
         return 0;
     }
     if (use_attention_bf16 != 0u &&
-        !SparkValidationLoadLayer0AttentionBf16Fixture(
-            &buffers,
-            model_directory,
-            (use_layer3_router != 0u ||
-             use_layer3_shared_expert != 0u ||
-             use_layer3_routed_expert != 0u) ? 3u : dense_layer_index,
-            &layer0_attention))
+        !(exact_pp13_model_quantization ==
+            SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8
+            ? SparkValidationLoadLayer0AttentionFp8Fixture(
+                &buffers,
+                model_directory,
+                (use_layer3_router != 0u ||
+                 use_layer3_shared_expert != 0u ||
+                 use_layer3_routed_expert != 0u) ? 3u : dense_layer_index,
+                &layer0_attention)
+            : SparkValidationLoadLayer0AttentionBf16Fixture(
+                &buffers,
+                model_directory,
+                (use_layer3_router != 0u ||
+                 use_layer3_shared_expert != 0u ||
+                 use_layer3_routed_expert != 0u) ? 3u : dense_layer_index,
+                &layer0_attention)))
     {
         return 2;
     }
@@ -11111,6 +11152,7 @@ int main(int argc, char **argv)
                     routed_chain_layer_count,
                     0u,
                     1u,
+                    exact_pp13_model_quantization,
                     &total_microseconds,
                     &maximum_observed_microseconds,
                     &submission_count) ||
@@ -11168,6 +11210,7 @@ int main(int argc, char **argv)
                     routed_chain_layer_count,
                     1u,
                     production_timing == 0u,
+                    exact_pp13_model_quantization,
                     &total_microseconds,
                     &maximum_observed_microseconds,
                     &submission_count) ||
@@ -11535,6 +11578,7 @@ int main(int argc, char **argv)
                 routed_chain_layer_count,
                 0u,
                 1u,
+                exact_pp13_model_quantization,
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count) ||
@@ -11592,6 +11636,7 @@ int main(int argc, char **argv)
                 routed_chain_layer_count,
                 1u,
                 production_timing == 0u,
+                exact_pp13_model_quantization,
                 &total_microseconds,
                 &maximum_observed_microseconds,
                 &submission_count) ||
