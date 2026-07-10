@@ -825,7 +825,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTables(
 	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_low_scratch,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * (SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION + SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) * 2u);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->device_probe_hash_slots,128u);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->device_probe_hash_slots,144u);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->cos_table,table_bytes);
 	if (status == SPARK_STATUS_OK)
@@ -2534,7 +2534,7 @@ static void SparkGlm52Pp13BuilderMaybeProbeLayer1Sublayers(
 	uint32_t token_offset,
 	uint32_t position)
 {
-	uint64_t probe_slots[16];
+	uint64_t probe_slots[18];
 	if (getenv("SPARKPIPE_FP8_AMAX_PROBE") == 0 || state == 0 ||
 		state->device_probe_hash_slots == 0)
 		return;
@@ -2546,8 +2546,8 @@ static void SparkGlm52Pp13BuilderMaybeProbeLayer1Sublayers(
 		(unsigned long long)request_id,
 		token_offset,
 		position,
-		(unsigned long long)probe_slots[0],
-		(unsigned long long)probe_slots[1],
+		(unsigned long long)probe_slots[16],
+		(unsigned long long)probe_slots[17],
 		(unsigned long long)probe_slots[8],
 		(unsigned long long)probe_slots[9],
 		(unsigned long long)probe_slots[10],

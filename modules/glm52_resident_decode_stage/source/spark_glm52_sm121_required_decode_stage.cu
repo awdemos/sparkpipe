@@ -12827,13 +12827,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinearFp8(
             node_context,
             weight_fp8_e4m3,
             (uint64_t)input_dimension * (uint64_t)output_dimension,
-            0u,
+            16u,
             cuda_stream);
         SparkGlm52ResidentDecodeStageDeviceHashProbe(
             node_context,
             weight_scale_inv_f32,
             input_scale_block_count * output_scale_block_count * sizeof(float),
-            1u,
+            17u,
             cuda_stream);
     }
     status = SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
