@@ -779,11 +779,43 @@ static SparkStatus SparkReleaseManagerRememberRoleManifest(
     return SparkWriteEntireFileAtomically(path,state_text,strlen(state_text));
 }
 
+static SparkStatus SparkReleaseManagerOpenRoleDescriptors(
+    const SparkReleaseResolvedRole *resolved_role,
+    int *null_fd_out,
+    int *log_fd_out)
+{
+    char log_path[SPARK_RELEASE_MAX_PATH_BYTES];
+    int written_bytes;
+
+    if (resolved_role == 0 || null_fd_out == 0 || log_fd_out == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    written_bytes = snprintf(
+        log_path,
+        sizeof(log_path),
+        "%s.log",
+        resolved_role->pid_file);
+    if (written_bytes < 0 || (uint32_t)written_bytes >= sizeof(log_path))
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    *null_fd_out = open("/dev/null",O_RDONLY);
+    if (*null_fd_out < 0)
+        return SPARK_STATUS_IO_ERROR;
+    *log_fd_out = open(log_path,O_WRONLY | O_CREAT | O_APPEND,0644);
+    if (*log_fd_out < 0)
+    {
+        close(*null_fd_out);
+        *null_fd_out = -1;
+        return SPARK_STATUS_IO_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkReleaseManagerStartRole(const SparkReleaseResolvedRole *resolved_role)
 {
     char *arguments[SPARK_RELEASE_MAX_ARGUMENTS + 2u];
     uint32_t argument_index;
     uint32_t environment_index;
+    int log_fd;
+    int null_fd;
     pid_t pid;
     SparkStatus status;
 
@@ -796,13 +828,32 @@ static SparkStatus SparkReleaseManagerStartRole(const SparkReleaseResolvedRole *
     {
         return status;
     }
+    null_fd = -1;
+    log_fd = -1;
+    status = SparkReleaseManagerOpenRoleDescriptors(
+        resolved_role,
+        &null_fd,
+        &log_fd);
+    if (status != SPARK_STATUS_OK)
+        return status;
     pid = fork();
     if (pid < 0)
     {
+        close(null_fd);
+        close(log_fd);
         return SPARK_STATUS_IO_ERROR;
     }
     if (pid == 0)
     {
+        if (setsid() < 0 ||
+            dup2(null_fd,STDIN_FILENO) < 0 ||
+            dup2(log_fd,STDOUT_FILENO) < 0 ||
+            dup2(log_fd,STDERR_FILENO) < 0)
+        {
+            _exit(126);
+        }
+        close(null_fd);
+        close(log_fd);
         for (environment_index = 0u; environment_index < resolved_role->environment_count; ++environment_index)
         {
             char *equals;
@@ -825,6 +876,8 @@ static SparkStatus SparkReleaseManagerStartRole(const SparkReleaseResolvedRole *
         execv(resolved_role->command,arguments);
         _exit(127);
     }
+    close(null_fd);
+    close(log_fd);
     {
         char pid_text[64];
 
