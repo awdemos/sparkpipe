@@ -12788,6 +12788,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinear(
         cuda_stream);
 }
 
+static void SparkGlm52ResidentDecodeStageDeviceHashProbe(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const void *device_data,
+    uint64_t bytes,
+    uint32_t slot_index,
+    cudaStream_t cuda_stream);
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinearFp8(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
@@ -12804,8 +12811,31 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinearFp8(
 {
     dim3 grid;
     bool plan_was_launched;
+    uint64_t input_scale_block_count;
+    uint64_t output_scale_block_count;
     SparkStatus status;
 
+    if (plan_index == SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_A)
+    {
+        input_scale_block_count =
+            (input_dimension + SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK;
+        output_scale_block_count =
+            (output_dimension + SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK - 1u) /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK;
+        SparkGlm52ResidentDecodeStageDeviceHashProbe(
+            node_context,
+            weight_fp8_e4m3,
+            (uint64_t)input_dimension * (uint64_t)output_dimension,
+            0u,
+            cuda_stream);
+        SparkGlm52ResidentDecodeStageDeviceHashProbe(
+            node_context,
+            weight_scale_inv_f32,
+            input_scale_block_count * output_scale_block_count * sizeof(float),
+            1u,
+            cuda_stream);
+    }
     status = SparkGlm52ResidentDecodeStageMaybeLaunchPreboundLinearPlan(
         node_context,
         plan_index,
