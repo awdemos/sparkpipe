@@ -1453,30 +1453,32 @@ static bool SparkValidationLoadLayer0DenseBf16Fixture(
     return true;
 }
 
-static bool SparkValidationLoadLayer0DenseFp8Fixture(
+static bool SparkValidationLoadFp8MlpFixture(
     SparkValidationDeviceBuffers *buffers,
     const char *model_directory,
     uint32_t layer_index,
+    uint32_t intermediate_dimension,
+    uint32_t shared_expert,
     SparkValidationLayer0DenseBf16Fixture *fixture)
 {
     const uint64_t norm_shape[1] = {
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
     const uint64_t gate_up_shape[2] = {
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,
+        intermediate_dimension,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
     const uint64_t gate_up_scale_shape[2] = {
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION),
+            intermediate_dimension),
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION)};
     const uint64_t down_shape[2] = {
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION};
+        intermediate_dimension};
     const uint64_t down_scale_shape[2] = {
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION)};
+            intermediate_dimension)};
     char norm_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
     char gate_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
     char gate_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
@@ -1486,20 +1488,24 @@ static bool SparkValidationLoadLayer0DenseFp8Fixture(
     char down_scale_name[SPARK_VALIDATION_TENSOR_NAME_BYTES];
 
     memset(fixture, 0, sizeof(*fixture));
-    if (layer_index >= SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT)
+    if (intermediate_dimension == 0u ||
+        (shared_expert == 0u &&
+         layer_index >= SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT) ||
+        (shared_expert != 0u &&
+         layer_index < SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX))
     {
-        fprintf(stderr, "GLM52_DENSE_LAYER_INDEX must be 0..%u\n", SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT - 1u);
+        fprintf(stderr, "FP8 MLP fixture layer is incompatible with its MLP kind\n");
         return false;
     }
     if (!SparkValidationBuildLayerTensorName(norm_name, sizeof(norm_name), layer_index, "post_attention_layernorm.weight") ||
-        !SparkValidationBuildLayerTensorName(gate_name, sizeof(gate_name), layer_index, "mlp.gate_proj.weight") ||
-        !SparkValidationBuildLayerTensorName(gate_scale_name, sizeof(gate_scale_name), layer_index, "mlp.gate_proj.weight_scale_inv") ||
-        !SparkValidationBuildLayerTensorName(up_name, sizeof(up_name), layer_index, "mlp.up_proj.weight") ||
-        !SparkValidationBuildLayerTensorName(up_scale_name, sizeof(up_scale_name), layer_index, "mlp.up_proj.weight_scale_inv") ||
-        !SparkValidationBuildLayerTensorName(down_name, sizeof(down_name), layer_index, "mlp.down_proj.weight") ||
-        !SparkValidationBuildLayerTensorName(down_scale_name, sizeof(down_scale_name), layer_index, "mlp.down_proj.weight_scale_inv"))
+        !SparkValidationBuildLayerTensorName(gate_name, sizeof(gate_name), layer_index, shared_expert != 0u ? "mlp.shared_experts.gate_proj.weight" : "mlp.gate_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(gate_scale_name, sizeof(gate_scale_name), layer_index, shared_expert != 0u ? "mlp.shared_experts.gate_proj.weight_scale_inv" : "mlp.gate_proj.weight_scale_inv") ||
+        !SparkValidationBuildLayerTensorName(up_name, sizeof(up_name), layer_index, shared_expert != 0u ? "mlp.shared_experts.up_proj.weight" : "mlp.up_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(up_scale_name, sizeof(up_scale_name), layer_index, shared_expert != 0u ? "mlp.shared_experts.up_proj.weight_scale_inv" : "mlp.up_proj.weight_scale_inv") ||
+        !SparkValidationBuildLayerTensorName(down_name, sizeof(down_name), layer_index, shared_expert != 0u ? "mlp.shared_experts.down_proj.weight" : "mlp.down_proj.weight") ||
+        !SparkValidationBuildLayerTensorName(down_scale_name, sizeof(down_scale_name), layer_index, shared_expert != 0u ? "mlp.shared_experts.down_proj.weight_scale_inv" : "mlp.down_proj.weight_scale_inv"))
     {
-        fprintf(stderr, "dense FP8 layer tensor name is too long\n");
+        fprintf(stderr, "FP8 MLP layer tensor name is too long\n");
         return false;
     }
     if (!SparkValidationCopyBf16TensorToDevice(model_directory, norm_name, norm_shape, 1u, buffers->post_attention_norm_weight_bf16, &fixture->copied_bytes) ||
@@ -1513,7 +1519,7 @@ static bool SparkValidationLoadLayer0DenseFp8Fixture(
         return false;
     }
     fixture->ready = 1u;
-    fprintf(stderr, "layer0_dense_fp8_fixture_ready=1 model_dir=%s dense_layer_index=%u bytes=%llu\n", model_directory, layer_index, (unsigned long long)fixture->copied_bytes);
+    fprintf(stderr, "fp8_mlp_fixture_ready=1 model_dir=%s layer_index=%u shared=%u bytes=%llu\n", model_directory, layer_index, shared_expert, (unsigned long long)fixture->copied_bytes);
     return true;
 }
 
@@ -4729,10 +4735,11 @@ static bool SparkValidationBindRequiredLinearPlans(
 {
     SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo create_info;
     SparkStatus status;
-    const SparkGlm52ResidentDecodeStageLinearPlan *plans;
+    SparkGlm52ResidentDecodeStageLinearPlan *plans;
     uint32_t plan_count;
     uint32_t initialized_plan_count;
     uint32_t dense_intermediate_dimension;
+    uint32_t bind_blackwell_regular_plans;
     uint32_t use_quantized_dense_plans;
 
     if (buffers == 0 || node_context == 0)
@@ -4759,9 +4766,25 @@ static bool SparkValidationBindRequiredLinearPlans(
             "required quantized attention projection plans missing FP8 weight/scale buffers\n");
         return false;
     }
+    use_quantized_dense_plans =
+        node_context->model_quantization_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT &&
+        (node_context->mlp_execution_mode ==
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE ||
+         node_context->mlp_execution_mode ==
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE);
+    bind_blackwell_regular_plans =
+        (use_quantized_attention_plans != 0u &&
+         (required_plan_mask &
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_RAW_ATTENTION_PROJECTIONS) != 0u) ||
+        (use_quantized_dense_plans != 0u &&
+         (required_plan_mask &
+          (SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
+           SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
+           SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN)) != 0u);
     if (buffers->linear_plan_binding != 0)
     {
-        plans = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPlans(
+        plans = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingMutablePlans(
             buffers->linear_plan_binding,
             &plan_count);
         if (plans != 0 &&
@@ -4777,10 +4800,19 @@ static bool SparkValidationBindRequiredLinearPlans(
             {
                 return false;
             }
+            if (bind_blackwell_regular_plans != 0u &&
+                SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedRegularLinearPlans(
+                    plans,
+                    plan_count) != SPARK_STATUS_OK)
+            {
+                return false;
+            }
             if ((required_plan_mask &
                  (SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
                   SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
-                  SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN)) != 0u)
+                  SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN)) != 0u &&
+                node_context->layer_progression_mode ==
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP)
             {
                 node_context->mlp_execution_mode =
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE;
@@ -4819,11 +4851,6 @@ static bool SparkValidationBindRequiredLinearPlans(
     create_info.workspace_limit_bytes =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BINDING_DEFAULT_WORKSPACE_BYTES;
     create_info.cuda_stream = (void *)cuda_stream;
-    use_quantized_dense_plans =
-        node_context->model_quantization_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT &&
-        node_context->mlp_execution_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE;
     create_info.dense_input_bf16 =
         buffers->post_attention_normalized_hidden_bf16;
     create_info.dense_gate_weight_bf16 = buffers->dense_gate_weight_bf16;
@@ -4976,7 +5003,7 @@ static bool SparkValidationBindRequiredLinearPlans(
             (int)status);
         return false;
     }
-    plans = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPlans(
+    plans = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingMutablePlans(
         buffers->linear_plan_binding,
         &plan_count);
     if (plans == 0 ||
@@ -4997,13 +5024,23 @@ static bool SparkValidationBindRequiredLinearPlans(
         SparkValidationReleaseLinearPlanBinding(buffers);
         return false;
     }
+    if (bind_blackwell_regular_plans != 0u &&
+        SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedRegularLinearPlans(
+            plans,
+            plan_count) != SPARK_STATUS_OK)
+    {
+        SparkValidationReleaseLinearPlanBinding(buffers);
+        return false;
+    }
     initialized_plan_count = SparkValidationCountInitializedLinearPlans(
         plans,
         plan_count);
     if ((required_plan_mask &
          (SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
           SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
-          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN)) != 0u)
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN)) != 0u &&
+        node_context->layer_progression_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP)
     {
         node_context->mlp_execution_mode =
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE;
@@ -9095,6 +9132,27 @@ static bool SparkValidationInitializeExactPp13StageSlicePlan(
     return true;
 }
 
+static uint32_t SparkValidationExactPp13SparseIndexMode(
+    uint32_t layer_index,
+    uint32_t source_layer_index)
+{
+    const char *force_context_prefix;
+    force_context_prefix = getenv(
+        "GLM52_EXACT_PP13_FORCE_CONTEXT_PREFIX");
+    if (force_context_prefix != 0 && force_context_prefix[0] != '\0' &&
+        strcmp(force_context_prefix, "0") != 0)
+    {
+        fprintf(
+            stderr,
+            "exact_pp13_sparse_index_mode=context_prefix layer=%u\n",
+            layer_index);
+        return SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_COPY_CONTEXT_PREFIX;
+    }
+    return source_layer_index == layer_index
+        ? SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL
+        : SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED;
+}
+
 static bool SparkValidationPrepareExactPp13StageSliceLayer(
     SparkValidationExactPp13StageSliceRuntime *runtime,
     const char *model_directory,
@@ -9158,9 +9216,9 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
             layer_index);
     }
     node_context->sparse_index_mode =
-        dsa_source_layer_index == layer_index
-        ? SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL
-        : SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED;
+        SparkValidationExactPp13SparseIndexMode(
+            layer_index,
+            dsa_source_layer_index);
     node_context->dsa_indexshare_source_layer_index = dsa_source_layer_index;
     node_context->dsa_indexshare_group_end_layer_exclusive =
         dsa_group_end_layer_exclusive;
@@ -9256,10 +9314,12 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
     {
         if (!(model_quantization ==
                 SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8
-                ? SparkValidationLoadLayer0DenseFp8Fixture(
+                ? SparkValidationLoadFp8MlpFixture(
                     buffers,
                     model_directory,
                     layer_index,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,
+                    0u,
                     &dense_fixture)
                 : SparkValidationLoadLayer0DenseBf16Fixture(
                     buffers,
@@ -9305,7 +9365,14 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
         if (model_quantization ==
             SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8)
         {
-            if (!SparkValidationBindFp8MoePlanForLayer(
+            if (!SparkValidationLoadFp8MlpFixture(
+                    buffers,
+                    model_directory,
+                    layer_index,
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
+                    1u,
+                    &dense_fixture) ||
+                !SparkValidationBindFp8MoePlanForLayer(
                     buffers,
                     node_context,
                     layer_index))
@@ -9315,6 +9382,12 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
             SparkValidationEnableLayer3RoutedExpertFp8(
                 buffers,
                 node_context);
+            node_context->dense_intermediate_dimension =
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+            required_linear_plan_mask |=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN;
         }
         else
         {
@@ -9798,6 +9871,159 @@ static bool SparkValidationInitializeExactPp13SequenceRopeTables(
     return true;
 }
 
+static bool SparkValidationDumpExactPp13Hidden(
+    const char *dump_directory,
+    uint16_t *host_hidden,
+    const uint16_t *device_hidden,
+    uint32_t token_index,
+    uint32_t layer_index,
+    const char *phase_name)
+{
+    char dump_path[PATH_MAX];
+    FILE *dump_file;
+    bool write_succeeded;
+    int32_t path_bytes;
+    if (phase_name == 0)
+        path_bytes = snprintf(
+            dump_path,
+            sizeof(dump_path),
+            "%s/token_%04u_after_layer_%04u.bf16",
+            dump_directory,
+            token_index,
+            layer_index);
+    else
+        path_bytes = snprintf(
+            dump_path,
+            sizeof(dump_path),
+            "%s/token_%04u_layer_%04u_%s.bf16",
+            dump_directory,
+            token_index,
+            layer_index,
+            phase_name);
+    if (path_bytes < 0 || (uint32_t)path_bytes >= sizeof(dump_path))
+        return false;
+    dump_file = fopen(dump_path, "wb");
+    if (dump_file == 0)
+        return false;
+    write_succeeded = SparkValidationWriteDeviceBf16VectorToFile(
+        dump_file,
+        host_hidden,
+        device_hidden,
+        dump_path);
+    if (fclose(dump_file) != 0)
+        write_succeeded = false;
+    return write_succeeded;
+}
+
+static bool SparkValidationWriteBytesToPath(
+    const char *path,
+    const void *data,
+    size_t byte_count)
+{
+    FILE *file;
+    size_t written_bytes;
+    bool succeeded;
+    if (path == 0 || data == 0 || byte_count == 0u)
+        return false;
+    file = fopen(path, "wb");
+    if (file == 0)
+        return false;
+    written_bytes = fwrite(data, 1u, byte_count, file);
+    succeeded = written_bytes == byte_count;
+    if (fclose(file) != 0)
+        succeeded = false;
+    return succeeded;
+}
+
+static bool SparkValidationDumpExactPp13Route(
+    const char *dump_directory,
+    SparkValidationDeviceBuffers *buffers,
+    uint32_t token_index,
+    uint32_t layer_index)
+{
+    uint32_t topk_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
+    float topk_weights[SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
+    char dump_path[PATH_MAX];
+    int32_t path_bytes;
+    if (!SparkValidationCudaSucceeded(
+            cudaMemcpy(topk_ids, buffers->moe_topk_expert_ids, sizeof(topk_ids), cudaMemcpyDeviceToHost),
+            "copy exact pp13 route ids") ||
+        !SparkValidationCudaSucceeded(
+            cudaMemcpy(topk_weights, buffers->moe_topk_weights, sizeof(topk_weights), cudaMemcpyDeviceToHost),
+            "copy exact pp13 route weights"))
+        return false;
+    path_bytes = snprintf(dump_path, sizeof(dump_path), "%s/token_%04u_layer_%04u_topk_expert_ids.i32", dump_directory, token_index, layer_index);
+    if (path_bytes < 0 || (uint32_t)path_bytes >= sizeof(dump_path) ||
+        !SparkValidationWriteBytesToPath(dump_path, topk_ids, sizeof(topk_ids)))
+        return false;
+    path_bytes = snprintf(dump_path, sizeof(dump_path), "%s/token_%04u_layer_%04u_topk_weights.f32", dump_directory, token_index, layer_index);
+    return path_bytes >= 0 && (uint32_t)path_bytes < sizeof(dump_path) &&
+        SparkValidationWriteBytesToPath(dump_path, topk_weights, sizeof(topk_weights));
+}
+
+static bool SparkValidationDumpExactPp13LayerOutputs(
+    SparkValidationExactPp13StageSliceRuntime *runtime,
+    uint16_t *host_hidden,
+    uint32_t first_layer_index,
+    uint32_t token_index)
+{
+    const char *dump_directory;
+    uint32_t layer_offset;
+    dump_directory = getenv("GLM52_EXACT_PP13_LAYER_DUMP_DIR");
+    if (dump_directory == 0 || dump_directory[0] == '\0')
+        return true;
+    for (layer_offset = 0u;
+         layer_offset < SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+         ++layer_offset)
+    {
+        if (!SparkValidationDumpExactPp13Hidden(
+            dump_directory,
+            host_hidden,
+            runtime->buffers[layer_offset].layer_output_hidden_bf16,
+            token_index,
+            first_layer_index + layer_offset,
+            0))
+            return false;
+    }
+    return true;
+}
+
+static bool SparkValidationDumpExactPp13PhaseOutputs(
+    SparkValidationExactPp13StageSliceRuntime *runtime,
+    uint16_t *host_hidden,
+    uint32_t first_layer_index,
+    uint32_t token_index)
+{
+    const char *dump_directory;
+    SparkValidationDeviceBuffers *buffers;
+    uint32_t layer_index;
+    uint32_t layer_offset;
+    dump_directory = getenv("GLM52_EXACT_PP13_PHASE_DUMP_DIR");
+    if (dump_directory == 0 || dump_directory[0] == '\0')
+        return true;
+    for (layer_offset = 0u;
+         layer_offset < SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT;
+         ++layer_offset)
+    {
+        buffers = &runtime->buffers[layer_offset];
+        layer_index = first_layer_index + layer_offset;
+        if (!SparkValidationDumpExactPp13Hidden(dump_directory, host_hidden, buffers->attention_projected_hidden_bf16, token_index, layer_index, "attention_projected") ||
+            !SparkValidationDumpExactPp13Hidden(dump_directory, host_hidden, buffers->post_attention_hidden_bf16, token_index, layer_index, "post_attention") ||
+            !SparkValidationDumpExactPp13Hidden(dump_directory, host_hidden, buffers->post_attention_normalized_hidden_bf16, token_index, layer_index, "post_attention_normalized") ||
+            !SparkValidationDumpExactPp13Hidden(dump_directory, host_hidden, buffers->moe_route_output_bf16, token_index, layer_index, "moe_output"))
+            return false;
+        if (runtime->node_contexts[layer_offset].layer_progression_mode ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK &&
+            !SparkValidationDumpExactPp13Route(
+                dump_directory,
+                buffers,
+                token_index,
+                layer_index))
+            return false;
+    }
+    return true;
+}
+
 static bool SparkValidationRunExactPp13StageSequenceFromHidden(
     SparkValidationExactPp13StageSliceRuntime *runtime,
     cudaStream_t cuda_stream,
@@ -9946,6 +10172,22 @@ static bool SparkValidationRunExactPp13StageSequenceFromHidden(
                 cuda_stream,
                 run_final_outputs,
                 &elapsed_microseconds))
+        {
+            free(host_hidden);
+            fclose(output_file);
+            fclose(input_file);
+            return false;
+        }
+        if (!SparkValidationDumpExactPp13LayerOutputs(
+                runtime,
+                host_hidden,
+                first_layer_index,
+                token_index) ||
+            !SparkValidationDumpExactPp13PhaseOutputs(
+                runtime,
+                host_hidden,
+                first_layer_index,
+                token_index))
         {
             free(host_hidden);
             fclose(output_file);

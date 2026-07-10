@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+import glob
+import os
 import re
 import struct
 import sys
@@ -120,7 +122,6 @@ def numeric_stats(a, b):
     return max_abs, rel_l2, cos
 
 def numeric_report(serial_dir, dump_dir):
-    import glob, os
     row_bytes = HIDDEN_BYTES
     findings = 0
     for rank in range(12):
@@ -149,6 +150,55 @@ def numeric_report(serial_dir, dump_dir):
             print(f"numeric\ttoken={token}\trank={rank}\tlayer={layer}\tmax_abs={max_abs:.6f}\trel_l2={rel_l2:.6f}\tcos={cos:.6f}{flag}")
     print(f"numeric\tjumps={findings}")
     return findings
+
+def layer_numeric_report(reference_dir, candidate_dir):
+    missing = 0
+    for reference_path in sorted(glob.glob(os.path.join(reference_dir, "after_layer_*.bf16"))):
+        layer = int(os.path.basename(reference_path).split("_")[2].split(".")[0])
+        reference = open(reference_path, "rb").read()
+        if len(reference) % HIDDEN_BYTES != 0:
+            print(f"layer_numeric\tlayer={layer}\treference_size_invalid={len(reference)}")
+            missing += 1
+            continue
+        for token in range(len(reference) // HIDDEN_BYTES):
+            candidate_path = os.path.join(
+                candidate_dir,
+                f"token_{token:04d}_after_layer_{layer:04d}.bf16")
+            if not os.path.exists(candidate_path):
+                print(f"layer_numeric\ttoken={token}\tlayer={layer}\tcandidate_missing")
+                missing += 1
+                continue
+            candidate = open(candidate_path, "rb").read()
+            expected = reference[token * HIDDEN_BYTES:(token + 1) * HIDDEN_BYTES]
+            max_abs, rel_l2, cos = numeric_stats(
+                bf16_to_f32_list(candidate),
+                bf16_to_f32_list(expected))
+            print(f"layer_numeric\ttoken={token}\tlayer={layer}\tmax_abs={max_abs:.6f}\trel_l2={rel_l2:.6f}\tcos={cos:.6f}")
+    print(f"layer_numeric\tmissing={missing}")
+    return missing
+
+def phase_numeric_report(reference_dir, candidate_dir):
+    missing = 0
+    pattern = os.path.join(reference_dir, "token_*_layer_*_*.bf16")
+    for reference_path in sorted(glob.glob(pattern)):
+        name = os.path.basename(reference_path)
+        parts = name.removesuffix(".bf16").split("_")
+        token = int(parts[1])
+        layer = int(parts[3])
+        phase = "_".join(parts[4:])
+        candidate_path = os.path.join(candidate_dir, name)
+        if not os.path.exists(candidate_path):
+            print(f"phase_numeric\ttoken={token}\tlayer={layer}\tphase={phase}\tcandidate_missing")
+            missing += 1
+            continue
+        reference = open(reference_path, "rb").read()
+        candidate = open(candidate_path, "rb").read()
+        max_abs, rel_l2, cos = numeric_stats(
+            bf16_to_f32_list(candidate),
+            bf16_to_f32_list(reference))
+        print(f"phase_numeric\ttoken={token}\tlayer={layer}\tphase={phase}\tmax_abs={max_abs:.6f}\trel_l2={rel_l2:.6f}\tcos={cos:.6f}")
+    print(f"phase_numeric\tmissing={missing}")
+    return missing
 
 def selftest():
     import tempfile, os
@@ -180,6 +230,18 @@ def selftest():
     assert all(abs(v - 1.0) < 1e-6 for v in vals), vals
     max_abs, rel_l2, cos = numeric_stats(vals, vals)
     assert max_abs == 0.0 and rel_l2 == 0.0 and abs(cos - 1.0) < 1e-9
+    reference_dir = f"{d}/reference"
+    candidate_dir = f"{d}/candidate"
+    hidden_ones = bytes([0x80, 0x3f] * MODEL_CONTRACT["hidden_dimension"])
+    os.mkdir(reference_dir)
+    os.mkdir(candidate_dir)
+    open(f"{reference_dir}/after_layer_0.bf16", "wb").write(hidden_ones)
+    open(f"{candidate_dir}/token_0000_after_layer_0000.bf16", "wb").write(hidden_ones)
+    assert layer_numeric_report(reference_dir, candidate_dir) == 0
+    phase_name = "token_0000_layer_0000_moe_output.bf16"
+    open(f"{reference_dir}/{phase_name}", "wb").write(hidden_ones)
+    open(f"{candidate_dir}/{phase_name}", "wb").write(hidden_ones)
+    assert phase_numeric_report(reference_dir, candidate_dir) == 0
     print("selftest_ok")
 
 def main():
@@ -200,6 +262,10 @@ def main():
         return 1 if bad != 0 else 0
     if len(argv) == 3 and argv[0] == "--numeric":
         return 1 if numeric_report(argv[1], argv[2]) != 0 else 0
+    if len(argv) == 3 and argv[0] == "--layer-numeric":
+        return 1 if layer_numeric_report(argv[1], argv[2]) != 0 else 0
+    if len(argv) == 3 and argv[0] == "--phase-numeric":
+        return 1 if phase_numeric_report(argv[1], argv[2]) != 0 else 0
     if argv and argv[0] == "--chain":
         a = load_run(argv[1:])
         chain_report(a)
@@ -207,7 +273,7 @@ def main():
     if argv and argv[0] == "--a":
         a = load_run(argv[1:])
         return 1 if hop_integrity("a", a) != 0 else 0
-    print("usage: glm52_hash_diff.py --a RANK:PATH... --b RANK:PATH... | --chain RANK:PATH... | --numeric SERIAL_DIR DUMP_DIR | --a RANK:PATH... | --selftest")
+    print("usage: glm52_hash_diff.py --a RANK:PATH... --b RANK:PATH... | --chain RANK:PATH... | --numeric SERIAL_DIR DUMP_DIR | --layer-numeric REFERENCE_DIR CANDIDATE_DIR | --phase-numeric REFERENCE_DIR CANDIDATE_DIR | --a RANK:PATH... | --selftest")
     return 2
 
 if __name__ == "__main__":
