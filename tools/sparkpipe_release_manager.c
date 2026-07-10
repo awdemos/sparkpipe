@@ -691,6 +691,94 @@ static SparkStatus SparkReleaseManagerEnsureParentDirectory(const char *path)
     return SparkCreateDirectories(parent_path);
 }
 
+static uint32_t SparkReleaseManagerIsSha256Hex(const char *text)
+{
+    uint32_t index;
+
+    if (text == 0)
+    {
+        return 0u;
+    }
+    for (index = 0u; index < SPARK_SHA256_HEX_BYTES - 1u; ++index)
+    {
+        if (!((text[index] >= '0' && text[index] <= '9') ||
+              (text[index] >= 'a' && text[index] <= 'f')))
+        {
+            return 0u;
+        }
+    }
+    return text[SPARK_SHA256_HEX_BYTES - 1u] == '\0' ? 1u : 0u;
+}
+
+static uint32_t SparkReleaseManagerBuildRoleManifestStatePath(
+    const SparkReleaseManagerAgentConfig *configuration,
+    const SparkReleaseRole *role,
+    char *path,
+    uint32_t path_bytes)
+{
+    if (configuration == 0 || role == 0 || path == 0 || path_bytes == 0u ||
+        configuration->state_directory == 0)
+    {
+        return 0u;
+    }
+    return snprintf(path,path_bytes,"%s/run/%s.manifest.sha256",
+        configuration->state_directory,role->name) < (int)path_bytes ? 1u : 0u;
+}
+
+static void SparkReleaseManagerLoadRoleManifestState(
+    SparkReleaseManagerAgentConfig *configuration,
+    const SparkReleaseRole *role)
+{
+    char path[SPARK_RELEASE_MAX_PATH_BYTES];
+    char *data;
+    size_t data_bytes;
+
+    if (SparkReleaseManagerBuildRoleManifestStatePath(
+            configuration,role,path,sizeof(path)) == 0u ||
+        SparkReadEntireFile(path,&data,&data_bytes) != SPARK_STATUS_OK)
+    {
+        return;
+    }
+    if (data_bytes == SPARK_SHA256_HEX_BYTES &&
+        data[SPARK_SHA256_HEX_BYTES - 1u] == '\n')
+    {
+        data[SPARK_SHA256_HEX_BYTES - 1u] = '\0';
+    }
+    if (SparkReleaseManagerIsSha256Hex(data) != 0u)
+    {
+        SparkCopyString(configuration->active_manifest_sha256,
+            sizeof(configuration->active_manifest_sha256),data);
+        configuration->have_active_manifest = 1u;
+    }
+    free(data);
+}
+
+static SparkStatus SparkReleaseManagerRememberRoleManifest(
+    SparkReleaseManagerAgentConfig *configuration,
+    const SparkReleaseRole *role,
+    const char *manifest_sha256)
+{
+    char path[SPARK_RELEASE_MAX_PATH_BYTES];
+    char state_text[SPARK_SHA256_HEX_BYTES + 1u];
+    SparkStatus status;
+
+    SparkCopyString(configuration->active_manifest_sha256,
+        sizeof(configuration->active_manifest_sha256),manifest_sha256);
+    configuration->have_active_manifest = 1u;
+    if (SparkReleaseManagerBuildRoleManifestStatePath(
+            configuration,role,path,sizeof(path)) == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    status = SparkReleaseManagerEnsureParentDirectory(path);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    snprintf(state_text,sizeof(state_text),"%s\n",manifest_sha256);
+    return SparkWriteEntireFileAtomically(path,state_text,strlen(state_text));
+}
+
 static SparkStatus SparkReleaseManagerStartRole(const SparkReleaseResolvedRole *resolved_role)
 {
     char *arguments[SPARK_RELEASE_MAX_ARGUMENTS + 2u];
@@ -802,6 +890,7 @@ static SparkStatus SparkReleaseManagerRunAgentOnce(SparkReleaseManagerAgentConfi
     {
         return status;
     }
+    SparkReleaseManagerLoadRoleManifestState(configuration,role);
     role_alive = 0u;
     {
         pid_t existing_pid;
@@ -829,16 +918,20 @@ static SparkStatus SparkReleaseManagerRunAgentOnce(SparkReleaseManagerAgentConfi
         return status;
     }
     if (role_alive != 0u &&
-        (sync_result.action_flags & SPARK_RELEASE_ACTION_FLAG_RESTART_REQUIRED) == 0u &&
-        (role->flags & SPARK_RELEASE_ROLE_FLAG_REQUIRE_EXACT_GENERATION) == 0u)
+        (role->flags & (SPARK_RELEASE_ROLE_FLAG_RESTART_ON_UPDATE |
+                        SPARK_RELEASE_ROLE_FLAG_REQUIRE_EXACT_GENERATION)) == 0u)
     {
-        SparkCopyString(configuration->active_manifest_sha256,sizeof(configuration->active_manifest_sha256),manifest_sha256);
-        configuration->have_active_manifest = 1u;
+        status = SparkReleaseManagerRememberRoleManifest(
+            configuration,role,manifest_sha256);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
         printf("sparkpipe_release_manager synced without restart role=%s generation=%llu files=%u changed=%u\n",
             role->name,(unsigned long long)manifest.generation,sync_result.verified_file_count,sync_result.changed_file_count);
         return SPARK_STATUS_OK;
     }
-    if (role_alive != 0u && (role->flags & SPARK_RELEASE_ROLE_FLAG_RESTART_ON_UPDATE) != 0u)
+    if (role_alive != 0u)
     {
         (void)SparkReleaseManagerStopRole(&resolved_role,manifest.stop_grace_ms);
     }
@@ -851,8 +944,11 @@ static SparkStatus SparkReleaseManagerRunAgentOnce(SparkReleaseManagerAgentConfi
     status = SparkReleaseManagerStartRole(&resolved_role);
     if (status == SPARK_STATUS_OK)
     {
-        SparkCopyString(configuration->active_manifest_sha256,sizeof(configuration->active_manifest_sha256),manifest_sha256);
-        configuration->have_active_manifest = 1u;
+        status = SparkReleaseManagerRememberRoleManifest(
+            configuration,role,manifest_sha256);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
         printf("sparkpipe_release_manager synced files=%u changed=%u cuda_packs=%u pid_file=%s\n",
             sync_result.verified_file_count,sync_result.changed_file_count,sync_result.cuda_pack_file_count,resolved_role.pid_file);
     }
