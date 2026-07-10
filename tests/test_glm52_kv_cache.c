@@ -3,6 +3,14 @@
 #include <string.h>
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
+#include "sparkpipe/spark_glm52_model.h"
+
+#define SPARK_TEST_KV_BLOCK_TOKENS 16u
+#define SPARK_TEST_KV_HEAD_COUNT 8u
+#define SPARK_TEST_KV_HEAD_DIMENSION 128u
+#define SPARK_TEST_KV_INDEX_KEY_LAYER_COUNT 2u
+#define SPARK_TEST_KV_STAGE_LAYER_COUNT 6u
+#define SPARK_TEST_KV_TRANSFER_BYTES 64u
 
 static void SparkTestInitializeKvCacheArena(
     SparkGlm52KvCacheArena *arena,
@@ -16,11 +24,11 @@ static void SparkTestInitializeKvCacheArena(
     configuration.descriptor_bytes =
         SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     configuration.physical_block_count = physical_block_count;
-    configuration.block_token_count = 16u;
-    configuration.layer_count = 78u;
-    configuration.kv_head_count = 8u;
-    configuration.head_dim = 128u;
-    configuration.bytes_per_scalar = 2u;
+    configuration.block_token_count = SPARK_TEST_KV_BLOCK_TOKENS;
+    configuration.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
+    configuration.kv_head_count = SPARK_TEST_KV_HEAD_COUNT;
+    configuration.head_dim = SPARK_TEST_KV_HEAD_DIMENSION;
+    configuration.bytes_per_scalar = sizeof(uint16_t);
     configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
     configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
     configuration.blocks = blocks;
@@ -41,12 +49,12 @@ static void SparkTestInitializeKvCacheArenaWithResidentCapacity(
     configuration.descriptor_bytes =
         SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     configuration.physical_block_count = physical_block_count;
-    configuration.block_token_count = 16u;
+    configuration.block_token_count = SPARK_TEST_KV_BLOCK_TOKENS;
     configuration.resident_block_capacity = resident_block_capacity;
-    configuration.layer_count = 78u;
-    configuration.kv_head_count = 8u;
-    configuration.head_dim = 128u;
-    configuration.bytes_per_scalar = 2u;
+    configuration.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
+    configuration.kv_head_count = SPARK_TEST_KV_HEAD_COUNT;
+    configuration.head_dim = SPARK_TEST_KV_HEAD_DIMENSION;
+    configuration.bytes_per_scalar = sizeof(uint16_t);
     configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
     configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
     configuration.blocks = blocks;
@@ -64,7 +72,12 @@ static void SparkTestKvCacheAllocatesResidentDeviceBlocks(void)
     uint64_t expected_stride;
 
     SparkTestInitializeKvCacheArena(&arena, blocks, 4u);
-    expected_stride = 16ull * 78ull * 8ull * 128ull * 2ull;
+    expected_stride =
+        (uint64_t)SPARK_TEST_KV_BLOCK_TOKENS *
+        SPARK_GLM52_MODEL_LAYER_COUNT *
+        SPARK_TEST_KV_HEAD_COUNT *
+        SPARK_TEST_KV_HEAD_DIMENSION *
+        sizeof(uint16_t);
     assert(arena.key_block_stride_bytes == expected_stride);
     assert(arena.value_block_stride_bytes == expected_stride);
 
@@ -425,10 +438,10 @@ static void SparkTestKvCacheAsyncPrefetchBackendCopiesHashAddressedBlocks(void)
     SparkGlm52KvCachePrefetchBackendSourceEntry source_entries[2u];
     SparkGlm52KvCacheAsyncPrefetchBackendConfiguration backend_configuration;
     SparkGlm52KvCacheAsyncPrefetchBackend backend;
-    unsigned char key_source[4u][64u];
-    unsigned char value_source[4u][64u];
-    unsigned char key_destination[4u][64u];
-    unsigned char value_destination[4u][64u];
+    uint8_t key_source[4u][SPARK_TEST_KV_TRANSFER_BYTES];
+    uint8_t value_source[4u][SPARK_TEST_KV_TRANSFER_BYTES];
+    uint8_t key_destination[4u][SPARK_TEST_KV_TRANSFER_BYTES];
+    uint8_t value_destination[4u][SPARK_TEST_KV_TRANSFER_BYTES];
     uint32_t physical_block_indices[2u];
     uint32_t block_index;
     uint32_t byte_index;
@@ -439,7 +452,9 @@ static void SparkTestKvCacheAsyncPrefetchBackendCopiesHashAddressedBlocks(void)
     memset(value_destination, 0, sizeof(value_destination));
     for (block_index = 0u; block_index < 4u; ++block_index)
     {
-        for (byte_index = 0u; byte_index < 64u; ++byte_index)
+        for (byte_index = 0u;
+            byte_index < SPARK_TEST_KV_TRANSFER_BYTES;
+            ++byte_index)
         {
             key_source[block_index][byte_index] =
                 (unsigned char)(0x10u + block_index + byte_index);
@@ -457,9 +472,9 @@ static void SparkTestKvCacheAsyncPrefetchBackendCopiesHashAddressedBlocks(void)
     arena_configuration.layer_count = 1u;
     arena_configuration.kv_head_count = 1u;
     arena_configuration.head_dim = 32u;
-    arena_configuration.bytes_per_scalar = 2u;
-    arena_configuration.key_block_stride_bytes = 64u;
-    arena_configuration.value_block_stride_bytes = 64u;
+    arena_configuration.bytes_per_scalar = (uint32_t)sizeof(uint16_t);
+    arena_configuration.key_block_stride_bytes = SPARK_TEST_KV_TRANSFER_BYTES;
+    arena_configuration.value_block_stride_bytes = SPARK_TEST_KV_TRANSFER_BYTES;
     arena_configuration.key_device_base = key_destination;
     arena_configuration.value_device_base = value_destination;
     arena_configuration.blocks = blocks;
@@ -532,10 +547,10 @@ static void SparkTestKvCacheAsyncPrefetchBackendCopiesHashAddressedBlocks(void)
     backend_configuration.physical_block_count = 4u;
     backend_configuration.source_entry_count = 2u;
     backend_configuration.blocks_per_poll = 1u;
-    backend_configuration.key_source_stride_bytes = 64u;
-    backend_configuration.value_source_stride_bytes = 64u;
-    backend_configuration.key_transfer_bytes = 64u;
-    backend_configuration.value_transfer_bytes = 64u;
+    backend_configuration.key_source_stride_bytes = SPARK_TEST_KV_TRANSFER_BYTES;
+    backend_configuration.value_source_stride_bytes = SPARK_TEST_KV_TRANSFER_BYTES;
+    backend_configuration.key_transfer_bytes = SPARK_TEST_KV_TRANSFER_BYTES;
+    backend_configuration.value_transfer_bytes = SPARK_TEST_KV_TRANSFER_BYTES;
     backend_configuration.key_source_base = key_source;
     backend_configuration.value_source_base = value_source;
     backend_configuration.source_entries = source_entries;
@@ -553,20 +568,20 @@ static void SparkTestKvCacheAsyncPrefetchBackendCopiesHashAddressedBlocks(void)
         &prefetch_plan) == SPARK_STATUS_BUSY);
     assert(memcmp(key_destination[physical_block_indices[0u]],
         key_source[2u],
-        64u) == 0);
+        sizeof(key_destination[physical_block_indices[0u]])) == 0);
     assert(memcmp(value_destination[physical_block_indices[0u]],
         value_source[2u],
-        64u) == 0);
+        sizeof(value_destination[physical_block_indices[0u]])) == 0);
     assert(SparkGlm52KvCacheAsyncPrefetchBackendPoll(
         &backend,
         99u,
         &prefetch_plan) == SPARK_STATUS_OK);
     assert(memcmp(key_destination[physical_block_indices[1u]],
         key_source[3u],
-        64u) == 0);
+        sizeof(key_destination[physical_block_indices[1u]])) == 0);
     assert(memcmp(value_destination[physical_block_indices[1u]],
         value_source[3u],
-        64u) == 0);
+        sizeof(value_destination[physical_block_indices[1u]])) == 0);
     assert(backend.started_prefetch_count == 1u);
     assert(backend.completed_prefetch_count == 1u);
     assert(backend.copied_key_block_count == 2u);
@@ -616,14 +631,16 @@ static void SparkTestKvCacheSupportsMlaPrimaryOnlyArenaAndPrefetch(void)
     SparkGlm52KvCachePrefetchPlan prefetch_plan;
     SparkGlm52KvCacheAsyncPrefetchBackendConfiguration backend_configuration;
     SparkGlm52KvCacheAsyncPrefetchBackend backend;
-    unsigned char source[2u][64u];
-    unsigned char destination[2u][64u];
+    uint8_t source[2u][SPARK_TEST_KV_TRANSFER_BYTES];
+    uint8_t destination[2u][SPARK_TEST_KV_TRANSFER_BYTES];
     uint32_t physical_block_index;
     uint32_t byte_index;
 
     memset(source, 0, sizeof(source));
     memset(destination, 0, sizeof(destination));
-    for (byte_index = 0u; byte_index < 64u; ++byte_index)
+    for (byte_index = 0u;
+        byte_index < SPARK_TEST_KV_TRANSFER_BYTES;
+        ++byte_index)
     {
         source[1u][byte_index] = (unsigned char)(0x40u + byte_index);
     }
@@ -637,8 +654,8 @@ static void SparkTestKvCacheSupportsMlaPrimaryOnlyArenaAndPrefetch(void)
     arena_configuration.layer_count = 1u;
     arena_configuration.kv_head_count = 1u;
     arena_configuration.head_dim = 32u;
-    arena_configuration.bytes_per_scalar = 2u;
-    arena_configuration.key_block_stride_bytes = 64u;
+    arena_configuration.bytes_per_scalar = (uint32_t)sizeof(uint16_t);
+    arena_configuration.key_block_stride_bytes = SPARK_TEST_KV_TRANSFER_BYTES;
     arena_configuration.key_device_base = destination;
     arena_configuration.blocks = blocks;
     assert(SparkGlm52KvCacheArenaInitialize(
@@ -686,8 +703,8 @@ static void SparkTestKvCacheSupportsMlaPrimaryOnlyArenaAndPrefetch(void)
     backend_configuration.max_inflight_prefetch_count = 1u;
     backend_configuration.physical_block_count = 2u;
     backend_configuration.blocks_per_poll = 1u;
-    backend_configuration.key_source_stride_bytes = 64u;
-    backend_configuration.key_transfer_bytes = 64u;
+    backend_configuration.key_source_stride_bytes = SPARK_TEST_KV_TRANSFER_BYTES;
+    backend_configuration.key_transfer_bytes = SPARK_TEST_KV_TRANSFER_BYTES;
     backend_configuration.key_source_base = source;
     assert(SparkGlm52KvCacheAsyncPrefetchBackendInitialize(
         &backend,
@@ -700,7 +717,10 @@ static void SparkTestKvCacheSupportsMlaPrimaryOnlyArenaAndPrefetch(void)
         &backend,
         7u,
         &prefetch_plan) == SPARK_STATUS_OK);
-    assert(memcmp(destination[physical_block_index], source[physical_block_index], 64u) == 0);
+    assert(memcmp(
+        destination[physical_block_index],
+        source[physical_block_index],
+        sizeof(destination[physical_block_index])) == 0);
     assert(backend.copied_key_block_count == 1u);
     assert(backend.copied_value_block_count == 0u);
 }
@@ -716,18 +736,18 @@ static void SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression(void)
     request.descriptor_bytes =
         SPARK_GLM52_KV_CACHE_CAPACITY_REQUEST_DESCRIPTOR_BYTES;
     request.layout = SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE;
-    request.context_token_count = 1048576u;
-    request.block_token_count = 64u;
-    request.layer_count = 6u;
-    request.head_count = 64u;
-    request.qk_nope_head_dimension = 192u;
-    request.value_head_dimension = 256u;
-    request.latent_dimension = 512u;
-    request.rope_dimension = 64u;
-    request.bytes_per_scalar = 2u;
-    request.index_key_layer_count = 2u;
-    request.index_key_dimension = 128u;
-    request.index_key_bytes_per_scalar = 2u;
+    request.context_token_count = SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
+    request.block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
+    request.layer_count = SPARK_TEST_KV_STAGE_LAYER_COUNT;
+    request.head_count = SPARK_GLM52_MODEL_HEAD_COUNT;
+    request.qk_nope_head_dimension = SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION;
+    request.value_head_dimension = SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION;
+    request.latent_dimension = SPARK_GLM52_MODEL_LATENT_DIMENSION;
+    request.rope_dimension = SPARK_GLM52_MODEL_ROPE_DIMENSION;
+    request.bytes_per_scalar = sizeof(uint16_t);
+    request.index_key_layer_count = SPARK_TEST_KV_INDEX_KEY_LAYER_COUNT;
+    request.index_key_dimension = SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION;
+    request.index_key_bytes_per_scalar = sizeof(uint16_t);
     request.cache_bytes_per_rank = 1024ull * 1024ull * 1024ull * 1024ull;
 
     assert(SparkGlm52KvCacheEstimateCapacity(
@@ -741,12 +761,18 @@ static void SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression(void)
 
     assert(full_estimate.contexts_per_rank < mla_estimate.contexts_per_rank);
     assert(full_estimate.attention_bytes_per_token_per_layer ==
-        ((512ull + 64ull + (64ull * 192ull) + (64ull * 256ull)) * 2ull));
+        ((uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+         ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+          SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION) +
+         ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+          SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION)) * sizeof(uint16_t));
     assert(mla_estimate.attention_bytes_per_token_per_layer ==
-        ((512ull + 64ull) * 2ull));
+        SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t));
     assert(mla_estimate.dsa_index_bytes_per_token ==
-        (2ull * 128ull * 2ull));
-    assert(mla_estimate.block_count_per_context == 16384u);
+        SPARK_TEST_KV_INDEX_KEY_LAYER_COUNT *
+        SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t));
+    assert(mla_estimate.block_count_per_context ==
+        SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS);
 }
 
 int main(void)

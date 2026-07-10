@@ -22,6 +22,7 @@
 #define SPARK_MODEL_PACKAGE_STAGE_DIRECTORY_NAME "stages"
 #define SPARK_MODEL_PACKAGE_SCHEMA_VERSION 3u
 #define SPARK_DRIVER_GENERATOR_ID "sparkpipe.driver.generator.v3"
+static const uint8_t SparkDriverHashFieldTerminator = 0u;
 #if defined(__APPLE__)
 #define SPARK_DRIVER_FIXED_LINK_CONTRACT "-std=c11;-O3;-fPIC;-fvisibility=hidden;-fno-semantic-interposition;-dynamiclib;-Wl,-undefined,error;-Wl,-exported_symbol,_SparkModelDriverGetInterface"
 #else
@@ -154,12 +155,13 @@ static void SparkHashTextField(SparkSha256Context *hash_context, const char *tex
 
     value = text != 0 ? text : "";
     SparkSha256Update(hash_context, value, strlen(value));
-    SparkSha256Update(hash_context, "\0", 1u);
+    SparkSha256Update(hash_context,&SparkDriverHashFieldTerminator,
+        sizeof(SparkDriverHashFieldTerminator));
 }
 
 static void SparkHashUInt32Field(SparkSha256Context *hash_context, uint32_t value)
 {
-    uint8_t encoded[4];
+    uint8_t encoded[sizeof(uint32_t)];
 
     encoded[0] = (uint8_t)(value >> 24u);
     encoded[1] = (uint8_t)(value >> 16u);
@@ -170,12 +172,13 @@ static void SparkHashUInt32Field(SparkSha256Context *hash_context, uint32_t valu
 
 static void SparkHashUInt64Field(SparkSha256Context *hash_context, uint64_t value)
 {
-    uint8_t encoded[8];
+    uint8_t encoded[sizeof(uint64_t)];
     uint32_t byte_index;
 
-    for (byte_index = 0u; byte_index < 8u; ++byte_index)
+    for (byte_index = 0u; byte_index < (uint32_t)sizeof(encoded); ++byte_index)
     {
-        encoded[byte_index] = (uint8_t)(value >> ((7u - byte_index) * 8u));
+        encoded[byte_index] = (uint8_t)(value >>
+            ((((uint32_t)sizeof(encoded) - 1u) - byte_index) * 8u));
     }
     SparkSha256Update(hash_context, encoded, sizeof(encoded));
 }

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_glm52_http_gateway.h"
+#include "sparkpipe/spark_glm52_model.h"
 
 static void SparkTestHttpGatewayRoutes(void)
 {
@@ -94,7 +95,7 @@ static void SparkTestHttpGatewayBuildsServiceHealth(void)
         &stats,
         1u,
         1u,
-        1048576u,
+        SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS,
         SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS,
         "none") ==
         SPARK_STATUS_OK);

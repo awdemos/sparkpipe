@@ -179,7 +179,7 @@ static void SparkTestServiceInitializeFixture(
     kv_configuration.layer_count = 78u;
     kv_configuration.kv_head_count = 8u;
     kv_configuration.head_dim = 128u;
-    kv_configuration.bytes_per_scalar = 2u;
+    kv_configuration.bytes_per_scalar = (uint32_t)sizeof(uint16_t);
     kv_configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
     kv_configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
     kv_configuration.blocks = fixture->kv_blocks;

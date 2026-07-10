@@ -11,6 +11,7 @@
 #define SPARK_TEST_PREFIX_ENTRY_COUNT 128u
 #define SPARK_TEST_PREFIX_BINDING_COUNT 512u
 #define SPARK_TEST_KV_BLOCK_COUNT 128u
+#define SPARK_TEST_KV_BLOCK_PAYLOAD_BYTES 64u
 #define SPARK_TEST_DSPARK_SEQUENCE_STATE_COUNT SPARK_TEST_REQUEST_SLOT_COUNT
 #define SPARK_TEST_TEXT_TOKEN_A 1u
 #define SPARK_TEST_TEXT_TOKEN_B 2u
@@ -79,10 +80,14 @@ typedef struct SparkTestRequestApiFixture
     SparkTestDsparkDraftCapture dspark_capture;
     SparkGlm52DsparkModelContract dspark_model_contract;
     SparkTestPrefetchCapture prefetch_capture;
-    unsigned char key_destination[SPARK_TEST_KV_BLOCK_COUNT][64u];
-    unsigned char value_destination[SPARK_TEST_KV_BLOCK_COUNT][64u];
-    unsigned char key_source[SPARK_TEST_KV_BLOCK_COUNT][64u];
-    unsigned char value_source[SPARK_TEST_KV_BLOCK_COUNT][64u];
+    uint8_t key_destination[SPARK_TEST_KV_BLOCK_COUNT][
+        SPARK_TEST_KV_BLOCK_PAYLOAD_BYTES];
+    uint8_t value_destination[SPARK_TEST_KV_BLOCK_COUNT][
+        SPARK_TEST_KV_BLOCK_PAYLOAD_BYTES];
+    uint8_t key_source[SPARK_TEST_KV_BLOCK_COUNT][
+        SPARK_TEST_KV_BLOCK_PAYLOAD_BYTES];
+    uint8_t value_source[SPARK_TEST_KV_BLOCK_COUNT][
+        SPARK_TEST_KV_BLOCK_PAYLOAD_BYTES];
     SparkGlm52KvCacheAsyncPrefetchBackend async_prefetch_backend;
 } SparkTestRequestApiFixture;
 
@@ -288,7 +293,7 @@ static void SparkTestInitializeFixture(
     kv_configuration.layer_count = 78u;
     kv_configuration.kv_head_count = 8u;
     kv_configuration.head_dim = 128u;
-    kv_configuration.bytes_per_scalar = 2u;
+    kv_configuration.bytes_per_scalar = (uint32_t)sizeof(uint16_t);
     kv_configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
     kv_configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
     kv_configuration.blocks = fixture->kv_blocks;
@@ -389,7 +394,7 @@ static void SparkTestInitializeFixtureWithAsyncMemoryBackend(
     kv_configuration.layer_count = 1u;
     kv_configuration.kv_head_count = 1u;
     kv_configuration.head_dim = 32u;
-    kv_configuration.bytes_per_scalar = 2u;
+    kv_configuration.bytes_per_scalar = (uint32_t)sizeof(uint16_t);
     kv_configuration.key_block_stride_bytes = 64u;
     kv_configuration.value_block_stride_bytes = 64u;
     kv_configuration.key_device_base = fixture->key_destination;
@@ -2463,8 +2468,14 @@ static void SparkTestRequestApiUsesBuiltInAsyncMemoryPrefetchBackend(void)
     assert(matched_token_count == SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS);
     assert(physical_block_count == 1u);
     cold_physical_block_index = physical_block_indices[0u];
-    memset(fixture.key_destination[cold_physical_block_index], 0, 64u);
-    memset(fixture.value_destination[cold_physical_block_index], 0, 64u);
+    memset(
+        fixture.key_destination[cold_physical_block_index],
+        0,
+        sizeof(fixture.key_destination[cold_physical_block_index]));
+    memset(
+        fixture.value_destination[cold_physical_block_index],
+        0,
+        sizeof(fixture.value_destination[cold_physical_block_index]));
     assert(SparkGlm52KvCacheArenaMarkBlockNonResident(
         &fixture.kv_arena,
         cold_physical_block_index) == SPARK_STATUS_OK);
@@ -2495,10 +2506,10 @@ static void SparkTestRequestApiUsesBuiltInAsyncMemoryPrefetchBackend(void)
     assert(fixture.async_prefetch_backend.copied_value_block_count == 1u);
     assert(memcmp(fixture.key_destination[cold_physical_block_index],
         fixture.key_source[cold_physical_block_index],
-        64u) == 0);
+        sizeof(fixture.key_destination[cold_physical_block_index])) == 0);
     assert(memcmp(fixture.value_destination[cold_physical_block_index],
         fixture.value_source[cold_physical_block_index],
-        64u) == 0);
+        sizeof(fixture.value_destination[cold_physical_block_index])) == 0);
     assert((fixture.kv_blocks[cold_physical_block_index].flags &
         SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
 

@@ -32,7 +32,7 @@ $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
 
 $(BACKEND_OBJECT): source/spark_flashinfer_b12x_compiled_moe_backend.cu include/sparkpipe/spark_glm52_sm121_b12x_generated_kernel_table.h | $(BUILD_DIRECTORY)
-	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I../glm52_sm121_flashinfer_b12x_moe/include -Iinclude -c $< -o $@
+	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -c $< -o $@
 
 $(BACKEND_ARCHIVE): $(BACKEND_OBJECT)
 	rm -f $@
@@ -56,14 +56,14 @@ require_generated_source:
 	fi
 
 $(GENERATED_OBJECT): $(GENERATED_SOURCE) $(GENERATED_FLAGS) | $(BUILD_DIRECTORY)
-	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) $(TVM_FFI_CFLAGS) -I$(REPOSITORY_ROOT)/include -I../glm52_sm121_flashinfer_b12x_moe/include -Iinclude -c $(GENERATED_SOURCE) -o $@
+	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) $(TVM_FFI_CFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -c $(GENERATED_SOURCE) -o $@
 
 $(GENERATED_ARCHIVE): $(GENERATED_OBJECT) $(GENERATED_EXPORTED_OBJECTS)
 	rm -f $@
 	$(AR) rcs $@ $^
 
 $(UNAVAILABLE_OBJECT): $(UNAVAILABLE_SOURCE) include/sparkpipe/spark_glm52_sm121_b12x_generated_kernel_table.h | $(BUILD_DIRECTORY)
-	$(CC) -std=c11 -O3 -fPIC -fvisibility=hidden -I$(REPOSITORY_ROOT)/include -I../glm52_sm121_flashinfer_b12x_moe/include -Iinclude -c $(UNAVAILABLE_SOURCE) -o $@
+	$(CC) -std=c11 -O3 -fPIC -fvisibility=hidden -I$(REPOSITORY_ROOT)/include -Iinclude -c $(UNAVAILABLE_SOURCE) -o $@
 
 clean:
 	rm -rf $(BUILD_DIRECTORY)

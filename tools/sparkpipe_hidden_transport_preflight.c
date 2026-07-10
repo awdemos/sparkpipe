@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_hidden_transport.h"
 
 static void SparkPreflightInitializeEndpoint(
@@ -9,7 +10,7 @@ static void SparkPreflightInitializeEndpoint(
 {
     SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
         endpoint,
-        6144u,
+        SPARK_GLM52_MODEL_HIDDEN_DIMENSION,
         1024u,
         0u,
         "sparkpipe_pp13_hidden_transport");

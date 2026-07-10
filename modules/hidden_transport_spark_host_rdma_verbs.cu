@@ -72,7 +72,7 @@ typedef struct SparkHiddenSparkHostRdmaQueuePairWireInfo
     uint32_t packet_sequence_number;
     uint16_t lid;
     uint16_t reserved;
-    uint8_t gid[16u];
+    uint8_t gid[sizeof(union ibv_gid)];
 } SparkHiddenSparkHostRdmaQueuePairWireInfo;
 
 typedef struct SparkHiddenSparkHostRdmaLane

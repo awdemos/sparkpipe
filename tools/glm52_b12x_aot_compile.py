@@ -22,13 +22,18 @@ import subprocess
 import sys
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from glm52_model_contract import load_model_contract
 
+MODEL_CONTRACT = load_model_contract()
 REQUIRED_SHAPE = {
-    "hidden_dimension": 6144,
-    "intermediate_dimension": 2048,
-    "expert_count": 256,
-    "top_k": 8,
-    "fused_w1_rows": 4096,
+    "hidden_dimension": MODEL_CONTRACT["hidden_dimension"],
+    "intermediate_dimension": MODEL_CONTRACT["moe_intermediate_dimension"],
+    "expert_count": MODEL_CONTRACT["moe_expert_count"],
+    "top_k": MODEL_CONTRACT["moe_top_k"],
+    "fused_w1_rows": (
+        MODEL_CONTRACT["moe_w1_component_count"] *
+        MODEL_CONTRACT["moe_intermediate_dimension"]
+    ),
 }
 
 BACKEND_KIND = {

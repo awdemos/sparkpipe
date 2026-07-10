@@ -649,7 +649,7 @@ static SparkStatus SparkReadSafetensorsHeader(
     uint32_t error_buffer_bytes)
 {
     FILE *file;
-    uint8_t header_length_bytes[8];
+    uint8_t header_length_bytes[sizeof(uint64_t)];
     uint64_t header_length;
     uint32_t index;
 
@@ -666,7 +666,9 @@ static SparkStatus SparkReadSafetensorsHeader(
         return SparkSetToolError(SPARK_STATUS_IO_ERROR, error_buffer, error_buffer_bytes, "could not read safetensors header length from %s", path);
     }
     header_length = 0u;
-    for (index = 0u; index < 8u; ++index)
+    for (index = 0u;
+         index < (uint32_t)sizeof(header_length_bytes);
+         ++index)
     {
         header_length |= ((uint64_t)header_length_bytes[index]) << (8u * index);
     }
@@ -730,10 +732,10 @@ static void SparkGlm52UpdateSha256U64(
     SparkSha256Context *context,
     uint64_t value)
 {
-    uint8_t bytes[8];
+    uint8_t bytes[sizeof(uint64_t)];
     uint32_t byte_index;
 
-    for (byte_index = 0u; byte_index < 8u; ++byte_index)
+    for (byte_index = 0u; byte_index < (uint32_t)sizeof(bytes); ++byte_index)
     {
         bytes[byte_index] = (uint8_t)(value & 0xffu);
         value >>= 8u;

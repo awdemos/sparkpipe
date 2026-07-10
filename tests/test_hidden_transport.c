@@ -3,7 +3,11 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_hidden_transport.h"
+
+#define SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT 2u
+#define SPARK_TEST_HIDDEN_TRANSPORT_MAX_ACTIVE_SEQUENCE_COUNT 128u
 
 #ifndef SPARK_TEST_HIDDEN_TRANSPORT_MODULE_PATH
 #define SPARK_TEST_HIDDEN_TRANSPORT_MODULE_PATH \
@@ -113,10 +117,13 @@ static void SparkTestInitializeEndpoint(
     endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
     endpoint->capability_flags =
         SPARK_HIDDEN_TRANSPORT_REQUIRED_PRODUCTION_CAPS;
-    endpoint->hidden_dimension = 6144u;
-    endpoint->bytes_per_sequence = 12288u;
-    endpoint->max_active_sequence_count = 128u;
-    endpoint->max_packet_bytes = 1572864u;
+    endpoint->hidden_dimension = SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
+    endpoint->bytes_per_sequence = SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES;
+    endpoint->max_active_sequence_count =
+        SPARK_TEST_HIDDEN_TRANSPORT_MAX_ACTIVE_SEQUENCE_COUNT;
+    endpoint->max_packet_bytes =
+        SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES *
+        SPARK_TEST_HIDDEN_TRANSPORT_MAX_ACTIVE_SEQUENCE_COUNT;
     endpoint->validated_latency_ns = 200000u;
     endpoint->transport_module_id =
         "spark.glm52.hidden_stage_transport.100g.persistent.v1";
@@ -128,8 +135,8 @@ static void SparkTestInitializeSparkHostRdmaEndpoint(
 {
     SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
         endpoint,
-        6144u,
-        128u,
+        SPARK_GLM52_MODEL_HIDDEN_DIMENSION,
+        SPARK_TEST_HIDDEN_TRANSPORT_MAX_ACTIVE_SEQUENCE_COUNT,
         200000u,
         "spark2_to_sparka_hidden");
 }
@@ -146,7 +153,8 @@ static void SparkTestInitializePacket(
     packet->flags =
         SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_BF16 |
         SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_DEVICE_POINTER;
-    packet->active_sequence_count = 2u;
+    packet->active_sequence_count =
+        SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT;
     packet->hidden_dimension = endpoint->hidden_dimension;
     packet->bytes_per_sequence = endpoint->bytes_per_sequence;
     packet->sequence_id = sequence_id;
@@ -175,7 +183,7 @@ static void SparkTestHiddenTransportValidatesEndpointAndPacket(void)
 {
     SparkHiddenTransportEndpoint endpoint;
     SparkHiddenTransportPacket packet;
-    uint16_t hidden_payload[6144u * 2u];
+    uint16_t hidden_payload[SPARK_GLM52_MODEL_HIDDEN_DIMENSION * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT];
 
     SparkTestInitializeEndpoint(&endpoint);
     assert(SparkHiddenTransportValidateEndpoint(&endpoint) == SPARK_STATUS_OK);
@@ -187,11 +195,11 @@ static void SparkTestHiddenTransportValidatesEndpointAndPacket(void)
     endpoint.max_packet_bytes = 12287u;
     assert(SparkHiddenTransportValidateEndpoint(&endpoint) ==
         SPARK_STATUS_CAPACITY_EXCEEDED);
-    endpoint.max_packet_bytes = 1572864u;
+    endpoint.max_packet_bytes = SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES * SPARK_TEST_HIDDEN_TRANSPORT_MAX_ACTIVE_SEQUENCE_COUNT;
     endpoint.bytes_per_sequence = 12290u;
     assert(SparkHiddenTransportValidateEndpoint(&endpoint) ==
         SPARK_STATUS_INVALID_ARGUMENT);
-    endpoint.bytes_per_sequence = 12288u;
+    endpoint.bytes_per_sequence = SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES;
 
     SparkTestInitializePacket(&packet, &endpoint, hidden_payload, 7u);
     assert(SparkHiddenTransportValidatePacket(&endpoint, &packet) ==
@@ -217,15 +225,15 @@ static void SparkTestHiddenTransportValidatesSidebandPayload(void)
 {
     SparkHiddenTransportEndpoint endpoint;
     SparkHiddenTransportPacket packet;
-    uint16_t hidden_payload[6144u * 2u];
-    uint32_t sideband_payload[2048u * 2u];
+    uint16_t hidden_payload[SPARK_GLM52_MODEL_HIDDEN_DIMENSION * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT];
+    uint32_t sideband_payload[SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT];
 
     SparkTestInitializeEndpoint(&endpoint);
     SparkTestInitializePacket(&packet, &endpoint, hidden_payload, 9u);
     packet.flags |= SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
     packet.sideband_payload = sideband_payload;
     packet.sideband_kind = 1u;
-    packet.sideband_bytes_per_sequence = 8192u;
+    packet.sideband_bytes_per_sequence = SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES;
     assert(SparkHiddenTransportValidatePacket(&endpoint, &packet) ==
         SPARK_STATUS_OK);
 
@@ -241,7 +249,7 @@ static void SparkTestHiddenTransportValidatesSidebandPayload(void)
     assert(SparkHiddenTransportValidatePacket(&endpoint, &packet) ==
         SPARK_STATUS_INVALID_ARGUMENT);
 
-    packet.sideband_bytes_per_sequence = 8192u;
+    packet.sideband_bytes_per_sequence = SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES;
     packet.flags &= ~SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
     assert(SparkHiddenTransportValidatePacket(&endpoint, &packet) ==
         SPARK_STATUS_INVALID_ARGUMENT);
@@ -254,7 +262,7 @@ static void SparkTestHiddenTransportUsesScalarFallbackBatch(void)
     SparkHiddenTransportPacket packets[3];
     SparkHiddenTransportCompletion completion;
     SparkHiddenTransportSession *session;
-    uint16_t hidden_payload[6144u * 2u];
+    uint16_t hidden_payload[SPARK_GLM52_MODEL_HIDDEN_DIMENSION * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT];
     uint32_t packet_index;
 
     SparkTestInitializeEndpoint(&endpoint);
@@ -311,7 +319,7 @@ static void SparkTestHiddenTransportUsesNativeBatchSubmission(void)
     SparkHiddenTransportInterface transport_interface;
     SparkHiddenTransportPacket packets[2];
     SparkHiddenTransportSession *session;
-    uint16_t hidden_payload[6144u * 2u];
+    uint16_t hidden_payload[SPARK_GLM52_MODEL_HIDDEN_DIMENSION * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT];
 
     SparkTestInitializeEndpoint(&endpoint);
     endpoint.capability_flags |= SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION;
@@ -359,7 +367,7 @@ static void SparkTestHiddenTransportPersistentRingBackend(void)
     SparkHiddenTransportCompletion completion;
     SparkHiddenTransportPersistentRingStatistics statistics;
     SparkHiddenTransportSession *session;
-    uint16_t hidden_payload[6144u * 2u];
+    uint16_t hidden_payload[SPARK_GLM52_MODEL_HIDDEN_DIMENSION * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT];
 
     SparkTestInitializeEndpoint(&endpoint);
     endpoint.capability_flags = SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SIMULATION_CAPS;
@@ -383,7 +391,7 @@ static void SparkTestHiddenTransportPersistentRingBackend(void)
     assert(SparkHiddenTransportPoll(session, &completion) == SPARK_STATUS_OK);
     assert(completion.status == SPARK_STATUS_OK);
     assert(completion.sequence_id == 41u);
-    assert(completion.transfer_bytes == 24576u);
+    assert(completion.transfer_bytes == SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT);
     assert(SparkHiddenTransportPoll(session, &completion) == SPARK_STATUS_OK);
     assert(completion.status == SPARK_STATUS_OK);
     assert(completion.sequence_id == 42u);
@@ -408,8 +416,8 @@ static void SparkTestHiddenTransportPersistentRingAccountsSidebandBytes(void)
     SparkHiddenTransportPacket packet;
     SparkHiddenTransportCompletion completion;
     SparkHiddenTransportSession *session;
-    uint16_t hidden_payload[6144u * 2u];
-    uint32_t sideband_payload[2048u * 2u];
+    uint16_t hidden_payload[SPARK_GLM52_MODEL_HIDDEN_DIMENSION * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT];
+    uint32_t sideband_payload[SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT];
 
     SparkTestInitializeEndpoint(&endpoint);
     endpoint.capability_flags = SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SIMULATION_CAPS;
@@ -418,7 +426,7 @@ static void SparkTestHiddenTransportPersistentRingAccountsSidebandBytes(void)
     packet.flags |= SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD;
     packet.sideband_payload = sideband_payload;
     packet.sideband_kind = 1u;
-    packet.sideband_bytes_per_sequence = 8192u;
+    packet.sideband_bytes_per_sequence = SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES;
 
     assert(SparkHiddenTransportPersistentRingGetInterface(&transport_interface) ==
         SPARK_STATUS_OK);
@@ -430,7 +438,7 @@ static void SparkTestHiddenTransportPersistentRingAccountsSidebandBytes(void)
     assert(SparkHiddenTransportSend(session, &packet) == SPARK_STATUS_OK);
     assert(SparkHiddenTransportPoll(session, &completion) == SPARK_STATUS_OK);
     assert(completion.status == SPARK_STATUS_OK);
-    assert(completion.transfer_bytes == 40960u);
+    assert(completion.transfer_bytes == (SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES + SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES) * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT);
     SparkHiddenTransportClose(session);
 }
 
@@ -463,7 +471,7 @@ static void SparkTestHiddenTransportLoadsProductionModule(void)
     SparkHiddenTransportPacket packet;
     SparkHiddenTransportCompletion completion;
     SparkHiddenTransportSession *session;
-    uint16_t hidden_payload[6144u * 2u];
+    uint16_t hidden_payload[SPARK_GLM52_MODEL_HIDDEN_DIMENSION * SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT];
 
     memset(&library, 0, sizeof(library));
     assert(SparkHiddenTransportLoadInterfaceFromSharedObject(

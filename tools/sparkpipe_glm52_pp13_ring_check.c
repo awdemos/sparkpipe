@@ -1,4 +1,5 @@
 #define _GNU_SOURCE
+#include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_hidden_transport.h"
 #include <cuda_runtime_api.h>
 #include <poll.h>
@@ -8,8 +9,8 @@
 #include <time.h>
 
 #define SPARK_RING_CHECK_SEQUENCE_ID 0x52494e47ull
-#define SPARK_RING_CHECK_HIDDEN_DIMENSION 6144u
-#define SPARK_RING_CHECK_BYTES_PER_SEQUENCE (SPARK_RING_CHECK_HIDDEN_DIMENSION * 2u)
+#define SPARK_RING_CHECK_HIDDEN_DIMENSION SPARK_GLM52_MODEL_HIDDEN_DIMENSION
+#define SPARK_RING_CHECK_BYTES_PER_SEQUENCE SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES
 
 typedef struct SparkRingCheckConfig
 {

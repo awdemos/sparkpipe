@@ -1,7 +1,13 @@
 #!/usr/bin/env python3
 import re
+import struct
 import sys
 
+from glm52_model_contract import load_model_contract
+
+MODEL_CONTRACT = load_model_contract()
+BF16_BYTES = struct.calcsize("<H")
+HIDDEN_BYTES = MODEL_CONTRACT["hidden_dimension"] * BF16_BYTES
 LINE = re.compile(r"hidden_tcp_(send_header|deliver) seq=(\d+) token=(\d+) .*?hidden_hash=([0-9a-f]+) sideband_hash=([0-9a-f]+) hidden_bytes=(\d+) sideband_bytes=(\d+)")
 
 def fnv64(data, seed=0):
@@ -115,7 +121,7 @@ def numeric_stats(a, b):
 
 def numeric_report(serial_dir, dump_dir):
     import glob, os
-    row_bytes = 12288
+    row_bytes = HIDDEN_BYTES
     findings = 0
     for rank in range(12):
         layer = 6 * rank + 5
@@ -146,8 +152,8 @@ def numeric_report(serial_dir, dump_dir):
 
 def selftest():
     import tempfile, os
-    tx = "hidden_tcp_send_header seq=1 token=0 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=00000000000000aa sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0 total=12800\n"
-    rx = "hidden_tcp_deliver seq=1 token=0 active=1 sideband_kind=0 hidden_hash=00000000000000aa sideband_hash=0000000000000000 hidden_bytes=12288 sideband_bytes=0\n"
+    tx = f"hidden_tcp_send_header seq=1 token=0 active=1 sideband_kind=0 sideband_bps=0 hidden_hash=00000000000000aa sideband_hash=0000000000000000 hidden_bytes={HIDDEN_BYTES} sideband_bytes=0 total={HIDDEN_BYTES}\n"
+    rx = f"hidden_tcp_deliver seq=1 token=0 active=1 sideband_kind=0 hidden_hash=00000000000000aa sideband_hash=0000000000000000 hidden_bytes={HIDDEN_BYTES} sideband_bytes=0\n"
     rx_bad = rx.replace("aa", "ab")
     tx_bad = tx.replace("aa", "ab")
     d = tempfile.mkdtemp()

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 
 def load_sweep_module():
     repo_root = Path(__file__).resolve().parents[1]
     tool_path = repo_root / "tools" / "glm52_stage_bucket_sweep.py"
+    sys.path.insert(0, str(tool_path.parent))
     spec = importlib.util.spec_from_file_location("glm52_stage_bucket_sweep", tool_path)
     if spec is None or spec.loader is None:
         raise RuntimeError("failed to load stage bucket sweep tool")

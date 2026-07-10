@@ -12,7 +12,9 @@
 
 #define SPARK_STATIC_ARCHIVE_MAGIC "!<arch>\n"
 #define SPARK_THIN_ARCHIVE_MAGIC "!<thin>\n"
-#define SPARK_ARCHIVE_MAGIC_BYTES 8u
+#define SPARK_ARCHIVE_MAGIC_BYTES \
+    ((uint32_t)(sizeof(SPARK_STATIC_ARCHIVE_MAGIC) - 1u))
+static const char SparkModuleHashFieldSeparator[] = "\n";
 
 static SparkStatus SparkModuleCopyJsonStringMember(
     const SparkJsonDocument *document,
@@ -430,7 +432,8 @@ static SparkStatus SparkModuleComputeIdentityKey(
     }
     SparkSha256Initialize(&hash_context);
     SparkSha256Update(&hash_context, module_id, strlen(module_id));
-    SparkSha256Update(&hash_context, "\n", 1u);
+    SparkSha256Update(&hash_context,SparkModuleHashFieldSeparator,
+        sizeof(SparkModuleHashFieldSeparator) - 1u);
     SparkSha256Update(&hash_context, target, strlen(target));
     SparkSha256Finalize(&hash_context, digest);
     SparkSha256DigestToHex(digest, key);
@@ -445,7 +448,8 @@ static void SparkModuleHashValidationField(
 
     field_value = field != 0 ? field : "";
     SparkSha256Update(hash_context, field_value, strlen(field_value));
-    SparkSha256Update(hash_context, "\n", 1u);
+    SparkSha256Update(hash_context,SparkModuleHashFieldSeparator,
+        sizeof(SparkModuleHashFieldSeparator) - 1u);
 }
 
 static SparkStatus SparkModuleComputeValidationKey(

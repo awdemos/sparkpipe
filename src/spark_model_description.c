@@ -7,6 +7,8 @@
 #include "sparkpipe/spark_json.h"
 #include "sparkpipe/spark_model_driver.h"
 
+static const char SparkModelDescriptionEmptyConfiguration[] = "{}";
+
 static SparkStatus SparkModelDescriptionCopyRequiredString(
     const SparkJsonDocument *document,
     int32_t object_token_index,
@@ -516,13 +518,18 @@ static SparkStatus SparkParseModelOperation(
     configuration_token_index = SparkJsonFindObjectMember(document, operation_token_index, "configuration");
     if (configuration_token_index < 0)
     {
-        operation->configuration_json = (char *)malloc(3u);
+        operation->configuration_json = (char *)malloc(
+            sizeof(SparkModelDescriptionEmptyConfiguration));
         if (operation->configuration_json == 0)
         {
             return SPARK_STATUS_INTERNAL_ERROR;
         }
-        memcpy(operation->configuration_json, "{}", 3u);
-        operation->configuration_json_bytes = 2u;
+        memcpy(
+            operation->configuration_json,
+            SparkModelDescriptionEmptyConfiguration,
+            sizeof(SparkModelDescriptionEmptyConfiguration));
+        operation->configuration_json_bytes =
+            sizeof(SparkModelDescriptionEmptyConfiguration) - 1u;
         return SPARK_STATUS_OK;
     }
     if (!SparkJsonTokenIsType(document, configuration_token_index, SPARK_JSON_TOKEN_OBJECT))

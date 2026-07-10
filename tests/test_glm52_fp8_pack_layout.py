@@ -5,16 +5,19 @@ from __future__ import annotations
 import importlib.util
 from pathlib import Path
 import struct
+import sys
 import tempfile
 
 
 def load_fp8_packer_module():
     repo_root = Path(__file__).resolve().parents[1]
     packer_path = repo_root / "tools" / "glm52_fp8_resident_pack.py"
+    sys.path.insert(0, str(packer_path.parent))
     spec = importlib.util.spec_from_file_location("glm52_fp8_resident_pack", packer_path)
     if spec is None or spec.loader is None:
         raise RuntimeError("failed to load FP8 packer")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -90,9 +93,10 @@ def main() -> int:
     assert module.parse_layers("3,4;5") == [3, 4, 5]
     regions = module.reserve_regions()
     header = module.pack_header(7, regions, 1024)
-    fields = struct.unpack("<16I", header[16:80])
-    assert fields[2] == 7
-    assert fields[3] == 1024
+    header_fields, header_regions = module.unpack_pack_header(header)
+    assert header_fields.layer_index == 7
+    assert header_fields.maximum_token_count == 1024
+    assert header_regions == regions
     assert module.DEFAULT_MAX_ACTIVE_SEQUENCE_COUNT == 1024
     with tempfile.TemporaryDirectory() as temp_dir:
         pack_path = Path(temp_dir) / "glm52_layer_0007_fp8_moe.spfp8"
@@ -101,8 +105,9 @@ def main() -> int:
             file.write(module.pack_header(7, regions, 128))
             file.truncate(pack_bytes)
         assert module.existing_pack_can_reuse(pack_path, 7, pack_bytes, 1024)
-        _, updated_fields = module.existing_pack_fields(pack_path)
-        assert updated_fields[3] == 1024
+        updated_header, updated_regions = module.existing_pack_header(pack_path)
+        assert updated_header.maximum_token_count == 1024
+        assert updated_regions == regions
     return 0
 
 

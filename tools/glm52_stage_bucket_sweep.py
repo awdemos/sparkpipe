@@ -8,15 +8,18 @@ import os
 from pathlib import Path
 import re
 import shlex
+import struct
 import subprocess
 import sys
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
+from glm52_model_contract import load_model_contract
 
-HIDDEN_DIMENSION = 6144
-BF16_BYTES = 2
-LAYER_COUNT = 78
-FIRST_ROUTED_LAYER = 3
+MODEL_CONTRACT = load_model_contract()
+HIDDEN_DIMENSION = MODEL_CONTRACT["hidden_dimension"]
+BF16_BYTES = struct.calcsize("<H")
+LAYER_COUNT = MODEL_CONTRACT["layer_count"]
+FIRST_ROUTED_LAYER = MODEL_CONTRACT["first_routed_layer"]
 MAX_ROUTED_LAYERS_PER_STAGE = 8
 DEFAULT_BUCKETS = (8, 16, 32, 64)
 DEFAULT_STAGES = (

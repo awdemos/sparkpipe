@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 
 
 def load_packer_module():
     repo_root = Path(__file__).resolve().parents[1]
     packer_path = repo_root / "tools" / "glm52_b12x_resident_pack.py"
+    sys.path.insert(0, str(packer_path.parent))
     spec = importlib.util.spec_from_file_location("glm52_b12x_resident_pack", packer_path)
     if spec is None or spec.loader is None:
         raise RuntimeError("failed to load B12x packer")

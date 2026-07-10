@@ -1,6 +1,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_glm52_service_backend.h"
+#include "sparkpipe/spark_glm52_model.h"
 
 static SparkStatus SparkTestServiceBackendInitialize(
 	const SparkGlm52ServiceBackendConfiguration *configuration,
@@ -34,7 +35,7 @@ static SparkStatus SparkTestServiceBackendGetView(
 	view->descriptor_bytes = SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES;
 	view->backend_ready = 1u;
 	view->pp13_ready = 1u;
-	view->max_context_tokens = 1048576u;
+	view->max_context_tokens = SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
 	view->production_contract_flags =
 		SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS;
 	view->service = (SparkGlm52ServiceRuntime *)(uintptr_t)0x1000u;
