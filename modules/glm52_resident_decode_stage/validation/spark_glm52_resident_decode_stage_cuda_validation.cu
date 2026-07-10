@@ -4470,7 +4470,7 @@ static bool SparkValidationBindFp8MoePlanForLayer(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REQUIRED_CAPABILITIES;
         plan->maximum_active_sequence_count =
             node_context->max_active_sequence_count;
-        plan->maximum_token_count = node_context->max_active_sequence_count;
+        plan->maximum_token_count = header.maximum_token_count;
         plan->expert_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
         plan->top_k = SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
         plan->hidden_dimension = SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
@@ -9141,6 +9141,7 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
         node_context,
         use_dense_mlp,
         0u);
+    node_context->layer_index = layer_index;
     attention_mode_text = getenv("GLM52_EXACT_PP13_ATTENTION_EXECUTION_MODE");
     if (attention_mode_text != 0 &&
         attention_mode_text[0] != '\0')
