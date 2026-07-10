@@ -825,7 +825,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTables(
 	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_low_scratch,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * (SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION + SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) * 2u);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->device_probe_hash_slots,64u);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->device_probe_hash_slots,128u);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->cos_table,table_bytes);
 	if (status == SPARK_STATUS_OK)
@@ -2534,7 +2534,7 @@ static void SparkGlm52Pp13BuilderMaybeProbeLayer2Sublayers(
 	uint32_t token_offset,
 	uint32_t position)
 {
-	uint64_t probe_slots[8];
+	uint64_t probe_slots[16];
 	if (getenv("SPARKPIPE_FP8_AMAX_PROBE") == 0 || state == 0 ||
 		state->device_probe_hash_slots == 0)
 		return;
@@ -2542,18 +2542,18 @@ static void SparkGlm52Pp13BuilderMaybeProbeLayer2Sublayers(
 			sizeof(probe_slots),cudaMemcpyDeviceToHost) != cudaSuccess)
 		return;
 	fprintf(stderr,
-		"fp8_layer2_probe request=%llu token_offset=%u position=%u input=%016llx post_attention=%016llx post_attention_norm=%016llx gate=%016llx up=%016llx intermediate=%016llx down=%016llx residual=%016llx\n",
+		"fp8_layer2_attention_probe request=%llu token_offset=%u position=%u input=%016llx attention_norm=%016llx kv_latent=%016llx raw_kv_b=%016llx fp8_value_cache=%016llx attention_value=%016llx attention_projection=%016llx post_attention=%016llx\n",
 		(unsigned long long)request_id,
 		token_offset,
 		position,
-		(unsigned long long)probe_slots[0],
-		(unsigned long long)probe_slots[1],
-		(unsigned long long)probe_slots[2],
-		(unsigned long long)probe_slots[3],
-		(unsigned long long)probe_slots[4],
-		(unsigned long long)probe_slots[5],
-		(unsigned long long)probe_slots[6],
-		(unsigned long long)probe_slots[7]);
+		(unsigned long long)probe_slots[8],
+		(unsigned long long)probe_slots[9],
+		(unsigned long long)probe_slots[10],
+		(unsigned long long)probe_slots[11],
+		(unsigned long long)probe_slots[12],
+		(unsigned long long)probe_slots[13],
+		(unsigned long long)probe_slots[14],
+		(unsigned long long)probe_slots[15]);
 }
 
 static SparkStatus SparkGlm52Pp13BuilderPrefill(
