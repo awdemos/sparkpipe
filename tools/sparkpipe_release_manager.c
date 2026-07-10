@@ -23,7 +23,13 @@
 #define SPARK_RELEASE_MANAGER_DEFAULT_PORT 55420u
 #define SPARK_RELEASE_MANAGER_MAX_URL_BYTES 4096u
 #define SPARK_RELEASE_MANAGER_HTTP_HEADER_BYTES 4096u
+#define SPARK_RELEASE_MANAGER_COMMAND_LINE_BYTES 8192u
 #define SPARK_RELEASE_MANAGER_AGENT_IDLE_SLEEP_MS 1000u
+
+static const char SparkReleaseManagerHttpHeaderEnd[] = "\r\n\r\n";
+static const char SparkReleaseManagerHttp10Ok[] = "HTTP/1.0 200";
+static const char SparkReleaseManagerHttp11Ok[] = "HTTP/1.1 200";
+static const char SparkReleaseManagerHttpScheme[] = "http://";
 
 typedef struct SparkReleaseManagerUrl
 {
@@ -122,13 +128,17 @@ static SparkStatus SparkReleaseManagerParseUrl(
     uint32_t host_bytes;
     uint32_t path_bytes;
 
-    if (url == 0 || parsed_url == 0 || strncmp(url,"http://",7u) != 0)
+    if (url == 0 || parsed_url == 0 ||
+        strncmp(
+            url,
+            SparkReleaseManagerHttpScheme,
+            sizeof(SparkReleaseManagerHttpScheme) - 1u) != 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     memset(parsed_url,0,sizeof(*parsed_url));
     parsed_url->port = SPARK_RELEASE_MANAGER_DEFAULT_PORT;
-    cursor = url + 7u;
+    cursor = url + sizeof(SparkReleaseManagerHttpScheme) - 1u;
     host_start = cursor;
     path_start = strchr(cursor,'/');
     if (path_start == 0)
@@ -379,10 +389,23 @@ static SparkStatus SparkReleaseManagerReadHttpResponseToFile(
                 }
                 header[header_bytes++] = (char)buffer[offset++];
                 header[header_bytes] = '\0';
-                if (header_bytes >= 4u && memcmp(header + header_bytes - 4u,"\r\n\r\n",4u) == 0)
+                if (header_bytes >= sizeof(SparkReleaseManagerHttpHeaderEnd) - 1u &&
+                    memcmp(
+                        header + header_bytes -
+                            (sizeof(SparkReleaseManagerHttpHeaderEnd) - 1u),
+                        SparkReleaseManagerHttpHeaderEnd,
+                        sizeof(SparkReleaseManagerHttpHeaderEnd) - 1u) == 0)
                 {
                     header_done = 1u;
-                    status_ok = strncmp(header,"HTTP/1.0 200",12u) == 0 || strncmp(header,"HTTP/1.1 200",12u) == 0;
+                    status_ok =
+                        strncmp(
+                            header,
+                            SparkReleaseManagerHttp10Ok,
+                            sizeof(SparkReleaseManagerHttp10Ok) - 1u) == 0 ||
+                        strncmp(
+                            header,
+                            SparkReleaseManagerHttp11Ok,
+                            sizeof(SparkReleaseManagerHttp11Ok) - 1u) == 0;
                     if (status_ok == 0u)
                     {
                         fclose(output);
@@ -737,7 +760,7 @@ static SparkStatus SparkReleaseManagerRunAgentOnce(SparkReleaseManagerAgentConfi
     const char *source_directory;
     SparkReleaseSyncResult sync_result;
     char manifest_path[SPARK_RELEASE_MAX_PATH_BYTES];
-    char command_line[8192];
+    char command_line[SPARK_RELEASE_MANAGER_COMMAND_LINE_BYTES];
     SparkStatus status;
     char manifest_sha256[SPARK_SHA256_HEX_BYTES];
     uint32_t role_alive;
@@ -1089,7 +1112,7 @@ int main(int argc,char **argv)
         const SparkReleaseRole *role;
         const char *manifest_path;
         const char *role_name;
-        char command_line[8192];
+        char command_line[SPARK_RELEASE_MANAGER_COMMAND_LINE_BYTES];
         int index;
         SparkStatus status;
 

@@ -9,6 +9,7 @@ load these packs from C/CUDA only.
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 from multiprocessing import Pool
 from pathlib import Path
@@ -16,18 +17,29 @@ import struct
 import tempfile
 from typing import Any, BinaryIO, Dict, Iterable, List, Tuple
 
+from glm52_model_contract import load_model_contract
 
 
+MODEL_CONTRACT = load_model_contract()
 MAGIC = b"SPARKGLM52FP8\0\0"
+MAGIC_FIELD_BYTES = 16
+WIRE_MAGIC = MAGIC.ljust(MAGIC_FIELD_BYTES, b"\0")
 ABI_VERSION = 1
 HEADER_BYTES = 512
 REGION_ALIGNMENT = 4096
-REGION_FORMAT = "<QQ"
+HEADER_U32_FIELD_COUNT = 16
+HEADER_PREFIX_STRUCT = struct.Struct(
+    f"<{MAGIC_FIELD_BYTES}s{HEADER_U32_FIELD_COUNT}I"
+)
+REGION_STRUCT = struct.Struct("<QQ")
 REGION_COUNT = 4
-HIDDEN_DIMENSION = 6144
-INTERMEDIATE_DIMENSION = 2048
-EXPERT_COUNT = 256
-TOP_K = 8
+HIDDEN_DIMENSION = MODEL_CONTRACT["hidden_dimension"]
+INTERMEDIATE_DIMENSION = MODEL_CONTRACT["moe_intermediate_dimension"]
+EXPERT_COUNT = MODEL_CONTRACT["moe_expert_count"]
+TOP_K = MODEL_CONTRACT["moe_top_k"]
+W1_COMPONENT_COUNT = MODEL_CONTRACT["moe_w1_component_count"]
+FP8_SCALE_BLOCK = MODEL_CONTRACT["fp8_scale_block"]
+FLOAT32_BYTES = struct.calcsize("<f")
 CUDA_ARCHITECTURE_SM121 = 121
 GATE_UP_ORDER_UP_GATE = 1
 WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR = 1
@@ -45,6 +57,27 @@ class PackFailure(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class Fp8MoePackHeader:
+    magic: bytes
+    abi_version: int
+    header_bytes: int
+    layer_index: int
+    maximum_token_count: int
+    hidden_dimension: int
+    intermediate_dimension: int
+    expert_count: int
+    top_k: int
+    gate_up_order: int
+    weight_layout: int
+    scale_layout: int
+    quant_mode: int
+    output_dtype: int
+    cuda_architecture: int
+    reserved0: int
+    reserved1: int
+
+
 def import_torch() -> Any:
     try:
         import torch
@@ -56,7 +89,7 @@ def import_torch() -> Any:
 def fp8_scale_inv_row_block_major_byte_count(rows: int, column_blocks: int) -> int:
     if rows <= 0 or column_blocks <= 0:
         raise PackFailure("FP8 scale dimensions must be positive")
-    return rows * column_blocks * 4
+    return rows * column_blocks * FLOAT32_BYTES
 
 
 def fp8_scale_inv_bytes_to_runtime_row_block_major(
@@ -89,9 +122,10 @@ def transposed_fp8_scale_inv_bytes_to_runtime_row_block_major(
     runtime = bytearray(expected_bytes)
     for row in range(rows):
         for column_block in range(column_blocks):
-            source = ((column_block * rows) + row) * 4
-            target = ((row * column_blocks) + column_block) * 4
-            runtime[target:target + 4] = transposed[source:source + 4]
+            source = ((column_block * rows) + row) * FLOAT32_BYTES
+            target = ((row * column_blocks) + column_block) * FLOAT32_BYTES
+            runtime[target:target + FLOAT32_BYTES] = \
+                transposed[source:source + FLOAT32_BYTES]
     return bytes(runtime)
 
 
@@ -131,15 +165,30 @@ def align_up(value: int, alignment: int) -> int:
     return ((value + alignment - 1) // alignment) * alignment
 
 
+def scale_extent(dimension: int) -> int:
+    return (dimension + FP8_SCALE_BLOCK - 1) // FP8_SCALE_BLOCK
+
+
+def scale_shape(rows: int, columns: int) -> Tuple[int, int]:
+    return scale_extent(rows), scale_extent(columns)
+
+
 def tensor_name(layer: int, expert: int, projection: str, suffix: str) -> str:
     return f"model.layers.{layer}.mlp.experts.{expert}.{projection}.{suffix}"
 
 
 def reserve_regions() -> List[Dict[str, int]]:
-    w1_weight_bytes = EXPERT_COUNT * (2 * INTERMEDIATE_DIMENSION) * HIDDEN_DIMENSION
-    w1_scale_bytes = EXPERT_COUNT * 32 * 48 * 4
+    w1_rows = W1_COMPONENT_COUNT * INTERMEDIATE_DIMENSION
+    w1_weight_bytes = EXPERT_COUNT * w1_rows * HIDDEN_DIMENSION
+    w1_scale_bytes = (
+        EXPERT_COUNT * scale_extent(w1_rows) * scale_extent(HIDDEN_DIMENSION) *
+        FLOAT32_BYTES
+    )
     w2_weight_bytes = EXPERT_COUNT * HIDDEN_DIMENSION * INTERMEDIATE_DIMENSION
-    w2_scale_bytes = EXPERT_COUNT * 48 * 16 * 4
+    w2_scale_bytes = (
+        EXPERT_COUNT * scale_extent(HIDDEN_DIMENSION) *
+        scale_extent(INTERMEDIATE_DIMENSION) * FLOAT32_BYTES
+    )
     offset = HEADER_BYTES
     regions: List[Dict[str, int]] = []
     for byte_count in (w1_weight_bytes, w1_scale_bytes, w2_weight_bytes, w2_scale_bytes):
@@ -149,31 +198,53 @@ def reserve_regions() -> List[Dict[str, int]]:
     return regions
 
 
-def pack_header(layer: int, regions: List[Dict[str, int]], max_active: int) -> bytes:
+def expected_pack_header(layer: int, max_active: int) -> Fp8MoePackHeader:
     if max_active <= 0:
         raise PackFailure("maximum active sequence count must be positive")
-    prefix = struct.pack(
-        "<16s16I",
-        MAGIC,
-        ABI_VERSION,
-        HEADER_BYTES,
-        layer,
-        max_active,
-        HIDDEN_DIMENSION,
-        INTERMEDIATE_DIMENSION,
-        EXPERT_COUNT,
-        TOP_K,
-        GATE_UP_ORDER_UP_GATE,
-        WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR,
-        SCALE_LAYOUT_EXPERT_MAJOR_ROW_BLOCK_MAJOR,
-        QUANT_MODE_FP8_E4M3,
-        OUTPUT_DTYPE_BF16,
-        CUDA_ARCHITECTURE_SM121,
-        0,
-        0,
+    return Fp8MoePackHeader(
+        magic=WIRE_MAGIC,
+        abi_version=ABI_VERSION,
+        header_bytes=HEADER_BYTES,
+        layer_index=layer,
+        maximum_token_count=max_active,
+        hidden_dimension=HIDDEN_DIMENSION,
+        intermediate_dimension=INTERMEDIATE_DIMENSION,
+        expert_count=EXPERT_COUNT,
+        top_k=TOP_K,
+        gate_up_order=GATE_UP_ORDER_UP_GATE,
+        weight_layout=WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR,
+        scale_layout=SCALE_LAYOUT_EXPERT_MAJOR_ROW_BLOCK_MAJOR,
+        quant_mode=QUANT_MODE_FP8_E4M3,
+        output_dtype=OUTPUT_DTYPE_BF16,
+        cuda_architecture=CUDA_ARCHITECTURE_SM121,
+        reserved0=0,
+        reserved1=0,
+    )
+
+
+def pack_header(layer: int, regions: List[Dict[str, int]], max_active: int) -> bytes:
+    header_fields = expected_pack_header(layer, max_active)
+    prefix = HEADER_PREFIX_STRUCT.pack(
+        header_fields.magic,
+        header_fields.abi_version,
+        header_fields.header_bytes,
+        header_fields.layer_index,
+        header_fields.maximum_token_count,
+        header_fields.hidden_dimension,
+        header_fields.intermediate_dimension,
+        header_fields.expert_count,
+        header_fields.top_k,
+        header_fields.gate_up_order,
+        header_fields.weight_layout,
+        header_fields.scale_layout,
+        header_fields.quant_mode,
+        header_fields.output_dtype,
+        header_fields.cuda_architecture,
+        header_fields.reserved0,
+        header_fields.reserved1,
     )
     region_bytes = b"".join(
-        struct.pack(REGION_FORMAT, region["offset"], region["bytes"])
+        REGION_STRUCT.pack(region["offset"], region["bytes"])
         for region in regions
     )
     header = prefix + region_bytes
@@ -182,44 +253,47 @@ def pack_header(layer: int, regions: List[Dict[str, int]], max_active: int) -> b
     return header + (b"\0" * (HEADER_BYTES - len(header)))
 
 
-def existing_pack_fields(path: Path) -> Tuple[bytes, Tuple[int, ...]]:
+def unpack_pack_header(
+    header: bytes,
+) -> Tuple[Fp8MoePackHeader, List[Dict[str, int]]]:
+    if len(header) != HEADER_BYTES:
+        raise PackFailure("short FP8 pack header")
+    prefix = HEADER_PREFIX_STRUCT.unpack(header[:HEADER_PREFIX_STRUCT.size])
+    fields = Fp8MoePackHeader(*prefix)
+    regions = []
+    offset = HEADER_PREFIX_STRUCT.size
+    for _ in range(REGION_COUNT):
+        region_offset, region_bytes = REGION_STRUCT.unpack(
+            header[offset:offset + REGION_STRUCT.size]
+        )
+        regions.append({"offset": region_offset, "bytes": region_bytes})
+        offset += REGION_STRUCT.size
+    return fields, regions
+
+
+def existing_pack_header(
+    path: Path,
+) -> Tuple[Fp8MoePackHeader, List[Dict[str, int]]]:
     with path.open("rb") as file:
-        header = file.read(80)
-    if len(header) != 80:
-        raise PackFailure(f"short FP8 pack header: {path}")
-    return header[:16], struct.unpack("<16I", header[16:80])
+        header = file.read(HEADER_BYTES)
+    try:
+        return unpack_pack_header(header)
+    except PackFailure as error:
+        raise PackFailure(f"{error}: {path}") from error
 
 
 def existing_pack_can_reuse(path: Path, layer: int, expected_bytes: int, max_active: int) -> bool:
     if not path.exists() or path.stat().st_size != expected_bytes:
         return False
-    magic, fields = existing_pack_fields(path)
-    if magic[:len(MAGIC)] != MAGIC:
+    header, regions = existing_pack_header(path)
+    expected_regions = reserve_regions()
+    if regions != expected_regions:
         return False
-    expected = (
-        ABI_VERSION,
-        HEADER_BYTES,
-        layer,
-        fields[3],
-        HIDDEN_DIMENSION,
-        INTERMEDIATE_DIMENSION,
-        EXPERT_COUNT,
-        TOP_K,
-        GATE_UP_ORDER_UP_GATE,
-        WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR,
-        SCALE_LAYOUT_EXPERT_MAJOR_ROW_BLOCK_MAJOR,
-        QUANT_MODE_FP8_E4M3,
-        OUTPUT_DTYPE_BF16,
-        CUDA_ARCHITECTURE_SM121,
-        0,
-        0,
-    )
-    if fields != expected:
+    if header != expected_pack_header(layer, header.maximum_token_count):
         return False
-    if fields[3] < max_active:
+    if header.maximum_token_count < max_active:
         with path.open("r+b") as file:
-            file.seek(16 + (3 * 4))
-            file.write(struct.pack("<I", max_active))
+            file.write(pack_header(layer, regions, max_active))
     return True
 
 
@@ -320,14 +394,14 @@ def write_layer_pack(
                 write_scale_bytes(
                     file,
                     reader.tensor(tensor_name(layer, expert, "up_proj", "weight_scale_inv")),
-                    (16, 48),
+                    scale_shape(INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION),
                     f"layer {layer} expert {expert} up scale_inv",
                     allow_transposed_scales,
                 )
                 write_scale_bytes(
                     file,
                     reader.tensor(tensor_name(layer, expert, "gate_proj", "weight_scale_inv")),
-                    (16, 48),
+                    scale_shape(INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION),
                     f"layer {layer} expert {expert} gate scale_inv",
                     allow_transposed_scales,
                 )
@@ -344,7 +418,7 @@ def write_layer_pack(
                 write_scale_bytes(
                     file,
                     reader.tensor(tensor_name(layer, expert, "down_proj", "weight_scale_inv")),
-                    (48, 16),
+                    scale_shape(HIDDEN_DIMENSION, INTERMEDIATE_DIMENSION),
                     f"layer {layer} expert {expert} down scale_inv",
                     allow_transposed_scales,
                 )

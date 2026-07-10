@@ -3410,7 +3410,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapFrameCont
         return SPARK_STATUS_OK;
     }
     if (frame_context->dspark_hidden_tap_lane_stride_bytes <
-            (uint64_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2ull ||
+            SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES ||
         SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapPlanInline(
             frame_context->dspark_hidden_tap_plan) != SPARK_STATUS_OK)
     {

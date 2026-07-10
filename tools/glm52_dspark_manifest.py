@@ -14,12 +14,15 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
+from glm52_model_contract import load_model_contract
 
+MODEL_CONTRACT = load_model_contract()
+DSPARK_CONTRACT = MODEL_CONTRACT["dspark"]
 FORMAT = "sparkpipe.glm52.dspark.speculator_manifest.v1"
 MODEL_ID = "RedHatAI/GLM-5.2-speculator.dspark"
 BASE_MODEL = "zai-org/GLM-5.2-FP8"
-AUX_LAYERS = [8, 23, 39, 55, 70]
-MAX_SPECULATIVE_TOKENS = 7
+AUX_LAYERS = DSPARK_CONTRACT["aux_layer_ids"]
+MAX_SPECULATIVE_TOKENS = DSPARK_CONTRACT["maximum_speculative_token_count"]
 
 
 class ManifestFailure(RuntimeError):
@@ -66,11 +69,15 @@ def build_manifest(model_dir: Path, skip_sha256: bool) -> Dict[str, Any]:
 
     require_equal("architectures", config.get("architectures"), ["DSparkDraftModel"])
     aux_layers = require_layer_ids(config.get("aux_hidden_state_layer_ids") or [])
-    require_equal("block_size", config.get("block_size"), 8)
+    require_equal("block_size", config.get("block_size"), DSPARK_CONTRACT["block_size"])
     require_equal("dtype", config.get("dtype"), "bfloat16")
-    require_equal("draft_vocab_size", config.get("draft_vocab_size"), 154880)
-    require_equal("markov_rank", config.get("markov_rank"), 256)
-    require_equal("max_anchors", config.get("max_anchors"), 1024)
+    require_equal(
+        "draft_vocab_size",
+        config.get("draft_vocab_size"),
+        MODEL_CONTRACT["output_vocab_count"],
+    )
+    require_equal("markov_rank", config.get("markov_rank"), DSPARK_CONTRACT["markov_rank"])
+    require_equal("max_anchors", config.get("max_anchors"), DSPARK_CONTRACT["max_anchors"])
     require_equal("enable_confidence_head", config.get("enable_confidence_head"), True)
     require_equal(
         "confidence_head_with_markov",
@@ -86,13 +93,13 @@ def build_manifest(model_dir: Path, skip_sha256: bool) -> Dict[str, Any]:
     )
     require_equal("proposal verifier_accept_k", proposal.get("verifier_accept_k"), 1)
     require_equal("verifier.name_or_path", verifier.get("name_or_path"), BASE_MODEL)
-    require_equal("draft hidden_size", transformer.get("hidden_size"), 6144)
-    require_equal("draft intermediate_size", transformer.get("intermediate_size"), 12288)
-    require_equal("draft num_hidden_layers", transformer.get("num_hidden_layers"), 5)
-    require_equal("draft num_attention_heads", transformer.get("num_attention_heads"), 64)
-    require_equal("draft num_key_value_heads", transformer.get("num_key_value_heads"), 64)
-    require_equal("draft head_dim", transformer.get("head_dim"), 64)
-    require_equal("draft vocab_size", transformer.get("vocab_size"), 154880)
+    require_equal("draft hidden_size", transformer.get("hidden_size"), MODEL_CONTRACT["hidden_dimension"])
+    require_equal("draft intermediate_size", transformer.get("intermediate_size"), DSPARK_CONTRACT["draft_intermediate_dimension"])
+    require_equal("draft num_hidden_layers", transformer.get("num_hidden_layers"), DSPARK_CONTRACT["draft_layer_count"])
+    require_equal("draft num_attention_heads", transformer.get("num_attention_heads"), DSPARK_CONTRACT["draft_attention_head_count"])
+    require_equal("draft num_key_value_heads", transformer.get("num_key_value_heads"), DSPARK_CONTRACT["draft_kv_head_count"])
+    require_equal("draft head_dim", transformer.get("head_dim"), DSPARK_CONTRACT["draft_head_dimension"])
+    require_equal("draft vocab_size", transformer.get("vocab_size"), MODEL_CONTRACT["output_vocab_count"])
 
     if not model_path.exists():
         raise ManifestFailure(f"missing DSpark weights: {model_path}")
@@ -115,17 +122,17 @@ def build_manifest(model_dir: Path, skip_sha256: bool) -> Dict[str, Any]:
             "abi_version": 1,
             "verifier_quantization_mode": 2,
             "draft_dtype": 1,
-            "draft_layer_count": 5,
-            "block_size": 8,
-            "hidden_dimension": 6144,
-            "intermediate_dimension": 12288,
-            "attention_head_count": 64,
-            "kv_head_count": 64,
-            "head_dimension": 64,
-            "vocab_size": 154880,
-            "draft_vocab_size": 154880,
-            "markov_rank": 256,
-            "max_anchors": 1024,
+            "draft_layer_count": DSPARK_CONTRACT["draft_layer_count"],
+            "block_size": DSPARK_CONTRACT["block_size"],
+            "hidden_dimension": MODEL_CONTRACT["hidden_dimension"],
+            "intermediate_dimension": DSPARK_CONTRACT["draft_intermediate_dimension"],
+            "attention_head_count": DSPARK_CONTRACT["draft_attention_head_count"],
+            "kv_head_count": DSPARK_CONTRACT["draft_kv_head_count"],
+            "head_dimension": DSPARK_CONTRACT["draft_head_dimension"],
+            "vocab_size": MODEL_CONTRACT["output_vocab_count"],
+            "draft_vocab_size": MODEL_CONTRACT["output_vocab_count"],
+            "markov_rank": DSPARK_CONTRACT["markov_rank"],
+            "max_anchors": DSPARK_CONTRACT["max_anchors"],
             "maximum_speculative_token_count": MAX_SPECULATIVE_TOKENS,
             "verifier_accept_k": 1,
             "enable_confidence_head": 1,

@@ -17,7 +17,8 @@ extern "C" {
     ((uint32_t)sizeof(SparkHiddenTransportPacket))
 #define SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES \
     ((uint32_t)sizeof(SparkHiddenTransportCompletion))
-#define SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT 2u
+#define SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT \
+    ((uint32_t)sizeof(uint16_t))
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH 1024u
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_MODULE_ID \
     "spark.hidden_transport.persistent_ring.device.v1"

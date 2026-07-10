@@ -4,6 +4,8 @@
 
 #include "sparkpipe/spark_glm52_production_topology.h"
 
+#define SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY 64u
+
 static void SparkTestInitializePp13StagePlan(SparkGlm52StagePlan *stage_plan)
 {
     uint32_t stage_index;
@@ -88,20 +90,22 @@ static void SparkTestGlm52ProductionTopologyPp13Sideband(void)
     SparkTestInitializePp13StagePlan(&stage_plan);
     assert(SparkGlm52ProductionTopologyBuild(
         &stage_plan,
-        64u,
+        SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY,
         SPARK_GLM52_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT,
         16u,
-        576u,
+        SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS,
         &topology,
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(topology.stage_count == 13u);
-    assert(topology.active_sequence_capacity == 64u);
+    assert(topology.active_sequence_capacity ==
+        SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY);
     assert(topology.selected_token_count ==
         SPARK_GLM52_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT);
     assert((topology.topology_flags &
         SPARK_GLM52_PRODUCTION_TOPOLOGY_FLAG_MLA_COMPRESSED_KV_CACHE) != 0u);
-    assert(topology.mla_cache_element_count == 576u);
+    assert(topology.mla_cache_element_count ==
+        SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS);
     {
         uint32_t tap_count, sideband_index;
         uint32_t expected_export_stages[5] = { 1u, 3u, 6u, 9u, 11u };
@@ -122,7 +126,8 @@ static void SparkTestGlm52ProductionTopologyPp13Sideband(void)
             assert(tap->export_stage_index == expected_export_stages[tap_count]);
             assert(tap->import_stage_index == topology.stage_count - 1u);
             assert(tap->payload_bytes ==
-                (uint64_t)64u * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u);
+                (uint64_t)SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY *
+                SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES);
             tap_count += 1u;
         }
         assert(tap_count == 5u);
@@ -146,10 +151,10 @@ static void SparkTestGlm52ProductionTopologyPp13Sideband(void)
                     : 0u));
             assert(bytes_per_sequence >=
                 expected_taps[hop_index] *
-                    SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u);
+                    SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES);
             assert((bytes_per_sequence -
                 expected_taps[hop_index] *
-                    SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u) %
+                    SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES) %
                 sizeof(uint32_t) == 0u);
         }
     }
@@ -161,7 +166,9 @@ static void SparkTestGlm52ProductionTopologyPp13Sideband(void)
     assert(sideband->import_stage_index == 2u);
     assert(sideband->first_imported_consumer_layer_index == 12u);
     assert(sideband->imported_consumer_layer_count == 2u);
-    assert(sideband->payload_bytes == 524288u);
+    assert(sideband->payload_bytes ==
+        (uint64_t)SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY *
+        SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES);
     assert(topology.stages[1u].exported_sideband_count != 0u);
     assert(topology.stages[2u].imported_sideband_count != 0u);
     assert(topology.stages[0u].first_layer_index == 0u);
@@ -188,7 +195,7 @@ static void SparkTestGlm52ProductionTopologyRejectsBadDimensions(void)
         0u,
         SPARK_GLM52_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT,
         16u,
-        576u,
+        SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS,
         &topology,
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_INVALID_ARGUMENT);

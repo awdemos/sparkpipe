@@ -5,7 +5,10 @@
 
 #include "sparkpipe/spark_tokenizer.h"
 
-#define SPARK_TOKENIZE_PROMPT_DEFAULT_TOKEN_CAPACITY 1048576u
+#include "sparkpipe/spark_glm52_model.h"
+
+#define SPARK_TOKENIZE_PROMPT_DEFAULT_TOKEN_CAPACITY \
+    SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_TOKENIZE_PROMPT_MAX_TEXT_BYTES 0xffffffffull
 
 static int SparkTokenizePromptUsage(

@@ -14,6 +14,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_MAGIC "SPARKGLM52FP8\0\0"
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_HEADER_BYTES 512u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_ALIGNMENT 4096u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_U32_FIELD_COUNT 16u
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W1_WEIGHT 0u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W1_SCALE_INV 1u
@@ -30,10 +31,44 @@ typedef struct SparkGlm52ResidentDecodeStageFp8MoePackRegion
 typedef struct SparkGlm52ResidentDecodeStageFp8MoePackHeader
 {
 	uint8_t magic[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_MAGIC_BYTES];
-	uint32_t fields[16];
+	uint32_t abi_version;
+	uint32_t header_bytes;
+	uint32_t layer_index;
+	uint32_t maximum_token_count;
+	uint32_t hidden_dimension;
+	uint32_t intermediate_dimension;
+	uint32_t expert_count;
+	uint32_t top_k;
+	uint32_t gate_up_order;
+	uint32_t weight_layout;
+	uint32_t scale_layout;
+	uint32_t quant_mode;
+	uint32_t output_dtype;
+	uint32_t cuda_architecture;
+	uint32_t reserved0;
+	uint32_t reserved1;
 	SparkGlm52ResidentDecodeStageFp8MoePackRegion regions[
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_COUNT];
+	uint8_t reserved_bytes[
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_HEADER_BYTES -
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_MAGIC_BYTES -
+		(SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_U32_FIELD_COUNT *
+		 sizeof(uint32_t)) -
+		(SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_COUNT *
+		 sizeof(SparkGlm52ResidentDecodeStageFp8MoePackRegion))];
 } SparkGlm52ResidentDecodeStageFp8MoePackHeader;
+
+#ifdef __cplusplus
+static_assert(
+	sizeof(SparkGlm52ResidentDecodeStageFp8MoePackHeader) ==
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_HEADER_BYTES,
+	"FP8 MoE pack header wire size mismatch");
+#else
+_Static_assert(
+	sizeof(SparkGlm52ResidentDecodeStageFp8MoePackHeader) ==
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_HEADER_BYTES,
+	"FP8 MoE pack header wire size mismatch");
+#endif
 
 typedef struct SparkGlm52ResidentDecodeStageFp8MoeResidentBinding
 {

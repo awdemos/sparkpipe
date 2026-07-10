@@ -9,7 +9,12 @@
 #include "spark_filesystem.h"
 
 #define SPARK_JSON_INITIAL_TOKEN_CAPACITY 256u
+#define SPARK_JSON_TOKEN_CAPACITY_GROWTH_FACTOR 2u
 #define SPARK_JSON_MAX_NESTING_DEPTH 256u
+
+static const char SparkJsonTrue[] = "true";
+static const char SparkJsonFalse[] = "false";
+static const char SparkJsonNull[] = "null";
 
 typedef struct SparkJsonParser
 {
@@ -53,11 +58,14 @@ static SparkStatus SparkJsonAllocateToken(
     }
     if (parser->token_count == parser->token_capacity)
     {
-        if (parser->token_capacity > UINT32_MAX / 2u)
+        if (parser->token_capacity >
+            UINT32_MAX / SPARK_JSON_TOKEN_CAPACITY_GROWTH_FACTOR)
         {
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         }
-        resized_capacity = parser->token_capacity == 0u ? SPARK_JSON_INITIAL_TOKEN_CAPACITY : parser->token_capacity * 2u;
+        resized_capacity = parser->token_capacity == 0u ?
+            SPARK_JSON_INITIAL_TOKEN_CAPACITY :
+            parser->token_capacity * SPARK_JSON_TOKEN_CAPACITY_GROWTH_FACTOR;
         resized_tokens = (SparkJsonToken *)realloc(parser->tokens, (size_t)resized_capacity * sizeof(*resized_tokens));
         if (resized_tokens == 0)
         {
@@ -244,9 +252,9 @@ static SparkStatus SparkJsonParsePrimitiveToken(SparkJsonParser *parser, int32_t
     {
         return SPARK_STATUS_PARSE_ERROR;
     }
-    if (!((primitive_bytes == 4u && memcmp(parser->text + primitive_start, "true", 4u) == 0) ||
-          (primitive_bytes == 5u && memcmp(parser->text + primitive_start, "false", 5u) == 0) ||
-          (primitive_bytes == 4u && memcmp(parser->text + primitive_start, "null", 4u) == 0) ||
+    if (!((primitive_bytes == sizeof(SparkJsonTrue) - 1u && memcmp(parser->text + primitive_start, SparkJsonTrue, sizeof(SparkJsonTrue) - 1u) == 0) ||
+          (primitive_bytes == sizeof(SparkJsonFalse) - 1u && memcmp(parser->text + primitive_start, SparkJsonFalse, sizeof(SparkJsonFalse) - 1u) == 0) ||
+          (primitive_bytes == sizeof(SparkJsonNull) - 1u && memcmp(parser->text + primitive_start, SparkJsonNull, sizeof(SparkJsonNull) - 1u) == 0) ||
           SparkJsonValidateNumber(parser->text + primitive_start, primitive_bytes)))
     {
         return SPARK_STATUS_PARSE_ERROR;
@@ -867,12 +875,12 @@ SparkStatus SparkJsonGetBoolean(const SparkJsonDocument *document, int32_t token
     }
     token = &document->tokens[token_index];
     primitive_bytes = (size_t)(token->end - token->start);
-    if (primitive_bytes == 4u && memcmp(document->text + token->start, "true", 4u) == 0)
+    if (primitive_bytes == sizeof(SparkJsonTrue) - 1u && memcmp(document->text + token->start, SparkJsonTrue, sizeof(SparkJsonTrue) - 1u) == 0)
     {
         *value = true;
         return SPARK_STATUS_OK;
     }
-    if (primitive_bytes == 5u && memcmp(document->text + token->start, "false", 5u) == 0)
+    if (primitive_bytes == sizeof(SparkJsonFalse) - 1u && memcmp(document->text + token->start, SparkJsonFalse, sizeof(SparkJsonFalse) - 1u) == 0)
     {
         *value = false;
         return SPARK_STATUS_OK;

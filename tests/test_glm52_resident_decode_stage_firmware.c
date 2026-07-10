@@ -14,6 +14,8 @@
 #include "sparkpipe/spark_orchestrator.h"
 #include "test_support.h"
 
+#define SPARK_TEST_GLM52_PIPELINE_SLOT_COUNT 2u
+
 typedef struct SparkGlm52ResidentDecodeStageTestCompletionState
 {
     uint32_t completion_count;
@@ -66,7 +68,7 @@ static void SparkTestInitializePrefillBridgeFixture(
     kv_configuration.layer_count = 78u;
     kv_configuration.kv_head_count = 8u;
     kv_configuration.head_dim = 128u;
-    kv_configuration.bytes_per_scalar = 2u;
+    kv_configuration.bytes_per_scalar = (uint32_t)sizeof(uint16_t);
     kv_configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
     kv_configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
     kv_configuration.blocks = fixture->kv_blocks;
@@ -175,8 +177,10 @@ static void SparkTestGlm52ResidentDecodeStageB12xRouterLogitsAbi(void)
 
 static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[2],
-    SparkGlm52ResidentDecodeStageFakeStream fake_streams[2])
+    SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[
+        SPARK_TEST_GLM52_PIPELINE_SLOT_COUNT],
+    SparkGlm52ResidentDecodeStageFakeStream fake_streams[
+        SPARK_TEST_GLM52_PIPELINE_SLOT_COUNT])
 {
     static uint32_t MlaCacheStorage[2];
     static uint32_t KeyNopeCacheStorage[2];
@@ -193,13 +197,14 @@ static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
     uint32_t token_index;
 
     memset(node_context, 0, sizeof(*node_context));
-    memset(pipeline_slots, 0, sizeof(*pipeline_slots) * 2u);
+    memset(pipeline_slots, 0,
+        sizeof(*pipeline_slots) * SPARK_TEST_GLM52_PIPELINE_SLOT_COUNT);
     for (token_index = 0u; token_index < 64u; ++token_index)
     {
         U32Storage[token_index] = token_index;
     }
     for (pipeline_slot_index = 0u;
-         pipeline_slot_index < 2u;
+         pipeline_slot_index < SPARK_TEST_GLM52_PIPELINE_SLOT_COUNT;
          ++pipeline_slot_index)
     {
         SparkGlm52ResidentDecodeStageFakeStreamInitialize(

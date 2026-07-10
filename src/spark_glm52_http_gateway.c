@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include <string.h>
 
+static const char SparkGlm52HttpGatewayStreamMember[] = "\"stream\"";
+static const char SparkGlm52HttpGatewayTrue[] = "true";
+
 static uint32_t SparkGlm52HttpStringEquals(const char *left,const char *right)
 {
 	if (left == 0 || right == 0)
@@ -235,13 +238,21 @@ uint32_t SparkGlm52HttpGatewayBodyRequestsStream(
 	uint32_t index;
 	uint32_t cursor;
 
-	if (body == 0 || body_bytes < 12u)
+	if (body == 0 ||
+		body_bytes <
+			(sizeof(SparkGlm52HttpGatewayStreamMember) - 1u) +
+			(sizeof(SparkGlm52HttpGatewayTrue) - 1u))
 		return 0u;
-	for (index = 0u; (index + 8u) <= body_bytes; ++index)
+	for (index = 0u;
+		(index + sizeof(SparkGlm52HttpGatewayStreamMember) - 1u) <= body_bytes;
+		++index)
 	{
-		if (memcmp(&body[index],"\"stream\"",8u) != 0)
+		if (memcmp(
+				&body[index],
+				SparkGlm52HttpGatewayStreamMember,
+				sizeof(SparkGlm52HttpGatewayStreamMember) - 1u) != 0)
 			continue;
-		cursor = index + 8u;
+		cursor = index + sizeof(SparkGlm52HttpGatewayStreamMember) - 1u;
 		while (cursor < body_bytes &&
 			(body[cursor] == ' ' || body[cursor] == '\t' ||
 			 body[cursor] == '\r' || body[cursor] == '\n'))
@@ -253,8 +264,11 @@ uint32_t SparkGlm52HttpGatewayBodyRequestsStream(
 			(body[cursor] == ' ' || body[cursor] == '\t' ||
 			 body[cursor] == '\r' || body[cursor] == '\n'))
 			++cursor;
-		if ((cursor + 4u) <= body_bytes &&
-			memcmp(&body[cursor],"true",4u) == 0)
+		if ((cursor + sizeof(SparkGlm52HttpGatewayTrue) - 1u) <= body_bytes &&
+			memcmp(
+				&body[cursor],
+				SparkGlm52HttpGatewayTrue,
+				sizeof(SparkGlm52HttpGatewayTrue) - 1u) == 0)
 			return 1u;
 	}
 	return 0u;

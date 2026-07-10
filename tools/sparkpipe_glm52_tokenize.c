@@ -5,9 +5,14 @@
 
 #include "sparkpipe/spark_tokenizer.h"
 
-#define SPARK_GLM52_TOKENIZE_DEFAULT_TOKEN_CAPACITY 1048576u
+#include "sparkpipe/spark_glm52_model.h"
+
+#define SPARK_GLM52_TOKENIZE_DEFAULT_TOKEN_CAPACITY \
+    SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_GLM52_TOKENIZE_CHAT_FLAG_ADD_GENERATION_PROMPT 0x00000001u
 #define SPARK_GLM52_TOKENIZE_CHAT_FLAG_ENABLE_THINKING 0x00000002u
+
+static const char SparkGlm52TokenizerFileName[] = "tokenizer.json";
 
 typedef struct SparkGlm52TokenizeStringBuilder
 {
@@ -207,11 +212,13 @@ static int32_t SparkGlm52TokenizeBuildTokenizerPath(
     *tokenizer_json_path_out = 0;
     model_dir_bytes = SparkGlm52TokenizeStringLengthU32(model_dir);
     needs_separator = model_dir_bytes != 0u && model_dir[model_dir_bytes - 1u] != '/' ? 1u : 0u;
-    if (model_dir_bytes > 0xffffffffu - 16u - needs_separator)
+    if (model_dir_bytes >
+        0xffffffffu - sizeof(SparkGlm52TokenizerFileName) - needs_separator)
     {
         return -2;
     }
-    path_bytes = model_dir_bytes + needs_separator + 14u;
+    path_bytes = model_dir_bytes + needs_separator +
+        sizeof(SparkGlm52TokenizerFileName) - 1u;
     path = (char *)malloc((size_t)path_bytes + 1u);
     if (path == 0)
     {
@@ -222,7 +229,10 @@ static int32_t SparkGlm52TokenizeBuildTokenizerPath(
     {
         path[model_dir_bytes] = '/';
     }
-    memcpy(path + model_dir_bytes + needs_separator, "tokenizer.json", 15u);
+    memcpy(
+        path + model_dir_bytes + needs_separator,
+        SparkGlm52TokenizerFileName,
+        sizeof(SparkGlm52TokenizerFileName));
     *tokenizer_json_path_out = path;
     return 0;
 }

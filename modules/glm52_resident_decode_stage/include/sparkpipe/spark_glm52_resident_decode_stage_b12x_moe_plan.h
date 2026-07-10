@@ -15,6 +15,8 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_MAGIC "SPARKGLM52B12X\0\0"
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_HEADER_BYTES 512u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_ALIGNMENT 4096u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_U32_FIELD_COUNT 16u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_U64_FIELD_COUNT 4u
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W1_WEIGHT 0u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_W1_SCALE 1u
@@ -59,11 +61,25 @@ typedef struct SparkGlm52ResidentDecodeStageB12xMoePackHeader
     uint8_t reserved_bytes[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_HEADER_BYTES -
         SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_MAGIC_BYTES -
-        (16u * sizeof(uint32_t)) -
-        (4u * sizeof(uint64_t)) -
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_U32_FIELD_COUNT *
+         sizeof(uint32_t)) -
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_U64_FIELD_COUNT *
+         sizeof(uint64_t)) -
         (SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_REGION_COUNT *
          sizeof(SparkGlm52ResidentDecodeStageB12xMoePackRegion))];
 } SparkGlm52ResidentDecodeStageB12xMoePackHeader;
+
+#ifdef __cplusplus
+static_assert(
+    sizeof(SparkGlm52ResidentDecodeStageB12xMoePackHeader) ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_HEADER_BYTES,
+    "B12x MoE pack header wire size mismatch");
+#else
+_Static_assert(
+    sizeof(SparkGlm52ResidentDecodeStageB12xMoePackHeader) ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PACK_HEADER_BYTES,
+    "B12x MoE pack header wire size mismatch");
+#endif
 
 typedef struct SparkGlm52ResidentDecodeStageB12xMoeResidentBinding
 {

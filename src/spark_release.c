@@ -12,6 +12,17 @@
 #include "spark_filesystem.h"
 #include "sparkpipe/spark_json.h"
 
+static const char SparkReleaseTemplateInstallRoot[] = "{install_root}";
+static const char SparkReleaseTemplateStateRoot[] = "{state_root}";
+static const char SparkReleaseTemplateHost[] = "{host}";
+static const char SparkReleaseTemplateRank[] = "{rank}";
+static const char SparkReleaseTemplateRankHex[] = "{rank_hex}";
+static const char SparkReleaseTemplateRankCount[] = "{rank_count}";
+static const char SparkReleaseTemplateMaxActive[] = "{max_active}";
+static const char SparkReleaseTemplateReleaseId[] = "{release_id}";
+static const char SparkReleaseTemplateGeneration[] = "{generation}";
+static const char SparkReleaseTemplateRole[] = "{role}";
+
 static SparkStatus SparkReleaseCopyStringField(
     char *destination,
     uint32_t destination_bytes,
@@ -766,66 +777,66 @@ static SparkStatus SparkReleaseExpandTemplate(
             character[1] = '\0';
             status = SparkReleaseAppendText(destination,destination_bytes,&offset,character);
         }
-        else if (strncmp(source + source_index,"{install_root}",14u) == 0)
+        else if (strncmp(source + source_index,SparkReleaseTemplateInstallRoot,sizeof(SparkReleaseTemplateInstallRoot) - 1u) == 0)
         {
             status = SparkReleaseExpandTemplate(manifest->install_root,manifest,identity,role,destination + offset,destination_bytes - offset);
             if (status == SPARK_STATUS_OK)
             {
                 offset = (uint32_t)strlen(destination);
             }
-            source_index += 14u;
+            source_index += sizeof(SparkReleaseTemplateInstallRoot) - 1u;
         }
-        else if (strncmp(source + source_index,"{state_root}",12u) == 0)
+        else if (strncmp(source + source_index,SparkReleaseTemplateStateRoot,sizeof(SparkReleaseTemplateStateRoot) - 1u) == 0)
         {
             status = SparkReleaseExpandTemplate(manifest->state_root,manifest,identity,role,destination + offset,destination_bytes - offset);
             if (status == SPARK_STATUS_OK)
             {
                 offset = (uint32_t)strlen(destination);
             }
-            source_index += 12u;
+            source_index += sizeof(SparkReleaseTemplateStateRoot) - 1u;
         }
-        else if (strncmp(source + source_index,"{host}",6u) == 0)
+        else if (strncmp(source + source_index,SparkReleaseTemplateHost,sizeof(SparkReleaseTemplateHost) - 1u) == 0)
         {
             status = SparkReleaseAppendText(destination,destination_bytes,&offset,identity->host);
-            source_index += 6u;
+            source_index += sizeof(SparkReleaseTemplateHost) - 1u;
         }
-        else if (strncmp(source + source_index,"{rank}",6u) == 0)
+        else if (strncmp(source + source_index,SparkReleaseTemplateRank,sizeof(SparkReleaseTemplateRank) - 1u) == 0)
         {
             status = SparkReleaseAppendU32(destination,destination_bytes,&offset,identity->rank);
-            source_index += 6u;
+            source_index += sizeof(SparkReleaseTemplateRank) - 1u;
         }
-        else if (strncmp(source + source_index,"{rank_hex}",10u) == 0)
+        else if (strncmp(source + source_index,SparkReleaseTemplateRankHex,sizeof(SparkReleaseTemplateRankHex) - 1u) == 0)
         {
             status = SparkReleaseAppendRankHex(destination,destination_bytes,&offset,identity->rank);
-            source_index += 10u;
+            source_index += sizeof(SparkReleaseTemplateRankHex) - 1u;
         }
-        else if (strncmp(source + source_index,"{rank_count}",12u) == 0)
+        else if (strncmp(source + source_index,SparkReleaseTemplateRankCount,sizeof(SparkReleaseTemplateRankCount) - 1u) == 0)
         {
             status = SparkReleaseAppendU32(destination,destination_bytes,&offset,identity->rank_count != 0u ? identity->rank_count : manifest->rank_count);
-            source_index += 12u;
+            source_index += sizeof(SparkReleaseTemplateRankCount) - 1u;
         }
-        else if (strncmp(source + source_index,"{max_active}",12u) == 0)
+        else if (strncmp(source + source_index,SparkReleaseTemplateMaxActive,sizeof(SparkReleaseTemplateMaxActive) - 1u) == 0)
         {
             status = SparkReleaseAppendU32(destination,destination_bytes,&offset,manifest->max_active_sequence_count);
-            source_index += 12u;
+            source_index += sizeof(SparkReleaseTemplateMaxActive) - 1u;
         }
-        else if (strncmp(source + source_index,"{release_id}",12u) == 0)
+        else if (strncmp(source + source_index,SparkReleaseTemplateReleaseId,sizeof(SparkReleaseTemplateReleaseId) - 1u) == 0)
         {
             status = SparkReleaseAppendText(destination,destination_bytes,&offset,manifest->release_id);
-            source_index += 12u;
+            source_index += sizeof(SparkReleaseTemplateReleaseId) - 1u;
         }
-        else if (strncmp(source + source_index,"{generation}",12u) == 0)
+        else if (strncmp(source + source_index,SparkReleaseTemplateGeneration,sizeof(SparkReleaseTemplateGeneration) - 1u) == 0)
         {
             char text[32];
 
             snprintf(text,sizeof(text),"%llu",(unsigned long long)manifest->generation);
             status = SparkReleaseAppendText(destination,destination_bytes,&offset,text);
-            source_index += 12u;
+            source_index += sizeof(SparkReleaseTemplateGeneration) - 1u;
         }
-        else if (strncmp(source + source_index,"{role}",6u) == 0)
+        else if (strncmp(source + source_index,SparkReleaseTemplateRole,sizeof(SparkReleaseTemplateRole) - 1u) == 0)
         {
             status = SparkReleaseAppendText(destination,destination_bytes,&offset,role == 0 ? "sparkpipe" : role->name);
-            source_index += 6u;
+            source_index += sizeof(SparkReleaseTemplateRole) - 1u;
         }
         else
         {

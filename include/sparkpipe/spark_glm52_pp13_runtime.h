@@ -2,9 +2,11 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_glm52_production_topology.h"
 #include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_hidden_transport.h"
+#include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
@@ -14,25 +16,27 @@ extern "C" {
 #define SPARK_GLM52_PP13_RUNTIME_ABI_VERSION 1u
 #define SPARK_GLM52_PP13_RUNTIME_RANK_PLAN_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52Pp13RuntimeRankPlan))
-#define SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT 13u
-#define SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE 6u
+#define SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT \
+    SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT
+#define SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE \
+    SPARK_GLM52_STAGE_PLAN_FIXED_LAYERS_PER_STAGE
 #define SPARK_GLM52_PP13_RUNTIME_HOST_NAME_BYTES 16u
 #define SPARK_GLM52_PP13_RUNTIME_ROUTE_NAME_BYTES 64u
 #define SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES 512u
 #define SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE 52100u
 #define SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_PORT_OFFSET 200u
 #define SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_ROUTE_NAME_BYTES 64u
-#define SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION 6144u
+#define SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_MAGIC 0x35454650u
+#define SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION \
+    SPARK_GLM52_MODEL_HIDDEN_DIMENSION
 #define SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE \
     SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT
 #define SPARK_GLM52_PP13_RUNTIME_FP8_PACK_MANIFEST \
     "fp8_moe_pack_manifest.json"
 #define SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE \
-    (SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION * \
-     SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT)
+    SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES
 #define SPARK_GLM52_PP13_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE \
-    (SPARK_GLM52_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT * \
-     ((uint32_t)sizeof(uint32_t)))
+    SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES
 #define SPARK_GLM52_PP13_RUNTIME_MAX_TRANSPORT_BYTES_PER_SEQUENCE \
     (SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE + \
      SPARK_GLM52_PP13_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE)
@@ -86,8 +90,27 @@ typedef struct SparkGlm52Pp13RuntimeFinalEventRoute
     char route_name[SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_ROUTE_NAME_BYTES];
 } SparkGlm52Pp13RuntimeFinalEventRoute;
 
+typedef struct SparkGlm52Pp13RuntimeFinalEvent
+{
+    uint32_t magic;
+    uint32_t descriptor_bytes;
+    uint32_t status;
+    uint32_t program_id;
+    uint32_t driver_dispatch_slot;
+    uint32_t accepted_token_count;
+    uint32_t completion_flags;
+    uint32_t token_count;
+    uint32_t token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
+    uint64_t request_id;
+    uint64_t sequence_id;
+    uint64_t sequence_position;
+    uint64_t service_time_ns;
+} SparkGlm52Pp13RuntimeFinalEvent;
+
 #define SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_ROUTE_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52Pp13RuntimeFinalEventRoute))
+#define SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52Pp13RuntimeFinalEvent))
 
 SparkStatus SparkGlm52Pp13RuntimeBuildFixedStagePlan(
     SparkGlm52StagePlan *stage_plan,

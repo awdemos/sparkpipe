@@ -12,7 +12,9 @@ import struct
 import sys
 from typing import Any, BinaryIO, Dict, Iterable, List, Tuple
 
+from glm52_model_contract import load_model_contract
 
+MODEL_CONTRACT = load_model_contract()
 MAGIC = b"SPARKGLM52B12X\0\0"
 ABI_VERSION = 3
 HEADER_BYTES = 512
@@ -27,11 +29,18 @@ REGION_W2_WEIGHT = 4
 REGION_W2_SCALE = 5
 REGION_W2_ALPHA = 6
 
-HIDDEN_DIMENSION = 6144
-INTERMEDIATE_DIMENSION = 2048
-EXPERT_COUNT = 256
-TOP_K = 8
-NVFP4_GROUP_SIZE = 16
+HIDDEN_DIMENSION = MODEL_CONTRACT["hidden_dimension"]
+INTERMEDIATE_DIMENSION = MODEL_CONTRACT["moe_intermediate_dimension"]
+EXPERT_COUNT = MODEL_CONTRACT["moe_expert_count"]
+TOP_K = MODEL_CONTRACT["moe_top_k"]
+W1_COMPONENT_COUNT = MODEL_CONTRACT["moe_w1_component_count"]
+NVFP4_GROUP_SIZE = MODEL_CONTRACT["nvfp4_group_size"]
+NVFP4_VALUES_PER_BYTE = 2
+FLOAT32_BYTES = struct.calcsize("<f")
+SCALE_M_TILE_ROWS = 128
+SCALE_K_TILE_GROUPS = 4
+SCALE_OUTER_M_ROWS = 32
+SCALE_INNER_M_ROWS = 4
 
 GATE_UP_ORDER_UP_GATE = 1
 WEIGHT_LAYOUT_FLASHINFER_STATIC_VIEW = 2
@@ -198,22 +207,30 @@ def tensor_bytes_f8_scaled(name: str, tensor: Any, scale: float, expected_shape:
 def scale_bytes_to_flashinfer_static_storage(name: str, row_major: bytes, rows: int, k_groups: int) -> bytes:
     if rows <= 0 or k_groups <= 0:
         raise PackFailure(f"{name} has invalid scale shape")
-    if rows % 128 != 0 or k_groups % 4 != 0:
+    if rows % SCALE_M_TILE_ROWS != 0 or k_groups % SCALE_K_TILE_GROUPS != 0:
         raise PackFailure(f"{name} is not aligned to FlashInfer B12x scale tiles")
     if len(row_major) != rows * k_groups:
         raise PackFailure(f"{name} has {len(row_major)} scale bytes, expected {rows * k_groups}")
-    m_tiles = rows // 128
-    k_tiles = k_groups // 4
+    m_tiles = rows // SCALE_M_TILE_ROWS
+    k_tiles = k_groups // SCALE_K_TILE_GROUPS
     output = bytearray(len(row_major))
     for m_tile in range(m_tiles):
         for k_tile in range(k_tiles):
-            for outer_m in range(32):
-                for inner_m in range(4):
-                    row = (m_tile * 128) + (inner_m * 32) + outer_m
-                    for inner_k in range(4):
-                        k_group = (k_tile * 4) + inner_k
+            for outer_m in range(SCALE_OUTER_M_ROWS):
+                for inner_m in range(SCALE_INNER_M_ROWS):
+                    row = (
+                        (m_tile * SCALE_M_TILE_ROWS) +
+                        (inner_m * SCALE_OUTER_M_ROWS) + outer_m
+                    )
+                    for inner_k in range(SCALE_K_TILE_GROUPS):
+                        k_group = (k_tile * SCALE_K_TILE_GROUPS) + inner_k
                         source = (row * k_groups) + k_group
-                        target = (((((m_tile * k_tiles) + k_tile) * 32 + outer_m) * 4 + inner_m) * 4 + inner_k)
+                        target = (
+                            (((((m_tile * k_tiles) + k_tile) *
+                               SCALE_OUTER_M_ROWS + outer_m) *
+                              SCALE_INNER_M_ROWS + inner_m) *
+                             SCALE_K_TILE_GROUPS) + inner_k
+                        )
                         output[target] = row_major[source]
     return bytes(output)
 
@@ -227,11 +244,19 @@ def write_padding(file: BinaryIO, target_offset: int) -> None:
 
 
 def reserve_regions() -> List[Dict[str, int]]:
-    w1_weight_bytes = EXPERT_COUNT * (2 * INTERMEDIATE_DIMENSION) * (HIDDEN_DIMENSION // 2)
-    w1_scale_bytes = EXPERT_COUNT * (2 * INTERMEDIATE_DIMENSION) * (HIDDEN_DIMENSION // NVFP4_GROUP_SIZE)
-    w2_weight_bytes = EXPERT_COUNT * HIDDEN_DIMENSION * (INTERMEDIATE_DIMENSION // 2)
+    w1_rows = W1_COMPONENT_COUNT * INTERMEDIATE_DIMENSION
+    w1_weight_bytes = (
+        EXPERT_COUNT * w1_rows * (HIDDEN_DIMENSION // NVFP4_VALUES_PER_BYTE)
+    )
+    w1_scale_bytes = (
+        EXPERT_COUNT * w1_rows * (HIDDEN_DIMENSION // NVFP4_GROUP_SIZE)
+    )
+    w2_weight_bytes = (
+        EXPERT_COUNT * HIDDEN_DIMENSION *
+        (INTERMEDIATE_DIMENSION // NVFP4_VALUES_PER_BYTE)
+    )
     w2_scale_bytes = EXPERT_COUNT * HIDDEN_DIMENSION * (INTERMEDIATE_DIMENSION // NVFP4_GROUP_SIZE)
-    alpha_bytes = EXPERT_COUNT * 4
+    alpha_bytes = EXPERT_COUNT * FLOAT32_BYTES
     sizes = [
         w1_weight_bytes,
         w1_scale_bytes,
@@ -577,7 +602,10 @@ def explain_pack_reuse_failure(
 
 
 def write_w1_weight_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
-    expected = (INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION // 2)
+    expected = (
+        INTERMEDIATE_DIMENSION,
+        HIDDEN_DIMENSION // NVFP4_VALUES_PER_BYTE,
+    )
     for expert in range(EXPERT_COUNT):
         up_name = tensor_name(layer, expert, "up_proj", "weight")
         gate_name = tensor_name(layer, expert, "gate_proj", "weight")
@@ -608,7 +636,10 @@ def write_w1_scale_region(reader: SafetensorReader, file: BinaryIO, layer: int) 
 
 
 def write_w2_weight_region(reader: SafetensorReader, file: BinaryIO, layer: int) -> None:
-    expected = (HIDDEN_DIMENSION, INTERMEDIATE_DIMENSION // 2)
+    expected = (
+        HIDDEN_DIMENSION,
+        INTERMEDIATE_DIMENSION // NVFP4_VALUES_PER_BYTE,
+    )
     for expert in range(EXPERT_COUNT):
         down_name = tensor_name(layer, expert, "down_proj", "weight")
         file.write(tensor_bytes_uint8(down_name, reader.tensor(down_name), expected))

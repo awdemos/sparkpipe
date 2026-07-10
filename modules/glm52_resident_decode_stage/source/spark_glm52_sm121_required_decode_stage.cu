@@ -62,10 +62,14 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N 64u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_K 32u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_FUSED_MAX_SCALE_BLOCKS 1024u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SELECTED_BLOCK_HASH_LOAD_FACTOR 2u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REFERENCE_WORKSPACE_BUFFER_COUNT 3u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_ACTIVATION_LINEAR_WORKSPACE_ALIGNMENT_BYTES 256ull
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_CUTLASS_INT_WORKSPACE_BYTES (8ull * 1024ull * 1024ull)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_CUTLASS_FLOAT_WORKSPACE_BYTES (128ull * 1024ull * 1024ull)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_PROBE_HOST_BUFFER_BYTES \
+    (SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_FP8_LINEAR_SCALE_COUNT * \
+     ((uint32_t)sizeof(float)))
 
 #ifndef SPARK_GLM52_REQUIRED_SYMBOL_REFERENCE
 #if defined(__GNUC__) || defined(__clang__)
@@ -3366,7 +3370,8 @@ static __device__ __forceinline__ uint32_t SparkGlm52ResidentDecodeStageDsaSelec
 
 static __device__ __forceinline__ uint32_t SparkGlm52ResidentDecodeStageDsaSelectedBlockHashCapacity(void)
 {
-    return SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * 2u;
+    return SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SELECTED_BLOCK_HASH_LOAD_FACTOR;
 }
 
 static __device__ __forceinline__ uint32_t SparkGlm52ResidentDecodeStageDsaSelectedBlockHashSlot(
@@ -3394,7 +3399,8 @@ static __global__ void SparkGlm52ResidentDecodeStageDsaSelectedBlockBuildKernel(
 {
     __shared__ uint32_t shared_counts[SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
     __shared__ uint32_t shared_block_hash[
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * 2u];
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SELECTED_BLOCK_HASH_LOAD_FACTOR];
     __shared__ uint32_t shared_selected_block_count;
     uint32_t sequence_index;
     uint32_t selected_entry_index;
@@ -10993,14 +10999,16 @@ static bool SparkGlm52ResidentDecodeStageCalculateFp8MoeGroupedReferenceWorkspac
     }
     layout.hidden_amax_bytes = workspace_cursor - layout.hidden_amax_offset;
 
-    if (bf16_route_activation_bytes > UINT64_MAX / 2ull)
+    if (bf16_route_activation_bytes >
+        UINT64_MAX / SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_W1_COMPONENT_COUNT)
     {
         return false;
     }
     layout.w1_output_bf16_offset = workspace_cursor;
     if (!SparkGlm52ResidentDecodeStageAddAlignedWorkspaceRange(
             &workspace_cursor,
-            bf16_route_activation_bytes * 2ull,
+            bf16_route_activation_bytes *
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_W1_COMPONENT_COUNT,
             1u,
             alignment))
     {
@@ -11685,7 +11693,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedExte
         (fp8_moe_plan->intermediate_dimension + fp8_moe_plan->scale_block_size - 1u) /
         fp8_moe_plan->scale_block_size;
     arguments.w1_output_scale_block_count = (uint32_t)(
-        (((uint64_t)fp8_moe_plan->intermediate_dimension * 2ull) +
+        (((uint64_t)fp8_moe_plan->intermediate_dimension *
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_W1_COMPONENT_COUNT) +
          (uint64_t)fp8_moe_plan->scale_block_size - 1ull) /
         (uint64_t)fp8_moe_plan->scale_block_size);
     arguments.w2_output_scale_block_count = arguments.hidden_scale_block_count;
@@ -11908,7 +11917,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedRefe
         workspace_view.cutlass_float_workspace,
         workspace_view.cutlass_float_workspace_bytes,
         routed_row_count,
-        fp8_moe_plan->intermediate_dimension * 2u,
+        fp8_moe_plan->intermediate_dimension *
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_W1_COMPONENT_COUNT,
         fp8_moe_plan->hidden_dimension,
         fp8_moe_plan->expert_count,
         cuda_stream);
@@ -11930,7 +11940,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedRefe
         workspace_view.intermediate_amax_f32,
         routed_row_count,
         fp8_moe_plan->intermediate_dimension,
-        fp8_moe_plan->intermediate_dimension * 2u,
+        fp8_moe_plan->intermediate_dimension *
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_W1_COMPONENT_COUNT,
         fp8_moe_plan->scale_block_size);
     cuda_status = cudaPeekAtLastError();
     if (cuda_status != cudaSuccess)
@@ -14640,7 +14651,8 @@ static void SparkGlm52ResidentDecodeStageMaybeProbeFp8Amax(
     uint64_t bytes,
     cudaStream_t cuda_stream)
 {
-    static uint8_t host_buffer[16384];
+    static uint8_t host_buffer[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROBE_HOST_BUFFER_BYTES];
     cudaStreamCaptureStatus capture_status;
     uint64_t hash;
     uint64_t offset;
@@ -14950,7 +14962,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchFp8DenseMlpPreparedStag
     SparkGlm52ResidentDecodeStageDeviceHashProbe(
         node_context,
         pipeline_slot->moe_gate_bf16,
-        (uint64_t)active_sequence_count * (uint64_t)node_context->dense_intermediate_dimension * 2u,
+        (uint64_t)active_sequence_count *
+            (uint64_t)node_context->dense_intermediate_dimension *
+            sizeof(uint16_t),
         2u,
         cuda_stream);
 
@@ -15161,21 +15175,24 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
             node_context,
             pipeline_slot->input_hidden_bf16,
             (uint64_t)active_sequence_count *
-                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+                    sizeof(uint16_t),
             0u,
             cuda_stream);
         SparkGlm52ResidentDecodeStageDeviceHashProbe(
             node_context,
             pipeline_slot->post_attention_hidden_bf16,
             (uint64_t)active_sequence_count *
-                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+                    sizeof(uint16_t),
             1u,
             cuda_stream);
         SparkGlm52ResidentDecodeStageDeviceHashProbe(
             node_context,
             pipeline_slot->post_attention_normalized_hidden_bf16,
             (uint64_t)active_sequence_count *
-                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+                    sizeof(uint16_t),
             2u,
             cuda_stream);
         status = SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
@@ -15201,7 +15218,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
             node_context,
             pipeline_slot->moe_gate_bf16,
             (uint64_t)active_sequence_count *
-                (uint64_t)node_context->dense_intermediate_dimension * 2u,
+                (uint64_t)node_context->dense_intermediate_dimension *
+                    sizeof(uint16_t),
             3u,
             cuda_stream);
         status = SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
@@ -15227,7 +15245,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
             node_context,
             pipeline_slot->moe_up_bf16,
             (uint64_t)active_sequence_count *
-                (uint64_t)node_context->dense_intermediate_dimension * 2u,
+                (uint64_t)node_context->dense_intermediate_dimension *
+                    sizeof(uint16_t),
             4u,
             cuda_stream);
         intermediate_value_count =
@@ -15254,7 +15273,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
             node_context,
             pipeline_slot->moe_intermediate_bf16,
             (uint64_t)active_sequence_count *
-                (uint64_t)node_context->dense_intermediate_dimension * 2u,
+                (uint64_t)node_context->dense_intermediate_dimension *
+                    sizeof(uint16_t),
             5u,
             cuda_stream);
         status = SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
@@ -15280,7 +15300,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
             node_context,
             pipeline_slot->layer_output_hidden_bf16,
             (uint64_t)active_sequence_count *
-                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+                    sizeof(uint16_t),
             6u,
             cuda_stream);
         hidden_element_count =
@@ -15307,7 +15328,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
             node_context,
             pipeline_slot->layer_output_hidden_bf16,
             (uint64_t)active_sequence_count *
-                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+                    sizeof(uint16_t),
             7u,
             cuda_stream);
         return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
@@ -15373,13 +15395,17 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
     SparkGlm52ResidentDecodeStageDeviceHashProbe(
         node_context,
         pipeline_slot->moe_gate_bf16,
-        (uint64_t)active_sequence_count * (uint64_t)node_context->dense_intermediate_dimension * 2u,
+        (uint64_t)active_sequence_count *
+            (uint64_t)node_context->dense_intermediate_dimension *
+            sizeof(uint16_t),
         3u,
         cuda_stream);
     SparkGlm52ResidentDecodeStageDeviceHashProbe(
         node_context,
         pipeline_slot->moe_intermediate_bf16,
-        (uint64_t)active_sequence_count * (uint64_t)node_context->dense_intermediate_dimension * 2u,
+        (uint64_t)active_sequence_count *
+            (uint64_t)node_context->dense_intermediate_dimension *
+            sizeof(uint16_t),
         4u,
         cuda_stream);
     status = SparkGlm52ResidentDecodeStageLaunchLinear(
@@ -15401,7 +15427,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
     SparkGlm52ResidentDecodeStageDeviceHashProbe(
         node_context,
         pipeline_slot->layer_output_hidden_bf16,
-        (uint64_t)active_sequence_count * (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+        (uint64_t)active_sequence_count *
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES,
         5u,
         cuda_stream);
     hidden_element_count =
@@ -16779,7 +16806,8 @@ static void SparkGlm52ResidentDecodeStagePhaseHashHidden(
     uint64_t bytes,
     cudaStream_t cuda_stream)
 {
-    static uint8_t host_buffer[16384];
+    static uint8_t host_buffer[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROBE_HOST_BUFFER_BYTES];
     uint64_t hash;
     uint64_t offset;
     uint32_t zeros;
@@ -17417,7 +17445,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         node_context,
         pipeline_slot->input_hidden_bf16,
         (uint64_t)active_sequence_count *
-            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES,
         8u,
         cuda_stream);
 
@@ -17478,7 +17506,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         node_context,
         pipeline_slot->normalized_hidden_bf16,
         (uint64_t)active_sequence_count *
-            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES,
         9u,
         cuda_stream);
 
@@ -17524,14 +17552,16 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         node_context,
         pipeline_slot->current_kv_latent_bf16,
         (uint64_t)active_sequence_count *
-            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u,
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION *
+            sizeof(uint16_t),
         10u,
         cuda_stream);
     SparkGlm52ResidentDecodeStageDeviceHashProbe(
         node_context,
         pipeline_slot->raw_kv_b_bf16,
         (uint64_t)active_sequence_count *
-            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION * 2u,
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION *
+            sizeof(uint16_t),
         11u,
         cuda_stream);
 
@@ -17776,7 +17806,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         node_context,
         pipeline_slot->attention_output_latent_bf16,
         (uint64_t)active_sequence_count *
-            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION * 2u,
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION *
+            sizeof(uint16_t),
         13u,
         cuda_stream);
 
@@ -17803,7 +17834,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         node_context,
         pipeline_slot->attention_projected_hidden_bf16,
         (uint64_t)active_sequence_count *
-            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES,
         14u,
         cuda_stream);
     hidden_element_count =
@@ -17832,7 +17863,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         node_context,
         pipeline_slot->post_attention_hidden_bf16,
         (uint64_t)active_sequence_count *
-            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES,
         15u,
         cuda_stream);
     status = SparkGlm52ResidentDecodeStageMaybeMarkPhase(
@@ -18254,7 +18285,7 @@ static uint64_t SparkGlm52ResidentDecodeStageDsparkTapRegionBytes(
     uint32_t active_sequence_count)
 {
     return (uint64_t)active_sequence_count *
-        (uint64_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2ull;
+        (uint64_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t);
 }
 
 static uint64_t SparkGlm52ResidentDecodeStageDsparkTapPayloadBaseOffset(
@@ -18502,8 +18533,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeImportDsparkHiddenTaps(
                 (const void *)((const uint8_t *)input_packet->sideband_payload +
                     base_offset +
                     ((uint64_t)tap_index * region_bytes)),
-                (size_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u,
-                (size_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u,
+                (size_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t),
+                (size_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t),
                 active_sequence_count,
                 cudaMemcpyDeviceToDevice,
                 cuda_stream) != cudaSuccess)
@@ -19865,7 +19896,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeCaptureDsparkHiddenTap(
         layer_node_context,
         layer_pipeline_slot);
     tap_output_bf16 = frame_context->dspark_hidden_tap_output_bf16[tap_index];
-    hidden_row_bytes = (uint64_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2ull;
+    hidden_row_bytes =
+        (uint64_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t);
     if (hidden_output_bf16 == 0 ||
         tap_output_bf16 == 0 ||
         frame_context->dspark_hidden_tap_lane_stride_bytes < hidden_row_bytes)
@@ -20760,7 +20792,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchExactPp13StageSliceBody(
             exact_stage_slice_plan->first_layer_index + layer_offset,
             0u,
             layer_pipeline_slot->layer_output_hidden_bf16,
-            12288u,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES,
             cuda_stream);
         status = SparkGlm52ResidentDecodeStageMaybeCaptureDsparkHiddenTap(
             exact_stage_slice_plan,
@@ -21320,7 +21352,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
             layer_offset,
             graph_capture_active,
             layer_pipeline_slot->layer_output_hidden_bf16,
-            12288u,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES,
             typed_cuda_stream);
         status = SparkGlm52ResidentDecodeStageMaybeExportDsparkHiddenTap(
             frame_context,

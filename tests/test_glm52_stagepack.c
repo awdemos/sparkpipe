@@ -5,6 +5,8 @@
 
 #include "sparkpipe/spark_glm52_stagepack.h"
 
+#define SPARK_TEST_GLM52_STAGEPACK_PAYLOAD_BYTES 32u
+
 static void SparkTestMakeDirectory(const char *path)
 {
 	(void)mkdir(path,0775);
@@ -23,7 +25,7 @@ static void SparkTestWriteTextFile(const char *path,const char *text)
 static void SparkTestWritePayloadFile(const char *path)
 {
 	FILE *file;
-	uint8_t bytes[32];
+	uint8_t bytes[SPARK_TEST_GLM52_STAGEPACK_PAYLOAD_BYTES];
 	uint32_t index;
 
 	for (index = 0u; index < sizeof(bytes); ++index)
@@ -42,7 +44,7 @@ static void SparkTestInitializeSpec(
 	spec->abi_version = SPARK_GLM52_STAGEPACK_ABI_VERSION;
 	spec->tensor_name = "model.layers.18.self_attn.q_proj.weight";
 	spec->dtype = dtype;
-	spec->bytes_per_element = 2u;
+	spec->bytes_per_element = (uint32_t)sizeof(uint16_t);
 	spec->rank = 2u;
 	spec->shape[0] = 4u;
 	spec->shape[1] = 2u;

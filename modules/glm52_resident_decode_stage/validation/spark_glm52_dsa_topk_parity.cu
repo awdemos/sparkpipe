@@ -277,7 +277,9 @@ int main(void)
     start_event = 0;
     stop_event = 0;
     elapsed_ms = 0.0f;
-    candidate_count = SparkValidationReadU32Env("GLM52_DSA_TOPK_CANDIDATE_COUNT",1048576u);
+    candidate_count = SparkValidationReadU32Env(
+        "GLM52_DSA_TOPK_CANDIDATE_COUNT",
+        SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS);
     selected_token_count = SparkValidationReadU32Env(
         "GLM52_DSA_TOPK_SELECTED_TOKEN_COUNT",
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT);

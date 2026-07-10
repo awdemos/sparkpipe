@@ -21,6 +21,7 @@
 #define SPARK_HIDDEN_TCP_CUDA_HOST_BYTES 64u
 #define SPARK_HIDDEN_TCP_CUDA_NO_PENDING 0xffffffffu
 #define SPARK_HIDDEN_TCP_CUDA_PENDING_DEPTH 8u
+#define SPARK_HIDDEN_TCP_CUDA_PENDING_HASH_LOAD_FACTOR 2u
 #define SPARK_HIDDEN_TCP_CUDA_OUTGOING_DEPTH 8u
 #define SPARK_HIDDEN_TCP_CUDA_CONNECT_RETRY_MS 50u
 #define SPARK_HIDDEN_TCP_CUDA_DESTROY_DRAIN_TIMEOUT_MS 5000u
@@ -816,7 +817,8 @@ static SparkStatus SparkHiddenTcpCudaInitialize(
     state->slot_payload_bytes = endpoint->max_packet_bytes +
         (uint64_t)sizeof(SparkHiddenTcpCudaHeader);
     state->pending_depth = SPARK_HIDDEN_TCP_CUDA_PENDING_DEPTH;
-    state->pending_hash_slots = state->pending_depth * 2u;
+    state->pending_hash_slots =
+        state->pending_depth * SPARK_HIDDEN_TCP_CUDA_PENDING_HASH_LOAD_FACTOR;
     state->event_fd = eventfd(0u,EFD_NONBLOCK | EFD_CLOEXEC);
     if (state->event_fd < 0 ||
         pthread_mutex_init(&state->lock,0) != 0 ||

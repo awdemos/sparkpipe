@@ -21,6 +21,11 @@
 #define SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY 8u
 #define SPARK_GLM52_GATEWAY_STREAM_WAIT_MS 1000u
 
+static const char SparkGlm52GatewayContentLengthHeader[] = "Content-Length:";
+static const char SparkGlm52GatewayContentLengthLowerHeader[] = "content-length:";
+static const char SparkGlm52GatewayAuthorizationHeader[] = "Authorization:";
+static const char SparkGlm52GatewayAuthorizationLowerHeader[] = "authorization:";
+
 typedef struct SparkGlm52GatewayConfig
 {
 	const char *bind_address;
@@ -815,28 +820,44 @@ static void SparkGlm52GatewayExtractHeaders(
 			next[0] = '\0';
 			next += 2;
 		}
-		if (strncmp(line,"Content-Length:",15) == 0)
+		if (strncmp(
+				line,
+				SparkGlm52GatewayContentLengthHeader,
+				sizeof(SparkGlm52GatewayContentLengthHeader) - 1u) == 0)
 		{
 			if (SparkGlm52GatewayParseU32(
-					SparkGlm52GatewaySkipSpaces(line + 15),
+					SparkGlm52GatewaySkipSpaces(
+						line + sizeof(SparkGlm52GatewayContentLengthHeader) - 1u),
 					&value) == 0)
 				*content_length_out = value;
 		}
-		if (strncmp(line,"content-length:",15) == 0)
+		if (strncmp(
+				line,
+				SparkGlm52GatewayContentLengthLowerHeader,
+				sizeof(SparkGlm52GatewayContentLengthLowerHeader) - 1u) == 0)
 		{
 			if (SparkGlm52GatewayParseU32(
-					SparkGlm52GatewaySkipSpaces(line + 15),
+					SparkGlm52GatewaySkipSpaces(
+						line + sizeof(SparkGlm52GatewayContentLengthLowerHeader) - 1u),
 					&value) == 0)
 				*content_length_out = value;
 		}
-		if (strncmp(line,"Authorization:",14) == 0)
+		if (strncmp(
+				line,
+				SparkGlm52GatewayAuthorizationHeader,
+				sizeof(SparkGlm52GatewayAuthorizationHeader) - 1u) == 0)
 		{
-			request->authorization = SparkGlm52GatewaySkipSpaces(line + 14);
+			request->authorization = SparkGlm52GatewaySkipSpaces(
+				line + sizeof(SparkGlm52GatewayAuthorizationHeader) - 1u);
 			request->authorization_bytes = (uint32_t)strlen(request->authorization);
 		}
-		if (strncmp(line,"authorization:",14) == 0)
+		if (strncmp(
+				line,
+				SparkGlm52GatewayAuthorizationLowerHeader,
+				sizeof(SparkGlm52GatewayAuthorizationLowerHeader) - 1u) == 0)
 		{
-			request->authorization = SparkGlm52GatewaySkipSpaces(line + 14);
+			request->authorization = SparkGlm52GatewaySkipSpaces(
+				line + sizeof(SparkGlm52GatewayAuthorizationLowerHeader) - 1u);
 			request->authorization_bytes = (uint32_t)strlen(request->authorization);
 		}
 		line = next;

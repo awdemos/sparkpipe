@@ -9,17 +9,18 @@
 #include <unistd.h>
 #include <sys/types.h>
 
+#include "sparkpipe/spark_glm52_rope.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_fp8_moe_plan.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_required_cuda.h"
+#include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_glm52_stagepack.h"
 
 #define SPARK_GLM52_PP13_BUILDER_LAYER_COUNT 6u
 #define SPARK_GLM52_PP13_BUILDER_PIPELINE_SLOT_COUNT 1u
-#define SPARK_GLM52_PP13_BUILDER_POSITION_COUNT 1048576u
-#include "sparkpipe/spark_glm52_kv_cache.h"
+#define SPARK_GLM52_PP13_BUILDER_POSITION_COUNT SPARK_GLM52_KV_CONTEXT_TOKENS
 #define SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE \
 	(SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS)
 #define SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS 1024u
@@ -28,8 +29,8 @@
 	(SPARK_GLM52_KV_POOL_TOKENS / SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS)
 #define SPARK_GLM52_PP13_BUILDER_COPY_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 #define SPARK_GLM52_PP13_BUILDER_MAX_ALLOCATIONS 512u
-#define SPARK_GLM52_PP13_BUILDER_ROPE_THETA 8000000.0
 #define SPARK_GLM52_PP13_BUILDER_THREADS 256u
+#define SPARK_GLM52_PP13_BUILDER_PROBE_HASH_SLOT_COUNT 18u
 #define SPARK_GLM52_PP13_BUILDER_MAX_PREFILL_TOKENS \
 	SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS
 #define SPARK_GLM52_PP13_BUILDER_INVALID_SLOT UINT32_MAX
@@ -721,9 +722,9 @@ static SparkStatus SparkGlm52Pp13BuilderLoadLmHeadRestricted(
 		&spec,
 		"lm_head.weight",
 		"BF16",
+		(uint32_t)sizeof(uint16_t),
 		2u,
-		2u,
-		154880u,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT,
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52StagePackResolveTensor(
@@ -732,7 +733,8 @@ static SparkStatus SparkGlm52Pp13BuilderLoadLmHeadRestricted(
 			&region);
 	bytes =
 		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
-		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2ull;
+		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+		sizeof(uint16_t);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderCudaAlloc(state,device_out,bytes);
 	if (status == SPARK_STATUS_OK)
@@ -753,9 +755,9 @@ static SparkStatus SparkGlm52Pp13BuilderLoadEmbedding(
 		state,
 		"model.embed_tokens.weight",
 		"BF16",
+		(uint32_t)sizeof(uint16_t),
 		2u,
-		2u,
-		154880u,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT,
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
 		&state->embedding_weight);
 }
@@ -807,25 +809,25 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTables(
 	status = SparkGlm52Pp13BuilderCudaAlloc(state,(void **)&state->dsa_prefill_row_positions,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * sizeof(uint32_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_key_scratch,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION * 2u);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_key_scratch,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION * sizeof(uint16_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_query_a,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION * 2u);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_query_a,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION * sizeof(uint16_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_query_index_heads,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION * 2u);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_query_index_heads,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION * sizeof(uint16_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_index_weights,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION * 2u);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_index_weights,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION * sizeof(uint16_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_normalized_hidden,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_normalized_hidden,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * sizeof(uint16_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_low_scratch,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * (SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION + SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) * 2u);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->dsa_prefill_low_scratch,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION * sizeof(uint16_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->device_probe_hash_slots,144u);
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->device_probe_hash_slots,SPARK_GLM52_PP13_BUILDER_PROBE_HASH_SLOT_COUNT * sizeof(uint64_t));
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderCudaAlloc(state,&state->cos_table,table_bytes);
 	if (status == SPARK_STATUS_OK)
@@ -840,20 +842,10 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTables(
 			free(sin_host);
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		}
-		for (uint32_t position = 0u; position < SPARK_GLM52_PP13_BUILDER_POSITION_COUNT; ++position)
-		{
-			for (uint32_t pair = 0u; pair < rope_pairs; ++pair)
-			{
-				double inv_freq;
-				double angle;
-				uint64_t offset;
-				inv_freq = pow(SPARK_GLM52_PP13_BUILDER_ROPE_THETA,-((double)(pair * 2u) / (double)SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION));
-				angle = (double)position * inv_freq;
-				offset = ((uint64_t)position * rope_pairs) + pair;
-				cos_host[offset] = (float)cos(angle);
-				sin_host[offset] = (float)sin(angle);
-			}
-		}
+		SparkGlm52BuildRopeTables(
+			cos_host,
+			sin_host,
+			SPARK_GLM52_PP13_BUILDER_POSITION_COUNT);
 		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy(
 			state->cos_table,cos_host,(size_t)table_bytes,cudaMemcpyHostToDevice));
 		if (status == SPARK_STATUS_OK)
@@ -902,80 +894,80 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	output_crosses_rank_boundary =
 		layer_offset + 1u == state->rank_plan.layer_count &&
 		(state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u;
-#define ALLOC_FIELD(field, count, bytes) \
-	do { status = SparkGlm52Pp13BuilderCudaAlloc(state,&layer->field,(uint64_t)(count) * (uint64_t)(bytes)); if (status != SPARK_STATUS_OK) return status; } while (0)
-#define ALLOC_FIELD_MAPPED(field, count, bytes) \
-	do { status = SparkGlm52Pp13BuilderCudaHostMappedAlloc(state,&layer->field,(uint64_t)(count) * (uint64_t)(bytes)); if (status != SPARK_STATUS_OK) return status; } while (0)
-#define ZERO_FIELD(field, count, bytes) \
-	do { status = SparkGlm52Pp13BuilderCudaZero(layer->field,(uint64_t)(count) * (uint64_t)(bytes)); if (status != SPARK_STATUS_OK) return status; } while (0)
+#define ALLOC_FIELD(field, count, type) \
+	do { status = SparkGlm52Pp13BuilderCudaAlloc(state,&layer->field,(uint64_t)(count) * sizeof(type)); if (status != SPARK_STATUS_OK) return status; } while (0)
+#define ALLOC_FIELD_MAPPED(field, count, type) \
+	do { status = SparkGlm52Pp13BuilderCudaHostMappedAlloc(state,&layer->field,(uint64_t)(count) * sizeof(type)); if (status != SPARK_STATUS_OK) return status; } while (0)
+#define ZERO_FIELD(field, count, type) \
+	do { status = SparkGlm52Pp13BuilderCudaZero(layer->field,(uint64_t)(count) * sizeof(type)); if (status != SPARK_STATUS_OK) return status; } while (0)
 	if (input_crosses_rank_boundary != 0u)
-		ALLOC_FIELD_MAPPED(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
+		ALLOC_FIELD_MAPPED(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
 	else
-		ALLOC_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
-	ALLOC_FIELD(normalized_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
-	ALLOC_FIELD(query_latent,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_LATENT_PROJECTION_DIMENSION,2u);
-	ALLOC_FIELD(query_rope_input,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION,2u);
-	ALLOC_FIELD(key_rope_input,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION,2u);
-	ALLOC_FIELD(current_kv_latent,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,2u);
-	ALLOC_FIELD(raw_query_a,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,2u);
-	ALLOC_FIELD(raw_query_a_norm,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,2u);
-	ALLOC_FIELD(raw_query_b,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,2u);
-	ALLOC_FIELD(raw_kv_a,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,2u);
-	ALLOC_FIELD(raw_kv_a_norm,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,2u);
-	ALLOC_FIELD(raw_kv_b,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,2u);
-	ALLOC_FIELD(query_index_heads,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,2u);
-	ALLOC_FIELD(current_key_index,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ALLOC_FIELD(index_head_weights,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,2u);
-	ALLOC_FIELD(dsa_token_scores,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT,sizeof(float));
-	ALLOC_FIELD(sparse_token_indices,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT,sizeof(uint32_t));
-	ALLOC_FIELD(rotated_query_rope,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION,2u);
-	ALLOC_FIELD(attention_output_latent,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,2u);
-	ALLOC_FIELD(attention_projected_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
-	ALLOC_FIELD(post_attention_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
-	ALLOC_FIELD(post_attention_normalized_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
-	ALLOC_FIELD(moe_topk_expert_ids,route_count,sizeof(uint32_t));
-	ALLOC_FIELD(moe_topk_weights,route_count,sizeof(float));
-	ALLOC_FIELD(moe_router_logits,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT,sizeof(float));
-	ALLOC_FIELD(moe_gate,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,2u);
-	ALLOC_FIELD(moe_up,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,2u);
-	ALLOC_FIELD(moe_intermediate,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,2u);
-	ALLOC_FIELD(moe_route_output,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
+		ALLOC_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
+	ALLOC_FIELD(normalized_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
+	ALLOC_FIELD(query_latent,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_LATENT_PROJECTION_DIMENSION,uint16_t);
+	ALLOC_FIELD(query_rope_input,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION,uint16_t);
+	ALLOC_FIELD(key_rope_input,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION,uint16_t);
+	ALLOC_FIELD(current_kv_latent,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,uint16_t);
+	ALLOC_FIELD(raw_query_a,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,uint16_t);
+	ALLOC_FIELD(raw_query_a_norm,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,uint16_t);
+	ALLOC_FIELD(raw_query_b,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,uint16_t);
+	ALLOC_FIELD(raw_kv_a,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,uint16_t);
+	ALLOC_FIELD(raw_kv_a_norm,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,uint16_t);
+	ALLOC_FIELD(raw_kv_b,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,uint16_t);
+	ALLOC_FIELD(query_index_heads,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,uint16_t);
+	ALLOC_FIELD(current_key_index,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
+	ALLOC_FIELD(index_head_weights,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,uint16_t);
+	ALLOC_FIELD(dsa_token_scores,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT,float);
+	ALLOC_FIELD(sparse_token_indices,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT,uint32_t);
+	ALLOC_FIELD(rotated_query_rope,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION,uint16_t);
+	ALLOC_FIELD(attention_output_latent,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,uint16_t);
+	ALLOC_FIELD(attention_projected_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
+	ALLOC_FIELD(post_attention_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
+	ALLOC_FIELD(post_attention_normalized_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
+	ALLOC_FIELD(moe_topk_expert_ids,route_count,uint32_t);
+	ALLOC_FIELD(moe_topk_weights,route_count,float);
+	ALLOC_FIELD(moe_router_logits,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT,float);
+	ALLOC_FIELD(moe_gate,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,uint16_t);
+	ALLOC_FIELD(moe_up,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,uint16_t);
+	ALLOC_FIELD(moe_intermediate,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,uint16_t);
+	ALLOC_FIELD(moe_route_output,route_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
 	if (output_crosses_rank_boundary != 0u)
-		ALLOC_FIELD_MAPPED(layer_output_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
+		ALLOC_FIELD_MAPPED(layer_output_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
 	else
-		ALLOC_FIELD(layer_output_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
-	ALLOC_FIELD(mtp_draft_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
-	ALLOC_FIELD(restricted_logits,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT,sizeof(float));
-	ALLOC_FIELD(restricted_selected_token_ids,b,sizeof(uint32_t));
-	ALLOC_FIELD(restricted_selected_token_scores,b,sizeof(float));
-	ALLOC_FIELD(mtp_draft_logits,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT,sizeof(float));
-	ALLOC_FIELD(mtp_draft_token_ids,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,sizeof(uint32_t));
-	ALLOC_FIELD(mtp_draft_token_budgets,b,sizeof(uint32_t));
-	ALLOC_FIELD(mtp_target_token_ids,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,sizeof(uint32_t));
-	ALLOC_FIELD(mtp_accept_mask,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,sizeof(uint32_t));
-	ALLOC_FIELD(mtp_committed_token_ids,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,sizeof(uint32_t));
-	ALLOC_FIELD(mtp_event_counters,SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_EVENT_COUNTER_COUNT,sizeof(uint32_t));
-	ALLOC_FIELD(phase_clock_cycles,SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT,sizeof(uint64_t));
-	ALLOC_FIELD(positions,b,sizeof(uint32_t));
-	ALLOC_FIELD(slot_mapping,b,sizeof(uint32_t));
-	ALLOC_FIELD(block_table,b * SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE,sizeof(uint32_t));
-	ALLOC_FIELD(context_lengths,b,sizeof(uint32_t));
-	ALLOC_FIELD(first_block_token_offsets,b,sizeof(uint32_t));
-	ALLOC_FIELD(mla_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,2u);
-	ALLOC_FIELD(key_nope_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION,2u);
-	ALLOC_FIELD(value_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,2u);
-	ALLOC_FIELD(key_index_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ALLOC_FIELD(key_index_block_min,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ALLOC_FIELD(key_index_block_max,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ALLOC_FIELD(dsa_summary_dirty_flags,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS,1u);
-	ZERO_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,2u);
-	ZERO_FIELD(mla_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,2u);
-	ZERO_FIELD(key_nope_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION,2u);
-	ZERO_FIELD(value_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,2u);
-	ZERO_FIELD(key_index_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ZERO_FIELD(key_index_block_min,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ZERO_FIELD(key_index_block_max,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,2u);
-	ZERO_FIELD(dsa_summary_dirty_flags,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS,1u);
+		ALLOC_FIELD(layer_output_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
+	ALLOC_FIELD(mtp_draft_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
+	ALLOC_FIELD(restricted_logits,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT,float);
+	ALLOC_FIELD(restricted_selected_token_ids,b,uint32_t);
+	ALLOC_FIELD(restricted_selected_token_scores,b,float);
+	ALLOC_FIELD(mtp_draft_logits,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT,float);
+	ALLOC_FIELD(mtp_draft_token_ids,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,uint32_t);
+	ALLOC_FIELD(mtp_draft_token_budgets,b,uint32_t);
+	ALLOC_FIELD(mtp_target_token_ids,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,uint32_t);
+	ALLOC_FIELD(mtp_accept_mask,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,uint32_t);
+	ALLOC_FIELD(mtp_committed_token_ids,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,uint32_t);
+	ALLOC_FIELD(mtp_event_counters,SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_EVENT_COUNTER_COUNT,uint32_t);
+	ALLOC_FIELD(phase_clock_cycles,SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT,uint64_t);
+	ALLOC_FIELD(positions,b,uint32_t);
+	ALLOC_FIELD(slot_mapping,b,uint32_t);
+	ALLOC_FIELD(block_table,b * SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE,uint32_t);
+	ALLOC_FIELD(context_lengths,b,uint32_t);
+	ALLOC_FIELD(first_block_token_offsets,b,uint32_t);
+	ALLOC_FIELD(mla_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
+	ALLOC_FIELD(key_nope_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION,uint16_t);
+	ALLOC_FIELD(value_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,uint16_t);
+	ALLOC_FIELD(key_index_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
+	ALLOC_FIELD(key_index_block_min,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
+	ALLOC_FIELD(key_index_block_max,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
+	ALLOC_FIELD(dsa_summary_dirty_flags,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS,uint8_t);
+	ZERO_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
+	ZERO_FIELD(mla_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
+	ZERO_FIELD(key_nope_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION,uint16_t);
+	ZERO_FIELD(value_cache,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,uint16_t);
+	ZERO_FIELD(key_index_cache,(uint64_t)SPARK_GLM52_KV_POOL_TOKENS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
+	ZERO_FIELD(key_index_block_min,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
+	ZERO_FIELD(key_index_block_max,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
+	ZERO_FIELD(dsa_summary_dirty_flags,(uint64_t)SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS,uint8_t);
 #undef ALLOC_FIELD
 #undef ALLOC_FIELD_MAPPED
 #undef ZERO_FIELD
@@ -990,43 +982,43 @@ static SparkStatus SparkGlm52Pp13BuilderLoadLayerWeights(
 	SparkStatus status;
 #define LOAD(suffix, dtype, bpe, rank, d0, d1, field) \
 	do { status = SparkGlm52Pp13BuilderLoadLayerTensor(state,layer_index,suffix,dtype,bpe,rank,d0,d1,&layer->field); if (status != SPARK_STATUS_OK) return status; } while (0)
-	LOAD("input_layernorm.weight","BF16",2u,1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,1u,attention_norm_weight);
-	LOAD("post_attention_layernorm.weight","BF16",2u,1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,1u,post_attention_norm_weight);
-	LOAD("self_attn.q_a_layernorm.weight","BF16",2u,1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,1u,raw_query_a_norm_weight);
-	LOAD("self_attn.kv_a_layernorm.weight","BF16",2u,1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,1u,raw_kv_a_norm_weight);
-	LOAD("self_attn.q_a_proj.weight","F8_E4M3",1u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,raw_query_a_weight_fp8);
-	LOAD("self_attn.q_a_proj.weight_scale_inv","F32",4u,2u,16u,48u,raw_query_a_scale);
-	LOAD("self_attn.q_b_proj.weight","F8_E4M3",1u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,raw_query_b_weight_fp8);
-	LOAD("self_attn.q_b_proj.weight_scale_inv","F32",4u,2u,128u,16u,raw_query_b_scale);
-	LOAD("self_attn.kv_a_proj_with_mqa.weight","F8_E4M3",1u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,raw_kv_a_weight_fp8);
-	LOAD("self_attn.kv_a_proj_with_mqa.weight_scale_inv","F32",4u,2u,5u,48u,raw_kv_a_scale);
-	LOAD("self_attn.kv_b_proj.weight","F8_E4M3",1u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,raw_kv_b_weight_fp8);
-	LOAD("self_attn.kv_b_proj.weight_scale_inv","F32",4u,2u,224u,4u,raw_kv_b_scale);
-	LOAD("self_attn.o_proj.weight","F8_E4M3",1u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,attention_output_weight_fp8);
-	LOAD("self_attn.o_proj.weight_scale_inv","F32",4u,2u,48u,128u,attention_output_scale);
+	LOAD("input_layernorm.weight","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,1u,attention_norm_weight);
+	LOAD("post_attention_layernorm.weight","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,1u,post_attention_norm_weight);
+	LOAD("self_attn.q_a_layernorm.weight","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,1u,raw_query_a_norm_weight);
+	LOAD("self_attn.kv_a_layernorm.weight","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,1u,raw_kv_a_norm_weight);
+	LOAD("self_attn.q_a_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,raw_query_a_weight_fp8);
+	LOAD("self_attn.q_a_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),raw_query_a_scale);
+	LOAD("self_attn.q_b_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,raw_query_b_weight_fp8);
+	LOAD("self_attn.q_b_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION),raw_query_b_scale);
+	LOAD("self_attn.kv_a_proj_with_mqa.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,raw_kv_a_weight_fp8);
+	LOAD("self_attn.kv_a_proj_with_mqa.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),raw_kv_a_scale);
+	LOAD("self_attn.kv_b_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,raw_kv_b_weight_fp8);
+	LOAD("self_attn.kv_b_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION),raw_kv_b_scale);
+	LOAD("self_attn.o_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,attention_output_weight_fp8);
+	LOAD("self_attn.o_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION),attention_output_scale);
 	if (SparkGlm52Pp13BuilderDsaSourceLayer(layer_index) == layer_index)
 	{
-		LOAD("self_attn.indexer.wq_b.weight","F8_E4M3",1u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,index_query_weight_fp8);
-		LOAD("self_attn.indexer.wq_b.weight_scale_inv","F32",4u,2u,32u,16u,index_query_scale);
-		LOAD("self_attn.indexer.wk.weight","F8_E4M3",1u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,index_key_weight_fp8);
-		LOAD("self_attn.indexer.wk.weight_scale_inv","F32",4u,2u,1u,48u,index_key_scale);
-		LOAD("self_attn.indexer.weights_proj.weight","BF16",2u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,index_weights_proj_weight);
-		LOAD("self_attn.indexer.k_norm.weight","BF16",2u,1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,1u,index_key_norm_weight);
-		LOAD("self_attn.indexer.k_norm.bias","BF16",2u,1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,1u,index_key_norm_bias);
+		LOAD("self_attn.indexer.wq_b.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,index_query_weight_fp8);
+		LOAD("self_attn.indexer.wq_b.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION),index_query_scale);
+		LOAD("self_attn.indexer.wk.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,index_key_weight_fp8);
+		LOAD("self_attn.indexer.wk.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),index_key_scale);
+		LOAD("self_attn.indexer.weights_proj.weight","BF16",sizeof(uint16_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,index_weights_proj_weight);
+		LOAD("self_attn.indexer.k_norm.weight","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,1u,index_key_norm_weight);
+		LOAD("self_attn.indexer.k_norm.bias","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,1u,index_key_norm_bias);
 	}
 	if (layer_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER)
 	{
-		LOAD("mlp.gate_proj.weight","F8_E4M3",1u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_gate_weight_fp8);
-		LOAD("mlp.gate_proj.weight_scale_inv","F32",4u,2u,96u,48u,dense_gate_scale);
-		LOAD("mlp.up_proj.weight","F8_E4M3",1u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_up_weight_fp8);
-		LOAD("mlp.up_proj.weight_scale_inv","F32",4u,2u,96u,48u,dense_up_scale);
-		LOAD("mlp.down_proj.weight","F8_E4M3",1u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,dense_down_weight_fp8);
-		LOAD("mlp.down_proj.weight_scale_inv","F32",4u,2u,48u,96u,dense_down_scale);
+		LOAD("mlp.gate_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_gate_weight_fp8);
+		LOAD("mlp.gate_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),dense_gate_scale);
+		LOAD("mlp.up_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_up_weight_fp8);
+		LOAD("mlp.up_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),dense_up_scale);
+		LOAD("mlp.down_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,dense_down_weight_fp8);
+		LOAD("mlp.down_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION),dense_down_scale);
 	}
 	else
 	{
-		LOAD("mlp.gate.weight","BF16",2u,2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,router_weight);
-		LOAD("mlp.gate.e_score_correction_bias","F32",4u,1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT,1u,router_bias);
+		LOAD("mlp.gate.weight","BF16",sizeof(uint16_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,router_weight);
+		LOAD("mlp.gate.e_score_correction_bias","F32",sizeof(float),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT,1u,router_bias);
 	}
 #undef LOAD
 	return SPARK_STATUS_OK;
@@ -1477,7 +1469,7 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 			state,
 			"model.norm.weight",
 			"BF16",
-			2u,
+			sizeof(uint16_t),
 			1u,
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
 			1u,
@@ -1877,7 +1869,8 @@ static SparkStatus SparkGlm52Pp13BuilderBuild(
 	state->result.first_layer_index = state->rank_plan.first_layer_index;
 	state->result.layer_count = state->rank_plan.layer_count;
 	state->result.hidden_dimension = state->rank_plan.hidden_dimension;
-	state->result.vocabulary_size = 154880u;
+	state->result.vocabulary_size =
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT;
 	state->result.node_context = &state->slice_context;
 	state->result.embedding_weight_bf16 = state->embedding_weight;
 	state->result.private_state = state;
@@ -2255,8 +2248,7 @@ static void SparkGlm52Pp13BuilderBuildPacket(
 		packet->sideband_kind =
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_TRANSPORT_SIDEBAND_INDEXSHARE_SELECTED_TOKENS;
 		packet->sideband_bytes_per_sequence =
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT *
-			sizeof(uint32_t);
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_INDEX_BYTES;
 	}
 }
 
@@ -2439,19 +2431,23 @@ static uint64_t SparkGlm52Pp13BuilderProbeFnv64(const uint8_t *data,uint64_t byt
 
 static void SparkGlm52Pp13BuilderMaybeProbeMlaSlots(SparkGlm52Pp13BuilderState *state)
 {
-	static uint8_t slot_host[SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS * 2u];
+	static uint8_t slot_host[
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS *
+		sizeof(uint16_t)];
 	uint32_t slot_index;
 	uint64_t slot_bytes;
 	const uint8_t *cache_base;
 	if (getenv("SPARKPIPE_MLA_SLOT_PROBE") == 0 || state == 0 || state->layers[0].mla_cache == 0)
 		return;
-	slot_bytes = (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS * 2u;
+	slot_bytes =
+		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS *
+		sizeof(uint16_t);
 	cache_base = (const uint8_t *)state->layers[0].mla_cache;
 	for (slot_index = 0u; slot_index < 2u; ++slot_index)
 	{
 		if (cudaMemcpy(slot_host,cache_base + ((uint64_t)slot_index * slot_bytes),(size_t)slot_bytes,cudaMemcpyDeviceToHost) != cudaSuccess)
 			return;
-		fprintf(stderr,"mla_slot%u=%016llx mla_slot%u_rope_pair0=%016llx\n",slot_index,(unsigned long long)SparkGlm52Pp13BuilderProbeFnv64(slot_host,slot_bytes),slot_index,(unsigned long long)SparkGlm52Pp13BuilderProbeFnv64(slot_host + ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * 2u),4u));
+		fprintf(stderr,"mla_slot%u=%016llx mla_slot%u_rope_pair0=%016llx\n",slot_index,(unsigned long long)SparkGlm52Pp13BuilderProbeFnv64(slot_host,slot_bytes),slot_index,(unsigned long long)SparkGlm52Pp13BuilderProbeFnv64(slot_host + ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION * sizeof(uint16_t)),2u * sizeof(uint16_t)));
 	}
 }
 
@@ -2534,7 +2530,7 @@ static void SparkGlm52Pp13BuilderMaybeProbeLayer1Sublayers(
 	uint32_t token_offset,
 	uint32_t position)
 {
-	uint64_t probe_slots[18];
+	uint64_t probe_slots[SPARK_GLM52_PP13_BUILDER_PROBE_HASH_SLOT_COUNT];
 	if (getenv("SPARKPIPE_FP8_AMAX_PROBE") == 0 || state == 0 ||
 		state->device_probe_hash_slots == 0)
 		return;

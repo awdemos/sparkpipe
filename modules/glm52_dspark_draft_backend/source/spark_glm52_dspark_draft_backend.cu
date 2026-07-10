@@ -14,6 +14,7 @@
 
 #define SPARK_GLM52_DSPARK_BACKEND_REDUCE_THREADS 256u
 #define SPARK_GLM52_DSPARK_BACKEND_WINDOW_TOKENS SPARK_GLM52_DSPARK_BLOCK_SIZE
+#define SPARK_GLM52_DSPARK_BACKEND_ARGMAX_WORD_COUNT 2u
 
 typedef enum SparkGlm52DsparkWeightRole
 {
@@ -674,8 +675,9 @@ static SparkStatus SparkGlm52DsparkSafetensorsFindTensor(
             SparkJsonGetArrayElement(&file->header, offsets_token, 1u),
             &end_offset) != SPARK_STATUS_OK ||
         end_offset <= begin_offset ||
-        (end_offset - begin_offset) !=
-            ((uint64_t)expected_rows * (uint64_t)expected_columns * 2u) ||
+		(end_offset - begin_offset) !=
+			((uint64_t)expected_rows * (uint64_t)expected_columns *
+			 sizeof(uint16_t)) ||
         (file->data_offset + end_offset) > file->file_bytes)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -884,61 +886,64 @@ static SparkStatus SparkGlm52DsparkAllocateWorkspaces(
         ? backend->restricted_vocabulary_count
         : SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE;
     status = SparkGlm52DsparkCudaStatus(cudaMalloc(
-        (void **)&backend->device_tap_arena_bf16,
-        (size_t)backend->maximum_lane_count *
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION * 2u));
+		(void **)&backend->device_tap_arena_bf16,
+		(size_t)backend->maximum_lane_count *
+			SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION *
+			sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_hidden_bf16,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u));
+			SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_normed_bf16,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u));
+			SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_attention_bf16,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION * 2u));
+			SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION * sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_query_bf16,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION * 2u));
+			SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION * sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_key_bf16,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION * 2u));
+			SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION * sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_value_bf16,
-            SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION * 2u));
+			SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION * sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_gate_bf16,
-            SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION * 2u));
+			SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION * sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_up_bf16,
-            SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION * 2u));
+			SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION * sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_mlp_bf16,
-            SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION * 2u));
+			SPARK_GLM52_DSPARK_DRAFT_INTERMEDIATE_DIMENSION * sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_fused_bf16,
-            SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u));
+			SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_window_key_bf16,
-            (size_t)SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT *
-                SPARK_GLM52_DSPARK_BACKEND_WINDOW_TOKENS *
-                SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION * 2u));
+			(size_t)SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT *
+				SPARK_GLM52_DSPARK_BACKEND_WINDOW_TOKENS *
+				SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION *
+				sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_window_value_bf16,
-            (size_t)SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT *
-                SPARK_GLM52_DSPARK_BACKEND_WINDOW_TOKENS *
-                SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION * 2u));
+			(size_t)SPARK_GLM52_DSPARK_DRAFT_LAYER_COUNT *
+				SPARK_GLM52_DSPARK_BACKEND_WINDOW_TOKENS *
+				SPARK_GLM52_DSPARK_DRAFT_BACKEND_ATTENTION_DIMENSION *
+				sizeof(uint16_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_logits_f32,
@@ -949,13 +954,15 @@ static SparkStatus SparkGlm52DsparkAllocateWorkspaces(
             SPARK_GLM52_DSPARK_MARKOV_RANK * sizeof(float)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
-            (void **)&backend->device_step_argmax_u32, 2u * sizeof(uint32_t)));
+			(void **)&backend->device_step_argmax_u32,
+			SPARK_GLM52_DSPARK_BACKEND_ARGMAX_WORD_COUNT * sizeof(uint32_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMalloc(
             (void **)&backend->device_step_confidence_f32, sizeof(float)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMallocHost(
-            (void **)&backend->host_step_argmax_u32, 2u * sizeof(uint32_t)));
+			(void **)&backend->host_step_argmax_u32,
+			SPARK_GLM52_DSPARK_BACKEND_ARGMAX_WORD_COUNT * sizeof(uint32_t)));
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52DsparkCudaStatus(cudaMallocHost(
             (void **)&backend->host_step_confidence_f32, sizeof(float)));
@@ -1051,8 +1058,9 @@ SparkStatus SparkGlm52DsparkDraftBackendInitialize(
     backend->restricted_vocabulary_count =
         configuration->restricted_vocabulary_count;
     backend->weight_count = SPARK_GLM52_DSPARK_DRAFT_BACKEND_WEIGHT_COUNT;
-    backend->tap_arena_lane_stride_bytes =
-        (uint64_t)SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION * 2u;
+	backend->tap_arena_lane_stride_bytes =
+		(uint64_t)SPARK_GLM52_DSPARK_DRAFT_BACKEND_FUSED_INPUT_DIMENSION *
+		sizeof(uint16_t);
     SparkGlm52DsparkFillModelContract(&backend->contract);
     if (configuration->cuda_stream != 0)
     {
@@ -1190,8 +1198,9 @@ SparkStatus SparkGlm52DsparkDraftBackendTapOutputPointers(
          tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
          ++tap_index)
     {
-        tap_output_bf16[tap_index] = lane_base +
-            ((uint64_t)tap_index * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * 2u);
+		tap_output_bf16[tap_index] = lane_base +
+			((uint64_t)tap_index * SPARK_GLM52_DSPARK_HIDDEN_DIMENSION *
+			 sizeof(uint16_t));
     }
     *lane_stride_bytes_out = backend->tap_arena_lane_stride_bytes;
     return SPARK_STATUS_OK;

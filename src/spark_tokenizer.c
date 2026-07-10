@@ -12,6 +12,9 @@
 
 #define SPARK_TOKENIZER_EMPTY_BUCKET UINT32_MAX
 #define SPARK_TOKENIZER_INITIAL_BYTE_SYMBOL_BYTES 4u
+#define SPARK_TOKENIZER_HASH_LOAD_FACTOR 2u
+#define SPARK_TOKENIZER_MERGE_HEAP_CAPACITY_FACTOR 4u
+#define SPARK_TOKENIZER_MERGE_HEAP_CAPACITY_SLACK 16u
 #define SPARK_TOKENIZER_SYMBOL_NONE UINT32_MAX
 
 static uint32_t SparkTokenizerNextPowerOfTwo(
@@ -262,7 +265,8 @@ static SparkStatus SparkTokenizerAllocateStringTable(
         return SPARK_STATUS_OK;
     }
 
-    bucket_count = SparkTokenizerNextPowerOfTwo(entry_count * 2u + 1u);
+    bucket_count = SparkTokenizerNextPowerOfTwo(
+        entry_count * SPARK_TOKENIZER_HASH_LOAD_FACTOR + 1u);
     entries = (SparkTokenizerStringEntry *)calloc(entry_count, sizeof(*entries));
     buckets = (uint32_t *)malloc((uint64_t)bucket_count * sizeof(*buckets));
     if (entries == 0 || buckets == 0)
@@ -362,7 +366,8 @@ static SparkStatus SparkTokenizerAllocateMergePairTable(
     {
         return SPARK_STATUS_OK;
     }
-    tokenizer->fast_merge_bucket_count = SparkTokenizerNextPowerOfTwo(entry_capacity * 2u + 1u);
+    tokenizer->fast_merge_bucket_count = SparkTokenizerNextPowerOfTwo(
+        entry_capacity * SPARK_TOKENIZER_HASH_LOAD_FACTOR + 1u);
     tokenizer->fast_merge_pairs = (SparkTokenizerFastMergePair *)calloc(
         entry_capacity,
         sizeof(*tokenizer->fast_merge_pairs));
@@ -1185,11 +1190,15 @@ SparkStatus SparkTokenizerWorkspaceInitialize(
     }
     SparkTokenizerWorkspaceDestroy(workspace);
     workspace->maximum_symbol_count = maximum_symbol_count;
-    if (maximum_symbol_count > (UINT32_MAX - 16u) / 4u)
+    if (maximum_symbol_count >
+        (UINT32_MAX - SPARK_TOKENIZER_MERGE_HEAP_CAPACITY_SLACK) /
+        SPARK_TOKENIZER_MERGE_HEAP_CAPACITY_FACTOR)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    workspace->heap_capacity = maximum_symbol_count * 4u + 16u;
+    workspace->heap_capacity =
+        maximum_symbol_count * SPARK_TOKENIZER_MERGE_HEAP_CAPACITY_FACTOR +
+        SPARK_TOKENIZER_MERGE_HEAP_CAPACITY_SLACK;
     workspace->symbol_token_ids = (uint32_t *)malloc(
         (uint64_t)maximum_symbol_count * sizeof(*workspace->symbol_token_ids));
     workspace->previous_symbol_indices = (uint32_t *)malloc(
