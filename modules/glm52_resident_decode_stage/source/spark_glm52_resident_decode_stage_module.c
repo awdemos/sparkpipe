@@ -197,7 +197,9 @@ static bool SparkGlm52ResidentDecodeStageMlpExecutionUsesQuantizedPlan(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
     return node_context->mlp_execution_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE;
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE ||
+        node_context->mlp_execution_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
 }
 
 static bool SparkGlm52ResidentDecodeStageLinearPlanIsUsable(
@@ -2233,6 +2235,8 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageLayerPointers(
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K ||
             node_context->moe_intermediate_dimension !=
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION ||
+            node_context->dense_intermediate_dimension !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION ||
             node_context->mlp_execution_mode !=
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE ||
             node_context->projection_mode !=
@@ -2249,7 +2253,8 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageLayerPointers(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        return SPARK_STATUS_OK;
+        return SparkValidateGlm52ResidentDecodeStageRequiredDenseMlpPlans(
+            node_context);
     }
     return SPARK_STATUS_INVALID_ARGUMENT;
 }

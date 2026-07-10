@@ -638,7 +638,8 @@ static void SparkTestInitializeQuantizedRawProjectionPlans(
 static void SparkTestAttachQuantizedDenseMlpPlans(
     SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT],
-    uint32_t plan_kind)
+    uint32_t plan_kind,
+    uint32_t intermediate_dimension)
 {
 #define SPARK_TEST_SET_DENSE_PLAN(Index, InputDimension, OutputDimension) \
     do \
@@ -651,19 +652,21 @@ static void SparkTestAttachQuantizedDenseMlpPlans(
         linear_plans[(Index)].output_dimension = (OutputDimension); \
         linear_plans[(Index)].alpha = 1.0f; \
         linear_plans[(Index)].beta = 0.0f; \
+        linear_plans[(Index)].custom_launch_function = \
+            (void *)SparkTestQuantizedProjectionLaunchPlaceholder; \
     } while (0)
 
     SPARK_TEST_SET_DENSE_PLAN(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_GATE,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION);
+        intermediate_dimension);
     SPARK_TEST_SET_DENSE_PLAN(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_UP,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION);
+        intermediate_dimension);
     SPARK_TEST_SET_DENSE_PLAN(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_DOWN,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,
+        intermediate_dimension,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION);
 
 #undef SPARK_TEST_SET_DENSE_PLAN
@@ -1115,6 +1118,8 @@ static void SparkPrepareFp8ResidentDecodeStageNodeContext(
     node_context->moe_top_k = SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
     node_context->moe_intermediate_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+    node_context->dense_intermediate_dimension =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
     node_context->fp8_moe_plan = fp8_moe_plan;
 }
 
@@ -1236,6 +1241,8 @@ static void SparkTestGlm52ResidentDecodeStageFp8ModelVariantValidation(void)
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
     SparkGlm52ResidentDecodeStageNodeContext node_context;
     SparkGlm52ResidentDecodeStageFp8MoePlan fp8_moe_plan;
+    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
     SparkFirmwareModuleConfiguration configuration;
     SparkFirmwareModuleHostServices host_services;
@@ -1246,9 +1253,17 @@ static void SparkTestGlm52ResidentDecodeStageFp8ModelVariantValidation(void)
         pipeline_slots,
         fake_streams);
     SparkTestInitializeFp8MoePlan(&fp8_moe_plan);
+    SparkTestInitializeRouterLinearPlan(linear_plans);
+    SparkTestAttachQuantizedDenseMlpPlans(
+        linear_plans,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION);
     SparkPrepareFp8ResidentDecodeStageNodeContext(
         &node_context,
         &fp8_moe_plan);
+    node_context.linear_plans = linear_plans;
+    node_context.linear_plan_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT;
 
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
@@ -2604,6 +2619,10 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeValidation(void
 
     SparkTestInitializeFp8MoePlan(&fp8_moe_plan);
     SparkTestInitializeRouterLinearPlan(router_linear_plans);
+    SparkTestAttachQuantizedDenseMlpPlans(
+        router_linear_plans,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION);
     SparkPrepareFp8ResidentDecodeStageNodeContext(
         &node_contexts[0],
         &fp8_moe_plan);
@@ -3223,7 +3242,8 @@ static void SparkTestGlm52ResidentDecodeStageFp8DenseMlpPlanValidation(void)
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR);
     SparkTestAttachQuantizedDenseMlpPlans(
         linear_plans,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION);
     SparkTestAttachBuiltInQuantizedRawProjectionViews(
         linear_plans,
         quantized_views);
