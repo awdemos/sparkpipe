@@ -2542,10 +2542,12 @@ static void SparkGlm52Pp13BuilderMaybeProbeLayer1Sublayers(
 			sizeof(probe_slots),cudaMemcpyDeviceToHost) != cudaSuccess)
 		return;
 	fprintf(stderr,
-		"fp8_layer1_attention_probe request=%llu token_offset=%u position=%u input=%016llx attention_norm=%016llx kv_latent=%016llx raw_kv_b=%016llx fp8_value_cache=%016llx attention_value=%016llx attention_projection=%016llx post_attention=%016llx\n",
+		"fp8_layer1_attention_probe request=%llu token_offset=%u position=%u weight=%016llx scale=%016llx input=%016llx attention_norm=%016llx kv_latent=%016llx raw_kv_b=%016llx fp8_value_cache=%016llx attention_value=%016llx attention_projection=%016llx post_attention=%016llx\n",
 		(unsigned long long)request_id,
 		token_offset,
 		position,
+		(unsigned long long)probe_slots[0],
+		(unsigned long long)probe_slots[1],
 		(unsigned long long)probe_slots[8],
 		(unsigned long long)probe_slots[9],
 		(unsigned long long)probe_slots[10],
