@@ -48,6 +48,10 @@ VALIDATION_RECIPE_VARIANT ?= $(GLM52_VALIDATION_MODE)
 VALIDATION_RECIPE := glm52.resident_decode_stage.$(CUDA_ARCH).$(VALIDATION_RECIPE_VARIANT).b$(GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT).max_us_$(MAX_STAGE_MICROSECONDS).v1
 REQUIRED_CUDA_CC_ARGS ?=
 GLM52_REQUIRED_CUDA_LINK_ARGS ?=
+B12X_ADAPTER_ARCHIVE := $(REPOSITORY_ROOT)/build/modules/glm52_sm121_flashinfer_b12x_moe/libglm52_sm121_flashinfer_b12x_moe_adapter.a
+B12X_COMPILED_BACKEND_ARCHIVE := $(REPOSITORY_ROOT)/build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_compiled_backend.a
+B12X_GENERATED_KERNEL_TABLE_ARCHIVE := $(REPOSITORY_ROOT)/build/modules/glm52_sm121_b12x_compiled_backend/libglm52_sm121_b12x_generated_kernel_table.a
+GLM52_DSA_TOPK_LINK_ARGS := $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE))
 HOST_DEPENDENCY := $(HOST_OBJECT:.o=.d)
 CUDA_DEPENDENCY := $(CUDA_OBJECT:.o=.d)
 REQUIRED_STAGE_DEPENDENCY := $(REQUIRED_STAGE_OBJECT:.o=.d)
@@ -202,7 +206,8 @@ validate: require_sm121a require_latency_limit require_fast_model_dir require_va
 		$(MAX_STAGE_MICROSECONDS) $(MODULE_ARCHIVE)
 
 validate_dsa_topk_parity: require_sm121a archive
-	GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" \
+	$(MAKE) -C $(REPOSITORY_ROOT) glm52_flashinfer_b12x_moe_adapter glm52_b12x_compiled_backend
+	GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_DSA_TOPK_LINK_ARGS)" \
 		bash validation/validate_glm52_dsa_topk_parity.sh \
 		$(MODULE_ARCHIVE)
 

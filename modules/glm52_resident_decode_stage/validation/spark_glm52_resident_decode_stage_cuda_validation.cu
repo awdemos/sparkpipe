@@ -3882,7 +3882,7 @@ static void SparkValidationConfigureNode(
     pipeline_slot->query_index_heads_bf16 = buffers->query_index_heads_bf16;
     pipeline_slot->current_key_index_bf16 = buffers->current_key_index_bf16;
     pipeline_slot->index_head_weights_bf16 = buffers->index_head_weights_bf16;
-    pipeline_slot->dsa_token_scores = buffers->dsa_token_scores;
+    pipeline_slot->dsa_candidate_count = SPARK_VALIDATION_DSA_CANDIDATE_COUNT;
     pipeline_slot->sparse_token_indices = buffers->sparse_token_indices;
     pipeline_slot->rotated_query_rope_bf16 = buffers->rotated_query_rope_bf16;
     pipeline_slot->attention_output_latent_bf16 = buffers->attention_output_latent_bf16;
@@ -3922,7 +3922,9 @@ static void SparkValidationConfigureNode(
     node_context->max_blocks_per_sequence =
         SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE;
     node_context->position_count = SPARK_VALIDATION_POSITION_COUNT;
-    node_context->dsa_candidate_count = SPARK_VALIDATION_DSA_CANDIDATE_COUNT;
+    node_context->dsa_candidate_capacity = SPARK_VALIDATION_DSA_CANDIDATE_COUNT;
+    node_context->dsa_score_row_capacity = SPARK_VALIDATION_BUFFER_SEQUENCE_COUNT;
+    node_context->dsa_score_tiles_f32 = buffers->dsa_token_scores;
     node_context->qk_scale = SPARK_GLM52_MODEL_QK_SCALE;
     node_context->rms_norm_epsilon = SPARK_GLM52_MODEL_RMS_NORM_EPSILON;
     node_context->cos_table = buffers->cos_table;

@@ -77,6 +77,9 @@ typedef struct SparkGlm52Pp13RuntimeRankPlan
     SparkHiddenTransportEndpoint output_endpoint;
 } SparkGlm52Pp13RuntimeRankPlan;
 
+uint32_t SparkGlm52Pp13RuntimeDsaCandidateBucket(
+    uint32_t context_token_count);
+
 typedef struct SparkGlm52Pp13RuntimeFinalEventRoute
 {
     uint32_t abi_version;

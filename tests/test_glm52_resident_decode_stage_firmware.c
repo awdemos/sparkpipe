@@ -233,7 +233,7 @@ static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
         pipeline_slots[pipeline_slot_index].query_index_heads_bf16 = Bf16Storage;
         pipeline_slots[pipeline_slot_index].current_key_index_bf16 = Bf16Storage;
         pipeline_slots[pipeline_slot_index].index_head_weights_bf16 = Bf16Storage;
-        pipeline_slots[pipeline_slot_index].dsa_token_scores = F32Storage;
+        pipeline_slots[pipeline_slot_index].dsa_candidate_count = 64u;
         pipeline_slots[pipeline_slot_index].sparse_token_indices = U32Storage;
         pipeline_slots[pipeline_slot_index].rotated_query_rope_bf16 = Bf16Storage;
         pipeline_slots[pipeline_slot_index].attention_output_latent_bf16 =
@@ -278,7 +278,9 @@ static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
     node_context->kv_block_count = 2u;
     node_context->max_blocks_per_sequence = 2u;
     node_context->position_count = 64u;
-    node_context->dsa_candidate_count = 64u;
+    node_context->dsa_candidate_capacity = 64u;
+    node_context->dsa_score_row_capacity = 1u;
+    node_context->dsa_score_tiles_f32 = F32Storage;
     node_context->qk_scale = SPARK_GLM52_MODEL_QK_SCALE;
     node_context->rms_norm_epsilon = SPARK_GLM52_MODEL_RMS_NORM_EPSILON;
     node_context->cos_table = CosTableStorage;

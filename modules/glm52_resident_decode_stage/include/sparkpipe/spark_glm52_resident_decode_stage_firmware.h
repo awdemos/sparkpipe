@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 25u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 26u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION SPARK_GLM52_MODEL_HIDDEN_DIMENSION
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT SPARK_GLM52_MODEL_HEAD_COUNT
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION SPARK_GLM52_MODEL_LATENT_DIMENSION
@@ -60,6 +60,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS SPARK_GLM52_KV_BLOCK_TOKENS
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT \
     SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_TILE_ROWS 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT \
     SPARK_GLM52_MODEL_DSA_INDEX_HEAD_COUNT
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_DIMENSION \
@@ -928,7 +929,7 @@ typedef struct SparkGlm52ResidentDecodeStagePipelineSlot
     void *query_index_heads_bf16;
     void *current_key_index_bf16;
     void *index_head_weights_bf16;
-    float *dsa_token_scores;
+    uint32_t dsa_candidate_count;
     uint32_t *sparse_token_indices;
     void *rotated_query_rope_bf16;
     void *attention_output_latent_bf16;
@@ -967,7 +968,7 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t kv_block_count;
     uint32_t max_blocks_per_sequence;
     uint32_t position_count;
-    uint32_t dsa_candidate_count;
+    uint32_t dsa_candidate_capacity;
     float qk_scale;
     float rms_norm_epsilon;
     const float *cos_table;
@@ -1056,7 +1057,7 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t dsa_indexshare_layer_count;
     uint32_t dsa_index_head_count;
     uint32_t dsa_index_head_dimension;
-    uint32_t reserved2;
+    uint32_t dsa_score_row_capacity;
     uint32_t *selected_token_indices_by_layer;
     const void *index_query_weight_bf16;
     const void *index_key_weight_bf16;
@@ -1067,7 +1068,7 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     const void *index_weights_proj_weight_bf16;
     const void *index_key_norm_weight_bf16;
     const void *index_key_norm_bias_bf16;
-    float *dsa_prefill_scores_f32;
+    float *dsa_score_tiles_f32;
     uint32_t *dsa_prefill_selected_u32;
     uint32_t *dsa_prefill_row_context_lengths_u32;
     uint32_t *dsa_prefill_row_sequences_u32;

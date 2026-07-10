@@ -12,6 +12,7 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -119,22 +120,44 @@ static void SparkHiddenTcpCudaMaybeDumpPayload(
     static const char *dump_dir = 0;
     char path[256];
     FILE *file;
+    int32_t close_status;
+    int32_t written_bytes;
+    uint64_t written_payload_bytes;
     if (resolved == 0)
     {
         dump_dir = getenv("SPARKPIPE_HIDDEN_DUMP_DIR");
+        if (dump_dir != 0 && mkdir(dump_dir,0755) != 0 && errno != EEXIST)
+        {
+            fprintf(stderr,"hidden_dump_directory_failed path=%s errno=%d\n",
+                dump_dir,errno);
+            dump_dir = 0;
+        }
         resolved = 1;
     }
     if (dump_dir == 0 || payload == 0 || bytes == 0u)
         return;
-    snprintf(path,sizeof(path),"%s/rank%d_%s_seq%llu_tok%llu.bin",
+    written_bytes = snprintf(path,sizeof(path),
+        "%s/rank%d_%s_seq%llu_tok%llu.bin",
         dump_dir,local_rank,direction,
         (unsigned long long)sequence_id,
         (unsigned long long)token_index);
+    if (written_bytes < 0 || (uint32_t)written_bytes >= sizeof(path))
+    {
+        fprintf(stderr,"hidden_dump_path_too_long rank=%d seq=%llu token=%llu\n",
+            local_rank,(unsigned long long)sequence_id,
+            (unsigned long long)token_index);
+        return;
+    }
     file = fopen(path,"wb");
     if (file == 0)
+    {
+        fprintf(stderr,"hidden_dump_open_failed path=%s errno=%d\n",path,errno);
         return;
-    (void)fwrite(payload,1u,(size_t)bytes,file);
-    (void)fclose(file);
+    }
+    written_payload_bytes = (uint64_t)fwrite(payload,1u,(size_t)bytes,file);
+    close_status = fclose(file);
+    if (written_payload_bytes != bytes || close_status != 0)
+        fprintf(stderr,"hidden_dump_write_failed path=%s errno=%d\n",path,errno);
 }
 
 static uint64_t SparkHiddenTcpCudaPayloadHash(

@@ -25,6 +25,22 @@ static SparkStatus SparkGlm52Pp13RuntimeReport(
     return status;
 }
 
+uint32_t SparkGlm52Pp13RuntimeDsaCandidateBucket(
+    uint32_t context_token_count)
+{
+    uint32_t candidate_count;
+    if (context_token_count == 0u ||
+        context_token_count > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS)
+        return 0u;
+    candidate_count = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT;
+    while (candidate_count < context_token_count &&
+        candidate_count < SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS)
+        candidate_count <<= 1u;
+    if (candidate_count > SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS)
+        candidate_count = SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
+    return candidate_count;
+}
+
 static uint32_t SparkGlm52Pp13RuntimePathIsPresent(const char *path)
 {
     struct stat path_status;
