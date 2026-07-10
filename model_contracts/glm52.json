@@ -2,6 +2,10 @@
   "dense_intermediate_dimension": 12288,
   "dsa_index_head_count": 32,
   "dsa_index_head_dimension": 128,
+  "dsa_index_norm_epsilon": 0.000001,
+  "dsa_index_share_group_layer_count": 4,
+  "dsa_index_skip_topk_offset": 3,
+  "dsa_rope_interleave": true,
   "dsa_selected_token_count": 2048,
   "dspark": {
     "aux_layer_ids": [8, 23, 39, 55, 70],
@@ -24,6 +28,7 @@
   "maximum_context_tokens": 1048576,
   "moe_expert_count": 256,
   "moe_intermediate_dimension": 2048,
+  "moe_routed_scaling_factor": 2.5,
   "moe_top_k": 8,
   "moe_w1_component_count": 2,
   "mtp_draft_token_count": 6,
@@ -35,6 +40,8 @@
   "query_a_dimension": 2048,
   "restricted_vocab_count": 256,
   "rope_dimension": 64,
+  "rope_interleave": true,
   "rope_theta": 8000000.0,
+  "rms_norm_epsilon": 0.00001,
   "value_head_dimension": 256
 }

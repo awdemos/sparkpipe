@@ -5,6 +5,11 @@
 
 #include "sparkpipe/spark_glm52_model.h"
 
+#if SPARK_GLM52_MODEL_ROPE_INTERLEAVE != 1u || \
+    SPARK_GLM52_MODEL_DSA_ROPE_INTERLEAVE != 1u
+#error "GLM-5.2 MLA and DSA require interleaved adjacent-pair RoPE"
+#endif
+
 static inline void SparkGlm52BuildRopeTables(
 	float *cosine_table,
 	float *sine_table,

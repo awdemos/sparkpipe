@@ -91,7 +91,8 @@
 #define SPARK_VALIDATION_FP8_MOE_COPY_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 #define SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_NVFP4 0u
 #define SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8 1u
-#define SPARK_VALIDATION_DSA_INDEXSHARE_GROUP_LAYER_COUNT 4u
+#define SPARK_VALIDATION_DSA_INDEXSHARE_GROUP_LAYER_COUNT \
+    SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT
 
 static uint32_t SparkValidationDsaIndexShareSourceLayer(uint32_t layer_index)
 {
@@ -3916,13 +3917,13 @@ static void SparkValidationConfigureNode(
         SPARK_VALIDATION_MAX_BLOCKS_PER_SEQUENCE;
     node_context->position_count = SPARK_VALIDATION_POSITION_COUNT;
     node_context->dsa_candidate_count = SPARK_VALIDATION_DSA_CANDIDATE_COUNT;
-    node_context->qk_scale = 0.0416666679f;
-    node_context->rms_norm_epsilon = 0.000001f;
+    node_context->qk_scale = SPARK_GLM52_MODEL_QK_SCALE;
+    node_context->rms_norm_epsilon = SPARK_GLM52_MODEL_RMS_NORM_EPSILON;
     node_context->cos_table = buffers->cos_table;
     node_context->sin_table = buffers->sin_table;
     node_context->key_index_cache_bf16 = buffers->key_index_cache_bf16;
     node_context->index_head_weights_f32 = buffers->index_head_weights_f32;
-    node_context->index_softmax_scale = 1.0f;
+    node_context->index_softmax_scale = SPARK_GLM52_MODEL_DSA_INDEX_SOFTMAX_SCALE;
     node_context->dsa_index_head_count =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT;
     node_context->dsa_index_head_dimension =
@@ -4056,7 +4057,8 @@ static void SparkValidationEnableLayer3RouterTopK(
     node_context->moe_router_weight_bf16 = buffers->moe_router_weight_bf16;
     node_context->moe_router_score_bias_f32 =
         buffers->moe_router_score_bias_f32;
-    node_context->moe_routed_scaling_factor = 2.5f;
+    node_context->moe_routed_scaling_factor =
+        SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR;
     node_context->moe_norm_topk_prob = 1u;
 }
 
@@ -5510,7 +5512,7 @@ static float SparkValidationReferenceAttentionValue(
                 query_rope_values[rope_dimension_index] *
                 cache_rope_values[token_index][rope_dimension_index];
         }
-        scores[token_index] *= 0.0416666679f;
+        scores[token_index] *= SPARK_GLM52_MODEL_QK_SCALE;
         if (scores[token_index] > maximum_score)
         {
             maximum_score = scores[token_index];
@@ -6400,7 +6402,7 @@ static bool SparkValidationCheckSampledAttentionReferences(
                     attention_norm_weight,
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
                     hidden_index,
-                    0.000001f));
+                    SPARK_GLM52_MODEL_RMS_NORM_EPSILON));
     }
     for (sample_index = 0u; sample_index < 4u; ++sample_index)
     {
@@ -6436,7 +6438,7 @@ static bool SparkValidationCheckSampledAttentionReferences(
                     raw_query_a_norm_weight,
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,
                     query_a_index,
-                    0.000001f)) ||
+                    SPARK_GLM52_MODEL_RMS_NORM_EPSILON)) ||
             !SparkValidationCopyDeviceBf16Row(
                 row,
                 buffers->raw_query_b_weight_bf16,
@@ -6476,7 +6478,7 @@ static bool SparkValidationCheckSampledAttentionReferences(
                     raw_kv_a_norm_weight,
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,
                     kv_a_index,
-                    0.000001f)))
+                    SPARK_GLM52_MODEL_RMS_NORM_EPSILON)))
             return false;
         if (!SparkValidationCopyDeviceBf16Row(
                 row,
@@ -6565,7 +6567,7 @@ static bool SparkValidationCheckSampledOutputAndDenseReferences(
                     post_attention_norm_weight,
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
                     hidden_index,
-                    0.000001f)) ||
+                    SPARK_GLM52_MODEL_RMS_NORM_EPSILON)) ||
             !SparkValidationCopyDeviceBf16Row(
                 row,
                 buffers->dense_gate_weight_bf16,
@@ -6660,7 +6662,7 @@ static bool SparkValidationCheckFullOutputAndDenseReferences(
             !SparkValidationCheckBf16ReferenceValueTracked("attention_residual_full", index, post_attention_hidden[index], SparkValidationBf16ToFloat(input_hidden[index]) + SparkValidationBf16ToFloat(attention_projected_hidden[index]), maximum_error))
             return false;
     }
-    SparkValidationReferenceRmsNormVector(post_attention_normalized_reference, post_attention_hidden, post_attention_norm_weight, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, 0.000001f);
+    SparkValidationReferenceRmsNormVector(post_attention_normalized_reference, post_attention_hidden, post_attention_norm_weight, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, SPARK_GLM52_MODEL_RMS_NORM_EPSILON);
     if (!SparkValidationCheckBf16ReferenceVector("post_attention_norm_full", post_attention_normalized, post_attention_normalized_reference, SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION, maximum_error))
         return false;
     for (index = 0u; index < SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION; ++index)
@@ -6730,7 +6732,7 @@ static bool SparkValidationCheckLayer3SharedExpertReferences(
                     post_attention_norm_weight,
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
                     hidden_index,
-                    0.000001f),
+                    SPARK_GLM52_MODEL_RMS_NORM_EPSILON),
                 maximum_error) ||
             !SparkValidationCopyDeviceBf16Row(
                 row,
@@ -7076,7 +7078,8 @@ static bool SparkValidationCheckLayer3RouterTopK(
         {
             if (weight_sum > 0.0f)
                 expected_weights[topk_index] /= weight_sum;
-            expected_weights[topk_index] *= 2.5f;
+            expected_weights[topk_index] *=
+                SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR;
         }
     }
     for (topk_index = 0u;

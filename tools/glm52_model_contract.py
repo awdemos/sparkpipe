@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict
 
@@ -31,11 +32,23 @@ INTEGER_MACROS = {
     "SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT": "dsa_selected_token_count",
     "SPARK_GLM52_MODEL_DSA_INDEX_HEAD_COUNT": "dsa_index_head_count",
     "SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION": "dsa_index_head_dimension",
+    "SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT": "dsa_index_share_group_layer_count",
+    "SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET": "dsa_index_skip_topk_offset",
     "SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT": "output_vocab_count",
     "SPARK_GLM52_MODEL_RESTRICTED_VOCAB_COUNT": "restricted_vocab_count",
     "SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT": "mtp_draft_token_count",
     "SPARK_GLM52_MODEL_MXFP4_GROUP_SIZE": "mxfp4_group_size",
     "SPARK_GLM52_MODEL_NVFP4_GROUP_SIZE": "nvfp4_group_size",
+}
+FLOAT_MACROS = {
+    "SPARK_GLM52_MODEL_RMS_NORM_EPSILON": "rms_norm_epsilon",
+    "SPARK_GLM52_MODEL_DSA_INDEX_NORM_EPSILON": "dsa_index_norm_epsilon",
+    "SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR": "moe_routed_scaling_factor",
+    "SPARK_GLM52_MODEL_ROPE_THETA": "rope_theta",
+}
+BOOLEAN_MACROS = {
+    "SPARK_GLM52_MODEL_DSA_ROPE_INTERLEAVE": "dsa_rope_interleave",
+    "SPARK_GLM52_MODEL_ROPE_INTERLEAVE": "rope_interleave",
 }
 DSPARK_INTEGER_MACROS = {
     "SPARK_GLM52_MODEL_DSPARK_DRAFT_LAYER_COUNT": "draft_layer_count",
@@ -60,8 +73,17 @@ def load_model_contract(root: Path | None = None) -> Dict[str, Any]:
     for key in INTEGER_MACROS.values():
         if not isinstance(contract.get(key), int) or contract[key] <= 0:
             raise ValueError(f"invalid GLM-5.2 model contract field: {key}")
-    if not isinstance(contract.get("rope_theta"), (int, float)) or contract["rope_theta"] <= 0:
-        raise ValueError("invalid GLM-5.2 model contract field: rope_theta")
+    for key in FLOAT_MACROS.values():
+        value = contract.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(f"invalid GLM-5.2 model contract field: {key}")
+    for key in BOOLEAN_MACROS.values():
+        if not isinstance(contract.get(key), bool):
+            raise ValueError(f"invalid GLM-5.2 model contract field: {key}")
+    if not contract["rope_interleave"] or not contract["dsa_rope_interleave"]:
+        raise ValueError("GLM-5.2 requires interleaved MLA and DSA RoPE")
+    if contract["rope_dimension"] % 2 != 0:
+        raise ValueError("GLM-5.2 RoPE dimension must contain complete pairs")
     dspark = contract.get("dspark")
     if not isinstance(dspark, dict):
         raise ValueError("invalid GLM-5.2 DSpark model contract")
@@ -76,11 +98,29 @@ def load_model_contract(root: Path | None = None) -> Dict[str, Any]:
     return contract
 
 
+def render_float(value: float) -> str:
+    text = format(float(value), ".9g")
+    if "." not in text and "e" not in text:
+        text += ".0"
+    return text + "f"
+
+
 def render_c_header(contract: Dict[str, Any]) -> str:
     lines = ["#pragma once", "", "#include <stdint.h>", ""]
     for name, key in INTEGER_MACROS.items():
         lines.append(f"#define {name} {contract[key]}u")
-    lines.append(f"#define SPARK_GLM52_MODEL_ROPE_THETA {float(contract['rope_theta']):.1f}")
+    for name, key in FLOAT_MACROS.items():
+        lines.append(f"#define {name} {render_float(contract[key])}")
+    qk_head_dimension = (
+        contract["qk_nope_head_dimension"] + contract["rope_dimension"])
+    lines.append(
+        "#define SPARK_GLM52_MODEL_QK_SCALE " +
+        render_float(1.0 / math.sqrt(qk_head_dimension)))
+    lines.append(
+        "#define SPARK_GLM52_MODEL_DSA_INDEX_SOFTMAX_SCALE " +
+        render_float(1.0 / math.sqrt(contract["dsa_index_head_dimension"])))
+    for name, key in BOOLEAN_MACROS.items():
+        lines.append(f"#define {name} {1 if contract[key] else 0}u")
     dspark = contract["dspark"]
     aux_layer_ids = dspark["aux_layer_ids"]
     lines.append(

@@ -83,8 +83,24 @@ index_head_dim=128
 index_topk=2048
 ```
 
-Interleaved RoPE and theta 8,000,000 are therefore confirmed. Two runtime and
-validation constants remain wrong and must be corrected together: attention
-uses 1/24 instead of 1/sqrt(256), and model RMSNorm uses 1e-6 instead of 1e-5.
-The DSA key LayerNorm independently uses epsilon 1e-6 and must not inherit the
-model RMSNorm value.
+Interleaved RoPE and theta 8,000,000 are therefore confirmed. The generated
+model contract now also owns attention scale `1/sqrt(256)`, model RMSNorm
+epsilon `1e-5`, DSA key LayerNorm epsilon `1e-6`, DSA score scale
+`1/sqrt(128)`, DSA index-sharing geometry, and routed-MoE scale `2.5`. The DSA
+key LayerNorm remains independent from the model RMSNorm value.
+
+## Corrected model-semantics receipt
+
+After applying the generated model constants, the exact FP8 stage `0:6` loop
+and built-in launcher produced the same five-row output:
+
+```text
+SHA-256 5a93fde2f080c2a8cf22fd30ef1e389a7f1b7b02fddd1fc2508bff972e458111
+rows    5
+bytes   61440
+```
+
+A second loop-path run was byte-identical. The run used the same token sequence,
+FP8 stagepack, and FP8 MoE packs as the earlier comparison, with graph replay
+disabled. This hash supersedes the pre-contract stage0 hashes above for future
+ring comparisons.

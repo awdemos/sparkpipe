@@ -279,13 +279,13 @@ static void SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
     node_context->max_blocks_per_sequence = 2u;
     node_context->position_count = 64u;
     node_context->dsa_candidate_count = 64u;
-    node_context->qk_scale = 0.0416666679f;
-    node_context->rms_norm_epsilon = 0.000001f;
+    node_context->qk_scale = SPARK_GLM52_MODEL_QK_SCALE;
+    node_context->rms_norm_epsilon = SPARK_GLM52_MODEL_RMS_NORM_EPSILON;
     node_context->cos_table = CosTableStorage;
     node_context->sin_table = SinTableStorage;
     node_context->key_index_cache_bf16 = Bf16Storage;
     node_context->index_head_weights_f32 = F32Storage;
-    node_context->index_softmax_scale = 1.0f;
+    node_context->index_softmax_scale = SPARK_GLM52_MODEL_DSA_INDEX_SOFTMAX_SCALE;
     node_context->dsa_index_head_count =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT;
     node_context->dsa_index_head_dimension =
@@ -1225,7 +1225,8 @@ static void SparkPrepareNvfp4B12xResidentDecodeStageNodeContext(
     node_context->moe_intermediate_dimension =
         SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_INTERMEDIATE_DIMENSION;
     node_context->moe_norm_topk_prob = 1u;
-    node_context->moe_routed_scaling_factor = 1.0f;
+    node_context->moe_routed_scaling_factor =
+        SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR;
     node_context->b12x_moe_dispatch_plan = b12x_dispatch_plan;
 }
 

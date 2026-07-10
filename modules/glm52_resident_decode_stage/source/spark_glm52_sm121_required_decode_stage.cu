@@ -14187,7 +14187,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexerRows(
         row_count,
         node_context->position_count,
         node_context->cache_token_capacity,
-        node_context->rms_norm_epsilon);
+        SPARK_GLM52_MODEL_DSA_INDEX_NORM_EPSILON);
     if (node_context->dsa_summary_dirty_flags_u8 != 0)
     {
         SparkGlm52ResidentDecodeStageDsaSummaryMarkDirtyKernel<<<
