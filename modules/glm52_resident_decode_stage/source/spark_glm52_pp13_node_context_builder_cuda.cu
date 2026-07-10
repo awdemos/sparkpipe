@@ -2528,6 +2528,34 @@ static void SparkGlm52Pp13BuilderMaybeProbePrefillTokenSlot(
 		slot_mapping);
 }
 
+static void SparkGlm52Pp13BuilderMaybeProbeLayer2Sublayers(
+	SparkGlm52Pp13BuilderState *state,
+	uint64_t request_id,
+	uint32_t token_offset,
+	uint32_t position)
+{
+	uint64_t probe_slots[8];
+	if (getenv("SPARKPIPE_FP8_AMAX_PROBE") == 0 || state == 0 ||
+		state->device_probe_hash_slots == 0)
+		return;
+	if (cudaMemcpy(probe_slots,state->device_probe_hash_slots,
+			sizeof(probe_slots),cudaMemcpyDeviceToHost) != cudaSuccess)
+		return;
+	fprintf(stderr,
+		"fp8_layer2_probe request=%llu token_offset=%u position=%u input=%016llx post_attention=%016llx post_attention_norm=%016llx gate=%016llx up=%016llx intermediate=%016llx down=%016llx residual=%016llx\n",
+		(unsigned long long)request_id,
+		token_offset,
+		position,
+		(unsigned long long)probe_slots[0],
+		(unsigned long long)probe_slots[1],
+		(unsigned long long)probe_slots[2],
+		(unsigned long long)probe_slots[3],
+		(unsigned long long)probe_slots[4],
+		(unsigned long long)probe_slots[5],
+		(unsigned long long)probe_slots[6],
+		(unsigned long long)probe_slots[7]);
+}
+
 static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	void *builder_state,
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
@@ -2726,6 +2754,11 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 				token_id);
 			return status;
 		}
+		SparkGlm52Pp13BuilderMaybeProbeLayer2Sublayers(
+			state,
+			prefill_dispatch->request_dispatch->request_ids[0u],
+			token_offset,
+			position);
 		if (idle_pump_function != 0)
 			(void)idle_pump_function(idle_pump_context);
 		if (debug_enabled != 0)
@@ -2734,12 +2767,6 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	if (debug_enabled != 0)
 		fprintf(stderr,"pp13_builder_prefill_done offset=%u count=%u\n",prefill_dispatch->prompt_token_offset,prefill_dispatch->prompt_token_count);
 	SparkGlm52Pp13BuilderMaybeProbeMlaSlots(state);
-	if (getenv("SPARKPIPE_FP8_AMAX_PROBE") != 0 && state->device_probe_hash_slots != 0)
-	{
-		uint64_t probe_slots[8];
-		if (cudaMemcpy(probe_slots,state->device_probe_hash_slots,sizeof(probe_slots),cudaMemcpyDeviceToHost) == cudaSuccess)
-			fprintf(stderr,"fp8_device_probe layer2 amax=%016llx quant=%016llx gate=%016llx fbgate=%016llx fbinter=%016llx fbdown=%016llx\n",(unsigned long long)probe_slots[0],(unsigned long long)probe_slots[1],(unsigned long long)probe_slots[2],(unsigned long long)probe_slots[3],(unsigned long long)probe_slots[4],(unsigned long long)probe_slots[5]);
-	}
 	return SPARK_STATUS_OK;
 }
 
