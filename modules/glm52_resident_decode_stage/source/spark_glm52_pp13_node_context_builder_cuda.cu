@@ -24,7 +24,6 @@
 #define SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE \
 	(SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS)
 #define SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS 1024u
-#define SPARK_GLM52_PP13_BUILDER_PREFILL_TILE_ROWS 16u
 #define SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS \
 	(SPARK_GLM52_KV_POOL_TOKENS / SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS)
 #define SPARK_GLM52_PP13_BUILDER_COPY_CHUNK_BYTES (64ull * 1024ull * 1024ull)
@@ -89,7 +88,6 @@ typedef struct SparkGlm52Pp13BuilderLayer
 	void *query_index_heads;
 	void *current_key_index;
 	void *index_head_weights;
-	void *dsa_token_scores;
 	void *sparse_token_indices;
 	void *rotated_query_rope;
 	void *attention_output_latent;
@@ -164,7 +162,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	void *cos_table;
 	void *device_probe_hash_slots;
 	void *sin_table;
-	float *dsa_prefill_scores;
+	float *dsa_score_tiles;
 	uint32_t *dsa_prefill_selected;
 	uint32_t *dsa_prefill_row_context_lengths;
 	uint32_t *dsa_prefill_row_sequences;
@@ -799,7 +797,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTables(
 	rope_pairs = SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION / 2u;
 	table_count = (uint64_t)SPARK_GLM52_PP13_BUILDER_POSITION_COUNT * rope_pairs;
 	table_bytes = table_count * sizeof(float);
-	status = SparkGlm52Pp13BuilderCudaAlloc(state,(void **)&state->dsa_prefill_scores,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_TILE_ROWS * SPARK_GLM52_KV_CONTEXT_TOKENS * sizeof(float));
+	status = SparkGlm52Pp13BuilderCudaAlloc(state,(void **)&state->dsa_score_tiles,(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_TILE_ROWS * SPARK_GLM52_KV_CONTEXT_TOKENS * sizeof(float));
 	if (status != SPARK_STATUS_OK)
 		return status;
 	status = SparkGlm52Pp13BuilderCudaAlloc(state,(void **)&state->dsa_prefill_selected,(uint64_t)SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT * sizeof(uint32_t));
@@ -923,7 +921,6 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ALLOC_FIELD(query_index_heads,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,uint16_t);
 	ALLOC_FIELD(current_key_index,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 	ALLOC_FIELD(index_head_weights,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,uint16_t);
-	ALLOC_FIELD(dsa_token_scores,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT,float);
 	ALLOC_FIELD(sparse_token_indices,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT,uint32_t);
 	ALLOC_FIELD(rotated_query_rope,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_ROPE_PROJECTION_DIMENSION,uint16_t);
 	ALLOC_FIELD(attention_output_latent,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,uint16_t);
@@ -1131,7 +1128,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	slot->query_index_heads_bf16 = layer->query_index_heads;
 	slot->current_key_index_bf16 = layer->current_key_index;
 	slot->index_head_weights_bf16 = layer->index_head_weights;
-	slot->dsa_token_scores = (float *)layer->dsa_token_scores;
+	slot->dsa_candidate_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
 	slot->sparse_token_indices = (uint32_t *)layer->sparse_token_indices;
 	slot->rotated_query_rope_bf16 = layer->rotated_query_rope;
 	slot->attention_output_latent_bf16 = layer->attention_output_latent;
@@ -1169,7 +1166,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->kv_block_count = SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS;
 	node->max_blocks_per_sequence = SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
 	node->position_count = SPARK_GLM52_PP13_BUILDER_POSITION_COUNT;
-	node->dsa_candidate_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
+	node->dsa_candidate_capacity = SPARK_GLM52_KV_CONTEXT_TOKENS;
 	node->qk_scale = SPARK_GLM52_MODEL_QK_SCALE;
 	node->rms_norm_epsilon = SPARK_GLM52_MODEL_RMS_NORM_EPSILON;
 	node->cos_table = (const float *)state->cos_table;
@@ -1206,8 +1203,8 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->projection_backend_mode =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
 	node->attention_execution_mode =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
-	node->dsa_prefill_scores_f32 = state->dsa_prefill_scores;
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+	node->dsa_score_tiles_f32 = state->dsa_score_tiles;
 	node->dsa_prefill_selected_u32 = state->dsa_prefill_selected;
 	node->dsa_prefill_row_context_lengths_u32 = state->dsa_prefill_row_context_lengths;
 	node->dsa_prefill_row_sequences_u32 = state->dsa_prefill_row_sequences;
@@ -1219,6 +1216,8 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->dsa_prefill_normalized_hidden_bf16 = state->dsa_prefill_normalized_hidden;
 	node->dsa_prefill_low_scratch_bf16 = state->dsa_prefill_low_scratch;
 	node->dsa_prefill_row_capacity = SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS;
+	node->dsa_score_row_capacity =
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_TILE_ROWS;
 	node->model_quantization_mode =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
 	node->layer_index = layer_index;
@@ -2304,6 +2303,30 @@ static uint32_t SparkGlm52Pp13BuilderNeedsOutputSideband(
 	return 0u;
 }
 
+static SparkStatus SparkGlm52Pp13BuilderSetDsaCandidateCount(
+	SparkGlm52Pp13BuilderState *state,
+	uint32_t context_token_count)
+{
+	uint32_t candidate_count;
+	uint32_t layer_offset;
+	if (state == 0 || context_token_count == 0u ||
+		context_token_count > SPARK_GLM52_KV_CONTEXT_TOKENS)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	candidate_count = SparkGlm52Pp13RuntimeDsaCandidateBucket(
+		context_token_count);
+	if (candidate_count == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	for (layer_offset = 0u; layer_offset < state->rank_plan.layer_count;
+		 ++layer_offset)
+	{
+		if (candidate_count >
+			state->layers[layer_offset].node.dsa_candidate_capacity)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		state->layers[layer_offset].slot.dsa_candidate_count = candidate_count;
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	void *builder_state,
 	const SparkGlm52Pp13WorkControlPacket *work_packet,
@@ -2345,6 +2368,11 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 			state->host_lane_physical_block_counts,
 			(size_t)(state->rank_plan.max_active_sequence_count * sizeof(uint32_t)),
 			cudaMemcpyHostToDevice));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13BuilderSetDsaCandidateCount(
+		state,
+		work_packet->kv_block_table_token_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	status = SparkGlm52Pp13BuilderUploadMtpBudget(
@@ -2623,6 +2651,11 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	{
 		position = prefill_dispatch->prompt_token_offset + token_offset;
 		token_id = prefill_dispatch->host_token_ids[token_offset];
+		status = SparkGlm52Pp13BuilderSetDsaCandidateCount(
+			state,
+			position + 1u);
+		if (status != SPARK_STATUS_OK)
+			return status;
 		state->host_decode_positions[0u] = position;
 		state->host_decode_token_ids[0u] = token_id;
 		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
@@ -2820,6 +2853,11 @@ static SparkStatus SparkGlm52Pp13BuilderDecode(
 	status = SparkGlm52Pp13BuilderPrepareDeviceKvView(
 		state,
 		decode_dispatch->kv_block_table_view);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13BuilderSetDsaCandidateCount(
+		state,
+		lane->context_token_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	state->host_decode_positions[0u] = lane->sequence_position;

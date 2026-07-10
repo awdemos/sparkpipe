@@ -498,6 +498,25 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareSelectTopkFromS
     uint32_t selected_token_count,
     void *cuda_stream);
 
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareScoreTopk(
+    const void *query_index_heads_bf16,
+    const void *key_index_cache_bf16,
+    const void *index_head_weights_bf16,
+    const uint32_t *block_table,
+    const uint32_t *context_lengths,
+    const uint32_t *first_block_token_offsets,
+    float *dsa_score_tiles_f32,
+    uint32_t *sparse_token_indices,
+    uint32_t active_sequence_count,
+    uint32_t dsa_candidate_count,
+    uint32_t dsa_score_row_capacity,
+    uint32_t block_token_count,
+    uint32_t max_blocks_per_sequence,
+    uint32_t kv_block_count,
+    uint32_t cache_token_capacity,
+    float index_softmax_scale,
+    void *cuda_stream);
+
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareDecodeSelection(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,

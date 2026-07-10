@@ -62,6 +62,18 @@ static void SparkTestGlm52Pp13RuntimeRankPlan(void)
         "10.10.100.21_to_10.10.100.22_hidden") == 0);
 }
 
+static void SparkTestGlm52Pp13RuntimeDsaCandidateBucket(void)
+{
+    assert(SparkGlm52Pp13RuntimeDsaCandidateBucket(0u) == 0u);
+    assert(SparkGlm52Pp13RuntimeDsaCandidateBucket(1u) == 2048u);
+    assert(SparkGlm52Pp13RuntimeDsaCandidateBucket(2048u) == 2048u);
+    assert(SparkGlm52Pp13RuntimeDsaCandidateBucket(2049u) == 4096u);
+    assert(SparkGlm52Pp13RuntimeDsaCandidateBucket(65536u) == 65536u);
+    assert(SparkGlm52Pp13RuntimeDsaCandidateBucket(1048575u) == 1048576u);
+    assert(SparkGlm52Pp13RuntimeDsaCandidateBucket(1048576u) == 1048576u);
+    assert(SparkGlm52Pp13RuntimeDsaCandidateBucket(1048577u) == 0u);
+}
+
 static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
 {
     SparkGlm52Pp13RuntimeRankPlan rank_plan;
@@ -126,6 +138,7 @@ static void SparkTestGlm52Pp13RuntimeFinalEventRoute(void)
 int main(void)
 {
     SparkTestGlm52Pp13RuntimeRankPlan();
+    SparkTestGlm52Pp13RuntimeDsaCandidateBucket();
     SparkTestGlm52Pp13RuntimeFp8Packs();
     SparkTestGlm52Pp13RuntimeFinalEventRoute();
     return 0;

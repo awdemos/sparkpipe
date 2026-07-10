@@ -38,6 +38,10 @@ RAW_PROTOCOL_BUFFER = re.compile(
 RAW_TYPED_BYTE_ARRAY = re.compile(
     r"\buint8_t\s+(?:bytes|encoded|header_length_bytes)"
     r"\s*\[\s*[0-9]+u?\s*\]")
+RAW_SIDEBAND_BYTE_ASSIGNMENT = re.compile(
+    r"\bsideband_bytes_per_sequence\s*=\s*[1-9][0-9]*u?\b")
+RAW_PACKET_BYTE_SLACK = re.compile(
+    r"\bmax_packet_bytes\s*=\s*[1-9][0-9]*u?\s*\+")
 SIZEOF_CONTRACT_SUFFIXES = (
     "_COMPLETION_BYTES",
     "_DESCRIPTOR_BYTES",
@@ -60,6 +64,10 @@ REQUIRED_SYMBOLIC_DEFINES = {
             "SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT",
         "SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE":
             "SPARK_GLM52_STAGE_PLAN_FIXED_LAYERS_PER_STAGE",
+        "SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE":
+            "SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES",
+        "SPARK_GLM52_PP13_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE":
+            "SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES",
     },
     "include/sparkpipe/spark_glm52_production_topology.h": {
         "SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT":
@@ -230,6 +238,12 @@ def main():
         for match in RAW_TYPED_BYTE_ARRAY.finditer(text):
             report(violations, path, text, match.start(),
                 "typed byte array extent is a raw numeric width")
+        for match in RAW_SIDEBAND_BYTE_ASSIGNMENT.finditer(text):
+            report(violations, path, text, match.start(),
+                "sideband byte width is a raw numeric value")
+        for match in RAW_PACKET_BYTE_SLACK.finditer(text):
+            report(violations, path, text, match.start(),
+                "transport packet capacity contains numeric slack")
         for offset, logical_line in logical_preprocessor_lines(text):
             match = re.match(r"\s*#define\s+([A-Z0-9_]+)\s+", logical_line)
             if match is None or not match.group(1).endswith(
@@ -276,6 +290,13 @@ def main():
         "spark_glm52_resident_decode_stage_fp8_moe_plan.h")
     if "fields[" in fp8_header.read_text():
         violations.append("FP8 MoE wire header uses anonymous indexed fields")
+    all_source_text = "\n".join(
+        path.read_text(errors="replace") for path in source_paths()
+        if path.suffix in {".c", ".cu", ".h"})
+    if "SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_PREFILL_TILE_ROWS" in all_source_text:
+        violations.append("DSA score tile rows have a duplicate prefill constant")
+    if "dsa_prefill_scores_f32" in all_source_text:
+        violations.append("DSA score storage retains a prefill-only ABI field")
     model_description_path = ROOT / (
         "examples/model_descriptions/glm52_resident_decode_stage_firmware.json")
     model_description = json.loads(model_description_path.read_text())

@@ -1888,9 +1888,6 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStagePipelineSlot(
             pipeline_slot->first_block_token_offsets,
             4u) ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            pipeline_slot->dsa_token_scores,
-            4u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
             pipeline_slot->sparse_token_indices,
             4u) ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
@@ -2287,7 +2284,11 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->kv_block_count == 0u ||
         node_context->max_blocks_per_sequence == 0u ||
         node_context->position_count == 0u ||
-        node_context->dsa_candidate_count == 0u ||
+        node_context->dsa_candidate_capacity == 0u ||
+        node_context->dsa_score_row_capacity == 0u ||
+        !SparkGlm52ResidentDecodeStagePointerIsAligned(
+            node_context->dsa_score_tiles_f32,
+            4u) ||
         node_context->projection_mode >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_MXFP4_E2M1 ||
         node_context->layer_progression_mode >
@@ -2307,7 +2308,6 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         !SparkGlm52ResidentDecodeStageModelQuantizationModeIsSupported(
             node_context->model_quantization_mode) ||
         node_context->reserved1 != 0u ||
-        node_context->reserved2 != 0u ||
         SparkGlm52ResidentDecodeStageEffectiveKvBlockTokenCount(node_context) == 0u ||
         SparkGlm52ResidentDecodeStageEffectiveKvBlockTokenCount(node_context) >
             SPARK_GLM52_KV_CACHE_MAX_BLOCK_TOKENS ||
@@ -2555,10 +2555,22 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
          pipeline_slot_index < node_context->pipeline_slot_count;
          ++pipeline_slot_index)
     {
+        const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot;
         SparkStatus status;
 
+        pipeline_slot = &node_context->pipeline_slots[pipeline_slot_index];
+        if (pipeline_slot->dsa_candidate_count == 0u ||
+            pipeline_slot->dsa_candidate_count >
+                node_context->dsa_candidate_capacity)
+        {
+            SparkGlm52ResidentDecodeStageReportValidationFailure(
+                node_context,
+                "dsa_candidate_count",
+                SPARK_STATUS_INVALID_ARGUMENT);
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
         status = SparkValidateGlm52ResidentDecodeStagePipelineSlot(
-            &node_context->pipeline_slots[pipeline_slot_index]);
+            pipeline_slot);
         if (status != SPARK_STATUS_OK)
         {
             SparkGlm52ResidentDecodeStageReportValidationFailure(

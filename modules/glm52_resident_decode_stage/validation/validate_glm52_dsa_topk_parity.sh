@@ -75,3 +75,24 @@ make -C "${repository_root}" "${common_target}" "${runtime_target}" "${compiler_
     -o "${validation_directory}/glm52_dsa_topk_parity"
 
 "${validation_directory}/glm52_dsa_topk_parity"
+
+"${nvcc_path}" \
+    -std=c++17 \
+    -O3 \
+    --use_fast_math \
+    -arch="${cuda_architecture}" \
+    -I"${repository_root}/include" \
+    -I"${module_directory}/include" \
+    -I"${module_directory}/source" \
+    "${script_directory}/spark_glm52_dsa_score_topk_parity.cu" \
+    "${module_archive}" \
+    "${runtime_archive}" \
+    "${compiler_archive}" \
+    "${common_archive}" \
+    "${required_cuda_link_args[@]}" \
+    -lcublasLt \
+    -lcublas \
+    -ldl \
+    -o "${validation_directory}/glm52_dsa_score_topk_parity"
+
+"${validation_directory}/glm52_dsa_score_topk_parity"

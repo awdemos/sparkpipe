@@ -167,10 +167,10 @@ static void SparkRingCheckBuildEndpoint(
     endpoint->bytes_per_sequence = SPARK_RING_CHECK_BYTES_PER_SEQUENCE;
     endpoint->max_active_sequence_count =
         configuration->active_sequence_count;
-    endpoint->max_packet_bytes = 512u +
-        ((uint64_t)(SPARK_RING_CHECK_BYTES_PER_SEQUENCE +
+    endpoint->max_packet_bytes =
+        (uint64_t)(SPARK_RING_CHECK_BYTES_PER_SEQUENCE +
             configuration->sideband_bytes_per_sequence) *
-         (uint64_t)configuration->active_sequence_count);
+        (uint64_t)configuration->active_sequence_count;
     endpoint->transport_module_id = "hidden_transport_tcp_cuda";
     endpoint->route_name = route_buffer;
 }
