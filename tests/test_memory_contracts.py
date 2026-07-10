@@ -24,6 +24,11 @@ RAW_DIMENSION_DEFINE = re.compile(
     r"#define\s+SPARK_GLM52_RESIDENT_DECODE_STAGE_"
     r"(?:QUERY_B_DIMENSION|KV_A_DIMENSION|KV_B_DIMENSION|QK_HEAD_DIMENSION|"
     r"CACHE_TOKEN_ELEMENTS|QUERY_ROPE_PROJECTION_DIMENSION)\s+[0-9]+u\b")
+RAW_MODEL_SCALAR_ASSIGNMENT = re.compile(
+    r"\b(?:qk_scale|rms_norm_epsilon|index_softmax_scale|"
+    r"moe_routed_scaling_factor)\s*=\s*"
+    r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:e[+-]?[0-9]+)?f?\b",
+    re.I)
 RAW_SCALAR_WIDTH_ASSIGNMENT = re.compile(
     r"\b(?:bytes_per_scalar|bytes_per_element|element_bytes)\s*=\s*"
     r"(?:1|2|4|8)(?:u|ul|ull)?\b")
@@ -59,6 +64,10 @@ REQUIRED_SYMBOLIC_DEFINES = {
     "include/sparkpipe/spark_glm52_production_topology.h": {
         "SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT":
             "SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER",
+        "SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT":
+            "SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT",
+        "SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET":
+            "SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET",
     },
     "include/sparkpipe/spark_glm52_request_api.h": {
         "SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT":
@@ -209,6 +218,9 @@ def main():
         for match in RAW_DIMENSION_DEFINE.finditer(text):
             report(violations, path, text, match.start(),
                 "derived GLM dimension is defined as a literal")
+        for match in RAW_MODEL_SCALAR_ASSIGNMENT.finditer(text):
+            report(violations, path, text, match.start(),
+                "GLM model scalar is assigned from a raw literal")
         for match in RAW_SCALAR_WIDTH_ASSIGNMENT.finditer(text):
             report(violations, path, text, match.start(),
                 "scalar element width is assigned as a byte literal")
@@ -283,6 +295,11 @@ def main():
             model_contract["qk_nope_head_dimension"] +
             model_contract["rope_dimension"]),
         "v_head_dim": model_contract["value_head_dimension"],
+        "rope_theta": model_contract["rope_theta"],
+        "rope_interleave": model_contract["rope_interleave"],
+        "indexer_rope_interleave": model_contract["dsa_rope_interleave"],
+        "rms_norm_eps": model_contract["rms_norm_epsilon"],
+        "routed_scaling_factor": model_contract["moe_routed_scaling_factor"],
     }
     for key, expected in expected_geometry.items():
         if geometry.get(key) != expected:

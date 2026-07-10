@@ -218,9 +218,11 @@ static uint32_t SparkGlm52Pp13BuilderDsaSourceLayer(uint32_t layer_index)
 	if (layer_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER)
 		return layer_index;
 	adjusted_layer_index =
-		layer_index - (SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER - 1u);
-	return (SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER - 1u) +
-		(adjusted_layer_index - (adjusted_layer_index % 4u));
+		layer_index - (SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET - 1u);
+	return (SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET - 1u) +
+		(adjusted_layer_index -
+		 (adjusted_layer_index %
+		  SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT));
 }
 
 static uint32_t SparkGlm52Pp13BuilderDsaGroupEnd(uint32_t source_layer_index)
@@ -228,9 +230,12 @@ static uint32_t SparkGlm52Pp13BuilderDsaGroupEnd(uint32_t source_layer_index)
 	if (source_layer_index + 1u <
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER)
 		return source_layer_index + 1u;
-	if (source_layer_index + 4u > SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT)
+	if (source_layer_index +
+		SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT >
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT)
 		return SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT;
-	return source_layer_index + 4u;
+	return source_layer_index +
+		SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT;
 }
 
 static SparkStatus SparkGlm52Pp13BuilderCudaStatus(cudaError_t status)
@@ -1159,8 +1164,8 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->max_blocks_per_sequence = SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
 	node->position_count = SPARK_GLM52_PP13_BUILDER_POSITION_COUNT;
 	node->dsa_candidate_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
-	node->qk_scale = 0.0416666679f;
-	node->rms_norm_epsilon = 0.000001f;
+	node->qk_scale = SPARK_GLM52_MODEL_QK_SCALE;
+	node->rms_norm_epsilon = SPARK_GLM52_MODEL_RMS_NORM_EPSILON;
 	node->cos_table = (const float *)state->cos_table;
 	node->sin_table = (const float *)state->sin_table;
 	node->mla_cache_bf16 = layer->mla_cache;
@@ -1236,7 +1241,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
 	node->validated_stage_latency_ns = 1000000000ull;
 	node->estimated_service_time_ns = 1000000000ull;
-	node->index_softmax_scale = 1.0f;
+	node->index_softmax_scale = SPARK_GLM52_MODEL_DSA_INDEX_SOFTMAX_SCALE;
 	node->dsa_index_head_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT;
 	node->dsa_index_head_dimension = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_DIMENSION;
 	node->index_query_weight_fp8_e4m3 = (const uint8_t *)layer->index_query_weight_fp8;
@@ -1286,7 +1291,8 @@ static void SparkGlm52Pp13BuilderWireLayer(
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
 		node->moe_router_weight_bf16 = layer->router_weight;
 		node->moe_router_score_bias_f32 = (const float *)layer->router_bias;
-		node->moe_routed_scaling_factor = 2.5f;
+		node->moe_routed_scaling_factor =
+			SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR;
 		node->moe_norm_topk_prob = 1u;
 		node->moe_expert_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
 		node->moe_bound_expert_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT;
