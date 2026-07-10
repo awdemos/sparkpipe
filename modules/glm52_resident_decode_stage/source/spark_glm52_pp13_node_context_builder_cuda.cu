@@ -2528,7 +2528,7 @@ static void SparkGlm52Pp13BuilderMaybeProbePrefillTokenSlot(
 		slot_mapping);
 }
 
-static void SparkGlm52Pp13BuilderMaybeProbeLayer2Sublayers(
+static void SparkGlm52Pp13BuilderMaybeProbeLayer1Sublayers(
 	SparkGlm52Pp13BuilderState *state,
 	uint64_t request_id,
 	uint32_t token_offset,
@@ -2542,7 +2542,7 @@ static void SparkGlm52Pp13BuilderMaybeProbeLayer2Sublayers(
 			sizeof(probe_slots),cudaMemcpyDeviceToHost) != cudaSuccess)
 		return;
 	fprintf(stderr,
-		"fp8_layer2_attention_probe request=%llu token_offset=%u position=%u input=%016llx attention_norm=%016llx kv_latent=%016llx raw_kv_b=%016llx fp8_value_cache=%016llx attention_value=%016llx attention_projection=%016llx post_attention=%016llx\n",
+		"fp8_layer1_attention_probe request=%llu token_offset=%u position=%u input=%016llx attention_norm=%016llx kv_latent=%016llx raw_kv_b=%016llx fp8_value_cache=%016llx attention_value=%016llx attention_projection=%016llx post_attention=%016llx\n",
 		(unsigned long long)request_id,
 		token_offset,
 		position,
@@ -2754,7 +2754,7 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 				token_id);
 			return status;
 		}
-		SparkGlm52Pp13BuilderMaybeProbeLayer2Sublayers(
+		SparkGlm52Pp13BuilderMaybeProbeLayer1Sublayers(
 			state,
 			prefill_dispatch->request_dispatch->request_ids[0u],
 			token_offset,

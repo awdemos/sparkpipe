@@ -14529,7 +14529,7 @@ static void SparkGlm52ResidentDecodeStageDeviceHashProbe(
     cudaStream_t cuda_stream)
 {
     if (SparkGlm52ResidentDecodeStageFp8AmaxProbeEnabled() == 0u ||
-        node_context == 0 || node_context->layer_index != 2u ||
+        node_context == 0 || node_context->layer_index != 1u ||
         node_context->device_probe_hash_slots == 0 ||
         device_data == 0 || bytes == 0u || cuda_stream == 0)
     {
@@ -14592,7 +14592,7 @@ static void SparkGlm52ResidentDecodeStageMappedFp8ValueHashProbe(
     const SparkGlm52ResidentDecodeStageFp8KvCachePlan *plan;
 
     if (SparkGlm52ResidentDecodeStageFp8AmaxProbeEnabled() == 0u ||
-        node_context == 0 || node_context->layer_index != 2u ||
+        node_context == 0 || node_context->layer_index != 1u ||
         node_context->device_probe_hash_slots == 0 || pipeline_slot == 0 ||
         pipeline_slot->slot_mapping == 0 || cuda_stream == 0 ||
         !SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsableCuda(node_context))
@@ -14623,7 +14623,7 @@ static void SparkGlm52ResidentDecodeStageMaybeProbeFp8Amax(
     uint32_t zeros;
 
     if (SparkGlm52ResidentDecodeStageFp8AmaxProbeEnabled() == 0u ||
-        label == 0 || node_context == 0 || node_context->layer_index != 2u ||
+        label == 0 || node_context == 0 || node_context->layer_index != 1u ||
         device_amax_f32 == 0 || bytes == 0u || bytes > sizeof(host_buffer) ||
         cuda_stream == 0)
     {
