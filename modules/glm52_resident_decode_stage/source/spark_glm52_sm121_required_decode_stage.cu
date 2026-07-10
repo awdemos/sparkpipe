@@ -15053,6 +15053,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
     cudaStream_t cuda_stream,
     uint32_t active_sequence_count)
 {
+    const SparkGlm52ResidentDecodeStageLinearPlan *gate_plan;
+    const SparkGlm52ResidentDecodeStageLinearPlan *up_plan;
+    const SparkGlm52ResidentDecodeStageLinearPlan *down_plan;
     uint64_t intermediate_value_count;
     uint64_t hidden_element_count;
     SparkStatus status;
@@ -15074,7 +15077,139 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundDenseMlp(
     if (node_context->mlp_execution_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        gate_plan = SparkGlm52ResidentDecodeStageGetLinearPlan(
+            node_context,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_GATE,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            node_context->dense_intermediate_dimension,
+            active_sequence_count);
+        up_plan = SparkGlm52ResidentDecodeStageGetLinearPlan(
+            node_context,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_UP,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            node_context->dense_intermediate_dimension,
+            active_sequence_count);
+        down_plan = SparkGlm52ResidentDecodeStageGetLinearPlan(
+            node_context,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_DOWN,
+            node_context->dense_intermediate_dimension,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+            active_sequence_count);
+        if (!SparkGlm52ResidentDecodeStageLinearPlanUsesFp8E4m3QuantizedView(
+                gate_plan,
+                0) ||
+            !SparkGlm52ResidentDecodeStageLinearPlanUsesFp8E4m3QuantizedView(
+                up_plan,
+                0) ||
+            !SparkGlm52ResidentDecodeStageLinearPlanUsesFp8E4m3QuantizedView(
+                down_plan,
+                0))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        status = SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
+            gate_plan,
+            pipeline_slot->post_attention_normalized_hidden_bf16,
+            0,
+            pipeline_slot->moe_gate_bf16,
+            active_sequence_count,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
+            up_plan,
+            pipeline_slot->post_attention_normalized_hidden_bf16,
+            0,
+            pipeline_slot->moe_up_bf16,
+            active_sequence_count,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        intermediate_value_count =
+            (uint64_t)active_sequence_count *
+            (uint64_t)node_context->dense_intermediate_dimension;
+        SparkGlm52ResidentDecodeStageSiluMulKernel<<<
+            SparkGlm52ResidentDecodeStageElementBlockCount(intermediate_value_count),
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->moe_gate_bf16,
+            (const uint16_t *)pipeline_slot->moe_up_bf16,
+            (uint16_t *)pipeline_slot->moe_intermediate_bf16,
+            intermediate_value_count);
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
+            down_plan,
+            pipeline_slot->moe_intermediate_bf16,
+            0,
+            pipeline_slot->layer_output_hidden_bf16,
+            active_sequence_count,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        hidden_element_count =
+            (uint64_t)active_sequence_count *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+        SparkGlm52ResidentDecodeStageResidualKernel<<<
+            SparkGlm52ResidentDecodeStageElementBlockCount(hidden_element_count),
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            (const uint16_t *)pipeline_slot->post_attention_hidden_bf16,
+            (const uint16_t *)pipeline_slot->layer_output_hidden_bf16,
+            (uint16_t *)pipeline_slot->layer_output_hidden_bf16,
+            active_sequence_count);
+        status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        return SparkGlm52ResidentDecodeStageMaybeMarkPhase(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_LOCAL_MOE);
     }
 
     status = SparkGlm52ResidentDecodeStageLaunchLinear(
