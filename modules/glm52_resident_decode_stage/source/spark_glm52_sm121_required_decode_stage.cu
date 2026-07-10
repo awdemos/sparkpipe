@@ -7788,57 +7788,29 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
         }
     }
 
-    if (active_sequence_count >
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_M)
-    {
-        grid = dim3(
-            (linear_plan->output_dimension +
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N - 1u) /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N,
-            (active_sequence_count +
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS - 1u) /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS,
-            1u);
-        SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearBatchKernel<<<
-            grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)input,
-            (const uint8_t *)quantized_view->weight_payload,
-            quantized_view->weight_scale,
-            output,
-            active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            quantized_view->weight_format,
-            quantized_view->scale_block_size,
-            linear_plan->output_is_f32);
-    }
-    else
-    {
-        grid = dim3(
-            (linear_plan->output_dimension +
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N - 1u) /
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_N,
-            1u,
-            1u);
-        SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearKernel<<<
-            grid,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_THREADS,
-            0u,
-            cuda_stream>>>(
-            (const uint16_t *)input,
-            (const uint8_t *)quantized_view->weight_payload,
-            quantized_view->weight_scale,
-            output,
-            active_sequence_count,
-            linear_plan->input_dimension,
-            linear_plan->output_dimension,
-            quantized_view->weight_format,
-            quantized_view->scale_block_size,
-            linear_plan->output_is_f32);
-    }
+    grid = dim3(
+        (linear_plan->output_dimension +
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N - 1u) /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_N,
+        (active_sequence_count +
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS - 1u) /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_ROWS,
+        1u);
+    SparkGlm52ResidentDecodeStageSupportedQuantizedBf16WmmaLinearBatchKernel<<<
+        grid,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SUPPORTED_QKVO_WMMA_BATCH_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)input,
+        (const uint8_t *)quantized_view->weight_payload,
+        quantized_view->weight_scale,
+        output,
+        active_sequence_count,
+        linear_plan->input_dimension,
+        linear_plan->output_dimension,
+        quantized_view->weight_format,
+        quantized_view->scale_block_size,
+        linear_plan->output_is_f32);
 
     cuda_status = cudaPeekAtLastError();
     return cuda_status == cudaSuccess
