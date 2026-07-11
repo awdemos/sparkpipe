@@ -18783,6 +18783,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeImportDsparkHiddenTaps(
     if (frame_context == 0 ||
         (frame_context->flags &
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS) == 0u ||
+        frame_context->dspark_hidden_tap_output_bf16[0u] == 0 ||
         (frame_context->flags &
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) == 0u)
     {
@@ -20251,10 +20252,11 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybeCaptureDsparkHiddenTap(
         layer_node_context,
         layer_pipeline_slot);
     tap_output_bf16 = frame_context->dspark_hidden_tap_output_bf16[tap_index];
+    if (tap_output_bf16 == 0)
+        return SPARK_STATUS_OK;
     hidden_row_bytes =
         (uint64_t)SPARK_GLM52_DSPARK_HIDDEN_DIMENSION * sizeof(uint16_t);
     if (hidden_output_bf16 == 0 ||
-        tap_output_bf16 == 0 ||
         frame_context->dspark_hidden_tap_lane_stride_bytes < hidden_row_bytes)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;

@@ -16,6 +16,9 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 	uint32_t max_active_sequence_count,
 	uint32_t max_pipeline_slot_count)
 {
+	uint32_t token_index;
+	uint32_t dspark_verify;
+
 	if (packet == 0 ||
 		packet->magic != SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC ||
 		packet->abi_version != SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION ||
@@ -35,6 +38,45 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 	if ((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) == 0u &&
 		packet->new_token_count > 8u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	dspark_verify = (packet->flags &
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u;
+	if (packet->input_token_id >= SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (dspark_verify != 0u)
+	{
+		if ((packet->flags &
+				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE) == 0u ||
+			(packet->flags & (SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL |
+				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP)) != 0u ||
+			packet->new_token_count != 1u ||
+			packet->dspark_speculative_token_count == 0u ||
+			packet->dspark_speculative_token_count >
+				SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
+			packet->dspark_speculative_token_index >
+				packet->dspark_speculative_token_count)
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		for (token_index = 0u;
+			 token_index < packet->dspark_speculative_token_count;
+			 ++token_index)
+		{
+			if (packet->dspark_draft_token_ids[token_index] >=
+				SPARK_GLM52_DSPARK_FULL_VOCAB_SIZE)
+				return SPARK_STATUS_INVALID_ARGUMENT;
+		}
+	}
+	else
+	{
+		if (packet->dspark_speculative_token_count != 0u ||
+			packet->dspark_speculative_token_index != 0u)
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		for (token_index = 0u;
+			 token_index < SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+			 ++token_index)
+		{
+			if (packet->dspark_draft_token_ids[token_index] != 0u)
+				return SPARK_STATUS_INVALID_ARGUMENT;
+		}
+	}
 	return SPARK_STATUS_OK;
 }
 

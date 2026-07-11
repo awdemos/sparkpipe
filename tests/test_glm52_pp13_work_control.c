@@ -124,10 +124,43 @@ static void SparkTestGlm52Pp13WorkControlTracksKvReadiness(void)
 	assert(block_states[0] == SPARK_GLM52_PP13_KV_ENTRY_RESIDENT);
 }
 
+static void SparkTestGlm52Pp13WorkControlDsparkVerify(void)
+{
+	SparkGlm52Pp13WorkControlPacket packet;
+	uint32_t token_index;
+
+	SparkTestInitializeWorkPacket(&packet);
+	packet.active_sequence_count = 1u;
+	packet.flags =
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE |
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY;
+	packet.dspark_speculative_token_count =
+		SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+	packet.dspark_speculative_token_index =
+		SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+	packet.input_token_id = 101u;
+	for (token_index = 0u;
+		 token_index < SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+		 ++token_index)
+		packet.dspark_draft_token_ids[token_index] = 200u + token_index;
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
+		SPARK_STATUS_OK);
+	packet.flags &=
+		~SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE;
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
+	packet.flags |=
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE;
+	packet.dspark_speculative_token_index += 1u;
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 int main(void)
 {
 	SparkTestGlm52Pp13WorkControlPacket();
 	SparkTestGlm52Pp13WorkControlHostBlockTable();
 	SparkTestGlm52Pp13WorkControlTracksKvReadiness();
+	SparkTestGlm52Pp13WorkControlDsparkVerify();
 	return 0;
 }

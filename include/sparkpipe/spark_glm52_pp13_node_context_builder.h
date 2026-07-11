@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 2u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 3u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS 256u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_INTERFACE_SYMBOL \
 	"SparkGlm52Pp13NodeContextBuilderGetInterface"
@@ -27,11 +27,18 @@ extern "C" {
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_STAGE_SLICE 0x00000002u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK0_TOKEN_INPUT 0x00000004u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK_WORK_DISPATCH 0x00000008u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_DSPARK_DRAFT 0x00000010u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_REQUIRED_PRODUCTION_CAPS \
 	(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_FP8_PACKS | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_STAGE_SLICE | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK0_TOKEN_INPUT | \
-	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK_WORK_DISPATCH)
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK_WORK_DISPATCH | \
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_DSPARK_DRAFT)
+
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK \
+	0x00000001u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_KNOWN_FLAGS \
+	SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK
 
 typedef struct SparkGlm52Pp13NodeContextBuilderConfiguration
 {
@@ -47,6 +54,9 @@ typedef struct SparkGlm52Pp13NodeContextBuilderConfiguration
 	const char *stagepack_root;
 	const char *embedding_pack_path;
 	const char *node_target;
+	const char *dspark_safetensors_path;
+	uint32_t dspark_maximum_lane_count;
+	uint32_t dspark_maximum_context_token_count;
 	const SparkGlm52Pp13RuntimeRankPlan *rank_plan;
 } SparkGlm52Pp13NodeContextBuilderConfiguration;
 
@@ -100,6 +110,9 @@ typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction)(
 	SparkHiddenTransportSession *output_transport_session,
 	SparkModelDriverCompletionFunction completion_function,
 	void *completion_context);
+typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderTakeDsparkDraftFunction)(
+	void *builder_state,
+	SparkGlm52DsparkDraftResult *draft_result);
 
 typedef struct SparkGlm52Pp13NodeContextBuilderInterface
 {
@@ -115,6 +128,7 @@ typedef struct SparkGlm52Pp13NodeContextBuilderInterface
 	SparkGlm52Pp13NodeContextBuilderPrefillFunction prefill;
 	SparkGlm52Pp13NodeContextBuilderDecodeFunction decode;
 	SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction submit_work;
+	SparkGlm52Pp13NodeContextBuilderTakeDsparkDraftFunction take_dspark_draft;
 } SparkGlm52Pp13NodeContextBuilderInterface;
 
 typedef const SparkGlm52Pp13NodeContextBuilderInterface *(
