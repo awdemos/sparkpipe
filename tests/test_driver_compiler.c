@@ -91,6 +91,7 @@ int main(void)
     const SparkModelDriverProgramDescriptor *program;
     SparkModelDriverFrame frame;
     SparkTestCompletionState completion_state;
+    SparkTestCompletionState frame_completion_state;
     void *driver_instance;
     const char *variant_compiler_arguments[1];
     struct stat library_link_unit_status;
@@ -162,6 +163,18 @@ int main(void)
     assert(completion_state.completion_count == 1u);
     assert(completion_state.completion.request_id == 77u);
     assert(completion_state.completion.status == SPARK_STATUS_OK);
+    memset(&frame_completion_state, 0, sizeof(frame_completion_state));
+    memset(&frame, 0, sizeof(frame));
+    frame.request_id = 78u;
+    frame.scalar[0] = 5u;
+    frame.completion_function = SparkTestCompletion;
+    frame.completion_context = &frame_completion_state;
+    assert(program->submit(driver_instance, &frame) == SPARK_STATUS_OK);
+    assert(frame.scalar[0] == 12u);
+    assert(completion_state.completion_count == 1u);
+    assert(frame_completion_state.completion_count == 1u);
+    assert(frame_completion_state.completion.request_id == 78u);
+    assert(frame_completion_state.completion.status == SPARK_STATUS_OK);
     loaded_driver.interface->destroy(driver_instance);
     SparkUnloadModelDriver(&loaded_driver);
 
