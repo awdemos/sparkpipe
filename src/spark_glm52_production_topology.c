@@ -152,7 +152,7 @@ static SparkStatus SparkGlm52ProductionTopologyAppendDsparkTapSidebands(
     static const uint32_t AuxLayerIds[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] =
         SPARK_GLM52_DSPARK_AUX_LAYER_IDS_INITIALIZER;
     SparkStatus status;
-    uint32_t tap_index, export_stage_index, import_stage_index;
+    uint32_t tap_index, capture_layer_index, export_stage_index, import_stage_index;
     uint64_t tap_payload_bytes;
 
     if (topology->stage_count == 0u)
@@ -163,19 +163,21 @@ static SparkStatus SparkGlm52ProductionTopologyAppendDsparkTapSidebands(
         SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES;
     for (tap_index = 0u; tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT; ++tap_index)
     {
+        capture_layer_index = SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_INDEX(
+            AuxLayerIds[tap_index]);
         status = SparkGlm52ProductionTopologyFindStageForLayer(
             stage_plan,
-            AuxLayerIds[tap_index],
+            capture_layer_index,
             &export_stage_index);
         if (status != SPARK_STATUS_OK)
             return status;
         status = SparkGlm52ProductionTopologyAppendSideband(
             topology,
-            AuxLayerIds[tap_index],
-            AuxLayerIds[tap_index] + 1u,
+            capture_layer_index,
+            capture_layer_index + 1u,
             export_stage_index,
             import_stage_index,
-            AuxLayerIds[tap_index] + 1u,
+            capture_layer_index + 1u,
             tap_payload_bytes,
             SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP |
                 SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DEVICE_TO_DEVICE);

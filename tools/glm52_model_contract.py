@@ -51,6 +51,8 @@ BOOLEAN_MACROS = {
     "SPARK_GLM52_MODEL_ROPE_INTERLEAVE": "rope_interleave",
 }
 DSPARK_INTEGER_MACROS = {
+    "SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_OFFSET":
+        "aux_capture_layer_offset",
     "SPARK_GLM52_MODEL_DSPARK_DRAFT_LAYER_COUNT": "draft_layer_count",
     "SPARK_GLM52_MODEL_DSPARK_BLOCK_SIZE": "block_size",
     "SPARK_GLM52_MODEL_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT": "maximum_speculative_token_count",
@@ -135,6 +137,8 @@ def render_c_header(contract: Dict[str, Any]) -> str:
     for name, key in DSPARK_INTEGER_MACROS.items():
         lines.append(f"#define {name} {dspark[key]}u")
     lines.extend([
+        "#define SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_INDEX(aux_layer_id) \\",
+        "\t((aux_layer_id) - SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_OFFSET)",
         "#define SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES ((uint32_t)sizeof(uint16_t))",
         "#define SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES \\",
         "\t(SPARK_GLM52_MODEL_HIDDEN_DIMENSION * SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES)",
