@@ -141,6 +141,7 @@ int main(void)
     cudaStream_t stream;
     cudaEvent_t start_event,stop_event;
     uint32_t candidate_count,active_sequence_count,row_capacity,block_count;
+    uint32_t warmup_count,measure_count,iteration;
     float elapsed_ms;
     SparkStatus status;
     int result;
@@ -152,9 +153,14 @@ int main(void)
     row_capacity = SparkValidationReadU32Env(
         "GLM52_DSA_SCORE_ROW_CAPACITY",
         SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_TILE_ROWS);
+    warmup_count = SparkValidationReadU32Env(
+        "GLM52_DSA_SCORE_WARMUP_COUNT",0u);
+    measure_count = SparkValidationReadU32Env(
+        "GLM52_DSA_SCORE_MEASURE_COUNT",1u);
     if (candidate_count == 0u || candidate_count >
             SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS ||
-        active_sequence_count == 0u || row_capacity == 0u)
+        active_sequence_count == 0u || row_capacity == 0u ||
+        measure_count == 0u)
         return 2;
     block_count =
         (candidate_count + SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS - 1u) /
@@ -189,19 +195,38 @@ int main(void)
         cudaMemcpyAsync(device_blocks,block_table.data(),block_table.size() * sizeof(uint32_t),cudaMemcpyHostToDevice,stream) != cudaSuccess ||
         cudaMemcpyAsync(device_contexts,context_lengths.data(),context_lengths.size() * sizeof(uint32_t),cudaMemcpyHostToDevice,stream) != cudaSuccess ||
         cudaMemcpyAsync(device_offsets,first_block_offsets.data(),first_block_offsets.size() * sizeof(uint32_t),cudaMemcpyHostToDevice,stream) != cudaSuccess ||
+        cudaStreamSynchronize(stream) != cudaSuccess)
+        return 2;
+    for (iteration = 0u; iteration < warmup_count; ++iteration)
+    {
+        status = SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareScoreTopk(
+            device_query,device_key,device_weights,device_blocks,device_contexts,
+            device_offsets,device_scores,device_output,active_sequence_count,
+            candidate_count,row_capacity,SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS,
+            block_count,block_count,candidate_count,1.0f,stream);
+        if (status != SPARK_STATUS_OK)
+            return 2;
+    }
+    if (cudaStreamSynchronize(stream) != cudaSuccess ||
         cudaEventRecord(start_event,stream) != cudaSuccess)
         return 2;
-    status = SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareScoreTopk(
-        device_query,device_key,device_weights,device_blocks,device_contexts,
-        device_offsets,device_scores,device_output,active_sequence_count,
-        candidate_count,row_capacity,SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS,
-        block_count,block_count,candidate_count,1.0f,stream);
-    if (status != SPARK_STATUS_OK ||
+    for (iteration = 0u; iteration < measure_count; ++iteration)
+    {
+        status = SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareScoreTopk(
+            device_query,device_key,device_weights,device_blocks,device_contexts,
+            device_offsets,device_scores,device_output,active_sequence_count,
+            candidate_count,row_capacity,SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS,
+            block_count,block_count,candidate_count,1.0f,stream);
+        if (status != SPARK_STATUS_OK)
+            return 2;
+    }
+    if (
         cudaEventRecord(stop_event,stream) != cudaSuccess ||
         cudaMemcpyAsync(output.data(),device_output,output.size() * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream) != cudaSuccess ||
         cudaStreamSynchronize(stream) != cudaSuccess ||
         cudaEventElapsedTime(&elapsed_ms,start_event,stop_event) != cudaSuccess)
         return 2;
+    elapsed_ms /= (float)measure_count;
     result = SparkValidationCheckOutput(
         output,context_lengths,active_sequence_count,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT);
@@ -211,7 +236,8 @@ int main(void)
         return result;
     }
     printf(
-        "dsa_score_topk_parity_pass active_sequences=%u candidate_count=%u row_capacity=%u elapsed_ms=%.3f\n",
-        active_sequence_count,candidate_count,row_capacity,(double)elapsed_ms);
+        "dsa_score_topk_parity_pass active_sequences=%u candidate_count=%u row_capacity=%u warmups=%u measurements=%u elapsed_ms=%.3f\n",
+        active_sequence_count,candidate_count,row_capacity,warmup_count,
+        measure_count,(double)elapsed_ms);
     return 0;
 }
