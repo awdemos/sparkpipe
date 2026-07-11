@@ -23,6 +23,10 @@ typedef struct SparkRingCheckConfig
     const char *prev_host;
     const char *next_host;
     const char *transport_path;
+    const char *transport_module_id;
+    uint32_t transport_capability_flags;
+    uint32_t verify_every_hop;
+    uint32_t busy_poll;
 } SparkRingCheckConfig;
 
 static uint64_t SparkRingCheckMonotonicMs(void)
@@ -33,6 +37,16 @@ static uint64_t SparkRingCheckMonotonicMs(void)
         return 0u;
     return ((uint64_t)now.tv_sec * 1000ull) +
         ((uint64_t)now.tv_nsec / 1000000ull);
+}
+
+static uint64_t SparkRingCheckMonotonicNs(void)
+{
+    struct timespec now;
+
+    if (clock_gettime(CLOCK_MONOTONIC,&now) != 0)
+        return 0u;
+    return ((uint64_t)now.tv_sec * 1000000000ull) +
+        (uint64_t)now.tv_nsec;
 }
 
 static void SparkRingCheckFillPattern(
@@ -109,7 +123,8 @@ static SparkStatus SparkRingCheckPumpUntilOk(
     SparkHiddenTransportSession *session,
     SparkHiddenTransportPacket *packet,
     uint64_t timeout_ms,
-    const char *label)
+    const char *label,
+    uint32_t busy_poll)
 {
     SparkStatus status;
     uint64_t deadline_ms;
@@ -140,7 +155,8 @@ static SparkStatus SparkRingCheckPumpUntilOk(
                 (unsigned long long)timeout_ms);
             return SPARK_STATUS_BUSY;
         }
-        (void)SparkRingCheckWaitForPollEvents(session,deadline_ms);
+        if (busy_poll == 0u)
+            (void)SparkRingCheckWaitForPollEvents(session,deadline_ms);
     }
 }
 
@@ -161,8 +177,7 @@ static void SparkRingCheckBuildEndpoint(
         sink_host);
     endpoint->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
-    endpoint->capability_flags =
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS;
+    endpoint->capability_flags = configuration->transport_capability_flags;
     endpoint->hidden_dimension = SPARK_RING_CHECK_HIDDEN_DIMENSION;
     endpoint->bytes_per_sequence = SPARK_RING_CHECK_BYTES_PER_SEQUENCE;
     endpoint->max_active_sequence_count =
@@ -171,8 +186,26 @@ static void SparkRingCheckBuildEndpoint(
         (uint64_t)(SPARK_RING_CHECK_BYTES_PER_SEQUENCE +
             configuration->sideband_bytes_per_sequence) *
         (uint64_t)configuration->active_sequence_count;
-    endpoint->transport_module_id = "hidden_transport_tcp_cuda";
+    endpoint->transport_module_id = configuration->transport_module_id;
     endpoint->route_name = route_buffer;
+}
+
+static SparkStatus SparkRingCheckOpenSession(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const SparkHiddenTransportDynamicLibrary *transport_library,
+    SparkHiddenTransportSession **session,
+    const char *label)
+{
+    SparkStatus status;
+
+    status = SparkHiddenTransportOpen(endpoint,
+        &transport_library->transport_interface,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
+        session);
+    if (status != SPARK_STATUS_OK)
+        fprintf(stderr,"ring_check_%s_open_failed status=%d route=%s\n",
+            label,(int32_t)status,endpoint->route_name);
+    return status;
 }
 
 static void SparkRingCheckBuildPacket(
@@ -243,6 +276,8 @@ static int32_t SparkRingCheckParseArguments(
     configuration->active_sequence_count = 1u;
     configuration->timeout_ms = 30000u;
     configuration->transport_path = "build/libhidden_transport_tcp_cuda.so";
+    configuration->transport_module_id = "hidden_transport_tcp_cuda";
+    configuration->verify_every_hop = 1u;
     for (argument_index = 1; argument_index < argc; ++argument_index)
     {
         if (strcmp(argv[argument_index],"--rank") == 0 &&
@@ -278,6 +313,13 @@ static int32_t SparkRingCheckParseArguments(
         else if (strcmp(argv[argument_index],"--transport") == 0 &&
             argument_index + 1 < argc)
             configuration->transport_path = argv[++argument_index];
+        else if (strcmp(argv[argument_index],"--transport-module") == 0 &&
+            argument_index + 1 < argc)
+            configuration->transport_module_id = argv[++argument_index];
+        else if (strcmp(argv[argument_index],"--end-to-end-verify-only") == 0)
+            configuration->verify_every_hop = 0u;
+        else if (strcmp(argv[argument_index],"--busy-poll") == 0)
+            configuration->busy_poll = 1u;
         else
         {
             fprintf(stderr,"ring_check_bad_argument %s\n",
@@ -293,7 +335,8 @@ static int32_t SparkRingCheckParseArguments(
         fprintf(stderr,
             "usage: --rank N --ranks 13 --prev HOST --next HOST"
             " [--laps K --active A --sideband-bytes S --timeout-ms T"
-            " --transport PATH]\n");
+            " --transport PATH --transport-module ID"
+            " --end-to-end-verify-only --busy-poll]\n");
         return -1;
     }
     return 0;
@@ -316,20 +359,23 @@ int main(int argc,char **argv)
     uint8_t *host_pattern;
     uint8_t *host_scratch;
     void *hidden_device;
+    void *hidden_host_mapped;
     void *sideband_device;
+    void *sideband_host_mapped;
     cudaStream_t stream;
     uint64_t hidden_bytes;
     uint64_t sideband_bytes;
     uint64_t lap;
-    uint64_t lap_start_ms;
-    uint64_t lap_ms;
-    uint64_t total_ms;
-    uint64_t worst_ms;
-    uint64_t best_ms;
-    uint64_t hop_start_ms;
-    uint64_t hop_ms;
-    uint64_t hop_total_ms;
-    uint64_t hop_worst_ms;
+    uint64_t lap_start_ns;
+    uint64_t lap_ns;
+    uint64_t total_ns;
+    uint64_t worst_ns;
+    uint64_t best_ns;
+    uint64_t hop_start_ns;
+    uint64_t hop_ns;
+    uint64_t hop_total_ns;
+    uint64_t hop_worst_ns;
+    uint64_t measured_laps;
 
     if (SparkRingCheckParseArguments(argc,argv,&configuration) != 0)
         return 1;
@@ -353,6 +399,8 @@ int main(int argc,char **argv)
             (int32_t)status,configuration.transport_path);
         return 1;
     }
+    configuration.transport_capability_flags =
+        transport_library.transport_interface.capability_flags;
     SparkRingCheckBuildEndpoint(&configuration,configuration.prev_host,
         self_host,input_route,sizeof(input_route),&input_endpoint);
     SparkRingCheckBuildEndpoint(&configuration,self_host,
@@ -360,26 +408,24 @@ int main(int argc,char **argv)
         &output_endpoint);
     input_session = 0;
     output_session = 0;
-    status = SparkHiddenTransportOpen(&input_endpoint,
-        &transport_library.transport_interface,
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
-        &input_session);
-    if (status != SPARK_STATUS_OK)
+    if ((configuration.rank & 1u) == 0u)
     {
-        fprintf(stderr,"ring_check_input_open_failed status=%d route=%s\n",
-            (int32_t)status,input_route);
-        return 1;
+        status = SparkRingCheckOpenSession(&input_endpoint,&transport_library,
+            &input_session,"input");
+        if (status == SPARK_STATUS_OK)
+            status = SparkRingCheckOpenSession(&output_endpoint,
+                &transport_library,&output_session,"output");
     }
-    status = SparkHiddenTransportOpen(&output_endpoint,
-        &transport_library.transport_interface,
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS,
-        &output_session);
-    if (status != SPARK_STATUS_OK)
+    else
     {
-        fprintf(stderr,"ring_check_output_open_failed status=%d route=%s\n",
-            (int32_t)status,output_route);
-        return 1;
+        status = SparkRingCheckOpenSession(&output_endpoint,&transport_library,
+            &output_session,"output");
+        if (status == SPARK_STATUS_OK)
+            status = SparkRingCheckOpenSession(&input_endpoint,
+                &transport_library,&input_session,"input");
     }
+    if (status != SPARK_STATUS_OK)
+        return 1;
     hidden_bytes = (uint64_t)SPARK_RING_CHECK_BYTES_PER_SEQUENCE *
         (uint64_t)configuration.active_sequence_count;
     sideband_bytes = (uint64_t)configuration.sideband_bytes_per_sequence *
@@ -395,13 +441,31 @@ int main(int argc,char **argv)
             cudaHostAllocDefault) != cudaSuccess)
         host_scratch = 0;
     hidden_device = 0;
+    hidden_host_mapped = 0;
     sideband_device = 0;
+    sideband_host_mapped = 0;
     stream = 0;
+    if ((configuration.transport_capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_CUDA_MAPPED_HOST_MEMORY) != 0u)
+    {
+        if (cudaHostAlloc(&hidden_host_mapped,(size_t)hidden_bytes,
+                cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess)
+            (void)cudaHostGetDevicePointer(&hidden_device,hidden_host_mapped,0);
+        if (sideband_bytes != 0u &&
+            cudaHostAlloc(&sideband_host_mapped,(size_t)sideband_bytes,
+                cudaHostAllocMapped | cudaHostAllocPortable) == cudaSuccess)
+            (void)cudaHostGetDevicePointer(&sideband_device,
+                sideband_host_mapped,0);
+    }
+    else
+    {
+        (void)cudaMalloc(&hidden_device,(size_t)hidden_bytes);
+        if (sideband_bytes != 0u)
+            (void)cudaMalloc(&sideband_device,(size_t)sideband_bytes);
+    }
     if (host_pattern == 0 || host_scratch == 0 ||
-        cudaStreamCreate(&stream) != cudaSuccess ||
-        cudaMalloc(&hidden_device,(size_t)hidden_bytes) != cudaSuccess ||
-        (sideband_bytes != 0u &&
-         cudaMalloc(&sideband_device,(size_t)sideband_bytes) != cudaSuccess))
+        cudaStreamCreate(&stream) != cudaSuccess || hidden_device == 0 ||
+        (sideband_bytes != 0u && sideband_device == 0))
     {
         fprintf(stderr,"ring_check_alloc_failed hidden=%llu sideband=%llu\n",
             (unsigned long long)hidden_bytes,
@@ -409,23 +473,33 @@ int main(int argc,char **argv)
         return 1;
     }
     printf("ring_check_ready rank=%u self=%s prev=%s next=%s laps=%u"
-        " active=%u sideband=%u\n",
+        " active=%u sideband=%u transport=%s mapped=%u verify_every_hop=%u"
+        " busy_poll=%u\n",
         configuration.rank,self_host,configuration.prev_host,
         configuration.next_host,configuration.laps,
         configuration.active_sequence_count,
-        configuration.sideband_bytes_per_sequence);
+        configuration.sideband_bytes_per_sequence,
+        configuration.transport_module_id,
+        hidden_host_mapped != 0 ? 1u : 0u,
+        configuration.verify_every_hop,
+        configuration.busy_poll);
     fflush(stdout);
-    total_ms = 0u;
-    worst_ms = 0u;
-    best_ms = ~0ull;
-    hop_start_ms = 0u;
-    hop_ms = 0u;
-    hop_total_ms = 0u;
-    hop_worst_ms = 0u;
+    total_ns = 0u;
+    worst_ns = 0u;
+    best_ns = ~0ull;
+    hop_start_ns = 0u;
+    hop_ns = 0u;
+    hop_total_ns = 0u;
+    hop_worst_ns = 0u;
+    measured_laps = configuration.laps > 1u ?
+        (uint64_t)configuration.laps - 1u : 1u;
     for (lap = 0u; lap < configuration.laps; ++lap)
     {
-        SparkRingCheckFillPattern(host_pattern,hidden_bytes + sideband_bytes,
-            lap * (uint64_t)configuration.rank_count);
+        if (configuration.rank == 0u ||
+            configuration.verify_every_hop != 0u)
+            SparkRingCheckFillPattern(host_pattern,
+                hidden_bytes + sideband_bytes,
+                lap * (uint64_t)configuration.rank_count);
         if (configuration.rank == 0u)
         {
             if (cudaMemcpy(hidden_device,host_pattern,(size_t)hidden_bytes,
@@ -441,18 +515,20 @@ int main(int argc,char **argv)
             }
             SparkRingCheckBuildPacket(&configuration,lap,hidden_device,
                 sideband_device,stream,&packet);
-            lap_start_ms = SparkRingCheckMonotonicMs();
+            lap_start_ns = SparkRingCheckMonotonicNs();
             status = SparkRingCheckPumpUntilOk(SparkRingCheckSendAdapter,
-                output_session,&packet,configuration.timeout_ms,"send");
+                output_session,&packet,configuration.timeout_ms,"send",
+                configuration.busy_poll);
             if (status != SPARK_STATUS_OK)
                 return 1;
             SparkRingCheckBuildPacket(&configuration,lap,hidden_device,
                 sideband_device,stream,&packet);
             status = SparkRingCheckPumpUntilOk(SparkHiddenTransportPostReceive,
-                input_session,&packet,configuration.timeout_ms,"receive");
+                input_session,&packet,configuration.timeout_ms,"receive",
+                configuration.busy_poll);
             if (status != SPARK_STATUS_OK)
                 return 1;
-            lap_ms = SparkRingCheckMonotonicMs() - lap_start_ms;
+            lap_ns = SparkRingCheckMonotonicNs() - lap_start_ns;
             if (SparkRingCheckVerifyPayload(host_pattern,hidden_device,
                     hidden_bytes,host_scratch,"hidden",lap) !=
                 SPARK_STATUS_OK)
@@ -462,13 +538,17 @@ int main(int argc,char **argv)
                     sideband_device,sideband_bytes,host_scratch,"sideband",
                     lap) != SPARK_STATUS_OK)
                 return 1;
-            total_ms += lap_ms;
-            if (lap_ms > worst_ms)
-                worst_ms = lap_ms;
-            if (lap_ms < best_ms)
-                best_ms = lap_ms;
-            printf("ring_check_lap lap=%llu ms=%llu\n",
-                (unsigned long long)lap,(unsigned long long)lap_ms);
+            if (lap != 0u || configuration.laps == 1u)
+            {
+                total_ns += lap_ns;
+                if (lap_ns > worst_ns)
+                    worst_ns = lap_ns;
+                if (lap_ns < best_ns)
+                    best_ns = lap_ns;
+            }
+            printf("ring_check_lap lap=%llu us=%llu\n",
+                (unsigned long long)lap,
+                (unsigned long long)(lap_ns / 1000ull));
             fflush(stdout);
         }
         else
@@ -476,46 +556,53 @@ int main(int argc,char **argv)
             SparkRingCheckBuildPacket(&configuration,lap,hidden_device,
                 sideband_device,stream,&packet);
             status = SparkRingCheckPumpUntilOk(SparkHiddenTransportPostReceive,
-                input_session,&packet,configuration.timeout_ms,"receive");
+                input_session,&packet,configuration.timeout_ms,"receive",
+                configuration.busy_poll);
             if (status != SPARK_STATUS_OK)
                 return 1;
-            hop_start_ms = SparkRingCheckMonotonicMs();
-            if (SparkRingCheckVerifyPayload(host_pattern,hidden_device,
-                    hidden_bytes,host_scratch,"hidden",lap) !=
-                SPARK_STATUS_OK)
-                return 1;
-            if (sideband_bytes != 0u &&
-                SparkRingCheckVerifyPayload(host_pattern + hidden_bytes,
-                    sideband_device,sideband_bytes,host_scratch,"sideband",
-                    lap) != SPARK_STATUS_OK)
-                return 1;
+            hop_start_ns = SparkRingCheckMonotonicNs();
+            if (configuration.verify_every_hop != 0u)
+            {
+                if (SparkRingCheckVerifyPayload(host_pattern,hidden_device,
+                        hidden_bytes,host_scratch,"hidden",lap) !=
+                    SPARK_STATUS_OK)
+                    return 1;
+                if (sideband_bytes != 0u &&
+                    SparkRingCheckVerifyPayload(host_pattern + hidden_bytes,
+                        sideband_device,sideband_bytes,host_scratch,"sideband",
+                        lap) != SPARK_STATUS_OK)
+                    return 1;
+            }
             SparkRingCheckBuildPacket(&configuration,lap,hidden_device,
                 sideband_device,stream,&packet);
             status = SparkRingCheckPumpUntilOk(SparkRingCheckSendAdapter,
-                output_session,&packet,configuration.timeout_ms,"send");
+                output_session,&packet,configuration.timeout_ms,"send",
+                configuration.busy_poll);
             if (status != SPARK_STATUS_OK)
                 return 1;
-            hop_ms = SparkRingCheckMonotonicMs() - hop_start_ms;
-            hop_total_ms += hop_ms;
-            if (hop_ms > hop_worst_ms)
-                hop_worst_ms = hop_ms;
+            hop_ns = SparkRingCheckMonotonicNs() - hop_start_ns;
+            if (lap != 0u || configuration.laps == 1u)
+            {
+                hop_total_ns += hop_ns;
+                if (hop_ns > hop_worst_ns)
+                    hop_worst_ns = hop_ns;
+            }
         }
     }
     if (configuration.rank == 0u)
-        printf("ring_check_result laps=%u total_ms=%llu avg_ms=%llu"
-            " best_ms=%llu worst_ms=%llu\n",
+        printf("ring_check_result laps=%u measured_laps=%llu avg_us=%llu"
+            " best_us=%llu worst_us=%llu\n",
             configuration.laps,
-            (unsigned long long)total_ms,
-            (unsigned long long)(total_ms / configuration.laps),
-            (unsigned long long)best_ms,
-            (unsigned long long)worst_ms);
+            (unsigned long long)measured_laps,
+            (unsigned long long)(total_ns / measured_laps / 1000ull),
+            (unsigned long long)(best_ns / 1000ull),
+            (unsigned long long)(worst_ns / 1000ull));
     else
         printf("ring_check_forwarder_done rank=%u laps=%u hop_avg_us=%llu"
             " hop_worst_ms=%llu\n",
             configuration.rank,configuration.laps,
-            (unsigned long long)((hop_total_ms * 1000ull) /
-                configuration.laps),
-            (unsigned long long)hop_worst_ms);
+            (unsigned long long)(hop_total_ns / measured_laps / 1000ull),
+            (unsigned long long)(hop_worst_ns / 1000000ull));
     SparkHiddenTransportClose(input_session);
     SparkHiddenTransportClose(output_session);
     (void)cudaStreamDestroy(stream);
