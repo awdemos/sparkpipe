@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 2u
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 3u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAGIC 0x52445543u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS \
     (SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS)
@@ -93,9 +93,14 @@ typedef struct SparkGlm52CudaResidentIpcSubmitWork
 typedef struct SparkGlm52CudaResidentIpcCompletion
 {
     uint32_t descriptor_bytes;
-    uint32_t reserved0;
+    uint32_t flags;
     SparkModelDriverCompletion completion;
+	SparkGlm52DsparkDraftResult dspark_draft;
 } SparkGlm52CudaResidentIpcCompletion;
+
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_FLAG_DSPARK_DRAFT 0x00000001u
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_KNOWN_FLAGS \
+	SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_FLAG_DSPARK_DRAFT
 
 typedef struct SparkGlm52CudaResidentIpcQuery
 {
@@ -136,6 +141,7 @@ typedef struct SparkGlm52CudaResidentIpcSubmitPrefill
     uint32_t highest_priority;
     uint64_t request_id;
     uint64_t sequence_id;
+    uint32_t request_flags;
     uint32_t prompt_token_offset;
     uint32_t prompt_token_count;
     uint32_t kv_block_token_count;
@@ -155,10 +161,13 @@ typedef struct SparkGlm52CudaResidentIpcSubmitDecode
     uint32_t input_token_id;
     uint32_t sequence_position;
     uint32_t context_token_count;
-    uint32_t kv_block_token_count;
-    uint32_t kv_lane_block_count;
-    uint32_t reserved0;
-    uint32_t kv_physical_block_indices[SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS];
+	uint32_t kv_block_token_count;
+	uint32_t kv_lane_block_count;
+	uint32_t dspark_speculative_token_count;
+	uint32_t dspark_speculative_token_index;
+	uint32_t dspark_draft_token_ids[
+		SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+	uint32_t kv_physical_block_indices[SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS];
 } SparkGlm52CudaResidentIpcSubmitDecode;
 
 typedef union SparkGlm52CudaResidentIpcAnyPayload

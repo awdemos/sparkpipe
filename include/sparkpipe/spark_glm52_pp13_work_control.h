@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_status.h"
 
@@ -9,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 1u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 2u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
 	((uint32_t)sizeof(SparkGlm52Pp13WorkControlPacket))
@@ -18,9 +19,13 @@ extern "C" {
 
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL 0x00000001u
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP 0x00000002u
+#define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE 0x00000004u
+#define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY 0x00000008u
 #define SPARK_GLM52_PP13_WORK_CONTROL_KNOWN_FLAGS \
 	(SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL | \
-	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP)
+	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP | \
+	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE | \
+	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY)
 
 #define SPARK_GLM52_PP13_KV_ENTRY_MISSING 0u
 #define SPARK_GLM52_PP13_KV_ENTRY_IN_FLIGHT 1u
@@ -44,6 +49,11 @@ typedef struct SparkGlm52Pp13WorkControlPacket
 	uint32_t kv_block_table_token_count;
 	uint32_t max_blocks_per_sequence;
 	uint32_t mtp_draft_token_count;
+	uint32_t input_token_id;
+	uint32_t dspark_speculative_token_count;
+	uint32_t dspark_speculative_token_index;
+	uint32_t dspark_draft_token_ids[
+		SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
 } SparkGlm52Pp13WorkControlPacket;
 
 typedef struct SparkGlm52Pp13WorkControlKvState

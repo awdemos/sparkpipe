@@ -45,12 +45,15 @@ typedef struct SparkGlm52CudaResidentdConfiguration
     const char *driver_path;
     const char *node_context_builder_shared_object_path;
     const char *embedding_pack_path;
+    const char *dspark_safetensors_path;
     const char *program_name;
     const char *node_target;
     uint32_t rank_index;
     uint32_t rank_is_set;
     uint32_t max_active_sequence_count;
     uint32_t port_base;
+    uint32_t dspark_enabled;
+    uint32_t dspark_maximum_context_token_count;
     uint64_t cuda_generation;
     uint64_t control_generation;
 } SparkGlm52CudaResidentdConfiguration;
@@ -102,6 +105,7 @@ static void SparkGlm52CudaResidentdInitializeConfiguration(
     configuration->max_active_sequence_count =
         SPARK_GLM52_CUDA_RESIDENTD_DEFAULT_MAX_ACTIVE;
     configuration->port_base = SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE;
+    configuration->dspark_maximum_context_token_count = 2048u;
 }
 
 static int32_t SparkGlm52CudaResidentdParseU32(
@@ -257,6 +261,28 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
         *index += 1;
         return 0;
     }
+    if (strcmp(argv[*index], "--dspark") == 0)
+    {
+        configuration->dspark_enabled = 1u;
+        return 0;
+    }
+    if (strcmp(argv[*index], "--dspark-safetensors") == 0)
+    {
+        if ((*index + 1) >= argc)
+            return -15;
+        configuration->dspark_safetensors_path = argv[*index + 1];
+        *index += 1;
+        return 0;
+    }
+    if (strcmp(argv[*index], "--dspark-max-context") == 0)
+    {
+        if ((*index + 1) >= argc ||
+            SparkGlm52CudaResidentdParseU32(argv[*index + 1], &parsed_u32) < 0)
+            return -16;
+        configuration->dspark_maximum_context_token_count = parsed_u32;
+        *index += 1;
+        return 0;
+    }
     if (strcmp(argv[*index], "--program") == 0)
     {
         if ((*index + 1) >= argc)
@@ -296,6 +322,11 @@ static SparkStatus SparkGlm52CudaResidentdValidateConfiguration(
             configuration->rank_index);
         configuration->socket_path = default_socket_path;
     }
+    if (configuration->dspark_enabled != 0u &&
+        configuration->rank_index == SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT - 1u &&
+        (configuration->dspark_safetensors_path == 0 ||
+         configuration->dspark_maximum_context_token_count == 0u))
+        return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
 }
 
@@ -415,6 +446,12 @@ static void SparkGlm52CudaResidentdCompletion(
     memset(&message, 0, sizeof(message));
     message.descriptor_bytes = SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_BYTES;
     message.completion = *completion;
+    if (runtime->builder_library.builder_interface.take_dspark_draft != 0 &&
+        runtime->builder_library.builder_interface.take_dspark_draft(
+            runtime->builder_state,
+            &message.dspark_draft) == SPARK_STATUS_OK)
+        message.flags |=
+            SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_FLAG_DSPARK_DRAFT;
     pthread_mutex_lock(&runtime->completion_write_mutex);
     status = SparkGlm52CudaResidentdWriteMessage(
         runtime,
@@ -537,6 +574,16 @@ static SparkStatus SparkGlm52CudaResidentdBuildNodeContext(
     builder_configuration.stagepack_root = configuration->stagepack_root;
     builder_configuration.embedding_pack_path = configuration->embedding_pack_path;
     builder_configuration.node_target = configuration->node_target;
+    if (configuration->dspark_enabled != 0u)
+    {
+        builder_configuration.flags |=
+            SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK;
+        builder_configuration.dspark_safetensors_path =
+            configuration->dspark_safetensors_path;
+        builder_configuration.dspark_maximum_lane_count = 1u;
+        builder_configuration.dspark_maximum_context_token_count =
+            configuration->dspark_maximum_context_token_count;
+    }
     builder_configuration.rank_plan = &runtime->rank_plan;
     status = SparkGlm52Pp13NodeContextBuilderLoadInterfaceFromSharedObject(
         configuration->node_context_builder_shared_object_path,
@@ -875,6 +922,7 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(
     }
     memset(&runtime->ingest_request_dispatch, 0, sizeof(runtime->ingest_request_dispatch));
     runtime->ingest_request_dispatch.highest_priority = message->highest_priority;
+    runtime->ingest_request_dispatch.flags = message->request_flags;
     runtime->ingest_request_dispatch.request_ids[0u] = message->request_id;
     runtime->ingest_request_dispatch.sequence_ids[0u] = message->sequence_id;
     memset(&runtime->ingest_prefill_view, 0, sizeof(runtime->ingest_prefill_view));
@@ -943,6 +991,15 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitDecode(
     dispatch.kv_block_table_view = &kv_view;
     dispatch.decode_view = &runtime->ingest_decode_view;
     dispatch.input_token_ids[0u] = message->input_token_id;
+    dispatch.speculative_token_count = message->dspark_speculative_token_count;
+    dispatch.speculative_token_index = message->dspark_speculative_token_index;
+    memcpy(
+        dispatch.speculative_draft_token_ids[0u],
+        message->dspark_draft_token_ids,
+        sizeof(dispatch.speculative_draft_token_ids[0u]));
+    if (message->dspark_speculative_token_count != 0u)
+        dispatch.dispatch_kind =
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
     memset(&runtime->ingest_decode_result, 0, sizeof(runtime->ingest_decode_result));
     status = runtime->builder_library.builder_interface.decode(runtime->builder_state, &dispatch, &runtime->ingest_decode_result);
     if (status == SPARK_STATUS_OK)
@@ -1102,7 +1159,7 @@ static void SparkGlm52CudaResidentdPrintReady(
 static void SparkGlm52CudaResidentdUsage(const char *program)
 {
     fprintf(stderr,
-        "usage: %s --rank n --socket path --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--program name] [--node-target target] [--max-active n] [--port-base n]\n",
+        "usage: %s --rank n --socket path --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--dspark --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--port-base n]\n",
         program);
 }
 

@@ -3148,6 +3148,12 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefill(
     dispatch->request_handles[0] = slot->handle;
     dispatch->request_ids[0] = slot->request_id;
     dispatch->sequence_ids[0] = slot->sequence_id;
+    if (SparkGlm52RequestApiSlotCanUseDspark(api, slot))
+    {
+        dispatch->flags |=
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
+        api->dspark_tap_capture_dispatch_count += 1u;
+    }
 
     if (dispatch->shared_prefix_token_count == 0u)
     {

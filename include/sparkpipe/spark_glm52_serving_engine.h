@@ -217,7 +217,7 @@ typedef struct SparkGlm52ServingDecodeDispatch
     uint32_t dispatch_kind;
     uint32_t request_count;
     uint32_t active_sequence_count;
-    uint32_t reserved0;
+    uint32_t speculative_token_index;
     uint32_t reserved1;
     uint32_t reserved2;
     const SparkGlm52RequestApiDispatch *request_dispatch;

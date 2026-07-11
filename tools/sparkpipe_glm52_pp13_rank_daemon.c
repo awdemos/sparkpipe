@@ -135,6 +135,8 @@ typedef struct SparkGlm52Pp13DaemonRuntime
     uint64_t final_event_receive_count;
     uint64_t final_event_send_error_count;
     uint64_t final_event_receive_error_count;
+    SparkGlm52DsparkDraftResult completion_dspark_draft;
+    uint32_t completion_dspark_draft_valid;
 } SparkGlm52Pp13DaemonRuntime;
 
 static volatile sig_atomic_t SparkGlm52Pp13DaemonRunning = 1;
@@ -1105,10 +1107,26 @@ static uint32_t SparkGlm52Pp13DaemonHandleCudaResidentMessage(
         completion_message =
             (const SparkGlm52CudaResidentIpcCompletion *)payload;
         if (completion_message->descriptor_bytes !=
-            SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_BYTES)
+                SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_BYTES ||
+            (completion_message->flags &
+                ~SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_KNOWN_FLAGS) != 0u)
         {
             runtime->cuda_resident_error_count += 1u;
             return 0u;
+        }
+        if ((completion_message->flags &
+                SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_FLAG_DSPARK_DRAFT) != 0u)
+        {
+            if (completion_message->dspark_draft.abi_version !=
+                    SPARK_GLM52_DSPARK_ABI_VERSION ||
+                completion_message->dspark_draft.descriptor_bytes !=
+                    SPARK_GLM52_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES)
+            {
+                runtime->cuda_resident_error_count += 1u;
+                return 0u;
+            }
+            runtime->completion_dspark_draft = completion_message->dspark_draft;
+            runtime->completion_dspark_draft_valid = 1u;
         }
         runtime->cuda_resident_completion_count += 1u;
         SparkGlm52Pp13DaemonCompletion(
@@ -1311,6 +1329,12 @@ static void SparkGlm52Pp13DaemonCompletion(
     runtime = (SparkGlm52Pp13DaemonRuntime *)completion_context;
     if (runtime == 0 || completion == 0)
         return;
+    if (runtime->completion_dspark_draft_valid == 0u &&
+        runtime->builder_library.builder_interface.take_dspark_draft != 0 &&
+        runtime->builder_library.builder_interface.take_dspark_draft(
+            runtime->builder_state,
+            &runtime->completion_dspark_draft) == SPARK_STATUS_OK)
+        runtime->completion_dspark_draft_valid = 1u;
     if (runtime->driver_inflight_count != 0u)
         runtime->driver_inflight_count -= 1u;
     if (runtime->driver_inflight_count == 0u)
@@ -1349,6 +1373,15 @@ static void SparkGlm52Pp13DaemonCompletion(
     event.sequence_id = completion->sequence_id;
     event.sequence_position = completion->sequence_position;
     event.service_time_ns = completion->service_time_ns;
+    if (runtime->completion_dspark_draft_valid != 0u)
+    {
+        event.extension_flags |=
+            SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_FLAG_DSPARK_DRAFT;
+        event.dspark_draft = runtime->completion_dspark_draft;
+        memset(&runtime->completion_dspark_draft,0,
+            sizeof(runtime->completion_dspark_draft));
+        runtime->completion_dspark_draft_valid = 0u;
+    }
     if (SparkGlm52Pp13DaemonQueueFinalEvent(runtime,&event) != SPARK_STATUS_OK)
     {
         runtime->final_event_send_error_count += 1u;
@@ -1718,6 +1751,12 @@ static SparkStatus SparkGlm52Pp13DaemonAwaitResidentSubmitResult(
             {
                 SparkGlm52Pp13DaemonTeardownCudaResident(runtime,"submit_completion_read");
                 return SPARK_STATUS_BUSY;
+            }
+            if ((completion_message.flags &
+                    SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_FLAG_DSPARK_DRAFT) != 0u)
+            {
+                runtime->completion_dspark_draft = completion_message.dspark_draft;
+                runtime->completion_dspark_draft_valid = 1u;
             }
             SparkGlm52Pp13DaemonCompletion(runtime,&completion_message.completion);
             continue;

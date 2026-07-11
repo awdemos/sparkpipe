@@ -2605,6 +2605,8 @@ static void SparkTestRequestApiDsparkCapturesTapsAndRunsSpeculativeVerify(void)
         &dispatch) == SPARK_STATUS_OK);
     assert(dispatch.accepted == 1u);
     assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert((dispatch.flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,
         &dispatch) == SPARK_STATUS_OK);
@@ -2626,7 +2628,7 @@ static void SparkTestRequestApiDsparkCapturesTapsAndRunsSpeculativeVerify(void)
         SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT);
     assert(fixture.dspark_capture.sequence_id == 11500u);
     assert(fixture.dspark_capture.sequence_position == 17u);
-    assert(fixture.api.dspark_tap_capture_dispatch_count == 1u);
+    assert(fixture.api.dspark_tap_capture_dispatch_count == 2u);
     assert(fixture.api.dspark_draft_ready_count == 1u);
 
     assert(SparkGlm52RequestApiScheduleNext(

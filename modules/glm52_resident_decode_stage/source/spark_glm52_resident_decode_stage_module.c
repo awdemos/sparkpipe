@@ -3418,6 +3418,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapPlanInlin
 static SparkStatus SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapFrameContext(
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context)
 {
+    uint32_t output_count;
     uint32_t tap_index;
 
     if ((frame_context->flags &
@@ -3433,15 +3434,16 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateDsparkHiddenTapFrameCont
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
+    output_count = 0u;
     for (tap_index = 0u;
          tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
          ++tap_index)
     {
-        if (frame_context->dspark_hidden_tap_output_bf16[tap_index] == 0)
-        {
-            return SPARK_STATUS_INVALID_ARGUMENT;
-        }
+        if (frame_context->dspark_hidden_tap_output_bf16[tap_index] != 0)
+            output_count += 1u;
     }
+    if (output_count != 0u && output_count != SPARK_GLM52_DSPARK_AUX_LAYER_COUNT)
+        return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
 }
 

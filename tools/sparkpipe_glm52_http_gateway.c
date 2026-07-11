@@ -50,6 +50,7 @@ typedef struct SparkGlm52GatewayConfig
 	uint32_t pump_steps;
 	uint32_t max_active_sequence_count;
 	uint32_t port_base;
+	uint32_t dspark_enabled;
 } SparkGlm52GatewayConfig;
 
 typedef struct SparkGlm52GatewayRuntime
@@ -282,6 +283,11 @@ static int32_t SparkGlm52GatewayApplyArgument(
 			return -20;
 		configuration->cuda_resident_socket_path = argv[*index + 1];
 		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--dspark") == 0)
+	{
+		configuration->dspark_enabled = 1u;
 		return 0;
 	}
 	return -19;
@@ -578,6 +584,9 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 		runtime->configuration.final_event_return_host;
 	backend_configuration.cuda_resident_socket_path =
 		runtime->configuration.cuda_resident_socket_path;
+	if (runtime->configuration.dspark_enabled != 0u)
+		backend_configuration.flags |=
+			SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_DSPARK;
 	status = runtime->service_backend_library.backend_interface.initialize(
 		&backend_configuration,
 		&runtime->service_backend_state);
@@ -1151,7 +1160,7 @@ int main(int argc,char **argv)
 	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
 	if (SparkGlm52GatewayParseArguments(&runtime.configuration,argc,argv) < 0)
 	{
-		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--fp8-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--program name] [--node-target target] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--cuda-resident-socket path]\n",argv[0]);
+		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--fp8-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--program name] [--node-target target] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--cuda-resident-socket path] [--dspark]\n",argv[0]);
 		return 2;
 	}
 	if (SparkGlm52GatewayLoadApiKeyFile(&runtime.configuration) < 0)
