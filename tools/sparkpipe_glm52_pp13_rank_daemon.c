@@ -60,6 +60,7 @@ typedef struct SparkGlm52Pp13DaemonConfig
     uint32_t rank_index;
     uint32_t rank_is_set;
     uint32_t own_final_event;
+    uint32_t transport_busy_poll;
     uint32_t max_active_sequence_count;
     uint32_t port_base;
 } SparkGlm52Pp13DaemonConfig;
@@ -337,6 +338,11 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
     if (strcmp(argv[*index],"--own-final-event") == 0)
     {
         configuration->own_final_event = 1u;
+        return 0;
+    }
+    if (strcmp(argv[*index],"--transport-busy-poll") == 0)
+    {
+        configuration->transport_busy_poll = 1u;
         return 0;
     }
     return -13;
@@ -2688,6 +2694,7 @@ static void SparkGlm52Pp13DaemonPrintReady(
         runtime->input_transport_session != 0 ? 1u : 0u);
     printf("output_transport=%u\n",
         runtime->output_transport_session != 0 ? 1u : 0u);
+    printf("transport_busy_poll=%u\n",configuration->transport_busy_poll);
     printf("work_listen=%d\n",runtime->work_listen_fd);
     printf("work_input_socket=%d\n",runtime->work_input_socket_fd);
     printf("work_output_socket=%d\n",runtime->work_output_socket_fd);
@@ -2746,7 +2753,7 @@ int main(int argc,char **argv)
     if (SparkGlm52Pp13DaemonParseArguments(&configuration,argc,argv) < 0)
     {
         fprintf(stderr,
-            "usage: %s --rank n [--cuda-resident-socket path | --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path] [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host]\n",
+            "usage: %s --rank n [--cuda-resident-socket path | --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path] [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--transport-busy-poll]\n",
             argv[0]);
         return 2;
     }
@@ -2764,6 +2771,15 @@ int main(int argc,char **argv)
         fprintf(stderr,"rank daemon init failed status=%u error=%s\n",
             (uint32_t)status,
             error_buffer);
+        SparkGlm52Pp13DaemonDestroy(&runtime);
+        return 3;
+    }
+    if (configuration.transport_busy_poll != 0u &&
+        (runtime.transport_library.transport_interface.capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_SPARK_HOST_PINNED_RDMA) == 0u)
+    {
+        fprintf(stderr,
+            "rank daemon transport busy poll requires Spark host RDMA\n");
         SparkGlm52Pp13DaemonDestroy(&runtime);
         return 3;
     }
@@ -2786,6 +2802,8 @@ int main(int argc,char **argv)
         progress |= SparkGlm52Pp13DaemonPumpFinalEvents(&runtime);
         if (progress == 0u)
         {
+            if (configuration.transport_busy_poll != 0u)
+                continue;
             timeout_ns = 0u;
             next_timer_ns = SparkGlm52Pp13DaemonNextTimerNs(&runtime);
             if (next_timer_ns != 0u)
