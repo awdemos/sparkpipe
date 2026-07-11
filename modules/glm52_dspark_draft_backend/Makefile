@@ -6,8 +6,11 @@ NVCCFLAGS ?= -std=c++17 -O3 -Xcompiler=-fPIC -Xcompiler=-fvisibility=hidden
 BUILD_DIRECTORY := $(REPOSITORY_ROOT)/build/modules/glm52_dspark_draft_backend
 BACKEND_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_dspark_draft_backend.o
 BACKEND_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_dspark_draft_backend.a
+VALIDATOR := $(BUILD_DIRECTORY)/validate_glm52_dspark_epoch3_cuda
+DSPARK_SAFETENSORS ?=
+DSPARK_ORACLE_DIR ?=
 
-.PHONY: archive clean
+.PHONY: archive validate_epoch3 clean
 
 archive: $(BACKEND_ARCHIVE)
 
@@ -20,6 +23,19 @@ $(BACKEND_OBJECT): source/spark_glm52_dspark_draft_backend.cu include/sparkpipe/
 $(BACKEND_ARCHIVE): $(BACKEND_OBJECT)
 	rm -f $@
 	$(AR) rcs $@ $^
+
+$(VALIDATOR): validation/validate_glm52_dspark_epoch3_cuda.cu $(BACKEND_ARCHIVE)
+	$(MAKE) -C $(REPOSITORY_ROOT) build/libsparkpipe_common.a
+	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude \
+		$< $(BACKEND_ARCHIVE) $(REPOSITORY_ROOT)/build/libsparkpipe_common.a \
+		-lcublas -o $@
+
+validate_epoch3: $(VALIDATOR)
+	@test -s "$(DSPARK_SAFETENSORS)" || \
+		{ echo "set DSPARK_SAFETENSORS to the epoch-3 checkpoint" >&2; exit 2; }
+	@test -d "$(DSPARK_ORACLE_DIR)" || \
+		{ echo "set DSPARK_ORACLE_DIR to the epoch-3 oracle directory" >&2; exit 2; }
+	$(VALIDATOR) "$(DSPARK_SAFETENSORS)" "$(DSPARK_ORACLE_DIR)"
 
 clean:
 	rm -rf $(BUILD_DIRECTORY)
