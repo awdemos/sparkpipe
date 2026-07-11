@@ -2679,7 +2679,7 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizeDsparkVerify(
 	state->captured_completion.sequence_position =
 		state->dspark_verify_base_position;
 	state->captured_completion.token_count =
-		state->dspark_verify_draft_count + 1u;
+		state->dspark_verify_accepted_count + 1u;
 	for (token_index = 0u;
 		 token_index < state->captured_completion.token_count;
 		 ++token_index)

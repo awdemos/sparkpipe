@@ -79,6 +79,22 @@ def test_serial_prefill_progresses_runner_after_each_token(root: Path) -> None:
     assert function_body.index(progress_call, function_body.index(sync_call)) > function_body.index(sync_call)
 
 
+def test_dspark_verify_commits_only_the_accepted_prefix(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderFinalizeDsparkVerify(")
+    end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderFinalizeDsparkCompletion(",
+        start)
+    function_body = source[start:end]
+    assert ("state->dspark_verify_accepted_count + 1u;" in
+            function_body)
+    assert ("state->dspark_verify_draft_count + 1u;" not in
+            function_body)
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_final_stage_has_hidden_only_builtin_launcher(root)
@@ -87,6 +103,7 @@ def main() -> None:
     test_pp13_rank_does_not_enable_dsa_fragment_transport(root)
     test_prebound_linear_plan_accepts_smaller_active_count(root)
     test_serial_prefill_progresses_runner_after_each_token(root)
+    test_dspark_verify_commits_only_the_accepted_prefix(root)
 
 
 if __name__ == "__main__":
