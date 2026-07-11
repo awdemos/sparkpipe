@@ -1350,6 +1350,7 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     const SparkGlm52ResidentDecodeStageNodeContext *layer_node_contexts[2];
     SparkGlm52ResidentDecodeStageSliceNodeContext slice_node_context;
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
+    SparkGlm52ResidentDecodeStageTestCompletionState frame_completion_state;
     SparkFirmwareModuleConfiguration configuration;
     SparkFirmwareModuleHostServices host_services;
     SparkModelDriverFrame frame;
@@ -1399,6 +1400,9 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     frame.active_slot_count = 2u;
     frame.new_token_count = 1u;
     frame.program_id = 1u;
+    memset(&frame_completion_state, 0, sizeof(frame_completion_state));
+    frame.completion_function = SparkGlm52ResidentDecodeStageTestCompletion;
+    frame.completion_context = &frame_completion_state;
     frame.scalar[SPARK_GLM52_RESIDENT_DECODE_STAGE_PIPELINE_SLOT_SCALAR_INDEX] =
         0u;
     assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
@@ -1407,8 +1411,9 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     assert(fake_streams[0].last_stage_slice_layer_count == 2u);
     assert(fake_streams[0].last_stage_slice_final_token_stage == 0u);
     assert(fake_streams[0].last_stage_slice_plan == &stage_slice_plan);
-    assert(completion_state.completion_count == 1u);
-    assert(completion_state.completions[0].request_id == 301u);
+    assert(completion_state.completion_count == 0u);
+    assert(frame_completion_state.completion_count == 1u);
+    assert(frame_completion_state.completions[0].request_id == 301u);
 
     assert(SparkGlm52ResidentDecodeStageSnapshot(
         module_state,

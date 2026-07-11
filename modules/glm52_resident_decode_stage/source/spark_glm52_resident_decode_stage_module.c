@@ -59,6 +59,8 @@ typedef struct SparkGlm52ResidentDecodeStagePendingCompletion
     uint32_t program_id;
     uint32_t driver_dispatch_slot;
     uint32_t accepted_token_count;
+    SparkModelDriverCompletionFunction completion_function;
+    void *completion_context;
     atomic_uint backend_completion_ready;
     atomic_uint_fast64_t dispatch_generation;
     SparkModelDriverResidencyToken residency;
@@ -2798,6 +2800,8 @@ static void SparkGlm52ResidentDecodeStageReleaseSlot(
 {
     pending_completion->hidden_output_transport_session = 0;
     pending_completion->hidden_output_send_function = 0;
+    pending_completion->completion_function = 0;
+    pending_completion->completion_context = 0;
     memset(&pending_completion->hidden_output_packet, 0, sizeof(pending_completion->hidden_output_packet));
     pending_completion->hidden_output_transport_active = 0u;
     atomic_store_explicit(
@@ -2848,6 +2852,8 @@ static void SparkGlm52ResidentDecodeStageTryComplete(
 {
     SparkGlm52ResidentDecodeStageState *state;
     SparkModelDriverCompletion completion;
+    SparkModelDriverCompletionFunction completion_function;
+    void *completion_context;
     unsigned int expected_state;
 
     if (pending_completion == 0 || pending_completion->owner == 0)
@@ -2879,6 +2885,8 @@ static void SparkGlm52ResidentDecodeStageTryComplete(
     completion.driver_dispatch_slot = pending_completion->driver_dispatch_slot;
     completion.accepted_token_count = pending_completion->accepted_token_count;
     completion.status = SPARK_STATUS_OK;
+    completion_function = pending_completion->completion_function;
+    completion_context = pending_completion->completion_context;
     (void)SparkGlm52ResidentDecodeStageNormalizeCompletionTokens(
         pending_completion,
         &completion);
@@ -2936,7 +2944,8 @@ static void SparkGlm52ResidentDecodeStageTryComplete(
         &state->host_callback_completion_count,
         1u,
         memory_order_relaxed);
-    state->completion_function(state->completion_context, &completion);
+    if (completion_function != 0)
+        completion_function(completion_context, &completion);
 }
 
 static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
@@ -4014,6 +4023,12 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
     pending_completion->driver_dispatch_slot = pipeline_slot_index;
     pending_completion->accepted_token_count =
         frame->new_token_count != 0u ? frame->new_token_count : 1u;
+    pending_completion->completion_function = frame->completion_function != 0
+        ? frame->completion_function
+        : state->completion_function;
+    pending_completion->completion_context = frame->completion_function != 0
+        ? frame->completion_context
+        : state->completion_context;
     pending_completion->residency = frame->residency;
     pending_completion->hidden_output_transport_session = 0;
     pending_completion->hidden_output_send_function = 0;
