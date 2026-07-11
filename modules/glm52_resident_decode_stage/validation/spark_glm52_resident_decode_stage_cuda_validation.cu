@@ -11067,6 +11067,13 @@ int main(int argc, char **argv)
         &node_context,
         use_dense_mlp,
         use_attention_bf16);
+    if (use_attention_bf16 != 0u &&
+        exact_pp13_model_quantization ==
+            SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8)
+    {
+        node_context.projection_mode =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
+    }
     if ((use_routed_chain_from_hidden != 0u ||
          use_routed_chain_from_hidden_final != 0u) &&
         exact_pp13_model_quantization ==
@@ -11080,6 +11087,9 @@ int main(int argc, char **argv)
                 1u,
                 &layer0_dense))
             return 2;
+        SparkValidationEnableLayer3RoutedExpertFp8(
+            &buffers,
+            &node_context);
         node_context.dense_intermediate_dimension =
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
     }
