@@ -14388,14 +14388,33 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareSelect(
 {
     uint32_t sequence_base;
     uint32_t candidate_count;
+    uint32_t selected_token_count;
     SparkStatus status;
 
     candidate_count = pipeline_slot->dsa_candidate_count;
+    selected_token_count =
+        SparkGlm52ResidentDecodeStageDsaIndexShareSelectedTokenCount(
+            node_context);
     if (candidate_count == 0u ||
         candidate_count > node_context->dsa_candidate_capacity ||
         node_context->dsa_score_row_capacity == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (candidate_count <= selected_token_count)
+    {
+        SparkGlm52ResidentDecodeStageCopyContextPrefixSparseIndicesKernel<<<
+            active_sequence_count,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            0u,
+            cuda_stream>>>(
+            pipeline_slot->context_lengths,
+            pipeline_slot->sparse_token_indices,
+            active_sequence_count);
+        return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+            node_context,
+            cuda_slot_state,
+            cuda_stream);
     }
     for (sequence_base = 0u; sequence_base < active_sequence_count;
          sequence_base += node_context->dsa_score_row_capacity)
@@ -14431,8 +14450,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareSelect(
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT,
             sequence_count,
             candidate_count,
-            SparkGlm52ResidentDecodeStageDsaIndexShareSelectedTokenCount(
-                node_context));
+            selected_token_count);
         status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
             node_context,
             cuda_slot_state,
