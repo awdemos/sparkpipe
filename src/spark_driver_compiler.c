@@ -601,8 +601,10 @@ static void SparkWriteGeneratedProgramFunction(
     fputs("    if (driver_instance == 0 || frame == 0)\n    {\n        return SPARK_STATUS_INVALID_ARGUMENT;\n    }\n", file);
     fputs("    instance = (SparkGeneratedDriverInstance *)driver_instance;\n", file);
     fprintf(file, "    frame->program_id = %uu;\n", program->program_id);
-    fputs("    frame->completion_function = instance->completion_function;\n", file);
-    fputs("    frame->completion_context = instance->completion_context;\n", file);
+    fputs("    if (frame->completion_function == 0)\n    {\n", file);
+    fputs("        frame->completion_function = instance->completion_function;\n", file);
+    fputs("        frame->completion_context = instance->completion_context;\n", file);
+    fputs("    }\n", file);
     fputs("    execution_status = SPARK_STATUS_OK;\n", file);
 
     for (program_operation_index = 0u; program_operation_index < program->operation_count; ++program_operation_index)
@@ -622,7 +624,7 @@ static void SparkWriteGeneratedProgramFunction(
     fputs("\ncomplete:\n", file);
     if (program->completion_mode == SPARK_MODEL_PROGRAM_COMPLETION_SUBMIT_RETURN)
     {
-        fputs("    if (instance->completion_function != 0)\n    {\n", file);
+        fputs("    if (frame->completion_function != 0)\n    {\n", file);
         fputs("        SparkModelDriverCompletion completion;\n\n", file);
         fputs("        memset(&completion, 0, sizeof(completion));\n", file);
         fputs("        completion.request_id = frame->request_id;\n", file);
@@ -633,7 +635,7 @@ static void SparkWriteGeneratedProgramFunction(
         fputs("        completion.residency = frame->residency;\n", file);
         fprintf(file, "        completion.program_id = %uu;\n", program->program_id);
         fputs("        completion.status = execution_status;\n", file);
-        fputs("        instance->completion_function(instance->completion_context, &completion);\n", file);
+        fputs("        frame->completion_function(frame->completion_context, &completion);\n", file);
         fputs("        return SPARK_STATUS_OK;\n    }\n", file);
         fputs("    return execution_status;\n}\n\n", file);
     }
