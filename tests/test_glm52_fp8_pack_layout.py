@@ -51,6 +51,14 @@ def transposed_values(rows: int, column_blocks: int):
 
 def main() -> int:
     module = load_fp8_packer_module()
+    repo_root = Path(__file__).resolve().parents[1]
+    cuda_source = (
+        repo_root /
+        "modules/glm52_resident_decode_stage/source/spark_glm52_sm121_required_decode_stage.cu"
+    ).read_text(encoding="utf-8")
+    assert "SPARKPIPE_FP8_MOE_ACCURATE_BF16_ACTIVATION" not in cuda_source
+    assert "Fp8MoeBf16ActivationScalarGroupGemm" not in cuda_source
+    assert "__nv_cvt_float_to_fp8" in cuda_source
     assert module.ABI_VERSION == 1
     assert module.SCALE_LAYOUT_EXPERT_MAJOR_ROW_BLOCK_MAJOR == 1
     runtime_values = row_major_values(3, 4)
