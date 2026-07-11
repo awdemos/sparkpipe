@@ -305,7 +305,8 @@ SparkStatus SparkGlm52DsparkBuildDefaultHiddenTapPlan(
         uint32_t target_layer_index;
         SparkGlm52DsparkTapStage *tap_stage;
 
-        target_layer_index = SparkGlm52DsparkDefaultAuxLayerIds[tap_index];
+        target_layer_index = SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_INDEX(
+            SparkGlm52DsparkDefaultAuxLayerIds[tap_index]);
         tap_stage = &tap_plan->tap_stages[tap_index];
         tap_stage->target_layer_index = target_layer_index;
         tap_stage->stage_index = target_layer_index / 6u;
@@ -343,7 +344,8 @@ SparkStatus SparkGlm52DsparkValidateHiddenTapPlan(
         const SparkGlm52DsparkTapStage *tap_stage;
         uint32_t target_layer_index;
 
-        target_layer_index = SparkGlm52DsparkDefaultAuxLayerIds[tap_index];
+        target_layer_index = SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_INDEX(
+            SparkGlm52DsparkDefaultAuxLayerIds[tap_index]);
         tap_stage = &tap_plan->tap_stages[tap_index];
         if (tap_stage->target_layer_index != target_layer_index ||
             tap_stage->stage_index != target_layer_index / 6u ||

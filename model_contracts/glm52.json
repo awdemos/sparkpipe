@@ -8,6 +8,7 @@
   "dsa_rope_interleave": true,
   "dsa_selected_token_count": 2048,
   "dspark": {
+    "aux_capture_layer_offset": 1,
     "aux_layer_ids": [8, 23, 39, 55, 70],
     "block_size": 8,
     "draft_attention_head_count": 64,

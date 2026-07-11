@@ -109,6 +109,7 @@ static void SparkTestGlm52ProductionTopologyPp13Sideband(void)
     {
         uint32_t tap_count, sideband_index;
         uint32_t expected_export_stages[5] = { 1u, 3u, 6u, 9u, 11u };
+        uint32_t expected_capture_layers[5] = { 7u, 22u, 38u, 54u, 69u };
 
         tap_count = 0u;
         for (sideband_index = 0u;
@@ -123,6 +124,9 @@ static void SparkTestGlm52ProductionTopologyPp13Sideband(void)
                 continue;
             }
             assert(tap_count < 5u);
+            assert(tap->source_layer_index == expected_capture_layers[tap_count]);
+            assert(tap->group_end_layer_exclusive ==
+                expected_capture_layers[tap_count] + 1u);
             assert(tap->export_stage_index == expected_export_stages[tap_count]);
             assert(tap->import_stage_index == topology.stage_count - 1u);
             assert(tap->payload_bytes ==

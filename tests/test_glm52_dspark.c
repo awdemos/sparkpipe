@@ -94,7 +94,7 @@ static void SparkTestDsparkDefaultTapPlanMatchesGlm52Pp13(void)
 {
     SparkGlm52DsparkHiddenTapPlan tap_plan;
     static const uint32_t expected_layers[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] =
-        { 8u, 23u, 39u, 55u, 70u };
+        { 7u, 22u, 38u, 54u, 69u };
     uint32_t tap_index;
 
     assert(SparkGlm52DsparkBuildDefaultHiddenTapPlan(
@@ -121,7 +121,7 @@ static void SparkTestDsparkDefaultTapPlanMatchesGlm52Pp13(void)
             expected_layers[tap_index] - tap_stage->stage_first_layer_index);
     }
 
-    tap_plan.tap_stages[2u].target_layer_index = 38u;
+    tap_plan.tap_stages[2u].target_layer_index = 39u;
     assert(SparkGlm52DsparkValidateHiddenTapPlan(
         &tap_plan) == SPARK_STATUS_INVALID_ARGUMENT);
 }
