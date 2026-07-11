@@ -2540,6 +2540,68 @@ static SparkStatus SparkGlm52Pp13BuilderStageDsparkLane(
 		sequence_position);
 }
 
+static void SparkGlm52Pp13BuilderTraceDsparkDraft(
+	const SparkGlm52DsparkDraftRequest *request,
+	const SparkGlm52DsparkDraftResult *result)
+{
+	uint32_t token_index;
+
+	if (getenv("SPARKPIPE_DSPARK_TRACE") == 0 || request == 0 || result == 0)
+		return;
+	fprintf(stderr,"dspark_trace draft request=%llu sequence=%llu position=%llu count=%u",
+		(unsigned long long)request->request_id,
+		(unsigned long long)request->sequence_id,
+		(unsigned long long)request->sequence_position,
+		result->token_count);
+	for (token_index = 0u; token_index < result->token_count; ++token_index)
+		fprintf(stderr," token%u=%u confidence%u=%u",token_index,
+			result->token_ids[token_index],token_index,
+			result->confidence_milli[token_index]);
+	fputc('\n',stderr);
+}
+
+static void SparkGlm52Pp13BuilderTraceDsparkVerifyStep(
+	const SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlPacket *work_packet,
+	uint32_t target_token_id)
+{
+	uint32_t token_index;
+	uint32_t draft_token_id;
+
+	if (getenv("SPARKPIPE_DSPARK_TRACE") == 0 || state == 0 || work_packet == 0)
+		return;
+	token_index = work_packet->dspark_speculative_token_index;
+	draft_token_id = token_index < state->dspark_verify_draft_count ?
+		state->dspark_verify_draft_token_ids[token_index] : UINT32_MAX;
+	fprintf(stderr,"dspark_trace verify request=%llu sequence=%llu base=%llu index=%u draft=%u target=%u mismatch=%u accepted=%u\n",
+		(unsigned long long)work_packet->request_id,
+		(unsigned long long)work_packet->sequence_id,
+		(unsigned long long)state->dspark_verify_base_position,
+		token_index,draft_token_id,target_token_id,
+		state->dspark_verify_mismatch,state->dspark_verify_accepted_count);
+}
+
+static void SparkGlm52Pp13BuilderTraceDsparkVerifierVector(
+	const SparkGlm52Pp13BuilderState *state)
+{
+	uint32_t token_index;
+
+	if (getenv("SPARKPIPE_DSPARK_TRACE") == 0 || state == 0)
+		return;
+	fprintf(stderr,"dspark_trace verifier_vector request=%llu sequence=%llu base=%llu accepted=%u count=%u",
+		(unsigned long long)state->dspark_verify_request_id,
+		(unsigned long long)state->dspark_verify_sequence_id,
+		(unsigned long long)state->dspark_verify_base_position,
+		state->dspark_verify_accepted_count,
+		state->captured_completion.token_count);
+	for (token_index = 0u;
+		 token_index < state->captured_completion.token_count;
+		 ++token_index)
+		fprintf(stderr," token%u=%u",token_index,
+			state->captured_completion.token_ids[token_index]);
+	fputc('\n',stderr);
+}
+
 static SparkStatus SparkGlm52Pp13BuilderGenerateDsparkDraft(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52Pp13WorkControlPacket *work_packet)
@@ -2565,7 +2627,12 @@ static SparkStatus SparkGlm52Pp13BuilderGenerateDsparkDraft(
 		&request,
 		&state->dspark_ready_draft);
 	if (status == SPARK_STATUS_OK)
+	{
 		state->dspark_ready_draft_valid = 1u;
+		SparkGlm52Pp13BuilderTraceDsparkDraft(
+			&request,
+			&state->dspark_ready_draft);
+	}
 	return status;
 }
 
@@ -2666,6 +2733,10 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizeDsparkVerify(
 				state->dspark_verify_draft_count;
 		}
 	}
+	SparkGlm52Pp13BuilderTraceDsparkVerifyStep(
+		state,
+		work_packet,
+		target_token_id);
 	if (work_packet->dspark_speculative_token_index <
 		state->dspark_verify_draft_count)
 	{
@@ -2679,7 +2750,7 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizeDsparkVerify(
 	state->captured_completion.sequence_position =
 		state->dspark_verify_base_position;
 	state->captured_completion.token_count =
-		state->dspark_verify_accepted_count + 1u;
+		state->dspark_verify_draft_count + 1u;
 	for (token_index = 0u;
 		 token_index < state->captured_completion.token_count;
 		 ++token_index)
@@ -2687,6 +2758,7 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizeDsparkVerify(
 		state->captured_completion.token_ids[token_index] =
 			state->dspark_verify_target_token_ids[token_index];
 	}
+	SparkGlm52Pp13BuilderTraceDsparkVerifierVector(state);
 	status = SparkGlm52Pp13BuilderGenerateDsparkDraft(state,work_packet);
 	state->dspark_verify_active = 0u;
 	return status;
