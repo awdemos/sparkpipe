@@ -8630,6 +8630,7 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
     uint32_t *submission_count)
 {
     SparkValidationLayer0AttentionBf16Fixture attention_fixture;
+    SparkValidationLayer0DenseBf16Fixture shared_expert_fixture;
     SparkValidationLayer3RouterBf16Fixture router_fixture;
     uint32_t topk_expert_ids[SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K];
     float elapsed_microseconds;
@@ -8666,7 +8667,14 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
     if (model_quantization ==
         SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8)
     {
-        if (!SparkValidationBindFp8MoePlanForLayer(
+        if (!SparkValidationLoadFp8MlpFixture(
+                buffers,
+                model_directory,
+                layer_index,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
+                1u,
+                &shared_expert_fixture) ||
+            !SparkValidationBindFp8MoePlanForLayer(
                 buffers,
                 node_context,
                 layer_index))
@@ -8676,6 +8684,8 @@ static bool SparkValidationRunRoutedLayerProductionB12x(
         SparkValidationEnableLayer3RoutedExpertFp8(
             buffers,
             node_context);
+        node_context->dense_intermediate_dimension =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
     }
     else
     {
@@ -11057,6 +11067,22 @@ int main(int argc, char **argv)
         &node_context,
         use_dense_mlp,
         use_attention_bf16);
+    if ((use_routed_chain_from_hidden != 0u ||
+         use_routed_chain_from_hidden_final != 0u) &&
+        exact_pp13_model_quantization ==
+            SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8)
+    {
+        if (!SparkValidationLoadFp8MlpFixture(
+                &buffers,
+                model_directory,
+                routed_chain_first_layer_index,
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,
+                1u,
+                &layer0_dense))
+            return 2;
+        node_context.dense_intermediate_dimension =
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION;
+    }
     if (use_routed_chain_from_hidden != 0u ||
         use_dense_chain_layer3_routed_expert_topk != 0u ||
         (use_dense_chain != 0u && production_timing != 0u))
@@ -11122,7 +11148,11 @@ int main(int argc, char **argv)
     if (use_dense_mlp != 0u ||
         use_dense_chain != 0u ||
         use_layer3_shared_expert != 0u ||
-        use_dense_chain_layer3_routed_expert_topk != 0u)
+        use_dense_chain_layer3_routed_expert_topk != 0u ||
+        ((use_routed_chain_from_hidden != 0u ||
+          use_routed_chain_from_hidden_final != 0u) &&
+         exact_pp13_model_quantization ==
+             SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8))
     {
         required_linear_plan_mask |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
