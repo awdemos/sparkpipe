@@ -2663,6 +2663,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 		 configuration->kv_logical_block_capacity >
 			UINT32_MAX - SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY))
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (configuration->cuda_resident_socket_path != 0 &&
+		configuration->kv_logical_block_capacity == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (configuration->cuda_resident_socket_path == 0 &&
 		configuration->kv_logical_block_capacity != 0u &&
 		configuration->kv_logical_block_capacity !=

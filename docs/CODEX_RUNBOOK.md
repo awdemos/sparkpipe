@@ -109,6 +109,7 @@ python3 tools/sparkpipe_release_assemble.py \
     --git-commit <full-merged-sha> \
     --max-active 1 \
     --kv-pool-tokens 1048576 \
+    --kv-logical-blocks 16384 \
     --replace bin/sparkpipe_release_manager=build/sparkpipe_release_manager \
     --replace bin/sparkpipe_glm52_cuda_residentd=build/sparkpipe_glm52_cuda_residentd \
     --replace bin/sparkpipe_glm52_pp13_rank_daemon=build/sparkpipe_glm52_pp13_rank_daemon \
