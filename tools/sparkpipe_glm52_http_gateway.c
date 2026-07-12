@@ -1065,7 +1065,7 @@ static SparkStatus SparkGlm52GatewayBuildResponse(
 		SparkGlm52GatewayRefreshBackendView(runtime) < 0 ||
 		runtime->service_backend_view.service == 0 ||
 		runtime->service_backend_view.runtime_initialized == 0u ||
-		runtime->service_backend_view.ring_control_ready == 0u ||
+		runtime->service_backend_view.local_control_ready == 0u ||
 		SparkGlm52GatewayEnsureServiceClient(runtime) < 0)
 		return SparkGlm52HttpGatewayBuildBackendUnavailable(response,stream);
 	SparkGlm52CompatInitializeTextRequest(

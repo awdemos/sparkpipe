@@ -160,11 +160,15 @@ installed builder and driver hashes on all 13 ranks with the manifest.
 
 ## Actual Inference Gate
 
-First require clean health:
+First require local health, then allow one probe request to prove the ring:
 
 ```sh
 curl -fsS http://spark0:18080/health
 ```
+
+`local_control_ready=1` proves only the gateway, backend, and rank-0 resident
+are attached. It is not a whole-ring readiness claim. Whole-ring readiness is
+observed only after a request produces token and done events and drains cleanly.
 
 Then send a streaming, greedy request. Read the API key from the installed
 file without printing it:

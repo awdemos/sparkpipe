@@ -34,7 +34,7 @@ static SparkStatus SparkTestServiceBackendGetView(
 	view->abi_version = SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION;
 	view->descriptor_bytes = SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES;
 	view->runtime_initialized = 1u;
-	view->ring_control_ready = 1u;
+	view->local_control_ready = 1u;
 	view->configured_kv_context_limit_tokens =
 		SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
 	view->configured_max_active_sequences = 1u;

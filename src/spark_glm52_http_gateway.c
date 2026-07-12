@@ -134,7 +134,7 @@ SparkStatus SparkGlm52HttpGatewayBuildDemoUi(
 SparkStatus SparkGlm52HttpGatewayBuildHealth(
 	SparkGlm52HttpGatewayResponse *response,
 	uint32_t runtime_initialized,
-	uint32_t ring_control_ready)
+	uint32_t local_control_ready)
 {
 	int32_t written;
 
@@ -144,12 +144,12 @@ SparkStatus SparkGlm52HttpGatewayBuildHealth(
 		response->body,
 		response->body_capacity,
 		"{\"schema\":\"sparkpipe.runtime_observation.v1\","
-		"\"runtime_initialized\":%u,\"ring_control_ready\":%u,"
+		"\"runtime_initialized\":%u,\"local_control_ready\":%u,"
 		"\"end_to_end_observation_status\":\"NOT_MEASURED\","
 		"\"accuracy_status\":\"NOT_MEASURED\","
 		"\"performance_status\":\"NOT_MEASURED\"}\n",
 		runtime_initialized != 0u ? 1u : 0u,
-		ring_control_ready != 0u ? 1u : 0u);
+		local_control_ready != 0u ? 1u : 0u);
 	if (written < 0)
 		return SPARK_STATUS_INTERNAL_ERROR;
 	if ((uint32_t)written >= response->body_capacity)
@@ -511,7 +511,7 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         "\"release_git_commit\":\"%s\","
         "\"release_generation\":%llu,"
         "\"runtime_initialized\":%u,"
-        "\"ring_control_ready\":%u,"
+        "\"local_control_ready\":%u,"
         "\"configured_kv_context_limit_tokens\":%u,"
         "\"configured_max_active_sequences\":%u,"
         "\"transport_shared_object\":\"%s\","
@@ -557,7 +557,7 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         escaped_commit,
         (unsigned long long)view->release_generation,
         view->runtime_initialized != 0u ? 1u : 0u,
-        view->ring_control_ready != 0u ? 1u : 0u,
+        view->local_control_ready != 0u ? 1u : 0u,
         view->configured_kv_context_limit_tokens,
         view->configured_max_active_sequences,
         escaped_transport,

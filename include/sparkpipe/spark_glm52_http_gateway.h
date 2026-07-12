@@ -73,7 +73,7 @@ SparkStatus SparkGlm52HttpGatewayBuildDemoUi(
 SparkStatus SparkGlm52HttpGatewayBuildHealth(
     SparkGlm52HttpGatewayResponse *response,
     uint32_t runtime_initialized,
-    uint32_t ring_control_ready);
+    uint32_t local_control_ready);
 
 SparkStatus SparkGlm52HttpGatewayBuildBackendUnavailable(
     SparkGlm52HttpGatewayResponse *response,

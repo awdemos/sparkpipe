@@ -2279,7 +2279,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendGetView(
 	view->abi_version = SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION;
 	view->descriptor_bytes = SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES;
 	view->runtime_initialized = state->initialized != 0u ? 1u : 0u;
-	view->ring_control_ready = state->service_runtime_ready != 0u &&
+	view->local_control_ready = state->service_runtime_ready != 0u &&
 		state->rank0_runtime_ready != 0u &&
 		state->first_blocker[0] == '\0' ? 1u : 0u;
 	view->configured_kv_context_limit_tokens =
