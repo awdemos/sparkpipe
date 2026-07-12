@@ -2658,10 +2658,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 			 SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP))
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (configuration->kv_logical_block_capacity != 0u &&
-		(configuration->kv_logical_block_capacity <
-			SPARK_GLM52_PP13_SERVICE_BACKEND_GPU_BLOCK_COUNT ||
-		 configuration->kv_logical_block_capacity >
-			UINT32_MAX - SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY))
+		configuration->kv_logical_block_capacity >
+			UINT32_MAX - SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (configuration->cuda_resident_socket_path != 0 &&
 		configuration->kv_logical_block_capacity == 0u)
