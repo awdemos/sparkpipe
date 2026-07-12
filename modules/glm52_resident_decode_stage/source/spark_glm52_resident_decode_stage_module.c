@@ -2385,12 +2385,14 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
             node_context->mla_cache_bf16,
             4u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->key_nope_cache_bf16,
-            4u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->value_cache_bf16,
-            4u) ||
+        (node_context->attention_execution_mode !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
+         (!SparkGlm52ResidentDecodeStagePointerIsAligned(
+              node_context->key_nope_cache_bf16,
+              4u) ||
+          !SparkGlm52ResidentDecodeStagePointerIsAligned(
+              node_context->value_cache_bf16,
+              4u))) ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
             node_context->attention_norm_weight_bf16,
             2u) ||
@@ -2509,7 +2511,9 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
             node_context,
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FP8_KV_CACHE) &&
-        !SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(node_context))
+        (node_context->attention_execution_mode ==
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT ||
+         !SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(node_context)))
     {
         SparkGlm52ResidentDecodeStageReportValidationFailure(
             node_context,

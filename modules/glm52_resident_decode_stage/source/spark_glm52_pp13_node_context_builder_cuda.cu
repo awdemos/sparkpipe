@@ -1358,10 +1358,8 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	SparkGlm52Pp13BuilderLayer *layer,
 	uint32_t layer_offset,
 	uint64_t cache_token_capacity,
-	uint32_t max_blocks_per_sequence,
-	uint32_t latent_cache_only)
+	uint32_t max_blocks_per_sequence)
 {
-	uint64_t attention_cache_row_capacity;
 	uint64_t b;
 	uint64_t kv_block_count;
 	uint64_t route_count;
@@ -1371,8 +1369,6 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	b = state->rank_plan.max_active_sequence_count;
 	kv_block_count = cache_token_capacity /
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
-	attention_cache_row_capacity =
-		b * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
 	route_count = b * SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K;
 	input_crosses_rank_boundary =
 		layer_offset == 0u &&
@@ -1439,22 +1435,12 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ALLOC_FIELD(context_lengths,b,uint32_t);
 	ALLOC_FIELD(first_block_token_offsets,b,uint32_t);
 	ALLOC_FIELD(mla_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
-	if (latent_cache_only == 0u)
-	{
-		ALLOC_FIELD(key_nope_cache,attention_cache_row_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION,uint16_t);
-		ALLOC_FIELD(value_cache,attention_cache_row_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,uint16_t);
-	}
 	ALLOC_FIELD(key_index_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 	ALLOC_FIELD(key_index_block_min,kv_block_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 	ALLOC_FIELD(key_index_block_max,kv_block_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 	ALLOC_FIELD(dsa_summary_dirty_flags,kv_block_count,uint8_t);
 	ZERO_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
 	ZERO_FIELD(mla_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
-	if (latent_cache_only == 0u)
-	{
-		ZERO_FIELD(key_nope_cache,attention_cache_row_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION,uint16_t);
-		ZERO_FIELD(value_cache,attention_cache_row_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION,uint16_t);
-	}
 	ZERO_FIELD(key_index_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 	ZERO_FIELD(key_index_block_min,kv_block_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 	ZERO_FIELD(key_index_block_max,kv_block_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
@@ -2265,7 +2251,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 	status = SparkGlm52Pp13BuilderAllocateLayerBuffers(
 		state,&state->mtp_layer,UINT32_MAX,
 		state->configuration.kv_pool_token_capacity,
-		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE,1u);
+		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderLoadLayerWeights(
 			state,&state->mtp_layer,SPARK_GLM52_MODEL_MTP_LAYER_INDEX);
@@ -2336,8 +2322,7 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 		layer,
 		layer_offset,
 		state->configuration.kv_pool_token_capacity,
-		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE,
-		0u);
+		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus("allocate_layer_buffers",layer_index,status);
 	if (status == SPARK_STATUS_OK)
