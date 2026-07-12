@@ -18065,8 +18065,14 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         node_context->sin_table,
         (uint16_t *)pipeline_slot->rotated_query_rope_bf16,
         (uint16_t *)node_context->mla_cache_bf16,
-        (uint16_t *)node_context->key_nope_cache_bf16,
-        (uint16_t *)node_context->value_cache_bf16,
+        node_context->attention_execution_mode ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT
+            ? 0
+            : (uint16_t *)node_context->key_nope_cache_bf16,
+        node_context->attention_execution_mode ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT
+            ? 0
+            : (uint16_t *)node_context->value_cache_bf16,
         active_sequence_count,
         node_context->position_count,
         node_context->cache_token_capacity);
