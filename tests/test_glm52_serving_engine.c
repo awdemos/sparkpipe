@@ -631,6 +631,12 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
     assert(stats.mtp_draft_token_count ==
         SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
     assert(stats.mtp_verify_dispatch_count == 1u);
+    assert(stats.mtp_draft_ready_count == 1u);
+    assert(stats.mtp_accepted_draft_token_count ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
+    assert(stats.mtp_committed_token_count ==
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
+    assert(stats.mtp_rejected_token_count == 0u);
 
     token_event_count = 0u;
     completion_event_count = 0u;

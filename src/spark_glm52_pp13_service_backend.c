@@ -2546,6 +2546,30 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingDecode(
 	return status;
 }
 
+static void SparkGlm52Pp13ServiceBackendTraceFinalEvent(
+	const SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52Pp13RuntimeFinalEvent *event,
+	const SparkGlm52Pp13ServiceBackendPendingDecode *pending)
+{
+	uint32_t token_index;
+
+	if (state == 0 || event == 0 || pending == 0 || state->trace_enabled == 0u)
+		return;
+	fprintf(stderr,
+		"pp13_trace final_event request=%llu sequence=%llu position=%llu kind=%u dispatch_flags=0x%x completion_flags=0x%x tokens=%u ids=",
+		(unsigned long long)event->request_id,
+		(unsigned long long)event->sequence_id,
+		(unsigned long long)event->sequence_position,
+		pending->dispatch.kind,
+		pending->dispatch.flags,
+		event->completion_flags,
+		event->token_count);
+	for (token_index = 0u; token_index < event->token_count; ++token_index)
+		fprintf(stderr,"%s%u",token_index == 0u ? "" : ",",
+			event->token_ids[token_index]);
+	fprintf(stderr," status=%u\n",event->status);
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 	SparkGlm52Pp13ServiceBackendState *state,
 	const SparkGlm52Pp13RuntimeFinalEvent *event)
@@ -2558,8 +2582,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 	if (state == 0 || event == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	SparkGlm52Pp13ServiceBackendRecordFinalEvent(state,event);
-	if (state->trace_enabled != 0u)
-		fprintf(stderr,"pp13_trace final_event request=%llu sequence=%llu position=%llu flags=0x%x tokens=%u id0=%u status=%u\n",(unsigned long long)event->request_id,(unsigned long long)event->sequence_id,(unsigned long long)event->sequence_position,event->completion_flags,event->token_count,event->token_count != 0u ? event->token_ids[0u] : 0u,event->status);
 	if (event->magic != SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_MAGIC ||
 		event->descriptor_bytes !=
 			SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_DESCRIPTOR_BYTES ||
@@ -2600,6 +2622,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 		token_count > SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE ||
 		token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
 		return SPARK_STATUS_VALIDATION_FAILED;
+	SparkGlm52Pp13ServiceBackendTraceFinalEvent(state,event,pending);
 	memcpy(
 		pending->result.token_ids[lane_index],
 		event->token_ids,

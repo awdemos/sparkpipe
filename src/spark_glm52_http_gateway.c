@@ -449,6 +449,12 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         "\"jit_prefetch_blocks\":%llu,"
         "\"async_jit_prefetch_starts\":%llu,"
         "\"async_jit_prefetch_completions\":%llu,"
+        "\"mtp_draft_tokens\":%llu,"
+        "\"mtp_verify_dispatches\":%llu,"
+        "\"mtp_draft_ready\":%llu,"
+        "\"mtp_accepted_draft_tokens\":%llu,"
+        "\"mtp_committed_tokens\":%llu,"
+        "\"mtp_rejected_tokens\":%llu,"
         "\"first_blocker\":\"%s\""
         "}\n",
         backend_ready != 0u ? 1u : 0u,
@@ -464,6 +470,12 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         (unsigned long long)stats_view->serving_stats.jit_prefetch_block_count,
         (unsigned long long)stats_view->serving_stats.async_jit_prefetch_start_count,
         (unsigned long long)stats_view->serving_stats.async_jit_prefetch_completion_count,
+        (unsigned long long)stats_view->serving_stats.mtp_draft_token_count,
+        (unsigned long long)stats_view->serving_stats.mtp_verify_dispatch_count,
+        (unsigned long long)stats_view->serving_stats.mtp_draft_ready_count,
+        (unsigned long long)stats_view->serving_stats.mtp_accepted_draft_token_count,
+        (unsigned long long)stats_view->serving_stats.mtp_committed_token_count,
+        (unsigned long long)stats_view->serving_stats.mtp_rejected_token_count,
         escaped_blocker);
     if (written < 0)
     {

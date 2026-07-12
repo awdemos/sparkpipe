@@ -333,6 +333,14 @@ static void SparkGlm52ServingRefreshStats(
         engine->request_api->prefix_family_member_count;
     stats->prefix_family_saved_prompt_token_count =
         engine->request_api->prefix_family_saved_prompt_token_count;
+    stats->mtp_draft_ready_count =
+        engine->request_api->mtp_draft_ready_count;
+    stats->mtp_accepted_draft_token_count =
+        engine->request_api->mtp_accepted_draft_token_count;
+    stats->mtp_committed_token_count =
+        engine->request_api->mtp_committed_token_count;
+    stats->mtp_rejected_token_count =
+        engine->request_api->mtp_rejected_token_count;
 }
 
 void SparkGlm52ServingInitializeSubmitTextRequest(
