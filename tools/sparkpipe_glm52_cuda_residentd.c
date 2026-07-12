@@ -53,6 +53,7 @@ typedef struct SparkGlm52CudaResidentdConfiguration
     uint32_t max_active_sequence_count;
     uint32_t port_base;
     uint32_t dspark_enabled;
+	uint32_t mtp_enabled;
     uint32_t dspark_maximum_context_token_count;
     uint64_t cuda_generation;
     uint64_t control_generation;
@@ -266,6 +267,11 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
         configuration->dspark_enabled = 1u;
         return 0;
     }
+	if (strcmp(argv[*index], "--mtp") == 0)
+	{
+		configuration->mtp_enabled = 1u;
+		return 0;
+	}
     if (strcmp(argv[*index], "--dspark-safetensors") == 0)
     {
         if ((*index + 1) >= argc)
@@ -584,6 +590,9 @@ static SparkStatus SparkGlm52CudaResidentdBuildNodeContext(
         builder_configuration.dspark_maximum_context_token_count =
             configuration->dspark_maximum_context_token_count;
     }
+	if (configuration->mtp_enabled != 0u)
+		builder_configuration.flags |=
+			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_MTP;
     builder_configuration.rank_plan = &runtime->rank_plan;
     status = SparkGlm52Pp13NodeContextBuilderLoadInterfaceFromSharedObject(
         configuration->node_context_builder_shared_object_path,
@@ -991,13 +1000,13 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitDecode(
     dispatch.kv_block_table_view = &kv_view;
     dispatch.decode_view = &runtime->ingest_decode_view;
     dispatch.input_token_ids[0u] = message->input_token_id;
-    dispatch.speculative_token_count = message->dspark_speculative_token_count;
-    dispatch.speculative_token_index = message->dspark_speculative_token_index;
+    dispatch.speculative_token_count = message->speculative_token_count;
+    dispatch.speculative_token_index = message->speculative_token_index;
     memcpy(
         dispatch.speculative_draft_token_ids[0u],
-        message->dspark_draft_token_ids,
+        message->speculative_draft_token_ids,
         sizeof(dispatch.speculative_draft_token_ids[0u]));
-    if (message->dspark_speculative_token_count != 0u)
+    if (message->speculative_token_count != 0u)
         dispatch.dispatch_kind =
             SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
     memset(&runtime->ingest_decode_result, 0, sizeof(runtime->ingest_decode_result));
@@ -1159,7 +1168,7 @@ static void SparkGlm52CudaResidentdPrintReady(
 static void SparkGlm52CudaResidentdUsage(const char *program)
 {
     fprintf(stderr,
-        "usage: %s --rank n --socket path --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--dspark --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--port-base n]\n",
+        "usage: %s --rank n --socket path --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--mtp] [--dspark --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--port-base n]\n",
         program);
 }
 

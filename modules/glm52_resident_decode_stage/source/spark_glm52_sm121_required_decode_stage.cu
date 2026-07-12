@@ -17403,6 +17403,98 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFullVocabGreedyFina
     return status;
 }
 
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFullVocabGreedy(
+    const void *hidden_bf16,
+    const void *norm_weight_bf16,
+    void *normalized_hidden_bf16,
+    const void *lm_head_weight_bf16,
+    const uint32_t *token_ids,
+    float *logits_f32,
+    uint32_t *selected_token_ids,
+    float *selected_token_scores,
+    void *workspace,
+    uint64_t workspace_bytes,
+    uint32_t active_sequence_count,
+    uint32_t maximum_active_sequence_count,
+    float rms_norm_epsilon,
+    void *cuda_stream)
+{
+    uint64_t candidate_count;
+    uint64_t required_workspace_bytes;
+    float *candidate_scores;
+    uint32_t *candidate_tokens;
+    dim3 candidate_grid;
+
+    candidate_count =
+        (uint64_t)maximum_active_sequence_count *
+        (uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT;
+    required_workspace_bytes = candidate_count *
+        ((uint64_t)sizeof(float) + (uint64_t)sizeof(uint32_t));
+    if (hidden_bf16 == 0 || norm_weight_bf16 == 0 ||
+        normalized_hidden_bf16 == 0 || lm_head_weight_bf16 == 0 ||
+        token_ids == 0 || selected_token_ids == 0 ||
+        selected_token_scores == 0 || workspace == 0 || cuda_stream == 0 ||
+        active_sequence_count == 0u || maximum_active_sequence_count == 0u ||
+        active_sequence_count > maximum_active_sequence_count ||
+        workspace_bytes < required_workspace_bytes ||
+        !isfinite(rms_norm_epsilon) || rms_norm_epsilon <= 0.0f)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    candidate_scores = (float *)workspace;
+    candidate_tokens = (uint32_t *)(candidate_scores + candidate_count);
+    SparkGlm52ResidentDecodeStageRmsNormKernel<<<
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        (cudaStream_t)cuda_stream>>>(
+        (const uint16_t *)hidden_bf16,
+        (const uint16_t *)norm_weight_bf16,
+        (uint16_t *)normalized_hidden_bf16,
+        active_sequence_count,
+        rms_norm_epsilon);
+    if (cudaGetLastError() != cudaSuccess)
+    {
+        return SPARK_STATUS_IO_ERROR;
+    }
+    candidate_grid = dim3(
+        active_sequence_count,
+        1u,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT);
+    SparkGlm52ResidentDecodeStageFusedFinalTokenCandidateKernel<<<
+        candidate_grid,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        (cudaStream_t)cuda_stream>>>(
+        (const uint16_t *)normalized_hidden_bf16,
+        (const uint16_t *)lm_head_weight_bf16,
+        0,
+        0,
+        0,
+        token_ids,
+        logits_f32,
+        candidate_scores,
+        candidate_tokens,
+        active_sequence_count);
+    if (cudaGetLastError() != cudaSuccess)
+    {
+        return SPARK_STATUS_IO_ERROR;
+    }
+    SparkGlm52ResidentDecodeStageFullVocabGreedyCommitKernel<<<
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        (cudaStream_t)cuda_stream>>>(
+        candidate_scores,
+        candidate_tokens,
+        selected_token_ids,
+        selected_token_scores,
+        active_sequence_count);
+    return cudaGetLastError() == cudaSuccess ?
+        SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
     const char *phase_name,
     SparkStatus status);
@@ -18301,11 +18393,15 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
     mtp_requested =
         SparkGlm52ResidentDecodeStageFrameContextHasMtpDraftBudgets(
             frame_context);
-    if (mtp_requested &&
-        SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
-            exact_stage_slice_plan))
+    if (mtp_requested)
     {
-        status = SparkGlm52ResidentDecodeStageLaunchBuiltInFusedFinalTokenEpilogue(
+        if (node_context->mtp_draft_plan == 0)
+        {
+            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+                "mtp_plan_missing",
+                SPARK_STATUS_MODULE_NOT_VALIDATED);
+        }
+        status = SparkGlm52ResidentDecodeStageLaunchBuiltInFullVocabGreedyFinalTokenEpilogue(
             exact_stage_slice_plan,
             node_context,
             pipeline_slot,
@@ -18315,7 +18411,19 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         if (status != SPARK_STATUS_OK)
         {
             return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
-                "built_in_final_epilogue",
+                "full_vocab_greedy_final_epilogue",
+                status);
+        }
+        status = SparkGlm52ResidentDecodeStageLaunchMtpDraft(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+                "mtp_draft",
                 status);
         }
     }
@@ -18333,48 +18441,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         {
             return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
                 "full_vocab_greedy_final_epilogue",
-                status);
-        }
-    }
-    else if (mtp_requested)
-    {
-        status = SparkGlm52ResidentDecodeStageLaunchRestrictedLogits(
-            node_context,
-            pipeline_slot,
-            cuda_slot_state,
-            cuda_stream,
-            active_sequence_count);
-        if (status != SPARK_STATUS_OK)
-        {
-            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
-                "restricted_logits",
-                status);
-        }
-
-        status = SparkGlm52ResidentDecodeStageLaunchMtpDraft(
-            node_context,
-            pipeline_slot,
-            cuda_slot_state,
-            cuda_stream,
-            active_sequence_count);
-        if (status != SPARK_STATUS_OK)
-        {
-            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
-                "mtp_draft",
-                status);
-        }
-
-        status = SparkGlm52ResidentDecodeStageLaunchFusedFinalTokenTail(
-            exact_stage_slice_plan,
-            node_context,
-            pipeline_slot,
-            cuda_slot_state,
-            cuda_stream,
-            active_sequence_count);
-        if (status != SPARK_STATUS_OK)
-        {
-            return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
-                "fused_final_token_tail",
                 status);
         }
     }
