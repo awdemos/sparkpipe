@@ -173,6 +173,23 @@ def test_rank_queue_does_not_overtake_a_deferred_sequence_position(
     assert function_body.index(predecessor) < function_body.index(submit)
 
 
+def test_short_context_bypasses_indexshare_for_exact_prefix_attention(
+        root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(")
+    end = source.index(
+        "static uint32_t SparkGlm52ResidentDecodeStageFp8AmaxProbeEnabled(",
+        start)
+    function_body = source[start:end]
+    prefix = "SparkGlm52ResidentDecodeStageLaunchContextPrefixSparseIndices("
+    shared = "SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED"
+    assert "pipeline_slot->dsa_candidate_count <=" in function_body
+    assert function_body.index(prefix) < function_body.index(shared)
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_final_stage_has_hidden_only_builtin_launcher(root)
@@ -187,6 +204,7 @@ def main() -> None:
     test_service_backend_namespaces_ids_per_live_session(root)
     test_final_event_pump_detects_disconnect_before_send(root)
     test_rank_queue_does_not_overtake_a_deferred_sequence_position(root)
+    test_short_context_bypasses_indexshare_for_exact_prefix_attention(root)
 
 
 if __name__ == "__main__":

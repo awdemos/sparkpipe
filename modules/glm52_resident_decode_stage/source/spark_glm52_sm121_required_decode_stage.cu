@@ -14425,6 +14425,34 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareScoreTile(
         cuda_stream);
 }
 
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchContextPrefixSparseIndices(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count)
+{
+    if (node_context == 0 || pipeline_slot == 0 ||
+        pipeline_slot->context_lengths == 0 ||
+        pipeline_slot->sparse_token_indices == 0 ||
+        active_sequence_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    SparkGlm52ResidentDecodeStageCopyContextPrefixSparseIndicesKernel<<<
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        pipeline_slot->context_lengths,
+        pipeline_slot->sparse_token_indices,
+        active_sequence_count);
+    return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        node_context,
+        cuda_slot_state,
+        cuda_stream);
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareSelect(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -14449,18 +14477,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaIndexShareSelect(
     }
     if (candidate_count <= selected_token_count)
     {
-        SparkGlm52ResidentDecodeStageCopyContextPrefixSparseIndicesKernel<<<
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            pipeline_slot->context_lengths,
-            pipeline_slot->sparse_token_indices,
-            active_sequence_count);
-        return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        return SparkGlm52ResidentDecodeStageLaunchContextPrefixSparseIndices(
             node_context,
+            pipeline_slot,
             cuda_slot_state,
-            cuda_stream);
+            cuda_stream,
+            active_sequence_count);
     }
     for (sequence_base = 0u; sequence_base < active_sequence_count;
          sequence_base += node_context->dsa_score_row_capacity)
@@ -14528,6 +14550,18 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
     {
         return SPARK_STATUS_OK;
     }
+    if (pipeline_slot->dsa_candidate_count != 0u &&
+        pipeline_slot->dsa_candidate_count <=
+            SparkGlm52ResidentDecodeStageDsaIndexShareSelectedTokenCount(
+                node_context))
+    {
+        return SparkGlm52ResidentDecodeStageLaunchContextPrefixSparseIndices(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count);
+    }
     if (node_context->sparse_index_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED)
     {
@@ -14566,18 +14600,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
     if (node_context->sparse_index_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_COPY_CONTEXT_PREFIX)
     {
-        SparkGlm52ResidentDecodeStageCopyContextPrefixSparseIndicesKernel<<<
-            active_sequence_count,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-            0u,
-            cuda_stream>>>(
-            pipeline_slot->context_lengths,
-            pipeline_slot->sparse_token_indices,
-            active_sequence_count);
-        return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+        return SparkGlm52ResidentDecodeStageLaunchContextPrefixSparseIndices(
             node_context,
+            pipeline_slot,
             cuda_slot_state,
-            cuda_stream);
+            cuda_stream,
+            active_sequence_count);
     }
     if (node_context->sparse_index_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL)
