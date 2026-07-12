@@ -28,8 +28,6 @@
 #define SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE \
 	(SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS)
 #define SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS 1024u
-#define SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS \
-	(SPARK_GLM52_KV_POOL_TOKENS / SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS)
 #define SPARK_GLM52_PP13_BUILDER_COPY_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 #define SPARK_GLM52_PP13_BUILDER_EXECUTION_LAYER_COUNT \
 	(SPARK_GLM52_PP13_BUILDER_LAYER_COUNT + 1u)
@@ -1562,8 +1560,9 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	node->pipeline_slot_count = SPARK_GLM52_PP13_BUILDER_PIPELINE_SLOT_COUNT;
 	node->max_active_sequence_count = state->rank_plan.max_active_sequence_count;
-	node->cache_token_capacity = SPARK_GLM52_KV_POOL_TOKENS;
-	node->kv_block_count = SPARK_GLM52_PP13_BUILDER_KV_POOL_BLOCKS;
+	node->cache_token_capacity = state->configuration.kv_pool_token_capacity;
+	node->kv_block_count = state->configuration.kv_pool_token_capacity /
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
 	node->max_blocks_per_sequence = SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
 	node->position_count = SPARK_GLM52_PP13_BUILDER_POSITION_COUNT;
 	node->dsa_candidate_capacity = SPARK_GLM52_KV_CONTEXT_TOKENS;
@@ -2208,7 +2207,7 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 		state,
 		layer,
 		layer_offset,
-		SPARK_GLM52_KV_POOL_TOKENS,
+		state->configuration.kv_pool_token_capacity,
 		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus("allocate_layer_buffers",layer_index,status);
@@ -2589,7 +2588,11 @@ static SparkStatus SparkGlm52Pp13BuilderValidateConfiguration(
 		configuration->stagepack_root == 0 ||
 		configuration->max_active_sequence_count == 0u ||
 		configuration->max_active_sequence_count >
-			SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
+			SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET ||
+		configuration->kv_pool_token_capacity == 0u ||
+		configuration->kv_pool_token_capacity > SPARK_GLM52_KV_POOL_TOKENS ||
+		(configuration->kv_pool_token_capacity %
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS) != 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((configuration->flags &
 			(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK |

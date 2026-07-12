@@ -103,6 +103,7 @@ python3 tools/sparkpipe_release_assemble.py \
     --release-id <release-id> \
     --git-commit <full-merged-sha> \
     --max-active 16 \
+    --kv-pool-tokens 65536 \
     --replace bin/sparkpipe_release_manager=build/sparkpipe_release_manager \
     --replace bin/sparkpipe_glm52_cuda_residentd=build/sparkpipe_glm52_cuda_residentd \
     --replace bin/sparkpipe_glm52_pp13_rank_daemon=build/sparkpipe_glm52_pp13_rank_daemon \
@@ -119,6 +120,10 @@ Validate before serving:
 <new-release>/bin/sparkpipe_release_manager validate \
     --manifest <new-release>/sparkpipe.json
 ```
+
+The 64K pool is the B1 correctness configuration when rank12 also owns native
+MTP weights. Increase it only after measuring resident memory headroom; it is
+not a B16 concurrency or long-context claim.
 
 ## Deploy The Ring
 

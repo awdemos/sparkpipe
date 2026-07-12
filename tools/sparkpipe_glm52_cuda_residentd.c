@@ -18,6 +18,7 @@
 
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_glm52_cuda_resident_ipc.h"
+#include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
 #include "sparkpipe/spark_glm52_prompt_pipeline.h"
@@ -51,6 +52,7 @@ typedef struct SparkGlm52CudaResidentdConfiguration
     uint32_t rank_index;
     uint32_t rank_is_set;
     uint32_t max_active_sequence_count;
+	uint32_t kv_pool_token_capacity;
     uint32_t port_base;
     uint32_t dspark_enabled;
 	uint32_t mtp_enabled;
@@ -105,6 +107,7 @@ static void SparkGlm52CudaResidentdInitializeConfiguration(
     configuration->program_name = SPARK_GLM52_CUDA_RESIDENTD_DEFAULT_PROGRAM;
     configuration->max_active_sequence_count =
         SPARK_GLM52_CUDA_RESIDENTD_DEFAULT_MAX_ACTIVE;
+	configuration->kv_pool_token_capacity = SPARK_GLM52_KV_POOL_TOKENS;
     configuration->port_base = SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE;
     configuration->dspark_maximum_context_token_count = 2048u;
 }
@@ -187,6 +190,15 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
         *index += 1;
         return 0;
     }
+	if (strcmp(argv[*index], "--kv-pool-tokens") == 0)
+	{
+		if ((*index + 1) >= argc ||
+			SparkGlm52CudaResidentdParseU32(argv[*index + 1], &parsed_u32) < 0)
+			return -17;
+		configuration->kv_pool_token_capacity = parsed_u32;
+		*index += 1;
+		return 0;
+	}
     if (strcmp(argv[*index], "--port-base") == 0)
     {
         if ((*index + 1) >= argc ||
@@ -319,7 +331,10 @@ static SparkStatus SparkGlm52CudaResidentdValidateConfiguration(
         configuration->transport_shared_object_path == 0 ||
         configuration->driver_path == 0 ||
         configuration->node_context_builder_shared_object_path == 0 ||
-        configuration->embedding_pack_path == 0)
+        configuration->embedding_pack_path == 0 ||
+		configuration->kv_pool_token_capacity == 0u ||
+		configuration->kv_pool_token_capacity > SPARK_GLM52_KV_POOL_TOKENS ||
+		(configuration->kv_pool_token_capacity % SPARK_GLM52_KV_BLOCK_TOKENS) != 0u)
         return SPARK_STATUS_INVALID_ARGUMENT;
     if (configuration->socket_path == 0)
     {
@@ -575,6 +590,8 @@ static SparkStatus SparkGlm52CudaResidentdBuildNodeContext(
     builder_configuration.rank_index = runtime->rank_plan.rank_index;
     builder_configuration.max_active_sequence_count =
         configuration->max_active_sequence_count;
+	builder_configuration.kv_pool_token_capacity =
+		configuration->kv_pool_token_capacity;
     builder_configuration.port_base = configuration->port_base;
     builder_configuration.fp8_pack_root = configuration->fp8_pack_root;
     builder_configuration.stagepack_root = configuration->stagepack_root;
@@ -1168,7 +1185,7 @@ static void SparkGlm52CudaResidentdPrintReady(
 static void SparkGlm52CudaResidentdUsage(const char *program)
 {
     fprintf(stderr,
-        "usage: %s --rank n --socket path --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--mtp] [--dspark --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--port-base n]\n",
+        "usage: %s --rank n --socket path --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--mtp] [--dspark --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--kv-pool-tokens n] [--port-base n]\n",
         program);
 }
 

@@ -27,6 +27,23 @@ def set_role_max_active(manifest,max_active):
                 arguments[index + 1] = str(max_active)
 
 
+def set_role_argument(manifest,role_name,argument,value):
+    matching_roles = [role for role in manifest["roles"] if role.get("name") == role_name]
+    if len(matching_roles) != 1:
+        raise SystemExit("release must contain exactly one role named " + role_name)
+    arguments = matching_roles[0].setdefault("argv",[])
+    matches = [index for index,item in enumerate(arguments) if item == argument]
+    if len(matches) > 1:
+        raise SystemExit("role argument occurs more than once: " + argument)
+    if matches:
+        index = matches[0]
+        if index + 1 >= len(arguments):
+            raise SystemExit("role argument is missing its value: " + argument)
+        arguments[index + 1] = str(value)
+    else:
+        arguments.extend([argument,str(value)])
+
+
 def write_manifest(root,manifest):
     for entry in manifest["files"]:
         path = os.path.join(root,entry["path"])
@@ -47,6 +64,7 @@ def main():
     parser.add_argument("--release-id",required=True)
     parser.add_argument("--git-commit",required=True)
     parser.add_argument("--max-active",type=int)
+    parser.add_argument("--kv-pool-tokens",type=int)
     parser.add_argument("--replace",action="append",default=[])
     arguments = parser.parse_args()
     temporary = arguments.output + ".assembling." + str(os.getpid())
@@ -71,6 +89,12 @@ def main():
         if arguments.max_active < 1 or arguments.max_active > 1024:
             raise SystemExit("max-active must be in 1..1024")
         set_role_max_active(manifest,arguments.max_active)
+    if arguments.kv_pool_tokens is not None:
+        if arguments.kv_pool_tokens < 1:
+            raise SystemExit("kv-pool-tokens must be positive")
+        set_role_argument(
+            manifest,"pp13_cuda_residentd","--kv-pool-tokens",
+            arguments.kv_pool_tokens)
     write_manifest(temporary,manifest)
     os.rename(temporary,arguments.output)
 
