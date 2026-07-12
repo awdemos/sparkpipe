@@ -65,6 +65,15 @@ uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
 		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_BYTES);
 }
 
+uint32_t SparkGlm52CudaResidentIpcCalculateSubmitPrefillBytes(
+	const SparkGlm52Pp13WorkControlPacket *work_packet)
+{
+	return SparkGlm52CudaResidentIpcCalculateWorkMessageBytes(
+		work_packet,
+		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_PREFILL_PREFIX_BYTES,
+		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_PREFILL_BYTES);
+}
+
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitDecodeBytes(
 	const SparkGlm52Pp13WorkControlPacket *work_packet)
 {

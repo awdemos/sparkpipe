@@ -85,8 +85,9 @@ typedef struct SparkGlm52CudaResidentdRuntime
     uint64_t ingest_prefill_count;
     uint64_t ingest_decode_count;
     uint32_t state;
-    uint32_t ingest_lane_block_count;
 	uint32_t ingest_lane_block_counts[
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t ingest_prefill_token_ids[
 		SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT];
 	uint32_t ingest_physical_block_indices[
 		SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT][
@@ -902,32 +903,6 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitWork(
     return status;
 }
 
-static SparkStatus SparkGlm52CudaResidentdBuildIngestKvView(
-    SparkGlm52CudaResidentdRuntime *runtime,
-    SparkGlm52KvBlockTableView *view,
-    const uint32_t *block_indices,
-    uint32_t block_count,
-    uint32_t block_token_count)
-{
-    if (block_count == 0u ||
-        block_count > SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS ||
-        block_token_count == 0u)
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    runtime->ingest_lane_block_count = block_count;
-    memset(view, 0, sizeof(*view));
-    view->abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
-    view->descriptor_bytes = SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
-    view->block_token_count = block_token_count;
-    view->lane_count = 1u;
-    view->lane_stride = block_count;
-    view->lane_capacity = 1u;
-    view->physical_block_indices = block_indices;
-    view->lane_physical_block_counts = &runtime->ingest_lane_block_count;
-    view->host_physical_block_indices = block_indices;
-    view->host_lane_physical_block_counts = &runtime->ingest_lane_block_count;
-    return SPARK_STATUS_OK;
-}
-
 static SparkStatus SparkGlm52CudaResidentdBuildDecodeKvView(
 	SparkGlm52CudaResidentdRuntime *runtime,
 	const SparkGlm52Pp13WorkControlPacket *packet,
@@ -972,45 +947,95 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(
     const SparkGlm52CudaResidentdConfiguration *configuration,
     const SparkGlm52CudaResidentIpcSubmitPrefill *message)
 {
+	const SparkGlm52Pp13WorkControlPacket *packet;
     SparkGlm52PromptPipelinePrefillDispatch dispatch;
     SparkGlm52KvBlockTableView kv_view;
+	uint32_t lane_index;
     SparkStatus status;
     if (message == 0 || message->descriptor_bytes !=
-        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_PREFILL_BYTES)
+        SparkGlm52CudaResidentIpcCalculateSubmitPrefillBytes(
+			&message->work_packet))
         return SPARK_STATUS_ABI_MISMATCH;
-    if (message->prompt_token_count == 0u ||
-        message->prompt_token_count >
-            SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS)
-    {
-        SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, SPARK_STATUS_INVALID_ARGUMENT, "ingest_prefill_tokens_invalid");
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    status = SparkGlm52CudaResidentdBuildIngestKvView(runtime, &kv_view, message->kv_physical_block_indices, message->kv_lane_block_count, message->kv_block_token_count);
+    packet = &message->work_packet;
+    status = SparkGlm52Pp13WorkControlValidatePacket(
+        packet,configuration->max_active_sequence_count,UINT32_MAX);
+	if (status == SPARK_STATUS_OK &&
+		((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) == 0u ||
+		 packet->new_token_count != 1u))
+		status = SPARK_STATUS_INVALID_ARGUMENT;
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52CudaResidentdBuildDecodeKvView(
+			runtime,packet,&kv_view);
     if (status != SPARK_STATUS_OK)
     {
-        SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, status, "ingest_prefill_kv_invalid");
+        SparkGlm52CudaResidentdWriteSubmitResult(
+			runtime,configuration,status,"ingest_prefill_packet_invalid");
         return status;
     }
     memset(&runtime->ingest_request_dispatch, 0, sizeof(runtime->ingest_request_dispatch));
-    runtime->ingest_request_dispatch.highest_priority = message->highest_priority;
+	runtime->ingest_request_dispatch.abi_version =
+		SPARK_GLM52_REQUEST_API_ABI_VERSION;
+	runtime->ingest_request_dispatch.descriptor_bytes =
+		SPARK_GLM52_REQUEST_API_DISPATCH_DESCRIPTOR_BYTES;
+	runtime->ingest_request_dispatch.kind =
+		packet->active_sequence_count > 1u ?
+			SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH :
+			SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL;
+	runtime->ingest_request_dispatch.request_count =
+		packet->active_sequence_count;
+	runtime->ingest_request_dispatch.highest_priority = packet->priority;
     runtime->ingest_request_dispatch.flags = message->request_flags;
-    runtime->ingest_request_dispatch.request_ids[0u] = message->request_id;
-    runtime->ingest_request_dispatch.sequence_ids[0u] = message->sequence_id;
     memset(&runtime->ingest_prefill_view, 0, sizeof(runtime->ingest_prefill_view));
-    runtime->ingest_prefill_view.descriptor_bytes = (uint32_t)sizeof(runtime->ingest_prefill_view);
-    runtime->ingest_prefill_view.active_sequence_count = 1u;
-    runtime->ingest_prefill_view.lane_count = 1u;
-    runtime->ingest_prefill_view.prompt_token_offset = message->prompt_token_offset;
-    runtime->ingest_prefill_view.prompt_token_count = message->prompt_token_count;
+	runtime->ingest_prefill_view.abi_version =
+		SPARK_GLM52_REQUEST_API_ABI_VERSION;
+	runtime->ingest_prefill_view.descriptor_bytes =
+		SPARK_GLM52_REQUEST_API_PREFILL_DISPATCH_VIEW_DESCRIPTOR_BYTES;
+	runtime->ingest_prefill_view.kind = runtime->ingest_request_dispatch.kind;
+	runtime->ingest_prefill_view.active_sequence_count =
+		packet->active_sequence_count;
+	runtime->ingest_prefill_view.lane_count = packet->active_sequence_count;
+	runtime->ingest_prefill_view.prompt_token_offset =
+		(uint32_t)packet->sequence_position;
+	runtime->ingest_prefill_view.prompt_token_count = 1u;
+	runtime->ingest_prefill_view.prompt_token_stride = 1u;
+	for (lane_index = 0u;
+		 lane_index < packet->active_sequence_count;
+		 ++lane_index)
+	{
+		const SparkGlm52Pp13WorkControlLane *lane;
+
+		lane = &packet->lanes[lane_index];
+		runtime->ingest_request_dispatch.request_ids[lane_index] =
+			lane->request_id;
+		runtime->ingest_request_dispatch.sequence_ids[lane_index] =
+			lane->sequence_id;
+		runtime->ingest_prefill_token_ids[lane_index] = lane->input_token_id;
+		runtime->ingest_prefill_view.lanes[lane_index].request_index =
+			lane_index;
+		runtime->ingest_prefill_view.lanes[lane_index].prompt_token_offset =
+			(uint32_t)lane->sequence_position;
+		runtime->ingest_prefill_view.lanes[lane_index].prompt_token_count = 1u;
+		runtime->ingest_prefill_view.lanes[lane_index].request_id =
+			lane->request_id;
+		runtime->ingest_prefill_view.lanes[lane_index].sequence_id =
+			lane->sequence_id;
+		runtime->ingest_prefill_view.lanes[lane_index].prompt_token_ids =
+			&runtime->ingest_prefill_token_ids[lane_index];
+	}
     memset(&dispatch, 0, sizeof(dispatch));
-    dispatch.descriptor_bytes = (uint32_t)sizeof(dispatch);
-    dispatch.active_sequence_count = 1u;
-    dispatch.lane_count = 1u;
-    dispatch.prompt_token_offset = message->prompt_token_offset;
-    dispatch.prompt_token_count = message->prompt_token_count;
+	dispatch.abi_version = SPARK_GLM52_PROMPT_PIPELINE_ABI_VERSION;
+	dispatch.descriptor_bytes =
+		SPARK_GLM52_PROMPT_PIPELINE_PREFILL_DISPATCH_DESCRIPTOR_BYTES;
+	dispatch.dispatch_kind = runtime->ingest_request_dispatch.kind;
+	dispatch.active_sequence_count = packet->active_sequence_count;
+	dispatch.lane_count = packet->active_sequence_count;
+	dispatch.prompt_token_offset = (uint32_t)packet->sequence_position;
+	dispatch.prompt_token_count = 1u;
+	dispatch.prompt_token_stride = 1u;
+	dispatch.host_token_stride = 1u;
     dispatch.request_dispatch = &runtime->ingest_request_dispatch;
     dispatch.prefill_view = &runtime->ingest_prefill_view;
-    dispatch.host_token_ids = message->prompt_token_ids;
+	dispatch.host_token_ids = runtime->ingest_prefill_token_ids;
     dispatch.kv_block_table_view = &kv_view;
     status = runtime->builder_library.builder_interface.prefill(runtime->builder_state, &dispatch, 0, 0);
     if (status == SPARK_STATUS_OK)

@@ -106,12 +106,18 @@ def test_serial_prefill_progresses_runner_after_each_token(root: Path) -> None:
                   encoding="utf-8")
     sync_call = "cudaStreamSynchronize(state->stream)"
     progress_call = "SparkGlm52ResidentDecodeStageProductionRunnerProgress("
-    start = source.index("static SparkStatus SparkGlm52Pp13BuilderPrefill(")
-    end = source.index("static SparkStatus SparkGlm52Pp13BuilderDecode(", start)
-    function_body = source[start:end]
-    assert sync_call in function_body
-    assert progress_call in function_body
-    assert function_body.index(progress_call, function_body.index(sync_call)) > function_body.index(sync_call)
+    runner_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderRunPrefillFrame(")
+    prefill_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderPrefill(", runner_start)
+    decode_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderDecode(", prefill_start)
+    runner_body = source[runner_start:prefill_start]
+    prefill_body = source[prefill_start:decode_start]
+    assert sync_call in runner_body
+    assert progress_call in runner_body
+    assert runner_body.index(progress_call, runner_body.index(sync_call)) > runner_body.index(sync_call)
+    assert "SparkGlm52Pp13BuilderRunPrefillFrame(" in prefill_body
 
 
 def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None:
