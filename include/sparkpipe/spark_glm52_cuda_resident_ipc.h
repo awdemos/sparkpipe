@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 3u
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 4u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAGIC 0x52445543u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS \
     (SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS)
@@ -163,10 +163,10 @@ typedef struct SparkGlm52CudaResidentIpcSubmitDecode
     uint32_t context_token_count;
 	uint32_t kv_block_token_count;
 	uint32_t kv_lane_block_count;
-	uint32_t dspark_speculative_token_count;
-	uint32_t dspark_speculative_token_index;
-	uint32_t dspark_draft_token_ids[
-		SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+	uint32_t speculative_token_count;
+	uint32_t speculative_token_index;
+	uint32_t speculative_draft_token_ids[
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT];
 	uint32_t kv_physical_block_indices[SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS];
 } SparkGlm52CudaResidentIpcSubmitDecode;
 

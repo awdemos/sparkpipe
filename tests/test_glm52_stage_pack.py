@@ -48,6 +48,9 @@ def main() -> int:
             "model.layers.18.input_layernorm.weight": ("BF16", [4], b"12345678"),
             "model.layers.18.self_attn.q_proj.weight": ("U8", [2, 2], b"QWER"),
             "model.layers.18.mlp.experts.0.gate_proj.weight": ("U8", [2, 2], b"DROP"),
+            "model.layers.78.enorm.weight": ("BF16", [4], b"MTPENORM"),
+            "model.layers.78.self_attn.indexer.k_norm.weight": ("BF16", [4], b"MTPINDEX"),
+            "model.layers.78.mlp.experts.0.gate_proj.weight": ("U8", [2, 2], b"SKIP"),
             "model.norm.weight": ("BF16", [4], b"abcdefgh"),
             "lm_head.weight": ("BF16", [8, 2], b"ABCDEFGHIJKLMNOP"),
         }
@@ -72,6 +75,7 @@ def main() -> int:
                 "model_quantization": "fp8",
                 "stages": "0,3,12",
                 "reuse": False,
+                "mtp_only": False,
             },
         )()
         result = module.build_stage_packs(args)
@@ -82,13 +86,54 @@ def main() -> int:
         assert "model.layers.18.input_layernorm.weight" in tensor_map
         assert "model.layers.18.self_attn.q_proj.weight" in tensor_map
         assert "model.layers.18.mlp.experts.0.gate_proj.weight" not in tensor_map
+        assert "model.layers.78.enorm.weight" in tensor_map
+        assert "model.layers.78.self_attn.indexer.k_norm.weight" not in tensor_map
+        assert "model.layers.78.mlp.experts.0.gate_proj.weight" not in tensor_map
+        assert module.MTP_EMBEDDING_ALIAS in tensor_map
         assert "model.norm.weight" in tensor_map
         assert "lm_head.weight" in tensor_map
         assert tensor_map["model.embed_tokens.weight"]["file"] == "stage_00_non_moe.spstage"
         assert tensor_map["model.layers.18.input_layernorm.weight"]["file"] == "stage_03_non_moe.spstage"
         assert tensor_map["lm_head.weight"]["file"] == "stage_12_non_moe.spstage"
+        assert tensor_map[module.MTP_EMBEDDING_ALIAS]["file"] == "stage_12_non_moe.spstage"
         for stage_file in ("stage_00_non_moe.spstage", "stage_03_non_moe.spstage", "stage_12_non_moe.spstage"):
             assert (output_dir / stage_file).stat().st_size > 0
+        supplement_dir = root / "supplement"
+        supplement_dir.mkdir()
+        (supplement_dir / "stage_12_non_moe.spstage").write_bytes(b"base")
+        (supplement_dir / module.INDEX_FILE).write_text(
+            json.dumps({
+                "format": module.FORMAT,
+                "model_quantization": "fp8",
+                "topology": "pp13_fixed6",
+                "stage_count": module.STAGE_COUNT,
+                "layers_per_stage": module.LAYERS_PER_STAGE,
+                "tensor_map": {},
+                "stages": {"12": {"file": "stage_12_non_moe.spstage"}},
+            }),
+            encoding="utf-8",
+        )
+        supplement_args = type(
+            "Args",
+            (),
+            {
+                "model_dir": model_dir,
+                "output_dir": supplement_dir,
+                "model_quantization": "fp8",
+                "stages": "12",
+                "reuse": False,
+                "mtp_only": True,
+            },
+        )()
+        module.build_stage_packs(supplement_args)
+        supplement_index = json.loads(
+            (supplement_dir / module.INDEX_FILE).read_text(encoding="utf-8"))
+        assert (supplement_dir / module.MTP_STAGE_FILE).stat().st_size > 0
+        assert supplement_index["supplements"]["mtp"]["layer"] == 78
+        assert supplement_index["tensor_map"]["model.layers.78.enorm.weight"][
+            "file"] == module.MTP_STAGE_FILE
+        assert supplement_index["tensor_map"][module.MTP_EMBEDDING_ALIAS][
+            "file"] == module.MTP_STAGE_FILE
     return 0
 
 

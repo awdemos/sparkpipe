@@ -114,19 +114,19 @@ def test_serial_prefill_progresses_runner_after_each_token(root: Path) -> None:
     assert function_body.index(progress_call, function_body.index(sync_call)) > function_body.index(sync_call)
 
 
-def test_dspark_verify_exposes_the_full_verifier_vector(root: Path) -> None:
+def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
     start = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderFinalizeDsparkVerify(")
+        "static SparkStatus SparkGlm52Pp13BuilderFinalizeSpeculativeVerify(")
     end = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderFinalizeDsparkCompletion(",
+        "static SparkStatus SparkGlm52Pp13BuilderFinalizeCapturedCompletion(",
         start)
     function_body = source[start:end]
-    assert ("state->dspark_verify_draft_count + 1u;" in
+    assert ("state->speculative_verify_draft_count + 1u;" in
             function_body)
-    assert ("state->dspark_verify_accepted_count + 1u;" not in
+    assert ("state->speculative_verify_accepted_count + 1u;" not in
             function_body)
 
 
@@ -140,7 +140,7 @@ def main() -> None:
     test_fp8_linear_plans_require_scaled_gemm_backend(root)
     test_pp13_builder_binds_all_fp8_linear_plans(root)
     test_serial_prefill_progresses_runner_after_each_token(root)
-    test_dspark_verify_exposes_the_full_verifier_vector(root)
+    test_speculative_verify_exposes_the_full_verifier_vector(root)
 
 
 if __name__ == "__main__":

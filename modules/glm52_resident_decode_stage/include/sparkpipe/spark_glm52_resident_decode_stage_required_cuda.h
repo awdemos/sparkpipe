@@ -561,6 +561,22 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaKeyIndexCacheStore(
     float epsilon,
     void *cuda_stream);
 
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFullVocabGreedy(
+    const void *hidden_bf16,
+    const void *norm_weight_bf16,
+    void *normalized_hidden_bf16,
+    const void *lm_head_weight_bf16,
+    const uint32_t *token_ids,
+    float *logits_f32,
+    uint32_t *selected_token_ids,
+    float *selected_token_scores,
+    void *workspace,
+    uint64_t workspace_bytes,
+    uint32_t active_sequence_count,
+    uint32_t maximum_active_sequence_count,
+    float rms_norm_epsilon,
+    void *cuda_stream);
+
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunch(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,

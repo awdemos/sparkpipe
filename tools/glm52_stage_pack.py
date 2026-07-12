@@ -22,11 +22,15 @@ from typing import Any, BinaryIO, Dict, Iterable, List, Mapping, Sequence, Tuple
 FORMAT = "sparkpipe.glm52.pp13.stagepack.v1"
 STAGE_COUNT = 13
 LAYER_COUNT = 78
+MTP_LAYER_INDEX = LAYER_COUNT
 LAYERS_PER_STAGE = 6
 INDEX_FILE = "stagepack_index.json"
 STAGE_FILE_TEMPLATE = "stage_{stage_index:02d}_non_moe.spstage"
+MTP_STAGE_FILE = "stage_12_mtp.spstage"
 REGION_ALIGNMENT = 4096
 LAYER_RE = re.compile(r"^model\.layers\.(\d+)\.")
+MTP_EMBEDDING_ALIAS = "sparkpipe.mtp.embed_tokens.weight"
+MTP_EMBEDDING_SOURCE = "model.embed_tokens.weight"
 
 
 class StagePackFailure(RuntimeError):
@@ -100,6 +104,8 @@ def tensor_stage(name: str) -> int | None:
     layer_match = LAYER_RE.match(name)
     if layer_match is not None:
         layer = int(layer_match.group(1), 10)
+        if layer == MTP_LAYER_INDEX:
+            return STAGE_COUNT - 1
         if layer < 0 or layer >= LAYER_COUNT:
             return None
         return layer // LAYERS_PER_STAGE
@@ -114,6 +120,13 @@ def is_moe_expert_tensor(name: str) -> bool:
     return ".mlp.experts." in name
 
 
+def is_unused_mtp_indexer_tensor(name: str) -> bool:
+    layer_match = LAYER_RE.match(name)
+    return (layer_match is not None and
+            int(layer_match.group(1), 10) == MTP_LAYER_INDEX and
+            ".self_attn.indexer." in name)
+
+
 def collect_stage_tensors(
     weight_map: Mapping[str, str],
     selected_stages: Iterable[int],
@@ -122,7 +135,7 @@ def collect_stage_tensors(
     stage_tensors: Dict[int, List[str]] = {stage: [] for stage in selected}
     shard_names: List[str] = []
     for name in sorted(weight_map.keys()):
-        if is_moe_expert_tensor(name):
+        if is_moe_expert_tensor(name) or is_unused_mtp_indexer_tensor(name):
             continue
         stage = tensor_stage(name)
         if stage is None or stage not in selected:
@@ -131,7 +144,35 @@ def collect_stage_tensors(
         shard = str(weight_map[name])
         if shard not in shard_names:
             shard_names.append(shard)
+    if STAGE_COUNT - 1 in selected:
+        stage_tensors[STAGE_COUNT - 1].append(MTP_EMBEDDING_ALIAS)
+        embedding_shard = str(weight_map[MTP_EMBEDDING_SOURCE])
+        if embedding_shard not in shard_names:
+            shard_names.append(embedding_shard)
     return stage_tensors, shard_names
+
+
+def collect_mtp_tensors(
+    weight_map: Mapping[str, str],
+) -> Tuple[Dict[int, List[str]], List[str]]:
+    stage_index = STAGE_COUNT - 1
+    tensor_names = sorted(
+        name
+        for name in weight_map
+        if tensor_stage(name) == stage_index
+        and LAYER_RE.match(name) is not None
+        and int(LAYER_RE.match(name).group(1), 10) == MTP_LAYER_INDEX
+        and not is_moe_expert_tensor(name)
+        and not is_unused_mtp_indexer_tensor(name)
+    )
+    tensor_names.append(MTP_EMBEDDING_ALIAS)
+    shard_names = []
+    for name in tensor_names:
+        source_name = MTP_EMBEDDING_SOURCE if name == MTP_EMBEDDING_ALIAS else name
+        shard_name = str(weight_map[source_name])
+        if shard_name not in shard_names:
+            shard_names.append(shard_name)
+    return {stage_index: tensor_names}, shard_names
 
 
 def copy_exact(file_in: BinaryIO, file_out: BinaryIO, byte_count: int) -> None:
@@ -191,8 +232,10 @@ def write_stage_pack(
     headers: Mapping[str, Mapping[str, Any]],
     payload_bases: Mapping[str, int],
     reuse: bool,
+    stage_file_name: str | None = None,
 ) -> Dict[str, Any]:
-    stage_file_name = STAGE_FILE_TEMPLATE.format(stage_index=stage_index)
+    if stage_file_name is None:
+        stage_file_name = STAGE_FILE_TEMPLATE.format(stage_index=stage_index)
     output_path = output_dir / stage_file_name
     stage_tensor_map: Dict[str, Dict[str, Any]] = {}
     if reuse and output_path.exists():
@@ -212,12 +255,17 @@ def write_stage_pack(
     ) as temp_file:
         temp_path = Path(temp_file.name)
         for name in tensor_names:
-            shard_name = str(weight_map[name])
+            source_name = (
+                MTP_EMBEDDING_SOURCE
+                if name == MTP_EMBEDDING_ALIAS
+                else name
+            )
+            shard_name = str(weight_map[source_name])
             header = headers[shard_name]
             aligned_offset = align_up(temp_file.tell(), REGION_ALIGNMENT)
             write_padding(temp_file, aligned_offset)
             record, tensor_start, tensor_bytes = tensor_record(
-                name,
+                source_name,
                 shard_name,
                 header,
                 aligned_offset,
@@ -264,9 +312,20 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
     output_dir = args.output_dir.resolve()
     selected_stages = parse_stages(args.stages)
     weight_map = load_weight_map(model_dir)
-    stage_tensors, shard_names = collect_stage_tensors(weight_map, selected_stages)
-    headers, payload_bases = load_source_headers(model_dir, shard_names)
+    mtp_only = bool(getattr(args, "mtp_only", False))
     index = load_existing_index(output_dir)
+    if mtp_only:
+        base_stage = index.get("stages", {}).get(str(STAGE_COUNT - 1), {})
+        if selected_stages != [STAGE_COUNT - 1]:
+            raise StagePackFailure("--mtp-only requires --stages 12")
+        if (index.get("format") != FORMAT or
+                base_stage.get("file") != STAGE_FILE_TEMPLATE.format(
+                    stage_index=STAGE_COUNT - 1)):
+            raise StagePackFailure("--mtp-only requires a stage-12 base index")
+        stage_tensors, shard_names = collect_mtp_tensors(weight_map)
+    else:
+        stage_tensors, shard_names = collect_stage_tensors(weight_map, selected_stages)
+    headers, payload_bases = load_source_headers(model_dir, shard_names)
     index["format"] = FORMAT
     index["model_quantization"] = args.model_quantization
     index["topology"] = "pp13_fixed6"
@@ -274,6 +333,12 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
     index["layers_per_stage"] = LAYERS_PER_STAGE
     index.setdefault("tensor_map", {})
     index.setdefault("stages", {})
+    if mtp_only:
+        index["tensor_map"] = {
+            name: record
+            for name, record in index["tensor_map"].items()
+            if record.get("file") != MTP_STAGE_FILE
+        }
     built: List[Dict[str, Any]] = []
     for stage_index in selected_stages:
         result = write_stage_pack(
@@ -285,6 +350,7 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
             headers,
             payload_bases,
             args.reuse,
+            MTP_STAGE_FILE if mtp_only else None,
         )
         if "tensor_map" not in result:
             missing = [
@@ -298,12 +364,19 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
                 )
         for name, record in result.get("tensor_map", {}).items():
             index["tensor_map"][name] = record
-        index["stages"][str(stage_index)] = {
-            "file": STAGE_FILE_TEMPLATE.format(stage_index=stage_index),
-            "first_layer": stage_index * LAYERS_PER_STAGE,
-            "layer_count": LAYERS_PER_STAGE,
-            "tensor_count": len(stage_tensors[stage_index]),
-        }
+        if mtp_only:
+            index.setdefault("supplements", {})["mtp"] = {
+                "file": MTP_STAGE_FILE,
+                "layer": MTP_LAYER_INDEX,
+                "tensor_count": len(stage_tensors[stage_index]),
+            }
+        else:
+            index["stages"][str(stage_index)] = {
+                "file": STAGE_FILE_TEMPLATE.format(stage_index=stage_index),
+                "first_layer": stage_index * LAYERS_PER_STAGE,
+                "layer_count": LAYERS_PER_STAGE,
+                "tensor_count": len(stage_tensors[stage_index]),
+            }
         summary = dict(result)
         summary.pop("tensor_map", None)
         built.append(summary)
@@ -324,6 +397,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--model-quantization", choices=("fp8", "nvfp4"), required=True)
     parser.add_argument("--stages", default="all")
     parser.add_argument("--reuse", action="store_true")
+    parser.add_argument("--mtp-only", action="store_true")
     args = parser.parse_args(argv)
     try:
         result = build_stage_packs(args)
