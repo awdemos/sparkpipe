@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 
 #include <atomic>
+#include <errno.h>
 #include <float.h>
 #include <limits.h>
 #include <math.h>
@@ -384,6 +385,8 @@ typedef struct SparkValidationExactPp13StageSliceRuntime
     cudaEvent_t kv_branch_event;
     void *final_epilogue_workspace;
     uint64_t final_epilogue_workspace_bytes;
+    uint16_t *full_lm_head_weight_bf16;
+    uint32_t *full_vocab_token_ids;
 } SparkValidationExactPp13StageSliceRuntime;
 
 typedef struct SparkValidationFp8ScaledGemmFixture
@@ -9112,6 +9115,101 @@ static bool SparkValidationAllocateExactFinalEpilogueWorkspace(
     return true;
 }
 
+static bool SparkValidationLoadExactFullVocabFinalEpilogue(
+    SparkValidationExactPp13StageSliceRuntime *runtime,
+    const char *model_directory)
+{
+    const uint64_t lm_head_shape[2] = {
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION};
+    uint32_t *token_ids;
+    uint64_t weight_bytes;
+    uint64_t copied_bytes;
+    uint32_t token_index;
+    bool succeeded;
+
+    weight_bytes =
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
+        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION *
+        sizeof(uint16_t);
+    copied_bytes = 0u;
+    token_ids = (uint32_t *)malloc(
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
+        sizeof(uint32_t));
+    if (runtime == 0 || model_directory == 0 || token_ids == 0)
+    {
+        free(token_ids);
+        return false;
+    }
+    for (token_index = 0u;
+         token_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT;
+         ++token_index)
+    {
+        token_ids[token_index] = token_index;
+    }
+    succeeded = SparkValidationAllocateZeroed(
+            (void **)&runtime->full_lm_head_weight_bf16,
+            weight_bytes,
+            "cudaMalloc exact_pp13_full_lm_head") &&
+        SparkValidationAllocateZeroed(
+            (void **)&runtime->full_vocab_token_ids,
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
+                sizeof(uint32_t),
+            "cudaMalloc exact_pp13_full_vocab_token_ids") &&
+        SparkValidationCopyBf16TensorToDevice(
+            model_directory,
+            "lm_head.weight",
+            lm_head_shape,
+            2u,
+            runtime->full_lm_head_weight_bf16,
+            &copied_bytes) &&
+        SparkValidationCopyToDevice(
+            runtime->full_vocab_token_ids,
+            token_ids,
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
+                sizeof(uint32_t),
+            "copy exact_pp13_full_vocab_token_ids");
+    free(token_ids);
+    if (!succeeded || copied_bytes != weight_bytes)
+        return false;
+    fprintf(stderr, "exact_pp13_full_vocab_fixture_ready=1 bytes=%llu tokens=%u\n", (unsigned long long)copied_bytes, SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT);
+    return true;
+}
+
+static bool SparkValidationCheckExpectedFullVocabToken(
+    SparkValidationRealLmHeadFixture *fixture,
+    uint32_t selected_token_id)
+{
+    const char *expected_text;
+    char *end;
+    unsigned long expected;
+
+    expected_text = getenv("GLM52_EXACT_PP13_EXPECTED_FULL_VOCAB_TOKEN");
+    fixture->expected_selected_token = UINT32_MAX;
+    if (expected_text == 0 || expected_text[0] == '\0')
+    {
+        fprintf(stderr, "exact_pp13_full_vocab_expected_token=not_set observed=%u\n", selected_token_id);
+        return true;
+    }
+    errno = 0;
+    end = 0;
+    expected = strtoul(expected_text, &end, 10);
+    if (errno != 0 || end == expected_text || *end != '\0' ||
+        expected >= SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT)
+    {
+        fprintf(stderr, "invalid GLM52_EXACT_PP13_EXPECTED_FULL_VOCAB_TOKEN=%s\n", expected_text);
+        return false;
+    }
+    fixture->expected_selected_token = (uint32_t)expected;
+    if (selected_token_id != fixture->expected_selected_token)
+    {
+        fprintf(stderr, "exact_pp13_full_vocab_token_mismatch observed=%u expected=%u\n", selected_token_id, fixture->expected_selected_token);
+        return false;
+    }
+    fprintf(stderr, "exact_pp13_full_vocab_token_match observed=%u expected=%u\n", selected_token_id, fixture->expected_selected_token);
+    return true;
+}
+
 static bool SparkValidationInitializeExactPp13StageSlicePlan(
     SparkValidationExactPp13StageSliceRuntime *runtime,
     uint32_t first_layer_index,
@@ -9494,10 +9592,16 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
             !SparkValidationLoadRealLmHeadFixture(
                 buffers,
                 model_directory,
-                &real_lm_head_fixture))
+                &real_lm_head_fixture) ||
+            !SparkValidationLoadExactFullVocabFinalEpilogue(
+                runtime,
+                model_directory))
         {
             return false;
         }
+        node_context->restricted_lm_head_weight_bf16 =
+            runtime->full_lm_head_weight_bf16;
+        node_context->restricted_token_ids = runtime->full_vocab_token_ids;
     }
     if (!SparkValidationBindRequiredLinearPlans(
             buffers,
@@ -9847,8 +9951,9 @@ static bool SparkValidationRunExactPp13StageSliceFromHidden(
             fprintf(stderr, "exact PP13 final stage requires real lm_head fixture\n");
             return false;
         }
-        if (!SparkValidationCheckRealRestrictedLogits(
-                last_buffers,
+        if (runtime->full_lm_head_weight_bf16 == 0 ||
+            runtime->full_vocab_token_ids == 0 ||
+            !SparkValidationCheckExpectedFullVocabToken(
                 real_lm_head,
                 selected_token_id))
         {
@@ -10302,6 +10407,15 @@ static bool SparkValidationRunExactPp13StageSequenceFromHidden(
             return false;
         }
         *selected_token_id_out = selected_token_id;
+        if (!SparkValidationCheckExpectedFullVocabToken(
+                real_lm_head,
+                selected_token_id))
+        {
+            free(host_hidden);
+            fclose(output_file);
+            fclose(input_file);
+            return false;
+        }
         fprintf(
             stderr,
             "exact_pp13_stage_sequence_final_evidence restricted_token=%u mtp_draft=%u mtp_reject=%u token_count=%u\n",

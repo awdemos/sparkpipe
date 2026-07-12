@@ -1906,6 +1906,20 @@ static uint32_t SparkGlm52Pp13DaemonFindQueuedWorkSlot(
     return SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT;
 }
 
+static uint32_t SparkGlm52Pp13DaemonHasQueuedPredecessor(
+    SparkGlm52Pp13DaemonRuntime *runtime,
+    const SparkGlm52Pp13WorkControlPacket *packet)
+{
+    SparkGlm52Pp13WorkControlPacket predecessor;
+
+    if (runtime == 0 || packet == 0 || packet->sequence_position == 0u)
+        return 0u;
+    predecessor = *packet;
+    predecessor.sequence_position -= 1u;
+    return SparkGlm52Pp13DaemonFindQueuedWorkSlot(runtime,&predecessor) !=
+        SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT;
+}
+
 static void SparkGlm52Pp13DaemonInsertQueuedWorkHash(
     SparkGlm52Pp13DaemonRuntime *runtime,
     uint32_t queue_slot)
@@ -2089,6 +2103,11 @@ static uint32_t SparkGlm52Pp13DaemonPumpQueuedWork(
     packet = &runtime->work_queue[queue_slot];
         if (runtime->work_queue_state[queue_slot] ==
             SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING)
+        {
+            SparkGlm52Pp13DaemonDeferWork(runtime);
+            continue;
+        }
+        if (SparkGlm52Pp13DaemonHasQueuedPredecessor(runtime,packet) != 0u)
         {
             SparkGlm52Pp13DaemonDeferWork(runtime);
             continue;
