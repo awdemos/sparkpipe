@@ -674,6 +674,58 @@ static __device__ __forceinline__ uint16_t SparkGlm52Pp13BuilderFloatToBf16(
 	return __bfloat16_as_ushort(__float2bfloat16_rn(value));
 }
 
+__global__ static void SparkGlm52Pp13BuilderTargetFinalNormKernel(
+	const uint16_t *__restrict__ input_bf16,
+	const uint16_t *__restrict__ norm_weight_bf16,
+	uint16_t *__restrict__ output_bf16,
+	uint32_t active_sequence_count,
+	float epsilon)
+{
+	__shared__ float sum[SPARK_GLM52_PP13_BUILDER_THREADS];
+	uint32_t lane_index;
+	uint32_t hidden_index;
+	uint32_t stride;
+	float local_sum;
+	float norm_inv;
+	float value;
+	lane_index = blockIdx.x;
+	if (lane_index >= active_sequence_count)
+		return;
+	local_sum = 0.0f;
+	for (hidden_index = threadIdx.x;
+		 hidden_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+		 hidden_index += blockDim.x)
+	{
+		value = SparkGlm52Pp13BuilderBf16ToFloat(input_bf16[
+			((uint64_t)lane_index *
+			 SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) + hidden_index]);
+		local_sum += value * value;
+	}
+	sum[threadIdx.x] = local_sum;
+	__syncthreads();
+	for (stride = blockDim.x >> 1u; stride != 0u; stride >>= 1u)
+	{
+		if (threadIdx.x < stride)
+			sum[threadIdx.x] += sum[threadIdx.x + stride];
+		__syncthreads();
+	}
+	norm_inv = rsqrtf(
+		(sum[0] / SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) + epsilon);
+	for (hidden_index = threadIdx.x;
+		 hidden_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+		 hidden_index += blockDim.x)
+	{
+		value = SparkGlm52Pp13BuilderBf16ToFloat(input_bf16[
+			((uint64_t)lane_index *
+			 SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) + hidden_index]);
+		value *= SparkGlm52Pp13BuilderBf16ToFloat(norm_weight_bf16[hidden_index]) *
+			norm_inv;
+		output_bf16[((uint64_t)lane_index *
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) + hidden_index] =
+			SparkGlm52Pp13BuilderFloatToBf16(value);
+	}
+}
+
 __global__ static void SparkGlm52Pp13BuilderMtpNormInvKernel(
 	const uint32_t *__restrict__ token_ids,
 	const uint32_t *__restrict__ positions,
@@ -3548,24 +3600,34 @@ static SparkStatus SparkGlm52Pp13BuilderStoreMtpPreviousTarget(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52Pp13WorkControlPacket *work_packet)
 {
+	SparkGlm52Pp13BuilderLayer *final_layer;
 	const void *hidden;
 	SparkStatus status;
 	if (state == 0 || work_packet == 0 || state->mtp_ready == 0u ||
 		!SparkGlm52Pp13BuilderIsFinalRank(state) ||
 		state->mtp_previous_target_hidden == 0)
 		return SPARK_STATUS_OK;
-	hidden = state->layers[state->rank_plan.layer_count - 1u].layer_output_hidden;
+	final_layer = &state->layers[state->rank_plan.layer_count - 1u];
+	if (final_layer->final_norm_weight == 0)
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	hidden = final_layer->layer_output_hidden;
 	state->host_decode_positions[0u] = (uint32_t)work_packet->sequence_position;
 	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
 		state->mtp_base_positions,state->host_decode_positions,
 		sizeof(uint32_t),cudaMemcpyHostToDevice,state->stream));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
-		state->mtp_previous_target_hidden,hidden,
-		(size_t)((uint64_t)work_packet->active_sequence_count *
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES),
-		cudaMemcpyDeviceToDevice,state->stream));
+	SparkGlm52Pp13BuilderTargetFinalNormKernel<<<
+		work_packet->active_sequence_count,
+		SPARK_GLM52_PP13_BUILDER_THREADS,
+		0u,
+		state->stream>>>(
+		(const uint16_t *)hidden,
+		(const uint16_t *)final_layer->final_norm_weight,
+		(uint16_t *)state->mtp_previous_target_hidden,
+		work_packet->active_sequence_count,
+		SPARK_GLM52_MODEL_RMS_NORM_EPSILON);
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
 	if (status != SPARK_STATUS_OK)
 		return status;
 	state->mtp_previous_request_id = work_packet->request_id;
