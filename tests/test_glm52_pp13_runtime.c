@@ -111,6 +111,14 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
     assert(SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
         &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
             SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13RuntimeBuildFp8PackPath(
+        pack_root,SPARK_GLM52_MODEL_MTP_LAYER_INDEX,
+        pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
+    assert(strcmp(pack_path,
+        "build/test_glm52_pp13_runtime_packs/glm52_layer_0078_fp8_moe.spfp8") == 0);
+    assert(SparkGlm52Pp13RuntimeBuildFp8PackPath(
+        pack_root,SPARK_GLM52_MODEL_WEIGHT_LAYER_COUNT,
+        pack_path,sizeof(pack_path)) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestGlm52Pp13RuntimeFinalEventRoute(void)

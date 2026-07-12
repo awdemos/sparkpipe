@@ -112,6 +112,11 @@ def render_c_header(contract: Dict[str, Any]) -> str:
     lines = ["#pragma once", "", "#include <stdint.h>", ""]
     for name, key in INTEGER_MACROS.items():
         lines.append(f"#define {name} {contract[key]}u")
+    lines.extend([
+        "#define SPARK_GLM52_MODEL_MTP_LAYER_INDEX SPARK_GLM52_MODEL_LAYER_COUNT",
+        "#define SPARK_GLM52_MODEL_WEIGHT_LAYER_COUNT \\",
+        "\t(SPARK_GLM52_MODEL_MTP_LAYER_INDEX + 1u)",
+    ])
     for name, key in FLOAT_MACROS.items():
         lines.append(f"#define {name} {render_float(contract[key])}")
     qk_head_dimension = (
