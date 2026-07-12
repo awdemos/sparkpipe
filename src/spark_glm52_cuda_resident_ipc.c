@@ -39,3 +39,37 @@ SparkStatus SparkGlm52CudaResidentIpcValidateHeader(
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     return SPARK_STATUS_OK;
 }
+
+static uint32_t SparkGlm52CudaResidentIpcCalculateWorkMessageBytes(
+	const SparkGlm52Pp13WorkControlPacket *work_packet,
+	uint32_t prefix_bytes,
+	uint32_t maximum_bytes)
+{
+	uint64_t message_bytes;
+
+	if (work_packet == 0 ||
+		work_packet->descriptor_bytes <
+			SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES ||
+		work_packet->descriptor_bytes > SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES)
+		return 0u;
+	message_bytes = (uint64_t)prefix_bytes + work_packet->descriptor_bytes;
+	return message_bytes <= maximum_bytes ? (uint32_t)message_bytes : 0u;
+}
+
+uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
+	const SparkGlm52Pp13WorkControlPacket *work_packet)
+{
+	return SparkGlm52CudaResidentIpcCalculateWorkMessageBytes(
+		work_packet,
+		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_PREFIX_BYTES,
+		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_BYTES);
+}
+
+uint32_t SparkGlm52CudaResidentIpcCalculateSubmitDecodeBytes(
+	const SparkGlm52Pp13WorkControlPacket *work_packet)
+{
+	return SparkGlm52CudaResidentIpcCalculateWorkMessageBytes(
+		work_packet,
+		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_PREFIX_BYTES,
+		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_BYTES);
+}

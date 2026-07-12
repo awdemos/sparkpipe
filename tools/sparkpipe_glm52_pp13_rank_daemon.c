@@ -27,7 +27,8 @@
 
 #define SPARK_GLM52_PP13_DAEMON_DEFAULT_MAX_ACTIVE 1024u
 #define SPARK_GLM52_PP13_DAEMON_DEFAULT_PROGRAM "glm52.pp13.rank.production"
-#define SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY 2048u
+#define SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY \
+    (SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS * 2u)
 #define SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_HASH_SLOTS 4096u
 #define SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_QUEUE_CAPACITY 2048u
 #define SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT UINT32_MAX
@@ -1702,7 +1703,7 @@ static SparkStatus SparkGlm52Pp13DaemonForwardWork(
     status = SparkGlm52Pp13DaemonWriteBuffered(
             runtime->work_output_socket_fd,
             packet,
-            sizeof(*packet),
+            packet->descriptor_bytes,
             &runtime->work_output_write_offset);
     if (status == SPARK_STATUS_BUSY)
         return status;
@@ -1780,6 +1781,7 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
 {
     SparkGlm52CudaResidentIpcSubmitWork submit_message;
     SparkStatus status;
+	uint32_t message_bytes;
     uint64_t trace_begin_ns;
 
     if (runtime == 0 || packet == 0)
@@ -1791,14 +1793,17 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
         if (status != SPARK_STATUS_OK)
             return status;
         memset(&submit_message,0,sizeof(submit_message));
-        submit_message.descriptor_bytes =
-            SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_BYTES;
         submit_message.work_packet = *packet;
+		message_bytes = SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
+			&submit_message.work_packet);
+		if (message_bytes == 0u)
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		submit_message.descriptor_bytes = message_bytes;
         status = SparkGlm52Pp13DaemonWriteResidentMessage(
             runtime,
             SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_WORK,
             &submit_message,
-            sizeof(submit_message));
+			message_bytes);
         if (status != SPARK_STATUS_OK)
         {
             SparkGlm52Pp13DaemonTeardownCudaResident(runtime,"submit_write");
@@ -2126,20 +2131,23 @@ static uint32_t SparkGlm52Pp13DaemonPumpQueuedWork(
         }
         if (runtime->work_queue_submitted[queue_slot] == 0u)
         {
+			if (runtime->driver_inflight_count == 0u)
+			{
+				runtime->driver_inflight_open_ns =
+					SparkGlm52Pp13DaemonMonotonicNs();
+				runtime->driver_inflight_warned = 0u;
+			}
+			runtime->driver_inflight_count += 1u;
             status = SparkGlm52Pp13DaemonSubmitWork(runtime,packet);
             if (status == SPARK_STATUS_OK)
             {
                 runtime->work_submit_count += 1u;
                 runtime->work_queue_submitted[queue_slot] = 1u;
-                if (runtime->driver_inflight_count == 0u)
-                {
-                    runtime->driver_inflight_open_ns = SparkGlm52Pp13DaemonMonotonicNs();
-                    runtime->driver_inflight_warned = 0u;
-                }
-                runtime->driver_inflight_count += 1u;
             }
             else if (status == SPARK_STATUS_BUSY)
             {
+				if (runtime->driver_inflight_count != 0u)
+					runtime->driver_inflight_count -= 1u;
                 runtime->work_queue_state[queue_slot] =
                     SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING;
                 runtime->work_deferred_count += 1u;
@@ -2148,6 +2156,8 @@ static uint32_t SparkGlm52Pp13DaemonPumpQueuedWork(
             }
             else
             {
+				if (runtime->driver_inflight_count != 0u)
+					runtime->driver_inflight_count -= 1u;
                 runtime->work_error_count += 1u;
                 fprintf(stderr,
                     "rank_work_submit_failed status=%u request=%llu sequence=%llu position=%llu queued=%u\n",
@@ -2200,6 +2210,7 @@ static uint32_t SparkGlm52Pp13DaemonPumpWorkControl(
 {
     SparkGlm52Pp13WorkControlPacket *packet;
     ssize_t got;
+	uint32_t expected_bytes;
     uint32_t remaining;
     uint32_t progress;
 
@@ -2208,8 +2219,24 @@ static uint32_t SparkGlm52Pp13DaemonPumpWorkControl(
         return progress;
     for (;;)
     {
-        remaining = ((uint32_t)sizeof(runtime->work_read_buffer) -
-            runtime->work_read_offset);
+		packet = (SparkGlm52Pp13WorkControlPacket *)runtime->work_read_buffer;
+		expected_bytes = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES;
+		if (runtime->work_read_offset >=
+			(uint32_t)offsetof(SparkGlm52Pp13WorkControlPacket,flags))
+		{
+			expected_bytes = packet->descriptor_bytes;
+			if (expected_bytes <
+					SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES ||
+				expected_bytes > SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES)
+			{
+				runtime->work_error_count += 1u;
+				close(runtime->work_input_socket_fd);
+				runtime->work_input_socket_fd = -1;
+				runtime->work_read_offset = 0u;
+				return 1u;
+			}
+		}
+		remaining = expected_bytes - runtime->work_read_offset;
         got = read(
             runtime->work_input_socket_fd,
             runtime->work_read_buffer + runtime->work_read_offset,
@@ -2229,9 +2256,8 @@ static uint32_t SparkGlm52Pp13DaemonPumpWorkControl(
         }
         progress = 1u;
         runtime->work_read_offset += (uint32_t)got;
-        if (runtime->work_read_offset < sizeof(*packet))
+		if (runtime->work_read_offset < expected_bytes)
             return progress;
-        packet = (SparkGlm52Pp13WorkControlPacket *)runtime->work_read_buffer;
         SparkGlm52Pp13DaemonHandleWork(runtime,packet);
         runtime->work_read_offset = 0u;
     }
@@ -2742,7 +2768,7 @@ static void SparkGlm52Pp13DaemonPrintReady(
 int main(int argc,char **argv)
 {
     SparkGlm52Pp13DaemonConfig configuration;
-    SparkGlm52Pp13DaemonRuntime runtime;
+    static SparkGlm52Pp13DaemonRuntime runtime;
     char error_buffer[512];
     SparkStatus status;
     uint32_t event_mask;

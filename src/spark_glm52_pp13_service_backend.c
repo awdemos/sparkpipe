@@ -48,7 +48,8 @@
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY 128u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE 0u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE 1u
-#define SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY 4096u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY \
+	(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS * 2u)
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY 128u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_PATH_BYTES 4096u
 
@@ -429,14 +430,16 @@ static SparkStatus SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(SparkGl
 
 static SparkStatus SparkGlm52Pp13ServiceBackendMarshalIngestKv(const SparkGlm52KvBlockTableView *view, uint32_t *out_indices, uint32_t *out_count, uint32_t *out_block_tokens)
 {
+	const uint32_t *source_counts;
 	const uint32_t *source_blocks;
 	uint32_t block_count;
-	if (view == 0 || view->lane_physical_block_counts == 0 || view->lane_count != 1u)
+	if (view == 0 || view->lane_count != 1u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	source_counts = view->host_lane_physical_block_counts != 0 ? view->host_lane_physical_block_counts : view->lane_physical_block_counts;
 	source_blocks = view->host_physical_block_indices != 0 ? view->host_physical_block_indices : view->physical_block_indices;
-	if (source_blocks == 0)
+	if (source_counts == 0 || source_blocks == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	block_count = view->lane_physical_block_counts[0u];
+	block_count = source_counts[0u];
 	if (block_count == 0u || block_count > SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	memcpy(out_indices,source_blocks,(size_t)block_count * sizeof(uint32_t));
@@ -486,14 +489,13 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitDecodeFrameToResident(
 	uint32_t speculative_token_index)
 {
 	static SparkGlm52CudaResidentIpcSubmitDecode message;
-	const SparkGlm52RequestApiDecodeDispatchLaneView *lane;
+	uint32_t message_bytes;
 	SparkStatus status;
 	if (state == 0 || decode_dispatch == 0 ||
 		decode_dispatch->request_dispatch == 0 ||
 		decode_dispatch->decode_view == 0 ||
-		decode_dispatch->decode_view->lane_count != 1u)
+		decode_dispatch->decode_view->lane_count == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	lane = &decode_dispatch->decode_view->lanes[0u];
 	if ((decode_dispatch->dispatch_kind ==
 				SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
 		 speculative_token_index != 0u) ||
@@ -503,38 +505,24 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitDecodeFrameToResident(
 		  speculative_token_index > decode_dispatch->speculative_token_count)))
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	memset(&message,0,sizeof(message));
-	message.descriptor_bytes = SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_BYTES;
-	message.highest_priority = decode_dispatch->request_dispatch->highest_priority;
-	message.request_id = decode_dispatch->request_dispatch->request_ids[0u];
-	message.sequence_id = decode_dispatch->request_dispatch->sequence_ids[0u];
 	message.request_flags = decode_dispatch->request_dispatch->flags;
-	message.mtp_draft_token_budget = decode_dispatch->dispatch_kind ==
-		SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ?
-		decode_dispatch->request_dispatch->mtp_draft_token_budget : 0u;
-	message.input_token_id = speculative_token_index == 0u ?
-		decode_dispatch->input_token_ids[0u] :
-		decode_dispatch->speculative_draft_token_ids[0u][
-			speculative_token_index - 1u];
-	message.sequence_position = lane->sequence_position + speculative_token_index;
-	message.context_token_count = lane->context_token_count + speculative_token_index;
-	if (decode_dispatch->dispatch_kind ==
-		SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
-	{
-		message.speculative_token_count =
-			decode_dispatch->speculative_token_count;
-		message.speculative_token_index = speculative_token_index;
-		memcpy(
-			message.speculative_draft_token_ids,
-			decode_dispatch->speculative_draft_token_ids[0u],
-			sizeof(message.speculative_draft_token_ids));
-	}
-	status = SparkGlm52Pp13ServiceBackendMarshalIngestKv(decode_dispatch->kv_block_table_view,message.kv_physical_block_indices,&message.kv_lane_block_count,&message.kv_block_token_count);
+	status = SparkGlm52Pp13WorkControlBuildDecodePacket(
+		decode_dispatch,speculative_token_index,&message.work_packet);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	message_bytes = SparkGlm52CudaResidentIpcCalculateSubmitDecodeBytes(
+		&message.work_packet);
+	if (message_bytes == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	message.descriptor_bytes = message_bytes;
 	status = SparkGlm52Pp13ServiceBackendEnsureCudaResident(state);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(state,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_DECODE,&message,sizeof(message));
+	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(
+		state,
+		SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_DECODE,
+		&message,
+		message_bytes);
 	if (status != SPARK_STATUS_OK)
 	{
 		SparkGlm52Pp13ServiceBackendTeardownCudaResident(state,"submit_write");
@@ -969,7 +957,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendFlushWorkOutput(
 	while (state->work_queue_count != 0u)
 	{
 		packet = &state->work_queue[state->work_queue_head];
-		remaining = ((uint32_t)sizeof(*packet)) -
+		remaining = packet->descriptor_bytes -
 			state->work_queue_write_offset;
 		written = write(
 			state->work_output_socket_fd,
@@ -993,7 +981,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendFlushWorkOutput(
 		if (written == 0)
 			return SPARK_STATUS_BUSY;
 		state->work_queue_write_offset += (uint32_t)written;
-		if (state->work_queue_write_offset != (uint32_t)sizeof(*packet))
+		if (state->work_queue_write_offset != packet->descriptor_bytes)
 			continue;
 		state->work_queue_write_offset = 0u;
 		state->work_queue_head =
@@ -1009,87 +997,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 	uint32_t speculative_token_index,
 	SparkGlm52Pp13WorkControlPacket *packet)
 {
-	const SparkGlm52RequestApiDecodeDispatchLaneView *lane;
-	uint32_t dspark_verify;
-	uint32_t mtp_verify;
-	uint32_t speculative_verify;
-	uint32_t mtp_budget;
-	if (decode_dispatch == 0 || packet == 0 ||
-		decode_dispatch->request_dispatch == 0 ||
-		decode_dispatch->decode_view == 0 ||
-		decode_dispatch->request_count != 1u ||
-		decode_dispatch->active_sequence_count != 1u ||
-		decode_dispatch->decode_view->lane_count != 1u ||
-		(decode_dispatch->dispatch_kind !=
-				SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
-		 decode_dispatch->dispatch_kind !=
-				SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH))
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	lane = &decode_dispatch->decode_view->lanes[0u];
-	dspark_verify = (decode_dispatch->request_dispatch->flags &
-		SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u;
-	mtp_verify = (decode_dispatch->request_dispatch->flags &
-		SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u;
-	speculative_verify = dspark_verify | mtp_verify;
-	if ((decode_dispatch->dispatch_kind ==
-			SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
-		 speculative_verify == 0u) ||
-		(dspark_verify != 0u && mtp_verify != 0u) ||
-		(speculative_verify == 0u && speculative_token_index != 0u) ||
-		(speculative_verify != 0u &&
-		 (decode_dispatch->speculative_token_count == 0u ||
-		  decode_dispatch->speculative_token_count >
-			SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT ||
-		  speculative_token_index > decode_dispatch->speculative_token_count)))
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	mtp_budget = 0u;
-	if (speculative_verify == 0u &&
-		(decode_dispatch->request_dispatch->flags &
-			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u)
-		mtp_budget = decode_dispatch->request_dispatch->mtp_draft_token_budget;
-	memset(packet,0,sizeof(*packet));
-	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
-	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
-	packet->descriptor_bytes = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES;
-	packet->flags =
-		mtp_budget != 0u ? SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT : 0u;
-	if ((decode_dispatch->request_dispatch->flags &
-			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u)
-		packet->flags |=
-			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE;
-	if (dspark_verify != 0u)
-		packet->flags |=
-			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY;
-	if (mtp_verify != 0u)
-		packet->flags |=
-			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY;
-	packet->request_id = decode_dispatch->request_dispatch->request_ids[0u];
-	packet->sequence_id = decode_dispatch->request_dispatch->sequence_ids[0u];
-	packet->sequence_position = lane->sequence_position + speculative_token_index;
-	packet->active_sequence_count = 1u;
-	packet->new_token_count = speculative_verify != 0u ? 1u : mtp_budget + 1u;
-	packet->priority = decode_dispatch->request_dispatch->highest_priority;
-	packet->block_token_count = SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_TOKENS;
-	packet->kv_block_table_token_count =
-		lane->context_token_count + speculative_token_index;
-	packet->max_blocks_per_sequence =
-		SPARK_GLM52_PP13_SERVICE_BACKEND_MAX_BLOCKS_PER_SEQUENCE;
-	packet->mtp_draft_token_count = mtp_budget;
-	packet->input_token_id = speculative_token_index == 0u ?
-		decode_dispatch->input_token_ids[0u] :
-		decode_dispatch->speculative_draft_token_ids[0u][
-			speculative_token_index - 1u];
-	if (speculative_verify != 0u)
-	{
-		packet->speculative_token_count =
-			decode_dispatch->speculative_token_count;
-		packet->speculative_token_index = speculative_token_index;
-		memcpy(
-			packet->speculative_draft_token_ids,
-			decode_dispatch->speculative_draft_token_ids[0u],
-			sizeof(packet->speculative_draft_token_ids));
-	}
-	return SPARK_STATUS_OK;
+	return SparkGlm52Pp13WorkControlBuildDecodePacket(
+		decode_dispatch,speculative_token_index,packet);
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendBuildPrefillWorkPacket(
@@ -1097,38 +1006,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildPrefillWorkPacket(
 	uint32_t token_offset,
 	SparkGlm52Pp13WorkControlPacket *packet)
 {
-	uint32_t position;
-	if (prefill_dispatch == 0 || packet == 0 ||
-		prefill_dispatch->request_dispatch == 0 ||
-		prefill_dispatch->prefill_view == 0 ||
-		prefill_dispatch->kv_block_table_view == 0 ||
-		prefill_dispatch->lane_count != 1u ||
-		prefill_dispatch->active_sequence_count != 1u ||
-		prefill_dispatch->prefill_view->lane_count != 1u ||
-		token_offset >= prefill_dispatch->prompt_token_count)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	position = prefill_dispatch->prompt_token_offset + token_offset;
-	memset(packet,0,sizeof(*packet));
-	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
-	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
-	packet->descriptor_bytes = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES;
-	packet->flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL;
-	if ((prefill_dispatch->request_dispatch->flags &
-			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u)
-		packet->flags |=
-			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE;
-	packet->request_id = prefill_dispatch->request_dispatch->request_ids[0u];
-	packet->sequence_id = prefill_dispatch->request_dispatch->sequence_ids[0u];
-	packet->sequence_position = position;
-	packet->active_sequence_count = 1u;
-	packet->new_token_count = 1u;
-	packet->priority = prefill_dispatch->request_dispatch->highest_priority;
-	packet->block_token_count = SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_TOKENS;
-	packet->kv_block_table_token_count = position + 1u;
-	packet->max_blocks_per_sequence =
-		SPARK_GLM52_PP13_SERVICE_BACKEND_MAX_BLOCKS_PER_SEQUENCE;
-	packet->input_token_id = prefill_dispatch->host_token_ids[token_offset];
-	return SPARK_STATUS_OK;
+	return SparkGlm52Pp13WorkControlBuildPrefillPacket(
+		prefill_dispatch,token_offset,packet);
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendEnsureWorkOutputSocket(
@@ -1269,7 +1148,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 		memset(decode_result,0,sizeof(*decode_result));
 		decode_result->abi_version = SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
 		decode_result->descriptor_bytes = SPARK_GLM52_SERVING_DECODE_RESULT_DESCRIPTOR_BYTES;
-		decode_result->lane_count = 1u;
+		decode_result->lane_count = decode_dispatch->active_sequence_count;
 		decode_result->token_stride = SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE;
 		pending = 0;
 		status = SparkGlm52Pp13ServiceBackendRegisterPendingDecode(
@@ -1612,7 +1491,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRequestApi(
 	request_api_configuration.configuration_flags =
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING |
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING |
-		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING |
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION;
 	if (state->mtp_enabled != 0u)
 		request_api_configuration.configuration_flags |=
