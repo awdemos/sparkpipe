@@ -68,13 +68,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
     }
     if (token_count > 1u)
     {
-        if (pipeline_slot->mtp_committed_token_ids == 0)
+        if (pipeline_slot->mtp_draft_token_ids == 0)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         cuda_status = cudaMemcpyAsync(
             &completion->token_ids[1u],
-            pipeline_slot->mtp_committed_token_ids,
+            pipeline_slot->mtp_draft_token_ids,
             (size_t)(token_count - 1u) * sizeof(uint32_t),
             cudaMemcpyDeviceToHost,
             cuda_stream);
