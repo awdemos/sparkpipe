@@ -3363,6 +3363,49 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
         &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkTestGlm52ResidentDecodeStageAbsorbedLatentCacheValidation(void)
+{
+    SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[2];
+    SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
+    SparkGlm52ResidentDecodeStageNodeContext node_context;
+    SparkFirmwareModuleConfiguration configuration;
+    SparkFirmwareModuleHostServices host_services;
+    SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
+    void *module_state;
+
+    SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
+        &node_context,
+        pipeline_slots,
+        fake_streams);
+    node_context.attention_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+    node_context.key_nope_cache_bf16 = 0;
+    node_context.value_cache_bf16 = 0;
+    memset(&completion_state, 0, sizeof(completion_state));
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    memset(&host_services, 0, sizeof(host_services));
+    host_services.completion_function =
+        SparkGlm52ResidentDecodeStageTestCompletion;
+    host_services.completion_context = &completion_state;
+    host_services.node_context = &node_context;
+
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_OK);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
+
+    node_context.attention_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 int main(void)
 {
     static const char LibraryRoot[] =
@@ -3402,6 +3445,7 @@ int main(void)
     SparkTestGlm52ResidentDecodeStageBuiltInQuantizedProjectionValidation();
     SparkTestGlm52ResidentDecodeStageFp8DenseMlpPlanValidation();
     SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation();
+    SparkTestGlm52ResidentDecodeStageAbsorbedLatentCacheValidation();
     SparkTestGlm52ResidentDecodeStageDsaIndexShareFullRequiresScoreInputs();
     SparkTestGlm52ResidentDecodeStageBulkPrefillSubmit();
     SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit();
