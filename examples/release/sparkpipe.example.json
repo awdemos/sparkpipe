@@ -97,7 +97,7 @@
         "1024",
         "--cuda-resident-socket",
         "{state_root}/cuda_resident_rank0.sock",
-        "--kv-nvme-blocks",
+        "--kv-logical-blocks",
         "1048576",
         "--mtp",
         "--port-base",

@@ -87,6 +87,12 @@ On an SM121 Spark, rebuild the CUDA module with the normal production archives. 
 --kv-nvme-batch-blocks 32
 ```
 
+Start the attached gateway with the matching logical capacity:
+
+```sh
+--kv-logical-blocks 1048576
+```
+
 Add `--mtp` for the MTP run. MTP and DSpark remain separate configurations. Current DSpark live capture is deliberately lane-1 fail-closed; Sparkdev must not remove that rejection until the batched DSpark backend and its B1024 numerical gate are connected.
 
 After a clean resident start, the log must contain:

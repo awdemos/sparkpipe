@@ -28,6 +28,7 @@ def main():
             "roles": [
                 {"name": "rank", "argv": ["--max-active", "16"]},
                 {"name": "pp13_cuda_residentd", "argv": ["--max-active", "16"]},
+                {"name": "spark0_gateway", "argv": ["--max-active", "16"]},
             ],
         }
         (template / "sparkpipe.json").write_text(json.dumps(manifest),encoding="utf-8")
@@ -39,6 +40,7 @@ def main():
             "--git-commit","abc123",
             "--max-active","64",
             "--kv-pool-tokens","65536",
+            "--kv-logical-blocks","1024",
             "--replace","bin/runtime=" + str(replacement),
         ],check=True)
         result = json.loads((output / "sparkpipe.json").read_text(encoding="utf-8"))
@@ -49,6 +51,8 @@ def main():
         assert result["roles"][0]["argv"] == ["--max-active","64"]
         assert result["roles"][1]["argv"] == [
             "--max-active","64","--kv-pool-tokens","65536"]
+        assert result["roles"][2]["argv"] == [
+            "--max-active","64","--kv-logical-blocks","1024"]
         for role in result["roles"]:
             assert "SPARKPIPE_RELEASE_ID=new" in role["env"]
             assert "SPARKPIPE_RELEASE_GIT_COMMIT=abc123" in role["env"]

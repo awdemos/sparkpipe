@@ -426,7 +426,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 		*index += 1;
 		return 0;
 	}
-	if (strcmp(argv[*index],"--kv-nvme-blocks") == 0)
+	if (strcmp(argv[*index],"--kv-logical-blocks") == 0)
 	{
 		if ((*index + 1) >= argc ||
 			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0 ||
@@ -1473,7 +1473,7 @@ int main(int argc,char **argv)
 	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
 	if (SparkGlm52GatewayParseArguments(&runtime.configuration,argc,argv) < 0)
 	{
-		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--fp8-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--program name] [--node-target target] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path] [--max-active n] [--kv-nvme-blocks n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--cuda-resident-socket path] [--mtp] [--dspark]\n",argv[0]);
+		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--fp8-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--program name] [--node-target target] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path] [--max-active n] [--kv-logical-blocks n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--cuda-resident-socket path] [--mtp] [--dspark]\n",argv[0]);
 		return 2;
 	}
 	if (SparkGlm52GatewayInitializePendingStreams(&runtime) < 0)

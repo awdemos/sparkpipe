@@ -79,6 +79,7 @@ def main():
     parser.add_argument("--git-commit",required=True)
     parser.add_argument("--max-active",type=int)
     parser.add_argument("--kv-pool-tokens",type=int)
+    parser.add_argument("--kv-logical-blocks",type=int,required=True)
     parser.add_argument("--replace",action="append",default=[])
     arguments = parser.parse_args()
     temporary = arguments.output + ".assembling." + str(os.getpid())
@@ -110,6 +111,11 @@ def main():
         set_role_argument(
             manifest,"pp13_cuda_residentd","--kv-pool-tokens",
             arguments.kv_pool_tokens)
+    if arguments.kv_logical_blocks < 1:
+        raise SystemExit("kv-logical-blocks must be positive")
+    set_role_argument(
+        manifest,"spark0_gateway","--kv-logical-blocks",
+        arguments.kv_logical_blocks)
     write_manifest(temporary,manifest)
     os.rename(temporary,arguments.output)
 
