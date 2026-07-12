@@ -140,6 +140,25 @@ def test_prefill_probe_hashes_the_exact_stage_input(root: Path) -> None:
     assert "SparkGlm52Pp13BuilderMaybeProbePrefillInputHidden(" in prefill_body
 
 
+def test_fp8_phase_probe_targets_the_first_divergent_layer(root: Path) -> None:
+    cuda_source = (root / "modules" / "glm52_resident_decode_stage" /
+                   "source" /
+                   "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                       encoding="utf-8")
+    builder_source = (root / "modules" / "glm52_resident_decode_stage" /
+                      "source" /
+                      "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                          encoding="utf-8")
+    probe_start = cuda_source.index(
+        "static void SparkGlm52ResidentDecodeStageDeviceHashProbe(")
+    probe_end = cuda_source.index(
+        "static bool SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsableCuda(",
+        probe_start)
+    assert "node_context->layer_index != 0u" in cuda_source[
+        probe_start:probe_end]
+    assert "fp8_layer0_attention_probe" in builder_source
+
+
 def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -221,6 +240,7 @@ def main() -> None:
     test_pp13_builder_binds_all_fp8_linear_plans(root)
     test_serial_prefill_progresses_runner_after_each_token(root)
     test_prefill_probe_hashes_the_exact_stage_input(root)
+    test_fp8_phase_probe_targets_the_first_divergent_layer(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
     test_service_backend_namespaces_ids_per_live_session(root)
     test_final_event_pump_detects_disconnect_before_send(root)
