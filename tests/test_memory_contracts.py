@@ -301,6 +301,19 @@ def main():
         violations.append("DSA score tile rows have a duplicate prefill constant")
     if "dsa_prefill_scores_f32" in all_source_text:
         violations.append("DSA score storage retains a prefill-only ABI field")
+    backend_text = (
+        ROOT / "src/spark_glm52_pp13_service_backend.c").read_text()
+    if re.search(
+            r"kv_logical_block_capacity\s*<\s*"
+            r"SPARK_GLM52_PP13_SERVICE_BACKEND_GPU_BLOCK_COUNT",
+            backend_text):
+        violations.append(
+            "attached KV geometry is coupled to the local compile-time pool")
+    if re.search(
+            r"cuda_resident_socket_path\s*!=\s*0\s*&&\s*"
+            r"configuration->kv_logical_block_capacity\s*==\s*0u",
+            backend_text) is None:
+        violations.append("attached KV geometry can silently default")
     model_description_path = ROOT / (
         "examples/model_descriptions/glm52_resident_decode_stage_firmware.json")
     model_description = json.loads(model_description_path.read_text())
