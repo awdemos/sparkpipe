@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 4u
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 5u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAGIC 0x52445543u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS \
     (SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS)
@@ -22,6 +22,8 @@ extern "C" {
     ((uint32_t)sizeof(SparkGlm52CudaResidentIpcHello))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_BYTES \
     ((uint32_t)sizeof(SparkGlm52CudaResidentIpcSubmitWork))
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_PREFIX_BYTES \
+	((uint32_t)offsetof(SparkGlm52CudaResidentIpcSubmitWork,work_packet))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_BYTES \
     ((uint32_t)sizeof(SparkGlm52CudaResidentIpcCompletion))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_RESULT_BYTES \
@@ -34,6 +36,8 @@ extern "C" {
     ((uint32_t)sizeof(SparkGlm52CudaResidentIpcSubmitPrefill))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_BYTES \
     ((uint32_t)sizeof(SparkGlm52CudaResidentIpcSubmitDecode))
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_PREFIX_BYTES \
+	((uint32_t)offsetof(SparkGlm52CudaResidentIpcSubmitDecode,work_packet))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_CONTROL_PAYLOAD_BYTES \
     ((uint32_t)sizeof(SparkGlm52CudaResidentIpcAnyPayload))
 
@@ -153,21 +157,8 @@ typedef struct SparkGlm52CudaResidentIpcSubmitPrefill
 typedef struct SparkGlm52CudaResidentIpcSubmitDecode
 {
     uint32_t descriptor_bytes;
-    uint32_t highest_priority;
-    uint64_t request_id;
-    uint64_t sequence_id;
     uint32_t request_flags;
-    uint32_t mtp_draft_token_budget;
-    uint32_t input_token_id;
-    uint32_t sequence_position;
-    uint32_t context_token_count;
-	uint32_t kv_block_token_count;
-	uint32_t kv_lane_block_count;
-	uint32_t speculative_token_count;
-	uint32_t speculative_token_index;
-	uint32_t speculative_draft_token_ids[
-		SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT];
-	uint32_t kv_physical_block_indices[SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS];
+	SparkGlm52Pp13WorkControlPacket work_packet;
 } SparkGlm52CudaResidentIpcSubmitDecode;
 
 typedef union SparkGlm52CudaResidentIpcAnyPayload
@@ -192,6 +183,10 @@ SparkStatus SparkGlm52CudaResidentIpcValidateHeader(
     const SparkGlm52CudaResidentIpcHeader *header,
     uint32_t expected_kind,
     uint32_t maximum_payload_bytes);
+uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
+	const SparkGlm52Pp13WorkControlPacket *work_packet);
+uint32_t SparkGlm52CudaResidentIpcCalculateSubmitDecodeBytes(
+	const SparkGlm52Pp13WorkControlPacket *work_packet);
 
 #ifdef __cplusplus
 }

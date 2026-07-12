@@ -86,6 +86,11 @@ typedef struct SparkGlm52CudaResidentdRuntime
     uint64_t ingest_decode_count;
     uint32_t state;
     uint32_t ingest_lane_block_count;
+	uint32_t ingest_lane_block_counts[
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t ingest_physical_block_indices[
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT][
+			SPARK_GLM52_PP13_WORK_CONTROL_KV_BLOCK_CAPACITY];
     SparkGlm52RequestApiDispatch ingest_request_dispatch;
     SparkGlm52RequestApiPrefillDispatchView ingest_prefill_view;
     SparkGlm52RequestApiDecodeDispatchView ingest_decode_view;
@@ -878,8 +883,9 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitWork(
     const SparkGlm52CudaResidentIpcSubmitWork *message)
 {
     SparkStatus status;
-    if (message == 0 || message->descriptor_bytes !=
-        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_BYTES)
+	if (message == 0 || message->descriptor_bytes !=
+		SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
+			&message->work_packet))
         return SPARK_STATUS_ABI_MISMATCH;
     status = runtime->builder_library.builder_interface.submit_work(
         runtime->builder_state,
@@ -920,6 +926,45 @@ static SparkStatus SparkGlm52CudaResidentdBuildIngestKvView(
     view->host_physical_block_indices = block_indices;
     view->host_lane_physical_block_counts = &runtime->ingest_lane_block_count;
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52CudaResidentdBuildDecodeKvView(
+	SparkGlm52CudaResidentdRuntime *runtime,
+	const SparkGlm52Pp13WorkControlPacket *packet,
+	SparkGlm52KvBlockTableView *view)
+{
+	uint32_t block_count;
+	uint32_t lane_index;
+
+	if (runtime == 0 || packet == 0 || view == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	for (lane_index = 0u;
+		 lane_index < packet->active_sequence_count;
+		 ++lane_index)
+	{
+		block_count = packet->lanes[lane_index].kv_block_count;
+		if (block_count == 0u || block_count >
+				SPARK_GLM52_PP13_WORK_CONTROL_KV_BLOCK_CAPACITY)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		runtime->ingest_lane_block_counts[lane_index] = block_count;
+		memcpy(
+			runtime->ingest_physical_block_indices[lane_index],
+			packet->lanes[lane_index].kv_physical_block_indices,
+			(size_t)(block_count * sizeof(uint32_t)));
+	}
+	memset(view,0,sizeof(*view));
+	view->abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+	view->descriptor_bytes = SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+	view->block_token_count = packet->block_token_count;
+	view->lane_count = packet->active_sequence_count;
+	view->lane_stride = SPARK_GLM52_PP13_WORK_CONTROL_KV_BLOCK_CAPACITY;
+	view->lane_capacity = packet->active_sequence_count;
+	view->physical_block_indices = &runtime->ingest_physical_block_indices[0u][0u];
+	view->lane_physical_block_counts = runtime->ingest_lane_block_counts;
+	view->host_physical_block_indices =
+		&runtime->ingest_physical_block_indices[0u][0u];
+	view->host_lane_physical_block_counts = runtime->ingest_lane_block_counts;
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(
@@ -981,51 +1026,95 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitDecode(
     const SparkGlm52CudaResidentdConfiguration *configuration,
     const SparkGlm52CudaResidentIpcSubmitDecode *message)
 {
+	const SparkGlm52Pp13WorkControlPacket *packet;
     SparkGlm52ServingDecodeDispatch dispatch;
     SparkGlm52KvBlockTableView kv_view;
+	uint32_t lane_index;
     SparkStatus status;
-    if (message == 0 || message->descriptor_bytes !=
-        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_BYTES)
+	if (message == 0 || message->descriptor_bytes !=
+		SparkGlm52CudaResidentIpcCalculateSubmitDecodeBytes(
+			&message->work_packet))
         return SPARK_STATUS_ABI_MISMATCH;
-    status = SparkGlm52CudaResidentdBuildIngestKvView(runtime, &kv_view, message->kv_physical_block_indices, message->kv_lane_block_count, message->kv_block_token_count);
+	packet = &message->work_packet;
+	status = SparkGlm52Pp13WorkControlValidatePacket(
+		packet,
+		configuration->max_active_sequence_count,
+		UINT32_MAX);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52CudaResidentdBuildDecodeKvView(
+			runtime,packet,&kv_view);
     if (status != SPARK_STATUS_OK)
     {
         SparkGlm52CudaResidentdWriteSubmitResult(runtime, configuration, status, "ingest_decode_kv_invalid");
         return status;
     }
     memset(&runtime->ingest_request_dispatch, 0, sizeof(runtime->ingest_request_dispatch));
-    runtime->ingest_request_dispatch.highest_priority = message->highest_priority;
+	runtime->ingest_request_dispatch.abi_version =
+		SPARK_GLM52_REQUEST_API_ABI_VERSION;
+	runtime->ingest_request_dispatch.descriptor_bytes =
+		SPARK_GLM52_REQUEST_API_DISPATCH_DESCRIPTOR_BYTES;
+	runtime->ingest_request_dispatch.kind =
+		SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
+	runtime->ingest_request_dispatch.request_count =
+		packet->active_sequence_count;
+    runtime->ingest_request_dispatch.highest_priority = packet->priority;
     runtime->ingest_request_dispatch.flags = message->request_flags;
-    runtime->ingest_request_dispatch.mtp_draft_token_budget = message->mtp_draft_token_budget;
-    runtime->ingest_request_dispatch.request_ids[0u] = message->request_id;
-    runtime->ingest_request_dispatch.sequence_ids[0u] = message->sequence_id;
+	runtime->ingest_request_dispatch.mtp_draft_token_budget =
+		packet->mtp_draft_token_count;
     memset(&runtime->ingest_decode_view, 0, sizeof(runtime->ingest_decode_view));
-    runtime->ingest_decode_view.descriptor_bytes = (uint32_t)sizeof(runtime->ingest_decode_view);
-    runtime->ingest_decode_view.active_sequence_count = 1u;
-    runtime->ingest_decode_view.lane_count = 1u;
-    runtime->ingest_decode_view.lanes[0u].sequence_position = message->sequence_position;
-    runtime->ingest_decode_view.lanes[0u].context_token_count = message->context_token_count;
-    runtime->ingest_decode_view.lanes[0u].request_id = message->request_id;
-    runtime->ingest_decode_view.lanes[0u].sequence_id = message->sequence_id;
+	runtime->ingest_decode_view.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
+	runtime->ingest_decode_view.descriptor_bytes =
+		SPARK_GLM52_REQUEST_API_DECODE_DISPATCH_VIEW_DESCRIPTOR_BYTES;
+	runtime->ingest_decode_view.kind =
+		SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
+	runtime->ingest_decode_view.active_sequence_count =
+		packet->active_sequence_count;
+	runtime->ingest_decode_view.lane_count = packet->active_sequence_count;
+	for (lane_index = 0u;
+		 lane_index < packet->active_sequence_count;
+		 ++lane_index)
+	{
+		runtime->ingest_request_dispatch.request_ids[lane_index] =
+			packet->lanes[lane_index].request_id;
+		runtime->ingest_request_dispatch.sequence_ids[lane_index] =
+			packet->lanes[lane_index].sequence_id;
+		runtime->ingest_decode_view.lanes[lane_index].request_index = lane_index;
+		runtime->ingest_decode_view.lanes[lane_index].sequence_position =
+			(uint32_t)packet->lanes[lane_index].sequence_position;
+		runtime->ingest_decode_view.lanes[lane_index].context_token_count =
+			packet->lanes[lane_index].context_token_count;
+		runtime->ingest_decode_view.lanes[lane_index].request_id =
+			packet->lanes[lane_index].request_id;
+		runtime->ingest_decode_view.lanes[lane_index].sequence_id =
+			packet->lanes[lane_index].sequence_id;
+	}
     memset(&dispatch, 0, sizeof(dispatch));
     dispatch.abi_version = SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
     dispatch.descriptor_bytes = SPARK_GLM52_SERVING_DECODE_DISPATCH_DESCRIPTOR_BYTES;
     dispatch.dispatch_kind = SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
-    dispatch.request_count = 1u;
-    dispatch.active_sequence_count = 1u;
+	dispatch.request_count = packet->active_sequence_count;
+	dispatch.active_sequence_count = packet->active_sequence_count;
     dispatch.request_dispatch = &runtime->ingest_request_dispatch;
     dispatch.kv_block_table_view = &kv_view;
     dispatch.decode_view = &runtime->ingest_decode_view;
-    dispatch.input_token_ids[0u] = message->input_token_id;
-    dispatch.speculative_token_count = message->speculative_token_count;
-    dispatch.speculative_token_index = message->speculative_token_index;
+	for (lane_index = 0u;
+		 lane_index < packet->active_sequence_count;
+		 ++lane_index)
+		dispatch.input_token_ids[lane_index] =
+			packet->lanes[lane_index].input_token_id;
+	dispatch.speculative_token_count = packet->speculative_token_count;
+	dispatch.speculative_token_index = packet->speculative_token_index;
     memcpy(
         dispatch.speculative_draft_token_ids[0u],
-        message->speculative_draft_token_ids,
+		packet->speculative_draft_token_ids,
         sizeof(dispatch.speculative_draft_token_ids[0u]));
-    if (message->speculative_token_count != 0u)
+	if (packet->speculative_token_count != 0u)
+    {
         dispatch.dispatch_kind =
             SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
+		runtime->ingest_request_dispatch.kind = dispatch.dispatch_kind;
+		runtime->ingest_decode_view.kind = dispatch.dispatch_kind;
+	}
     memset(&runtime->ingest_decode_result, 0, sizeof(runtime->ingest_decode_result));
     status = runtime->builder_library.builder_interface.decode(runtime->builder_state, &dispatch, &runtime->ingest_decode_result);
     if (status == SPARK_STATUS_OK)
@@ -1192,7 +1281,7 @@ static void SparkGlm52CudaResidentdUsage(const char *program)
 int main(int argc, char **argv)
 {
     SparkGlm52CudaResidentdConfiguration configuration;
-    SparkGlm52CudaResidentdRuntime runtime;
+    static SparkGlm52CudaResidentdRuntime runtime;
     SparkStatus status;
     struct pollfd fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CAPACITY];
     int32_t index;

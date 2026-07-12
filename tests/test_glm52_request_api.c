@@ -836,6 +836,49 @@ static void SparkTestRequestApiBatchesReadyDecodeRequestsAndConsumesBudgets(void
         second_handle) == SPARK_STATUS_OK);
 }
 
+static void SparkTestRequestApiFillsDecodeBatchBeforeEqualPriorityDecode(void)
+{
+	SparkTestRequestApiFixture fixture;
+	SparkGlm52RequestApiSubmitRequest request;
+	SparkGlm52RequestApiDispatch dispatch;
+	SparkGlm52RequestApiHandle handle;
+	uint32_t prompts[4u][16u];
+	uint32_t request_index;
+
+	SparkTestInitializeFixture(&fixture);
+	fixture.api.configuration_flags &=
+		~SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING;
+	fixture.api.decode_batch_target = 4u;
+	for (request_index = 0u; request_index < 4u; ++request_index)
+	{
+		SparkTestFillTokenIds(
+			prompts[request_index],16u,50000u + (request_index * 100u));
+		SparkTestInitializeSubmitRequest(
+			&request,
+			100u + request_index,
+			6000u + request_index,
+			100u,
+			prompts[request_index],
+			16u,
+			2u);
+		assert(SparkGlm52RequestApiSubmit(
+			&fixture.api,&request,&handle) == SPARK_STATUS_OK);
+	}
+	for (request_index = 0u; request_index < 4u; ++request_index)
+	{
+		assert(SparkGlm52RequestApiScheduleNext(
+			&fixture.api,&dispatch) == SPARK_STATUS_OK);
+		assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+		assert(SparkGlm52RequestApiCompleteDispatch(
+			&fixture.api,&dispatch) == SPARK_STATUS_OK);
+	}
+	assert(SparkGlm52RequestApiScheduleNext(
+		&fixture.api,&dispatch) == SPARK_STATUS_OK);
+	assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+	assert(dispatch.request_count == 4u);
+	assert(dispatch.decode_batch_decision.active_sequence_count == 4u);
+}
+
 static void SparkTestRequestApiCohortsSamePromptRequestsAndSharesBlocks(void)
 {
     SparkTestRequestApiFixture fixture;
@@ -3134,6 +3177,7 @@ int main(void)
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
     SparkTestRequestApiMtpDraftRequiresSpeculativeVerify();
     SparkTestRequestApiBatchesReadyDecodeRequestsAndConsumesBudgets();
+	SparkTestRequestApiFillsDecodeBatchBeforeEqualPriorityDecode();
     SparkTestRequestApiCohortsSamePromptRequestsAndSharesBlocks();
     SparkTestRequestApiCohortsArbitrarySharedPrefixWithSuffixes();
     SparkTestRequestApiChoosesWiderSharedPrefixFamily();

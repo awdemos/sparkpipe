@@ -1,21 +1,36 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
+#include "sparkpipe/spark_glm52_model.h"
+#include "sparkpipe/spark_glm52_serving_engine.h"
+#include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 3u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 4u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
 	((uint32_t)sizeof(SparkGlm52Pp13WorkControlPacket))
+#define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES \
+	((uint32_t)offsetof(SparkGlm52Pp13WorkControlPacket,lanes))
 #define SPARK_GLM52_PP13_WORK_CONTROL_KV_STATE_BYTES \
 	((uint32_t)sizeof(SparkGlm52Pp13WorkControlKvState))
+#define SPARK_GLM52_PP13_WORK_CONTROL_LANE_BYTES \
+	((uint32_t)sizeof(SparkGlm52Pp13WorkControlLane))
+#define SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT \
+	SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET
+#define SPARK_GLM52_PP13_WORK_CONTROL_KV_CONTEXT_TOKEN_CAPACITY \
+	SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT
+#define SPARK_GLM52_PP13_WORK_CONTROL_KV_BLOCK_CAPACITY \
+	(SPARK_GLM52_PP13_WORK_CONTROL_KV_CONTEXT_TOKEN_CAPACITY / \
+	 SPARK_GLM52_KV_BLOCK_TOKENS)
 
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL 0x00000001u
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT 0x00000002u
@@ -37,6 +52,19 @@ extern "C" {
 #define SPARK_GLM52_PP13_KV_ENTRY_MISSING 0u
 #define SPARK_GLM52_PP13_KV_ENTRY_IN_FLIGHT 1u
 #define SPARK_GLM52_PP13_KV_ENTRY_RESIDENT 2u
+
+typedef struct SparkGlm52Pp13WorkControlLane
+{
+	uint64_t request_id;
+	uint64_t sequence_id;
+	uint64_t sequence_position;
+	uint32_t context_token_count;
+	uint32_t input_token_id;
+	uint32_t kv_block_count;
+	uint32_t reserved0;
+	uint32_t kv_physical_block_indices[
+		SPARK_GLM52_PP13_WORK_CONTROL_KV_BLOCK_CAPACITY];
+} SparkGlm52Pp13WorkControlLane;
 
 typedef struct SparkGlm52Pp13WorkControlPacket
 {
@@ -61,6 +89,8 @@ typedef struct SparkGlm52Pp13WorkControlPacket
 	uint32_t speculative_token_index;
 	uint32_t speculative_draft_token_ids[
 		SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT];
+	SparkGlm52Pp13WorkControlLane lanes[
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT];
 } SparkGlm52Pp13WorkControlPacket;
 
 typedef struct SparkGlm52Pp13WorkControlKvState
@@ -70,6 +100,7 @@ typedef struct SparkGlm52Pp13WorkControlKvState
 	uint32_t lane_capacity;
 	uint32_t lane_stride;
 	uint32_t block_token_count;
+	uint32_t table_entry_capacity;
 	uint32_t physical_block_capacity;
 	uint32_t *physical_block_indices;
 	uint32_t *lane_physical_block_counts;
@@ -83,11 +114,22 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 	const SparkGlm52Pp13WorkControlPacket *packet,
 	uint32_t max_active_sequence_count,
 	uint32_t max_pipeline_slot_count);
+uint32_t SparkGlm52Pp13WorkControlCalculatePacketBytes(
+	uint32_t active_sequence_count);
+SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
+	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+	uint32_t speculative_token_index,
+	SparkGlm52Pp13WorkControlPacket *packet);
+SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
+	uint32_t token_offset,
+	SparkGlm52Pp13WorkControlPacket *packet);
 SparkStatus SparkGlm52Pp13WorkControlInitializeKvState(
 	SparkGlm52Pp13WorkControlKvState *state,
 	uint32_t lane_capacity,
 	uint32_t lane_stride,
 	uint32_t block_token_count,
+	uint32_t physical_block_capacity,
 	uint32_t *physical_block_indices,
 	uint32_t *lane_physical_block_counts,
 	uint8_t *physical_block_states);

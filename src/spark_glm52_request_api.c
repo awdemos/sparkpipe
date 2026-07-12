@@ -4063,6 +4063,34 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
     return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkGlm52RequestApiShouldFillDecodeBatch(
+	const SparkGlm52RequestApi *api,
+	const SparkGlm52RequestApiSlot *prefill_slot,
+	const SparkGlm52RequestApiSlot *decode_slot)
+{
+	const SparkGlm52RequestApiSlot *slot;
+	uint32_t ready_decode_count;
+	uint32_t slot_index;
+
+	if (!SparkGlm52RequestApiDecodeBatchingIsEnabled(api) ||
+		prefill_slot == 0 || decode_slot == 0 ||
+		prefill_slot->priority < decode_slot->priority ||
+		(SparkGlm52RequestApiSlotHasRealtimePriority(decode_slot) != 0u &&
+		 SparkGlm52RequestApiSlotHasRealtimePriority(prefill_slot) == 0u))
+		return 0u;
+	ready_decode_count = 0u;
+	for (slot_index = 0u;
+		 slot_index < api->request_capacity &&
+			ready_decode_count < api->decode_batch_target;
+		 ++slot_index)
+	{
+		slot = &api->request_slots[slot_index];
+		if (SparkGlm52RequestApiSlotIsSchedulableDecode(slot))
+			ready_decode_count += 1u;
+	}
+	return ready_decode_count < api->decode_batch_target;
+}
+
 SparkStatus SparkGlm52RequestApiScheduleNext(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiDispatch *dispatch)
@@ -4147,8 +4175,11 @@ SparkStatus SparkGlm52RequestApiScheduleNext(
     if (prefill_slot != 0 &&
         (chosen_slot == 0 ||
          SparkGlm52RequestApiSlotHasHigherSchedulingPriority(
-            prefill_slot,
-            chosen_slot)))
+			prefill_slot,
+			chosen_slot) ||
+		 (chosen_slot == decode_slot &&
+		  SparkGlm52RequestApiShouldFillDecodeBatch(
+			api,prefill_slot,decode_slot) != 0u)))
     {
         chosen_is_prefill = 1u;
         chosen_slot = prefill_slot;
