@@ -136,6 +136,15 @@ def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None
             function_body)
 
 
+def test_service_backend_namespaces_ids_per_live_session(root: Path) -> None:
+    source = (root / "src" /
+              "spark_glm52_pp13_service_backend.c").read_text(
+                  encoding="utf-8")
+    assert "state->request_api.next_sequence_id = state->session_id_base" in source
+    assert "service_configuration.request_id_base = state->session_id_base" in source
+    assert "state->cuda_resident_next_sequence_number = state->session_id_base" in source
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_final_stage_has_hidden_only_builtin_launcher(root)
@@ -147,6 +156,7 @@ def main() -> None:
     test_pp13_builder_binds_all_fp8_linear_plans(root)
     test_serial_prefill_progresses_runner_after_each_token(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
+    test_service_backend_namespaces_ids_per_live_session(root)
 
 
 if __name__ == "__main__":
