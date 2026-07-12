@@ -4,6 +4,7 @@
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_model.h"
+#include "sparkpipe/spark_glm52_stage_plan.h"
 
 #define SPARK_TEST_KV_BLOCK_TOKENS 16u
 #define SPARK_TEST_KV_HEAD_COUNT 8u
@@ -775,6 +776,75 @@ static void SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression(void)
         SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS);
 }
 
+static void SparkTestKvJitStageBudgetsMatchPp13Storage(void)
+{
+    SparkGlm52KvJitStageBudgetRequest request;
+    SparkGlm52KvJitStageBudget budget;
+
+    memset(&request, 0, sizeof(request));
+    request.abi_version = SPARK_GLM52_KV_JIT_STAGE_BUDGET_ABI_VERSION;
+    request.descriptor_bytes =
+        SPARK_GLM52_KV_JIT_STAGE_BUDGET_REQUEST_DESCRIPTOR_BYTES;
+    request.layer_count = 6u;
+    request.physical_pool_token_capacity = SPARK_GLM52_KV_POOL_TOKENS;
+    request.backing_block_capacity = 1048576u;
+    request.active_sequence_count = 1024u;
+    request.backing_request_count =
+        SPARK_GLM52_STAGE_PLAN_PIPELINE_INFLIGHT_REQUEST_CAPACITY;
+    request.selected_token_count = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT;
+    request.block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
+    request.record_alignment_bytes =
+        SPARK_GLM52_KV_JIT_DEFAULT_RECORD_ALIGNMENT;
+
+    request.first_layer_index = 0u;
+    assert(SparkGlm52KvCacheCalculateJitStageBudget(
+        &request, &budget) == SPARK_STATUS_OK);
+    assert(budget.local_dsa_index_layer_count == 3u);
+    assert(budget.mla_bytes_per_token == 6912u);
+    assert(budget.dsa_index_bytes_per_token == 768u);
+    assert(budget.resident_bytes_per_token == 7680u);
+    assert(budget.resident_summary_bytes == 100859904u);
+    assert(budget.resident_pool_bytes == UINT64_C(32313114624));
+    assert(budget.nvme_payload_bytes_per_block == 493059u);
+    assert(budget.nvme_record_bytes == 499712u);
+    assert(budget.nvme_capacity_bytes == UINT64_C(523986010112));
+    assert(budget.compact_selected_mla_working_set_bytes ==
+        UINT64_C(14495514624));
+    assert(budget.maximum_average_active_context_tokens == 4096u);
+    assert(budget.maximum_average_backing_context_tokens == 5041u);
+
+    request.first_layer_index = 6u;
+    assert(SparkGlm52KvCacheCalculateJitStageBudget(
+        &request, &budget) == SPARK_STATUS_OK);
+    assert(budget.local_dsa_index_layer_count == 2u);
+    assert(budget.resident_bytes_per_token == 7424u);
+    assert(budget.nvme_record_bytes == 483328u);
+
+    request.first_layer_index = 12u;
+    assert(SparkGlm52KvCacheCalculateJitStageBudget(
+        &request, &budget) == SPARK_STATUS_OK);
+    assert(budget.local_dsa_index_layer_count == 1u);
+    assert(budget.resident_bytes_per_token == 7168u);
+    assert(budget.nvme_record_bytes == 466944u);
+
+    request.first_layer_index = 72u;
+    request.include_mtp_layer = 1u;
+    assert(SparkGlm52KvCacheCalculateJitStageBudget(
+        &request, &budget) == SPARK_STATUS_OK);
+    assert(budget.local_dsa_index_layer_count == 1u);
+    assert(budget.mtp_bytes_per_token == 1152u);
+    assert(budget.resident_bytes_per_token == 8320u);
+    assert(budget.resident_pool_bytes == UINT64_C(34930229248));
+    assert(budget.nvme_record_bytes == 540672u);
+    assert(budget.nvme_capacity_bytes == UINT64_C(566935683072));
+    assert(budget.compact_selected_mla_working_set_bytes ==
+        UINT64_C(16911433728));
+
+    request.first_layer_index = 66u;
+    assert(SparkGlm52KvCacheCalculateJitStageBudget(
+        &request, &budget) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 int main(void)
 {
     SparkTestKvCacheAllocatesResidentDeviceBlocks();
@@ -789,5 +859,6 @@ int main(void)
     SparkTestKvCacheSupportsMlaPrimaryOnlyArenaAndPrefetch();
     SparkTestKvCacheRejectsRecyclingRetainedBlocks();
     SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression();
+    SparkTestKvJitStageBudgetsMatchPp13Storage();
     return 0;
 }

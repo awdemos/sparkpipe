@@ -1,5 +1,6 @@
 #include "sparkpipe/spark_glm52_serving_engine.h"
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -140,8 +141,6 @@ static SparkStatus SparkGlm52ServingValidateConfiguration(
             SPARK_GLM52_REQUEST_API_DESCRIPTOR_BYTES ||
         configuration->request_records == 0 ||
         configuration->request_record_capacity == 0u ||
-        configuration->request_token_storage == 0 ||
-        configuration->request_token_stride == 0u ||
         configuration->event_ring == 0 ||
         configuration->event_ring_capacity <= SparkGlm52ServingEventRingSafetyMargin() ||
         configuration->host_prefill_token_ids == 0 ||
@@ -155,6 +154,20 @@ static SparkStatus SparkGlm52ServingValidateConfiguration(
         configuration->lane_count_capacity == 0u ||
         configuration->prefill_function == 0 ||
         configuration->decode_function == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((flags &
+            SPARK_GLM52_SERVING_ENGINE_FLAG_DYNAMIC_REQUEST_TOKEN_STORAGE) != 0u)
+    {
+        if (configuration->request_token_storage != 0 ||
+            configuration->request_token_stride != 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    else if (configuration->request_token_storage == 0 ||
+        configuration->request_token_stride == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -183,6 +196,7 @@ static void SparkGlm52ServingInitializeRequestRecord(
     record->descriptor_bytes = SPARK_GLM52_SERVING_REQUEST_RECORD_DESCRIPTOR_BYTES;
     record->state = SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_FREE;
     record->handle_hash_next = SPARK_GLM52_SERVING_NO_RECORD_SLOT;
+    record->free_record_next = SPARK_GLM52_SERVING_NO_RECORD_SLOT;
     record->token_ids = token_storage;
     record->token_capacity = token_capacity;
 }
@@ -438,6 +452,8 @@ SparkStatus SparkGlm52ServingEngineInitialize(
     engine->lane_count_capacity = configuration->lane_count_capacity;
     engine->prefill_function = configuration->prefill_function;
     engine->decode_function = configuration->decode_function;
+    engine->release_sequence_function =
+        configuration->release_sequence_function;
     engine->callback_context = configuration->callback_context;
     engine->stop_token_id_count = configuration->stop_token_id_count;
     for (stop_index = 0u;
@@ -458,12 +474,31 @@ SparkStatus SparkGlm52ServingEngineInitialize(
          record_index < engine->request_record_capacity;
          ++record_index)
     {
+        uint32_t *token_storage;
+        uint32_t token_capacity;
+
+        if ((engine->flags &
+                SPARK_GLM52_SERVING_ENGINE_FLAG_DYNAMIC_REQUEST_TOKEN_STORAGE) != 0u)
+        {
+            token_storage = 0;
+            token_capacity = 0u;
+        }
+        else
+        {
+            token_storage = &engine->request_token_storage[
+                (uint64_t)record_index * engine->request_token_stride];
+            token_capacity = engine->request_token_stride;
+        }
         SparkGlm52ServingInitializeRequestRecord(
             &engine->request_records[record_index],
-            &engine->request_token_storage[(uint64_t)record_index *
-                engine->request_token_stride],
-            engine->request_token_stride);
+            token_storage,
+            token_capacity);
+        engine->request_records[record_index].free_record_next =
+            record_index + 1u < engine->request_record_capacity
+                ? record_index + 1u
+                : SPARK_GLM52_SERVING_NO_RECORD_SLOT;
     }
+    engine->free_record_head = 0u;
     for (record_index = 0u;
          record_index < engine->event_ring_capacity;
          ++record_index)
@@ -482,7 +517,9 @@ static SparkStatus SparkGlm52ServingValidateEngine(
         engine->descriptor_bytes != SPARK_GLM52_SERVING_ENGINE_DESCRIPTOR_BYTES ||
         engine->request_api == 0 ||
         engine->request_records == 0 ||
-        engine->request_token_storage == 0 ||
+        (((engine->flags &
+                SPARK_GLM52_SERVING_ENGINE_FLAG_DYNAMIC_REQUEST_TOKEN_STORAGE) == 0u) &&
+            engine->request_token_storage == 0) ||
         engine->event_ring == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -493,19 +530,69 @@ static SparkStatus SparkGlm52ServingValidateEngine(
 static SparkGlm52ServingRequestRecord *SparkGlm52ServingFindFreeRecord(
     SparkGlm52ServingEngine *engine)
 {
-    uint32_t record_index;
-
-    for (record_index = 0u;
-         record_index < engine->request_record_capacity;
-         ++record_index)
+    if (engine == 0 ||
+        engine->free_record_head == SPARK_GLM52_SERVING_NO_RECORD_SLOT ||
+        engine->free_record_head >= engine->request_record_capacity)
     {
-        if (engine->request_records[record_index].state ==
-            SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_FREE)
-        {
-            return &engine->request_records[record_index];
-        }
+        return 0;
     }
-    return 0;
+    if (engine->request_records[engine->free_record_head].state !=
+        SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_FREE)
+    {
+        return 0;
+    }
+    return &engine->request_records[engine->free_record_head];
+}
+
+static SparkStatus SparkGlm52ServingEnsureRecordTokenCapacity(
+    SparkGlm52ServingEngine *engine,
+    SparkGlm52ServingRequestRecord *record,
+    uint32_t required_token_capacity)
+{
+    uint32_t grown_capacity;
+    uint32_t *grown_token_ids;
+
+    if (engine == 0 || record == 0 || required_token_capacity == 0u ||
+        required_token_capacity > engine->max_context_tokens)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    if (required_token_capacity <= record->token_capacity)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if ((engine->flags &
+            SPARK_GLM52_SERVING_ENGINE_FLAG_DYNAMIC_REQUEST_TOKEN_STORAGE) == 0u)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+
+    grown_capacity = record->token_capacity != 0u
+        ? record->token_capacity
+        : 64u;
+    while (grown_capacity < required_token_capacity &&
+        grown_capacity <= engine->max_context_tokens / 2u)
+    {
+        grown_capacity *= 2u;
+    }
+    if (grown_capacity < required_token_capacity)
+    {
+        grown_capacity = required_token_capacity;
+    }
+    if (grown_capacity > engine->max_context_tokens)
+    {
+        grown_capacity = engine->max_context_tokens;
+    }
+    grown_token_ids = (uint32_t *)realloc(
+        record->token_ids,
+        (size_t)grown_capacity * sizeof(record->token_ids[0u]));
+    if (grown_token_ids == 0)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    record->token_ids = grown_token_ids;
+    record->token_capacity = grown_capacity;
+    return SPARK_STATUS_OK;
 }
 
 static SparkGlm52ServingRequestRecord *SparkGlm52ServingFindRecordByHandle(
@@ -682,6 +769,7 @@ static SparkStatus SparkGlm52ServingSubmitPreparedRecord(
 {
     SparkGlm52RequestApiSubmitRequest api_request;
     SparkGlm52RequestApiHandle request_handle;
+    uint32_t record_index;
     SparkStatus status;
 
     memset(&api_request, 0, sizeof(api_request));
@@ -705,12 +793,24 @@ static SparkStatus SparkGlm52ServingSubmitPreparedRecord(
         &request_handle);
     if (status != SPARK_STATUS_OK)
     {
-        SparkGlm52ServingInitializeRequestRecord(
-            record,
-            record->token_ids,
-            record->token_capacity);
         return status;
     }
+
+    record_index = SparkGlm52ServingRecordIndex(engine, record);
+    if (record_index == SPARK_GLM52_SERVING_NO_RECORD_SLOT ||
+        engine->free_record_head != record_index ||
+        record->state != SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_FREE)
+    {
+        (void)SparkGlm52RequestApiCancelRequest(
+            engine->request_api,
+            request_handle);
+        (void)SparkGlm52RequestApiReleaseCompletedRequest(
+            engine->request_api,
+            request_handle);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    engine->free_record_head = record->free_record_next;
+    record->free_record_next = SPARK_GLM52_SERVING_NO_RECORD_SLOT;
 
     record->state = SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_SUBMITTED;
     record->flags = request_flags;
@@ -755,6 +855,7 @@ SparkStatus SparkGlm52ServingEngineSubmitTokenIds(
     uint32_t token_index;
     uint32_t thinking_token_budget;
     uint32_t output_token_budget;
+    uint64_t required_token_capacity;
     uint64_t request_id;
     SparkStatus status;
 
@@ -778,10 +879,6 @@ SparkStatus SparkGlm52ServingEngineSubmitTokenIds(
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    if (request->token_count > record->token_capacity)
-    {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    }
     status = SparkGlm52ServingApplyContextBudget(
         engine,
         request->token_count,
@@ -789,6 +886,20 @@ SparkStatus SparkGlm52ServingEngineSubmitTokenIds(
         request->output_token_budget,
         &thinking_token_budget,
         &output_token_budget);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    required_token_capacity = (uint64_t)request->token_count +
+        thinking_token_budget + output_token_budget;
+    if (required_token_capacity > UINT32_MAX)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    status = SparkGlm52ServingEnsureRecordTokenCapacity(
+        engine,
+        record,
+        (uint32_t)required_token_capacity);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -824,6 +935,8 @@ SparkStatus SparkGlm52ServingEngineSubmitText(
     SparkTokenizerEncoding encoding;
     uint32_t thinking_token_budget;
     uint32_t output_token_budget;
+    uint32_t required_prompt_token_capacity;
+    uint64_t required_token_capacity;
     uint32_t text_bytes;
     uint64_t request_id;
     SparkStatus status;
@@ -865,6 +978,7 @@ SparkStatus SparkGlm52ServingEngineSubmitText(
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
 
+    memset(&encoding, 0, sizeof(encoding));
     SparkTokenizerEncodingReset(&encoding);
     encoding.token_ids = record->token_ids;
     encoding.token_capacity = record->token_capacity;
@@ -874,6 +988,29 @@ SparkStatus SparkGlm52ServingEngineSubmitText(
         text_bytes,
         request->tokenizer_encode_flags,
         &encoding);
+    if (status == SPARK_STATUS_CAPACITY_EXCEEDED &&
+        (engine->flags &
+            SPARK_GLM52_SERVING_ENGINE_FLAG_DYNAMIC_REQUEST_TOKEN_STORAGE) != 0u)
+    {
+        required_prompt_token_capacity =
+            encoding.token_count + encoding.overflow_token_count;
+        status = SparkGlm52ServingEnsureRecordTokenCapacity(
+            engine,
+            record,
+            required_prompt_token_capacity);
+        if (status == SPARK_STATUS_OK)
+        {
+            SparkTokenizerEncodingReset(&encoding);
+            encoding.token_ids = record->token_ids;
+            encoding.token_capacity = record->token_capacity;
+            status = SparkTokenizerEncodeUtf8(
+                engine->tokenizer,
+                request->text,
+                text_bytes,
+                request->tokenizer_encode_flags,
+                &encoding);
+        }
+    }
     if (status != SPARK_STATUS_OK)
     {
         if (result != 0)
@@ -895,6 +1032,20 @@ SparkStatus SparkGlm52ServingEngineSubmitText(
         request->output_token_budget,
         &thinking_token_budget,
         &output_token_budget);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    required_token_capacity = (uint64_t)encoding.token_count +
+        thinking_token_budget + output_token_budget;
+    if (required_token_capacity > UINT32_MAX)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    status = SparkGlm52ServingEnsureRecordTokenCapacity(
+        engine,
+        record,
+        (uint32_t)required_token_capacity);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1997,6 +2148,7 @@ SparkStatus SparkGlm52ServingEngineReleaseCompletedRequest(
     SparkGlm52ServingRequestHandle request_handle)
 {
     SparkGlm52ServingRequestRecord *record;
+    uint32_t record_index;
     uint32_t *token_ids;
     uint32_t token_capacity;
     SparkStatus status;
@@ -2011,6 +2163,23 @@ SparkStatus SparkGlm52ServingEngineReleaseCompletedRequest(
     {
         return SPARK_STATUS_NOT_FOUND;
     }
+    if (engine->release_sequence_function != 0)
+    {
+        uint64_t token_count;
+        token_count = (uint64_t)record->prompt_token_count +
+            record->streamed_decode_token_count;
+        if (token_count == 0u || token_count > UINT32_MAX)
+        {
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+        status = engine->release_sequence_function(
+            engine->callback_context,record->request_id,record->sequence_id,
+            (uint32_t)token_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
     status = SparkGlm52RequestApiReleaseCompletedRequest(
         engine->request_api,
         request_handle);
@@ -2020,11 +2189,25 @@ SparkStatus SparkGlm52ServingEngineReleaseCompletedRequest(
     }
     token_ids = record->token_ids;
     token_capacity = record->token_capacity;
+    record_index = SparkGlm52ServingRecordIndex(engine, record);
+    if (record_index == SPARK_GLM52_SERVING_NO_RECORD_SLOT)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if ((engine->flags &
+            SPARK_GLM52_SERVING_ENGINE_FLAG_DYNAMIC_REQUEST_TOKEN_STORAGE) != 0u)
+    {
+        free(token_ids);
+        token_ids = 0;
+        token_capacity = 0u;
+    }
     SparkGlm52ServingRemoveRecordHash(engine, record);
     SparkGlm52ServingInitializeRequestRecord(
         record,
         token_ids,
         token_capacity);
+    record->free_record_next = engine->free_record_head;
+    engine->free_record_head = record_index;
     SparkGlm52ServingRefreshStats(engine);
     return SPARK_STATUS_OK;
 }

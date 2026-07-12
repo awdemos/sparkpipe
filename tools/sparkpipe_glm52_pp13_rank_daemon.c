@@ -27,8 +27,7 @@
 
 #define SPARK_GLM52_PP13_DAEMON_DEFAULT_MAX_ACTIVE 1024u
 #define SPARK_GLM52_PP13_DAEMON_DEFAULT_PROGRAM "glm52.pp13.rank.production"
-#define SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY \
-    (SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS * 2u)
+#define SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY 64u
 #define SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_HASH_SLOTS 4096u
 #define SPARK_GLM52_PP13_DAEMON_FINAL_EVENT_QUEUE_CAPACITY 2048u
 #define SPARK_GLM52_PP13_DAEMON_NO_WORK_QUEUE_SLOT UINT32_MAX
@@ -1042,6 +1041,57 @@ static SparkStatus SparkGlm52Pp13DaemonConnectCudaResident(
         stats.state != SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_READY)
         status = SPARK_STATUS_BUSY;
     if (status == SPARK_STATUS_OK &&
+        (stats.logical_lane_capacity != runtime->rank_plan.logical_lane_capacity ||
+         stats.execution_row_capacity != runtime->rank_plan.execution_row_capacity ||
+         stats.kv_physical_block_capacity == 0u ||
+         stats.kv_logical_block_capacity < stats.kv_physical_block_capacity ||
+         stats.fp8_moe_backend_kind !=
+            SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_FP8_MOE_BACKEND_BUILTIN_FLASHINFER_GROUPED ||
+         stats.fp8_moe_bound_layer_count == 0u ||
+         stats.fp8_moe_bound_layer_count != stats.fp8_moe_expected_layer_count ||
+         (stats.kv_nvme_enabled != 0u &&
+          stats.kv_nvme_mode !=
+            SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_SYNCHRONOUS_FULL_HISTORY &&
+          stats.kv_nvme_mode !=
+            SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_BATCHED_COHORT_JIT &&
+          stats.kv_nvme_mode !=
+            SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_ASYNC_SELECTED_JIT) ||
+         (runtime->rank_plan.logical_lane_capacity >=
+            SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT &&
+          (stats.kv_nvme_enabled == 0u ||
+           (stats.kv_nvme_mode !=
+                SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_BATCHED_COHORT_JIT &&
+            stats.kv_nvme_mode !=
+                SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_ASYNC_SELECTED_JIT) ||
+           stats.kv_resident_bytes_per_token == 0u ||
+           stats.kv_resident_pool_bytes == 0u ||
+           stats.kv_nvme_capacity_bytes == 0u ||
+           stats.kv_nvme_batch_block_capacity == 0u))))
+    {
+        fprintf(
+            stderr,
+            "rank_cuda_resident_contract_mismatch rank=%u logical=%u/%u "
+			"execution=%u/%u kv_blocks=%u logical_blocks=%u "
+			"fp8_backend=%u fp8_layers=%u/%u nvme=%u "
+            "nvme_mode=%u "
+            "blocker=%.*s\n",
+            runtime->rank_plan.rank_index,
+            stats.logical_lane_capacity,
+            runtime->rank_plan.logical_lane_capacity,
+            stats.execution_row_capacity,
+            runtime->rank_plan.execution_row_capacity,
+			stats.kv_physical_block_capacity,
+			stats.kv_logical_block_capacity,
+            stats.fp8_moe_backend_kind,
+            stats.fp8_moe_bound_layer_count,
+            stats.fp8_moe_expected_layer_count,
+            stats.kv_nvme_enabled,
+            stats.kv_nvme_mode,
+            (int32_t)sizeof(stats.blocker),
+            stats.blocker);
+        status = SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }
+    if (status == SPARK_STATUS_OK &&
         SparkGlm52Pp13DaemonSetNonblocking(fd) < 0)
         status = SPARK_STATUS_INTERNAL_ERROR;
     if (status != SPARK_STATUS_OK)
@@ -1528,6 +1578,8 @@ static SparkStatus SparkGlm52Pp13DaemonBuildNodeContext(
     builder_configuration.max_active_sequence_count =
         configuration->max_active_sequence_count;
 	builder_configuration.kv_pool_token_capacity = SPARK_GLM52_KV_POOL_TOKENS;
+	builder_configuration.maximum_resident_sequence_count =
+		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT;
     builder_configuration.port_base = configuration->port_base;
     builder_configuration.fp8_pack_root = configuration->fp8_pack_root;
     builder_configuration.stagepack_root = configuration->stagepack_root;
@@ -1828,9 +1880,10 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
 }
 
 static uint32_t SparkGlm52Pp13DaemonWorkPacketHash(
-    const SparkGlm52Pp13WorkControlPacket *packet)
+	const SparkGlm52Pp13WorkControlPacket *packet)
 {
-    uint64_t hash;
+	uint64_t hash;
+	uint32_t lane_index;
 
     if (packet == 0)
         return 0u;
@@ -1838,7 +1891,17 @@ static uint32_t SparkGlm52Pp13DaemonWorkPacketHash(
     hash ^= (packet->sequence_id * 0x9e3779b97f4a7c15ull);
     hash ^= (packet->sequence_position * 0xbf58476d1ce4e5b9ull);
     hash ^= ((uint64_t)packet->pipeline_slot << 32);
-    hash ^= ((uint64_t)packet->active_sequence_count << 48);
+	hash ^= ((uint64_t)packet->active_sequence_count << 48);
+	hash ^= ((uint64_t)packet->execution_row_count << 16);
+	for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
+	{
+		hash ^= packet->lanes[lane_index].request_id +
+			0x9e3779b97f4a7c15ull + (hash << 6u) + (hash >> 2u);
+		hash ^= packet->lanes[lane_index].sequence_id +
+			0xbf58476d1ce4e5b9ull + (hash << 6u) + (hash >> 2u);
+		hash ^= packet->lanes[lane_index].sequence_position +
+			((uint64_t)packet->lanes[lane_index].input_token_id << 32u);
+	}
     return (uint32_t)(hash ^ (hash >> 32u));
 }
 
@@ -1847,13 +1910,20 @@ static uint32_t SparkGlm52Pp13DaemonWorkPacketMatches(
     const SparkGlm52Pp13WorkControlPacket *right)
 {
     if (left == 0 || right == 0)
+    {
         return 0u;
+    }
     return left->request_id == right->request_id &&
         left->sequence_id == right->sequence_id &&
         left->sequence_position == right->sequence_position &&
         left->pipeline_slot == right->pipeline_slot &&
         left->active_sequence_count == right->active_sequence_count &&
-        left->new_token_count == right->new_token_count;
+		left->new_token_count == right->new_token_count &&
+		left->lane_count == right->lane_count &&
+		left->rows_per_lane == right->rows_per_lane &&
+		left->execution_row_count == right->execution_row_count &&
+		memcmp(left->lanes,right->lanes,
+			(size_t)left->lane_count * sizeof(left->lanes[0u])) == 0;
 }
 
 static void SparkGlm52Pp13DaemonInitializeWorkQueue(
@@ -2150,23 +2220,33 @@ static uint32_t SparkGlm52Pp13DaemonPumpQueuedWork(
         }
         if (runtime->work_queue_submitted[queue_slot] == 0u)
         {
-			if (runtime->driver_inflight_count == 0u)
-			{
-				runtime->driver_inflight_open_ns =
-					SparkGlm52Pp13DaemonMonotonicNs();
-				runtime->driver_inflight_warned = 0u;
-			}
-			runtime->driver_inflight_count += 1u;
+            /*
+             * submit_work may complete inline because the current builder
+             * drains its CUDA slot before returning.  Account the submission
+             * first so an inline completion cannot be lost and leave a
+             * permanently positive inflight count.
+             */
+            if (runtime->driver_inflight_count == 0u)
+            {
+                runtime->driver_inflight_open_ns =
+                    SparkGlm52Pp13DaemonMonotonicNs();
+                runtime->driver_inflight_warned = 0u;
+            }
+            runtime->driver_inflight_count += 1u;
             status = SparkGlm52Pp13DaemonSubmitWork(runtime,packet);
             if (status == SPARK_STATUS_OK)
             {
                 runtime->work_submit_count += 1u;
                 runtime->work_queue_submitted[queue_slot] = 1u;
+                if ((packet->flags &
+                        SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u &&
+                    runtime->driver_inflight_count != 0u)
+                    runtime->driver_inflight_count -= 1u;
             }
             else if (status == SPARK_STATUS_BUSY)
             {
-				if (runtime->driver_inflight_count != 0u)
-					runtime->driver_inflight_count -= 1u;
+                if (runtime->driver_inflight_count != 0u)
+                    runtime->driver_inflight_count -= 1u;
                 runtime->work_queue_state[queue_slot] =
                     SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING;
                 runtime->work_deferred_count += 1u;
@@ -2175,8 +2255,8 @@ static uint32_t SparkGlm52Pp13DaemonPumpQueuedWork(
             }
             else
             {
-				if (runtime->driver_inflight_count != 0u)
-					runtime->driver_inflight_count -= 1u;
+                if (runtime->driver_inflight_count != 0u)
+                    runtime->driver_inflight_count -= 1u;
                 runtime->work_error_count += 1u;
                 fprintf(stderr,
                     "rank_work_submit_failed status=%u request=%llu sequence=%llu position=%llu queued=%u\n",
@@ -2207,7 +2287,7 @@ static void SparkGlm52Pp13DaemonHandleWork(
 
     status = SparkGlm52Pp13WorkControlValidatePacket(
         packet,
-        runtime->rank_plan.max_active_sequence_count,
+        runtime->rank_plan.execution_row_capacity,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52Pp13DaemonQueueWork(runtime,packet);

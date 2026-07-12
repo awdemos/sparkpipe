@@ -54,6 +54,30 @@ static uint32_t SparkGlm52RequestApiNormalizeDecodeBatchTarget(
     return decode_batch_target;
 }
 
+static uint32_t SparkGlm52RequestApiNormalizeDecodeExecutionRowCapacity(
+    const SparkGlm52RequestApiConfiguration *configuration)
+{
+    uint32_t decode_batch_target;
+    uint32_t maximum_speculative_token_count;
+
+    if (configuration == 0)
+    {
+        return 0u;
+    }
+    if (configuration->decode_execution_row_capacity != 0u)
+    {
+        return configuration->decode_execution_row_capacity;
+    }
+    decode_batch_target = SparkGlm52RequestApiNormalizeDecodeBatchTarget(
+        configuration->decode_batch_target);
+    maximum_speculative_token_count =
+        SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT >
+            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT
+        ? SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT
+        : SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+    return decode_batch_target * (maximum_speculative_token_count + 1u);
+}
+
 static uint32_t SparkGlm52RequestApiNormalizeMaxResidentKvBlockCount(
     const SparkGlm52RequestApiConfiguration *configuration)
 {
@@ -163,6 +187,8 @@ static SparkStatus SparkGlm52RequestApiValidate(
         api->abi_version != SPARK_GLM52_REQUEST_API_ABI_VERSION ||
         api->descriptor_bytes != SPARK_GLM52_REQUEST_API_DESCRIPTOR_BYTES ||
         api->request_capacity == 0u ||
+        api->decode_batch_target == 0u ||
+        api->decode_execution_row_capacity < api->decode_batch_target ||
         api->scheduler == 0 ||
         api->request_slots == 0)
     {
@@ -187,6 +213,8 @@ static SparkStatus SparkGlm52RequestApiValidateConfiguration(
     const SparkGlm52RequestApiConfiguration *configuration)
 {
     uint32_t configuration_flags;
+    uint32_t decode_batch_target;
+    uint32_t decode_execution_row_capacity;
     uint32_t prefetch_lane_count;
     SparkStatus status;
 
@@ -195,8 +223,7 @@ static SparkStatus SparkGlm52RequestApiValidateConfiguration(
         configuration->descriptor_bytes !=
             SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES ||
         configuration->request_capacity == 0u ||
-        configuration->request_slots == 0 ||
-        configuration->reserved != 0u)
+        configuration->request_slots == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -205,9 +232,14 @@ static SparkStatus SparkGlm52RequestApiValidateConfiguration(
         configuration->configuration_flags);
     prefetch_lane_count = SparkGlm52RequestApiNormalizePrefetchLaneCount(
         configuration->prefetch_lane_count);
+    decode_batch_target = SparkGlm52RequestApiNormalizeDecodeBatchTarget(
+        configuration->decode_batch_target);
+    decode_execution_row_capacity =
+        SparkGlm52RequestApiNormalizeDecodeExecutionRowCapacity(configuration);
     if (!SparkGlm52RequestApiConfigurationFlagsAreValid(configuration_flags) ||
         prefetch_lane_count == 0u ||
-        prefetch_lane_count > SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT)
+        prefetch_lane_count > SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT ||
+        decode_execution_row_capacity < decode_batch_target)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -275,6 +307,7 @@ static void SparkGlm52RequestApiInitializeSlot(
     slot->descriptor_bytes = SPARK_GLM52_REQUEST_API_SLOT_DESCRIPTOR_BYTES;
     slot->state = SPARK_GLM52_REQUEST_API_STATE_FREE;
     slot->handle_hash_next = SPARK_GLM52_REQUEST_API_NO_SLOT;
+    slot->free_slot_next = SPARK_GLM52_REQUEST_API_NO_SLOT;
 }
 
 static uint32_t SparkGlm52RequestApiHashHandle(
@@ -436,6 +469,8 @@ SparkStatus SparkGlm52RequestApiInitialize(
         configuration->decode_batch_target);
     api->max_resident_kv_block_count =
         SparkGlm52RequestApiNormalizeMaxResidentKvBlockCount(configuration);
+    api->decode_execution_row_capacity =
+        SparkGlm52RequestApiNormalizeDecodeExecutionRowCapacity(configuration);
     api->next_handle = 1u;
     api->next_sequence_id = 1u;
     api->next_prefetch_id = 1u;
@@ -459,7 +494,12 @@ SparkStatus SparkGlm52RequestApiInitialize(
     for (slot_index = 0u; slot_index < api->request_capacity; ++slot_index)
     {
         SparkGlm52RequestApiInitializeSlot(&api->request_slots[slot_index]);
+        api->request_slots[slot_index].free_slot_next =
+            slot_index + 1u < api->request_capacity
+                ? slot_index + 1u
+                : SPARK_GLM52_REQUEST_API_NO_SLOT;
     }
+    api->free_slot_head = 0u;
     return SPARK_STATUS_OK;
 }
 
@@ -470,16 +510,25 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindFreeSlot(
     SparkGlm52RequestApi *api)
 {
     uint32_t slot_index;
+    SparkGlm52RequestApiSlot *slot;
 
-    for (slot_index = 0u; slot_index < api->request_capacity; ++slot_index)
+    if (api == 0 || api->free_slot_head == SPARK_GLM52_REQUEST_API_NO_SLOT)
     {
-        if (api->request_slots[slot_index].state ==
-            SPARK_GLM52_REQUEST_API_STATE_FREE)
-        {
-            return &api->request_slots[slot_index];
-        }
+        return 0;
     }
-    return 0;
+    slot_index = api->free_slot_head;
+    if (slot_index >= api->request_capacity)
+    {
+        return 0;
+    }
+    slot = &api->request_slots[slot_index];
+    if (slot->state != SPARK_GLM52_REQUEST_API_STATE_FREE)
+    {
+        return 0;
+    }
+    api->free_slot_head = slot->free_slot_next;
+    slot->free_slot_next = SPARK_GLM52_REQUEST_API_NO_SLOT;
+    return slot;
 }
 
 static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindSlotByHandle(
@@ -1482,17 +1531,222 @@ static uint32_t SparkGlm52RequestApiPrefillCachedBlocksAreResident(
     return nonresident_block_count == 0u;
 }
 
+static SparkStatus SparkGlm52RequestApiPendingSpeculativeTokenCount(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiSlot *slot,
+    uint32_t *speculative_token_count_out)
+{
+    SparkGlm52DsparkDraftResult draft_result;
+    SparkStatus status;
+
+    if (api == 0 || slot == 0 || speculative_token_count_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *speculative_token_count_out = 0u;
+    if (!SparkGlm52RequestApiSlotIsSchedulableSpeculativeVerify(slot) &&
+        slot->state !=
+            SPARK_GLM52_REQUEST_API_STATE_RUNNING_SPECULATIVE_VERIFY)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (slot->mtp_draft_token_count != 0u)
+    {
+        if (slot->mtp_draft_token_count >
+            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        *speculative_token_count_out = slot->mtp_draft_token_count;
+        return SPARK_STATUS_OK;
+    }
+    if (!SparkGlm52RequestApiDsparkSpeculationIsEnabled(api))
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    status = SparkGlm52DsparkGetDraft(
+        api->dspark_speculator,
+        slot->sequence_id,
+        &draft_result);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (draft_result.token_count == 0u ||
+        draft_result.token_count >
+            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *speculative_token_count_out = draft_result.token_count;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52RequestApiRequiredDecodeKvTokenCount(
+    const SparkGlm52RequestApiSlot *slot,
+    uint32_t speculative_token_count,
+    uint32_t *required_token_count_out)
+{
+    uint64_t required_token_count;
+
+    if (slot == 0 || required_token_count_out == 0 ||
+        slot->computed_prompt_token_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    required_token_count =
+        (uint64_t)slot->computed_prompt_token_count +
+        (uint64_t)slot->completed_decode_token_count + 1u +
+        (uint64_t)speculative_token_count;
+    if (required_token_count > UINT32_MAX ||
+        required_token_count > SPARK_GLM52_SCHEDULER_MAX_CONTEXT_TOKENS)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    *required_token_count_out = (uint32_t)required_token_count;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52RequestApiApplyActiveKvBlockBudget(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot **selected_slots,
+    uint32_t *selected_count,
+    uint32_t additional_token_count)
+{
+    uint64_t selected_block_count;
+    uint32_t block_token_count;
+    uint32_t input_index;
+    uint32_t output_count;
+
+    if (api == 0 || selected_slots == 0 || selected_count == 0 ||
+        *selected_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (api->max_resident_kv_block_count == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (api->scheduler == 0 || api->scheduler->prefix_cache == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    block_token_count = api->scheduler->prefix_cache_block_tokens;
+    if (block_token_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    selected_block_count = 0u;
+    output_count = 0u;
+    for (input_index = 0u; input_index < *selected_count; ++input_index)
+    {
+        uint64_t required_block_count;
+        uint32_t required_token_count;
+        SparkStatus status;
+
+        status = SparkGlm52RequestApiRequiredDecodeKvTokenCount(
+            selected_slots[input_index],
+            additional_token_count,
+            &required_token_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        required_block_count =
+            ((uint64_t)required_token_count + block_token_count - 1u) /
+            block_token_count;
+        if (required_block_count > api->max_resident_kv_block_count)
+        {
+            if (input_index == 0u)
+            {
+                return SPARK_STATUS_CAPACITY_EXCEEDED;
+            }
+            continue;
+        }
+        if (selected_block_count >
+            api->max_resident_kv_block_count - required_block_count)
+        {
+            continue;
+        }
+        selected_slots[output_count++] = selected_slots[input_index];
+        selected_block_count += required_block_count;
+    }
+    if (output_count == 0u)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    *selected_count = output_count;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52RequestApiEnsureDecodeSlotKvCapacity(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot *slot,
+    uint32_t speculative_token_count,
+    uint32_t *required_token_count_out)
+{
+    uint32_t required_token_count;
+    SparkStatus status;
+
+    if (api == 0 || api->scheduler == 0 ||
+        api->scheduler->prefix_cache == 0 || slot == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52RequestApiRequiredDecodeKvTokenCount(
+        slot,
+        speculative_token_count,
+        &required_token_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52PrefixCacheEnsureSequenceTokenCapacity(
+        api->scheduler->prefix_cache,
+        slot->sequence_id,
+        required_token_count);
+    if (status == SPARK_STATUS_OK && required_token_count_out != 0)
+    {
+        *required_token_count_out = required_token_count;
+    }
+    return status;
+}
+
+static SparkStatus SparkGlm52RequestApiEnsurePendingDecodeSlotKvCapacity(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot *slot,
+    uint32_t *required_token_count_out)
+{
+    uint32_t speculative_token_count;
+    SparkStatus status;
+
+    status = SparkGlm52RequestApiPendingSpeculativeTokenCount(
+        api,
+        slot,
+        &speculative_token_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52RequestApiEnsureDecodeSlotKvCapacity(
+        api,
+        slot,
+        speculative_token_count,
+        required_token_count_out);
+}
+
 static uint32_t SparkGlm52RequestApiDecodeBlocksAreResident(
     SparkGlm52RequestApi *api,
     const SparkGlm52RequestApiSlot *slot)
 {
+    uint32_t required_token_count;
     uint32_t physical_block_count;
     uint32_t resident_block_count;
     uint32_t nonresident_block_count;
     SparkStatus status;
 
-    if (!SparkGlm52RequestApiJitPrefetchIsEnabled(api) ||
-        api->scheduler == 0 ||
+    if (api->scheduler == 0 ||
         api->scheduler->prefix_cache == 0 ||
         slot == 0 ||
         slot->computed_prompt_token_count == 0u)
@@ -1500,10 +1754,23 @@ static uint32_t SparkGlm52RequestApiDecodeBlocksAreResident(
         return 1u;
     }
 
+    status = SparkGlm52RequestApiEnsurePendingDecodeSlotKvCapacity(
+        api,
+        (SparkGlm52RequestApiSlot *)slot,
+        &required_token_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return 0u;
+    }
+    if (!SparkGlm52RequestApiJitPrefetchIsEnabled(api))
+    {
+        return 1u;
+    }
+
     status = SparkGlm52PrefixCacheProbeSequenceResidency(
         api->scheduler->prefix_cache,
         slot->sequence_id,
-        slot->computed_prompt_token_count,
+        required_token_count,
         &physical_block_count,
         &resident_block_count,
         &nonresident_block_count);
@@ -1606,16 +1873,25 @@ static SparkStatus SparkGlm52RequestApiCollectDecodeSlotBlocks(
     uint32_t *physical_block_indices,
     uint32_t *physical_block_count)
 {
+    uint32_t required_token_count;
     uint32_t slot_physical_block_count;
     uint32_t slot_physical_block_indices[
         SPARK_GLM52_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT];
     uint32_t block_index;
     SparkStatus status;
 
+    status = SparkGlm52RequestApiEnsurePendingDecodeSlotKvCapacity(
+        api,
+        slot,
+        &required_token_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     status = SparkGlm52PrefixCacheBuildPhysicalBlockTable(
         api->scheduler->prefix_cache,
         slot->sequence_id,
-        slot->computed_prompt_token_count,
+        required_token_count,
         slot_physical_block_indices,
         SPARK_GLM52_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT,
         &slot_physical_block_count);
@@ -1708,16 +1984,25 @@ static SparkStatus SparkGlm52RequestApiCollectDecodeSlotPrefetchSources(
     SparkGlm52KvCachePrefetchSourceBlock *source_blocks,
     uint32_t *source_block_count)
 {
+    uint32_t required_token_count;
     SparkGlm52KvCachePrefetchSourceBlock slot_source_blocks[
         SPARK_GLM52_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT];
     uint32_t slot_source_block_count;
     uint32_t block_index;
     SparkStatus status;
 
+    status = SparkGlm52RequestApiEnsurePendingDecodeSlotKvCapacity(
+        api,
+        slot,
+        &required_token_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     status = SparkGlm52PrefixCacheBuildSequencePrefetchSources(
         api->scheduler->prefix_cache,
         slot->sequence_id,
-        slot->computed_prompt_token_count,
+        required_token_count,
         slot_source_blocks,
         SPARK_GLM52_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT,
         &slot_source_block_count);
@@ -3148,6 +3433,7 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefill(
     dispatch->prefix_cache_result_hash =
         dispatch->prefill_decision.prefix_cache_result_hash;
     dispatch->request_handles[0] = slot->handle;
+    dispatch->request_slot_indices[0] = SparkGlm52RequestApiSlotIndex(api, slot);
     dispatch->request_ids[0] = slot->request_id;
     dispatch->sequence_ids[0] = slot->sequence_id;
     if (SparkGlm52RequestApiSlotCanUseDspark(api, slot))
@@ -3185,6 +3471,8 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefill(
         api->queued_request_count -= 1u;
         api->running_request_count += 1u;
         dispatch->request_handles[dispatch->request_count] = candidate->handle;
+        dispatch->request_slot_indices[dispatch->request_count] =
+            SparkGlm52RequestApiSlotIndex(api, candidate);
         dispatch->request_ids[dispatch->request_count] = candidate->request_id;
         dispatch->sequence_ids[dispatch->request_count] = candidate->sequence_id;
         dispatch->request_count += 1u;
@@ -3523,6 +3811,8 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
         api->queued_request_count -= 1u;
         api->running_request_count += 1u;
         dispatch->request_handles[request_index] = selected_slot->handle;
+        dispatch->request_slot_indices[request_index] =
+            SparkGlm52RequestApiSlotIndex(api, selected_slot);
         dispatch->request_ids[request_index] = selected_slot->request_id;
         dispatch->sequence_ids[request_index] = selected_slot->sequence_id;
     }
@@ -3782,6 +4072,19 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     {
         batch_target = SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT;
     }
+    {
+        uint32_t row_limited_batch_target;
+        row_limited_batch_target = api->decode_execution_row_capacity /
+            (leader_draft.token_count + 1u);
+        if (row_limited_batch_target == 0u)
+        {
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+        if (batch_target > row_limited_batch_target)
+        {
+            batch_target = row_limited_batch_target;
+        }
+    }
     require_resident_batch_members =
         SparkGlm52RequestApiSlotHasRealtimePriority(first_slot) ||
         !SparkGlm52RequestApiJitPrefetchIsEnabled(api);
@@ -3793,6 +4096,15 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
         require_resident_batch_members,
         selected_slots,
         batch_target);
+    status = SparkGlm52RequestApiApplyActiveKvBlockBudget(
+        api,
+        selected_slots,
+        &request_count,
+        leader_draft.token_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     for (request_index = 0u; request_index < request_count; ++request_index)
     {
         SparkGlm52RequestApiFillSpeculativeVerifySchedulerRequest(
@@ -3801,6 +4113,19 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     if (request_count == 0u)
     {
         return SPARK_STATUS_NOT_FOUND;
+    }
+
+    for (request_index = 0u; request_index < request_count; ++request_index)
+    {
+        status = SparkGlm52RequestApiEnsureDecodeSlotKvCapacity(
+            api,
+            selected_slots[request_index],
+            leader_draft.token_count,
+            0);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
     }
 
     status = SparkGlm52RequestApiRunSlotArrayCriticalJitKvPrefetch(
@@ -3890,6 +4215,8 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
             draft_result.token_count;
         api->running_request_count += 1u;
         dispatch->request_handles[request_index] = selected_slot->handle;
+        dispatch->request_slot_indices[request_index] =
+            SparkGlm52RequestApiSlotIndex(api, selected_slot);
         dispatch->request_ids[request_index] = selected_slot->request_id;
         dispatch->sequence_ids[request_index] = selected_slot->sequence_id;
         for (token_index = 0u;
@@ -3957,6 +4284,16 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
         require_resident_batch_members,
         selected_slots,
         batch_target);
+    status = SparkGlm52RequestApiApplyActiveKvBlockBudget(
+        api,
+        selected_slots,
+        &request_count,
+        SparkGlm52RequestApiMtpCommitIsEnabled(api)
+            ? SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT : 0u);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     for (request_index = 0u; request_index < request_count; ++request_index)
     {
         SparkGlm52RequestApiFillDecodeSchedulerRequest(
@@ -3965,6 +4302,20 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
     if (request_count == 0u)
     {
         return SPARK_STATUS_NOT_FOUND;
+    }
+
+    for (request_index = 0u; request_index < request_count; ++request_index)
+    {
+        status = SparkGlm52RequestApiEnsureDecodeSlotKvCapacity(
+            api,
+            selected_slots[request_index],
+            SparkGlm52RequestApiMtpCommitIsEnabled(api)
+                ? SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT : 0u,
+            0);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
     }
 
     status = SparkGlm52RequestApiRunSlotArrayCriticalJitKvPrefetch(
@@ -4023,6 +4374,8 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
         selected_slot->scheduled_decode_token_count += 1u;
         api->running_request_count += 1u;
         dispatch->request_handles[request_index] = selected_slot->handle;
+        dispatch->request_slot_indices[request_index] =
+            SparkGlm52RequestApiSlotIndex(api, selected_slot);
         dispatch->request_ids[request_index] = selected_slot->request_id;
         dispatch->sequence_ids[request_index] = selected_slot->sequence_id;
         dispatch->decode_committed_token_counts[request_index] = 1u;
@@ -5014,6 +5367,8 @@ SparkStatus SparkGlm52RequestApiDescribePrefillDispatch(
             decision->scheduled_prompt_token_offset;
         prefill_view->lanes[0u].prompt_token_count =
             decision->scheduled_prompt_token_count;
+        prefill_view->lanes[0u].request_slot_index =
+            dispatch->request_slot_indices[0u];
         prefill_view->lanes[0u].request_id = dispatch->request_ids[0u];
         prefill_view->lanes[0u].sequence_id = dispatch->sequence_ids[0u];
         prefill_view->lanes[0u].request_handle = dispatch->request_handles[0u];
@@ -5079,6 +5434,8 @@ SparkStatus SparkGlm52RequestApiDescribePrefillDispatch(
                 lane->scheduled_prompt_token_offset;
             prefill_view->lanes[lane_index].prompt_token_count =
                 lane->scheduled_prompt_token_count;
+            prefill_view->lanes[lane_index].request_slot_index =
+                dispatch->request_slot_indices[lane_index];
             prefill_view->lanes[lane_index].request_id =
                 dispatch->request_ids[lane_index];
             prefill_view->lanes[lane_index].sequence_id =
@@ -5202,6 +5559,8 @@ SparkStatus SparkGlm52RequestApiDescribeDecodeDispatch(
             api,
             dispatch->request_handles[lane_index]);
         if (slot == 0 ||
+            dispatch->request_slot_indices[lane_index] !=
+                SparkGlm52RequestApiSlotIndex(api, slot) ||
             slot->computed_prompt_token_count == 0u ||
             (slot->state != SPARK_GLM52_REQUEST_API_STATE_RUNNING_DECODE &&
              slot->state !=
@@ -5222,6 +5581,11 @@ SparkStatus SparkGlm52RequestApiDescribeDecodeDispatch(
         lane->request_index = lane_index;
         lane->sequence_position = (uint32_t)sequence_position;
         lane->context_token_count = (uint32_t)(sequence_position + 1u);
+        lane->request_slot_index = SparkGlm52RequestApiSlotIndex(api, slot);
+        if (lane->request_slot_index == SPARK_GLM52_REQUEST_API_NO_SLOT)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
         lane->request_id = slot->request_id;
         lane->sequence_id = slot->sequence_id;
         lane->request_handle = slot->handle;
@@ -5301,6 +5665,7 @@ SparkStatus SparkGlm52RequestApiBuildDispatchKvBlockTables(
         for (lane_index = 0u; lane_index < dispatch->request_count; ++lane_index)
         {
             SparkGlm52RequestApiSlot *slot;
+            uint32_t required_token_count;
 
             slot = SparkGlm52RequestApiFindSlotByHandle(
                 api,
@@ -5313,10 +5678,24 @@ SparkStatus SparkGlm52RequestApiBuildDispatchKvBlockTables(
             {
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
+            status = SparkGlm52RequestApiEnsureDecodeSlotKvCapacity(
+                api,
+                slot,
+                dispatch->kind ==
+                    SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH
+                        ? dispatch->speculative_token_count
+                        : (dispatch->flags &
+                            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u
+                            ? dispatch->mtp_draft_token_budget : 0u,
+                &required_token_count);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
             status = SparkGlm52PrefixCacheBuildPhysicalBlockTable(
                 api->scheduler->prefix_cache,
                 slot->sequence_id,
-                slot->computed_prompt_token_count,
+                required_token_count,
                 &physical_block_indices[(uint64_t)lane_index * lane_stride],
                 lane_capacity,
                 &lane_physical_block_counts[lane_index]);
@@ -5787,6 +6166,17 @@ SparkStatus SparkGlm52RequestApiReleaseCompletedRequest(
         return status;
     }
     SparkGlm52RequestApiRemoveSlotHash(api, slot);
-    SparkGlm52RequestApiInitializeSlot(slot);
+    {
+        uint32_t released_slot_index;
+
+        released_slot_index = SparkGlm52RequestApiSlotIndex(api, slot);
+        if (released_slot_index == SPARK_GLM52_REQUEST_API_NO_SLOT)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+        SparkGlm52RequestApiInitializeSlot(slot);
+        slot->free_slot_next = api->free_slot_head;
+        api->free_slot_head = released_slot_index;
+    }
     return SPARK_STATUS_OK;
 }

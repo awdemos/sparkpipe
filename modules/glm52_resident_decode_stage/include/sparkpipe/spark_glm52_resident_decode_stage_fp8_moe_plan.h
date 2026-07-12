@@ -10,6 +10,12 @@ extern "C" {
 #endif
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_ABI_VERSION 1u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BINDING_CREATE_ABI_VERSION 2u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BINDING_CREATE_FLAG_EXTERNAL_WORKSPACE 0x00000001u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BINDING_CREATE_KNOWN_FLAGS \
+	SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BINDING_CREATE_FLAG_EXTERNAL_WORKSPACE
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BACKEND_NONE 0u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BACKEND_BUILTIN_FLASHINFER_GROUPED 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_MAGIC_BYTES 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_MAGIC "SPARKGLM52FP8\0\0"
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_HEADER_BYTES 512u
@@ -80,6 +86,8 @@ typedef struct SparkGlm52ResidentDecodeStageFp8MoeResidentBinding
 	uint8_t *w2_weight_fp8_e4m3;
 	float *w2_scale_inv_f32;
 	void *workspace;
+	uint32_t workspace_owned;
+	uint32_t backend_kind;
 } SparkGlm52ResidentDecodeStageFp8MoeResidentBinding;
 
 typedef struct SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateInfo
@@ -87,8 +95,10 @@ typedef struct SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateInfo
 	uint32_t abi_version;
 	uint32_t layer_index;
 	uint32_t maximum_active_sequence_count;
-	uint32_t reserved;
+	uint32_t flags;
 	const char *pack_path;
+	void *external_workspace;
+	uint64_t external_workspace_bytes;
 } SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateInfo;
 
 SparkStatus SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateFromPackFile(

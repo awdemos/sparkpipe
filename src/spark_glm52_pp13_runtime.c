@@ -5,6 +5,13 @@
 #include <string.h>
 #include <sys/stat.h>
 
+static const uint32_t SparkGlm52Pp13RuntimeDefaultLayerCounts[
+    SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT] =
+{
+    6u, 6u, 6u, 6u, 6u, 6u, 6u,
+    6u, 6u, 6u, 6u, 6u, 6u
+};
+
 static SparkStatus SparkGlm52Pp13RuntimeReport(
     char *error_buffer,
     uint32_t error_buffer_bytes,
@@ -88,7 +95,7 @@ static void SparkGlm52Pp13RuntimeInitializeEndpoint(
         SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE;
     endpoint->max_active_sequence_count = max_active_sequence_count;
     endpoint->max_packet_bytes =
-        (uint64_t)SPARK_GLM52_PP13_RUNTIME_MAX_TRANSPORT_BYTES_PER_SEQUENCE *
+        (uint64_t)SPARK_GLM52_PP13_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
         (uint64_t)endpoint->max_active_sequence_count;
     endpoint->transport_module_id =
         SPARK_HIDDEN_TRANSPORT_TCP_CUDA_HOST_MODULE_ID;
@@ -100,8 +107,6 @@ SparkStatus SparkGlm52Pp13RuntimeBuildFixedStagePlan(
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    uint32_t stage_index;
-
     if (stage_plan == 0)
     {
         return SparkGlm52Pp13RuntimeReport(
@@ -110,28 +115,9 @@ SparkStatus SparkGlm52Pp13RuntimeBuildFixedStagePlan(
             SPARK_STATUS_INVALID_ARGUMENT,
             "stage plan is null");
     }
-    memset(stage_plan, 0, sizeof(*stage_plan));
-    stage_plan->abi_version = SPARK_GLM52_STAGE_PLAN_ABI_VERSION;
-    stage_plan->descriptor_bytes = SPARK_GLM52_STAGE_PLAN_DESCRIPTOR_BYTES;
-    stage_plan->stage_count = SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT;
-    for (stage_index = 0u;
-         stage_index < SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT;
-         ++stage_index)
-    {
-        stage_plan->stages[stage_index].first_layer_index =
-            stage_index * SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE;
-        stage_plan->stages[stage_index].layer_count =
-            SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE;
-        stage_plan->stages[stage_index].flags =
-            SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN |
-            SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_OUTPUT_HIDDEN;
-    }
-    stage_plan->stages[0u].flags |=
-        SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_DENSE_PREFIX;
-    stage_plan->stages[SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT - 1u].flags =
-        SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN |
-        SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN;
-    return SparkGlm52StagePlanValidate(
+    return SparkGlm52StagePlanBuildFromLayerCounts(
+        SparkGlm52Pp13RuntimeDefaultLayerCounts,
+        SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT,
         stage_plan,
         error_buffer,
         error_buffer_bytes);
@@ -161,16 +147,18 @@ SparkStatus SparkGlm52Pp13RuntimeRankHostName(
 
 SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     uint32_t rank_index,
-    uint32_t max_active_sequence_count,
+    uint32_t logical_lane_capacity,
     uint32_t port_base,
     SparkGlm52Pp13RuntimeRankPlan *rank_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
     SparkGlm52StagePlan stage_plan;
+    uint64_t maximum_execution_row_count;
     SparkStatus status;
 
-    if (rank_plan == 0 || max_active_sequence_count == 0u ||
+    if (rank_plan == 0 || logical_lane_capacity == 0u ||
+        logical_lane_capacity > SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET ||
         rank_index >= SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT ||
         port_base > (65535u - SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT))
     {
@@ -200,14 +188,29 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     rank_plan->next_rank_index = UINT32_MAX;
     rank_plan->listen_port = port_base + rank_index;
     rank_plan->next_port = 0u;
-    rank_plan->max_active_sequence_count = max_active_sequence_count;
+    maximum_execution_row_count =
+        (uint64_t)logical_lane_capacity *
+        (uint64_t)SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE;
+    if (maximum_execution_row_count > UINT32_MAX)
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_CAPACITY_EXCEEDED,
+            "PP13 execution-row capacity overflows u32");
+    }
+    rank_plan->logical_lane_capacity = logical_lane_capacity;
+    rank_plan->maximum_speculative_rows_per_lane =
+        SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE;
+    rank_plan->execution_row_capacity =
+        (uint32_t)maximum_execution_row_count;
     rank_plan->hidden_dimension = SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION;
     rank_plan->bytes_per_sequence =
         SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE;
     rank_plan->quantization_mode = SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE;
     rank_plan->max_packet_bytes =
-        (uint64_t)SPARK_GLM52_PP13_RUNTIME_MAX_TRANSPORT_BYTES_PER_SEQUENCE *
-        (uint64_t)rank_plan->max_active_sequence_count;
+        (uint64_t)SPARK_GLM52_PP13_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
+        (uint64_t)rank_plan->execution_row_capacity;
     status = SparkGlm52Pp13RuntimeRankHostName(
         rank_index,
         rank_plan->host_name,
@@ -239,7 +242,7 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
         }
         SparkGlm52Pp13RuntimeInitializeEndpoint(
             &rank_plan->input_endpoint,
-            max_active_sequence_count,
+            rank_plan->execution_row_capacity,
             rank_plan->input_route_name);
     }
     if (rank_index + 1u < SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT)
@@ -266,7 +269,7 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
         }
         SparkGlm52Pp13RuntimeInitializeEndpoint(
             &rank_plan->output_endpoint,
-            max_active_sequence_count,
+            rank_plan->execution_row_capacity,
             rank_plan->output_route_name);
     }
     if ((stage_plan.stages[rank_index].flags &
@@ -290,7 +293,17 @@ SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
+    SparkGlm52StagePlan stage_plan;
     SparkStatus status;
+
+    status = SparkGlm52Pp13RuntimeBuildFixedStagePlan(
+        &stage_plan,
+        error_buffer,
+        error_buffer_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
 
     if (rank_plan == 0 ||
         rank_plan->abi_version != SPARK_GLM52_PP13_RUNTIME_ABI_VERSION ||
@@ -299,18 +312,26 @@ SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
         rank_plan->rank_index >= SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT ||
         (rank_plan->flags & ~SPARK_GLM52_PP13_RUNTIME_RANK_KNOWN_FLAGS) != 0u ||
         rank_plan->first_layer_index !=
-            rank_plan->rank_index * SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE ||
-        rank_plan->layer_count != SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE ||
+            stage_plan.stages[rank_plan->rank_index].first_layer_index ||
+        rank_plan->layer_count !=
+            stage_plan.stages[rank_plan->rank_index].layer_count ||
         rank_plan->host_name[0] == '\0' ||
-        rank_plan->max_active_sequence_count == 0u ||
+        rank_plan->logical_lane_capacity == 0u ||
+        rank_plan->logical_lane_capacity >
+            SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET ||
+        rank_plan->maximum_speculative_rows_per_lane !=
+            SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE ||
+        rank_plan->execution_row_capacity !=
+            rank_plan->logical_lane_capacity *
+                rank_plan->maximum_speculative_rows_per_lane ||
         rank_plan->hidden_dimension != SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION ||
         rank_plan->bytes_per_sequence !=
             SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE ||
         rank_plan->quantization_mode !=
             SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE ||
         rank_plan->max_packet_bytes !=
-            ((uint64_t)SPARK_GLM52_PP13_RUNTIME_MAX_TRANSPORT_BYTES_PER_SEQUENCE *
-             (uint64_t)rank_plan->max_active_sequence_count))
+            ((uint64_t)SPARK_GLM52_PP13_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
+             (uint64_t)rank_plan->execution_row_capacity))
     {
         return SparkGlm52Pp13RuntimeReport(
             error_buffer,

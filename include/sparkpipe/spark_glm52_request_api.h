@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_REQUEST_API_ABI_VERSION 1u
+#define SPARK_GLM52_REQUEST_API_ABI_VERSION 4u
 #define SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52RequestApiConfiguration))
 #define SPARK_GLM52_REQUEST_API_DESCRIPTOR_BYTES \
@@ -163,7 +163,7 @@ typedef struct SparkGlm52RequestApiSlot
     uint64_t handle;
     uint64_t submission_order;
     uint32_t handle_hash_next;
-    uint32_t reserved1;
+    uint32_t free_slot_next;
     const uint32_t *prompt_token_ids;
     uint32_t mtp_draft_token_count;
     uint32_t mtp_draft_token_ids[SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
@@ -204,7 +204,7 @@ typedef struct SparkGlm52RequestApiConfiguration
     uint32_t prefetch_lane_count;
     uint32_t decode_batch_target;
     uint32_t max_resident_kv_block_count;
-    uint32_t reserved;
+    uint32_t decode_execution_row_capacity;
     SparkGlm52Scheduler *scheduler;
     SparkGlm52RequestApiSlot *request_slots;
     SparkGlm52RequestApiKvPrefetchFunction kv_prefetch_function;
@@ -228,6 +228,8 @@ typedef struct SparkGlm52RequestApiDispatch
     uint64_t prefix_cache_parent_hash;
     uint64_t prefix_cache_result_hash;
     SparkGlm52RequestApiHandle request_handles[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+    uint32_t request_slot_indices[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     uint64_t request_ids[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     uint64_t sequence_ids[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
@@ -261,6 +263,7 @@ typedef struct SparkGlm52RequestApiPrefillDispatchLaneView
     uint32_t request_index;
     uint32_t prompt_token_offset;
     uint32_t prompt_token_count;
+    uint32_t request_slot_index;
     uint64_t request_id;
     uint64_t sequence_id;
     SparkGlm52RequestApiHandle request_handle;
@@ -288,7 +291,7 @@ typedef struct SparkGlm52RequestApiDecodeDispatchLaneView
     uint32_t request_index;
     uint32_t sequence_position;
     uint32_t context_token_count;
-    uint32_t reserved0;
+    uint32_t request_slot_index;
     uint64_t request_id;
     uint64_t sequence_id;
     SparkGlm52RequestApiHandle request_handle;
@@ -322,7 +325,8 @@ typedef struct SparkGlm52RequestApi
     uint32_t prefetch_lane_count;
     uint32_t decode_batch_target;
     uint32_t max_resident_kv_block_count;
-    uint32_t reserved;
+    uint32_t decode_execution_row_capacity;
+    uint32_t free_slot_head;
     uint64_t next_handle;
     uint64_t next_sequence_id;
     uint64_t submission_counter;

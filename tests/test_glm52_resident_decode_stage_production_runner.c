@@ -76,7 +76,7 @@ static const SparkModelDriverProgramProfile TestProfile =
     0u,
     16u,
     128u,
-    3u,
+    7u,
     128u,
     4096u,
     0u,
@@ -158,6 +158,8 @@ static void SparkTestProductionRunnerInitializeDispatch(
     dispatch->sequence_id = 2002u;
     dispatch->sequence_position = 33u;
     dispatch->active_sequence_count = 1u;
+    dispatch->logical_lane_count = 1u;
+    dispatch->rows_per_lane = 1u;
     dispatch->new_token_count = 1u;
     dispatch->pipeline_slot = 5u;
     dispatch->priority = 9u;
@@ -225,6 +227,33 @@ static void SparkTestProductionRunnerRejectsMissingTransport(void)
         &dispatch) == SPARK_STATUS_INVALID_ARGUMENT);
     assert(TestState.admit_count == 0u);
     assert(TestState.submit_count == 0u);
+}
+
+static void SparkTestProductionRunnerCarriesLayerMajorVerifyShape(void)
+{
+    SparkGlm52ResidentDecodeStageProductionRunner runner;
+    SparkGlm52ResidentDecodeStageProductionRunnerDispatch dispatch;
+
+    memset(&TestState, 0, sizeof(TestState));
+    TestState.admit_accept = 1u;
+    SparkTestProductionRunnerInitializeKvTable();
+    SparkTestProductionRunnerInitializeRunner(
+        &runner,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DEFAULT_FLAGS);
+    SparkTestProductionRunnerInitializeDispatch(&dispatch);
+    dispatch.logical_lane_count = 16u;
+    dispatch.rows_per_lane = 7u;
+    dispatch.active_sequence_count = 112u;
+    dispatch.new_token_count = 7u;
+    assert(SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
+        &runner,&dispatch) == SPARK_STATUS_OK);
+    assert((TestState.last_frame_context.flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY) != 0u);
+    assert(TestState.last_frame_context.logical_lane_count == 16u);
+    assert(TestState.last_frame_context.rows_per_lane == 7u);
+    dispatch.active_sequence_count -= 1u;
+    assert(SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
+        &runner,&dispatch) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestProductionRunnerCarriesPrefillView(void)
@@ -326,6 +355,7 @@ static void SparkTestProductionRunnerRejectsSlowProgram(void)
 int main(void)
 {
     SparkTestProductionRunnerSubmitsFrame();
+    SparkTestProductionRunnerCarriesLayerMajorVerifyShape();
     SparkTestProductionRunnerRejectsMissingTransport();
     SparkTestProductionRunnerCarriesPrefillView();
     SparkTestProductionRunnerLeavesPrefillContextDecodeShaped();

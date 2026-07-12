@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 
+#include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
@@ -45,6 +46,12 @@ extern "C" {
     ((uint32_t)sizeof(SparkGlm52KvCacheCapacityRequest))
 #define SPARK_GLM52_KV_CACHE_CAPACITY_ESTIMATE_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52KvCacheCapacityEstimate))
+#define SPARK_GLM52_KV_JIT_STAGE_BUDGET_ABI_VERSION 1u
+#define SPARK_GLM52_KV_JIT_STAGE_BUDGET_REQUEST_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52KvJitStageBudgetRequest))
+#define SPARK_GLM52_KV_JIT_STAGE_BUDGET_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52KvJitStageBudget))
+#define SPARK_GLM52_KV_JIT_DEFAULT_RECORD_ALIGNMENT 4096u
 
 typedef struct SparkGlm52KvCacheCapacityRequest
 {
@@ -84,6 +91,46 @@ typedef struct SparkGlm52KvCacheCapacityEstimate
     uint64_t bytes_per_context_per_rank;
     uint64_t unused_cache_bytes_per_rank;
 } SparkGlm52KvCacheCapacityEstimate;
+
+typedef struct SparkGlm52KvJitStageBudgetRequest
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t first_layer_index;
+    uint32_t layer_count;
+    uint32_t physical_pool_token_capacity;
+    uint32_t backing_block_capacity;
+    uint32_t active_sequence_count;
+    uint32_t backing_request_count;
+    uint32_t selected_token_count;
+    uint32_t include_mtp_layer;
+    uint32_t block_token_count;
+    uint32_t record_alignment_bytes;
+} SparkGlm52KvJitStageBudgetRequest;
+
+typedef struct SparkGlm52KvJitStageBudget
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t first_layer_index;
+    uint32_t layer_count;
+    uint32_t local_dsa_index_layer_count;
+    uint32_t include_mtp_layer;
+    uint32_t physical_block_capacity;
+    uint32_t backing_block_capacity;
+    uint32_t maximum_average_active_context_tokens;
+    uint32_t maximum_average_backing_context_tokens;
+    uint64_t mla_bytes_per_token;
+    uint64_t dsa_index_bytes_per_token;
+    uint64_t mtp_bytes_per_token;
+    uint64_t resident_bytes_per_token;
+    uint64_t resident_summary_bytes;
+    uint64_t resident_pool_bytes;
+    uint64_t nvme_payload_bytes_per_block;
+    uint64_t nvme_record_bytes;
+    uint64_t nvme_capacity_bytes;
+    uint64_t compact_selected_mla_working_set_bytes;
+} SparkGlm52KvJitStageBudget;
 
 
 #define SPARK_GLM52_KV_CACHE_PREFETCH_SOURCE_BLOCK_DESCRIPTOR_BYTES \
@@ -345,6 +392,12 @@ typedef struct SparkGlm52KvCacheArena
 SparkStatus SparkGlm52KvCacheEstimateCapacity(
     const SparkGlm52KvCacheCapacityRequest *request,
     SparkGlm52KvCacheCapacityEstimate *estimate);
+
+uint32_t SparkGlm52KvCacheDsaSourceLayer(uint32_t layer_index);
+
+SparkStatus SparkGlm52KvCacheCalculateJitStageBudget(
+    const SparkGlm52KvJitStageBudgetRequest *request,
+    SparkGlm52KvJitStageBudget *budget);
 
 SparkStatus SparkGlm52KvCacheArenaInitialize(
     SparkGlm52KvCacheArena *arena,

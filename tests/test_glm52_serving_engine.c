@@ -59,6 +59,10 @@ typedef struct SparkTestServingCallbackContext
     uint32_t decode_callback_count;
     uint32_t largest_prefill_lane_count;
     uint32_t saw_decode_kv_table;
+    uint32_t release_callback_count;
+    uint32_t released_token_count;
+    uint64_t released_request_id;
+    uint64_t released_sequence_id;
 } SparkTestServingCallbackContext;
 
 static SparkTestServingFixture Fixture;
@@ -84,6 +88,25 @@ static SparkStatus SparkTestServingKvPrefetch(
     (void)context;
     assert(prefetch_plan != 0);
     assert(prefetch_plan->abi_version == SPARK_GLM52_KV_CACHE_ABI_VERSION);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkTestServingReleaseSequence(
+    void *context,
+    uint64_t request_id,
+    uint64_t sequence_id,
+    uint32_t token_count)
+{
+    SparkTestServingCallbackContext *callback_context;
+    callback_context = (SparkTestServingCallbackContext *)context;
+    assert(callback_context != 0);
+    assert(request_id != 0u);
+    assert(sequence_id != 0u);
+    assert(token_count != 0u);
+    callback_context->release_callback_count += 1u;
+    callback_context->released_request_id = request_id;
+    callback_context->released_sequence_id = sequence_id;
+    callback_context->released_token_count = token_count;
     return SPARK_STATUS_OK;
 }
 
@@ -400,6 +423,8 @@ static void SparkTestServingInitializeFixture(
     serving_configuration.lane_count_capacity = SPARK_TEST_SERVING_LANE_CAPACITY;
     serving_configuration.prefill_function = SparkTestServingPrefill;
     serving_configuration.decode_function = SparkTestServingDecode;
+    serving_configuration.release_sequence_function =
+        SparkTestServingReleaseSequence;
     serving_configuration.callback_context = callback_context;
     assert(SparkGlm52ServingEngineInitialize(
         &fixture->serving_engine,
@@ -545,6 +570,11 @@ static void SparkTestServingFireAndForgetPumpRunsFullPromptToDecode(void)
     assert(prefill_event_count == 2u);
     assert(token_event_count == 2u);
     assert(completion_event_count == 1u);
+    assert(CallbackContext.release_callback_count == 1u);
+    assert(CallbackContext.released_request_id == 9001u);
+    assert(CallbackContext.released_sequence_id == 19001u);
+    assert(CallbackContext.released_token_count ==
+        SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT + 2u);
 }
 
 static void SparkTestServingPrefillBatchingIsInternal(void)
@@ -661,11 +691,97 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
     assert(completion_event_count == 1u);
 }
 
+static void SparkTestServingDynamicTokenStorageGrowsAndRecycles(void)
+{
+    SparkGlm52ServingEngineConfiguration configuration;
+    SparkGlm52ServingSubmitTokenIdsRequest request;
+    SparkGlm52ServingSubmitResult result;
+    SparkGlm52ServingRequestHandle handle;
+
+    SparkTestServingInitializeFixture(&Fixture, &CallbackContext);
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
+    configuration.descriptor_bytes =
+        SPARK_GLM52_SERVING_ENGINE_CONFIGURATION_DESCRIPTOR_BYTES;
+    configuration.flags = SPARK_GLM52_SERVING_ENGINE_DEFAULT_FLAGS |
+        SPARK_GLM52_SERVING_ENGINE_FLAG_DYNAMIC_REQUEST_TOKEN_STORAGE;
+    configuration.runtime_contract_flags =
+        SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS |
+        SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_JIT_KV_PREFETCH_CONNECTED |
+        SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_OVERLAPPED_STAGING_READY;
+    configuration.default_output_token_budget = 2u;
+    configuration.default_max_prefill_tokens_per_step =
+        SPARK_TEST_SERVING_PREFILL_TOKEN_STRIDE;
+    configuration.max_context_tokens = 256u;
+    configuration.request_api = &Fixture.request_api;
+    configuration.request_records = Fixture.request_records;
+    configuration.request_record_capacity =
+        SPARK_TEST_SERVING_REQUEST_RECORD_COUNT;
+    configuration.event_ring = Fixture.event_ring;
+    configuration.event_ring_capacity = SPARK_TEST_SERVING_EVENT_CAPACITY;
+    configuration.host_prefill_token_ids = Fixture.host_prefill_token_ids;
+    configuration.host_prefill_token_stride =
+        SPARK_TEST_SERVING_PREFILL_TOKEN_STRIDE;
+    configuration.host_prefill_lane_capacity = SPARK_TEST_SERVING_LANE_CAPACITY;
+    configuration.host_physical_block_indices = Fixture.physical_block_indices;
+    configuration.kv_block_lane_stride =
+        SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
+    configuration.kv_block_lane_capacity =
+        SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
+    configuration.lane_physical_block_counts =
+        Fixture.lane_physical_block_counts;
+    configuration.lane_count_capacity = SPARK_TEST_SERVING_LANE_CAPACITY;
+    configuration.prefill_function = SparkTestServingPrefill;
+    configuration.decode_function = SparkTestServingDecode;
+    configuration.release_sequence_function =
+        SparkTestServingReleaseSequence;
+    configuration.callback_context = &CallbackContext;
+    assert(SparkGlm52ServingEngineInitialize(
+        &Fixture.serving_engine,
+        &configuration) == SPARK_STATUS_OK);
+    assert(Fixture.serving_engine.request_token_storage == 0);
+    assert(Fixture.serving_engine.free_record_head == 0u);
+
+    SparkGlm52ServingInitializeSubmitTokenIdsRequest(&request);
+    request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
+    request.token_ids = Fixture.prompt_tokens;
+    request.output_token_budget = 7u;
+    request.request_id = 9401u;
+    request.sequence_id = 19401u;
+    assert(SparkGlm52ServingEngineSubmitTokenIds(
+        &Fixture.serving_engine,
+        &request,
+        &result) == SPARK_STATUS_OK);
+    handle = result.request_handle;
+    assert(Fixture.serving_engine.free_record_head == 1u);
+    assert(Fixture.request_records[0u].token_ids != 0);
+    assert(Fixture.request_records[0u].token_capacity >=
+        SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT + 7u);
+    assert(Fixture.request_records[0u].token_ids[0u] ==
+        Fixture.prompt_tokens[0u]);
+
+    assert(SparkGlm52ServingEngineCancelRequest(
+        &Fixture.serving_engine,
+        handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52ServingEngineReleaseCompletedRequest(
+        &Fixture.serving_engine,
+        handle) == SPARK_STATUS_OK);
+    assert(Fixture.serving_engine.free_record_head == 0u);
+    assert(Fixture.request_records[0u].token_ids == 0);
+    assert(Fixture.request_records[0u].token_capacity == 0u);
+    assert(CallbackContext.release_callback_count == 1u);
+    assert(CallbackContext.released_request_id == 9401u);
+    assert(CallbackContext.released_sequence_id == 19401u);
+    assert(CallbackContext.released_token_count ==
+        SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT);
+}
+
 int main(void)
 {
     SparkTestServingRejectsTailWindowRuntimeContract();
     SparkTestServingMtpCommitStreamsMultiTokenLanes();
     SparkTestServingFireAndForgetPumpRunsFullPromptToDecode();
     SparkTestServingPrefillBatchingIsInternal();
+    SparkTestServingDynamicTokenStorageGrowsAndRecycles();
     return 0;
 }

@@ -11,7 +11,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION 1u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION 2u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_CONFIGURATION_BYTES \
     ((uint32_t)sizeof(SparkGlm52ResidentDecodeStageProductionRunnerConfiguration))
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_BYTES \
@@ -73,6 +73,8 @@ typedef struct SparkGlm52ResidentDecodeStageProductionRunnerDispatch
     uint32_t active_sequence_count;
     uint32_t new_token_count;
     uint32_t pipeline_slot;
+    uint32_t logical_lane_count;
+    uint32_t rows_per_lane;
     uint32_t reserved0;
     SparkModelDriverResidencyToken residency;
     const uint32_t *mtp_draft_token_budgets;

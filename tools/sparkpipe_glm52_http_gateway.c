@@ -25,7 +25,7 @@
 #define SPARK_GLM52_GATEWAY_INVALID_STREAM_SLOT UINT32_MAX
 #define SPARK_GLM52_GATEWAY_NONSTREAM_REQUEST_BIT (1ull << 63u)
 #define SPARK_GLM52_GATEWAY_PENDING_STREAM_CAPACITY \
-	SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT
+	SPARK_GLM52_STAGE_PLAN_PIPELINE_INFLIGHT_REQUEST_CAPACITY
 #define SPARK_GLM52_GATEWAY_POLL_FD_CAPACITY \
 	(1u + SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY + \
 	 SPARK_GLM52_GATEWAY_PENDING_STREAM_CAPACITY)
@@ -58,6 +58,7 @@ typedef struct SparkGlm52GatewayConfig
 	uint32_t require_service_backend;
 	uint32_t pump_steps;
 	uint32_t max_active_sequence_count;
+	uint32_t kv_logical_block_capacity;
 	uint32_t port_base;
 	uint32_t dspark_enabled;
 	uint32_t mtp_enabled;
@@ -425,6 +426,16 @@ static int32_t SparkGlm52GatewayApplyArgument(
 		*index += 1;
 		return 0;
 	}
+	if (strcmp(argv[*index],"--kv-nvme-blocks") == 0)
+	{
+		if ((*index + 1) >= argc ||
+			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0 ||
+			parsed == 0u)
+			return -21;
+		configuration->kv_logical_block_capacity = parsed;
+		*index += 1;
+		return 0;
+	}
 	if (strcmp(argv[*index],"--final-event-bind") == 0)
 	{
 		if ((*index + 1) >= argc)
@@ -722,6 +733,8 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 	backend_configuration.max_active_sequence_count =
 		runtime->configuration.max_active_sequence_count;
 	backend_configuration.port_base = runtime->configuration.port_base;
+	backend_configuration.kv_logical_block_capacity =
+		runtime->configuration.kv_logical_block_capacity;
 	backend_configuration.fp8_pack_root = runtime->configuration.fp8_pack_root;
 	backend_configuration.stagepack_root =
 		runtime->configuration.stagepack_root;
@@ -1460,7 +1473,7 @@ int main(int argc,char **argv)
 	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
 	if (SparkGlm52GatewayParseArguments(&runtime.configuration,argc,argv) < 0)
 	{
-		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--fp8-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--program name] [--node-target target] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--cuda-resident-socket path] [--mtp] [--dspark]\n",argv[0]);
+		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--fp8-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--program name] [--node-target target] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path] [--max-active n] [--kv-nvme-blocks n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--cuda-resident-socket path] [--mtp] [--dspark]\n",argv[0]);
 		return 2;
 	}
 	if (SparkGlm52GatewayInitializePendingStreams(&runtime) < 0)

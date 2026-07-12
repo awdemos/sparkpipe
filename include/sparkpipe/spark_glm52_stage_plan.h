@@ -19,9 +19,9 @@ extern "C" {
      SPARK_GLM52_STAGE_PLAN_FIRST_ROUTED_LAYER)
 #define SPARK_GLM52_STAGE_PLAN_MAX_ROUTED_LAYERS_PER_STAGE 8u
 #define SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT 13u
-#define SPARK_GLM52_STAGE_PLAN_FIXED_LAYERS_PER_STAGE \
-    (SPARK_GLM52_STAGE_PLAN_LAYER_COUNT / \
-     SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT)
+#define SPARK_GLM52_STAGE_PLAN_PIPELINE_INFLIGHT_REQUEST_CAPACITY \
+    (SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT * \
+     SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
 #define SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT \
     SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT
 #define SPARK_GLM52_STAGE_PLAN_DESCRIPTOR_BYTES \
@@ -130,6 +130,13 @@ typedef struct SparkGlm52StagePlan
 
 SparkStatus SparkGlm52StagePlanValidate(
     const SparkGlm52StagePlan *stage_plan,
+    char *error_buffer,
+    uint32_t error_buffer_bytes);
+
+SparkStatus SparkGlm52StagePlanBuildFromLayerCounts(
+    const uint32_t *layer_counts,
+    uint32_t stage_count,
+    SparkGlm52StagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes);
 

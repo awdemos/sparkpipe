@@ -47,6 +47,9 @@ static void SparkTestGlm52StagePlanValidPp13(void)
     char error_buffer[256];
     uint32_t stage_index;
 
+    assert(SPARK_GLM52_STAGE_PLAN_PIPELINE_INFLIGHT_REQUEST_CAPACITY ==
+        13u * 1024u);
+
     memset(&stage_plan, 0, sizeof(stage_plan));
     stage_plan.abi_version = SPARK_GLM52_STAGE_PLAN_ABI_VERSION;
     stage_plan.descriptor_bytes = SPARK_GLM52_STAGE_PLAN_DESCRIPTOR_BYTES;
@@ -69,6 +72,40 @@ static void SparkTestGlm52StagePlanValidPp13(void)
         &stage_plan,
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_OK);
+}
+
+static void SparkTestGlm52StagePlanLayerCountTable(void)
+{
+    const uint32_t layer_counts[12] =
+        {6u, 7u, 7u, 7u, 7u, 7u, 7u, 6u, 6u, 6u, 6u, 6u};
+    uint32_t invalid_layer_counts[12];
+    SparkGlm52StagePlan stage_plan;
+    char error_buffer[256];
+
+    assert(SparkGlm52StagePlanBuildFromLayerCounts(
+        layer_counts,
+        12u,
+        &stage_plan,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
+    assert(stage_plan.stage_count == 12u);
+    assert(stage_plan.stages[0u].first_layer_index == 0u);
+    assert(stage_plan.stages[0u].layer_count == 6u);
+    assert(stage_plan.stages[1u].first_layer_index == 6u);
+    assert(stage_plan.stages[1u].layer_count == 7u);
+    assert(stage_plan.stages[11u].first_layer_index == 72u);
+    assert(stage_plan.stages[11u].layer_count == 6u);
+    assert((stage_plan.stages[11u].flags &
+        SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN) != 0u);
+
+    memcpy(invalid_layer_counts,layer_counts,sizeof(layer_counts));
+    invalid_layer_counts[11u] = 5u;
+    assert(SparkGlm52StagePlanBuildFromLayerCounts(
+        invalid_layer_counts,
+        12u,
+        &stage_plan,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestGlm52StagePlanBuilderAndBuckets(void)
@@ -328,6 +365,7 @@ static void SparkTestGlm52StagePlanInvalidCuts(void)
 int main(void)
 {
     SparkTestGlm52StagePlanValidPp13();
+    SparkTestGlm52StagePlanLayerCountTable();
     SparkTestGlm52StagePlanBuilderAndBuckets();
     SparkTestGlm52StagePlanMeasuredBalanced();
     SparkTestGlm52StagePlanMeasuredBalancedQuantizationModes();

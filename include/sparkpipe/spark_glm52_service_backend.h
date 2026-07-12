@@ -49,7 +49,7 @@ typedef struct SparkGlm52ServiceBackendConfiguration
 	uint32_t flags;
 	uint32_t max_active_sequence_count;
 	uint32_t port_base;
-	uint32_t reserved0;
+	uint32_t kv_logical_block_capacity;
 	const char *fp8_pack_root;
 	const char *stagepack_root;
 	const char *transport_shared_object_path;

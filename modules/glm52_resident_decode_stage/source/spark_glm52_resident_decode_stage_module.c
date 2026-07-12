@@ -864,6 +864,8 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
     uint32_t exact_required_capabilities;
     uint32_t expected_stage_index;
     uint32_t expected_final_token_stage;
+    uint32_t layer_major_speculative_verify;
+    uint64_t final_token_candidate_row_capacity;
 
     if ((stage_slice_plan->capability_flags &
             SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_EXACT_PP13_FIXED6) == 0u)
@@ -884,6 +886,13 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
             stage_slice_plan->opaque_state;
     exact_required_capabilities =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_EXACT_PP13_CAPABILITIES;
+    layer_major_speculative_verify =
+        (exact_stage_slice_plan->capability_flags &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_LAYER_MAJOR_SPECULATIVE_VERIFY) != 0u;
+    final_token_candidate_row_capacity = layer_major_speculative_verify != 0u
+        ? exact_stage_slice_plan->final_token_candidate_row_capacity
+        : (uint64_t)exact_stage_slice_plan->maximum_active_sequence_count *
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u);
     expected_stage_index = first_layer_index / 6u;
     expected_final_token_stage =
         first_layer_index + 6u ==
@@ -903,7 +912,20 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
             exact_stage_slice_plan->batch_bucket) == 0u ||
         exact_stage_slice_plan->maximum_active_sequence_count <
             required_active_sequence_count ||
-        exact_stage_slice_plan->batch_bucket < required_active_sequence_count ||
+        (layer_major_speculative_verify == 0u &&
+         exact_stage_slice_plan->batch_bucket < required_active_sequence_count) ||
+        (layer_major_speculative_verify != 0u &&
+         (exact_stage_slice_plan->logical_lane_capacity == 0u ||
+          exact_stage_slice_plan->logical_lane_capacity >
+            exact_stage_slice_plan->batch_bucket ||
+          exact_stage_slice_plan->maximum_speculative_rows_per_lane < 2u ||
+          exact_stage_slice_plan->maximum_speculative_rows_per_lane >
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u ||
+          (uint64_t)exact_stage_slice_plan->logical_lane_capacity *
+                exact_stage_slice_plan->maximum_speculative_rows_per_lane !=
+            exact_stage_slice_plan->maximum_active_sequence_count ||
+          final_token_candidate_row_capacity <
+            exact_stage_slice_plan->maximum_active_sequence_count)) ||
         (exact_stage_slice_plan->capability_flags & exact_required_capabilities) !=
             exact_required_capabilities ||
         final_token_stage != expected_final_token_stage)
@@ -977,8 +999,7 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_FUSED_FINAL_TOKEN_EPILOGUE) != 0u &&
         (exact_stage_slice_plan->workspace == 0 ||
          exact_stage_slice_plan->workspace_bytes <
-            ((((uint64_t)exact_stage_slice_plan->maximum_active_sequence_count *
-               (uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) *
+            (((final_token_candidate_row_capacity *
                (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT) *
               (uint64_t)(sizeof(float) + sizeof(uint32_t))) + 15u)))
     {
@@ -1097,6 +1118,7 @@ static bool SparkGlm52ResidentDecodeStageBulkPrefillPlanIsUsable(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
     const SparkGlm52ResidentDecodeStageBulkPrefillPlan *bulk_prefill_plan;
+    uint32_t logical_lane_capacity;
     uint32_t required_capabilities;
 
     if (node_context == 0 || node_context->bulk_prefill_plan == 0)
@@ -1104,12 +1126,20 @@ static bool SparkGlm52ResidentDecodeStageBulkPrefillPlanIsUsable(
         return false;
     }
     bulk_prefill_plan = node_context->bulk_prefill_plan;
+    logical_lane_capacity = node_context->logical_lane_capacity != 0u
+        ? node_context->logical_lane_capacity
+        : node_context->max_active_sequence_count;
+    if (logical_lane_capacity == 0u ||
+        logical_lane_capacity > node_context->max_active_sequence_count)
+    {
+        return false;
+    }
     required_capabilities =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_REQUIRED_CAPABILITIES;
     return bulk_prefill_plan->abi_version ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_PLAN_ABI_VERSION &&
         bulk_prefill_plan->maximum_active_sequence_count >=
-            node_context->max_active_sequence_count &&
+            logical_lane_capacity &&
         bulk_prefill_plan->maximum_prompt_token_count != 0u &&
         (bulk_prefill_plan->launch_function != 0 ||
          ((bulk_prefill_plan->capability_flags &
@@ -2342,12 +2372,21 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
          (node_context->selected_token_indices_by_layer == 0 ||
           node_context->dsa_indexshare_selected_token_count !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT ||
-          node_context->dsa_indexshare_layer_count <
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
+          node_context->dsa_indexshare_layer_count == 0u ||
           node_context->layer_index >=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
           node_context->dsa_indexshare_source_layer_index >=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
+          node_context->layer_index <
+            node_context->dsa_cache_first_layer_index ||
+          node_context->dsa_indexshare_source_layer_index <
+            node_context->dsa_cache_first_layer_index ||
+          node_context->layer_index -
+                node_context->dsa_cache_first_layer_index >=
+            node_context->dsa_indexshare_layer_count ||
+          node_context->dsa_indexshare_source_layer_index -
+                node_context->dsa_cache_first_layer_index >=
+            node_context->dsa_indexshare_layer_count ||
           node_context->dsa_indexshare_group_end_layer_exclusive >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
           node_context->dsa_indexshare_source_layer_index >=
@@ -3554,6 +3593,17 @@ static SparkStatus SparkGlm52ResidentDecodeStageExtractFrameContext(
     if ((frame_context->flags &
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS) != 0u &&
         frame_context->mtp_draft_token_budgets == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY) != 0u &&
+        (frame_context->logical_lane_count == 0u ||
+         frame_context->rows_per_lane < 2u ||
+         (uint64_t)frame_context->logical_lane_count *
+                frame_context->rows_per_lane != frame->active_slot_count ||
+         (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS) != 0u))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
