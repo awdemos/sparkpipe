@@ -65,6 +65,41 @@ def test_prebound_linear_plan_accepts_smaller_active_count(root: Path) -> None:
     assert "active_sequence_count != linear_plan->maximum_active_sequence_count" not in function_body
 
 
+def test_fp8_linear_plans_require_scaled_gemm_backend(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedTensorCoreLinearPlan(")
+    end = source.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageLaunchLinear(",
+        start)
+    function_body = source[start:end]
+    fp8_start = function_body.index(
+        "SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3")
+    fp8_end = function_body.index("grid = dim3(", fp8_start)
+    fp8_branch = function_body[fp8_start:fp8_end]
+    assert "if (backend == 0)" in fp8_branch
+    assert "return SPARK_STATUS_MODULE_NOT_VALIDATED;" in fp8_branch
+    assert "LaunchFp8E4m3ActivationWeightLinearScaledGemmBackend" in fp8_branch
+    assert "SupportedQuantizedBf16WmmaLinearKernel" not in fp8_branch
+
+
+def test_pp13_builder_binds_all_fp8_linear_plans(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    start = source.index("static SparkStatus SparkGlm52Pp13BuilderBindLayerPlans(")
+    end = source.index("static SparkStatus SparkGlm52Pp13BuilderBindFp8Moe(", start)
+    function_body = source[start:end]
+    regular_bind = function_body.index(
+        "SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedRegularLinearPlans(")
+    fp8_bind = function_body.index(
+        "SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearPlansScaledGemmBackend(")
+    assert fp8_bind > regular_bind
+    assert "&state->fp8_scaled_gemm_backend" in function_body[fp8_bind:]
+
+
 def test_serial_prefill_progresses_runner_after_each_token(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -102,6 +137,8 @@ def main() -> None:
     test_pp13_rank_capacity_is_not_fixed_batch(root)
     test_pp13_rank_does_not_enable_dsa_fragment_transport(root)
     test_prebound_linear_plan_accepts_smaller_active_count(root)
+    test_fp8_linear_plans_require_scaled_gemm_backend(root)
+    test_pp13_builder_binds_all_fp8_linear_plans(root)
     test_serial_prefill_progresses_runner_after_each_token(root)
     test_dspark_verify_exposes_the_full_verifier_vector(root)
 
