@@ -170,6 +170,51 @@ static void SparkGlm52StagePlanAssignStageFlags(
     }
 }
 
+SparkStatus SparkGlm52StagePlanBuildFromLayerCounts(
+    const uint32_t *layer_counts,
+    uint32_t stage_count,
+    SparkGlm52StagePlan *stage_plan,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    uint32_t first_layer_index;
+    uint32_t stage_index;
+
+    if (layer_counts == 0 || stage_plan == 0 || stage_count == 0u ||
+        stage_count > SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT)
+    {
+        return SparkGlm52StagePlanReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "invalid table-driven stage-plan input");
+    }
+    SparkGlm52StagePlanReset(stage_plan);
+    stage_plan->stage_count = stage_count;
+    first_layer_index = 0u;
+    for (stage_index = 0u; stage_index < stage_count; ++stage_index)
+    {
+        if (layer_counts[stage_index] == 0u ||
+            layer_counts[stage_index] >
+                SPARK_GLM52_STAGE_PLAN_LAYER_COUNT - first_layer_index)
+        {
+            return SparkGlm52StagePlanReport(
+                error_buffer,
+                error_buffer_bytes,
+                SPARK_STATUS_INVALID_ARGUMENT,
+                "table-driven stage layer count is invalid");
+        }
+        stage_plan->stages[stage_index].first_layer_index = first_layer_index;
+        stage_plan->stages[stage_index].layer_count = layer_counts[stage_index];
+        first_layer_index += layer_counts[stage_index];
+    }
+    SparkGlm52StagePlanAssignStageFlags(stage_plan);
+    return SparkGlm52StagePlanValidate(
+        stage_plan,
+        error_buffer,
+        error_buffer_bytes);
+}
+
 SparkStatus SparkGlm52StagePlanValidate(
     const SparkGlm52StagePlan *stage_plan,
     char *error_buffer,

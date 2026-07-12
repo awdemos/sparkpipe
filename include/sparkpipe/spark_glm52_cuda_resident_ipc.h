@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stddef.h>
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
@@ -12,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 6u
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 12u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAGIC 0x52445543u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS \
     (SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS)
@@ -37,11 +38,16 @@ extern "C" {
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_PREFILL_PREFIX_BYTES \
 	((uint32_t)offsetof(SparkGlm52CudaResidentIpcSubmitPrefill,work_packet))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_BYTES \
-    ((uint32_t)sizeof(SparkGlm52CudaResidentIpcSubmitDecode))
-#define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_PREFIX_BYTES \
-	((uint32_t)offsetof(SparkGlm52CudaResidentIpcSubmitDecode,work_packet))
+    SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES \
+    ((uint32_t)offsetof(SparkGlm52CudaResidentIpcSubmitDecode, \
+        kv_physical_block_indices))
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_DECODE_PAYLOAD_BYTES \
+    (SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES + \
+     (SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT * \
+      SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS * (uint32_t)sizeof(uint32_t)))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_CONTROL_PAYLOAD_BYTES \
-    ((uint32_t)sizeof(SparkGlm52CudaResidentIpcAnyPayload))
+    SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_DECODE_PAYLOAD_BYTES
 
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_HELLO 1u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_HELLO_ACK 2u
@@ -54,6 +60,11 @@ extern "C" {
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_ERROR 9u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_PREFILL 10u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_DECODE 11u
+
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_FLAG_INTERNAL_KV_DIRECTORY \
+    0x00000001u
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_KNOWN_FLAGS \
+    SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_FLAG_INTERNAL_KV_DIRECTORY
 
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_EMPTY 0u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_LOADING 1u
@@ -129,6 +140,60 @@ typedef struct SparkGlm52CudaResidentIpcStats
     uint64_t rejected_count;
     uint64_t resident_sequence_count;
     uint64_t resident_token_count;
+    uint32_t kv_nvme_enabled;
+    uint32_t kv_physical_block_capacity;
+    uint32_t kv_logical_block_capacity;
+    uint32_t kv_nvme_mode;
+    uint64_t kv_logical_block_count;
+    uint64_t kv_resident_block_count;
+    uint64_t kv_swapped_block_count;
+    uint64_t kv_nvme_record_bytes;
+    uint64_t kv_nvme_store_count;
+    uint64_t kv_nvme_load_count;
+    uint64_t kv_nvme_write_bytes;
+    uint64_t kv_nvme_read_bytes;
+    uint64_t kv_nvme_synchronous_wait_count;
+    uint64_t kv_nvme_batch_flush_count;
+    uint64_t kv_nvme_maximum_batch_operation_count;
+    uint64_t kv_resident_bytes_per_token;
+    uint64_t kv_resident_pool_bytes;
+    uint64_t kv_nvme_capacity_bytes;
+    uint64_t kv_compact_selected_mla_working_set_bytes;
+    uint32_t kv_nvme_batch_block_capacity;
+    uint32_t kv_nvme_pending_store_count;
+    uint32_t kv_nvme_pending_load_count;
+    uint32_t kv_nvme_clean_evict_count;
+    uint32_t work_queue_depth;
+    uint32_t work_queue_capacity;
+    uint32_t builder_pending_work;
+    uint32_t resident_driver_inflight;
+    uint64_t work_queue_accepted_count;
+    uint64_t work_queue_submit_count;
+    uint64_t work_queue_error_count;
+    uint64_t asynchronous_submit_count;
+    uint64_t asynchronous_completion_count;
+    uint64_t asynchronous_failure_count;
+    uint32_t logical_lane_capacity;
+    uint32_t execution_row_capacity;
+    uint32_t last_layer_major_logical_lane_count;
+    uint32_t last_layer_major_rows_per_lane;
+    uint32_t last_layer_major_execution_row_count;
+    uint32_t fp8_moe_backend_kind;
+    uint32_t fp8_moe_bound_layer_count;
+    uint32_t fp8_moe_expected_layer_count;
+    uint32_t fp8_scaled_gemm_bound_plan_count;
+    uint32_t fp8_scaled_gemm_expected_plan_count;
+    uint32_t layer_major_reserved0;
+    uint64_t layer_major_submit_count;
+    uint64_t layer_major_completion_count;
+    uint64_t layer_major_failure_count;
+	uint64_t cuda_total_bytes;
+	uint64_t cuda_initial_free_bytes;
+	uint64_t cuda_current_free_bytes;
+	uint64_t cuda_consumed_bytes;
+	uint64_t cuda_builder_allocation_bytes;
+	uint64_t cuda_largest_allocation_bytes;
+	uint64_t host_mapped_allocation_bytes;
     uint64_t cuda_generation;
     uint64_t control_generation;
     char blocker[SPARK_GLM52_CUDA_RESIDENT_IPC_ERROR_TEXT_BYTES];
@@ -148,11 +213,37 @@ typedef struct SparkGlm52CudaResidentIpcSubmitPrefill
     SparkGlm52Pp13WorkControlPacket work_packet;
 } SparkGlm52CudaResidentIpcSubmitPrefill;
 
+typedef struct SparkGlm52CudaResidentIpcDecodeLane
+{
+    uint64_t request_id;
+    uint64_t sequence_id;
+    uint64_t sequence_position;
+    uint32_t request_slot_index;
+    uint32_t context_token_count;
+    uint32_t input_token_id;
+    uint32_t mtp_draft_token_budget;
+    uint32_t speculative_token_count;
+    uint32_t kv_block_offset;
+    uint32_t kv_block_count;
+    uint32_t speculative_draft_token_ids[
+        SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT];
+} SparkGlm52CudaResidentIpcDecodeLane;
+
 typedef struct SparkGlm52CudaResidentIpcSubmitDecode
 {
     uint32_t descriptor_bytes;
+    uint32_t highest_priority;
     uint32_t request_flags;
-	SparkGlm52Pp13WorkControlPacket work_packet;
+    uint32_t dispatch_kind;
+    uint32_t lane_count;
+    uint32_t active_sequence_count;
+    uint32_t speculative_token_count;
+    uint32_t kv_block_token_count;
+    uint32_t kv_block_index_count;
+    uint32_t resident_flags;
+    SparkGlm52CudaResidentIpcDecodeLane
+        lanes[SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT];
+    uint32_t kv_physical_block_indices[];
 } SparkGlm52CudaResidentIpcSubmitDecode;
 
 typedef union SparkGlm52CudaResidentIpcAnyPayload
@@ -164,7 +255,6 @@ typedef union SparkGlm52CudaResidentIpcAnyPayload
     SparkGlm52CudaResidentIpcQuery query;
     SparkGlm52CudaResidentIpcStats stats;
     SparkGlm52CudaResidentIpcSubmitPrefill submit_prefill;
-    SparkGlm52CudaResidentIpcSubmitDecode submit_decode;
 } SparkGlm52CudaResidentIpcAnyPayload;
 
 void SparkGlm52CudaResidentIpcInitializeHeader(
@@ -181,8 +271,13 @@ uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
 	const SparkGlm52Pp13WorkControlPacket *work_packet);
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitPrefillBytes(
 	const SparkGlm52Pp13WorkControlPacket *work_packet);
-uint32_t SparkGlm52CudaResidentIpcCalculateSubmitDecodeBytes(
-	const SparkGlm52Pp13WorkControlPacket *work_packet);
+SparkStatus SparkGlm52CudaResidentIpcDecodePayloadBytes(
+    uint32_t kv_block_index_count,
+    uint32_t *payload_bytes_out);
+SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
+    const SparkGlm52CudaResidentIpcSubmitDecode *message,
+    uint32_t payload_bytes,
+    uint32_t maximum_lane_count);
 
 #ifdef __cplusplus
 }

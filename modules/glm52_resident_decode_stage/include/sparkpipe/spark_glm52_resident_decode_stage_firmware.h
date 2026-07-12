@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 26u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 27u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION SPARK_GLM52_MODEL_HIDDEN_DIMENSION
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT SPARK_GLM52_MODEL_HEAD_COUNT
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION SPARK_GLM52_MODEL_LATENT_DIMENSION
@@ -98,7 +98,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FULL_STAGE_PLAN_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_PLAN_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PLAN_ABI_VERSION 1u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_EXACT_STAGE_SLICE_PLAN_ABI_VERSION 3u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_EXACT_STAGE_SLICE_PLAN_ABI_VERSION 4u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_PLAN_ABI_VERSION 3u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PLAN_ABI_VERSION 2u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_EVENT_COUNTER_COUNT 5u
@@ -228,6 +228,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_EXACT_PP13_AOT 0x00020000u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_FUSED_STAGE_MOE 0x00040000u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_BUILTIN_FUSED_FINAL_TOKEN_EPILOGUE 0x00080000u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_LAYER_MAJOR_SPECULATIVE_VERIFY 0x00100000u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_REQUIRED_CAPABILITIES \
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_STREAM_ORDERED | \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_CUDA_GRAPH_REPLAY | \
@@ -352,7 +353,7 @@ typedef struct SparkGlm52ResidentDecodeStagePrefillFrameView
     void *prompt_output_hidden_bf16;
 } SparkGlm52ResidentDecodeStagePrefillFrameView;
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 6u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 7u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52ResidentDecodeStageFrameContext))
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE \
@@ -369,6 +370,8 @@ typedef struct SparkGlm52ResidentDecodeStagePrefillFrameView
     0x00000020u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME \
     0x00000040u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY \
+    0x00000080u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_TRANSPORT_SIDEBAND_INDEXSHARE_SELECTED_TOKENS \
     SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_INDEXSHARE_SELECTED_TOKENS
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_TRANSPORT_SIDEBAND_DSPARK_HIDDEN_TAP \
@@ -380,7 +383,8 @@ typedef struct SparkGlm52ResidentDecodeStagePrefillFrameView
      SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS | \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW | \
      SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS | \
-     SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME)
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME | \
+     SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY)
 
 typedef SparkStatus (*SparkGlm52ResidentDecodeStageHiddenTransportPostReceiveSessionFunction)(
     SparkHiddenTransportSession *transport_session,
@@ -395,6 +399,8 @@ typedef struct SparkGlm52ResidentDecodeStageFrameContext
     uint32_t descriptor_bytes;
     uint32_t flags;
     uint32_t reserved;
+    uint32_t logical_lane_count;
+    uint32_t rows_per_lane;
     const SparkGlm52KvBlockTableView *kv_block_table;
     const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_view;
     const uint32_t *mtp_draft_token_budgets;
@@ -828,6 +834,9 @@ typedef struct SparkGlm52ResidentDecodeStageExactStageSlicePlan
     uint32_t layer_count;
     uint32_t batch_bucket;
     uint32_t maximum_active_sequence_count;
+    uint32_t logical_lane_capacity;
+    uint32_t maximum_speculative_rows_per_lane;
+    uint32_t final_token_candidate_row_capacity;
     uint32_t capability_flags;
     void *query_branch_stream;
     void *kv_branch_stream;
@@ -967,6 +976,7 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t abi_version;
     uint32_t pipeline_slot_count;
     uint32_t max_active_sequence_count;
+    uint32_t logical_lane_capacity;
     uint32_t cache_token_capacity;
     uint32_t kv_block_count;
     uint32_t max_blocks_per_sequence;
@@ -1095,7 +1105,7 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t dsa_selected_block_stride;
     uint32_t dsa_selected_block_capacity;
     uint32_t dsa_selected_block_layer_count;
-    uint32_t reserved3;
+    uint32_t dsa_cache_first_layer_index;
     const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *dsa_kv_fragment_prefetch_plan;
     const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *dsa_kv_fragment_save_plan;
 

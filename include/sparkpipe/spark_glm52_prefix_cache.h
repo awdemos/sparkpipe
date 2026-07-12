@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PREFIX_CACHE_ABI_VERSION 5u
+#define SPARK_GLM52_PREFIX_CACHE_ABI_VERSION 6u
 #define SPARK_GLM52_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52PrefixCacheConfiguration))
 #define SPARK_GLM52_PREFIX_CACHE_DESCRIPTOR_BYTES \
@@ -149,6 +149,8 @@ typedef struct SparkGlm52PrefixCache
     SparkGlm52PrefixCacheEntry *entries;
     SparkGlm52PrefixCacheSequenceBinding *sequence_bindings;
     SparkGlm52KvCacheArena *kv_cache_arena;
+    uint32_t free_entry_head;
+    uint32_t free_binding_head;
     uint64_t tick;
     uint64_t operation_epoch;
     uint64_t lookup_count;
@@ -271,6 +273,17 @@ SparkStatus SparkGlm52PrefixCacheCommitPrompt(
     const uint32_t *token_ids,
     uint32_t token_count,
     SparkGlm52PrefixCacheLookup *lookup);
+
+/*
+ * Ensure that a live sequence owns enough KV blocks to write token_count
+ * positions.  Blocks added by this function are live-only: they are never
+ * offered as content-addressed prompt-cache hits.  Repeating the call with
+ * the same or a smaller token_count is idempotent.
+ */
+SparkStatus SparkGlm52PrefixCacheEnsureSequenceTokenCapacity(
+    SparkGlm52PrefixCache *cache,
+    uint64_t sequence_id,
+    uint32_t token_count);
 
 SparkStatus SparkGlm52PrefixCacheBuildPhysicalBlockTable(
     SparkGlm52PrefixCache *cache,

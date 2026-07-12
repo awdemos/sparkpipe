@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SERVING_ENGINE_ABI_VERSION 1u
+#define SPARK_GLM52_SERVING_ENGINE_ABI_VERSION 3u
 #define SPARK_GLM52_SERVING_ENGINE_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52ServingEngineConfiguration))
 #define SPARK_GLM52_SERVING_ENGINE_DESCRIPTOR_BYTES \
@@ -49,12 +49,15 @@ extern "C" {
     0x00000002u
 #define SPARK_GLM52_SERVING_ENGINE_FLAG_CLAMP_BUDGET_TO_CONTEXT \
     0x00000004u
+#define SPARK_GLM52_SERVING_ENGINE_FLAG_DYNAMIC_REQUEST_TOKEN_STORAGE \
+    0x00000008u
 #define SPARK_GLM52_SERVING_ENGINE_DEFAULT_FLAGS \
     (SPARK_GLM52_SERVING_ENGINE_FLAG_REQUIRE_PRODUCTION_RUNTIME_CONTRACT | \
      SPARK_GLM52_SERVING_ENGINE_FLAG_AUTO_RELEASE_COMPLETED_REQUESTS | \
      SPARK_GLM52_SERVING_ENGINE_FLAG_CLAMP_BUDGET_TO_CONTEXT)
 #define SPARK_GLM52_SERVING_ENGINE_KNOWN_FLAGS \
-    SPARK_GLM52_SERVING_ENGINE_DEFAULT_FLAGS
+    (SPARK_GLM52_SERVING_ENGINE_DEFAULT_FLAGS | \
+     SPARK_GLM52_SERVING_ENGINE_FLAG_DYNAMIC_REQUEST_TOKEN_STORAGE)
 
 #define SPARK_GLM52_SERVING_SUBMIT_FLAG_REALTIME \
     SPARK_GLM52_REQUEST_API_REQUEST_FLAG_REALTIME
@@ -148,7 +151,7 @@ typedef struct SparkGlm52ServingRequestRecord
     uint64_t sequence_id;
     SparkGlm52ServingRequestHandle request_handle;
     uint32_t handle_hash_next;
-    uint32_t reserved1;
+    uint32_t free_record_next;
     uint32_t *token_ids;
 } SparkGlm52ServingRequestRecord;
 
@@ -254,6 +257,11 @@ typedef SparkStatus (*SparkGlm52ServingDecodeFunction)(
     void *context,
     const SparkGlm52ServingDecodeDispatch *decode_dispatch,
     SparkGlm52ServingDecodeResult *decode_result);
+typedef SparkStatus (*SparkGlm52ServingReleaseSequenceFunction)(
+    void *context,
+    uint64_t request_id,
+    uint64_t sequence_id,
+    uint32_t token_count);
 
 typedef struct SparkGlm52ServingStats
 {
@@ -325,6 +333,7 @@ typedef struct SparkGlm52ServingEngineConfiguration
     uint32_t lane_count_capacity;
     SparkGlm52ServingPrefillFunction prefill_function;
     SparkGlm52ServingDecodeFunction decode_function;
+    SparkGlm52ServingReleaseSequenceFunction release_sequence_function;
     void *callback_context;
     const uint32_t *stop_token_ids;
     uint32_t stop_token_id_count;
@@ -346,6 +355,7 @@ typedef struct SparkGlm52ServingEngine
     const SparkTokenizer *tokenizer;
     SparkGlm52ServingRequestRecord *request_records;
     uint32_t request_record_capacity;
+    uint32_t free_record_head;
     uint32_t *request_token_storage;
     uint32_t request_token_stride;
     SparkGlm52ServingEvent *event_ring;
@@ -365,6 +375,7 @@ typedef struct SparkGlm52ServingEngine
     uint32_t lane_count_capacity;
     SparkGlm52ServingPrefillFunction prefill_function;
     SparkGlm52ServingDecodeFunction decode_function;
+    SparkGlm52ServingReleaseSequenceFunction release_sequence_function;
     void *callback_context;
     uint32_t stop_token_ids[SPARK_GLM52_SERVING_MAX_STOP_TOKEN_IDS];
     uint32_t stop_token_id_count;

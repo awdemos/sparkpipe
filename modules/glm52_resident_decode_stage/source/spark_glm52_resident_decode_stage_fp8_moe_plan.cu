@@ -123,7 +123,6 @@ static SparkStatus SparkGlm52Fp8MoePlanValidatePackHeader(const SparkGlm52Reside
 		header->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_ABI_VERSION ||
 		header->header_bytes != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_HEADER_BYTES ||
 		header->layer_index != create_info->layer_index ||
-		header->maximum_token_count < create_info->maximum_active_sequence_count ||
 		header->hidden_dimension != SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION ||
 		header->intermediate_dimension != SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION ||
 		header->expert_count != SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT ||
@@ -214,7 +213,10 @@ static void SparkGlm52Fp8MoePlanPopulateBinding(SparkGlm52ResidentDecodeStageFp8
 	binding->plan.abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PLAN_ABI_VERSION;
 	binding->plan.capability_flags = SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REQUIRED_CAPABILITIES;
 	binding->plan.maximum_active_sequence_count = maximum_active_sequence_count;
-	binding->plan.maximum_token_count = header->maximum_token_count;
+	binding->plan.maximum_token_count =
+		header->maximum_token_count > maximum_active_sequence_count
+		? header->maximum_token_count
+		: maximum_active_sequence_count;
 	binding->plan.expert_count = header->expert_count;
 	binding->plan.top_k = header->top_k;
 	binding->plan.hidden_dimension = header->hidden_dimension;
@@ -244,9 +246,20 @@ SparkStatus SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateFromPackFile
 	cudaError_t cuda_status;
 
 	if (binding == 0 || create_info == 0 || create_info->pack_path == 0 ||
-		create_info->abi_version != SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_ABI_VERSION ||
-		create_info->reserved != 0u ||
+		create_info->abi_version !=
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BINDING_CREATE_ABI_VERSION ||
+		(create_info->flags &
+			~SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BINDING_CREATE_KNOWN_FLAGS) != 0u ||
 		create_info->maximum_active_sequence_count == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (((create_info->flags &
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BINDING_CREATE_FLAG_EXTERNAL_WORKSPACE) != 0u &&
+		 (create_info->external_workspace == 0 ||
+		  create_info->external_workspace_bytes == 0u)) ||
+		((create_info->flags &
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BINDING_CREATE_FLAG_EXTERNAL_WORKSPACE) == 0u &&
+		 (create_info->external_workspace != 0 ||
+		  create_info->external_workspace_bytes != 0u)))
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	memset(binding,0,sizeof(*binding));
 	file = fopen(create_info->pack_path,"rb");
@@ -278,14 +291,33 @@ SparkStatus SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateFromPackFile
 	}
 	if (status == SPARK_STATUS_OK)
 	{
-		cuda_status = cudaMalloc(&binding->workspace,(size_t)workspace_bytes);
-		status = SparkGlm52Fp8MoePlanCudaToSparkStatus(cuda_status);
+		if ((create_info->flags &
+				SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BINDING_CREATE_FLAG_EXTERNAL_WORKSPACE) != 0u)
+		{
+			if (create_info->external_workspace_bytes < workspace_bytes)
+				status = SPARK_STATUS_CAPACITY_EXCEEDED;
+			else
+			{
+				binding->workspace = create_info->external_workspace;
+				binding->workspace_owned = 0u;
+			}
+		}
+		else
+		{
+			cuda_status = cudaMalloc(&binding->workspace,(size_t)workspace_bytes);
+			status = SparkGlm52Fp8MoePlanCudaToSparkStatus(cuda_status);
+			if (status == SPARK_STATUS_OK)
+				binding->workspace_owned = 1u;
+		}
 	}
 	if (status == SPARK_STATUS_OK)
 	{
 		binding->plan.workspace = binding->workspace;
 		binding->plan.workspace_bytes = workspace_bytes;
 		status = SparkGlm52Sm121RequiredDecodeStageBindFp8MoeGroupedReferencePlan(&binding->plan);
+		if (status == SPARK_STATUS_OK)
+			binding->backend_kind =
+				SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BACKEND_BUILTIN_FLASHINFER_GROUPED;
 	}
 	if (status != SPARK_STATUS_OK)
 	{
@@ -303,6 +335,9 @@ void SparkGlm52ResidentDecodeStageFp8MoeResidentBindingDestroy(SparkGlm52Residen
 	SparkGlm52Fp8MoePlanFreeDevicePointer((void **)&binding->w1_scale_inv_f32);
 	SparkGlm52Fp8MoePlanFreeDevicePointer((void **)&binding->w2_weight_fp8_e4m3);
 	SparkGlm52Fp8MoePlanFreeDevicePointer((void **)&binding->w2_scale_inv_f32);
-	SparkGlm52Fp8MoePlanFreeDevicePointer(&binding->workspace);
+	if (binding->workspace_owned != 0u)
+		SparkGlm52Fp8MoePlanFreeDevicePointer(&binding->workspace);
+	else
+		binding->workspace = 0;
 	memset(binding,0,sizeof(*binding));
 }

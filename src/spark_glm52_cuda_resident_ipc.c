@@ -45,15 +45,16 @@ static uint32_t SparkGlm52CudaResidentIpcCalculateWorkMessageBytes(
 	uint32_t prefix_bytes,
 	uint32_t maximum_bytes)
 {
-	uint64_t message_bytes;
+    uint64_t message_bytes;
 
-	if (work_packet == 0 ||
-		work_packet->descriptor_bytes <
-			SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES ||
-		work_packet->descriptor_bytes > SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES)
-		return 0u;
-	message_bytes = (uint64_t)prefix_bytes + work_packet->descriptor_bytes;
-	return message_bytes <= maximum_bytes ? (uint32_t)message_bytes : 0u;
+    if (work_packet == 0 ||
+        work_packet->descriptor_bytes <
+            SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES ||
+        work_packet->descriptor_bytes >
+            SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES)
+        return 0u;
+    message_bytes = (uint64_t)prefix_bytes + work_packet->descriptor_bytes;
+    return message_bytes <= maximum_bytes ? (uint32_t)message_bytes : 0u;
 }
 
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
@@ -74,11 +75,91 @@ uint32_t SparkGlm52CudaResidentIpcCalculateSubmitPrefillBytes(
 		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_PREFILL_BYTES);
 }
 
-uint32_t SparkGlm52CudaResidentIpcCalculateSubmitDecodeBytes(
-	const SparkGlm52Pp13WorkControlPacket *work_packet)
+SparkStatus SparkGlm52CudaResidentIpcDecodePayloadBytes(
+    uint32_t kv_block_index_count,
+    uint32_t *payload_bytes_out)
 {
-	return SparkGlm52CudaResidentIpcCalculateWorkMessageBytes(
-		work_packet,
-		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_PREFIX_BYTES,
-		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_BYTES);
+    uint64_t payload_bytes;
+    if (payload_bytes_out == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    payload_bytes =
+        (uint64_t)SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES +
+        (uint64_t)kv_block_index_count * sizeof(uint32_t);
+    if (payload_bytes > UINT32_MAX ||
+        payload_bytes > SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_DECODE_PAYLOAD_BYTES)
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    *payload_bytes_out = (uint32_t)payload_bytes;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
+    const SparkGlm52CudaResidentIpcSubmitDecode *message,
+    uint32_t payload_bytes,
+    uint32_t maximum_lane_count)
+{
+    uint32_t expected_payload_bytes;
+    uint32_t expected_block_offset;
+    uint32_t internal_kv_directory;
+    uint32_t lane_index;
+    SparkStatus status;
+    if (message == 0 || maximum_lane_count == 0u ||
+        maximum_lane_count > SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    status = SparkGlm52CudaResidentIpcDecodePayloadBytes(
+        message->kv_block_index_count,&expected_payload_bytes);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    if (message->descriptor_bytes !=
+            SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES)
+        return SPARK_STATUS_ABI_MISMATCH;
+    if (payload_bytes != expected_payload_bytes ||
+        message->lane_count == 0u ||
+        message->lane_count > maximum_lane_count ||
+        message->active_sequence_count != message->lane_count ||
+        message->kv_block_token_count == 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if ((message->resident_flags &
+            ~SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_KNOWN_FLAGS) != 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    internal_kv_directory = (message->resident_flags &
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_FLAG_INTERNAL_KV_DIRECTORY) != 0u;
+    if ((internal_kv_directory != 0u) !=
+        (message->kv_block_index_count == 0u))
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if ((message->dispatch_kind !=
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
+         message->dispatch_kind !=
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH) ||
+        message->speculative_token_count >
+            SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT ||
+        (message->dispatch_kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
+         message->speculative_token_count != 0u) ||
+        (message->dispatch_kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
+         message->speculative_token_count == 0u))
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    expected_block_offset = 0u;
+    for (lane_index = 0u; lane_index < message->lane_count; ++lane_index)
+    {
+        const SparkGlm52CudaResidentIpcDecodeLane *lane;
+        lane = &message->lanes[lane_index];
+        if (lane->request_id == 0u || lane->sequence_id == 0u ||
+            lane->request_slot_index == UINT32_MAX ||
+            lane->context_token_count == 0u ||
+            lane->speculative_token_count !=
+                message->speculative_token_count ||
+            lane->kv_block_offset != expected_block_offset ||
+            (internal_kv_directory != 0u && lane->kv_block_count != 0u) ||
+            (internal_kv_directory == 0u && lane->kv_block_count == 0u) ||
+            lane->kv_block_count >
+                SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS ||
+            lane->kv_block_count >
+                message->kv_block_index_count - expected_block_offset)
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        expected_block_offset += lane->kv_block_count;
+    }
+    if (expected_block_offset != message->kv_block_index_count)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    return SPARK_STATUS_OK;
 }

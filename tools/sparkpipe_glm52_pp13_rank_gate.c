@@ -427,7 +427,7 @@ static SparkStatus SparkGlm52Pp13GateWriteRankManifest(
         return SPARK_STATUS_IO_ERROR;
     }
     fprintf(file,"{\n");
-    fprintf(file,"  \"format\": \"sparkpipe.glm52.pp13.fp8.rank_runtime.v1\",\n");
+	fprintf(file,"  \"format\": \"sparkpipe.glm52.pp13.fp8.rank_runtime.v2\",\n");
     fprintf(file,"  \"rank\": %u,\n",rank_plan->rank_index);
     fprintf(file,"  \"host\": \"%s\",\n",rank_plan->host_name);
     fprintf(file,"  \"first_layer\": %u,\n",rank_plan->first_layer_index);
@@ -439,9 +439,15 @@ static SparkStatus SparkGlm52Pp13GateWriteRankManifest(
     fprintf(file,"  \"previous_host\": \"%s\",\n",rank_plan->previous_host_name);
     fprintf(file,"  \"next_host\": \"%s\",\n",rank_plan->next_host_name);
     fprintf(file,"  \"input_route\": \"%s\",\n",rank_plan->input_route_name);
-    fprintf(file,"  \"output_route\": \"%s\",\n",rank_plan->output_route_name);
-    fprintf(file,"  \"max_active_sequence_count\": %u,\n",
-        rank_plan->max_active_sequence_count);
+	fprintf(file,"  \"output_route\": \"%s\",\n",rank_plan->output_route_name);
+	fprintf(file,"  \"max_active_sequence_count\": %u,\n",
+		rank_plan->logical_lane_capacity);
+	fprintf(file,"  \"logical_lane_capacity\": %u,\n",
+		rank_plan->logical_lane_capacity);
+	fprintf(file,"  \"maximum_speculative_rows_per_lane\": %u,\n",
+		rank_plan->maximum_speculative_rows_per_lane);
+	fprintf(file,"  \"execution_row_capacity\": %u,\n",
+		rank_plan->execution_row_capacity);
     fprintf(file,"  \"hidden_bytes_per_sequence\": %u\n",
         rank_plan->bytes_per_sequence);
     fprintf(file,"}\n");
@@ -609,8 +615,13 @@ static void SparkGlm52Pp13GatePrintPlan(
     printf("next_host=%s\n",rank_plan->next_host_name);
     printf("input_route=%s\n",rank_plan->input_route_name);
     printf("output_route=%s\n",rank_plan->output_route_name);
-    printf("max_active_sequence_count=%u\n",
-        rank_plan->max_active_sequence_count);
+	printf("max_active_sequence_count=%u\n",
+		rank_plan->logical_lane_capacity);
+	printf("logical_lane_capacity=%u\n",rank_plan->logical_lane_capacity);
+	printf("maximum_speculative_rows_per_lane=%u\n",
+		rank_plan->maximum_speculative_rows_per_lane);
+	printf("execution_row_capacity=%u\n",
+		rank_plan->execution_row_capacity);
     printf("hidden_bytes_per_sequence=%u\n",rank_plan->bytes_per_sequence);
     printf("max_packet_bytes=%llu\n",
         (unsigned long long)rank_plan->max_packet_bytes);

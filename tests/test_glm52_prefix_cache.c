@@ -414,6 +414,77 @@ static void SparkTestPrefixCacheChainedBlockHashMatchesFullHash(void)
     }
 }
 
+static void SparkTestPrefixCacheExtendsLiveSequenceCapacityIdempotently(void)
+{
+    SparkGlm52PrefixCache cache;
+    SparkGlm52PrefixCacheEntry entries[8u];
+    SparkGlm52PrefixCacheSequenceBinding bindings[16u];
+    uint32_t prompt[3u] = {41u, 42u, 43u};
+    uint32_t first_table[4u];
+    uint32_t second_table[4u];
+    uint32_t first_block_count;
+    uint32_t second_block_count;
+    uint64_t inserted_block_count;
+    uint32_t block_index;
+
+    SparkTestInitializePrefixCache(&cache, entries, bindings, 8u, 16u, 4u);
+    assert(SparkGlm52PrefixCacheCommitPrompt(
+        &cache,
+        707u,
+        prompt,
+        3u,
+        0) == SPARK_STATUS_OK);
+    assert(SparkGlm52PrefixCacheBuildPhysicalBlockTable(
+        &cache,
+        707u,
+        3u,
+        first_table,
+        4u,
+        &first_block_count) == SPARK_STATUS_OK);
+    assert(first_block_count == 1u);
+
+    assert(SparkGlm52PrefixCacheEnsureSequenceTokenCapacity(
+        &cache,
+        707u,
+        10u) == SPARK_STATUS_OK);
+    assert(SparkGlm52PrefixCacheBuildPhysicalBlockTable(
+        &cache,
+        707u,
+        10u,
+        first_table,
+        4u,
+        &first_block_count) == SPARK_STATUS_OK);
+    assert(first_block_count == 3u);
+    for (block_index = 0u; block_index < first_block_count; ++block_index)
+    {
+        SparkGlm52PrefixCacheEntry *entry;
+
+        entry = &entries[first_table[block_index]];
+        assert((entry->flags &
+            SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY) != 0u);
+        assert((entry->flags &
+            SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_REUSABLE) == 0u);
+        assert(entry->token_count == 4u);
+    }
+
+    inserted_block_count = cache.inserted_block_count;
+    assert(SparkGlm52PrefixCacheEnsureSequenceTokenCapacity(
+        &cache,
+        707u,
+        10u) == SPARK_STATUS_OK);
+    assert(cache.inserted_block_count == inserted_block_count);
+    assert(SparkGlm52PrefixCacheBuildPhysicalBlockTable(
+        &cache,
+        707u,
+        10u,
+        second_table,
+        4u,
+        &second_block_count) == SPARK_STATUS_OK);
+    assert(second_block_count == first_block_count);
+    assert(memcmp(first_table, second_table,
+        first_block_count * sizeof(first_table[0u])) == 0);
+}
+
 int main(void)
 {
     SparkTestPrefixCacheMatchesCommittedBlocks();
@@ -424,5 +495,6 @@ int main(void)
     SparkTestPrefixCacheReservationOwnsPhysicalBlocksUntilCommitOrCancel();
     SparkTestPrefixCacheLookaheadProtectionSkipsProtectedVictim();
     SparkTestPrefixCacheChainedBlockHashMatchesFullHash();
+    SparkTestPrefixCacheExtendsLiveSequenceCapacityIdempotently();
     return 0;
 }

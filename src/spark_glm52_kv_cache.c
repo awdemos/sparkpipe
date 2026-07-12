@@ -24,6 +24,261 @@ static uint64_t SparkGlm52KvCacheCeilDivU64(
     return (numerator + denominator - 1u) / denominator;
 }
 
+static SparkStatus SparkGlm52KvCacheCheckedMulU64(
+    uint64_t left,
+    uint64_t right,
+    uint64_t *value_out)
+{
+    if (value_out == 0 || (right != 0u && left > UINT64_MAX / right))
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    *value_out = left * right;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52KvCacheCheckedAddU64(
+    uint64_t left,
+    uint64_t right,
+    uint64_t *value_out)
+{
+    if (value_out == 0 || left > UINT64_MAX - right)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    *value_out = left + right;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52KvCacheAlignUpU64(
+    uint64_t value,
+    uint32_t alignment,
+    uint64_t *value_out)
+{
+    uint64_t aligned_value;
+
+    if (value_out == 0 || alignment == 0u ||
+        (alignment & (alignment - 1u)) != 0u ||
+        value > UINT64_MAX - ((uint64_t)alignment - 1u))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    aligned_value = (value + alignment - 1u) & ~((uint64_t)alignment - 1u);
+    if (aligned_value < value)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    *value_out = aligned_value;
+    return SPARK_STATUS_OK;
+}
+
+uint32_t SparkGlm52KvCacheDsaSourceLayer(uint32_t layer_index)
+{
+    uint32_t adjusted_layer_index;
+
+    if (layer_index >= SPARK_GLM52_MODEL_LAYER_COUNT)
+    {
+        return UINT32_MAX;
+    }
+    if (layer_index < SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER)
+    {
+        return layer_index;
+    }
+    adjusted_layer_index = layer_index -
+        (SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET - 1u);
+    return (SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET - 1u) +
+        (adjusted_layer_index -
+         (adjusted_layer_index %
+          SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT));
+}
+
+SparkStatus SparkGlm52KvCacheCalculateJitStageBudget(
+    const SparkGlm52KvJitStageBudgetRequest *request,
+    SparkGlm52KvJitStageBudget *budget)
+{
+    uint64_t attention_bytes_per_token_per_layer;
+    uint64_t dsa_bytes_per_token_per_layer;
+    uint64_t summary_bytes_per_index_layer_block;
+    uint64_t resident_token_bytes;
+    uint64_t payload_token_bytes;
+    uint64_t record_unaligned_bytes;
+    uint64_t active_token_capacity;
+    uint64_t backing_token_capacity;
+    uint64_t compact_selected_token_count;
+    uint32_t layer_offset;
+    uint32_t local_dsa_index_layer_count;
+    SparkStatus status;
+
+    if (request == 0 || budget == 0 ||
+        request->abi_version != SPARK_GLM52_KV_JIT_STAGE_BUDGET_ABI_VERSION ||
+        request->descriptor_bytes !=
+            SPARK_GLM52_KV_JIT_STAGE_BUDGET_REQUEST_DESCRIPTOR_BYTES ||
+        request->layer_count == 0u ||
+        request->first_layer_index >= SPARK_GLM52_MODEL_LAYER_COUNT ||
+        request->layer_count >
+            SPARK_GLM52_MODEL_LAYER_COUNT - request->first_layer_index ||
+        request->physical_pool_token_capacity == 0u ||
+        request->backing_block_capacity == 0u ||
+        request->active_sequence_count == 0u ||
+        request->backing_request_count == 0u ||
+        request->selected_token_count == 0u ||
+        request->block_token_count == 0u ||
+        request->physical_pool_token_capacity % request->block_token_count != 0u ||
+        request->backing_block_capacity <
+            request->physical_pool_token_capacity / request->block_token_count ||
+        request->include_mtp_layer > 1u ||
+        (request->include_mtp_layer != 0u &&
+         request->first_layer_index + request->layer_count !=
+            SPARK_GLM52_MODEL_LAYER_COUNT) ||
+        request->record_alignment_bytes <
+            SPARK_GLM52_KV_JIT_DEFAULT_RECORD_ALIGNMENT ||
+        (request->record_alignment_bytes &
+            (request->record_alignment_bytes - 1u)) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    local_dsa_index_layer_count = 0u;
+    for (layer_offset = 0u; layer_offset < request->layer_count; ++layer_offset)
+    {
+        uint32_t layer_index;
+        layer_index = request->first_layer_index + layer_offset;
+        if (SparkGlm52KvCacheDsaSourceLayer(layer_index) == layer_index)
+        {
+            local_dsa_index_layer_count += 1u;
+        }
+    }
+    attention_bytes_per_token_per_layer =
+        (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t);
+    dsa_bytes_per_token_per_layer =
+        (uint64_t)SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t);
+    summary_bytes_per_index_layer_block =
+        (2u * dsa_bytes_per_token_per_layer) + sizeof(uint8_t);
+
+    memset(budget, 0, sizeof(*budget));
+    budget->abi_version = SPARK_GLM52_KV_JIT_STAGE_BUDGET_ABI_VERSION;
+    budget->descriptor_bytes = SPARK_GLM52_KV_JIT_STAGE_BUDGET_DESCRIPTOR_BYTES;
+    budget->first_layer_index = request->first_layer_index;
+    budget->layer_count = request->layer_count;
+    budget->local_dsa_index_layer_count = local_dsa_index_layer_count;
+    budget->include_mtp_layer = request->include_mtp_layer;
+    budget->physical_block_capacity =
+        request->physical_pool_token_capacity / request->block_token_count;
+    budget->backing_block_capacity = request->backing_block_capacity;
+    budget->mla_bytes_per_token =
+        (uint64_t)request->layer_count * attention_bytes_per_token_per_layer;
+    budget->dsa_index_bytes_per_token =
+        (uint64_t)local_dsa_index_layer_count * dsa_bytes_per_token_per_layer;
+    budget->mtp_bytes_per_token = request->include_mtp_layer != 0u
+        ? attention_bytes_per_token_per_layer : 0u;
+    status = SparkGlm52KvCacheCheckedAddU64(
+        budget->mla_bytes_per_token,
+        budget->dsa_index_bytes_per_token,
+        &resident_token_bytes);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheCheckedAddU64(
+            resident_token_bytes,
+            budget->mtp_bytes_per_token,
+            &budget->resident_bytes_per_token);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheCheckedMulU64(
+            budget->physical_block_capacity,
+            (uint64_t)local_dsa_index_layer_count *
+                summary_bytes_per_index_layer_block,
+            &budget->resident_summary_bytes);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheCheckedMulU64(
+            request->physical_pool_token_capacity,
+            budget->resident_bytes_per_token,
+            &resident_token_bytes);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheCheckedAddU64(
+            resident_token_bytes,
+            budget->resident_summary_bytes,
+            &budget->resident_pool_bytes);
+    }
+    payload_token_bytes = 0u;
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheCheckedMulU64(
+            request->block_token_count,
+            budget->resident_bytes_per_token,
+            &payload_token_bytes);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheCheckedAddU64(
+            payload_token_bytes,
+            (uint64_t)local_dsa_index_layer_count *
+                summary_bytes_per_index_layer_block,
+            &budget->nvme_payload_bytes_per_block);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheCheckedAddU64(
+            request->record_alignment_bytes,
+            budget->nvme_payload_bytes_per_block,
+            &record_unaligned_bytes);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheAlignUpU64(
+            record_unaligned_bytes,
+            request->record_alignment_bytes,
+            &budget->nvme_record_bytes);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheCheckedMulU64(
+            request->backing_block_capacity,
+            budget->nvme_record_bytes,
+            &budget->nvme_capacity_bytes);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheCheckedMulU64(
+            request->active_sequence_count,
+            request->selected_token_count,
+            &compact_selected_token_count);
+    }
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52KvCacheCheckedMulU64(
+            compact_selected_token_count,
+            budget->mla_bytes_per_token + budget->mtp_bytes_per_token,
+            &budget->compact_selected_mla_working_set_bytes);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        memset(budget, 0, sizeof(*budget));
+        return status;
+    }
+
+    active_token_capacity = request->physical_pool_token_capacity;
+    status = SparkGlm52KvCacheCheckedMulU64(
+        request->backing_block_capacity,
+        request->block_token_count,
+        &backing_token_capacity);
+    if (status != SPARK_STATUS_OK)
+    {
+        memset(budget, 0, sizeof(*budget));
+        return status;
+    }
+    budget->maximum_average_active_context_tokens =
+        (uint32_t)(active_token_capacity / request->active_sequence_count);
+    backing_token_capacity /= request->backing_request_count;
+    budget->maximum_average_backing_context_tokens =
+        backing_token_capacity > UINT32_MAX ? UINT32_MAX : (uint32_t)backing_token_capacity;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52KvCacheCalculateAttentionBytesPerTokenLayer(
     const SparkGlm52KvCacheCapacityRequest *request,
     uint64_t *bytes_per_token_per_layer_out)

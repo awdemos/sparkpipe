@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 4u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 6u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
 	((uint32_t)sizeof(SparkGlm52Pp13WorkControlPacket))
@@ -27,7 +27,7 @@ extern "C" {
 #define SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT \
 	SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET
 #define SPARK_GLM52_PP13_WORK_CONTROL_KV_CONTEXT_TOKEN_CAPACITY \
-	SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT
+	SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS
 #define SPARK_GLM52_PP13_WORK_CONTROL_KV_BLOCK_CAPACITY \
 	(SPARK_GLM52_PP13_WORK_CONTROL_KV_CONTEXT_TOKEN_CAPACITY / \
 	 SPARK_GLM52_KV_BLOCK_TOKENS)
@@ -37,33 +37,72 @@ extern "C" {
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE 0x00000004u
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY 0x00000008u
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY 0x00000010u
+#define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES 0x00000020u
 #define SPARK_GLM52_PP13_WORK_CONTROL_KNOWN_FLAGS \
 	(SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY | \
-	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY)
+	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY | \
+	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES)
 #define SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT \
 	((SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT > \
 	  SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) ? \
 	 SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT : \
 	 SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
+#define SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT 1024u
+#define SPARK_GLM52_PP13_WORK_CONTROL_INVALID_REQUEST_SLOT UINT32_MAX
 
 #define SPARK_GLM52_PP13_KV_ENTRY_MISSING 0u
 #define SPARK_GLM52_PP13_KV_ENTRY_IN_FLIGHT 1u
 #define SPARK_GLM52_PP13_KV_ENTRY_RESIDENT 2u
+
+#define SPARK_GLM52_PP13_KV_DIRECTORY_EMPTY 0u
+#define SPARK_GLM52_PP13_KV_DIRECTORY_OCCUPIED 1u
+#define SPARK_GLM52_PP13_KV_DIRECTORY_TOMBSTONE 2u
+
+#define SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NONE 0u
+#define SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_GPU 1u
+#define SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NVME 2u
+#define SPARK_GLM52_PP13_KV_INVALID_BLOCK_INDEX UINT32_MAX
+
+typedef SparkStatus (*SparkGlm52Pp13WorkControlKvSwapStoreFunction)(
+	void *context,
+	uint64_t sequence_id,
+	uint32_t logical_block_index,
+	uint32_t physical_block_index,
+	uint32_t backing_block_index);
+typedef SparkStatus (*SparkGlm52Pp13WorkControlKvSwapLoadFunction)(
+	void *context,
+	uint64_t sequence_id,
+	uint32_t logical_block_index,
+	uint32_t physical_block_index,
+	uint32_t backing_block_index);
+
+typedef struct SparkGlm52Pp13WorkControlKvDirectoryEntry
+{
+	uint64_t sequence_id;
+	uint32_t logical_block_index;
+	uint32_t physical_block_index;
+	uint32_t backing_block_index;
+	uint32_t residency_state;
+	uint32_t state;
+	uint32_t backing_valid;
+} SparkGlm52Pp13WorkControlKvDirectoryEntry;
 
 typedef struct SparkGlm52Pp13WorkControlLane
 {
 	uint64_t request_id;
 	uint64_t sequence_id;
 	uint64_t sequence_position;
+	uint32_t request_slot_index;
 	uint32_t context_token_count;
 	uint32_t input_token_id;
-	uint32_t kv_block_count;
+	uint32_t mtp_draft_token_count;
+	uint32_t speculative_token_count;
 	uint32_t reserved0;
-	uint32_t kv_physical_block_indices[
-		SPARK_GLM52_PP13_WORK_CONTROL_KV_BLOCK_CAPACITY];
+	uint32_t speculative_draft_token_ids[
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT];
 } SparkGlm52Pp13WorkControlLane;
 
 typedef struct SparkGlm52Pp13WorkControlPacket
@@ -89,8 +128,12 @@ typedef struct SparkGlm52Pp13WorkControlPacket
 	uint32_t speculative_token_index;
 	uint32_t speculative_draft_token_ids[
 		SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT];
-	SparkGlm52Pp13WorkControlLane lanes[
-		SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t lane_count;
+	uint32_t rows_per_lane;
+	uint32_t execution_row_count;
+	uint32_t reserved0;
+	SparkGlm52Pp13WorkControlLane
+		lanes[SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT];
 } SparkGlm52Pp13WorkControlPacket;
 
 typedef struct SparkGlm52Pp13WorkControlKvState
@@ -102,12 +145,31 @@ typedef struct SparkGlm52Pp13WorkControlKvState
 	uint32_t block_token_count;
 	uint32_t table_entry_capacity;
 	uint32_t physical_block_capacity;
+	uint32_t directory_capacity;
+	uint32_t next_physical_block_index;
+	uint32_t backing_block_capacity;
+	uint32_t free_backing_block_head;
+	uint32_t directory_entry_count;
+	uint32_t swapped_block_count;
+	uint32_t clean_evict_count;
+	uint64_t epoch;
 	uint32_t *physical_block_indices;
 	uint32_t *lane_physical_block_counts;
 	uint8_t *physical_block_states;
+	uint64_t *physical_block_sequence_ids;
+	uint32_t *physical_block_logical_indices;
+	uint64_t *physical_block_last_used_epochs;
+	SparkGlm52Pp13WorkControlKvDirectoryEntry *directory_entries;
+	uint32_t *backing_block_free_next;
+	SparkGlm52Pp13WorkControlKvSwapStoreFunction swap_store_function;
+	SparkGlm52Pp13WorkControlKvSwapLoadFunction swap_load_function;
+	void *swap_context;
 	uint32_t missing_block_count;
 	uint32_t in_flight_block_count;
 	uint32_t resident_block_count;
+	uint32_t allocated_physical_block_count;
+	uint64_t swap_store_count;
+	uint64_t swap_load_count;
 } SparkGlm52Pp13WorkControlKvState;
 
 SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
@@ -130,12 +192,30 @@ SparkStatus SparkGlm52Pp13WorkControlInitializeKvState(
 	uint32_t lane_stride,
 	uint32_t block_token_count,
 	uint32_t physical_block_capacity,
+	uint32_t directory_capacity,
 	uint32_t *physical_block_indices,
 	uint32_t *lane_physical_block_counts,
-	uint8_t *physical_block_states);
+	uint8_t *physical_block_states,
+	uint64_t *physical_block_sequence_ids,
+	uint32_t *physical_block_logical_indices,
+	uint64_t *physical_block_last_used_epochs,
+	SparkGlm52Pp13WorkControlKvDirectoryEntry *directory_entries);
+SparkStatus SparkGlm52Pp13WorkControlConfigureKvSwap(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint32_t backing_block_capacity,
+	uint32_t *backing_block_free_next,
+	SparkGlm52Pp13WorkControlKvSwapStoreFunction swap_store_function,
+	SparkGlm52Pp13WorkControlKvSwapLoadFunction swap_load_function,
+	void *swap_context);
 uint32_t SparkGlm52Pp13WorkControlBlockCount(
 	uint32_t token_count,
 	uint32_t block_token_count);
+SparkStatus SparkGlm52Pp13WorkControlPlanExecutionChunks(
+	uint32_t logical_lane_count,
+	uint32_t rows_per_lane,
+	uint32_t execution_row_capacity,
+	uint32_t *maximum_lanes_per_chunk_out,
+	uint32_t *chunk_count_out);
 SparkStatus SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 	const SparkGlm52Pp13WorkControlPacket *packet,
 	SparkGlm52Pp13WorkControlKvState *state,
@@ -144,6 +224,13 @@ SparkStatus SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
 	const SparkGlm52Pp13WorkControlPacket *packet,
 	SparkGlm52Pp13WorkControlKvState *state);
 SparkStatus SparkGlm52Pp13WorkControlCancelHostKvBlockTable(
+	const SparkGlm52Pp13WorkControlPacket *packet,
+	SparkGlm52Pp13WorkControlKvState *state);
+SparkStatus SparkGlm52Pp13WorkControlReleaseSequence(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint64_t sequence_id,
+	uint32_t logical_block_count);
+SparkStatus SparkGlm52Pp13WorkControlReleasePacketSequences(
 	const SparkGlm52Pp13WorkControlPacket *packet,
 	SparkGlm52Pp13WorkControlKvState *state);
 

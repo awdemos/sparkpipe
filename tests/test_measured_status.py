@@ -42,8 +42,11 @@ def main():
     scheduling = program["scheduling"]
     flags = set(scheduling["flags"])
     assert program["max_inflight"] == 1
-    assert scheduling["max_active_slots"] == 1024
-    assert scheduling["max_resident_sequences"] == 1024
+    # Capacity is a build contract, not a performance claim. The health/status
+    # surfaces below must continue to report the B1024 path as unmeasured until
+    # a retained full-ring receipt exists.
+    assert scheduling["max_active_slots"] == 1024 * 7
+    assert scheduling["max_resident_sequences"] == 16384
     assert scheduling["validated_latency_ns"] == 0
     assert scheduling["private_queue_count"] == 0
     assert flags.isdisjoint(FORBIDDEN_FLAGS)

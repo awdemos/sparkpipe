@@ -300,21 +300,18 @@ static SparkGlm52PrefixCacheSequenceBinding *SparkGlm52PrefixCacheFindBindingAtT
 static SparkGlm52PrefixCacheSequenceBinding *SparkGlm52PrefixCacheFindFreeBinding(
     SparkGlm52PrefixCache *cache)
 {
-    uint32_t binding_index;
-
-    for (binding_index = 0u;
-         binding_index < cache->sequence_binding_count;
-         ++binding_index)
+    if (cache == 0 ||
+        cache->free_binding_head == SPARK_GLM52_PREFIX_CACHE_NO_ENTRY)
     {
-        SparkGlm52PrefixCacheSequenceBinding *binding;
-
-        binding = &cache->sequence_bindings[binding_index];
-        if ((binding->flags & SPARK_GLM52_PREFIX_CACHE_BINDING_FLAG_VALID) == 0u)
-        {
-            return binding;
-        }
+        return 0;
     }
-    return 0;
+    if (cache->free_binding_head >= cache->sequence_binding_count ||
+        (cache->sequence_bindings[cache->free_binding_head].flags &
+            SPARK_GLM52_PREFIX_CACHE_BINDING_FLAG_VALID) != 0u)
+    {
+        return 0;
+    }
+    return &cache->sequence_bindings[cache->free_binding_head];
 }
 
 static uint32_t SparkGlm52PrefixCachePhysicalBlockIsUsed(
@@ -526,6 +523,17 @@ static SparkGlm52PrefixCacheEntry *SparkGlm52PrefixCacheSelectVictim(
     SparkGlm52PrefixCacheEntry *protected_victim;
     uint32_t entry_index;
 
+    if (cache->free_entry_head != SPARK_GLM52_PREFIX_CACHE_NO_ENTRY)
+    {
+        if (cache->free_entry_head >= cache->entry_count ||
+            (cache->entries[cache->free_entry_head].flags &
+                SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_VALID) != 0u)
+        {
+            return 0;
+        }
+        return &cache->entries[cache->free_entry_head];
+    }
+
     unprotected_victim = 0;
     protected_victim = 0;
     for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
@@ -575,6 +583,7 @@ static SparkStatus SparkGlm52PrefixCacheInvalidateEntry(
     SparkGlm52PrefixCache *cache,
     SparkGlm52PrefixCacheEntry *entry)
 {
+    uint32_t entry_index;
     SparkStatus status;
 
     if (entry == 0 ||
@@ -585,6 +594,11 @@ static SparkStatus SparkGlm52PrefixCacheInvalidateEntry(
     if (entry->reference_count != 0u)
     {
         return SPARK_STATUS_BUSY;
+    }
+    entry_index = SparkGlm52PrefixCacheEntryIndex(cache, entry);
+    if (entry_index == SPARK_GLM52_PREFIX_CACHE_NO_ENTRY)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (entry->physical_block_index != SPARK_GLM52_PREFIX_CACHE_NO_PHYSICAL_BLOCK)
     {
@@ -597,6 +611,8 @@ static SparkStatus SparkGlm52PrefixCacheInvalidateEntry(
         }
     }
     SparkGlm52PrefixCacheInitializeEntry(entry);
+    entry->reserved = cache->free_entry_head;
+    cache->free_entry_head = entry_index;
     return SPARK_STATUS_OK;
 }
 
@@ -611,10 +627,21 @@ static SparkStatus SparkGlm52PrefixCacheInstallEntry(
     uint32_t token_count,
     uint64_t operation_epoch)
 {
+    uint32_t entry_index;
+    uint32_t next_free_entry_index;
     uint32_t physical_block_index;
+    uint32_t entry_was_valid;
     SparkStatus status;
 
-    if ((entry->flags & SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_VALID) != 0u)
+    entry_index = SparkGlm52PrefixCacheEntryIndex(cache, entry);
+    if (entry_index == SPARK_GLM52_PREFIX_CACHE_NO_ENTRY)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    entry_was_valid =
+        (entry->flags & SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_VALID) != 0u;
+    next_free_entry_index = SPARK_GLM52_PREFIX_CACHE_NO_ENTRY;
+    if (entry_was_valid != 0u)
     {
         if (entry->reference_count != 0u)
         {
@@ -632,6 +659,11 @@ static SparkStatus SparkGlm52PrefixCacheInstallEntry(
     }
     else
     {
+        if (cache->free_entry_head != entry_index)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+        next_free_entry_index = entry->reserved;
         status = SparkGlm52PrefixCacheAcquirePhysicalBlock(
             cache,
             &physical_block_index);
@@ -639,6 +671,7 @@ static SparkStatus SparkGlm52PrefixCacheInstallEntry(
         {
             return status;
         }
+        cache->free_entry_head = next_free_entry_index;
     }
 
     entry->abi_version = SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
@@ -707,6 +740,7 @@ static SparkStatus SparkGlm52PrefixCacheReleaseBinding(
     SparkGlm52PrefixCache *cache,
     SparkGlm52PrefixCacheSequenceBinding *binding)
 {
+    uint32_t binding_index;
     SparkStatus status;
 
     if (binding == 0 ||
@@ -716,6 +750,11 @@ static SparkStatus SparkGlm52PrefixCacheReleaseBinding(
     }
     if (binding->entry_index >= cache->entry_count ||
         cache->entries[binding->entry_index].reference_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    binding_index = (uint32_t)(binding - cache->sequence_bindings);
+    if (binding_index >= cache->sequence_binding_count)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -729,6 +768,8 @@ static SparkStatus SparkGlm52PrefixCacheReleaseBinding(
     cache->entries[binding->entry_index].reference_count -= 1u;
     cache->released_block_count += 1u;
     SparkGlm52PrefixCacheInitializeBinding(binding);
+    binding->reserved = cache->free_binding_head;
+    cache->free_binding_head = binding_index;
     return SPARK_STATUS_OK;
 }
 
@@ -740,6 +781,7 @@ static SparkStatus SparkGlm52PrefixCacheAcquireEntryForSequence(
     uint32_t binding_is_pending)
 {
     SparkGlm52PrefixCacheSequenceBinding *binding;
+    uint32_t next_free_binding_index;
     uint32_t entry_index;
     SparkStatus status;
 
@@ -772,6 +814,16 @@ static SparkStatus SparkGlm52PrefixCacheAcquireEntryForSequence(
     {
         return status;
     }
+    next_free_binding_index = binding->reserved;
+    if (cache->free_binding_head !=
+        (uint32_t)(binding - cache->sequence_bindings))
+    {
+        (void)SparkGlm52PrefixCacheReleasePhysicalBlockReference(
+            cache,
+            entry->physical_block_index);
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    cache->free_binding_head = next_free_binding_index;
 
     binding->abi_version = SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
     binding->descriptor_bytes = SPARK_GLM52_PREFIX_CACHE_BINDING_DESCRIPTOR_BYTES;
@@ -884,9 +936,15 @@ SparkStatus SparkGlm52PrefixCacheInitialize(
     cache->entries = configuration->entries;
     cache->sequence_bindings = configuration->sequence_bindings;
     cache->kv_cache_arena = configuration->kv_cache_arena;
+    cache->free_entry_head = 0u;
+    cache->free_binding_head = 0u;
     for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
     {
         SparkGlm52PrefixCacheInitializeEntry(&cache->entries[entry_index]);
+        cache->entries[entry_index].reserved =
+            entry_index + 1u < cache->entry_count
+                ? entry_index + 1u
+                : SPARK_GLM52_PREFIX_CACHE_NO_ENTRY;
     }
     for (binding_index = 0u;
          binding_index < cache->sequence_binding_count;
@@ -894,6 +952,10 @@ SparkStatus SparkGlm52PrefixCacheInitialize(
     {
         SparkGlm52PrefixCacheInitializeBinding(
             &cache->sequence_bindings[binding_index]);
+        cache->sequence_bindings[binding_index].reserved =
+            binding_index + 1u < cache->sequence_binding_count
+                ? binding_index + 1u
+                : SPARK_GLM52_PREFIX_CACHE_NO_ENTRY;
     }
     return SPARK_STATUS_OK;
 }
@@ -1939,7 +2001,9 @@ SparkStatus SparkGlm52PrefixCacheCommitReservation(
                 return status;
             }
             entry->flags &= ~SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_PENDING;
-            if (entry->token_count == cache->block_token_count)
+            if (entry->token_count == cache->block_token_count &&
+                (entry->flags &
+                    SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY) == 0u)
             {
                 entry->flags |= SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_REUSABLE;
             }
@@ -2043,6 +2107,179 @@ SparkStatus SparkGlm52PrefixCacheCommitPrompt(
     return SPARK_STATUS_OK;
 }
 
+SparkStatus SparkGlm52PrefixCacheEnsureSequenceTokenCapacity(
+    SparkGlm52PrefixCache *cache,
+    uint64_t sequence_id,
+    uint32_t token_count)
+{
+    SparkGlm52PrefixCacheSequenceBinding *short_binding;
+    SparkGlm52PrefixCacheEntry *short_entry;
+    uint64_t operation_epoch;
+    uint64_t parent_hash;
+    uint32_t block_count;
+    uint32_t block_index;
+    SparkStatus status;
+
+    status = SparkGlm52PrefixCacheValidate(cache);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (sequence_id == 0u || token_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    block_count = SparkGlm52PrefixCacheCeilDivideU32(
+        token_count,
+        cache->block_token_count);
+    short_binding = 0;
+    short_entry = 0;
+    parent_hash = SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH;
+    cache->operation_epoch += 1u;
+    operation_epoch = cache->operation_epoch;
+
+    for (block_index = 0u; block_index < block_count; ++block_index)
+    {
+        SparkGlm52PrefixCacheSequenceBinding *binding;
+        SparkGlm52PrefixCacheEntry *entry;
+        uint64_t block_hash;
+        uint64_t content_hash;
+        uint32_t first_token_index;
+        uint32_t required_block_token_count;
+
+        first_token_index = block_index * cache->block_token_count;
+        required_block_token_count = SparkGlm52PrefixCacheMinimumU32(
+            cache->block_token_count,
+            token_count - first_token_index);
+        binding = SparkGlm52PrefixCacheFindBindingAtTokenOffset(
+            cache,
+            sequence_id,
+            first_token_index);
+        if (binding != 0)
+        {
+            if (binding->entry_index >= cache->entry_count ||
+                binding->physical_block_index >= cache->physical_block_count ||
+                binding->token_count == 0u ||
+                binding->token_count > cache->block_token_count)
+            {
+                SparkGlm52PrefixCacheRollbackEpoch(
+                    cache,
+                    sequence_id,
+                    operation_epoch);
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            entry = &cache->entries[binding->entry_index];
+            if ((entry->flags & SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_VALID) == 0u ||
+                (entry->flags & SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_PENDING) != 0u ||
+                entry->first_token_index != first_token_index ||
+                entry->physical_block_index != binding->physical_block_index ||
+                entry->token_count != binding->token_count)
+            {
+                SparkGlm52PrefixCacheRollbackEpoch(
+                    cache,
+                    sequence_id,
+                    operation_epoch);
+                return SPARK_STATUS_BUSY;
+            }
+            if (binding->token_count < required_block_token_count)
+            {
+                /*
+                 * Only the final, private, live-only prompt block may grow in
+                 * place.  Growing a shared partial block would corrupt a fork
+                 * and requires an explicit KV copy-on-write backend.
+                 */
+                if ((entry->flags &
+                        SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY) == 0u ||
+                    entry->reference_count != 1u || short_binding != 0)
+                {
+                    SparkGlm52PrefixCacheRollbackEpoch(
+                        cache,
+                        sequence_id,
+                        operation_epoch);
+                    return SPARK_STATUS_MODULE_NOT_VALIDATED;
+                }
+                short_binding = binding;
+                short_entry = entry;
+            }
+            parent_hash = binding->block_hash;
+            continue;
+        }
+
+        entry = SparkGlm52PrefixCacheSelectVictim(cache);
+        if (entry == 0)
+        {
+            SparkGlm52PrefixCacheRollbackEpoch(
+                cache,
+                sequence_id,
+                operation_epoch);
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+        block_hash = SparkGlm52PrefixCacheMixU64(
+            SparkGlm52PrefixCacheMixU64(parent_hash, sequence_id),
+            first_token_index);
+        content_hash = SparkGlm52PrefixCacheMixU64(
+            block_hash,
+            operation_epoch);
+        status = SparkGlm52PrefixCacheInstallEntry(
+            cache,
+            entry,
+            SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_PENDING |
+                SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY,
+            parent_hash,
+            block_hash,
+            content_hash,
+            first_token_index,
+            cache->block_token_count,
+            operation_epoch);
+        if (status != SPARK_STATUS_OK)
+        {
+            SparkGlm52PrefixCacheRollbackEpoch(
+                cache,
+                sequence_id,
+                operation_epoch);
+            return status;
+        }
+        cache->reserved_block_count += 1u;
+        status = SparkGlm52PrefixCacheAcquireEntryForSequence(
+            cache,
+            sequence_id,
+            entry,
+            operation_epoch,
+            1u);
+        if (status != SPARK_STATUS_OK)
+        {
+            SparkGlm52PrefixCacheRollbackEpoch(
+                cache,
+                sequence_id,
+                operation_epoch);
+            return status;
+        }
+        parent_hash = block_hash;
+    }
+
+    status = SparkGlm52PrefixCacheCommitReservation(
+        cache,
+        sequence_id,
+        operation_epoch);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52PrefixCacheRollbackEpoch(
+            cache,
+            sequence_id,
+            operation_epoch);
+        return status;
+    }
+    if (short_binding != 0)
+    {
+        short_binding->token_count = cache->block_token_count;
+        short_entry->token_count = cache->block_token_count;
+        short_entry->flags &= ~SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_REUSABLE;
+        short_entry->flags |= SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY;
+    }
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkGlm52PrefixCacheBuildPhysicalBlockTable(
     SparkGlm52PrefixCache *cache,
     uint64_t sequence_id,
@@ -2053,7 +2290,6 @@ SparkStatus SparkGlm52PrefixCacheBuildPhysicalBlockTable(
 {
     uint32_t block_count;
     uint32_t block_index;
-    uint32_t token_offset;
     SparkStatus status;
 
     status = SparkGlm52PrefixCacheValidate(cache);
@@ -2073,21 +2309,26 @@ SparkStatus SparkGlm52PrefixCacheBuildPhysicalBlockTable(
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    token_offset = 0u;
     for (block_index = 0u; block_index < block_count; ++block_index)
     {
         SparkGlm52PrefixCacheSequenceBinding *binding;
+        uint32_t required_block_token_count;
+        uint32_t token_offset;
+
+        token_offset = block_index * cache->block_token_count;
+        required_block_token_count = SparkGlm52PrefixCacheMinimumU32(
+            cache->block_token_count,
+            token_count - token_offset);
 
         binding = SparkGlm52PrefixCacheFindBindingAtTokenOffset(
             cache,
             sequence_id,
             token_offset);
-        if (binding == 0)
+        if (binding == 0 || binding->token_count < required_block_token_count)
         {
             return SPARK_STATUS_NOT_FOUND;
         }
         physical_block_indices[block_index] = binding->physical_block_index;
-        token_offset += binding->token_count;
     }
     *physical_block_count_out = block_count;
     return SPARK_STATUS_OK;
@@ -2373,6 +2614,10 @@ SparkStatus SparkGlm52PrefixCacheReset(
     for (entry_index = 0u; entry_index < cache->entry_count; ++entry_index)
     {
         SparkGlm52PrefixCacheInitializeEntry(&cache->entries[entry_index]);
+        cache->entries[entry_index].reserved =
+            entry_index + 1u < cache->entry_count
+                ? entry_index + 1u
+                : SPARK_GLM52_PREFIX_CACHE_NO_ENTRY;
     }
     for (binding_index = 0u;
          binding_index < cache->sequence_binding_count;
@@ -2380,6 +2625,10 @@ SparkStatus SparkGlm52PrefixCacheReset(
     {
         SparkGlm52PrefixCacheInitializeBinding(
             &cache->sequence_bindings[binding_index]);
+        cache->sequence_bindings[binding_index].reserved =
+            binding_index + 1u < cache->sequence_binding_count
+                ? binding_index + 1u
+                : SPARK_GLM52_PREFIX_CACHE_NO_ENTRY;
     }
     if (cache->kv_cache_arena != 0)
     {
@@ -2390,6 +2639,8 @@ SparkStatus SparkGlm52PrefixCacheReset(
         }
     }
     cache->tick = 0u;
+    cache->free_entry_head = 0u;
+    cache->free_binding_head = 0u;
     cache->operation_epoch = 0u;
     cache->lookup_count = 0u;
     cache->hit_count = 0u;

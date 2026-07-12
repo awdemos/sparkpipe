@@ -13,13 +13,11 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_RUNTIME_ABI_VERSION 1u
+#define SPARK_GLM52_PP13_RUNTIME_ABI_VERSION 3u
 #define SPARK_GLM52_PP13_RUNTIME_RANK_PLAN_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52Pp13RuntimeRankPlan))
 #define SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT \
     SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT
-#define SPARK_GLM52_PP13_RUNTIME_LAYERS_PER_STAGE \
-    SPARK_GLM52_STAGE_PLAN_FIXED_LAYERS_PER_STAGE
 #define SPARK_GLM52_PP13_RUNTIME_HOST_NAME_BYTES 16u
 #define SPARK_GLM52_PP13_RUNTIME_ROUTE_NAME_BYTES 64u
 #define SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES 512u
@@ -46,6 +44,11 @@ extern "C" {
 #define SPARK_GLM52_PP13_RUNTIME_MAX_TRANSPORT_BYTES_PER_SEQUENCE \
     (SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE + \
      SPARK_GLM52_PP13_RUNTIME_MAX_SIDEBAND_BYTES_PER_SEQUENCE)
+#define SPARK_GLM52_PP13_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW \
+	(SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE + \
+	 SPARK_GLM52_PP13_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE)
+#define SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE \
+	(SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT + 1u)
 
 #define SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS 0x00000001u
 #define SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT 0x00000002u
@@ -69,7 +72,9 @@ typedef struct SparkGlm52Pp13RuntimeRankPlan
     uint32_t next_rank_index;
     uint32_t listen_port;
     uint32_t next_port;
-    uint32_t max_active_sequence_count;
+    uint32_t logical_lane_capacity;
+    uint32_t maximum_speculative_rows_per_lane;
+    uint32_t execution_row_capacity;
     uint32_t hidden_dimension;
     uint32_t bytes_per_sequence;
     uint32_t quantization_mode;
@@ -140,7 +145,7 @@ SparkStatus SparkGlm52Pp13RuntimeRankHostName(
 
 SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     uint32_t rank_index,
-    uint32_t max_active_sequence_count,
+    uint32_t logical_lane_capacity,
     uint32_t port_base,
     SparkGlm52Pp13RuntimeRankPlan *rank_plan,
     char *error_buffer,
