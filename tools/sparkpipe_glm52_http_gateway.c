@@ -127,7 +127,7 @@ static int32_t SparkGlm52GatewayInitializePendingStreams(
 			SPARK_GLM52_GATEWAY_STREAM_SLOT_MASK)
 		return -1;
 	runtime->pending_stream_capacity =
-		runtime->configuration.max_active_sequence_count;
+		SPARK_GLM52_GATEWAY_PENDING_STREAM_CAPACITY;
 	runtime->pending_stream_free_head = 0u;
 	for (slot_index = 0u;
 		 slot_index < runtime->pending_stream_capacity;
