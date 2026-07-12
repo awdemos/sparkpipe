@@ -5,6 +5,37 @@
 #include "sparkpipe/spark_glm52_http_gateway.h"
 #include "sparkpipe/spark_glm52_model.h"
 
+#define main SparkTestHttpGatewayToolMain
+#include "../tools/sparkpipe_glm52_http_gateway.c"
+#undef main
+
+static void SparkTestHttpGatewayQueuesBeyondActiveLanes(void)
+{
+	static SparkGlm52GatewayRuntime runtime;
+	SparkGlm52GatewayPendingStream *stream;
+	uint64_t client_request_id;
+	uint32_t slot_index;
+	uint32_t index;
+
+	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
+	runtime.configuration.max_active_sequence_count = 4u;
+	assert(SparkGlm52GatewayInitializePendingStreams(&runtime) == 0);
+	assert(runtime.pending_stream_capacity ==
+		SPARK_GLM52_GATEWAY_PENDING_STREAM_CAPACITY);
+	for (index = 0u; index < 16u; ++index)
+	{
+		stream = SparkGlm52GatewayAllocatePendingStream(
+			&runtime,
+			(int32_t)(100u + index),
+			&slot_index,
+			&client_request_id);
+		assert(stream != 0);
+		assert(slot_index == index);
+		assert(client_request_id != 0u);
+	}
+	assert(runtime.pending_stream_count == 16u);
+}
+
 static void SparkTestHttpGatewayRoutes(void)
 {
 	SparkGlm52HttpGatewayRequest request;
@@ -190,6 +221,7 @@ static void SparkTestHttpGatewayStreamFlag(void)
 
 int main(void)
 {
+	SparkTestHttpGatewayQueuesBeyondActiveLanes();
 	SparkTestHttpGatewayRoutes();
 	SparkTestHttpGatewayBuildsCorsPreflight();
 	SparkTestHttpGatewayBuildsHealth();
