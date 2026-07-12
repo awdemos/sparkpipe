@@ -1847,6 +1847,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildNodeContext(
 	builder_configuration.rank_index = state->rank_plan.rank_index;
 	builder_configuration.max_active_sequence_count =
 		SparkGlm52Pp13ServiceBackendMaxActive(configuration);
+	builder_configuration.kv_pool_token_capacity = SPARK_GLM52_KV_POOL_TOKENS;
 	builder_configuration.port_base =
 		SparkGlm52Pp13ServiceBackendPortBase(configuration);
 	builder_configuration.fp8_pack_root = configuration->fp8_pack_root;

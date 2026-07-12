@@ -25,7 +25,10 @@ def main():
             "git_commit": "old",
             "max_active_sequence_count": 16,
             "files": [{"path": "bin/runtime", "bytes": 3, "sha256": "0" * 64}],
-            "roles": [{"name": "rank", "argv": ["--max-active", "16"]}],
+            "roles": [
+                {"name": "rank", "argv": ["--max-active", "16"]},
+                {"name": "pp13_cuda_residentd", "argv": ["--max-active", "16"]},
+            ],
         }
         (template / "sparkpipe.json").write_text(json.dumps(manifest),encoding="utf-8")
         subprocess.run([
@@ -35,6 +38,7 @@ def main():
             "--release-id","new",
             "--git-commit","abc123",
             "--max-active","64",
+            "--kv-pool-tokens","65536",
             "--replace","bin/runtime=" + str(replacement),
         ],check=True)
         result = json.loads((output / "sparkpipe.json").read_text(encoding="utf-8"))
@@ -43,6 +47,8 @@ def main():
         assert result["git_commit"] == "abc123"
         assert result["max_active_sequence_count"] == 64
         assert result["roles"][0]["argv"] == ["--max-active","64"]
+        assert result["roles"][1]["argv"] == [
+            "--max-active","64","--kv-pool-tokens","65536"]
         assert result["files"][0]["bytes"] == 11
         assert result["files"][0]["sha256"] == expected
         assert (output / "bin" / "runtime").read_bytes() == b"new-runtime"

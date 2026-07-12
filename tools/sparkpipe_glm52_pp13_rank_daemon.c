@@ -19,6 +19,7 @@
 
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_glm52_cuda_resident_ipc.h"
+#include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
 #include "sparkpipe/spark_glm52_pp13_work_control.h"
@@ -1525,6 +1526,7 @@ static SparkStatus SparkGlm52Pp13DaemonBuildNodeContext(
     builder_configuration.rank_index = runtime->rank_plan.rank_index;
     builder_configuration.max_active_sequence_count =
         configuration->max_active_sequence_count;
+	builder_configuration.kv_pool_token_capacity = SPARK_GLM52_KV_POOL_TOKENS;
     builder_configuration.port_base = configuration->port_base;
     builder_configuration.fp8_pack_root = configuration->fp8_pack_root;
     builder_configuration.stagepack_root = configuration->stagepack_root;
