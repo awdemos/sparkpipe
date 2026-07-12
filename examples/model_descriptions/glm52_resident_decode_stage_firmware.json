@@ -284,19 +284,7 @@
         "moe_execution": "FP8 E4M3 tensor-core MoE plan through SparkGlm52ResidentDecodeStageFp8MoePlan",
         "projection_contract": "RAW_GLM_FP8_E4M3 Q/KV/O projections with FP32 inverse scales"
       }
-    ],
-    "current_spark_topology": {
-      "spark_count": 13,
-      "stage_count": 13,
-      "planner": "SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization",
-      "scheduler": "SparkGlm52SchedulerAdmit",
-      "batch_buckets": [
-        16,
-        32,
-        64,
-        128
-      ]
-    }
+    ]
   },
   "stages": [
     {
@@ -306,7 +294,7 @@
         {
           "name": "decode",
           "id": 1,
-          "max_inflight": 1024,
+          "max_inflight": 1,
           "completion": "external",
           "operations": [
             {
@@ -404,34 +392,28 @@
               "stream_ordered",
               "driver_owns_resident_state",
               "driver_owns_kv_cache",
-              "jit_kv_cache",
               "zero_copy_node_context",
               "private_queue_pressure",
-              "no_host_staging",
               "fixed_firmware",
-              "validated_latency",
               "captured_cuda_graph",
-              "no_device_memcpy",
               "stream_event_dependencies",
               "batch_shape_fixed",
-              "driver_private_expert_queues",
               "requires_hidden_transport",
               "no_file_transport",
-              "no_shell_transport",
-              "bulk_prefill"
+              "no_shell_transport"
             ],
-            "max_active_slots": 1024,
+            "max_active_slots": 1,
             "max_new_tokens": 7,
-            "max_resident_sequences": 1024,
+            "max_resident_sequences": 1,
             "max_sequence_tokens": 8192,
             "target_latency_ns": 0,
-            "validated_latency_ns": 1000000000,
+            "validated_latency_ns": 0,
             "resident_weight_bytes": 0,
             "resident_kv_bytes": 0,
             "static_workspace_bytes": 0,
             "device_memcpy_bytes_per_submit_ceiling": 0,
             "host_staging_bytes_per_submit_ceiling": 0,
-            "private_queue_count": 1024
+            "private_queue_count": 0
           }
         }
       ]

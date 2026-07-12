@@ -33,12 +33,16 @@ static SparkStatus SparkTestServiceBackendGetView(
 	memset(view,0,sizeof(*view));
 	view->abi_version = SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION;
 	view->descriptor_bytes = SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES;
-	view->backend_ready = 1u;
-	view->pp13_ready = 1u;
-	view->max_context_tokens = SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
-	view->production_contract_flags =
-		SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS;
+	view->runtime_initialized = 1u;
+	view->ring_control_ready = 1u;
+	view->configured_kv_context_limit_tokens =
+		SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
+	view->configured_max_active_sequences = 1u;
 	view->service = (SparkGlm52ServiceRuntime *)(uintptr_t)0x1000u;
+	view->release_id = "test-release";
+	view->release_git_commit = "test-commit";
+	view->release_generation = 1u;
+	view->transport_shared_object_path = "test-transport.so";
 	return SPARK_STATUS_OK;
 }
 

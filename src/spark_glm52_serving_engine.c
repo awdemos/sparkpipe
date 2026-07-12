@@ -1063,6 +1063,16 @@ static SparkStatus SparkGlm52ServingInvokePrefill(
     engine->stats.prefill_token_count +=
         (uint64_t)prefill_view.prompt_token_count *
         (uint64_t)prefill_view.lane_count;
+    if (prefill_view.active_sequence_count >
+        engine->stats.maximum_prefill_active_sequence_count)
+    {
+        engine->stats.maximum_prefill_active_sequence_count =
+            prefill_view.active_sequence_count;
+    }
+    if (prefill_view.lane_count > engine->stats.maximum_prefill_lane_count)
+    {
+        engine->stats.maximum_prefill_lane_count = prefill_view.lane_count;
+    }
     return SPARK_STATUS_OK;
 }
 
@@ -1641,6 +1651,16 @@ SparkStatus SparkGlm52ServingEngineCompleteDecodeDispatch(
         return status;
     }
     engine->stats.decode_dispatch_count += 1u;
+    if (decode_result->lane_count >
+        engine->stats.maximum_decode_active_sequence_count)
+    {
+        engine->stats.maximum_decode_active_sequence_count =
+            decode_result->lane_count;
+    }
+    if (decode_result->lane_count > engine->stats.maximum_decode_lane_count)
+    {
+        engine->stats.maximum_decode_lane_count = decode_result->lane_count;
+    }
     status = SparkGlm52RequestApiCompleteDispatch(engine->request_api, dispatch);
     if (status != SPARK_STATUS_OK)
     {

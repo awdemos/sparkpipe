@@ -101,6 +101,11 @@ extern "C" {
      SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_BOUNDED_LONG_CONTEXT_ATTENTION | \
      SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_INDEXSHARE_STAGE_BOUNDARY_STATE | \
      SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_MLA_COMPRESSED_KV_CACHE)
+#define SPARK_GLM52_SERVING_RUNTIME_CONTRACT_CURRENT_IMPLEMENTED_FLAGS \
+    (SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_PREFILL_WRITES_RESIDENT_KV | \
+     SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_DECODE_CONSUMES_RESIDENT_KV | \
+     SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_DECODE_RETURNS_TOKEN_IDS | \
+     SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_USES_REQUEST_KV_BLOCK_TABLES)
 
 #define SPARK_GLM52_SERVING_EVENT_KIND_NONE 0u
 #define SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_ACCEPTED 1u
@@ -262,6 +267,10 @@ typedef struct SparkGlm52ServingStats
     uint32_t event_capacity;
     uint32_t dropped_event_count;
     uint32_t last_status;
+    uint32_t maximum_prefill_active_sequence_count;
+    uint32_t maximum_prefill_lane_count;
+    uint32_t maximum_decode_active_sequence_count;
+    uint32_t maximum_decode_lane_count;
     uint64_t submitted_request_count;
     uint64_t accepted_request_count;
     uint64_t prefill_dispatch_count;

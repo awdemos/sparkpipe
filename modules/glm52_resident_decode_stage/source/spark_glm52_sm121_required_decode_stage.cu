@@ -1694,7 +1694,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageInitializeBuiltinFp8Sca
     backend_out->launch_function =
         SparkGlm52ResidentDecodeStageLaunchBuiltinFp8ScaledGemm;
     backend_out->opaque_state = state;
-    backend_out->validated_maximum_latency_ns = 10000000000ull;
+    backend_out->validated_maximum_latency_ns = 0u;
     return SPARK_STATUS_OK;
 }
 
@@ -1745,8 +1745,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateFp8ScaledGemmBackend(
         backend->minimum_m_alignment == 0u ||
         backend->minimum_n_alignment == 0u ||
         backend->minimum_k_alignment == 0u ||
-        backend->reserved0 != 0u ||
-        backend->validated_maximum_latency_ns == 0u)
+        backend->reserved0 != 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -9753,7 +9752,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateB12xMoePlan(
             SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_TOP_K ||
         b12x_moe_dispatch_plan->intermediate_dimension !=
             SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_INTERMEDIATE_DIMENSION ||
-        b12x_moe_dispatch_plan->validated_maximum_latency_ns == 0u ||
         b12x_plan->abi_version !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_PLAN_ABI_VERSION ||
         b12x_plan->reserved0 != 0u ||
@@ -9781,7 +9779,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateB12xMoePlan(
         b12x_plan->output_dtype !=
             SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_OUTPUT_DTYPE_BF16 ||
         b12x_plan->cuda_architecture != 121u ||
-        b12x_plan->validated_maximum_latency_ns == 0u ||
         b12x_plan->state_cell == 0 ||
         b12x_plan->w1_weight_fp4_static_view == 0 ||
         b12x_plan->w1_scale_static_storage_ue4m3 == 0 ||
@@ -10102,7 +10099,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateFp8MoePlan(
         fp8_moe_plan->w1_scale_inv_f32 == 0 ||
         fp8_moe_plan->w2_weight_fp8_e4m3 == 0 ||
         fp8_moe_plan->w2_scale_inv_f32 == 0 ||
-        fp8_moe_plan->validated_maximum_latency_ns == 0u ||
         (fp8_moe_plan->capability_flags & required_capabilities) !=
             required_capabilities ||
         !SparkGlm52ResidentDecodeStagePointerIsAlignedCuda(
@@ -11579,7 +11575,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateFp8MoeGroupedBackend(
         backend->top_k != fp8_moe_plan->top_k ||
         backend->hidden_dimension != fp8_moe_plan->hidden_dimension ||
         backend->intermediate_dimension != fp8_moe_plan->intermediate_dimension ||
-        backend->validated_maximum_latency_ns == 0u ||
         (backend->capability_flags &
          SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_MOE_GROUPED_BACKEND_REQUIRED_CAPABILITIES) !=
             SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_MOE_GROUPED_BACKEND_REQUIRED_CAPABILITIES)
@@ -11856,7 +11851,6 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageBindFp8MoeGroupedExtern
         (fp8_moe_plan->capability_flags &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REQUIRED_CAPABILITIES) !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REQUIRED_CAPABILITIES ||
-        fp8_moe_plan->validated_maximum_latency_ns == 0u ||
         SparkGlm52ResidentDecodeStageValidateFp8MoeGroupedBackend(
             fp8_moe_plan,
             backend) != SPARK_STATUS_OK)
@@ -12131,8 +12125,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageBindFp8MoeGroupedRefere
         fp8_moe_plan->w2_scale_inv_f32 == 0 ||
         (fp8_moe_plan->capability_flags &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REQUIRED_CAPABILITIES) !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REQUIRED_CAPABILITIES ||
-        fp8_moe_plan->validated_maximum_latency_ns == 0u)
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REQUIRED_CAPABILITIES)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -12489,7 +12482,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageTryLaunchStageSlicePlan(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_STAGE_SLICE_LAYER_COUNT ||
         (stage_slice_plan->launch_function == 0 &&
             has_builtin_exact_pp13 == 0u) ||
-        stage_slice_plan->validated_maximum_latency_ns == 0u ||
         (stage_slice_plan->capability_flags & required_capabilities) !=
             required_capabilities)
     {
@@ -13765,8 +13757,7 @@ static uint32_t SparkGlm52ResidentDecodeStageDsaTransportPlanIsUsable(
         transport_plan->selected_block_capacity == 0u ||
         transport_plan->selected_block_stride < transport_plan->selected_block_capacity ||
         transport_plan->requested_epoch_by_physical_block == 0 ||
-        transport_plan->transport_epoch == 0ull ||
-        transport_plan->validated_maximum_latency_ns == 0ull)
+        transport_plan->transport_epoch == 0ull)
     {
         return 0u;
     }
@@ -16175,8 +16166,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchMtpDraft(
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION ||
             node_context->mtp_draft_plan->draft_token_count !=
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT ||
-            node_context->mtp_draft_plan->launch_function == 0 ||
-            node_context->mtp_draft_plan->validated_maximum_latency_ns == 0u)
+            node_context->mtp_draft_plan->launch_function == 0)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -16750,7 +16740,6 @@ static bool SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsableCuda(
              SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) ||
         fp8_kv_cache_plan->scale_block_size !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK ||
-        fp8_kv_cache_plan->validated_maximum_latency_ns == 0u ||
         (fp8_kv_cache_plan->capability_flags & required_capabilities) !=
             required_capabilities ||
         !SparkGlm52ResidentDecodeStagePointerIsAlignedCuda(
@@ -20568,7 +20557,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateExactPp13StageSlicePlan(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PLAN_ABI_VERSION ||
         stage_slice_plan->maximum_layer_count < 6u ||
         stage_slice_plan->maximum_active_sequence_count < active_sequence_count ||
-        stage_slice_plan->validated_maximum_latency_ns == 0u ||
         (stage_slice_plan->capability_flags & required_capabilities) !=
             required_capabilities ||
         (stage_slice_plan->capability_flags & exact_required_capabilities) !=
@@ -20588,7 +20576,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateExactPp13StageSlicePlan(
         SparkGlm52StagePlanBatchBucketIsSupported(
             exact_stage_slice_plan->batch_bucket) == 0u ||
         exact_stage_slice_plan->maximum_active_sequence_count < active_sequence_count ||
-        exact_stage_slice_plan->validated_maximum_latency_ns == 0u ||
         (exact_stage_slice_plan->capability_flags & exact_required_capabilities) !=
             exact_required_capabilities ||
         layer_count != 6u ||

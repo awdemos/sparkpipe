@@ -4509,7 +4509,7 @@ static bool SparkValidationBindFp8MoePlanForLayer(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_QUANT_MODE_E4M3;
         plan->scale_block_size =
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_SCALE_BLOCK_SIZE;
-        plan->validated_maximum_latency_ns = 1000000000ull;
+        plan->validated_maximum_latency_ns = 0u;
         if (!SparkValidationAllocateDeviceOnly(
                 (void **)&buffers->fp8_moe_w1_weight_fp8_e4m3[binding_index],
                 header.regions[
@@ -9186,8 +9186,7 @@ static bool SparkValidationInitializeExactPp13StageSlicePlan(
         runtime->final_epilogue_workspace;
     runtime->exact_stage_slice_plan.workspace_bytes =
         runtime->final_epilogue_workspace_bytes;
-    runtime->exact_stage_slice_plan.validated_maximum_latency_ns =
-        1000000000ull;
+    runtime->exact_stage_slice_plan.validated_maximum_latency_ns = 0u;
     memset(&runtime->stage_slice_plan, 0, sizeof(runtime->stage_slice_plan));
     runtime->stage_slice_plan.abi_version =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PLAN_ABI_VERSION;
@@ -9201,7 +9200,7 @@ static bool SparkValidationInitializeExactPp13StageSlicePlan(
         runtime->final_epilogue_workspace;
     runtime->stage_slice_plan.workspace_bytes =
         runtime->final_epilogue_workspace_bytes;
-    runtime->stage_slice_plan.validated_maximum_latency_ns = 1000000000ull;
+    runtime->stage_slice_plan.validated_maximum_latency_ns = 0u;
     if (final_token_stage != 0u &&
         first_layer_index + SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT !=
             SPARK_VALIDATION_LAYER_COUNT)

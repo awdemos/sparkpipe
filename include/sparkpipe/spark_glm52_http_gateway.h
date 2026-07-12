@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_compat_api.h"
+#include "sparkpipe/spark_glm52_service_backend.h"
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_tokenizer.h"
 
@@ -71,8 +72,8 @@ SparkStatus SparkGlm52HttpGatewayBuildDemoUi(
 
 SparkStatus SparkGlm52HttpGatewayBuildHealth(
     SparkGlm52HttpGatewayResponse *response,
-    uint32_t backend_ready,
-    uint32_t pp13_ready);
+    uint32_t runtime_initialized,
+    uint32_t ring_control_ready);
 
 SparkStatus SparkGlm52HttpGatewayBuildBackendUnavailable(
     SparkGlm52HttpGatewayResponse *response,
@@ -102,11 +103,7 @@ uint32_t SparkGlm52HttpGatewayAuthorizationMatches(
 SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
     SparkGlm52HttpGatewayResponse *response,
     const SparkGlm52ServiceStats *stats,
-    uint32_t backend_ready,
-    uint32_t pp13_ready,
-    uint32_t max_context_tokens,
-    uint32_t production_contract_flags,
-    const char *first_blocker);
+    const SparkGlm52ServiceBackendView *backend_view);
 
 SparkStatus SparkGlm52HttpGatewaySubmitJsonToService(
     SparkGlm52ServiceRuntime *service,

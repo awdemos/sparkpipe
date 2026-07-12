@@ -1553,7 +1553,7 @@ static void SparkGlm52Pp13BuilderWireLayerSerialPrefillPlan(
 	layer->serial_prefill_paged_plan.prompt_output_hidden_bf16 =
 		layer->layer_output_hidden;
 	layer->serial_prefill_paged_plan.validated_maximum_latency_ns =
-		1000000000ull;
+		0u;
 
 	memset(&layer->serial_prefill_bulk_plan,0,sizeof(layer->serial_prefill_bulk_plan));
 	layer->serial_prefill_bulk_plan.abi_version =
@@ -1566,7 +1566,7 @@ static void SparkGlm52Pp13BuilderWireLayerSerialPrefillPlan(
 	layer->serial_prefill_bulk_plan.opaque_state =
 		&layer->serial_prefill_paged_plan;
 	layer->serial_prefill_bulk_plan.validated_maximum_latency_ns =
-		1000000000ull;
+		0u;
 	layer->node.bulk_prefill_plan = &layer->serial_prefill_bulk_plan;
 }
 
@@ -1707,7 +1707,6 @@ static void SparkGlm52Pp13BuilderWireLayer(
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_GRAPH_REPLAY |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MLP |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_FORBID_DEBUG_SYNCHRONIZATION |
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_VALIDATED_LATENCY |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_STAGE_SLICE_PLAN |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
 	if ((state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u)
@@ -1720,8 +1719,8 @@ static void SparkGlm52Pp13BuilderWireLayer(
 		layer_index + 1u != state->rank_plan.first_layer_index + state->rank_plan.layer_count)
 		node->reserved_execution_flags |=
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
-	node->validated_stage_latency_ns = 1000000000ull;
-	node->estimated_service_time_ns = 1000000000ull;
+	node->validated_stage_latency_ns = 0u;
+	node->estimated_service_time_ns = 0u;
 	node->index_softmax_scale = SPARK_GLM52_MODEL_DSA_INDEX_SOFTMAX_SCALE;
 	node->dsa_index_head_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT;
 	node->dsa_index_head_dimension = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_DIMENSION;
@@ -2304,7 +2303,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 	state->mtp_draft_plan.launch_function =
 		(void *)SparkGlm52Pp13BuilderLaunchMtpDraftPlan;
 	state->mtp_draft_plan.opaque_state = state;
-	state->mtp_draft_plan.validated_maximum_latency_ns = 1000000000ull;
+	state->mtp_draft_plan.validated_maximum_latency_ns = 0u;
 	state->mtp_ready = 1u;
 	return SPARK_STATUS_OK;
 }
@@ -2441,7 +2440,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 	state->exact_plan.kv_branch_event = (void *)state->kv_event;
 	state->exact_plan.workspace = state->final_epilogue_workspace;
 	state->exact_plan.workspace_bytes = workspace_bytes;
-	state->exact_plan.validated_maximum_latency_ns = 1000000000ull;
+	state->exact_plan.validated_maximum_latency_ns = 0u;
 	memset(&state->stage_slice_plan,0,sizeof(state->stage_slice_plan));
 	state->stage_slice_plan.abi_version =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PLAN_ABI_VERSION;
@@ -2452,7 +2451,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 	state->stage_slice_plan.opaque_state = &state->exact_plan;
 	state->stage_slice_plan.workspace = state->final_epilogue_workspace;
 	state->stage_slice_plan.workspace_bytes = workspace_bytes;
-	state->stage_slice_plan.validated_maximum_latency_ns = 1000000000ull;
+	state->stage_slice_plan.validated_maximum_latency_ns = 0u;
 	return SPARK_STATUS_OK;
 }
 

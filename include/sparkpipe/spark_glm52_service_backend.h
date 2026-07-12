@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 6u
+#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 7u
 #define SPARK_GLM52_SERVICE_BACKEND_INTERFACE_BYTES \
 	((uint32_t)sizeof(SparkGlm52ServiceBackendInterface))
 #define SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES \
@@ -68,13 +68,21 @@ typedef struct SparkGlm52ServiceBackendView
 {
 	uint32_t abi_version;
 	uint32_t descriptor_bytes;
-	uint32_t backend_ready;
-	uint32_t pp13_ready;
-	uint32_t max_context_tokens;
-	uint32_t production_contract_flags;
+	uint32_t runtime_initialized;
+	uint32_t ring_control_ready;
+	uint32_t configured_kv_context_limit_tokens;
+	uint32_t configured_max_active_sequences;
+	uint32_t transport_capability_flags;
+	uint32_t speculation_configuration_flags;
+	uint32_t request_api_configuration_flags;
+	uint32_t reserved0;
+	uint64_t release_generation;
 	SparkGlm52ServiceRuntime *service;
 	const SparkTokenizer *tokenizer;
 	const char *first_blocker;
+	const char *release_id;
+	const char *release_git_commit;
+	const char *transport_shared_object_path;
 } SparkGlm52ServiceBackendView;
 
 typedef struct SparkGlm52ServiceBackendPollDescriptor

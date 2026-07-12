@@ -44,6 +44,20 @@ def set_role_argument(manifest,role_name,argument,value):
         arguments.extend([argument,str(value)])
 
 
+def set_role_release_identity(manifest):
+    values = {
+        "SPARKPIPE_RELEASE_ID": manifest["release_id"],
+        "SPARKPIPE_RELEASE_GIT_COMMIT": manifest["git_commit"],
+        "SPARKPIPE_RELEASE_GENERATION": str(manifest["generation"]),
+    }
+    for role in manifest["roles"]:
+        environment = role.setdefault("env",[])
+        environment = [entry for entry in environment
+                       if entry.split("=",1)[0] not in values]
+        environment.extend(key + "=" + value for key,value in values.items())
+        role["env"] = environment
+
+
 def write_manifest(root,manifest):
     for entry in manifest["files"]:
         path = os.path.join(root,entry["path"])
@@ -85,6 +99,7 @@ def main():
     manifest["release_id"] = arguments.release_id
     manifest["git_commit"] = arguments.git_commit
     manifest["generation"] = int(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S"))
+    set_role_release_identity(manifest)
     if arguments.max_active is not None:
         if arguments.max_active < 1 or arguments.max_active > 1024:
             raise SystemExit("max-active must be in 1..1024")

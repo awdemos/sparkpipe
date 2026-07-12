@@ -20,8 +20,13 @@ tokens through the installed release.
 - Never delete or regenerate `.sp*` packs without explicit user approval.
 - Never silently fall back to a reference, compatibility, or demo path.
 - Deploy one immutable manifest generation to every rank.
-- Keep B16 while correctness or deployment is changing; increase the bucket
-  only through a new manifest and a measured inference gate.
+- Keep the deployed runtime at the measured B1 shape while correctness or
+  deployment is changing. Increase active lanes only through a new manifest
+  and a measured inference gate.
+- Use `MEASURED`, `OBSERVED`, `NOT_MEASURED`, and `NOT_WORKING` exactly as
+  defined in `docs/GLM52_MEASURED_STATUS.md`.
+- Code presence, compile success, host tests, capability flags, and health
+  readiness are never evidence of accuracy or performance.
 
 ## Repository Update
 
@@ -176,6 +181,10 @@ The correctness receipt is token `10397`, text `" OK"`, followed by a done
 event. Also run a distinct factual prompt and an 8-or-more-token decode. A
 queued `202` without token and done events is not a passed inference test.
 
+Those prompt checks are smoke observations, not model-accuracy measurements.
+Accuracy remains `NOT_MEASURED` until a retained reference or corpus score is
+run against the exact deployed release.
+
 ## Performance Gate
 
 Use `tools/sparkpipe_api_stress.py` for API timing and retain its JSONL and
@@ -192,6 +201,12 @@ summary. Report separately:
 Run concurrency 1 first, then 4, 16, and larger only while throughput rises.
 If completion times form a staircase, requests are serialized before the GPU
 scheduler and larger bucket claims are invalid.
+
+Every performance receipt must include the merged commit, immutable release
+identity and generation, all-rank artifact hashes, actual observed lane maxima,
+backend and transport identities, raw output, and post-run queue state. A
+theoretical ceiling must be labeled theoretical and kept separate from measured
+end-to-end throughput.
 
 ## Diagnostics
 

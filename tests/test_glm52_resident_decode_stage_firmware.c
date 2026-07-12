@@ -3506,7 +3506,7 @@ int main(void)
     first_frame.request_id = 201u;
     first_frame.sequence_id = 7001u;
     first_frame.sequence_position = 41u;
-    first_frame.active_slot_count = 3u;
+    first_frame.active_slot_count = 1u;
     first_frame.new_token_count = 3u;
     first_frame.residency.owner = 17u;
     assert(SparkOrchestratorSubmit(
@@ -3522,41 +3522,20 @@ int main(void)
         (first_frame.sequence_id ^ first_frame.sequence_position));
     assert(fake_streams[0].submit_count == 1u);
     assert(fake_streams[0].last_pipeline_slot == 0u);
-    assert(fake_streams[0].last_active_sequence_count == 3u);
+    assert(fake_streams[0].last_active_sequence_count == 1u);
     assert(SparkGlm52ResidentDecodeStageFakeStreamHasPending(&fake_streams[0]));
     assert(SparkOrchestratorGetDriverOutstanding(
                orchestrator,
                driver_handle) == 1u);
-
-    memset(&second_frame, 0, sizeof(second_frame));
-    second_frame.request_id = 202u;
-    second_frame.sequence_id = 7002u;
-    second_frame.sequence_position = 5u;
-    second_frame.active_slot_count = 1u;
-    second_frame.new_token_count = 1u;
-    assert(SparkOrchestratorSubmit(
-               orchestrator,
-               route_handle,
-               &second_frame) == SPARK_STATUS_OK);
-    assert((second_frame.flags &
-        SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) != 0u);
-    assert(second_frame.driver_dispatch_slot == 1u);
-    assert(second_frame.driver_dispatch_generation == 1u);
-    assert(second_frame.driver_dispatch_cookie0 == (((uint64_t)1u << 32u) ^ 1u));
-    assert(fake_streams[1].submit_count == 1u);
-    assert(fake_streams[1].last_pipeline_slot == 1u);
-    assert(SparkOrchestratorGetDriverOutstanding(
-               orchestrator,
-               driver_handle) == 2u);
 
     assert(SparkOrchestratorGetDriverProgramSnapshot(
                orchestrator,
                driver_handle,
                "decode",
                &runtime_snapshot) == SPARK_STATUS_OK);
-    assert(runtime_snapshot.active_submission_count == 2u);
-    assert(runtime_snapshot.available_dispatch_slot_count == 0u);
-    assert(runtime_snapshot.submitted_count == 2u);
+    assert(runtime_snapshot.active_submission_count == 1u);
+    assert(runtime_snapshot.available_dispatch_slot_count == 1u);
+    assert(runtime_snapshot.submitted_count == 1u);
     assert(runtime_snapshot.completed_count == 0u);
     assert(runtime_snapshot.host_staging_bytes_per_submit == 0u);
     assert(runtime_snapshot.device_memcpy_bytes_per_submit == 0u);
@@ -3564,7 +3543,7 @@ int main(void)
     assert(runtime_snapshot.cuda_graph_replay_count == 0u);
     assert(runtime_snapshot.host_callback_completion_count == 0u);
     assert(runtime_snapshot.stale_admission_count == 0u);
-    assert(runtime_snapshot.private_queue_pressure == 1024u);
+    assert(runtime_snapshot.private_queue_pressure == 512u);
 
     memset(&blocked_frame, 0, sizeof(blocked_frame));
     blocked_frame.request_id = 204u;
@@ -3574,7 +3553,7 @@ int main(void)
                route_handle,
                &blocked_frame) == SPARK_STATUS_BUSY);
     assert(fake_streams[0].submit_count == 1u);
-    assert(fake_streams[1].submit_count == 1u);
+    assert(fake_streams[1].submit_count == 0u);
 
     SparkGlm52ResidentDecodeStageFakeStreamComplete(&fake_streams[0]);
     assert(completion_state.completion_count == 1u);
@@ -3589,12 +3568,31 @@ int main(void)
     assert(completion_state.completions[0].status == SPARK_STATUS_OK);
     assert(SparkOrchestratorGetDriverOutstanding(
                orchestrator,
-               driver_handle) == 1u);
+               driver_handle) == 0u);
 
-    SparkGlm52ResidentDecodeStageFakeStreamComplete(&fake_streams[1]);
+    memset(&second_frame, 0, sizeof(second_frame));
+    second_frame.request_id = 202u;
+    second_frame.sequence_id = 7002u;
+    second_frame.sequence_position = 5u;
+    second_frame.active_slot_count = 1u;
+    second_frame.new_token_count = 1u;
+    assert(SparkOrchestratorSubmit(
+               orchestrator,
+               route_handle,
+               &second_frame) == SPARK_STATUS_OK);
+    assert((second_frame.flags &
+        SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) != 0u);
+    assert(second_frame.driver_dispatch_slot == 0u);
+    assert(second_frame.driver_dispatch_generation == 2u);
+    assert(fake_streams[0].submit_count == 2u);
+    assert(fake_streams[0].last_pipeline_slot == 0u);
+    assert(SparkOrchestratorGetDriverOutstanding(
+               orchestrator,
+               driver_handle) == 1u);
+    SparkGlm52ResidentDecodeStageFakeStreamComplete(&fake_streams[0]);
     assert(completion_state.completion_count == 2u);
     assert(completion_state.completions[1].request_id == 202u);
-    assert(completion_state.completions[1].driver_dispatch_slot == 1u);
+    assert(completion_state.completions[1].driver_dispatch_slot == 0u);
     assert(SparkOrchestratorGetDriverOutstanding(
                orchestrator,
                driver_handle) == 0u);
@@ -3604,7 +3602,7 @@ int main(void)
         false);
     memset(&immediate_frame, 0, sizeof(immediate_frame));
     immediate_frame.request_id = 203u;
-    immediate_frame.active_slot_count = 2u;
+    immediate_frame.active_slot_count = 1u;
     immediate_frame.new_token_count = 1u;
     assert(SparkOrchestratorSubmit(
                orchestrator,
@@ -3616,7 +3614,7 @@ int main(void)
     assert(completion_state.completions[2].driver_dispatch_slot == 0u);
     assert(immediate_frame.driver_dispatch_generation >
         first_frame.driver_dispatch_generation);
-    assert(fake_streams[0].submit_count == 2u);
+    assert(fake_streams[0].submit_count == 3u);
     assert(SparkOrchestratorGetDriverOutstanding(
                orchestrator,
                driver_handle) == 0u);

@@ -133,8 +133,8 @@ SparkStatus SparkGlm52HttpGatewayBuildDemoUi(
 
 SparkStatus SparkGlm52HttpGatewayBuildHealth(
 	SparkGlm52HttpGatewayResponse *response,
-	uint32_t backend_ready,
-	uint32_t pp13_ready)
+	uint32_t runtime_initialized,
+	uint32_t ring_control_ready)
 {
 	int32_t written;
 
@@ -143,9 +143,13 @@ SparkStatus SparkGlm52HttpGatewayBuildHealth(
 	written = snprintf(
 		response->body,
 		response->body_capacity,
-		"{\"service\":\"sparkpipe-glm52\",\"backend_ready\":%u,\"pp13_ready\":%u}\n",
-		backend_ready != 0u ? 1u : 0u,
-		pp13_ready != 0u ? 1u : 0u);
+		"{\"schema\":\"sparkpipe.runtime_observation.v1\","
+		"\"runtime_initialized\":%u,\"ring_control_ready\":%u,"
+		"\"end_to_end_observation_status\":\"NOT_MEASURED\","
+		"\"accuracy_status\":\"NOT_MEASURED\","
+		"\"performance_status\":\"NOT_MEASURED\"}\n",
+		runtime_initialized != 0u ? 1u : 0u,
+		ring_control_ready != 0u ? 1u : 0u);
 	if (written < 0)
 		return SPARK_STATUS_INTERNAL_ERROR;
 	if ((uint32_t)written >= response->body_capacity)
@@ -399,16 +403,27 @@ static uint32_t SparkGlm52HttpServiceEventIsTerminal(
 SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
     SparkGlm52HttpGatewayResponse *response,
     const SparkGlm52ServiceStats *stats,
-    uint32_t backend_ready,
-    uint32_t pp13_ready,
-    uint32_t max_context_tokens,
-    uint32_t production_contract_flags,
-    const char *first_blocker)
+    const SparkGlm52ServiceBackendView *backend_view)
 {
     SparkGlm52ServiceStats empty_stats;
+    SparkGlm52ServiceBackendView empty_view;
     const SparkGlm52ServiceStats *stats_view;
+    const SparkGlm52ServiceBackendView *view;
+    const char *batching_status;
+    const char *dspark_status;
+    const char *end_to_end_status;
+    const char *identity_status;
+    const char *jit_kv_status;
+    const char *mtp_status;
+    const char *transport_status;
     char escaped_blocker[512];
+    char escaped_commit[128];
+    char escaped_release[512];
+    char escaped_transport[1024];
     uint32_t escaped_blocker_bytes;
+    uint32_t escaped_commit_bytes;
+    uint32_t escaped_release_bytes;
+    uint32_t escaped_transport_bytes;
     int32_t written;
 
     if (response == 0 || response->body == 0)
@@ -416,18 +431,73 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     memset(&empty_stats, 0, sizeof(empty_stats));
+    memset(&empty_view, 0, sizeof(empty_view));
     stats_view = stats != 0 ? stats : &empty_stats;
+    view = backend_view != 0 ? backend_view : &empty_view;
+    identity_status = view->release_id != 0 && view->release_id[0] != '\0' &&
+        view->release_git_commit != 0 && view->release_git_commit[0] != '\0' &&
+        view->release_generation != 0u ? "OBSERVED" : "NOT_MEASURED";
+    end_to_end_status = stats_view->serving_stats.completed_stream_count != 0u &&
+        stats_view->serving_stats.decoded_token_count != 0u ?
+        "OBSERVED" : "NOT_MEASURED";
+    batching_status = view->configured_max_active_sequences <= 1u ?
+        "NOT_WORKING" :
+        (stats_view->serving_stats.maximum_decode_lane_count > 1u ||
+         stats_view->serving_stats.maximum_prefill_lane_count > 1u ?
+            "OBSERVED" : "NOT_MEASURED");
+    jit_kv_status =
+        (view->request_api_configuration_flags &
+            SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_JIT_KV_PREFETCH) == 0u ?
+        "NOT_WORKING" :
+        (stats_view->serving_stats.jit_prefetch_dispatch_count != 0u ?
+            "OBSERVED" : "NOT_MEASURED");
+    if ((view->speculation_configuration_flags &
+            SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP) == 0u)
+        mtp_status = "NOT_WORKING";
+    else if (stats_view->serving_stats.mtp_verify_dispatch_count != 0u)
+        mtp_status = "OBSERVED";
+    else
+        mtp_status = "NOT_MEASURED";
+    dspark_status =
+        (view->speculation_configuration_flags &
+            SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_DSPARK) == 0u ?
+        "NOT_WORKING" : "NOT_MEASURED";
+    transport_status = view->transport_capability_flags != 0u ?
+        "OBSERVED" : "NOT_MEASURED";
     escaped_blocker_bytes = 0u;
-    if (first_blocker == 0)
-    {
-        first_blocker = "";
-    }
+    escaped_commit_bytes = 0u;
+    escaped_release_bytes = 0u;
+    escaped_transport_bytes = 0u;
     if (SparkGlm52HttpAppendJsonEscapedBytes(
             escaped_blocker,
             sizeof(escaped_blocker),
             &escaped_blocker_bytes,
-            first_blocker,
-            (uint32_t)strlen(first_blocker)) != SPARK_STATUS_OK)
+            view->first_blocker != 0 ? view->first_blocker : "",
+            view->first_blocker != 0 ?
+                (uint32_t)strlen(view->first_blocker) : 0u) != SPARK_STATUS_OK ||
+        SparkGlm52HttpAppendJsonEscapedBytes(
+            escaped_commit,
+            sizeof(escaped_commit),
+            &escaped_commit_bytes,
+            view->release_git_commit != 0 ? view->release_git_commit : "",
+            view->release_git_commit != 0 ?
+                (uint32_t)strlen(view->release_git_commit) : 0u) != SPARK_STATUS_OK ||
+        SparkGlm52HttpAppendJsonEscapedBytes(
+            escaped_release,
+            sizeof(escaped_release),
+            &escaped_release_bytes,
+            view->release_id != 0 ? view->release_id : "",
+            view->release_id != 0 ?
+                (uint32_t)strlen(view->release_id) : 0u) != SPARK_STATUS_OK ||
+        SparkGlm52HttpAppendJsonEscapedBytes(
+            escaped_transport,
+            sizeof(escaped_transport),
+            &escaped_transport_bytes,
+            view->transport_shared_object_path != 0 ?
+                view->transport_shared_object_path : "",
+            view->transport_shared_object_path != 0 ?
+                (uint32_t)strlen(view->transport_shared_object_path) : 0u) !=
+            SPARK_STATUS_OK)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
@@ -435,14 +505,39 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         response->body,
         response->body_capacity,
         "{"
-        "\"service\":\"sparkpipe-glm52\","
-        "\"backend_ready\":%u,"
-        "\"pp13_ready\":%u,"
-        "\"max_context_tokens\":%u,"
-        "\"production_contract_flags\":%u,"
+        "\"schema\":\"sparkpipe.runtime_observation.v1\","
+        "\"release_identity_status\":\"%s\","
+        "\"release_id\":\"%s\","
+        "\"release_git_commit\":\"%s\","
+        "\"release_generation\":%llu,"
+        "\"runtime_initialized\":%u,"
+        "\"ring_control_ready\":%u,"
+        "\"configured_kv_context_limit_tokens\":%u,"
+        "\"configured_max_active_sequences\":%u,"
+        "\"transport_shared_object\":\"%s\","
+        "\"bound_transport_interface_flags\":%u,"
+        "\"transport_binding_status\":\"%s\","
+        "\"end_to_end_observation_status\":\"%s\","
+        "\"accuracy_status\":\"NOT_MEASURED\","
+        "\"performance_status\":\"NOT_MEASURED\","
+        "\"multi_sequence_batching_status\":\"%s\","
+        "\"long_context_status\":\"NOT_MEASURED\","
+        "\"jit_kv_status\":\"%s\","
+        "\"dspark_status\":\"%s\","
+        "\"mtp_status\":\"%s\","
         "\"connected_clients\":%u,"
         "\"live_requests\":%u,"
         "\"queued_requests\":%u,"
+        "\"completed_streams\":%llu,"
+        "\"prefill_dispatches\":%llu,"
+        "\"prefill_batch_dispatches\":%llu,"
+        "\"prefill_tokens\":%llu,"
+        "\"decode_dispatches\":%llu,"
+        "\"decoded_tokens\":%llu,"
+        "\"maximum_prefill_active_sequences\":%u,"
+        "\"maximum_prefill_lanes\":%u,"
+        "\"maximum_decode_active_sequences\":%u,"
+        "\"maximum_decode_lanes\":%u,"
         "\"event_backlog\":%u,"
         "\"dropped_events\":%u,"
         "\"jit_prefetch_dispatches\":%llu,"
@@ -457,13 +552,35 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         "\"mtp_rejected_tokens\":%llu,"
         "\"first_blocker\":\"%s\""
         "}\n",
-        backend_ready != 0u ? 1u : 0u,
-        pp13_ready != 0u ? 1u : 0u,
-        max_context_tokens,
-        production_contract_flags,
+        identity_status,
+        escaped_release,
+        escaped_commit,
+        (unsigned long long)view->release_generation,
+        view->runtime_initialized != 0u ? 1u : 0u,
+        view->ring_control_ready != 0u ? 1u : 0u,
+        view->configured_kv_context_limit_tokens,
+        view->configured_max_active_sequences,
+        escaped_transport,
+        view->transport_capability_flags,
+        transport_status,
+        end_to_end_status,
+        batching_status,
+        jit_kv_status,
+        dspark_status,
+        mtp_status,
         stats_view->connected_client_count,
         stats_view->live_request_count,
         stats_view->serving_stats.queued_request_count,
+        (unsigned long long)stats_view->serving_stats.completed_stream_count,
+        (unsigned long long)stats_view->serving_stats.prefill_dispatch_count,
+        (unsigned long long)stats_view->serving_stats.prefill_batch_dispatch_count,
+        (unsigned long long)stats_view->serving_stats.prefill_token_count,
+        (unsigned long long)stats_view->serving_stats.decode_dispatch_count,
+        (unsigned long long)stats_view->serving_stats.decoded_token_count,
+        stats_view->serving_stats.maximum_prefill_active_sequence_count,
+        stats_view->serving_stats.maximum_prefill_lane_count,
+        stats_view->serving_stats.maximum_decode_active_sequence_count,
+        stats_view->serving_stats.maximum_decode_lane_count,
         stats_view->event_count,
         stats_view->dropped_event_count,
         (unsigned long long)stats_view->serving_stats.jit_prefetch_dispatch_count,

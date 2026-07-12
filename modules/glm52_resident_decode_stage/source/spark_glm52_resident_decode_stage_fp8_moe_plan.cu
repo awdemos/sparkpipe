@@ -231,7 +231,7 @@ static void SparkGlm52Fp8MoePlanPopulateBinding(SparkGlm52ResidentDecodeStageFp8
 	binding->plan.w2_weight_fp8_e4m3 = binding->w2_weight_fp8_e4m3;
 	binding->plan.w2_scale_inv_f32 = binding->w2_scale_inv_f32;
 	binding->plan.workspace = binding->workspace;
-	binding->plan.validated_maximum_latency_ns = 1000000000ull;
+	binding->plan.validated_maximum_latency_ns = 0u;
 }
 
 SparkStatus SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateFromPackFile(SparkGlm52ResidentDecodeStageFp8MoeResidentBinding *binding,const SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateInfo *create_info)

@@ -59,8 +59,9 @@ static void SparkTestHttpGatewayBuildsHealth(void)
 		SPARK_STATUS_OK);
 	assert(response.status_code == 200u);
 	assert(strcmp(response.content_type,"application/json") == 0);
-	assert(strstr(body,"\"backend_ready\":1") != 0);
-	assert(strstr(body,"\"pp13_ready\":0") != 0);
+	assert(strstr(body,"\"runtime_initialized\":1") != 0);
+	assert(strstr(body,"\"ring_control_ready\":0") != 0);
+	assert(strstr(body,"\"performance_status\":\"NOT_MEASURED\"") != 0);
 }
 
 static void SparkTestHttpGatewayBuildsSseUnavailable(void)
@@ -81,10 +82,12 @@ static void SparkTestHttpGatewayBuildsSseUnavailable(void)
 static void SparkTestHttpGatewayBuildsServiceHealth(void)
 {
     SparkGlm52HttpGatewayResponse response;
+    SparkGlm52ServiceBackendView backend_view;
     SparkGlm52ServiceStats stats;
-    char body[1024];
+    char body[4096];
 
     memset(&stats, 0, sizeof(stats));
+    memset(&backend_view, 0, sizeof(backend_view));
     stats.connected_client_count = 2u;
     stats.live_request_count = 3u;
     stats.serving_stats.queued_request_count = 4u;
@@ -92,18 +95,39 @@ static void SparkTestHttpGatewayBuildsServiceHealth(void)
     stats.serving_stats.mtp_draft_token_count = 6u;
     stats.serving_stats.mtp_verify_dispatch_count = 7u;
     stats.serving_stats.mtp_accepted_draft_token_count = 8u;
+    stats.serving_stats.mtp_committed_token_count = 8u;
+    stats.serving_stats.completed_stream_count = 1u;
+    stats.serving_stats.decoded_token_count = 9u;
+    stats.serving_stats.maximum_decode_lane_count = 1u;
+    backend_view.runtime_initialized = 1u;
+    backend_view.ring_control_ready = 1u;
+    backend_view.configured_kv_context_limit_tokens =
+        SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
+    backend_view.configured_max_active_sequences = 1u;
+    backend_view.speculation_configuration_flags =
+        SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP;
+    backend_view.release_id = "release-1";
+    backend_view.release_git_commit = "abcdef";
+    backend_view.release_generation = 42u;
+    backend_view.transport_shared_object_path = "tcp-host-staged.so";
+    backend_view.first_blocker = "none";
     SparkGlm52HttpGatewayInitializeResponse(&response, body, sizeof(body));
     assert(SparkGlm52HttpGatewayBuildServiceHealth(
         &response,
         &stats,
-        1u,
-        1u,
-        SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS,
-        SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS,
-        "none") ==
+        &backend_view) ==
         SPARK_STATUS_OK);
     assert(response.status_code == 200u);
-    assert(strstr(body, "\"max_context_tokens\":1048576") != 0);
+    assert(strstr(
+        body,
+        "\"configured_kv_context_limit_tokens\":1048576") != 0);
+    assert(strstr(body, "\"release_git_commit\":\"abcdef\"") != 0);
+    assert(strstr(
+        body,
+        "\"end_to_end_observation_status\":\"OBSERVED\"") != 0);
+    assert(strstr(body, "\"performance_status\":\"NOT_MEASURED\"") != 0);
+    assert(strstr(body, "\"multi_sequence_batching_status\":\"NOT_WORKING\"") != 0);
+    assert(strstr(body, "production_contract_flags") == 0);
     assert(strstr(body, "\"connected_clients\":2") != 0);
     assert(strstr(body, "\"jit_prefetch_dispatches\":5") != 0);
     assert(strstr(body, "\"mtp_draft_tokens\":6") != 0);

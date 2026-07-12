@@ -1,0 +1,85 @@
+# GLM-5.2 Measured Status
+
+This file is the authoritative SparkPipe GLM-5.2 status ledger. A feature is
+not working because code, a plan, a flag, a callback, or a test fixture exists.
+It earns status only from a named release and retained measurement output.
+
+## Status Vocabulary
+
+- `MEASURED`: exact merged commit, release id, generation, hardware shape,
+  command, raw output, and numerical result are retained.
+- `OBSERVED`: the live runtime emitted the named event or counter. This proves
+  activity, not correctness or performance.
+- `NOT_MEASURED`: no acceptable retained measurement exists.
+- `NOT_WORKING`: the active runtime rejects, omits, or cannot reach the path.
+
+Compilation, host tests, isolated source coverage, and capability declarations
+do not change any runtime status by themselves.
+
+## Accepted Measurements
+
+The last retained full-ring performance measurement is:
+
+```text
+commit:      9cc386a4ad1fa6827e7e36fba8fb1b4a7e16f00c
+release:     glm52-fp8-main-9cc386a-b16-scaled-gemm
+generation:  20260712013500
+topology:    13 Spark ranks
+live lanes:  1
+transport:   host-staged TCP
+```
+
+Raw output is under `diagnostics/glm52_fp8_scaled_gemm_20260712/`. The detailed
+receipt is `docs/GLM52_FP8_SCALED_GEMM_ACTIVATION_20260712.md`.
+
+| Surface | Status | Retained result |
+| --- | --- | --- |
+| B1 full-ring decode | `MEASURED` | 8 tokens in 2.571 s, 3.112 token events/s; 16-token run, 3.272 token events/s |
+| Four concurrent clients | `MEASURED` | 16 total tokens in 5.545 s, 2.884 token events/s aggregate; staircase completion proves serialization |
+| Stage-0 six-layer FP8 CUDA | `MEASURED` | 14.626 ms packaged-driver time, B1, one capture and two replays |
+| End-to-end token path | `OBSERVED` | token 10397 for `Say OK. OK.` and ` Paris\nQ:` for a factual prompt |
+| Model accuracy | `NOT_MEASURED` | no corpus, perplexity, long-context, or reference-equivalence score |
+| B4/B16/B64/B256/B1024 serving | `NOT_WORKING` | measured backend accepts one request, active sequence, and lane |
+| Multi-request GPU batching | `NOT_WORKING` | four clients were serialized before GPU admission |
+| Bulk prefill | `NOT_WORKING` | prompt processing was token-serial with maximum prompt count one |
+| Incremental HTTP streaming | `NOT_WORKING` | SSE body was buffered into one Content-Length response |
+| JIT KV prefetch | `NOT_WORKING` | active request API omitted the JIT flags and counters remained zero |
+| FP8 KV cache | `NOT_WORKING` | active builder allocated BF16 cache fields |
+| DSA long-context inference | `NOT_MEASURED` | no retained official long-context parity or end-to-end throughput receipt |
+| MTP throughput | `NOT_MEASURED` | no retained end-to-end token/s comparison against the same base release |
+| DSpark correctness and throughput | `NOT_MEASURED` | no retained full-ring token, acceptance, or token/s receipt |
+| Transport throughput | `NOT_MEASURED` | host-staged TCP identity was observed; no retained per-hop throughput result for this release |
+| 32K/256K/1M contexts | `NOT_MEASURED` | no retained full-ring accuracy and performance matrix |
+| Zero fallback execution | `NOT_MEASURED` | no retained runtime backend-identity and fallback-count receipt across every layer |
+| Final LM-head throughput | `NOT_MEASURED` | no isolated or end-to-end retained timing for the active scalar BF16 head |
+
+The isolated stage result is not an end-to-end throughput claim. Dividing one
+second by 14.626 ms gives a theoretical filled-pipeline ceiling, not measured
+serving performance.
+
+## Live Health Contract
+
+`/health` uses schema `sparkpipe.runtime_observation.v1`. It reports exact
+release identity, configured limits, bound interface information, and counters
+observed since process start. It must always report accuracy and performance as
+`NOT_MEASURED`; those properties require an external reproducible benchmark.
+
+`OBSERVED` in health means only that the named runtime event occurred. It must
+never be rendered or described as validated, production-ready, accurate, fast,
+or supported at an unobserved batch or context size.
+
+## Measurement Admission
+
+A new result may replace a row only when its receipt contains:
+
+1. Full merged Git commit, immutable release id, and generation.
+2. Installed artifact hashes on all 13 ranks.
+3. Exact request, concurrency, prompt/context, token count, and temperature.
+4. Actual maximum active-sequence and lane counters from the run.
+5. Bound backend and transport identities plus fallback counters where relevant.
+6. Raw timestamps, tokens, errors, and post-run queue health.
+7. Separate first-token, steady decode, aggregate, prefill, stage, and transport
+   timings when any of those numbers are claimed.
+
+If any required evidence is absent, the status remains `NOT_MEASURED` or
+`NOT_WORKING`.

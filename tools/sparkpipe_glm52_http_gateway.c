@@ -1050,13 +1050,7 @@ static SparkStatus SparkGlm52GatewayBuildResponse(
 		return SparkGlm52HttpGatewayBuildServiceHealth(
 			response,
 			runtime->service_backend_attached != 0u ? &service_stats : 0,
-			runtime->service_backend_view.backend_ready,
-			runtime->service_backend_view.pp13_ready,
-			runtime->service_backend_view.max_context_tokens != 0u ?
-				runtime->service_backend_view.max_context_tokens :
-				SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_CONTEXT_TOKENS,
-			runtime->service_backend_view.production_contract_flags,
-			runtime->service_backend_view.first_blocker);
+			&runtime->service_backend_view);
 	}
 	if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_NONE)
 		return SparkGlm52HttpGatewayBuildNotFound(response);
@@ -1070,8 +1064,8 @@ static SparkStatus SparkGlm52GatewayBuildResponse(
 	if (runtime->service_backend_attached == 0u ||
 		SparkGlm52GatewayRefreshBackendView(runtime) < 0 ||
 		runtime->service_backend_view.service == 0 ||
-		runtime->service_backend_view.backend_ready == 0u ||
-		runtime->service_backend_view.pp13_ready == 0u ||
+		runtime->service_backend_view.runtime_initialized == 0u ||
+		runtime->service_backend_view.ring_control_ready == 0u ||
 		SparkGlm52GatewayEnsureServiceClient(runtime) < 0)
 		return SparkGlm52HttpGatewayBuildBackendUnavailable(response,stream);
 	SparkGlm52CompatInitializeTextRequest(

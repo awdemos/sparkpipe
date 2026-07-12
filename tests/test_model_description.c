@@ -57,14 +57,13 @@ int main(void)
     assert(cpu_stage != 0);
     decode_program = SparkFindModelProgram(cpu_stage, "decode");
     assert(decode_program != 0);
-    assert(decode_program->max_inflight ==
-        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
+    assert(decode_program->max_inflight == 1u);
     assert((decode_program->scheduling.flags &
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE) != 0u);
     assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_JIT_KV_CACHE) != 0u);
+        SPARK_MODEL_DRIVER_PROGRAM_FLAG_JIT_KV_CACHE) == 0u);
     assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_HOST_STAGING) != 0u);
+        SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_HOST_STAGING) == 0u);
     assert((decode_program->scheduling.flags &
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_REQUIRES_HIDDEN_TRANSPORT) != 0u);
     assert((decode_program->scheduling.flags &
@@ -72,15 +71,18 @@ int main(void)
     assert((decode_program->scheduling.flags &
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_SHELL_TRANSPORT) != 0u);
     assert((decode_program->scheduling.flags &
-        SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL) != 0u);
-    assert(decode_program->scheduling.max_active_slots ==
-        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
+        SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL) == 0u);
+    assert((decode_program->scheduling.flags &
+        SPARK_MODEL_DRIVER_PROGRAM_FLAG_VALIDATED_LATENCY) == 0u);
+    assert((decode_program->scheduling.flags &
+        SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_DEVICE_MEMCPY) == 0u);
+    assert((decode_program->scheduling.flags &
+        SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_PRIVATE_EXPERT_QUEUES) == 0u);
+    assert(decode_program->scheduling.max_active_slots == 1u);
     assert(decode_program->scheduling.max_new_tokens == 7u);
-    assert(decode_program->scheduling.max_resident_sequences ==
-        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
-    assert(decode_program->scheduling.private_queue_count ==
-        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
-    assert(decode_program->scheduling.host_staging_bytes_per_submit_ceiling == 0u);
+    assert(decode_program->scheduling.max_resident_sequences == 1u);
+    assert(decode_program->scheduling.private_queue_count == 0u);
+    assert(decode_program->scheduling.validated_latency_ns == 0u);
     SparkModelDescriptionDestroy(&description);
 
     SparkTestEnsureBuildDirectory();

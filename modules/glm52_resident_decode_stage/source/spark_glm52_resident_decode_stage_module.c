@@ -814,8 +814,7 @@ static bool SparkGlm52ResidentDecodeStageMtpDraftPlanIsUsable(
         mtp_draft_plan->reserved != 0u ||
         mtp_draft_plan->launch_function == 0 ||
         (mtp_draft_plan->workspace_bytes != 0u &&
-            mtp_draft_plan->workspace == 0) ||
-        mtp_draft_plan->validated_maximum_latency_ns == 0u)
+            mtp_draft_plan->workspace == 0))
     {
         return false;
     }
@@ -849,7 +848,6 @@ static bool SparkGlm52ResidentDecodeStageFullStagePlanIsUsable(
         full_stage_plan->maximum_active_sequence_count >=
             node_context->max_active_sequence_count &&
         full_stage_plan->launch_function != 0 &&
-        full_stage_plan->validated_maximum_latency_ns != 0u &&
         (full_stage_plan->capability_flags & required_capabilities) ==
             required_capabilities;
 }
@@ -906,7 +904,6 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
         exact_stage_slice_plan->maximum_active_sequence_count <
             required_active_sequence_count ||
         exact_stage_slice_plan->batch_bucket < required_active_sequence_count ||
-        exact_stage_slice_plan->validated_maximum_latency_ns == 0u ||
         (exact_stage_slice_plan->capability_flags & exact_required_capabilities) !=
             exact_required_capabilities ||
         final_token_stage != expected_final_token_stage)
@@ -1012,7 +1009,6 @@ static bool SparkGlm52ResidentDecodeStageStageSlicePlanIsUsable(
         stage_slice_plan->maximum_layer_count >= required_layer_count &&
         stage_slice_plan->maximum_layer_count <=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_STAGE_SLICE_LAYER_COUNT &&
-        stage_slice_plan->validated_maximum_latency_ns != 0u &&
         (stage_slice_plan->capability_flags & required_capabilities) ==
             required_capabilities &&
         SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
@@ -1120,7 +1116,6 @@ static bool SparkGlm52ResidentDecodeStageBulkPrefillPlanIsUsable(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_PAGED_REQUIRED_CAPABILITIES) ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_PAGED_REQUIRED_CAPABILITIES &&
           bulk_prefill_plan->opaque_state != 0)) &&
-        bulk_prefill_plan->validated_maximum_latency_ns != 0u &&
         (bulk_prefill_plan->capability_flags & required_capabilities) ==
             required_capabilities;
 }
@@ -1274,7 +1269,6 @@ static bool SparkGlm52ResidentDecodeStageB12xMoePlanIsUsable(
         b12x_plan->output_dtype !=
             SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_OUTPUT_DTYPE_BF16 ||
         b12x_plan->cuda_architecture != 121u ||
-        b12x_plan->validated_maximum_latency_ns == 0u ||
         b12x_plan->state_cell == 0 ||
         b12x_plan->w1_weight_fp4_static_view == 0 ||
         b12x_plan->w1_scale_static_storage_ue4m3 == 0 ||
@@ -1362,7 +1356,6 @@ static bool SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(
         fp8_moe_plan->w1_scale_inv_f32 == 0 ||
         fp8_moe_plan->w2_weight_fp8_e4m3 == 0 ||
         fp8_moe_plan->w2_scale_inv_f32 == 0 ||
-        fp8_moe_plan->validated_maximum_latency_ns == 0u ||
         (fp8_moe_plan->capability_flags & required_capabilities) !=
             required_capabilities ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
@@ -1417,7 +1410,6 @@ static bool SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(
              SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION) ||
         fp8_kv_cache_plan->scale_block_size !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK ||
-        fp8_kv_cache_plan->validated_maximum_latency_ns == 0u ||
         (fp8_kv_cache_plan->capability_flags & required_capabilities) !=
             required_capabilities ||
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
@@ -1473,8 +1465,7 @@ static bool SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsUsable(
         b12x_moe_dispatch_plan->expert_count != node_context->moe_expert_count ||
         b12x_moe_dispatch_plan->top_k != node_context->moe_top_k ||
         b12x_moe_dispatch_plan->intermediate_dimension !=
-            node_context->moe_intermediate_dimension ||
-        b12x_moe_dispatch_plan->validated_maximum_latency_ns == 0u)
+            node_context->moe_intermediate_dimension)
     {
         return false;
     }
