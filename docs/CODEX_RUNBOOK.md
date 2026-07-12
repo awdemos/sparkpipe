@@ -102,8 +102,8 @@ python3 tools/sparkpipe_release_assemble.py \
     --output <new-release> \
     --release-id <release-id> \
     --git-commit <full-merged-sha> \
-    --max-active 16 \
-    --kv-pool-tokens 65536 \
+    --max-active 1 \
+    --kv-pool-tokens 1048576 \
     --replace bin/sparkpipe_release_manager=build/sparkpipe_release_manager \
     --replace bin/sparkpipe_glm52_cuda_residentd=build/sparkpipe_glm52_cuda_residentd \
     --replace bin/sparkpipe_glm52_pp13_rank_daemon=build/sparkpipe_glm52_pp13_rank_daemon \
@@ -121,9 +121,10 @@ Validate before serving:
     --manifest <new-release>/sparkpipe.json
 ```
 
-The 64K pool is the B1 correctness configuration when rank12 also owns native
-MTP weights. Increase it only after measuring resident memory headroom; it is
-not a B16 concurrency or long-context claim.
+The 1M-token pool is the B1 correctness configuration when rank12 also owns
+native MTP weights. It preserves one full-context lane while avoiding the old
+4M-token allocation. Increase concurrency only after measuring rank12 resident
+memory headroom; this configuration is not a B16 claim.
 
 ## Deploy The Ring
 

@@ -4161,14 +4161,16 @@ static __global__ void SparkGlm52ResidentDecodeStagePrepareKernel(
     cache_rope_work_count =
         (uint64_t)active_sequence_count *
         (uint64_t)rope_pair_count;
-    cache_key_nope_work_count =
-        (uint64_t)active_sequence_count *
-        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
-        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION;
-    cache_value_work_count =
-        (uint64_t)active_sequence_count *
-        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
-        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+    cache_key_nope_work_count = key_nope_cache_bf16 != 0
+        ? (uint64_t)active_sequence_count *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION
+        : 0u;
+    cache_value_work_count = value_cache_bf16 != 0
+        ? (uint64_t)active_sequence_count *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+            (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION
+        : 0u;
     total_work_count =
         query_rope_work_count + cache_latent_work_count +
         cache_rope_work_count + cache_key_nope_work_count +
