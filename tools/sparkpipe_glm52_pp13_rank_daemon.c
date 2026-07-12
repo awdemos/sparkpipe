@@ -2335,6 +2335,17 @@ static SparkStatus SparkGlm52Pp13DaemonEnsureFinalEventSocket(
         SPARK_STATUS_OK : SPARK_STATUS_BUSY;
 }
 
+static void SparkGlm52Pp13DaemonResetFinalEventSocket(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    if (runtime->final_event_socket_fd >= 0)
+        close(runtime->final_event_socket_fd);
+    runtime->final_event_socket_fd = -1;
+    runtime->final_event_socket_connecting = 0u;
+    runtime->final_event_write_offset = 0u;
+    runtime->final_event_read_offset = 0u;
+}
+
 static uint32_t SparkGlm52Pp13DaemonPumpFinalEventSend(
     SparkGlm52Pp13DaemonRuntime *runtime)
 {
@@ -2361,10 +2372,7 @@ static uint32_t SparkGlm52Pp13DaemonPumpFinalEventSend(
         return 0u;
     if (status != SPARK_STATUS_OK)
     {
-        close(runtime->final_event_socket_fd);
-        runtime->final_event_socket_fd = -1;
-        runtime->final_event_socket_connecting = 0u;
-        runtime->final_event_write_offset = 0u;
+        SparkGlm52Pp13DaemonResetFinalEventSocket(runtime);
         runtime->final_event_send_error_count += 1u;
         return 0u;
     }
@@ -2434,7 +2442,7 @@ static void SparkGlm52Pp13DaemonPublishFinalEvent(
     fflush(stdout);
 }
 
-static uint32_t SparkGlm52Pp13DaemonPumpFinalEvents(
+static uint32_t SparkGlm52Pp13DaemonPumpFinalEventReceive(
     SparkGlm52Pp13DaemonRuntime *runtime)
 {
     SparkGlm52Pp13RuntimeFinalEvent *event;
@@ -2442,11 +2450,9 @@ static uint32_t SparkGlm52Pp13DaemonPumpFinalEvents(
     uint32_t remaining;
     uint32_t progress;
 
-    progress = SparkGlm52Pp13DaemonPumpFinalEventSend(runtime);
-    progress |= SparkGlm52Pp13DaemonAcceptFinalEventSocket(runtime);
-    if (runtime->final_event_listen_fd < 0 ||
-        runtime->final_event_socket_fd < 0)
-        return progress;
+    progress = 0u;
+    if (runtime == 0 || runtime->final_event_socket_fd < 0)
+        return 0u;
     for (;;)
     {
         remaining = ((uint32_t)sizeof(runtime->final_event_read_buffer) -
@@ -2457,15 +2463,15 @@ static uint32_t SparkGlm52Pp13DaemonPumpFinalEvents(
             remaining);
         if (got < 0)
         {
-            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-                runtime->final_event_receive_error_count += 1u;
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)
+                return progress;
+            SparkGlm52Pp13DaemonResetFinalEventSocket(runtime);
+            runtime->final_event_receive_error_count += 1u;
             return progress;
         }
         if (got == 0)
         {
-            close(runtime->final_event_socket_fd);
-            runtime->final_event_socket_fd = -1;
-            runtime->final_event_read_offset = 0u;
+            SparkGlm52Pp13DaemonResetFinalEventSocket(runtime);
             return 1u;
         }
         progress = 1u;
@@ -2477,6 +2483,17 @@ static uint32_t SparkGlm52Pp13DaemonPumpFinalEvents(
         SparkGlm52Pp13DaemonPublishFinalEvent(runtime,event);
         runtime->final_event_read_offset = 0u;
     }
+}
+
+static uint32_t SparkGlm52Pp13DaemonPumpFinalEvents(
+    SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    uint32_t progress;
+
+    progress = SparkGlm52Pp13DaemonAcceptFinalEventSocket(runtime);
+    progress |= SparkGlm52Pp13DaemonPumpFinalEventReceive(runtime);
+    progress |= SparkGlm52Pp13DaemonPumpFinalEventSend(runtime);
+    return progress;
 }
 
 static SparkStatus SparkGlm52Pp13DaemonInitialize(
