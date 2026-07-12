@@ -112,6 +112,7 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	uint32_t trace_enabled;
 	uint64_t cuda_resident_retry_after_ns;
 	char cuda_resident_socket_path[108];
+	uint64_t session_id_base;
 	uint64_t cuda_resident_next_sequence_number;
 	uint64_t cuda_resident_submit_count;
 	uint64_t cuda_resident_completion_count;
@@ -1493,6 +1494,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRequestApi(
 	uint32_t lane_capacity)
 {
 	SparkGlm52RequestApiConfiguration request_api_configuration;
+	SparkStatus status;
 
 	memset(&request_api_configuration,0,sizeof(request_api_configuration));
 	request_api_configuration.abi_version =
@@ -1520,9 +1522,12 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRequestApi(
 	request_api_configuration.decode_batch_target = lane_capacity;
 	request_api_configuration.scheduler = &state->scheduler;
 	request_api_configuration.request_slots = state->request_slots;
-	return SparkGlm52RequestApiInitialize(
+	status = SparkGlm52RequestApiInitialize(
 		&state->request_api,
 		&request_api_configuration);
+	if (status == SPARK_STATUS_OK)
+		state->request_api.next_sequence_id = state->session_id_base;
+	return status;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendInitializeServingEngine(
@@ -1590,6 +1595,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeService(
 	service_configuration.abi_version = SPARK_GLM52_SERVICE_ABI_VERSION;
 	service_configuration.descriptor_bytes =
 		SPARK_GLM52_SERVICE_CONFIGURATION_DESCRIPTOR_BYTES;
+	service_configuration.request_id_base = state->session_id_base;
 	service_configuration.serving_engine = &state->serving_engine;
 	service_configuration.client_sessions = state->client_sessions;
 	service_configuration.client_session_capacity =
@@ -2049,6 +2055,15 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 	SparkTokenizerReset(&state->tokenizer);
 	state->initialized = 1u;
 	*backend_state = state;
+	state->session_id_base = SparkGlm52Pp13ServiceBackendMonotonicNs();
+	if (state->session_id_base == 0u)
+	{
+		SparkGlm52Pp13ServiceBackendSetBlocker(
+			state,
+			"PP13 session ID clock is unavailable");
+		return SPARK_STATUS_IO_ERROR;
+	}
+	state->cuda_resident_next_sequence_number = state->session_id_base;
 	status = SparkGlm52Pp13ServiceBackendRequireText(
 		configuration->fp8_pack_root,
 		state,
