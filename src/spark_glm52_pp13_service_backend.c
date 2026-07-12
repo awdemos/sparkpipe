@@ -50,6 +50,7 @@
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE 1u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY 4096u
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY 128u
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_PATH_BYTES 4096u
 
 typedef struct SparkGlm52Pp13ServiceBackendPendingDecode
 {
@@ -137,6 +138,8 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	uint32_t tokenizer_ready;
 	uint32_t rank0_runtime_ready;
 	uint32_t service_runtime_ready;
+	char transport_shared_object_path[
+		SPARK_GLM52_PP13_SERVICE_BACKEND_PATH_BYTES];
 	char first_blocker[SPARK_GLM52_SERVICE_BACKEND_BLOCKER_BYTES];
 } SparkGlm52Pp13ServiceBackendState;
 
@@ -178,6 +181,30 @@ static SparkStatus SparkGlm52Pp13ServiceBackendRequireText(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	}
 	return SPARK_STATUS_OK;
+}
+
+static const char *SparkGlm52Pp13ServiceBackendEnvironmentText(
+	const char *name)
+{
+	const char *value;
+	value = getenv(name);
+	return value != 0 ? value : "";
+}
+
+static uint64_t SparkGlm52Pp13ServiceBackendEnvironmentU64(
+	const char *name)
+{
+	const char *text;
+	char *end;
+	unsigned long long value;
+	text = getenv(name);
+	if (text == 0 || text[0] == '\0')
+		return 0u;
+	errno = 0;
+	value = strtoull(text,&end,10);
+	if (errno != 0 || end == text || *end != '\0')
+		return 0u;
+	return (uint64_t)value;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendAlloc(
@@ -1619,8 +1646,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeServingEngine(
 		SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
 	serving_configuration.descriptor_bytes =
 		SPARK_GLM52_SERVING_ENGINE_CONFIGURATION_DESCRIPTOR_BYTES;
+	serving_configuration.flags =
+		SPARK_GLM52_SERVING_ENGINE_FLAG_AUTO_RELEASE_COMPLETED_REQUESTS |
+		SPARK_GLM52_SERVING_ENGINE_FLAG_CLAMP_BUDGET_TO_CONTEXT;
 	serving_configuration.runtime_contract_flags =
-		SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS;
+		SPARK_GLM52_SERVING_RUNTIME_CONTRACT_CURRENT_IMPLEMENTED_FLAGS;
 	serving_configuration.default_output_token_budget = 1024u;
 	serving_configuration.default_max_prefill_tokens_per_step =
 		SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_TOKENS;
@@ -2144,6 +2174,16 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 			state,
 			"production hidden transport shared object is missing");
 	if (status == SPARK_STATUS_OK)
+	{
+		if (strlen(configuration->transport_shared_object_path) >=
+			sizeof(state->transport_shared_object_path))
+			status = SPARK_STATUS_CAPACITY_EXCEEDED;
+		else
+			snprintf(state->transport_shared_object_path,
+				sizeof(state->transport_shared_object_path),"%s",
+				configuration->transport_shared_object_path);
+	}
+	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13ServiceBackendRequireText(
 			configuration->driver_shared_object_path,
 			state,
@@ -2238,16 +2278,33 @@ static SparkStatus SparkGlm52Pp13ServiceBackendGetView(
 	memset(view,0,sizeof(*view));
 	view->abi_version = SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION;
 	view->descriptor_bytes = SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES;
-	view->backend_ready = state->initialized != 0u ? 1u : 0u;
-	view->pp13_ready = state->service_runtime_ready != 0u &&
+	view->runtime_initialized = state->initialized != 0u ? 1u : 0u;
+	view->ring_control_ready = state->service_runtime_ready != 0u &&
 		state->rank0_runtime_ready != 0u &&
 		state->first_blocker[0] == '\0' ? 1u : 0u;
-	view->max_context_tokens = SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS;
-	view->production_contract_flags =
-		SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS;
+	view->configured_kv_context_limit_tokens =
+		SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS;
+	view->configured_max_active_sequences =
+		state->rank_plan.max_active_sequence_count;
+	view->transport_capability_flags =
+		state->transport_library.transport_interface.capability_flags;
+	view->speculation_configuration_flags =
+		(state->dspark_enabled != 0u ?
+			SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_DSPARK : 0u) |
+		(state->mtp_enabled != 0u ?
+			SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP : 0u);
+	view->request_api_configuration_flags =
+		state->request_api.configuration_flags;
+	view->release_generation = SparkGlm52Pp13ServiceBackendEnvironmentU64(
+		"SPARKPIPE_RELEASE_GENERATION");
 	view->service = state->service_runtime_ready != 0u ? &state->service : 0;
 	view->tokenizer = state->tokenizer_ready != 0u ? &state->tokenizer : 0;
 	view->first_blocker = state->first_blocker;
+	view->release_id = SparkGlm52Pp13ServiceBackendEnvironmentText(
+		"SPARKPIPE_RELEASE_ID");
+	view->release_git_commit = SparkGlm52Pp13ServiceBackendEnvironmentText(
+		"SPARKPIPE_RELEASE_GIT_COMMIT");
+	view->transport_shared_object_path = state->transport_shared_object_path;
 	return SPARK_STATUS_OK;
 }
 

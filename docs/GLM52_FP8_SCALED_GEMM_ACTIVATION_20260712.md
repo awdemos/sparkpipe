@@ -1,5 +1,10 @@
 # GLM-5.2 FP8 Scaled-GEMM Activation Receipt
 
+This receipt records one deployment measurement. It does not certify model
+accuracy, multi-lane serving, long-context behavior, or the theoretical
+filled-pipeline ceiling. Current status terminology and accepted claims are in
+`docs/GLM52_MEASURED_STATUS.md`.
+
 ## Provenance
 
 ```text
@@ -37,8 +42,9 @@ checksum64:                14772085175729278197
 ```
 
 The previous live stage-0 receipt was approximately 64.8 ms. The scaled-GEMM
-activation reduces that isolated stage by about 4.3x. Its filled-pipeline B1
-ceiling is about 68.4 tok/s before control and transport overhead.
+activation reduces that isolated stage by about 4.3x. The reciprocal, about
+68.4 stages/s, is a theoretical filled-pipeline ceiling and is not measured
+end-to-end throughput.
 
 The focused FP8 GEMM gate also passed eager and graph modes with maximum
 absolute error `0.017578`:
@@ -54,7 +60,7 @@ B1  2048->16384 aligned graph    0.142880 ms
 There is no FP8 WMMA fallback. An FP8 plan without the scaled-GEMM backend now
 fails validation.
 
-## End-To-End Correctness
+## End-To-End Smoke Observation
 
 The deployed 13-rank ring returned the known greedy token:
 
@@ -65,7 +71,7 @@ text:      " OK"
 elapsed:   0.409 s for one-token request
 ```
 
-A distinct factual prompt also passed:
+A distinct factual prompt produced:
 
 ```text
 prompt:  Q: What is the capital of France?\nA:

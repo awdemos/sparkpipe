@@ -49,6 +49,11 @@ def main():
         assert result["roles"][0]["argv"] == ["--max-active","64"]
         assert result["roles"][1]["argv"] == [
             "--max-active","64","--kv-pool-tokens","65536"]
+        for role in result["roles"]:
+            assert "SPARKPIPE_RELEASE_ID=new" in role["env"]
+            assert "SPARKPIPE_RELEASE_GIT_COMMIT=abc123" in role["env"]
+            assert any(item.startswith("SPARKPIPE_RELEASE_GENERATION=")
+                       for item in role["env"])
         assert result["files"][0]["bytes"] == 11
         assert result["files"][0]["sha256"] == expected
         assert (output / "bin" / "runtime").read_bytes() == b"new-runtime"

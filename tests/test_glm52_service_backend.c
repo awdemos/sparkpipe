@@ -33,8 +33,8 @@ static void SparkTestServiceBackendLoadsRequiredInterface(void)
 	assert(library.backend_interface.get_view(backend_state,&view) ==
 		SPARK_STATUS_OK);
 	assert(view.service != 0);
-	assert(view.backend_ready == 1u);
-	assert(view.pp13_ready == 1u);
+	assert(view.runtime_initialized == 1u);
+	assert(view.ring_control_ready == 1u);
 	library.backend_interface.destroy(backend_state);
 	SparkGlm52ServiceBackendUnloadInterface(&library);
 }
