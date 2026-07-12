@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 5u
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 6u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAGIC 0x52445543u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS \
     (SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS)
@@ -34,6 +34,8 @@ extern "C" {
     ((uint32_t)sizeof(SparkGlm52CudaResidentIpcStats))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_PREFILL_BYTES \
     ((uint32_t)sizeof(SparkGlm52CudaResidentIpcSubmitPrefill))
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_PREFILL_PREFIX_BYTES \
+	((uint32_t)offsetof(SparkGlm52CudaResidentIpcSubmitPrefill,work_packet))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_BYTES \
     ((uint32_t)sizeof(SparkGlm52CudaResidentIpcSubmitDecode))
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_PREFIX_BYTES \
@@ -142,16 +144,8 @@ typedef struct SparkGlm52CudaResidentIpcSubmitResult
 typedef struct SparkGlm52CudaResidentIpcSubmitPrefill
 {
     uint32_t descriptor_bytes;
-    uint32_t highest_priority;
-    uint64_t request_id;
-    uint64_t sequence_id;
     uint32_t request_flags;
-    uint32_t prompt_token_offset;
-    uint32_t prompt_token_count;
-    uint32_t kv_block_token_count;
-    uint32_t kv_lane_block_count;
-    uint32_t prompt_token_ids[SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS];
-    uint32_t kv_physical_block_indices[SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS];
+    SparkGlm52Pp13WorkControlPacket work_packet;
 } SparkGlm52CudaResidentIpcSubmitPrefill;
 
 typedef struct SparkGlm52CudaResidentIpcSubmitDecode
@@ -184,6 +178,8 @@ SparkStatus SparkGlm52CudaResidentIpcValidateHeader(
     uint32_t expected_kind,
     uint32_t maximum_payload_bytes);
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
+	const SparkGlm52Pp13WorkControlPacket *work_packet);
+uint32_t SparkGlm52CudaResidentIpcCalculateSubmitPrefillBytes(
 	const SparkGlm52Pp13WorkControlPacket *work_packet);
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitDecodeBytes(
 	const SparkGlm52Pp13WorkControlPacket *work_packet);

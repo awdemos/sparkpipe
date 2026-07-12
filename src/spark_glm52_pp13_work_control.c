@@ -195,7 +195,10 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	uint32_t token_offset,
 	SparkGlm52Pp13WorkControlPacket *packet)
 {
-	SparkGlm52Pp13WorkControlLane *lane;
+	const SparkGlm52RequestApiPrefillDispatchLaneView *source_lane;
+	SparkGlm52Pp13WorkControlLane *destination_lane;
+	uint32_t active_lane_count;
+	uint32_t source_lane_index;
 	uint32_t position;
 	SparkStatus status;
 
@@ -203,43 +206,74 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 		prefill_dispatch->request_dispatch == 0 ||
 		prefill_dispatch->prefill_view == 0 ||
 		prefill_dispatch->kv_block_table_view == 0 ||
-		prefill_dispatch->lane_count != 1u ||
-		prefill_dispatch->active_sequence_count != 1u ||
-		prefill_dispatch->prefill_view->lane_count != 1u ||
+		prefill_dispatch->lane_count == 0u ||
+		prefill_dispatch->lane_count !=
+			prefill_dispatch->active_sequence_count ||
+		prefill_dispatch->lane_count !=
+			prefill_dispatch->prefill_view->lane_count ||
+		prefill_dispatch->lane_count !=
+			prefill_dispatch->kv_block_table_view->lane_count ||
+		prefill_dispatch->lane_count >
+			SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT ||
+		prefill_dispatch->host_token_ids == 0 ||
+		prefill_dispatch->host_token_stride == 0u ||
 		token_offset >= prefill_dispatch->prompt_token_count)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	position = prefill_dispatch->prompt_token_offset + token_offset;
 	memset(packet,0,sizeof(*packet));
 	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
 	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
-	packet->descriptor_bytes =
-		SparkGlm52Pp13WorkControlCalculatePacketBytes(1u);
 	packet->flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL;
 	if ((prefill_dispatch->request_dispatch->flags &
 			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u)
 		packet->flags |=
 			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE;
-	packet->active_sequence_count = 1u;
 	packet->new_token_count = 1u;
 	packet->priority = prefill_dispatch->request_dispatch->highest_priority;
 	packet->block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
-	packet->kv_block_table_token_count = position + 1u;
 	packet->max_blocks_per_sequence =
 		SPARK_GLM52_PP13_WORK_CONTROL_KV_BLOCK_CAPACITY;
-	lane = &packet->lanes[0u];
-	lane->request_id = prefill_dispatch->request_dispatch->request_ids[0u];
-	lane->sequence_id = prefill_dispatch->request_dispatch->sequence_ids[0u];
-	lane->sequence_position = position;
-	lane->context_token_count = position + 1u;
-	lane->input_token_id = prefill_dispatch->host_token_ids[token_offset];
-	status = SparkGlm52Pp13WorkControlCopyLaneKvBlocks(
-		prefill_dispatch->kv_block_table_view,0u,lane->context_token_count,lane);
-	if (status != SPARK_STATUS_OK)
-		return status;
-	packet->request_id = lane->request_id;
-	packet->sequence_id = lane->sequence_id;
-	packet->sequence_position = lane->sequence_position;
-	packet->input_token_id = lane->input_token_id;
+	active_lane_count = 0u;
+	for (source_lane_index = 0u;
+		 source_lane_index < prefill_dispatch->lane_count;
+		 ++source_lane_index)
+	{
+		source_lane = &prefill_dispatch->prefill_view->lanes[source_lane_index];
+		if (token_offset >= source_lane->prompt_token_count)
+			continue;
+		if (source_lane->prompt_token_count >
+			prefill_dispatch->host_token_stride)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		position = source_lane->prompt_token_offset + token_offset;
+		destination_lane = &packet->lanes[active_lane_count];
+		destination_lane->request_id = source_lane->request_id;
+		destination_lane->sequence_id = source_lane->sequence_id;
+		destination_lane->sequence_position = position;
+		destination_lane->context_token_count = position + 1u;
+		destination_lane->input_token_id = prefill_dispatch->host_token_ids[
+			((uint64_t)source_lane_index * prefill_dispatch->host_token_stride) +
+			token_offset];
+		status = SparkGlm52Pp13WorkControlCopyLaneKvBlocks(
+			prefill_dispatch->kv_block_table_view,
+			source_lane_index,
+			destination_lane->context_token_count,
+			destination_lane);
+		if (status != SPARK_STATUS_OK)
+			return status;
+		if (destination_lane->context_token_count >
+			packet->kv_block_table_token_count)
+			packet->kv_block_table_token_count =
+				destination_lane->context_token_count;
+		active_lane_count += 1u;
+	}
+	if (active_lane_count == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	packet->active_sequence_count = active_lane_count;
+	packet->descriptor_bytes =
+		SparkGlm52Pp13WorkControlCalculatePacketBytes(active_lane_count);
+	packet->request_id = packet->lanes[0u].request_id;
+	packet->sequence_id = packet->lanes[0u].sequence_id;
+	packet->sequence_position = packet->lanes[0u].sequence_position;
+	packet->input_token_id = packet->lanes[0u].input_token_id;
 	return SPARK_STATUS_OK;
 }
 
@@ -302,8 +336,7 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((packet->active_sequence_count != 1u &&
 		 (packet->flags &
-			(SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL |
-			 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT |
+			(SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT |
 			 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE |
 			 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY |
 			 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY)) != 0u) ||
