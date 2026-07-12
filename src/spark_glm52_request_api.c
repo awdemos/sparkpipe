@@ -1,5 +1,7 @@
 #include "sparkpipe/spark_glm52_request_api.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static uint32_t SparkGlm52RequestApiNormalizeConfigurationFlags(
@@ -4600,6 +4602,47 @@ SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
     return SPARK_STATUS_OK;
 }
 
+static void SparkGlm52RequestApiTraceMtpVerify(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    const uint32_t *verifier_token_ids,
+    uint32_t lane_stride,
+    uint32_t verifier_token_count,
+    uint32_t request_index,
+    const SparkGlm52DsparkVerifyResult *verify_result)
+{
+    uint32_t token_index;
+
+    if (getenv("SPARKPIPE_PP13_TRACE") == 0 || dispatch == 0 ||
+        verifier_token_ids == 0 || verify_result == 0 ||
+        (dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u)
+    {
+        return;
+    }
+    fprintf(stderr,
+        "mtp_trace verify request=%llu sequence=%llu proposed=%u accepted=%u committed=%u fallback=%u draft_ids=",
+        (unsigned long long)dispatch->request_ids[request_index],
+        (unsigned long long)dispatch->sequence_ids[request_index],
+        dispatch->speculative_token_count,
+        verify_result->accepted_draft_token_count,
+        verify_result->committed_token_count,
+        verify_result->fallback_token_id);
+    for (token_index = 0u;
+         token_index < dispatch->speculative_token_count;
+         ++token_index)
+    {
+        fprintf(stderr,"%s%u",token_index == 0u ? "" : ",",
+            dispatch->speculative_draft_token_ids[request_index][token_index]);
+    }
+    fprintf(stderr," verifier_ids=");
+    for (token_index = 0u; token_index < verifier_token_count; ++token_index)
+    {
+        fprintf(stderr,"%s%u",token_index == 0u ? "" : ",",
+            verifier_token_ids[((uint64_t)request_index * lane_stride) + token_index]);
+    }
+    fprintf(stderr,"\n");
+}
+
 SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiDispatch *dispatch,
@@ -4652,6 +4695,13 @@ SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
         {
             return status;
         }
+        SparkGlm52RequestApiTraceMtpVerify(
+            dispatch,
+            verifier_token_ids,
+            lane_stride,
+            verifier_token_count,
+            request_index,
+            &verify_result);
 
         dispatch->speculative_accepted_token_counts[request_index] =
             verify_result.accepted_draft_token_count;

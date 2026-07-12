@@ -89,6 +89,9 @@ static void SparkTestHttpGatewayBuildsServiceHealth(void)
     stats.live_request_count = 3u;
     stats.serving_stats.queued_request_count = 4u;
     stats.serving_stats.jit_prefetch_dispatch_count = 5u;
+    stats.serving_stats.mtp_draft_token_count = 6u;
+    stats.serving_stats.mtp_verify_dispatch_count = 7u;
+    stats.serving_stats.mtp_accepted_draft_token_count = 8u;
     SparkGlm52HttpGatewayInitializeResponse(&response, body, sizeof(body));
     assert(SparkGlm52HttpGatewayBuildServiceHealth(
         &response,
@@ -103,6 +106,9 @@ static void SparkTestHttpGatewayBuildsServiceHealth(void)
     assert(strstr(body, "\"max_context_tokens\":1048576") != 0);
     assert(strstr(body, "\"connected_clients\":2") != 0);
     assert(strstr(body, "\"jit_prefetch_dispatches\":5") != 0);
+    assert(strstr(body, "\"mtp_draft_tokens\":6") != 0);
+    assert(strstr(body, "\"mtp_verify_dispatches\":7") != 0);
+    assert(strstr(body, "\"mtp_accepted_draft_tokens\":8") != 0);
     assert(strstr(body, "\"first_blocker\":\"none\"") != 0);
 }
 

@@ -271,6 +271,10 @@ typedef struct SparkGlm52ServingStats
     uint64_t decoded_token_count;
     uint64_t mtp_draft_token_count;
     uint64_t mtp_verify_dispatch_count;
+    uint64_t mtp_draft_ready_count;
+    uint64_t mtp_accepted_draft_token_count;
+    uint64_t mtp_committed_token_count;
+    uint64_t mtp_rejected_token_count;
     uint64_t completed_stream_count;
     uint64_t jit_prefetch_dispatch_count;
     uint64_t jit_prefetch_block_count;
