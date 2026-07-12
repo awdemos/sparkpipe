@@ -4878,7 +4878,8 @@ static bool SparkValidationBindRequiredLinearPlans(
             {
                 return false;
             }
-            if ((required_plan_mask &
+            if (use_quantized_dense_plans == 0u &&
+                (required_plan_mask &
                  (SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
                   SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
                   SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN)) != 0u &&
@@ -5107,7 +5108,8 @@ static bool SparkValidationBindRequiredLinearPlans(
     initialized_plan_count = SparkValidationCountInitializedLinearPlans(
         plans,
         plan_count);
-    if ((required_plan_mask &
+    if (use_quantized_dense_plans == 0u &&
+        (required_plan_mask &
          (SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_GATE |
           SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_UP |
           SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BIND_DENSE_DOWN)) != 0u &&
