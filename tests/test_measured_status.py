@@ -42,8 +42,8 @@ def main():
     scheduling = program["scheduling"]
     flags = set(scheduling["flags"])
     assert program["max_inflight"] == 1
-    assert scheduling["max_active_slots"] == 1
-    assert scheduling["max_resident_sequences"] == 1
+    assert scheduling["max_active_slots"] == 1024
+    assert scheduling["max_resident_sequences"] == 1024
     assert scheduling["validated_latency_ns"] == 0
     assert scheduling["private_queue_count"] == 0
     assert flags.isdisjoint(FORBIDDEN_FLAGS)

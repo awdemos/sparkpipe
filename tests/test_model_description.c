@@ -78,9 +78,9 @@ int main(void)
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_NO_DEVICE_MEMCPY) == 0u);
     assert((decode_program->scheduling.flags &
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_PRIVATE_EXPERT_QUEUES) == 0u);
-    assert(decode_program->scheduling.max_active_slots == 1u);
+    assert(decode_program->scheduling.max_active_slots == 1024u);
     assert(decode_program->scheduling.max_new_tokens == 7u);
-    assert(decode_program->scheduling.max_resident_sequences == 1u);
+    assert(decode_program->scheduling.max_resident_sequences == 1024u);
     assert(decode_program->scheduling.private_queue_count == 0u);
     assert(decode_program->scheduling.validated_latency_ns == 0u);
     SparkModelDescriptionDestroy(&description);
