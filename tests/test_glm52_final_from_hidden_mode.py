@@ -24,6 +24,15 @@ def main() -> int:
     assert "routed_pipeline_from_hidden_final=1 final_stage=1" in validator
     assert "SparkValidationSetOutputHiddenOnly" in validator
     assert "run_final_outputs = final_token_stage != 0u" in validator
+    assert "SparkValidationLoadExactFullVocabFinalEpilogue" in validator
+    assert "runtime->full_lm_head_weight_bf16" in validator
+    assert "runtime->full_vocab_token_ids" in validator
+    assert (
+        "SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *\n"
+        "        (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION"
+        in validator
+    )
+    assert "GLM52_EXACT_PP13_EXPECTED_FULL_VOCAB_TOKEN" in validator
     assert "GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN=1" in makefile
     assert "routed_from_hidden_final" in makefile
     assert "GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16=1 GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN=1" not in makefile

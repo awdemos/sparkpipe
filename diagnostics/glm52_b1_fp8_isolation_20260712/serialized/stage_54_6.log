@@ -1,0 +1,37 @@
+resident_linear_plans_ready=1 mask=0x00000200 dense_intermediate=12288 initialized_plan_count=1 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=54
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=54 bytes=165077440
+dsa_indexer_fp8_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=54
+dsa_indexer_official_fixture_ready=1 layer=54 source=54 bytes=9571008
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer=54 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=54 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x00001dff dense_intermediate=2048 initialized_plan_count=12 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=55
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=55 bytes=165077440
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer=55 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=55 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x000001ff dense_intermediate=2048 initialized_plan_count=9 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=56
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=56 bytes=165077440
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer=56 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=56 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x000001ff dense_intermediate=2048 initialized_plan_count=9 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=57
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=57 bytes=165077440
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer=57 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=57 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x000001ff dense_intermediate=2048 initialized_plan_count=9 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=58
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=58 bytes=165077440
+dsa_indexer_fp8_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=58
+dsa_indexer_official_fixture_ready=1 layer=58 source=58 bytes=9571008
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer=58 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=58 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x00001dff dense_intermediate=2048 initialized_plan_count=12 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=59
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=59 bytes=165077440
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer=59 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/spark9/models/hf/zai-org/GLM-5.2-FP8 layer_index=59 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x000001ff dense_intermediate=2048 initialized_plan_count=9 plan_slot_count=21
+exact_pp13_stage_sequence_complete first_layer=54 layer_count=6 final=0 token_count=5 total_us=100246.623 maximum_us=31798.840 submissions=5 output_hidden=/home/spark9/sparkpipe_bench/b1_fp8_serial_current_6d36eb4/after_layer_59.bf16
+glm52_resident_decode_stage validation passed fixture=exact_pp13_stage_sequence first_layer=54 layer_count=6 final=0 token_count=5 total_submissions=5 total_us=100246.623 maximum_us=31798.840 limit_us=1000000.000 restricted_token=0 pipeline_output_hidden=/home/spark9/sparkpipe_bench/b1_fp8_serial_current_6d36eb4/after_layer_59.bf16 graph_captures=0 graph_replays=0

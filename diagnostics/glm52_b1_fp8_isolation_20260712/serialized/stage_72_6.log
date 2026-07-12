@@ -1,0 +1,41 @@
+real_lm_head_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 bytes=3145728
+resident_linear_plans_ready=1 mask=0x00000200 dense_intermediate=12288 initialized_plan_count=1 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=72
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=72 bytes=165077440
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer=72 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=72 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x000001ff dense_intermediate=2048 initialized_plan_count=9 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=73
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=73 bytes=165077440
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer=73 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=73 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x000001ff dense_intermediate=2048 initialized_plan_count=9 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=74
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=74 bytes=165077440
+dsa_indexer_fp8_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=74
+dsa_indexer_official_fixture_ready=1 layer=74 source=74 bytes=9571008
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer=74 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=74 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x00001dff dense_intermediate=2048 initialized_plan_count=12 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=75
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=75 bytes=165077440
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer=75 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=75 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x000001ff dense_intermediate=2048 initialized_plan_count=9 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=76
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=76 bytes=165077440
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer=76 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=76 shared=1 bytes=37770240
+resident_linear_plans_ready=1 mask=0x000001ff dense_intermediate=2048 initialized_plan_count=9 plan_slot_count=21
+exact_pp13_attention_execution_mode=1 layer=77
+layer0_attention_fp8_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=77 bytes=165077440
+routed_layer_router_bf16_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer=77 bytes=3159040
+fp8_mlp_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 layer_index=77 shared=1 bytes=37770240
+real_final_norm_bf16_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 bytes=12288
+real_lm_head_fixture_ready=1 model_dir=/home/sparkc/models/hf/zai-org/GLM-5.2-FP8 bytes=3145728
+exact_pp13_full_vocab_fixture_ready=1 bytes=1903165440 tokens=154880
+resident_linear_plans_ready=1 mask=0x000001ff dense_intermediate=2048 initialized_plan_count=9 plan_slot_count=21
+exact_pp13_full_vocab_token_match observed=10397 expected=10397
+exact_pp13_stage_sequence_final_evidence restricted_token=10397 mtp_draft=0 mtp_reject=0 token_count=5
+exact_pp13_stage_sequence_complete first_layer=72 layer_count=6 final=1 token_count=5 total_us=114607.652 maximum_us=31710.691 submissions=5 output_hidden=/home/sparkc/sparkpipe_bench/b1_fp8_serial_current_6d36eb4/after_layer_77.bf16
+glm52_resident_decode_stage validation passed fixture=exact_pp13_stage_sequence first_layer=72 layer_count=6 final=1 token_count=5 total_submissions=5 total_us=114607.652 maximum_us=31710.691 limit_us=1000000.000 restricted_token=10397 pipeline_output_hidden=/home/sparkc/sparkpipe_bench/b1_fp8_serial_current_6d36eb4/after_layer_77.bf16 graph_captures=0 graph_replays=0
