@@ -60,7 +60,7 @@ static void SparkTestHttpGatewayBuildsHealth(void)
 	assert(response.status_code == 200u);
 	assert(strcmp(response.content_type,"application/json") == 0);
 	assert(strstr(body,"\"runtime_initialized\":1") != 0);
-	assert(strstr(body,"\"ring_control_ready\":0") != 0);
+	assert(strstr(body,"\"local_control_ready\":0") != 0);
 	assert(strstr(body,"\"performance_status\":\"NOT_MEASURED\"") != 0);
 }
 
@@ -100,7 +100,7 @@ static void SparkTestHttpGatewayBuildsServiceHealth(void)
     stats.serving_stats.decoded_token_count = 9u;
     stats.serving_stats.maximum_decode_lane_count = 1u;
     backend_view.runtime_initialized = 1u;
-    backend_view.ring_control_ready = 1u;
+    backend_view.local_control_ready = 1u;
     backend_view.configured_kv_context_limit_tokens =
         SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
     backend_view.configured_max_active_sequences = 1u;

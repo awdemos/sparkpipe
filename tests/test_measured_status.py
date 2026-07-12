@@ -56,6 +56,7 @@ def main():
         ROOT / "src" / "spark_glm52_pp13_service_backend.c"
     ).read_text(encoding="utf-8")
     assert "production_contract_flags" not in health_source
+    assert "ring_control_ready" not in health_source
     assert "PRODUCTION_REQUIRED_FLAGS" not in backend_source
     assert '\\"accuracy_status\\":\\"NOT_MEASURED\\"' in health_source
     assert '\\"performance_status\\":\\"NOT_MEASURED\\"' in health_source

@@ -69,7 +69,7 @@ typedef struct SparkGlm52ServiceBackendView
 	uint32_t abi_version;
 	uint32_t descriptor_bytes;
 	uint32_t runtime_initialized;
-	uint32_t ring_control_ready;
+	uint32_t local_control_ready;
 	uint32_t configured_kv_context_limit_tokens;
 	uint32_t configured_max_active_sequences;
 	uint32_t transport_capability_flags;

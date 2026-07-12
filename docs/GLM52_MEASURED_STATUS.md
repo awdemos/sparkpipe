@@ -53,6 +53,35 @@ receipt is `docs/GLM52_FP8_SCALED_GEMM_ACTIVATION_20260712.md`.
 | Zero fallback execution | `NOT_MEASURED` | no retained runtime backend-identity and fallback-count receipt across every layer |
 | Final LM-head throughput | `NOT_MEASURED` | no isolated or end-to-end retained timing for the active scalar BF16 head |
 
+## Current Release Observation
+
+The honesty rewrite was deployed after the accepted performance measurement:
+
+```text
+commit:      e459d41df92f3bdaf2f8265e66151f97249c46f0
+release:     glm52-fp8-main-e459d41-b1-measured-status
+generation:  20260712063211
+topology:    13 Spark ranks
+live lanes:  1
+```
+
+All 13 residents reported ready and installed the manifest builder and driver
+hashes. The first greedy `Say OK. OK.` request after restart returned token 16
+(`1`). The immediate identical request returned token 10397 (` OK`). A distinct
+factual prompt returned ` Paris\nQ:`. Therefore:
+
+| Surface | Status | Result |
+| --- | --- | --- |
+| End-to-end event path | `OBSERVED` | accepted, token, done; queues drained |
+| Maximum serving lanes | `OBSERVED` | prefill 1, decode 1 |
+| Clean-start determinism | `NOT_WORKING` | identical requests returned different first tokens |
+| Accuracy | `NOT_MEASURED` | smoke outputs are not an accuracy score |
+| Performance | `NOT_MEASURED` | no timing run was accepted for this instrumented release |
+| MTP execution | `OBSERVED` | 3 draft tokens, 1 verify dispatch, 1 accepted draft, 2 committed tokens, 2 rejected tokens; no throughput comparison |
+
+The retained raw responses are under
+`diagnostics/glm52_measured_status_e459d41_20260712/`.
+
 The isolated stage result is not an end-to-end throughput claim. Dividing one
 second by 14.626 ms gives a theoretical filled-pipeline ceiling, not measured
 serving performance.
@@ -60,9 +89,11 @@ serving performance.
 ## Live Health Contract
 
 `/health` uses schema `sparkpipe.runtime_observation.v1`. It reports exact
-release identity, configured limits, bound interface information, and counters
-observed since process start. It must always report accuracy and performance as
-`NOT_MEASURED`; those properties require an external reproducible benchmark.
+release identity, configured limits, bound interface information, local control
+readiness, and counters observed since process start. Local readiness does not
+claim that all 13 ranks are connected. It must always report accuracy and
+performance as `NOT_MEASURED`; those properties require an external
+reproducible benchmark.
 
 `OBSERVED` in health means only that the named runtime event occurred. It must
 never be rendered or described as validated, production-ready, accurate, fast,
