@@ -18,8 +18,12 @@
 #if !__has_include("flashinfer/gemm/group_gemm_fp8_groupwise_sm120.cuh")
 #error "FlashInfer SM120 grouped FP8 GEMM headers are required for production FP8 MoE"
 #endif
+#if !__has_include("flashinfer/gemm/gemm_groupwise_sm120.cuh")
+#error "FlashInfer SM120 dense FP8 GEMM headers are required for production FP8 linear plans"
+#endif
 #include <cutlass/bfloat16.h>
 #include <cutlass/float8.h>
+#include "flashinfer/gemm/gemm_groupwise_sm120.cuh"
 #include "flashinfer/gemm/group_gemm_fp8_groupwise_sm120.cuh"
 
 #include <float.h>
@@ -67,8 +71,10 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SELECTED_BLOCK_HASH_LOAD_FACTOR 2u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_REFERENCE_WORKSPACE_BUFFER_COUNT 3u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_ACTIVATION_LINEAR_WORKSPACE_ALIGNMENT_BYTES 256ull
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_CUTLASS_INT_WORKSPACE_BYTES (8ull * 1024ull * 1024ull)
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_CUTLASS_FLOAT_WORKSPACE_BYTES (128ull * 1024ull * 1024ull)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FLASHINFER_FP8_GROUP_GEMM_INT_WORKSPACE_BYTES \
+    (8ull * 1024ull * 1024ull)
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FLASHINFER_FP8_GROUP_GEMM_FLOAT_WORKSPACE_BYTES \
+    (128ull * 1024ull * 1024ull)
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_PROBE_HOST_BUFFER_BYTES \
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION * \
      ((uint32_t)sizeof(uint16_t)))
@@ -1586,6 +1592,112 @@ static uint64_t SparkGlm52ResidentDecodeStageFp8ActivationLinearBackendWorkspace
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_ACTIVATION_LINEAR_WORKSPACE_ALIGNMENT_BYTES);
 }
 
+extern "C" uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateBuiltinFp8ScaledGemmWorkspaceBytes(void)
+{
+    return SPARK_GLM52_RESIDENT_DECODE_STAGE_FLASHINFER_FP8_GROUP_GEMM_FLOAT_WORKSPACE_BYTES;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinFp8ScaledGemm(
+    const SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmArguments *arguments)
+{
+    const SparkGlm52Sm121RequiredDecodeStageBuiltinFp8ScaledGemmState *state;
+    cudaStream_t cuda_stream;
+    cudaError_t cuda_status;
+
+    state = arguments != 0
+        ? (const SparkGlm52Sm121RequiredDecodeStageBuiltinFp8ScaledGemmState *)
+            arguments->opaque_state
+        : 0;
+    if (arguments == 0 || state == 0 ||
+        arguments->abi_version !=
+            SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_SCALED_GEMM_ARGUMENTS_ABI_VERSION ||
+        state->abi_version !=
+            SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_BUILTIN_FP8_SCALED_GEMM_STATE_ABI_VERSION ||
+        state->reserved0 != 0u || state->workspace == 0 ||
+        state->workspace_bytes <
+            SparkGlm52Sm121RequiredDecodeStageCalculateBuiltinFp8ScaledGemmWorkspaceBytes() ||
+        arguments->output_is_f32 != 0u || arguments->cuda_stream == 0 ||
+        arguments->scale_block_size !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK ||
+        (arguments->output_dimension %
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT) != 0u ||
+        (arguments->input_dimension % arguments->scale_block_size) != 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    cuda_stream = (cudaStream_t)arguments->cuda_stream;
+    cuda_status =
+        flashinfer::gemm::CutlassGroupwiseScaledGEMMSM120<
+            1, 128, 128, true, cutlass::float_e4m3_t, cutlass::bfloat16_t>(
+            state->workspace,
+            (size_t)state->workspace_bytes,
+            (cutlass::float_e4m3_t *)arguments->activation_fp8_e4m3,
+            (cutlass::float_e4m3_t *)arguments->weight_fp8_e4m3,
+            (float *)arguments->activation_scale_f32,
+            (float *)arguments->weight_scale_inv_f32,
+            (cutlass::bfloat16_t *)arguments->output,
+            (int)arguments->active_sequence_count,
+            (int)arguments->output_dimension,
+            (int)arguments->input_dimension,
+            1,
+            cuda_stream);
+    if (cuda_status != cudaSuccess)
+    {
+        fprintf(
+            stderr,
+            "fp8_scaled_gemm_launch_failed active=%u input=%u output=%u code=%d name=%s\n",
+            arguments->active_sequence_count,
+            arguments->input_dimension,
+            arguments->output_dimension,
+            (int)cuda_status,
+            cudaGetErrorString(cuda_status));
+    }
+    return cuda_status == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageInitializeBuiltinFp8ScaledGemmBackend(
+    SparkGlm52Sm121RequiredDecodeStageBuiltinFp8ScaledGemmState *state,
+    void *workspace,
+    uint64_t workspace_bytes,
+    SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend *backend_out)
+{
+    uint64_t required_workspace_bytes;
+
+    required_workspace_bytes =
+        SparkGlm52Sm121RequiredDecodeStageCalculateBuiltinFp8ScaledGemmWorkspaceBytes();
+    if (state == 0 || workspace == 0 || backend_out == 0 ||
+        workspace_bytes < required_workspace_bytes ||
+        !SparkGlm52ResidentDecodeStagePointerIsAlignedCuda(workspace, 256u))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(state, 0, sizeof(*state));
+    state->abi_version =
+        SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_BUILTIN_FP8_SCALED_GEMM_STATE_ABI_VERSION;
+    state->workspace = workspace;
+    state->workspace_bytes = workspace_bytes;
+    memset(backend_out, 0, sizeof(*backend_out));
+    backend_out->abi_version =
+        SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_SCALED_GEMM_BACKEND_ABI_VERSION;
+    backend_out->capability_flags =
+        SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_SCALED_GEMM_REQUIRED_CAPABILITIES |
+        SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_SCALED_GEMM_CAPABILITY_BF16_OUTPUT;
+    backend_out->cuda_architecture = 121u;
+    backend_out->scale_block_size = 128u;
+    backend_out->minimum_m_alignment = 1u;
+    backend_out->minimum_n_alignment =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT;
+    backend_out->minimum_k_alignment = 128u;
+    backend_out->launch_function =
+        SparkGlm52ResidentDecodeStageLaunchBuiltinFp8ScaledGemm;
+    backend_out->opaque_state = state;
+    backend_out->validated_maximum_latency_ns = 10000000000ull;
+    return SPARK_STATUS_OK;
+}
+
 extern "C" uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateFp8E4m3ActivationLinearBackendWorkspaceBytes(
     uint32_t maximum_active_sequence_count,
     uint32_t input_dimension,
@@ -1742,7 +1854,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearScaled
     status = SparkGlm52ResidentDecodeStageValidateFp8ScaledGemmBackend(
         backend,
         linear_plan->input_dimension,
-        linear_plan->output_dimension,
+        quantized_view->storage_output_dimension,
         linear_plan->maximum_active_sequence_count,
         quantized_view->scale_block_size,
         linear_plan->output_is_f32);
@@ -1876,6 +1988,62 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3Activation
     return backend->launch_function(&arguments);
 }
 
+static void *SparkGlm52ResidentDecodeStageFp8LinearStorageOutput(
+    const SparkGlm52ResidentDecodeStageQuantizedLinearView *quantized_view,
+    void *output)
+{
+    if (quantized_view->storage_output_dimension ==
+        quantized_view->output_dimension)
+    {
+        return output;
+    }
+    return quantized_view->output_workspace;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageCommitFp8LinearStorageOutput(
+    const SparkGlm52ResidentDecodeStageQuantizedLinearView *quantized_view,
+    void *output,
+    uint32_t active_sequence_count,
+    cudaStream_t cuda_stream)
+{
+    uint64_t output_element_bytes;
+    cudaError_t cuda_status;
+
+    if (quantized_view->storage_output_dimension ==
+        quantized_view->output_dimension)
+    {
+        return SPARK_STATUS_OK;
+    }
+    output_element_bytes = quantized_view->output_is_f32 != 0u
+        ? (uint64_t)sizeof(float)
+        : (uint64_t)sizeof(uint16_t);
+    cuda_status = cudaMemcpy2DAsync(
+        output,
+        (size_t)((uint64_t)quantized_view->output_dimension *
+            output_element_bytes),
+        quantized_view->output_workspace,
+        (size_t)((uint64_t)quantized_view->storage_output_dimension *
+            output_element_bytes),
+        (size_t)((uint64_t)quantized_view->output_dimension *
+            output_element_bytes),
+        active_sequence_count,
+        cudaMemcpyDeviceToDevice,
+        cuda_stream);
+    if (cuda_status != cudaSuccess)
+    {
+        fprintf(
+            stderr,
+            "fp8_scaled_gemm_output_trim_failed active=%u logical=%u storage=%u code=%d name=%s\n",
+            active_sequence_count,
+            quantized_view->output_dimension,
+            quantized_view->storage_output_dimension,
+            (int)cuda_status,
+            cudaGetErrorString(cuda_status));
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
 
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeightLinearPlan(
     const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
@@ -1892,6 +2060,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeigh
     uint64_t backend_workspace_offset;
     void *backend_workspace;
     uint64_t backend_workspace_bytes;
+    void *storage_output;
     SparkStatus status;
 
     if (linear_plan == 0 || quantized_view == 0 ||
@@ -1919,7 +2088,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeigh
     status = SparkGlm52ResidentDecodeStageValidateFp8ScaledGemmBackend(
         backend,
         linear_plan->input_dimension,
-        linear_plan->output_dimension,
+        quantized_view->storage_output_dimension,
         active_sequence_count,
         quantized_view->scale_block_size,
         linear_plan->output_is_f32);
@@ -1950,7 +2119,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeigh
     arguments.active_sequence_count = active_sequence_count;
     arguments.maximum_active_sequence_count = linear_plan->maximum_active_sequence_count;
     arguments.input_dimension = linear_plan->input_dimension;
-    arguments.output_dimension = linear_plan->output_dimension;
+    arguments.output_dimension = quantized_view->storage_output_dimension;
     arguments.scale_block_size = quantized_view->scale_block_size;
     arguments.output_is_f32 = linear_plan->output_is_f32;
     arguments.activation_scale_block_count =
@@ -1958,19 +2127,32 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8PreparedActivationWeigh
         quantized_view->scale_block_size;
     arguments.weight_input_scale_block_count = arguments.activation_scale_block_count;
     arguments.weight_output_scale_block_count =
-        (linear_plan->output_dimension + quantized_view->scale_block_size - 1u) /
+        (quantized_view->storage_output_dimension +
+            quantized_view->scale_block_size - 1u) /
         quantized_view->scale_block_size;
     arguments.activation_fp8_e4m3 = activation_fp8_e4m3;
     arguments.activation_scale_f32 = activation_scale_f32;
     arguments.activation_amax_f32 = activation_amax_f32;
     arguments.weight_fp8_e4m3 = (const uint8_t *)quantized_view->weight_payload;
     arguments.weight_scale_inv_f32 = (const float *)quantized_view->weight_scale;
-    arguments.output = output;
+    storage_output = SparkGlm52ResidentDecodeStageFp8LinearStorageOutput(
+        quantized_view,
+        output);
+    arguments.output = storage_output;
     arguments.workspace = backend_workspace;
     arguments.workspace_bytes = backend_workspace_bytes;
     arguments.opaque_state = backend->opaque_state;
     arguments.cuda_stream = cuda_stream;
-    return backend->launch_function(&arguments);
+    status = backend->launch_function(&arguments);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52ResidentDecodeStageCommitFp8LinearStorageOutput(
+        quantized_view,
+        output,
+        active_sequence_count,
+        (cudaStream_t)cuda_stream);
 }
 
 static __host__ __device__ __forceinline__ uint64_t SparkGlm52ResidentDecodeStageNativeActivationScaleBlockSize(
@@ -7560,6 +7742,8 @@ static bool SparkGlm52ResidentDecodeStageQuantizedLinearViewIsUsable(
     uint64_t scale_element_count;
     uint64_t required_payload_bytes;
     uint64_t required_scale_bytes;
+    uint64_t required_output_workspace_bytes;
+    uint64_t output_element_bytes;
     uint32_t expected_weight_format;
     uint32_t expected_scale_block_size;
 
@@ -7588,16 +7772,33 @@ static bool SparkGlm52ResidentDecodeStageQuantizedLinearViewIsUsable(
         view->weight_format != expected_weight_format ||
         view->input_dimension != linear_plan->input_dimension ||
         view->output_dimension != linear_plan->output_dimension ||
+        view->storage_output_dimension < view->output_dimension ||
+        (view->storage_output_dimension & 15u) != 0u ||
         view->scale_block_size != expected_scale_block_size ||
         view->output_is_f32 != linear_plan->output_is_f32 ||
+        view->reserved0 != 0u ||
         view->weight_payload == 0 ||
         view->weight_scale == 0)
     {
         return false;
     }
+    if (view->weight_format ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
+    {
+        if ((view->storage_output_dimension %
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT) != 0u)
+        {
+            return false;
+        }
+    }
+    else if (view->storage_output_dimension != view->output_dimension)
+    {
+        return false;
+    }
 
     weight_element_count =
-        (uint64_t)view->input_dimension * (uint64_t)view->output_dimension;
+        (uint64_t)view->input_dimension *
+        (uint64_t)view->storage_output_dimension;
     if (view->weight_format ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
     {
@@ -7614,7 +7815,7 @@ static bool SparkGlm52ResidentDecodeStageQuantizedLinearViewIsUsable(
         view->input_dimension,
         view->scale_block_size);
     output_scale_block_count = SparkGlm52ResidentDecodeStageDivideRoundUpU64(
-        view->output_dimension,
+        view->storage_output_dimension,
         view->scale_block_size);
     scale_element_count = input_scale_block_count * output_scale_block_count;
     required_scale_bytes =
@@ -7623,8 +7824,19 @@ static bool SparkGlm52ResidentDecodeStageQuantizedLinearViewIsUsable(
             ? scale_element_count * (uint64_t)sizeof(float)
             : scale_element_count;
 
+    output_element_bytes = view->output_is_f32 != 0u
+        ? (uint64_t)sizeof(float)
+        : (uint64_t)sizeof(uint16_t);
+    required_output_workspace_bytes =
+        (uint64_t)linear_plan->maximum_active_sequence_count *
+        (uint64_t)view->storage_output_dimension * output_element_bytes;
     if (view->weight_payload_bytes < required_payload_bytes ||
-        view->weight_scale_bytes < required_scale_bytes)
+        view->weight_scale_bytes < required_scale_bytes ||
+        (view->storage_output_dimension == view->output_dimension &&
+         (view->output_workspace != 0 || view->output_workspace_bytes != 0u)) ||
+        (view->storage_output_dimension != view->output_dimension &&
+         (view->output_workspace == 0 ||
+          view->output_workspace_bytes < required_output_workspace_bytes)))
     {
         return false;
     }
@@ -7670,8 +7882,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
     cudaStream_t cuda_stream)
 {
     const SparkGlm52ResidentDecodeStageQuantizedLinearView *quantized_view;
+    void *storage_output;
     dim3 grid;
     cudaError_t cuda_status;
+    SparkStatus status;
 
     if (linear_plan == 0 || input == 0 || output == 0 ||
         active_sequence_count == 0u ||
@@ -7695,24 +7909,44 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBlackwellBuiltInQuantizedT
         backend =
             (const SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend *)
             linear_plan->algorithm;
-        if (backend != 0)
+        if (backend == 0)
         {
-            return SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearScaledGemmBackend(
-                backend,
-                input,
-                (const uint8_t *)quantized_view->weight_payload,
-                (const float *)quantized_view->weight_scale,
-                linear_plan->workspace,
-                linear_plan->workspace_bytes,
-                output,
-                active_sequence_count,
-                linear_plan->maximum_active_sequence_count,
+            fprintf(
+                stderr,
+                "fp8_scaled_gemm_backend_missing input=%u output=%u maximum_active=%u output_f32=%u\n",
                 linear_plan->input_dimension,
                 linear_plan->output_dimension,
-                quantized_view->scale_block_size,
-                linear_plan->output_is_f32,
-                (void *)cuda_stream);
+                linear_plan->maximum_active_sequence_count,
+                linear_plan->output_is_f32);
+            return SPARK_STATUS_MODULE_NOT_VALIDATED;
         }
+        storage_output = SparkGlm52ResidentDecodeStageFp8LinearStorageOutput(
+            quantized_view,
+            output);
+        status = SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearScaledGemmBackend(
+            backend,
+            input,
+            (const uint8_t *)quantized_view->weight_payload,
+            (const float *)quantized_view->weight_scale,
+            linear_plan->workspace,
+            linear_plan->workspace_bytes,
+            storage_output,
+            active_sequence_count,
+            linear_plan->maximum_active_sequence_count,
+            linear_plan->input_dimension,
+            quantized_view->storage_output_dimension,
+            quantized_view->scale_block_size,
+            linear_plan->output_is_f32,
+            (void *)cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        return SparkGlm52ResidentDecodeStageCommitFp8LinearStorageOutput(
+            quantized_view,
+            output,
+            active_sequence_count,
+            cuda_stream);
     }
 
     grid = dim3(
@@ -7941,6 +8175,47 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedR
             }
             bound_plan_count += 1u;
         }
+    }
+    return bound_plan_count == 0u
+        ? SPARK_STATUS_NOT_FOUND
+        : SPARK_STATUS_OK;
+}
+
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearPlansScaledGemmBackend(
+    SparkGlm52ResidentDecodeStageLinearPlan *linear_plans,
+    uint32_t linear_plan_count,
+    const SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend *backend)
+{
+    uint32_t plan_index;
+    uint32_t bound_plan_count;
+
+    if (linear_plans == 0 || backend == 0 ||
+        linear_plan_count < SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    bound_plan_count = 0u;
+    for (plan_index = 0u;
+         plan_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT;
+         ++plan_index)
+    {
+        SparkGlm52ResidentDecodeStageLinearPlan *linear_plan;
+        SparkStatus status;
+
+        linear_plan = &linear_plans[plan_index];
+        if (linear_plan->plan_kind !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR)
+        {
+            continue;
+        }
+        status = SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearScaledGemmBackend(
+            linear_plan,
+            backend);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        bound_plan_count += 1u;
     }
     return bound_plan_count == 0u
         ? SPARK_STATUS_NOT_FOUND
@@ -11040,7 +11315,7 @@ static bool SparkGlm52ResidentDecodeStageCalculateFp8MoeGroupedReferenceWorkspac
     layout.cutlass_int_workspace_offset = arena_cursor;
     if (!SparkGlm52ResidentDecodeStageAddAlignedWorkspaceRange(
             &arena_cursor,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_CUTLASS_INT_WORKSPACE_BYTES,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FLASHINFER_FP8_GROUP_GEMM_INT_WORKSPACE_BYTES,
             1u,
             alignment))
     {
@@ -11051,7 +11326,7 @@ static bool SparkGlm52ResidentDecodeStageCalculateFp8MoeGroupedReferenceWorkspac
     layout.cutlass_float_workspace_offset = arena_cursor;
     if (!SparkGlm52ResidentDecodeStageAddAlignedWorkspaceRange(
             &arena_cursor,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_CUTLASS_FLOAT_WORKSPACE_BYTES,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FLASHINFER_FP8_GROUP_GEMM_FLOAT_WORKSPACE_BYTES,
             1u,
             alignment))
     {
@@ -16197,6 +16472,9 @@ static uint64_t SparkGlm52ResidentDecodeStageMixLinearPlansGraphSignature(
                 quantized_view->scale_block_size);
             signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
                 signature,
+                quantized_view->storage_output_dimension);
+            signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+                signature,
                 SparkGlm52ResidentDecodeStagePointerGraphSignature(
                     quantized_view->weight_payload));
             signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
@@ -16209,6 +16487,13 @@ static uint64_t SparkGlm52ResidentDecodeStageMixLinearPlansGraphSignature(
             signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
                 signature,
                 quantized_view->weight_scale_bytes);
+            signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+                signature,
+                SparkGlm52ResidentDecodeStagePointerGraphSignature(
+                    quantized_view->output_workspace));
+            signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+                signature,
+                quantized_view->output_workspace_bytes);
             if (quantized_view->weight_format ==
                     SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3 &&
                 linear_plan->algorithm != 0)

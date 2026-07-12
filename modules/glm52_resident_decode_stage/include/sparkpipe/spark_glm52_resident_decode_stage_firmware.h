@@ -34,6 +34,7 @@ extern "C" {
     SPARK_GLM52_MODEL_MOE_W1_COMPONENT_COUNT
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK SPARK_GLM52_MODEL_FP8_SCALE_BLOCK
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT 128u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_PLAN_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK \
     SPARK_GLM52_MODEL_FP8_SCALE_BLOCK
@@ -90,7 +91,7 @@ extern "C" {
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT 21u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ABI_VERSION 1u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_QUANTIZED_LINEAR_VIEW_ABI_VERSION 1u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_QUANTIZED_LINEAR_VIEW_ABI_VERSION 2u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_B12X_MOE_DISPATCH_PLAN_ABI_VERSION 2u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_LOGITS_PLAN_ABI_VERSION 1u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_PLAN_ABI_VERSION 1u
@@ -630,12 +631,16 @@ typedef struct SparkGlm52ResidentDecodeStageQuantizedLinearView
     uint32_t weight_format;
     uint32_t input_dimension;
     uint32_t output_dimension;
+    uint32_t storage_output_dimension;
     uint32_t scale_block_size;
     uint32_t output_is_f32;
+    uint32_t reserved0;
     const void *weight_payload;
     const void *weight_scale;
     uint64_t weight_payload_bytes;
     uint64_t weight_scale_bytes;
+    void *output_workspace;
+    uint64_t output_workspace_bytes;
 } SparkGlm52ResidentDecodeStageQuantizedLinearView;
 
 typedef struct SparkGlm52ResidentDecodeStageLinearPlan

@@ -23,6 +23,9 @@ typedef struct SparkGlm52ResidentDecodeStageLinearPlanStorage
     cublasLtMatmulAlgo_t algorithm;
     void *workspace;
     uint64_t workspace_bytes;
+    void *quantized_weight_workspace;
+    void *quantized_output_workspace;
+    uint64_t quantized_output_workspace_bytes;
 } SparkGlm52ResidentDecodeStageLinearPlanStorage;
 
 struct SparkGlm52ResidentDecodeStageLinearPlanResidentBinding
@@ -81,6 +84,14 @@ static void SparkGlm52LinearPlanDestroyStorage(
     if (storage->workspace != 0)
     {
         cudaFree(storage->workspace);
+    }
+    if (storage->quantized_output_workspace != 0)
+    {
+        cudaFree(storage->quantized_output_workspace);
+    }
+    if (storage->quantized_weight_workspace != 0)
+    {
+        cudaFree(storage->quantized_weight_workspace);
     }
     if (storage->output_layout != 0)
     {
@@ -547,6 +558,104 @@ static uint64_t SparkGlm52LinearPlanFp8ScaleBytes(
         (uint64_t)sizeof(float);
 }
 
+static uint32_t SparkGlm52LinearPlanFp8StorageOutputDimension(
+    uint32_t output_dimension)
+{
+    uint32_t alignment;
+
+    alignment =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT;
+    if (output_dimension == 0u || output_dimension > UINT32_MAX - alignment + 1u)
+    {
+        return 0u;
+    }
+    return ((output_dimension + alignment - 1u) / alignment) * alignment;
+}
+
+static SparkStatus SparkGlm52LinearPlanInitializeFp8TailStorage(
+    SparkGlm52ResidentDecodeStageLinearPlanStorage *storage,
+    uint32_t maximum_active_sequence_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t output_is_f32,
+    const void *weight_payload,
+    cudaStream_t cuda_stream,
+    uint32_t *storage_output_dimension_out,
+    const void **storage_weight_payload_out)
+{
+    uint32_t storage_output_dimension;
+    uint64_t weight_payload_bytes;
+    uint64_t output_workspace_bytes;
+    uint64_t output_element_bytes;
+    cudaError_t cuda_status;
+
+    if (storage == 0 || weight_payload == 0 || cuda_stream == 0 ||
+        storage_output_dimension_out == 0 || storage_weight_payload_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    storage_output_dimension = SparkGlm52LinearPlanFp8StorageOutputDimension(
+        output_dimension);
+    if (storage_output_dimension == 0u)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    *storage_output_dimension_out = storage_output_dimension;
+    *storage_weight_payload_out = weight_payload;
+    if (storage_output_dimension == output_dimension)
+    {
+        return SPARK_STATUS_OK;
+    }
+    weight_payload_bytes = (uint64_t)input_dimension * storage_output_dimension;
+    output_element_bytes = output_is_f32 != 0u
+        ? (uint64_t)sizeof(float)
+        : (uint64_t)sizeof(uint16_t);
+    output_workspace_bytes = (uint64_t)maximum_active_sequence_count *
+        storage_output_dimension * output_element_bytes;
+    if (weight_payload_bytes > (uint64_t)SIZE_MAX ||
+        output_workspace_bytes > (uint64_t)SIZE_MAX)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    cuda_status = cudaMalloc(
+        &storage->quantized_weight_workspace,
+        (size_t)weight_payload_bytes);
+    if (cuda_status == cudaSuccess)
+    {
+        cuda_status = cudaMalloc(
+            &storage->quantized_output_workspace,
+            (size_t)output_workspace_bytes);
+    }
+    if (cuda_status == cudaSuccess)
+    {
+        storage->quantized_output_workspace_bytes = output_workspace_bytes;
+        cuda_status = cudaMemsetAsync(
+            storage->quantized_weight_workspace,
+            0,
+            (size_t)weight_payload_bytes,
+            cuda_stream);
+    }
+    if (cuda_status == cudaSuccess)
+    {
+        cuda_status = cudaMemcpyAsync(
+            storage->quantized_weight_workspace,
+            weight_payload,
+            (size_t)((uint64_t)input_dimension * output_dimension),
+            cudaMemcpyDeviceToDevice,
+            cuda_stream);
+    }
+    if (cuda_status == cudaSuccess)
+    {
+        cuda_status = cudaStreamSynchronize(cuda_stream);
+    }
+    if (cuda_status != cudaSuccess)
+    {
+        return SparkGlm52LinearPlanCudaToSparkStatus(cuda_status);
+    }
+    *storage_weight_payload_out = storage->quantized_weight_workspace;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52LinearPlanCreateQuantizedFp8One(
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
     uint32_t plan_index,
@@ -560,7 +669,9 @@ static SparkStatus SparkGlm52LinearPlanCreateQuantizedFp8One(
     SparkGlm52ResidentDecodeStageLinearPlanStorage *storage;
     SparkGlm52ResidentDecodeStageLinearPlan *plan;
     SparkGlm52ResidentDecodeStageQuantizedLinearView *view;
+    const void *storage_weight_payload;
     uint64_t required_workspace_bytes;
+    uint32_t storage_output_dimension;
     SparkStatus status;
 
     if (binding == 0 || create_info == 0 ||
@@ -594,6 +705,21 @@ static SparkStatus SparkGlm52LinearPlanCreateQuantizedFp8One(
     memset(view, 0, sizeof(*view));
     SparkGlm52LinearPlanDestroyStorage(storage);
 
+    status = SparkGlm52LinearPlanInitializeFp8TailStorage(
+        storage,
+        create_info->maximum_active_sequence_count,
+        input_dimension,
+        output_dimension,
+        output_is_f32,
+        weight_payload,
+        (cudaStream_t)create_info->cuda_stream,
+        &storage_output_dimension,
+        &storage_weight_payload);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+
     status = SparkGlm52LinearPlanCudaToSparkStatus(
         cudaMalloc(&storage->workspace, (size_t)required_workspace_bytes));
     if (status != SPARK_STATUS_OK)
@@ -609,16 +735,19 @@ static SparkStatus SparkGlm52LinearPlanCreateQuantizedFp8One(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
     view->input_dimension = input_dimension;
     view->output_dimension = output_dimension;
+    view->storage_output_dimension = storage_output_dimension;
     view->scale_block_size = SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK;
     view->output_is_f32 = output_is_f32;
-    view->weight_payload = weight_payload;
+    view->weight_payload = storage_weight_payload;
     view->weight_scale = weight_scale;
     view->weight_payload_bytes = SparkGlm52LinearPlanFp8PayloadBytes(
         input_dimension,
-        output_dimension);
+        storage_output_dimension);
     view->weight_scale_bytes = SparkGlm52LinearPlanFp8ScaleBytes(
         input_dimension,
-        output_dimension);
+        storage_output_dimension);
+    view->output_workspace = storage->quantized_output_workspace;
+    view->output_workspace_bytes = storage->quantized_output_workspace_bytes;
 
     plan->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ABI_VERSION;
     plan->plan_kind =

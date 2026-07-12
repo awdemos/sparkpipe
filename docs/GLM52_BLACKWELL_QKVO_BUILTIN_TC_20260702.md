@@ -10,25 +10,29 @@ The required SM121 CUDA module now contains a built-in quantized projection laun
 - `SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_NVFP4_E2M1_ROW_MAJOR`
 - `SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_MXFP4_E2M1_ROW_MAJOR`
 
-The launcher consumes `SparkGlm52ResidentDecodeStageQuantizedLinearView` from `linear_plan->custom_state` and performs the projection with CUDA WMMA BF16 tensor-core tiles:
+The launcher consumes `SparkGlm52ResidentDecodeStageQuantizedLinearView` from `linear_plan->custom_state`. FP8 plans use the built-in FlashInfer/CUTLASS SM120 groupwise scaled GEMM path:
 
 ```text
-BF16 activation tile + dequantized FP8/NVFP4/MXFP4 weight tile -> BF16/F32 output tile
+BF16 activation
+    -> stream-ordered FP8 E4M3 row quantization
+    -> FP8 E4M3 x FP8 E4M3 block-scaled tensor-core GEMM
+    -> BF16 output
 ```
 
-The kernel computes one output-column tile for up to 64 active sequences per CTA. Four warps share the same dequantized weight tile, so B64 decode reuses the weight dequantization across the full graph bucket instead of redoing it once per 16-sequence tile.
+The 576-output KV-A projection is padded once at plan creation to the required 640-output physical shape. Its stream-ordered output trim is part of the captured graph. NVFP4 and MXFP4 plans retain their separate BF16 WMMA implementation.
 
 ## Why this replaces the previous weak path
 
 The previous binding function required caller-provided cuBLASLt descriptors and did not own the CUDA projection implementation. That was not enough for Sparkpipe production because it let a tensor-core plan be mostly a descriptor shell.
 
-Now a tensor-core projection plan is executable when either:
+An FP8 tensor-core projection plan is executable only when it has:
 
-1. it supplies an external custom launch function, or
-2. it supplies a valid quantized linear view and uses the built-in Sparkpipe CUDA launcher.
+1. a valid quantized linear view;
+2. the built-in scaled-GEMM backend bound at resident initialization; and
+3. enough activation, physical-tail, and backend workspace for its declared shape.
 
-If neither is present, module validation rejects the plan.
+Missing FP8 backend state fails loudly. FP8 plans never fall through to the WMMA implementation.
 
 ## Scope and honesty
 
-This is real CUDA tensor-core code, not the old scalar reference kernel. It is still a conservative WMMA/dequantize-to-BF16 implementation rather than a native Blackwell FP4/FP8 MMA mainloop. The next kernel step is to replace the WMMA dequantized-weight mainloop with native Blackwell block-scaled FP8/FP4 MMA while preserving the same plan validation and launch surface.
+The scaled-GEMM path passed direct B1/B64 numerical gates, CUDA graph capture/replay, and the exact six-layer PP13 stage0 validator with real FP8 weights. The 4-bit WMMA path is a distinct implementation and is not evidence for FP8 performance.

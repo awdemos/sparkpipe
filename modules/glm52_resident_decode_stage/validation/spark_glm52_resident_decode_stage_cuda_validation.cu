@@ -386,6 +386,16 @@ typedef struct SparkValidationExactPp13StageSliceRuntime
     uint64_t final_epilogue_workspace_bytes;
 } SparkValidationExactPp13StageSliceRuntime;
 
+typedef struct SparkValidationFp8ScaledGemmFixture
+{
+    SparkGlm52Sm121RequiredDecodeStageBuiltinFp8ScaledGemmState state;
+    SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend backend;
+    void *workspace;
+    uint32_t ready;
+} SparkValidationFp8ScaledGemmFixture;
+
+static SparkValidationFp8ScaledGemmFixture SparkValidationFp8ScaledGemm;
+
 static bool SparkValidationCudaSucceeded(
     cudaError_t cuda_status,
     const char *operation)
@@ -4682,6 +4692,61 @@ static bool SparkValidationRawAttentionFp8PlansAvailable(
         buffers->attention_output_weight_scale_inv_f32 != 0;
 }
 
+static bool SparkValidationEnsureFp8ScaledGemmBackend(void)
+{
+    uint64_t workspace_bytes;
+    SparkStatus status;
+
+    if (SparkValidationFp8ScaledGemm.ready != 0u)
+    {
+        return true;
+    }
+    workspace_bytes =
+        SparkGlm52Sm121RequiredDecodeStageCalculateBuiltinFp8ScaledGemmWorkspaceBytes();
+    if (workspace_bytes == 0u ||
+        cudaMalloc(&SparkValidationFp8ScaledGemm.workspace,
+            (size_t)workspace_bytes) != cudaSuccess)
+    {
+        return false;
+    }
+    status = SparkGlm52Sm121RequiredDecodeStageInitializeBuiltinFp8ScaledGemmBackend(
+        &SparkValidationFp8ScaledGemm.state,
+        SparkValidationFp8ScaledGemm.workspace,
+        workspace_bytes,
+        &SparkValidationFp8ScaledGemm.backend);
+    if (status != SPARK_STATUS_OK)
+    {
+        cudaFree(SparkValidationFp8ScaledGemm.workspace);
+        memset(&SparkValidationFp8ScaledGemm, 0, sizeof(SparkValidationFp8ScaledGemm));
+        return false;
+    }
+    SparkValidationFp8ScaledGemm.ready = 1u;
+    return true;
+}
+
+static bool SparkValidationBindFp8ScaledGemmPlans(
+    SparkGlm52ResidentDecodeStageLinearPlan *plans,
+    uint32_t plan_count)
+{
+    SparkStatus status;
+
+    if (!SparkValidationEnsureFp8ScaledGemmBackend())
+    {
+        fprintf(stderr, "failed to initialize builtin FP8 scaled GEMM backend\n");
+        return false;
+    }
+    status = SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearPlansScaledGemmBackend(
+        plans,
+        plan_count,
+        &SparkValidationFp8ScaledGemm.backend);
+    if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr, "failed to bind builtin FP8 scaled GEMM backend status=%d\n", (int)status);
+        return false;
+    }
+    return true;
+}
+
 static bool SparkValidationBindRequiredQuantizedProjectionPlans(
     SparkValidationDeviceBuffers *buffers,
     SparkGlm52ResidentDecodeStageNodeContext *node_context,
@@ -4803,9 +4868,10 @@ static bool SparkValidationBindRequiredLinearPlans(
                 return false;
             }
             if (bind_blackwell_regular_plans != 0u &&
-                SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedRegularLinearPlans(
-                    plans,
-                    plan_count) != SPARK_STATUS_OK)
+                (SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedRegularLinearPlans(
+                     plans,
+                     plan_count) != SPARK_STATUS_OK ||
+                 !SparkValidationBindFp8ScaledGemmPlans(plans, plan_count)))
             {
                 return false;
             }
@@ -5027,9 +5093,10 @@ static bool SparkValidationBindRequiredLinearPlans(
         return false;
     }
     if (bind_blackwell_regular_plans != 0u &&
-        SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedRegularLinearPlans(
-            plans,
-            plan_count) != SPARK_STATUS_OK)
+        (SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedRegularLinearPlans(
+             plans,
+             plan_count) != SPARK_STATUS_OK ||
+         !SparkValidationBindFp8ScaledGemmPlans(plans, plan_count)))
     {
         SparkValidationReleaseLinearPlanBinding(buffers);
         return false;

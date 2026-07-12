@@ -354,6 +354,8 @@ static bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTensorCore
     uint64_t scale_element_count;
     uint64_t required_payload_bytes;
     uint64_t required_scale_bytes;
+    uint64_t required_output_workspace_bytes;
+    uint64_t output_element_bytes;
 
     if (linear_plan == 0 || linear_plan->custom_state == 0 ||
         linear_plan->input_dimension == 0u ||
@@ -385,16 +387,33 @@ static bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTensorCore
         view->weight_format != expected_weight_format ||
         view->input_dimension != linear_plan->input_dimension ||
         view->output_dimension != linear_plan->output_dimension ||
+        view->storage_output_dimension < view->output_dimension ||
+        (view->storage_output_dimension & 15u) != 0u ||
         view->scale_block_size != expected_scale_block_size ||
         view->output_is_f32 != linear_plan->output_is_f32 ||
+        view->reserved0 != 0u ||
         view->weight_payload == 0 ||
         view->weight_scale == 0)
     {
         return false;
     }
+    if (view->weight_format ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
+    {
+        if ((view->storage_output_dimension %
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT) != 0u)
+        {
+            return false;
+        }
+    }
+    else if (view->storage_output_dimension != view->output_dimension)
+    {
+        return false;
+    }
 
     weight_element_count =
-        (uint64_t)view->input_dimension * (uint64_t)view->output_dimension;
+        (uint64_t)view->input_dimension *
+        (uint64_t)view->storage_output_dimension;
     required_payload_bytes = view->weight_format ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
         ? weight_element_count
@@ -405,7 +424,7 @@ static bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTensorCore
         view->input_dimension,
         view->scale_block_size);
     output_scale_block_count = SparkGlm52ResidentDecodeStageDivideRoundUpU64(
-        view->output_dimension,
+        view->storage_output_dimension,
         view->scale_block_size);
     scale_element_count = input_scale_block_count * output_scale_block_count;
     required_scale_bytes = view->weight_format ==
@@ -413,8 +432,18 @@ static bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTensorCore
         ? scale_element_count * (uint64_t)sizeof(float)
         : scale_element_count;
 
+    output_element_bytes = view->output_is_f32 != 0u
+        ? (uint64_t)sizeof(float)
+        : (uint64_t)sizeof(uint16_t);
+    required_output_workspace_bytes =
+        (uint64_t)linear_plan->maximum_active_sequence_count *
+        (uint64_t)view->storage_output_dimension * output_element_bytes;
     return view->weight_payload_bytes >= required_payload_bytes &&
-        view->weight_scale_bytes >= required_scale_bytes;
+        view->weight_scale_bytes >= required_scale_bytes &&
+        (view->storage_output_dimension == view->output_dimension
+            ? view->output_workspace == 0 && view->output_workspace_bytes == 0u
+            : view->output_workspace != 0 &&
+                view->output_workspace_bytes >= required_output_workspace_bytes);
 }
 
 static bool SparkGlm52ResidentDecodeStageLinearPlanHasQuantizedProjectionKind(

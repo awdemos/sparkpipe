@@ -144,6 +144,8 @@ typedef struct SparkGlm52Pp13BuilderState
 	SparkGlm52ResidentDecodeStageSliceNodeContext slice_context;
 	SparkGlm52ResidentDecodeStageStageSlicePlan stage_slice_plan;
 	SparkGlm52ResidentDecodeStageExactStageSlicePlan exact_plan;
+	SparkGlm52Sm121RequiredDecodeStageBuiltinFp8ScaledGemmState fp8_scaled_gemm_state;
+	SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend fp8_scaled_gemm_backend;
 	SparkGlm52ResidentDecodeStageProductionRunner runner;
 	SparkGlm52ProductionTopology production_topology;
 	SparkGlm52DsparkHiddenTapPlan dspark_tap_plan;
@@ -202,6 +204,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	void *input_sideband;
 	void *output_sideband;
 	void *final_epilogue_workspace;
+	void *fp8_scaled_gemm_workspace;
 	uint32_t *host_prefill_lane_offsets;
 	uint32_t *host_prefill_lane_counts;
 	uint32_t *host_decode_positions;
@@ -1545,6 +1548,12 @@ static SparkStatus SparkGlm52Pp13BuilderBindLayerPlans(
 		plan_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	status = SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearPlansScaledGemmBackend(
+		plans,
+		plan_count,
+		&state->fp8_scaled_gemm_backend);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	layer->node.linear_plans = plans;
 	layer->node.linear_plan_count = plan_count;
 	return SPARK_STATUS_OK;
@@ -1713,6 +1722,28 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeExactPlan(
 	state->stage_slice_plan.workspace_bytes = workspace_bytes;
 	state->stage_slice_plan.validated_maximum_latency_ns = 1000000000ull;
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderInitializeFp8ScaledGemm(
+	SparkGlm52Pp13BuilderState *state)
+{
+	uint64_t workspace_bytes;
+	SparkStatus status;
+	workspace_bytes =
+		SparkGlm52Sm121RequiredDecodeStageCalculateBuiltinFp8ScaledGemmWorkspaceBytes();
+	if (workspace_bytes == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13BuilderCudaAlloc(
+		state,
+		&state->fp8_scaled_gemm_workspace,
+		workspace_bytes);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	return SparkGlm52Sm121RequiredDecodeStageInitializeBuiltinFp8ScaledGemmBackend(
+		&state->fp8_scaled_gemm_state,
+		state->fp8_scaled_gemm_workspace,
+		workspace_bytes,
+		&state->fp8_scaled_gemm_backend);
 }
 
 static SparkStatus SparkGlm52Pp13BuilderInitializeRank0InputBuffers(
@@ -2001,6 +2032,8 @@ static SparkStatus SparkGlm52Pp13BuilderBuild(
 	status = SparkGlm52Pp13BuilderInitializeDsparkTopology(state);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderInitializeSharedBuffers(state);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderInitializeFp8ScaledGemm(state);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderInitializeExactPlan(state);
 	for (layer_offset = 0u;

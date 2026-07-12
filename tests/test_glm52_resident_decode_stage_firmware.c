@@ -796,6 +796,7 @@ static void SparkTestAttachBuiltInQuantizedRawProjectionViews(
     static uint8_t WeightPayloadSentinel;
     static uint8_t WeightScaleSentinel;
     static uint8_t NativeWorkspaceSentinel;
+    static uint8_t OutputWorkspaceSentinel;
     uint32_t plan_index;
 
     memset(
@@ -825,6 +826,14 @@ static void SparkTestAttachBuiltInQuantizedRawProjectionViews(
             linear_plans[plan_index].input_dimension;
         quantized_views[plan_index].output_dimension =
             linear_plans[plan_index].output_dimension;
+        quantized_views[plan_index].storage_output_dimension =
+            weight_format ==
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
+                ? ((linear_plans[plan_index].output_dimension +
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT - 1u) /
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT) *
+                    SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT
+                : linear_plans[plan_index].output_dimension;
         quantized_views[plan_index].scale_block_size = scale_block_size;
         quantized_views[plan_index].output_is_f32 =
             linear_plans[plan_index].output_is_f32;
@@ -832,6 +841,13 @@ static void SparkTestAttachBuiltInQuantizedRawProjectionViews(
         quantized_views[plan_index].weight_scale = &WeightScaleSentinel;
         quantized_views[plan_index].weight_payload_bytes = UINT64_MAX;
         quantized_views[plan_index].weight_scale_bytes = UINT64_MAX;
+        if (quantized_views[plan_index].storage_output_dimension !=
+            quantized_views[plan_index].output_dimension)
+        {
+            quantized_views[plan_index].output_workspace =
+                &OutputWorkspaceSentinel;
+            quantized_views[plan_index].output_workspace_bytes = UINT64_MAX;
+        }
         linear_plans[plan_index].custom_state = &quantized_views[plan_index];
         linear_plans[plan_index].custom_launch_function = 0;
         linear_plans[plan_index].workspace = &NativeWorkspaceSentinel;

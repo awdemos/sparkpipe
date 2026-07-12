@@ -125,6 +125,24 @@ typedef struct SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend
     uint64_t validated_maximum_latency_ns;
 } SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend;
 
+#define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_BUILTIN_FP8_SCALED_GEMM_STATE_ABI_VERSION 1u
+
+typedef struct SparkGlm52Sm121RequiredDecodeStageBuiltinFp8ScaledGemmState
+{
+    uint32_t abi_version;
+    uint32_t reserved0;
+    void *workspace;
+    uint64_t workspace_bytes;
+} SparkGlm52Sm121RequiredDecodeStageBuiltinFp8ScaledGemmState;
+
+uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateBuiltinFp8ScaledGemmWorkspaceBytes(void);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageInitializeBuiltinFp8ScaledGemmBackend(
+    SparkGlm52Sm121RequiredDecodeStageBuiltinFp8ScaledGemmState *state,
+    void *workspace,
+    uint64_t workspace_bytes,
+    SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend *backend_out);
+
 uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateFp8E4m3ActivationLinearBackendWorkspaceBytes(
     uint32_t maximum_active_sequence_count,
     uint32_t input_dimension,
@@ -133,6 +151,11 @@ uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateFp8E4m3ActivationLinearBacke
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearScaledGemmBackend(
     SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
+    const SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend *backend);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearPlansScaledGemmBackend(
+    SparkGlm52ResidentDecodeStageLinearPlan *linear_plans,
+    uint32_t linear_plan_count,
     const SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend *backend);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearScaledGemmBackend(

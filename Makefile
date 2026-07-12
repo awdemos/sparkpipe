@@ -70,6 +70,7 @@ GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B
 endif
 GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS))
 GLM52_PP13_NODE_CONTEXT_BUILDER := build/libglm52_pp13_node_context_builder.$(SHARED_LIBRARY_EXT)
+GLM52_FP8_SCALED_GEMM_CUDA_GATE := build/glm52_fp8_scaled_gemm_cuda_gate
 HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
 
@@ -523,6 +524,20 @@ cuda_glm52_resident_decode_stage:
 	else \
 		$(MAKE) -C modules/glm52_resident_decode_stage archive NVCC=$(NVCC) CUDA_ARCH=sm_121a; \
 	fi
+
+glm52_fp8_scaled_gemm_cuda_gate: cuda_glm52_resident_decode_stage $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE)
+	mkdir -p build
+	$(NVCC) -std=c++17 $(NVCCFLAGS) \
+		-Iinclude \
+		-Imodules/glm52_resident_decode_stage/include \
+		-Ithird_party/flashinfer/include \
+		-Ithird_party/flashinfer/3rdparty/cutlass/include \
+		-Ithird_party/flashinfer/3rdparty/cutlass/tools/util/include \
+		tools/glm52_fp8_scaled_gemm_cuda_gate.cu \
+		$(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) \
+		$(GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS) \
+		-lcublasLt -lcublas -ldl \
+		-o $(GLM52_FP8_SCALED_GEMM_CUDA_GATE)
 
 cuda_glm52_resident_decode_stage_publish: $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
