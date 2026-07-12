@@ -10216,6 +10216,7 @@ static bool SparkValidationRunExactPp13StageSequenceFromHidden(
     SparkValidationRealLmHeadFixture *real_lm_head,
     uint32_t first_layer_index,
     uint32_t final_token_stage,
+    uint32_t disable_graph_replay,
     uint32_t model_quantization,
     double *total_microseconds,
     double *maximum_observed_microseconds,
@@ -10292,7 +10293,7 @@ static bool SparkValidationRunExactPp13StageSequenceFromHidden(
                 first_layer_index,
                 layer_offset,
                 final_token_stage,
-                1u,
+                disable_graph_replay,
                 model_quantization))
         {
             free(host_hidden);
@@ -11433,6 +11434,7 @@ int main(int argc, char **argv)
                     &real_lm_head,
                     routed_chain_first_layer_index,
                     use_exact_pp13_stage_slice_final,
+                    disable_exact_pp13_graph_replay,
                     exact_pp13_model_quantization,
                     &total_microseconds,
                     &maximum_observed_microseconds,
@@ -11441,8 +11443,32 @@ int main(int argc, char **argv)
             {
                 return 2;
             }
+            exact_slot_state =
+                &exact_stage_slice_runtime.cuda_slot_states[0];
+            if (disable_exact_pp13_graph_replay == 0u &&
+                (exact_slot_state->graph_capture_count == 0u ||
+                 exact_slot_state->graph_replay_count == 0u))
+            {
+                fprintf(
+                    stderr,
+                    "exact PP13 stage sequence requested graph replay but observed captures=%llu replays=%llu\n",
+                    (unsigned long long)exact_slot_state->graph_capture_count,
+                    (unsigned long long)exact_slot_state->graph_replay_count);
+                return 2;
+            }
+            if (disable_exact_pp13_graph_replay != 0u &&
+                (exact_slot_state->graph_capture_count != 0u ||
+                 exact_slot_state->graph_replay_count != 0u))
+            {
+                fprintf(
+                    stderr,
+                    "exact PP13 stage sequence disabled graph replay but observed captures=%llu replays=%llu\n",
+                    (unsigned long long)exact_slot_state->graph_capture_count,
+                    (unsigned long long)exact_slot_state->graph_replay_count);
+                return 2;
+            }
             printf(
-                "glm52_resident_decode_stage validation passed fixture=exact_pp13_stage_sequence first_layer=%u layer_count=%u final=%u token_count=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u pipeline_output_hidden=%s graph_captures=0 graph_replays=0\n",
+                "glm52_resident_decode_stage validation passed fixture=exact_pp13_stage_sequence first_layer=%u layer_count=%u final=%u token_count=%u total_submissions=%u total_us=%.3f maximum_us=%.3f limit_us=%.3f restricted_token=%u pipeline_output_hidden=%s graph_captures=%llu graph_replays=%llu\n",
                 routed_chain_first_layer_index,
                 SPARK_VALIDATION_EXACT_PP13_STAGE_LAYER_COUNT,
                 use_exact_pp13_stage_slice_final,
@@ -11452,7 +11478,9 @@ int main(int argc, char **argv)
                 maximum_observed_microseconds,
                 maximum_stage_microseconds,
                 selected_token_id,
-                pipeline_output_hidden_path);
+                pipeline_output_hidden_path,
+                (unsigned long long)exact_slot_state->graph_capture_count,
+                (unsigned long long)exact_slot_state->graph_replay_count);
             return maximum_observed_microseconds <= maximum_stage_microseconds ? 0 : 1;
         }
         if (!SparkValidationRunExactPp13StageSliceFromHidden(

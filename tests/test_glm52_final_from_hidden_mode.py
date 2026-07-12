@@ -33,6 +33,14 @@ def main() -> int:
         in validator
     )
     assert "GLM52_EXACT_PP13_EXPECTED_FULL_VOCAB_TOKEN" in validator
+    assert (
+        "pipeline_output_hidden=%s graph_captures=0 graph_replays=0"
+        not in validator
+    )
+    assert (
+        "exact PP13 stage sequence requested graph replay but observed"
+        in validator
+    )
     assert "GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN=1" in makefile
     assert "routed_from_hidden_final" in makefile
     assert "GLM52_CHAIN_ROUTED_FROM_HIDDEN_BF16=1 GLM52_CHAIN_ROUTED_FROM_HIDDEN_FINAL_TOKEN=1" not in makefile
