@@ -4098,6 +4098,30 @@ static void SparkGlm52Pp13BuilderMaybeProbeLayer1Sublayers(
 		(unsigned long long)probe_slots[15]);
 }
 
+static void SparkGlm52Pp13BuilderMaybeProbePrefillInputHidden(
+	SparkGlm52Pp13BuilderState *state,
+	uint64_t request_id,
+	uint32_t token_offset,
+	uint32_t position)
+{
+	static uint8_t host_hidden[
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES];
+	if (getenv("SPARKPIPE_FP8_AMAX_PROBE") == 0 || state == 0 ||
+		state->layers[0].input_hidden == 0)
+		return;
+	if (cudaMemcpy(host_hidden,state->layers[0].input_hidden,
+			sizeof(host_hidden),cudaMemcpyDeviceToHost) != cudaSuccess)
+		return;
+	fprintf(stderr,
+		"fp8_prefill_input_probe request=%llu token_offset=%u position=%u hash=%016llx bytes=%llu\n",
+		(unsigned long long)request_id,
+		token_offset,
+		position,
+		(unsigned long long)SparkGlm52Pp13BuilderProbeFnv64(
+			host_hidden,sizeof(host_hidden)),
+		(unsigned long long)sizeof(host_hidden));
+}
+
 static SparkStatus SparkGlm52Pp13BuilderPreparePrefillFrame(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
@@ -4268,6 +4292,10 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13BuilderRunPrefillFrame(
 				state,&dispatch,idle_pump_function,idle_pump_context,&submit_retry);
+		if (status == SPARK_STATUS_OK)
+			SparkGlm52Pp13BuilderMaybeProbePrefillInputHidden(
+				state,work_packet.request_id,token_offset,
+				(uint32_t)work_packet.sequence_position);
 		if (status == SPARK_STATUS_OK)
 			(void)SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
 				&work_packet,&state->kv_state);

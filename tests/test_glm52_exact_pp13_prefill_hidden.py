@@ -120,6 +120,26 @@ def test_serial_prefill_progresses_runner_after_each_token(root: Path) -> None:
     assert "SparkGlm52Pp13BuilderRunPrefillFrame(" in prefill_body
 
 
+def test_prefill_probe_hashes_the_exact_stage_input(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    probe_start = source.index(
+        "static void SparkGlm52Pp13BuilderMaybeProbePrefillInputHidden(")
+    prepare_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderPreparePrefillFrame(",
+        probe_start)
+    probe_body = source[probe_start:prepare_start]
+    prefill_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderPrefill(", prepare_start)
+    decode_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderDecode(", prefill_start)
+    prefill_body = source[prefill_start:decode_start]
+    assert "SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES" in probe_body
+    assert "SparkGlm52Pp13BuilderProbeFnv64(" in probe_body
+    assert "SparkGlm52Pp13BuilderMaybeProbePrefillInputHidden(" in prefill_body
+
+
 def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -200,6 +220,7 @@ def main() -> None:
     test_fp8_linear_plans_require_scaled_gemm_backend(root)
     test_pp13_builder_binds_all_fp8_linear_plans(root)
     test_serial_prefill_progresses_runner_after_each_token(root)
+    test_prefill_probe_hashes_the_exact_stage_input(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
     test_service_backend_namespaces_ids_per_live_session(root)
     test_final_event_pump_detects_disconnect_before_send(root)
