@@ -159,6 +159,18 @@ def test_fp8_phase_probe_targets_the_first_divergent_layer(root: Path) -> None:
     assert "fp8_layer0_attention_probe" in builder_source
 
 
+def test_fp8_validator_preserves_quantized_dense_execution(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" /
+              "validation" /
+              "spark_glm52_resident_decode_stage_cuda_validation.cu").read_text(
+                  encoding="utf-8")
+    start = source.index("static bool SparkValidationBindRequiredLinearPlans(")
+    end = source.index(
+        "static bool SparkValidationInitializeDenseLayerCacheAliases(", start)
+    function_body = source[start:end]
+    assert function_body.count("use_quantized_dense_plans == 0u &&") == 2
+
+
 def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -241,6 +253,7 @@ def main() -> None:
     test_serial_prefill_progresses_runner_after_each_token(root)
     test_prefill_probe_hashes_the_exact_stage_input(root)
     test_fp8_phase_probe_targets_the_first_divergent_layer(root)
+    test_fp8_validator_preserves_quantized_dense_execution(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
     test_service_backend_namespaces_ids_per_live_session(root)
     test_final_event_pump_detects_disconnect_before_send(root)
