@@ -39,8 +39,6 @@
 #define SPARK_GLM52_PP13_BUILDER_INVALID_SLOT UINT32_MAX
 #define SPARK_GLM52_PP13_BUILDER_SPECULATIVE_VERIFY_TARGET_COUNT \
 	(SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT + 1u)
-#define SPARK_GLM52_PP13_BUILDER_MTP_LAYER_INDEX \
-	SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT
 #define SPARK_GLM52_PP13_BUILDER_MTP_CACHE_BLOCKS_PER_LANE 1u
 #define SPARK_GLM52_PP13_BUILDER_MTP_EH_INPUT_DIMENSION \
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u)
@@ -2048,23 +2046,23 @@ static SparkStatus SparkGlm52Pp13BuilderLoadMtpWeights(
 		&state->mtp_embedding_weight);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderLoadLayerTensor(
-			state,SPARK_GLM52_PP13_BUILDER_MTP_LAYER_INDEX,"enorm.weight","BF16",
+			state,SPARK_GLM52_MODEL_MTP_LAYER_INDEX,"enorm.weight","BF16",
 			sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
 			1u,&state->mtp_enorm_weight);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderLoadLayerTensor(
-			state,SPARK_GLM52_PP13_BUILDER_MTP_LAYER_INDEX,"hnorm.weight","BF16",
+			state,SPARK_GLM52_MODEL_MTP_LAYER_INDEX,"hnorm.weight","BF16",
 			sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
 			1u,&state->mtp_hnorm_weight);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderLoadLayerTensor(
-			state,SPARK_GLM52_PP13_BUILDER_MTP_LAYER_INDEX,"eh_proj.weight","BF16",
+			state,SPARK_GLM52_MODEL_MTP_LAYER_INDEX,"eh_proj.weight","BF16",
 			sizeof(uint16_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
 			SPARK_GLM52_PP13_BUILDER_MTP_EH_INPUT_DIMENSION,
 			&state->mtp_eh_proj_weight);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderLoadLayerTensor(
-			state,SPARK_GLM52_PP13_BUILDER_MTP_LAYER_INDEX,"shared_head.norm.weight",
+			state,SPARK_GLM52_MODEL_MTP_LAYER_INDEX,"shared_head.norm.weight",
 			"BF16",sizeof(uint16_t),1u,
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,1u,
 			&state->mtp_shared_head_norm_weight);
@@ -2127,21 +2125,21 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 		SPARK_GLM52_PP13_BUILDER_MTP_CACHE_BLOCKS_PER_LANE);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderLoadLayerWeights(
-			state,&state->mtp_layer,SPARK_GLM52_PP13_BUILDER_MTP_LAYER_INDEX);
+			state,&state->mtp_layer,SPARK_GLM52_MODEL_MTP_LAYER_INDEX);
 	if (status == SPARK_STATUS_OK)
 	{
 		SparkGlm52Pp13BuilderWireLayer(
-			state,&state->mtp_layer,SPARK_GLM52_PP13_BUILDER_MTP_LAYER_INDEX);
+			state,&state->mtp_layer,SPARK_GLM52_MODEL_MTP_LAYER_INDEX);
 		SparkGlm52Pp13BuilderConfigureMtpLayer(state);
 	}
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderLoadMtpWeights(state);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderBindFp8Moe(
-			state,&state->mtp_layer,SPARK_GLM52_PP13_BUILDER_MTP_LAYER_INDEX);
+			state,&state->mtp_layer,SPARK_GLM52_MODEL_MTP_LAYER_INDEX);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderBindLayerPlans(
-			state,&state->mtp_layer,SPARK_GLM52_PP13_BUILDER_MTP_LAYER_INDEX);
+			state,&state->mtp_layer,SPARK_GLM52_MODEL_MTP_LAYER_INDEX);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Sm121RequiredDecodeStageInitialize(&state->mtp_layer.node);
 	if (status == SPARK_STATUS_OK)
@@ -2152,7 +2150,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 			cublasSetStream(state->mtp_cublas_handle,state->stream));
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus(
-			"initialize_mtp",SPARK_GLM52_PP13_BUILDER_MTP_LAYER_INDEX,status);
+			"initialize_mtp",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 	memset(&state->mtp_draft_plan,0,sizeof(state->mtp_draft_plan));
 	state->mtp_draft_plan.abi_version =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_PLAN_ABI_VERSION;

@@ -369,7 +369,7 @@ SparkStatus SparkGlm52Pp13RuntimeBuildFp8PackPath(
 
     if (pack_root == 0 || pack_root[0] == '\0' || pack_path == 0 ||
         pack_path_bytes == 0u ||
-        layer_index >= SPARK_GLM52_STAGE_PLAN_LAYER_COUNT)
+        layer_index >= SPARK_GLM52_MODEL_WEIGHT_LAYER_COUNT)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
