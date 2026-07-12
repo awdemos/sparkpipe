@@ -2255,7 +2255,12 @@ static uint32_t SparkGlm52Pp13DaemonPumpWorkControl(
             return 1u;
         }
         progress = 1u;
-        runtime->work_read_offset += (uint32_t)got;
+		runtime->work_read_offset += (uint32_t)got;
+		if (runtime->work_read_offset ==
+				SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES &&
+			packet->descriptor_bytes >
+				SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES)
+			continue;
 		if (runtime->work_read_offset < expected_bytes)
             return progress;
         SparkGlm52Pp13DaemonHandleWork(runtime,packet);
