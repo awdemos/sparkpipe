@@ -34,6 +34,8 @@ static void SparkTestHttpGatewayQueuesBeyondActiveLanes(void)
 		assert(client_request_id != 0u);
 	}
 	assert(runtime.pending_stream_count == 16u);
+	assert(SPARK_GLM52_GATEWAY_PENDING_STREAM_CAPACITY >
+		runtime.configuration.max_active_sequence_count);
 }
 
 static void SparkTestHttpGatewayRoutes(void)

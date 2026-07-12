@@ -978,7 +978,7 @@ static int32_t SparkGlm52GatewayCreateListenSocket(
 		close(fd);
 		return -4;
 	}
-	if (listen(fd,(int32_t)configuration->max_active_sequence_count) < 0)
+	if (listen(fd,(int32_t)SPARK_GLM52_GATEWAY_PENDING_STREAM_CAPACITY) < 0)
 	{
 		close(fd);
 		return -5;
