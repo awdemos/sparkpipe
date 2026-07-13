@@ -404,19 +404,6 @@ static uint32_t SparkGlm52Pp13BuilderLayerActiveRowCapacity(
 		: state->rank_plan.execution_row_capacity;
 }
 
-static uint32_t SparkGlm52Pp13BuilderResidentMaxBlocksPerSequence(
-	const SparkGlm52Pp13BuilderState *state)
-{
-	uint32_t physical_block_count;
-	if (state == 0)
-		return 0u;
-	physical_block_count = state->configuration.kv_pool_token_capacity /
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
-	return physical_block_count < SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE
-		? physical_block_count
-		: SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
-}
-
 static uint32_t SparkGlm52Pp13BuilderIsFinalRank(
 	const SparkGlm52Pp13BuilderState *state)
 {
@@ -2590,7 +2577,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->kv_block_count = state->configuration.kv_pool_token_capacity /
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
 	node->max_blocks_per_sequence =
-		SparkGlm52Pp13BuilderResidentMaxBlocksPerSequence(state);
+		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
 	node->position_count = SPARK_GLM52_PP13_BUILDER_POSITION_COUNT;
 	node->dsa_candidate_capacity = SPARK_GLM52_KV_CONTEXT_TOKENS;
 	node->qk_scale = SPARK_GLM52_MODEL_QK_SCALE;
@@ -3242,7 +3229,7 @@ static void SparkGlm52Pp13BuilderConfigureMtpLayer(
 	node->kv_block_count = state->configuration.kv_pool_token_capacity /
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
 	node->max_blocks_per_sequence =
-		SparkGlm52Pp13BuilderResidentMaxBlocksPerSequence(state);
+		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
 	node->dsa_candidate_capacity =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
 	node->sparse_index_mode =

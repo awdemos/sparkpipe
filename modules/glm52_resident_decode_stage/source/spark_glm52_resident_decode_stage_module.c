@@ -2593,9 +2593,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         (uint64_t)SparkGlm52ResidentDecodeStageEffectiveKvBlockTokenCount(
             node_context);
     if ((uint64_t)node_context->cache_token_capacity >
-            represented_token_capacity ||
-        node_context->max_blocks_per_sequence >
-            node_context->kv_block_count)
+            represented_token_capacity)
     {
         SparkGlm52ResidentDecodeStageReportValidationFailure(
             node_context,
