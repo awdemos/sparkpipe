@@ -18,6 +18,8 @@
 #define SPARK_GLM52_GATEWAY_COMPAT_TEXT_BYTES SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_UPLOAD_BYTES
 #define SPARK_GLM52_GATEWAY_DEFAULT_PORT 8080u
 #define SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS 256u
+#define SPARK_GLM52_GATEWAY_BATCH_COALESCE_POLL_MS 1u
+#define SPARK_GLM52_GATEWAY_BATCH_COALESCE_POLL_COUNT 2u
 #define SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY 8u
 #define SPARK_GLM52_GATEWAY_STREAM_BODY_BYTES 4096u
 #define SPARK_GLM52_GATEWAY_STREAM_SLOT_BITS 16u
@@ -1457,13 +1459,70 @@ static int32_t SparkGlm52GatewayServeOne(
 	return SparkGlm52GatewaySendResponse(client_fd,&response);
 }
 
+static uint32_t SparkGlm52GatewayShouldCoalesceBatch(
+	const SparkGlm52GatewayRuntime *runtime)
+{
+	if (runtime == 0 || runtime->last_live_request_count != 0u ||
+		runtime->pending_stream_count == 0u ||
+		runtime->pending_stream_count >=
+			runtime->configuration.max_active_sequence_count)
+		return 0u;
+	return 1u;
+}
+
+static uint32_t SparkGlm52GatewayAcceptReadyClients(
+	SparkGlm52GatewayRuntime *runtime,
+	int32_t listen_fd)
+{
+	int32_t client_fd;
+	int32_t ownership;
+	uint32_t accepted_count;
+
+	accepted_count = 0u;
+	for (;;)
+	{
+		client_fd = accept(listen_fd,0,0);
+		if (client_fd < 0)
+			break;
+		ownership = SparkGlm52GatewayServeOne(runtime,client_fd);
+		if (ownership != 1)
+			close(client_fd);
+		accepted_count += 1u;
+	}
+	return accepted_count;
+}
+
+static void SparkGlm52GatewayCoalesceBatch(
+	SparkGlm52GatewayRuntime *runtime,
+	int32_t listen_fd)
+{
+	struct pollfd listen_poll;
+	int32_t poll_result;
+	uint32_t poll_index;
+
+	memset(&listen_poll,0,sizeof(listen_poll));
+	listen_poll.fd = listen_fd;
+	listen_poll.events = POLLIN;
+	for (poll_index = 0u;
+		 poll_index < SPARK_GLM52_GATEWAY_BATCH_COALESCE_POLL_COUNT &&
+			SparkGlm52GatewayShouldCoalesceBatch(runtime) != 0u;
+		 ++poll_index)
+	{
+		listen_poll.revents = 0;
+		poll_result = poll(
+			&listen_poll,1,SPARK_GLM52_GATEWAY_BATCH_COALESCE_POLL_MS);
+		if (poll_result <= 0 || (listen_poll.revents & POLLIN) == 0)
+			return;
+		if (SparkGlm52GatewayAcceptReadyClients(runtime,listen_fd) == 0u)
+			return;
+	}
+}
+
 int main(int argc,char **argv)
 {
 	static SparkGlm52GatewayRuntime runtime;
 	struct pollfd poll_fds[SPARK_GLM52_GATEWAY_POLL_FD_CAPACITY];
 	int32_t listen_fd;
-	int32_t client_fd;
-	int32_t ownership;
 	int32_t poll_result;
 	uint32_t fd_count;
 	uint32_t slot_index;
@@ -1534,15 +1593,8 @@ int main(int argc,char **argv)
 		SparkGlm52GatewayFlushPendingStreams(&runtime);
 		if ((poll_fds[0].revents & POLLIN) != 0)
 		{
-			for (;;)
-			{
-				client_fd = accept(listen_fd,0,0);
-				if (client_fd < 0)
-					break;
-				ownership = SparkGlm52GatewayServeOne(&runtime,client_fd);
-				if (ownership != 1)
-					close(client_fd);
-			}
+			(void)SparkGlm52GatewayAcceptReadyClients(&runtime,listen_fd);
+			SparkGlm52GatewayCoalesceBatch(&runtime,listen_fd);
 		}
 	}
 	for (slot_index = 0u;
