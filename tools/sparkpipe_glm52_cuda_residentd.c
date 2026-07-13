@@ -130,14 +130,17 @@ typedef struct SparkGlm52CudaResidentdRuntime
 static void SparkGlm52CudaResidentdSignal(int signal_number)
 {
     uint8_t byte;
+    ssize_t wrote;
 
     (void)signal_number;
     SparkGlm52CudaResidentdRunning = 0;
     if (SparkGlm52CudaResidentdWakeWriteFd >= 0)
     {
         byte = 1u;
-        (void)write((int32_t)SparkGlm52CudaResidentdWakeWriteFd,
+        wrote = write((int32_t)SparkGlm52CudaResidentdWakeWriteFd,
             &byte,sizeof(byte));
+        if (wrote < 0)
+            return;
     }
 }
 
@@ -502,11 +505,14 @@ static void SparkGlm52CudaResidentdSignalWake(
     SparkGlm52CudaResidentdRuntime *runtime)
 {
     uint8_t byte;
+    ssize_t wrote;
 
     if (runtime == 0 || runtime->wake_pipe_write_fd < 0)
         return;
     byte = 1u;
-    (void)write(runtime->wake_pipe_write_fd,&byte,sizeof(byte));
+    wrote = write(runtime->wake_pipe_write_fd,&byte,sizeof(byte));
+    if (wrote < 0)
+        return;
 }
 
 static void SparkGlm52CudaResidentdDrainWakePipe(
