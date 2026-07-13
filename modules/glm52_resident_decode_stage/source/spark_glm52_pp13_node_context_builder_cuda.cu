@@ -5393,16 +5393,14 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 		completion.sequence_position = lane->sequence_position;
 		completion.completion_flags |=
 			SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS;
-		completion.token_count = accepted_draft_count + 1u;
+		completion.token_count = work_packet->rows_per_lane;
 		completion.accepted_token_count = completion.token_count;
 		for (token_index = 0u;
-			 token_index < accepted_draft_count;
+			 token_index < completion.token_count;
 			 ++token_index)
 			completion.token_ids[token_index] =
-				lane->speculative_draft_token_ids[token_index];
-		completion.token_ids[accepted_draft_count] =
-			state->host_decode_result_token_ids[
-				execution_row_base + accepted_draft_count];
+				state->host_decode_result_token_ids[
+					execution_row_base + token_index];
 		for (token_index = completion.token_count;
 			 token_index < SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
 			 ++token_index)
