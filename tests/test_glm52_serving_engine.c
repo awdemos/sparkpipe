@@ -18,6 +18,7 @@
 #define SPARK_TEST_SERVING_EVENT_CAPACITY 16384u
 #define SPARK_TEST_SERVING_LANE_CAPACITY \
     SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT
+#define SPARK_TEST_SERVING_MTP_STOP_TOKEN_ID 90003u
 
 typedef struct SparkTestServingFixture
 {
@@ -634,6 +635,9 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
     Fixture.request_api.configuration_flags |=
         SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
     Fixture.serving_engine.decode_function = SparkTestServingMtpDecode;
+    Fixture.serving_engine.stop_token_ids[0u] =
+        SPARK_TEST_SERVING_MTP_STOP_TOKEN_ID;
+    Fixture.serving_engine.stop_token_id_count = 1u;
     SparkGlm52ServingInitializeSubmitTokenIdsRequest(&submit_request);
     submit_request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
     submit_request.token_ids = Fixture.prompt_tokens;
@@ -656,8 +660,7 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
     assert(status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_OK);
     assert(CallbackContext.decode_callback_count == 2u);
     assert(stats.decode_dispatch_count == 2u);
-    assert(stats.decoded_token_count ==
-        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u);
+    assert(stats.decoded_token_count == 4u);
     assert(stats.mtp_draft_token_count ==
         SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
     assert(stats.mtp_verify_dispatch_count == 1u);
@@ -678,16 +681,14 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
         {
             token_event_count += 1u;
             assert(event.token_id >= 90000u &&
-                event.token_id <=
-                    90000u + SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT);
+                event.token_id <= SPARK_TEST_SERVING_MTP_STOP_TOKEN_ID);
         }
         else if (event.kind == SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_COMPLETED)
         {
             completion_event_count += 1u;
         }
     }
-    assert(token_event_count ==
-        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u);
+    assert(token_event_count == 4u);
     assert(completion_event_count == 1u);
 }
 

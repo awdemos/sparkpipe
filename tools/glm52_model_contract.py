@@ -64,6 +64,11 @@ DSPARK_INTEGER_MACROS = {
     "SPARK_GLM52_MODEL_DSPARK_MASK_TOKEN_ID": "mask_token_id",
     "SPARK_GLM52_MODEL_DSPARK_MAX_ANCHORS": "max_anchors",
 }
+EOS_TOKEN_MACROS = {
+    "SPARK_GLM52_MODEL_END_OF_TEXT_TOKEN_ID": "end_of_text",
+    "SPARK_GLM52_MODEL_USER_TOKEN_ID": "user",
+    "SPARK_GLM52_MODEL_OBSERVATION_TOKEN_ID": "observation",
+}
 
 
 def repository_root() -> Path:
@@ -98,6 +103,15 @@ def load_model_contract(root: Path | None = None) -> Dict[str, Any]:
         raise ValueError("invalid GLM-5.2 DSpark aux layer ids")
     if any(not isinstance(value, int) or value < 0 for value in aux_layer_ids):
         raise ValueError("invalid GLM-5.2 DSpark aux layer id")
+    eos_token_ids = contract.get("eos_token_ids")
+    if not isinstance(eos_token_ids, dict):
+        raise ValueError("invalid GLM-5.2 EOS token contract")
+    for key in EOS_TOKEN_MACROS.values():
+        value = eos_token_ids.get(key)
+        if not isinstance(value, int) or value < 0 or value >= contract["output_vocab_count"]:
+            raise ValueError(f"invalid GLM-5.2 EOS token id: {key}")
+    if len(set(eos_token_ids.values())) != len(EOS_TOKEN_MACROS):
+        raise ValueError("GLM-5.2 EOS token ids must be unique")
     return contract
 
 
@@ -112,6 +126,17 @@ def render_c_header(contract: Dict[str, Any]) -> str:
     lines = ["#pragma once", "", "#include <stdint.h>", ""]
     for name, key in INTEGER_MACROS.items():
         lines.append(f"#define {name} {contract[key]}u")
+    eos_token_ids = contract["eos_token_ids"]
+    for name, key in EOS_TOKEN_MACROS.items():
+        lines.append(f"#define {name} {eos_token_ids[key]}u")
+    lines.extend([
+        "#define SPARK_GLM52_MODEL_EOS_TOKEN_IDS_INITIALIZER \\",
+        "\t{ \\",
+        "\t\tSPARK_GLM52_MODEL_END_OF_TEXT_TOKEN_ID, \\",
+        "\t\tSPARK_GLM52_MODEL_USER_TOKEN_ID, \\",
+        "\t\tSPARK_GLM52_MODEL_OBSERVATION_TOKEN_ID \\",
+        "\t}",
+    ])
     lines.extend([
         "#define SPARK_GLM52_MODEL_MTP_LAYER_INDEX SPARK_GLM52_MODEL_LAYER_COUNT",
         "#define SPARK_GLM52_MODEL_WEIGHT_LAYER_COUNT \\",

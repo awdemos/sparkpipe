@@ -2147,6 +2147,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeServingEngine(
 	SparkGlm52Pp13ServiceBackendState *state,
 	uint32_t lane_capacity)
 {
+	static const uint32_t StopTokenIds[] =
+		SPARK_GLM52_MODEL_EOS_TOKEN_IDS_INITIALIZER;
 	SparkGlm52ServingEngineConfiguration serving_configuration;
 
 	memset(&serving_configuration,0,sizeof(serving_configuration));
@@ -2195,6 +2197,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeServingEngine(
 	serving_configuration.release_sequence_function =
 		SparkGlm52Pp13ServiceBackendQueueSequenceRelease;
 	serving_configuration.callback_context = state;
+	serving_configuration.stop_token_ids = StopTokenIds;
+	serving_configuration.stop_token_id_count =
+		(uint32_t)(sizeof(StopTokenIds) / sizeof(StopTokenIds[0u]));
 	return SparkGlm52ServingEngineInitialize(
 		&state->serving_engine,
 		&serving_configuration);
