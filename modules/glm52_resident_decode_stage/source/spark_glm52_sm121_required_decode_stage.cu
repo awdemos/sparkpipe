@@ -1,4 +1,5 @@
 #include "spark_glm52_resident_decode_stage_backend.h"
+#include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_required_cuda.h"
 #include "sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h"
 
@@ -12711,6 +12712,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
             linear_plan->algorithm == 0)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        if (linear_plan->plan_kind ==
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR &&
+            SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(
+                linear_plan) != active_sequence_count)
+        {
+            return SPARK_STATUS_MODULE_NOT_VALIDATED;
         }
         alpha = linear_plan->alpha != 0.0f ? linear_plan->alpha : 1.0f;
         beta = linear_plan->beta;

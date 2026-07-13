@@ -127,6 +127,13 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding **binding_out,
     const SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo *create_info);
 
+SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveRows(
+    SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
+    uint32_t active_sequence_count);
+
+uint32_t SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(
+    const SparkGlm52ResidentDecodeStageLinearPlan *plan);
+
 void SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding);
 
