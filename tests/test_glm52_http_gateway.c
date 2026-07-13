@@ -41,6 +41,23 @@ static void SparkTestHttpGatewayQueuesBeyondActiveLanes(void)
 		runtime.configuration.max_active_sequence_count);
 }
 
+static void SparkTestHttpGatewayCoalescesOnlyIdlePartialBatch(void)
+{
+	static SparkGlm52GatewayRuntime runtime;
+
+	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
+	runtime.configuration.max_active_sequence_count = 64u;
+	runtime.pending_stream_count = 1u;
+	assert(SparkGlm52GatewayShouldCoalesceBatch(&runtime) == 1u);
+	runtime.last_live_request_count = 1u;
+	assert(SparkGlm52GatewayShouldCoalesceBatch(&runtime) == 0u);
+	runtime.last_live_request_count = 0u;
+	runtime.pending_stream_count = 64u;
+	assert(SparkGlm52GatewayShouldCoalesceBatch(&runtime) == 0u);
+	runtime.pending_stream_count = 0u;
+	assert(SparkGlm52GatewayShouldCoalesceBatch(&runtime) == 0u);
+}
+
 static void SparkTestHttpGatewayRoutes(void)
 {
 	SparkGlm52HttpGatewayRequest request;
@@ -227,6 +244,7 @@ static void SparkTestHttpGatewayStreamFlag(void)
 int main(void)
 {
 	SparkTestHttpGatewayQueuesBeyondActiveLanes();
+	SparkTestHttpGatewayCoalescesOnlyIdlePartialBatch();
 	SparkTestHttpGatewayRoutes();
 	SparkTestHttpGatewayBuildsCorsPreflight();
 	SparkTestHttpGatewayBuildsHealth();
