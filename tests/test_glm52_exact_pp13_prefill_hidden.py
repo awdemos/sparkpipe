@@ -41,6 +41,28 @@ def test_pp13_rank_capacity_is_not_fixed_batch(root: Path) -> None:
     assert "SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FIXED_ACTIVE_BATCH" not in reserved_block
 
 
+def test_pp13_builder_matches_validated_tiled_attention(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    wire_start = source.index("static void SparkGlm52Pp13BuilderWireLayer(")
+    wire_end = source.index(
+        "static void SparkGlm52Pp13BuilderConfigureMtpLayer(", wire_start)
+    wire_body = source[wire_start:wire_end]
+    assert "node->key_nope_cache_bf16 = layer->key_nope_cache;" in wire_body
+    assert "node->value_cache_bf16 = layer->value_cache;" in wire_body
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_"
+            "TILED_ONLINE_SOFTMAX" in wire_body)
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_"
+            "ABSORBED_LATENT" not in wire_body)
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_"
+            "TILED_ONLINE_ATTENTION" in wire_body)
+    assert source.count("ALLOC_FIELD(key_nope_cache,") == 2
+    assert source.count("ALLOC_FIELD(value_cache,") == 2
+    assert source.count("ZERO_FIELD(key_nope_cache,") == 2
+    assert source.count("ZERO_FIELD(value_cache,") == 2
+
+
 def test_pp13_rank_does_not_enable_dsa_fragment_transport(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
