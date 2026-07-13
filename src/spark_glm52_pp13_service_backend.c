@@ -2359,6 +2359,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeService(
 	service_configuration.abi_version = SPARK_GLM52_SERVICE_ABI_VERSION;
 	service_configuration.descriptor_bytes =
 		SPARK_GLM52_SERVICE_CONFIGURATION_DESCRIPTOR_BYTES;
+	service_configuration.flags =
+		SPARK_GLM52_SERVICE_CONFIGURATION_FLAG_AUTO_RELEASE_COMPLETED_MAPPINGS;
 	service_configuration.request_id_base = state->session_id_base;
 	service_configuration.serving_engine = &state->serving_engine;
 	service_configuration.client_sessions = state->client_sessions;
