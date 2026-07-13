@@ -187,6 +187,27 @@ def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None
             function_body)
 
 
+def test_plain_wide_decode_bypasses_dspark_finalizer(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static void SparkGlm52Pp13BuilderCompletePendingWork(")
+    end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderBuildResidentKvTable(",
+        start)
+    function_body = source[start:end]
+    plain_decode_guard = (
+        "SparkGlm52Pp13BuilderWorkIsPlainDecodeBatch(work_packet) == 0u")
+    captured_finalize = "SparkGlm52Pp13BuilderFinalizeCapturedCompletion("
+    wide_finalize = "SparkGlm52Pp13BuilderEmitWideDecodeCompletions("
+    assert plain_decode_guard in function_body
+    assert function_body.index(plain_decode_guard) < function_body.index(
+        captured_finalize)
+    assert function_body.index(captured_finalize) < function_body.index(
+        wide_finalize)
+
+
 def test_service_backend_namespaces_ids_per_live_session(root: Path) -> None:
     source = (root / "src" /
               "spark_glm52_pp13_service_backend.c").read_text(
@@ -255,6 +276,7 @@ def main() -> None:
     test_fp8_phase_probe_targets_the_first_divergent_layer(root)
     test_fp8_validator_preserves_quantized_dense_execution(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
+    test_plain_wide_decode_bypasses_dspark_finalizer(root)
     test_service_backend_namespaces_ids_per_live_session(root)
     test_final_event_pump_detects_disconnect_before_send(root)
     test_rank_queue_does_not_overtake_a_deferred_sequence_position(root)
