@@ -21034,6 +21034,11 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageLayer
     {
         return status;
     }
+    SparkGlm52ResidentDecodeStagePhaseHashLayerState(
+        exact_stage_slice_plan->first_layer_index + layer_offset,
+        0u,
+        effective_pipeline_slot,
+        cuda_stream);
     return SparkGlm52ResidentDecodeStageMaybeCaptureDsparkHiddenTap(
         exact_stage_slice_plan,
         frame_context,
