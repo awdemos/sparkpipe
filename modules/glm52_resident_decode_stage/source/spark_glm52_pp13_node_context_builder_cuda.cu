@@ -2977,7 +2977,7 @@ static uint32_t SparkGlm52Pp13BuilderExpectedFp8MoeLayerCount(
 	return expected_count;
 }
 
-static SparkStatus SparkGlm52Pp13BuilderPrepareLinearPlanRows(
+static SparkStatus SparkGlm52Pp13BuilderPrepareStageLinearPlanRows(
 	SparkGlm52Pp13BuilderState *state,
 	uint32_t active_sequence_count)
 {
@@ -2996,16 +2996,21 @@ static SparkStatus SparkGlm52Pp13BuilderPrepareLinearPlanRows(
 		if (status != SPARK_STATUS_OK)
 			return status;
 	}
-	if (SparkGlm52Pp13BuilderMtpEnabled(state) &&
-		SparkGlm52Pp13BuilderIsFinalRank(state))
-	{
-		status = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveRows(
-			state->mtp_layer.linear_binding,
-			active_sequence_count);
-		if (status != SPARK_STATUS_OK)
-			return status;
-	}
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderPrepareMtpLinearPlanRows(
+	SparkGlm52Pp13BuilderState *state,
+	uint32_t active_sequence_count)
+{
+	if (state == 0 || active_sequence_count == 0u ||
+		active_sequence_count > state->rank_plan.logical_lane_capacity ||
+		!SparkGlm52Pp13BuilderMtpEnabled(state) ||
+		!SparkGlm52Pp13BuilderIsFinalRank(state) ||
+		state->mtp_layer.linear_binding == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveRows(
+		state->mtp_layer.linear_binding,active_sequence_count);
 }
 
 static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFusion(
@@ -3190,6 +3195,10 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 		base_slot->mtp_draft_hidden_bf16 == 0 ||
 		base_slot->mtp_draft_token_ids == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13BuilderPrepareMtpLinearPlanRows(
+		state,active_sequence_count);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	use_previous = state->mtp_use_previous_for_draft;
 	base_positions = use_previous != 0u
 		? state->mtp_base_positions : base_slot->positions;
@@ -5646,7 +5655,10 @@ static SparkStatus SparkGlm52Pp13BuilderPrefillMtpPreviousTarget(
 	if (status == SPARK_STATUS_OK)
 	{
 		state->host_decode_token_ids[0u] = work_packet->input_token_id;
-		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
+		status = SparkGlm52Pp13BuilderPrepareMtpLinearPlanRows(
+			state,work_packet->active_sequence_count);
+		if (status == SPARK_STATUS_OK)
+			status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
 			state->device_decode_token_ids,state->host_decode_token_ids,
 			sizeof(uint32_t),cudaMemcpyHostToDevice,state->stream));
 		if (status == SPARK_STATUS_OK)
@@ -5940,7 +5952,7 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 			state,
 			work_packet->active_sequence_count);
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderPrepareLinearPlanRows(
+		status = SparkGlm52Pp13BuilderPrepareStageLinearPlanRows(
 			state,work_packet->execution_row_count);
 	if (status != SPARK_STATUS_OK)
 		goto cancel_work;
@@ -6316,7 +6328,7 @@ static SparkStatus SparkGlm52Pp13BuilderRunPrefillFrame(
 	uint32_t submit_retry;
 	SparkStatus status;
 
-	status = SparkGlm52Pp13BuilderPrepareLinearPlanRows(
+	status = SparkGlm52Pp13BuilderPrepareStageLinearPlanRows(
 		state,dispatch->active_sequence_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
@@ -6697,7 +6709,7 @@ static SparkStatus SparkGlm52Pp13BuilderDecode(
 		state->output_sideband,
 		&dispatch.hidden_output_packet);
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderPrepareLinearPlanRows(
+		status = SparkGlm52Pp13BuilderPrepareStageLinearPlanRows(
 			state,execution_row_count);
 	if (status != SPARK_STATUS_OK)
 		return status;

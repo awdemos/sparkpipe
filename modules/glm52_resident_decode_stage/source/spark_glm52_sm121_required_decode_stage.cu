@@ -12718,6 +12718,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
             SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(
                 linear_plan) != active_sequence_count)
         {
+            fprintf(
+                stderr,
+                "linear_plan_active_rows_mismatch prepared=%u active=%u input=%u output=%u\n",
+                SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(linear_plan),
+                active_sequence_count,
+                linear_plan->input_dimension,
+                linear_plan->output_dimension);
             return SPARK_STATUS_MODULE_NOT_VALIDATED;
         }
         alpha = linear_plan->alpha != 0.0f ? linear_plan->alpha : 1.0f;
