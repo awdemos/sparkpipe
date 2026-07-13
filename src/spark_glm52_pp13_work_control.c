@@ -131,6 +131,8 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
 	memset(packet,0,sizeof(*packet));
 	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
 	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
+	packet->control_generation =
+		SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
 	packet->active_sequence_count = decode_dispatch->active_sequence_count;
 	packet->lane_count = packet->active_sequence_count;
 	packet->descriptor_bytes = SparkGlm52Pp13WorkControlCalculatePacketBytes(
@@ -200,6 +202,8 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	memset(packet,0,sizeof(*packet));
 	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
 	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
+	packet->control_generation =
+		SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
 	packet->flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL;
 	if ((prefill_dispatch->request_dispatch->flags &
 			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u)
@@ -310,7 +314,8 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		return SPARK_STATUS_ABI_MISMATCH;
 	if ((packet->flags & ~SPARK_GLM52_PP13_WORK_CONTROL_KNOWN_FLAGS) != 0u ||
 		packet->request_id == 0u ||
-		packet->sequence_id == 0u)
+		packet->sequence_id == 0u ||
+		packet->control_generation == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	release_sequences = (packet->flags &
 		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u;
@@ -692,6 +697,75 @@ static SparkStatus SparkGlm52Pp13WorkControlValidateKvState(
 		packet->max_blocks_per_sequence > state->lane_stride ||
 		packet->active_sequence_count > state->lane_capacity)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	return SPARK_STATUS_OK;
+}
+
+static void SparkGlm52Pp13WorkControlResetBackingBlocks(
+	SparkGlm52Pp13WorkControlKvState *state)
+{
+	uint32_t backing_block_index;
+
+	if (state->backing_block_capacity == 0u)
+	{
+		state->free_backing_block_head =
+			SPARK_GLM52_PP13_KV_INVALID_BLOCK_INDEX;
+		return;
+	}
+	for (backing_block_index = 0u;
+		 backing_block_index < state->backing_block_capacity;
+		 ++backing_block_index)
+	{
+		state->backing_block_free_next[backing_block_index] =
+			backing_block_index + 1u < state->backing_block_capacity
+				? backing_block_index + 1u
+				: SPARK_GLM52_PP13_KV_INVALID_BLOCK_INDEX;
+	}
+	state->free_backing_block_head = 0u;
+}
+
+static void SparkGlm52Pp13WorkControlResetKvGeneration(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint64_t control_generation)
+{
+	memset(state->physical_block_indices,0xff,
+		state->table_entry_capacity * sizeof(state->physical_block_indices[0]));
+	memset(state->lane_physical_block_counts,0,
+		state->lane_capacity * sizeof(state->lane_physical_block_counts[0]));
+	memset(state->physical_block_states,SPARK_GLM52_PP13_KV_ENTRY_MISSING,
+		state->physical_block_capacity * sizeof(state->physical_block_states[0]));
+	memset(state->physical_block_sequence_ids,0,
+		state->physical_block_capacity *
+			sizeof(state->physical_block_sequence_ids[0]));
+	memset(state->physical_block_logical_indices,0xff,
+		state->physical_block_capacity *
+			sizeof(state->physical_block_logical_indices[0]));
+	memset(state->physical_block_last_used_epochs,0,
+		state->physical_block_capacity *
+			sizeof(state->physical_block_last_used_epochs[0]));
+	memset(state->directory_entries,0,
+		state->directory_capacity * sizeof(state->directory_entries[0]));
+	SparkGlm52Pp13WorkControlResetBackingBlocks(state);
+	state->next_physical_block_index = 0u;
+	state->directory_entry_count = 0u;
+	state->swapped_block_count = 0u;
+	state->epoch = 0u;
+	state->missing_block_count = 0u;
+	state->in_flight_block_count = 0u;
+	state->resident_block_count = 0u;
+	state->allocated_physical_block_count = 0u;
+	state->control_generation = control_generation;
+	state->control_generation_reset_count += 1u;
+}
+
+static SparkStatus SparkGlm52Pp13WorkControlSelectKvGeneration(
+	const SparkGlm52Pp13WorkControlPacket *packet,
+	SparkGlm52Pp13WorkControlKvState *state)
+{
+	if (packet->control_generation < state->control_generation)
+		return SPARK_STATUS_NOT_FOUND;
+	if (packet->control_generation != state->control_generation)
+		SparkGlm52Pp13WorkControlResetKvGeneration(
+			state,packet->control_generation);
 	return SPARK_STATUS_OK;
 }
 
@@ -1142,6 +1216,8 @@ static SparkStatus SparkGlm52Pp13WorkControlMarkTable(
 	status = SparkGlm52Pp13WorkControlValidateKvState(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	if (packet->control_generation != state->control_generation)
+		return SPARK_STATUS_NOT_FOUND;
 	for (lane_index = 0u; lane_index < packet->active_sequence_count; ++lane_index)
 	{
 		block_count = SparkGlm52Pp13WorkControlBlockCount(
@@ -1186,6 +1262,9 @@ SparkStatus SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 	if (view == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	status = SparkGlm52Pp13WorkControlValidateKvState(packet,state);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13WorkControlSelectKvGeneration(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	required_physical_block_count = 0u;
@@ -1333,6 +1412,8 @@ SparkStatus SparkGlm52Pp13WorkControlCancelHostKvBlockTable(
 	status = SparkGlm52Pp13WorkControlValidateKvState(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	if (packet->control_generation != state->control_generation)
+		return SPARK_STATUS_NOT_FOUND;
 	for (lane_index = 0u; lane_index < packet->active_sequence_count; ++lane_index)
 	{
 		block_count = SparkGlm52Pp13WorkControlBlockCount(
@@ -1405,6 +1486,11 @@ SparkStatus SparkGlm52Pp13WorkControlReleasePacketSequences(
 	if ((packet->flags &
 		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (packet->control_generation < state->control_generation)
+		return SPARK_STATUS_OK;
+	status = SparkGlm52Pp13WorkControlSelectKvGeneration(packet,state);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
 	{
 		uint32_t logical_block_count;

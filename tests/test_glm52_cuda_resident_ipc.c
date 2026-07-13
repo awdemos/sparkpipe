@@ -153,6 +153,8 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
     assert(packet != 0);
     packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
     packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
+    packet->control_generation =
+        SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
     packet->flags =
         SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY;
     packet->lane_count = SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT;

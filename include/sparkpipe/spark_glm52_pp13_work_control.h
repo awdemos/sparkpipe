@@ -14,8 +14,9 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 6u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 7u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
+#define SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION UINT64_C(1)
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
 	((uint32_t)sizeof(SparkGlm52Pp13WorkControlPacket))
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES \
@@ -115,6 +116,7 @@ typedef struct SparkGlm52Pp13WorkControlPacket
 	uint64_t sequence_id;
 	uint64_t sequence_position;
 	uint64_t deadline_time_ns;
+	uint64_t control_generation;
 	uint32_t active_sequence_count;
 	uint32_t new_token_count;
 	uint32_t pipeline_slot;
@@ -153,6 +155,8 @@ typedef struct SparkGlm52Pp13WorkControlKvState
 	uint32_t swapped_block_count;
 	uint32_t clean_evict_count;
 	uint64_t epoch;
+	uint64_t control_generation;
+	uint64_t control_generation_reset_count;
 	uint32_t *physical_block_indices;
 	uint32_t *lane_physical_block_counts;
 	uint8_t *physical_block_states;
