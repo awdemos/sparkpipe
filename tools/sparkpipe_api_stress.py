@@ -126,6 +126,28 @@ def request_path(parsed: urllib.parse.ParseResult) -> str:
     return path
 
 
+def build_request_body(
+    args: argparse.Namespace,
+    parsed: urllib.parse.ParseResult,
+    prompt: str,
+) -> dict[str, Any]:
+    path = parsed.path.rstrip("/")
+    body: dict[str, Any] = {
+        "model": args.model,
+        "stream": bool(args.stream),
+        "temperature": args.temperature,
+    }
+    if path.endswith("/chat/completions"):
+        body["max_completion_tokens"] = args.max_completion_tokens
+        body["messages"] = [{"role": "user", "content": prompt}]
+        return body
+    if path.endswith("/completions"):
+        body["max_tokens"] = args.max_completion_tokens
+        body["prompt"] = prompt
+        return body
+    raise ValueError(f"unsupported completion endpoint: {parsed.path}")
+
+
 def parse_sse_events(
     chunks: list[tuple[bytes, float]],
 ) -> tuple[int, int, str, list[dict[str, Any]], float | None]:
@@ -178,13 +200,7 @@ def run_one(
     prompt: str,
     request_index: int,
 ) -> dict[str, Any]:
-    body = {
-        "model": args.model,
-        "stream": bool(args.stream),
-        "temperature": args.temperature,
-        "max_completion_tokens": args.max_completion_tokens,
-        "messages": [{"role": "user", "content": prompt}],
-    }
+    body = build_request_body(args, parsed, prompt)
     encoded_body = json.dumps(body, separators=(",", ":")).encode("utf-8")
     start = time.monotonic()
     first_byte_s: float | None = None

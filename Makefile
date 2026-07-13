@@ -180,6 +180,7 @@ TEST_NAMES := \
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
+	tests/test_api_stress.py \
 	tests/test_memory_contracts.py \
 	tests/test_b12x_scale_layout.py \
 	tests/test_glm52_dspark_manifest.py \
