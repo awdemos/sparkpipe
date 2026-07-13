@@ -1,15 +1,8 @@
-#define _GNU_SOURCE
-#define _POSIX_C_SOURCE 200112L
-
-#include <assert.h>
-#include <stdint.h>
-#include <string.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
 #define main SparkTestGlm52Pp13RankDaemonMain
 #include "../tools/sparkpipe_glm52_pp13_rank_daemon.c"
 #undef main
+
+#include <assert.h>
 
 static void SparkTestRankDaemonReadsSplitResidentMessage(void)
 {
