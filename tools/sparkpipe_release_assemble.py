@@ -44,6 +44,20 @@ def set_role_argument(manifest,role_name,argument,value):
         arguments.extend([argument,str(value)])
 
 
+def set_role_switch(manifest,role_name,argument,enabled):
+    matching_roles = [role for role in manifest["roles"] if role.get("name") == role_name]
+    if len(matching_roles) != 1:
+        raise SystemExit("release must contain exactly one role named " + role_name)
+    arguments = matching_roles[0].setdefault("argv",[])
+    matches = [index for index,item in enumerate(arguments) if item == argument]
+    if len(matches) > 1:
+        raise SystemExit("role switch occurs more than once: " + argument)
+    if matches:
+        arguments.pop(matches[0])
+    if enabled:
+        arguments.append(argument)
+
+
 def set_role_release_identity(manifest):
     values = {
         "SPARKPIPE_RELEASE_ID": manifest["release_id"],
@@ -80,6 +94,7 @@ def main():
     parser.add_argument("--max-active",type=int)
     parser.add_argument("--kv-pool-tokens",type=int)
     parser.add_argument("--kv-logical-blocks",type=int,required=True)
+    parser.add_argument("--mtp",action="store_true")
     parser.add_argument("--replace",action="append",default=[])
     arguments = parser.parse_args()
     temporary = arguments.output + ".assembling." + str(os.getpid())
@@ -116,6 +131,7 @@ def main():
     set_role_argument(
         manifest,"spark0_gateway","--kv-logical-blocks",
         arguments.kv_logical_blocks)
+    set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
     write_manifest(temporary,manifest)
     os.rename(temporary,arguments.output)
 
