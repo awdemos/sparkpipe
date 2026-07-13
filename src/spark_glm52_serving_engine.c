@@ -1554,6 +1554,7 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
          lane_index < decode_result->lane_count;
          ++lane_index)
     {
+        uint32_t lane_token_count;
         uint32_t token_index;
         uint32_t lane_finish;
         SparkGlm52ServingRequestRecord *record;
@@ -1567,8 +1568,20 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
         }
         lane_finish = (decode_result->lane_flags[lane_index] &
             SPARK_GLM52_SERVING_DECODE_RESULT_FLAG_FINISH_REQUEST) != 0u;
+        lane_token_count = decode_result->token_counts[lane_index];
+        for (token_index = 0u; token_index < lane_token_count; ++token_index)
+        {
+            if (SparkGlm52ServingTokenIsStopToken(
+                    engine,
+                    decode_result->token_ids[lane_index][token_index]))
+            {
+                lane_token_count = token_index + 1u;
+                lane_finish = 1u;
+                break;
+            }
+        }
         for (token_index = 0u;
-             token_index < decode_result->token_counts[lane_index];
+             token_index < lane_token_count;
              ++token_index)
         {
             uint32_t token_id;
@@ -1584,10 +1597,6 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
                 record->prompt_token_count +
                 record->streamed_decode_token_count +
                 token_index] = token_id;
-            if (SparkGlm52ServingTokenIsStopToken(engine, token_id))
-            {
-                lane_finish = 1u;
-            }
             if ((decode_result->lane_flags[lane_index] &
                     SPARK_GLM52_SERVING_DECODE_RESULT_FLAG_TOKEN_STREAM_SUPPRESSED) != 0u)
             {
@@ -1599,7 +1608,7 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
             event.token_id = token_id;
             event.token_index = record->prompt_token_count +
                 record->streamed_decode_token_count + token_index;
-            event.token_count = decode_result->token_counts[lane_index];
+            event.token_count = lane_token_count;
             event.dispatch_kind = dispatch->kind;
             event.dispatch_flags = dispatch->flags;
             event.request_id = record->request_id;
@@ -1611,8 +1620,7 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
             }
             engine->stats.decoded_token_count += 1u;
         }
-        record->streamed_decode_token_count +=
-            decode_result->token_counts[lane_index];
+        record->streamed_decode_token_count += lane_token_count;
         if (lane_finish != 0u &&
             *finish_handle_count < SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT)
         {

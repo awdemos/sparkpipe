@@ -21,6 +21,11 @@
     "max_anchors": 1024,
     "maximum_speculative_token_count": 7
   },
+  "eos_token_ids": {
+    "end_of_text": 154820,
+    "observation": 154829,
+    "user": 154827
+  },
   "first_routed_layer": 3,
   "fp8_scale_block": 128,
   "head_count": 64,
