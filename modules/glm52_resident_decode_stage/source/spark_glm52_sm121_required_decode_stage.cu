@@ -17789,8 +17789,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
     const char *phase_name,
     SparkStatus status)
 {
-    if (status != SPARK_STATUS_OK &&
-        getenv("GLM52_LAYER_BODY_DEBUG") != 0)
+    if (status != SPARK_STATUS_OK)
     {
         fprintf(
             stderr,

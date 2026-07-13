@@ -3131,17 +3131,24 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpLayer(
 	SparkStatus status;
 	status = SparkGlm52Pp13BuilderLaunchMtpMetadata(
 		state,base_positions,draft_index,active_sequence_count,stream);
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderLaunchMtpFusion(
-			state,token_ids,(const uint32_t *)state->mtp_layer.positions,
-			hidden_bf16,active_sequence_count,stream);
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderProjectMtpEh(state,active_sequence_count);
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Sm121RequiredDecodeStageLaunch(
-			&state->mtp_layer.node,&state->mtp_layer.slot,0u,
-			active_sequence_count,0,stream);
-	return status;
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13BuilderReportStatus(
+			"mtp_metadata",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
+	status = SparkGlm52Pp13BuilderLaunchMtpFusion(
+		state,token_ids,(const uint32_t *)state->mtp_layer.positions,
+		hidden_bf16,active_sequence_count,stream);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13BuilderReportStatus(
+			"mtp_fusion",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
+	status = SparkGlm52Pp13BuilderProjectMtpEh(state,active_sequence_count);
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13BuilderReportStatus(
+			"mtp_eh_projection",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
+	status = SparkGlm52Sm121RequiredDecodeStageLaunch(
+		&state->mtp_layer.node,&state->mtp_layer.slot,0u,
+		active_sequence_count,0,stream);
+	return SparkGlm52Pp13BuilderReportStatus(
+		"mtp_required_layer",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 }
 
 static SparkStatus SparkGlm52Pp13BuilderStoreMtpDraft(
@@ -3198,7 +3205,8 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 	status = SparkGlm52Pp13BuilderPrepareMtpLinearPlanRows(
 		state,active_sequence_count);
 	if (status != SPARK_STATUS_OK)
-		return status;
+		return SparkGlm52Pp13BuilderReportStatus(
+			"mtp_prepare_linear_rows",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 	use_previous = state->mtp_use_previous_for_draft;
 	base_positions = use_previous != 0u
 		? state->mtp_base_positions : base_slot->positions;
@@ -3228,12 +3236,16 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 				state->final_epilogue_workspace,state->exact_plan.workspace_bytes,
 				active_sequence_count,state->rank_plan.logical_lane_capacity,
 				SPARK_GLM52_MODEL_RMS_NORM_EPSILON,cuda_stream);
+		if (status != SPARK_STATUS_OK)
+			return SparkGlm52Pp13BuilderReportStatus(
+				"mtp_full_vocab_greedy",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13BuilderStoreMtpDraft(
 				state,base_slot,draft_index,active_sequence_count,
 				(cudaStream_t)cuda_stream);
 		if (status != SPARK_STATUS_OK)
-			return status;
+			return SparkGlm52Pp13BuilderReportStatus(
+				"mtp_store_draft",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 	}
 	if (use_previous != 0u)
 		state->mtp_previous_valid = 0u;
