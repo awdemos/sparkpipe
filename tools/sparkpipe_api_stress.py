@@ -148,6 +148,26 @@ def build_request_body(
     raise ValueError(f"unsupported completion endpoint: {parsed.path}")
 
 
+def read_response_chunks(
+    response: http.client.HTTPResponse,
+    stream: bool,
+    start: float,
+) -> tuple[list[tuple[bytes, float]], bytes, float | None]:
+    chunks: list[tuple[bytes, float]] = []
+    response_body = b""
+    first_byte_s: float | None = None
+    while True:
+        chunk = response.readline() if stream else response.read(4096)
+        if not chunk:
+            break
+        offset_s = time.monotonic() - start
+        if first_byte_s is None:
+            first_byte_s = offset_s
+        chunks.append((chunk, offset_s))
+        response_body += chunk
+    return chunks, response_body, first_byte_s
+
+
 def parse_sse_events(
     chunks: list[tuple[bytes, float]],
 ) -> tuple[int, int, str, list[dict[str, Any]], float | None]:
@@ -221,14 +241,11 @@ def run_one(
         status = response.status
         reason = response.reason
         content_type = response.getheader("content-type", "")
-        while True:
-            chunk = response.read(4096)
-            if not chunk:
-                break
-            if first_byte_s is None:
-                first_byte_s = time.monotonic() - start
-            chunks.append((chunk, time.monotonic() - start))
-            response_body += chunk
+        chunks, response_body, first_byte_s = read_response_chunks(
+            response,
+            args.stream and "text/event-stream" in content_type,
+            start,
+        )
         connection.close()
     except Exception as exc:  # load client must report all failures, not abort the run
         error = f"{type(exc).__name__}: {exc}"

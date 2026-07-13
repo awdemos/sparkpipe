@@ -14,6 +14,24 @@ MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
 
+class StreamingResponse:
+    def __init__(self):
+        self.lines = iter([
+            b"event: token\n",
+            b'data: {"text":"ok"}\n',
+            b"\n",
+            b"event: done\n",
+            b"data: {}\n",
+            b"\n",
+        ])
+
+    def readline(self):
+        return next(self.lines,b"")
+
+    def read(self,count):
+        raise AssertionError("streaming response used buffered read")
+
+
 def arguments():
     return argparse.Namespace(
         concurrency=64,
@@ -27,6 +45,16 @@ def arguments():
 
 
 def main():
+    chunks,body,first_byte_s = MODULE.read_response_chunks(
+        StreamingResponse(),True,MODULE.time.monotonic())
+    assert body.startswith(b"event: token\n")
+    assert first_byte_s is not None
+    token_events,done_events,text,events,ttft_s = MODULE.parse_sse_events(chunks)
+    assert token_events == 1
+    assert done_events == 1
+    assert text == "ok"
+    assert len(events) == 2
+    assert ttft_s is not None
     barrier, worker_count = MODULE.make_start_barrier(arguments())
     assert barrier is not None
     assert barrier.parties == 65
