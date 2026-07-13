@@ -17219,6 +17219,54 @@ static void SparkGlm52ResidentDecodeStagePhaseHashHidden(
         (unsigned long long)bytes);
 }
 
+static void SparkGlm52ResidentDecodeStagePhaseHashMoeRow0(
+    uint32_t layer_index,
+    uint32_t graph_capture_active,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    cudaStream_t cuda_stream)
+{
+    if (pipeline_slot == 0 ||
+        layer_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER)
+    {
+        return;
+    }
+    SparkGlm52ResidentDecodeStagePhaseHashHidden(
+        "post_attention_norm_row0",
+        layer_index,
+        graph_capture_active,
+        pipeline_slot->post_attention_normalized_hidden_bf16,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES,
+        cuda_stream);
+    SparkGlm52ResidentDecodeStagePhaseHashHidden(
+        "router_logits_row0",
+        layer_index,
+        graph_capture_active,
+        pipeline_slot->moe_router_logits,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT * sizeof(float),
+        cuda_stream);
+    SparkGlm52ResidentDecodeStagePhaseHashHidden(
+        "topk_ids_row0",
+        layer_index,
+        graph_capture_active,
+        pipeline_slot->moe_topk_expert_ids,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K * sizeof(uint32_t),
+        cuda_stream);
+    SparkGlm52ResidentDecodeStagePhaseHashHidden(
+        "topk_weights_row0",
+        layer_index,
+        graph_capture_active,
+        pipeline_slot->moe_topk_weights,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K * sizeof(float),
+        cuda_stream);
+    SparkGlm52ResidentDecodeStagePhaseHashHidden(
+        "moe_output_row0",
+        layer_index,
+        graph_capture_active,
+        pipeline_slot->moe_route_output_bf16,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES,
+        cuda_stream);
+}
+
 static void SparkGlm52ResidentDecodeStagePhaseHashLayerState(
     uint32_t layer_index,
     uint32_t graph_capture_active,
@@ -17257,6 +17305,11 @@ static void SparkGlm52ResidentDecodeStagePhaseHashLayerState(
         graph_capture_active,
         pipeline_slot->layer_output_hidden_bf16,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES,
+        cuda_stream);
+    SparkGlm52ResidentDecodeStagePhaseHashMoeRow0(
+        layer_index,
+        graph_capture_active,
+        pipeline_slot,
         cuda_stream);
 }
 
