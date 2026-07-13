@@ -171,6 +171,7 @@ TEST_NAMES := \
     test_glm52_service_backend \
     test_glm52_compat_api \
     test_glm52_http_gateway \
+    test_glm52_pp13_rank_daemon \
     test_model_description \
     test_module_library \
     test_driver_compiler \
@@ -495,6 +496,9 @@ build/test_glm52_compat_api: tests/test_glm52_compat_api.c $(COMMON_LIBRARY)
 
 build/test_glm52_http_gateway: tests/test_glm52_http_gateway.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_pp13_rank_daemon: tests/test_glm52_pp13_rank_daemon.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_pp13_rank_daemon.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
