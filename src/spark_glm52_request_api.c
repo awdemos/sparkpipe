@@ -3343,6 +3343,112 @@ static uint32_t SparkGlm52RequestApiFindBestSharedPrefixTokenCount(
     return best_shared_prefix_token_count;
 }
 
+static uint32_t SparkGlm52RequestApiPrefillBlockCountForScheduledTokens(
+    const SparkGlm52RequestApi *api,
+    uint32_t scheduled_prompt_token_count)
+{
+    uint32_t block_token_count;
+
+    if (api == 0 ||
+        api->scheduler == 0 ||
+        scheduled_prompt_token_count == 0u)
+    {
+        return 0u;
+    }
+
+    block_token_count = api->scheduler->prefix_cache_block_tokens;
+    if (block_token_count == 0u)
+    {
+        return 1u;
+    }
+    return (scheduled_prompt_token_count + block_token_count - 1u) /
+        block_token_count;
+}
+
+static uint32_t SparkGlm52RequestApiSlotResidentKvBlockCount(
+    const SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiSlot *slot)
+{
+    uint64_t token_count;
+    uint32_t block_token_count;
+
+    if (api == 0 || api->scheduler == 0 || slot == 0 ||
+        slot->state == SPARK_GLM52_REQUEST_API_STATE_FREE ||
+        slot->state == SPARK_GLM52_REQUEST_API_STATE_COMPLETED ||
+        slot->state == SPARK_GLM52_REQUEST_API_STATE_CANCELLED ||
+        (slot->computed_prompt_token_count == 0u &&
+         (slot->state == SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL ||
+          slot->state == SPARK_GLM52_REQUEST_API_STATE_WAITING_PREFIX_COHORT)))
+    {
+        return 0u;
+    }
+    block_token_count = api->scheduler->prefix_cache_block_tokens;
+    if (block_token_count == 0u)
+    {
+        return 0u;
+    }
+    token_count = slot->prompt_token_count;
+    token_count += slot->scheduled_decode_token_count;
+    if (slot->state ==
+        SPARK_GLM52_REQUEST_API_STATE_RUNNING_SPECULATIVE_VERIFY)
+    {
+        token_count += 1u;
+    }
+    return token_count > UINT32_MAX
+        ? UINT32_MAX
+        : (uint32_t)((token_count + block_token_count - 1u) /
+            block_token_count);
+}
+
+static uint64_t SparkGlm52RequestApiResidentKvBlockCount(
+    const SparkGlm52RequestApi *api)
+{
+    uint64_t block_count;
+    uint32_t slot_index;
+
+    block_count = 0u;
+    for (slot_index = 0u; slot_index < api->request_capacity; ++slot_index)
+    {
+        block_count += SparkGlm52RequestApiSlotResidentKvBlockCount(
+            api,
+            &api->request_slots[slot_index]);
+    }
+    return block_count;
+}
+
+static uint32_t SparkGlm52RequestApiReservePrefillResidentKvBlocks(
+    const SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiSlot *slot,
+    uint64_t *reserved_block_count)
+{
+    uint64_t additional_block_count;
+    uint32_t current_block_count;
+    uint32_t required_block_count;
+
+    if (api->max_resident_kv_block_count == 0u ||
+        SparkGlm52RequestApiJitPrefetchIsEnabled(api))
+    {
+        return 1u;
+    }
+    current_block_count = SparkGlm52RequestApiSlotResidentKvBlockCount(
+        api,
+        slot);
+    required_block_count = SparkGlm52RequestApiPrefillBlockCountForScheduledTokens(
+        api,
+        slot->prompt_token_count);
+    additional_block_count = required_block_count > current_block_count
+        ? required_block_count - current_block_count
+        : 0u;
+    if (*reserved_block_count > api->max_resident_kv_block_count ||
+        additional_block_count >
+            api->max_resident_kv_block_count - *reserved_block_count)
+    {
+        return 0u;
+    }
+    *reserved_block_count += additional_block_count;
+    return 1u;
+}
+
 static SparkStatus SparkGlm52RequestApiSchedulePrefill(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiSlot *slot,
@@ -3356,7 +3462,17 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefill(
     uint32_t shared_prefix_token_count;
     uint32_t reusable_prefix_token_count;
     uint32_t committed_prefix_token_count;
+    uint64_t reserved_block_count;
     SparkStatus status;
+
+    reserved_block_count = SparkGlm52RequestApiResidentKvBlockCount(api);
+    if (!SparkGlm52RequestApiReservePrefillResidentKvBlocks(
+            api,
+            slot,
+            &reserved_block_count))
+    {
+        return SPARK_STATUS_BUSY;
+    }
 
     shared_prefix_token_count = selected_shared_prefix_token_count;
     if (shared_prefix_token_count == 0u)
@@ -3495,28 +3611,6 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefill(
     return SPARK_STATUS_OK;
 }
 
-
-static uint32_t SparkGlm52RequestApiPrefillBlockCountForScheduledTokens(
-    const SparkGlm52RequestApi *api,
-    uint32_t scheduled_prompt_token_count)
-{
-    uint32_t block_token_count;
-
-    if (api == 0 ||
-        api->scheduler == 0 ||
-        scheduled_prompt_token_count == 0u)
-    {
-        return 0u;
-    }
-
-    block_token_count = api->scheduler->prefix_cache_block_tokens;
-    if (block_token_count == 0u)
-    {
-        return 1u;
-    }
-    return (scheduled_prompt_token_count + block_token_count - 1u) /
-        block_token_count;
-}
 
 static uint32_t SparkGlm52RequestApiSlotIsCompatiblePrefillBatchMember(
     SparkGlm52RequestApi *api,
@@ -3683,6 +3777,7 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
     uint32_t leader_scheduled_prompt_token_count;
     uint32_t leader_prefill_block_count;
     uint32_t require_resident_batch_members;
+    uint64_t reserved_block_count;
     uint32_t selected_scheduled_prompt_token_counts[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     SparkStatus status;
@@ -3719,10 +3814,22 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
     }
     require_resident_batch_members =
         SparkGlm52RequestApiSlotHasRealtimePriority(first_slot);
+    reserved_block_count = SparkGlm52RequestApiResidentKvBlockCount(api);
     request_count = 0u;
     slot = first_slot;
     while (slot != 0 && request_count < batch_target)
     {
+        if (!SparkGlm52RequestApiReservePrefillResidentKvBlocks(
+                api,
+                slot,
+                &reserved_block_count))
+        {
+            if (request_count == 0u)
+            {
+                return SPARK_STATUS_BUSY;
+            }
+            break;
+        }
         if (request_count == 0u)
         {
             selected_scheduled_prompt_token_counts[request_count] =

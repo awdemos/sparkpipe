@@ -3449,6 +3449,71 @@ static void SparkTestRequestApiCapsDecodeBatchByActiveKvBlocks(void)
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
 }
 
+static void SparkTestRequestApiHoldsPrefillAtGlobalResidentKvLimit(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch prefill_dispatch;
+    SparkGlm52RequestApiDispatch decode_dispatches[2u];
+    SparkGlm52RequestApiHandle handles[6u];
+    uint32_t prompts[6u][4u];
+    uint32_t request_index;
+
+    SparkTestInitializeFixture(&fixture);
+    fixture.scheduler.queue_depth_per_spark = 8u;
+    fixture.api.configuration_flags &=
+        ~(SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_JIT_KV_PREFETCH |
+          SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING);
+    fixture.api.decode_batch_target = 2u;
+    fixture.api.max_resident_kv_block_count = 4u;
+    for (request_index = 0u; request_index < 6u; ++request_index)
+    {
+        SparkTestFillTokenIds(
+            prompts[request_index],4u,90000u + (request_index * 1000u));
+        SparkTestInitializeSubmitRequest(
+            &request,
+            1000u + request_index,
+            9000u + request_index,
+            10u,
+            prompts[request_index],
+            4u,
+            1u);
+        assert(SparkGlm52RequestApiSubmit(
+            &fixture.api,&request,&handles[request_index]) == SPARK_STATUS_OK);
+    }
+    for (request_index = 0u; request_index < 2u; ++request_index)
+    {
+        assert(SparkGlm52RequestApiScheduleNext(
+            &fixture.api,&prefill_dispatch) == SPARK_STATUS_OK);
+        assert(prefill_dispatch.kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH);
+        assert(prefill_dispatch.request_count == 2u);
+        assert(SparkGlm52RequestApiCompleteDispatch(
+            &fixture.api,&prefill_dispatch) == SPARK_STATUS_OK);
+        assert(SparkGlm52RequestApiScheduleNext(
+            &fixture.api,&decode_dispatches[request_index]) == SPARK_STATUS_OK);
+        assert(decode_dispatches[request_index].kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+        assert(decode_dispatches[request_index].request_count == 2u);
+    }
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&prefill_dispatch) == SPARK_STATUS_BUSY);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,&decode_dispatches[0u]) == SPARK_STATUS_OK);
+    for (request_index = 0u; request_index < 2u; ++request_index)
+    {
+        assert(SparkGlm52RequestApiReleaseCompletedRequest(
+            &fixture.api,
+            decode_dispatches[0u].request_handles[request_index]) ==
+            SPARK_STATUS_OK);
+    }
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&prefill_dispatch) == SPARK_STATUS_OK);
+    assert(prefill_dispatch.kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH);
+    assert(prefill_dispatch.request_count == 2u);
+}
+
 static void SparkTestRequestApiReservesMtpDraftKvBlocks(void)
 {
     SparkTestRequestApiFixture fixture;
@@ -3520,6 +3585,7 @@ int main(void)
     SparkTestRequestApiMtpVerifyCapsPackedExecutionRows();
     SparkTestRequestApiBatchesReadyDecodeRequestsAndConsumesBudgets();
 	SparkTestRequestApiFillsDecodeBatchBeforeEqualPriorityDecode();
+    SparkTestRequestApiHoldsPrefillAtGlobalResidentKvLimit();
     SparkTestRequestApiCohortsSamePromptRequestsAndSharesBlocks();
     SparkTestRequestApiCohortsArbitrarySharedPrefixWithSuffixes();
     SparkTestRequestApiChoosesWiderSharedPrefixFamily();
