@@ -65,6 +65,9 @@
 #define SPARK_GLM52_PP13_BUILDER_MTP_EH_INPUT_DIMENSION \
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u)
 #define SPARK_GLM52_PP13_BUILDER_MTP_NORM_COUNT_PER_LANE 2u
+#define SPARK_GLM52_PP13_BUILDER_MTP_TARGET_SAME_INPUT_POSITION 0u
+#define SPARK_GLM52_PP13_BUILDER_MTP_TARGET_PRECEDES_INPUT_POSITION \
+	SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET
 #define SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS \
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * \
 	 SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION)
@@ -1125,7 +1128,8 @@ __global__ static void SparkGlm52Pp13BuilderMtpMetadataKernel(
 	lane_index = (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x);
 	if (lane_index >= active_sequence_count)
 		return;
-	position = base_positions[lane_index] + draft_index;
+	position = base_positions[lane_index] +
+		SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET + draft_index;
 	block_index = position / block_token_count;
 	block_token_index = position - (block_index * block_token_count);
 	physical_block_index = physical_block_indices[
@@ -5490,13 +5494,16 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 
 static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(
 	SparkGlm52Pp13BuilderState *state,
-	const SparkGlm52Pp13WorkControlPacket *work_packet)
+	const SparkGlm52Pp13WorkControlPacket *work_packet,
+	uint32_t previous_position_delta)
 {
 	uint64_t element_count;
 	uint32_t block_count;
 	uint32_t lane_index;
 	SparkStatus status;
 	if (state == 0 || work_packet == 0 || state->mtp_ready == 0u ||
+		previous_position_delta >
+			SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET ||
 		!SparkGlm52Pp13BuilderIsFinalRank(state) ||
 		work_packet->lane_count == 0u ||
 		work_packet->lane_count > state->rank_plan.logical_lane_capacity ||
@@ -5520,7 +5527,8 @@ static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(
 			state->host_mtp_previous_sequence_ids[request_slot_index] !=
 				lane->sequence_id ||
 			state->host_mtp_previous_positions[request_slot_index] == UINT64_MAX ||
-			state->host_mtp_previous_positions[request_slot_index] + 1u !=
+			state->host_mtp_previous_positions[request_slot_index] +
+				previous_position_delta !=
 				lane->sequence_position ||
 			state->host_mtp_previous_positions[request_slot_index] > UINT32_MAX)
 			return SPARK_STATUS_NOT_FOUND;
@@ -5663,7 +5671,9 @@ static SparkStatus SparkGlm52Pp13BuilderPrefillMtpPreviousTarget(
 		!SparkGlm52Pp13BuilderIsFinalRank(state) ||
 		(work_packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) == 0u)
 		return SPARK_STATUS_OK;
-	status = SparkGlm52Pp13BuilderLoadMtpPreviousTargets(state,work_packet);
+	status = SparkGlm52Pp13BuilderLoadMtpPreviousTargets(
+		state,work_packet,
+		SPARK_GLM52_PP13_BUILDER_MTP_TARGET_PRECEDES_INPUT_POSITION);
 	if (status == SPARK_STATUS_OK)
 	{
 		state->host_decode_token_ids[0u] = work_packet->input_token_id;
@@ -6036,7 +6046,9 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	if (SparkGlm52Pp13BuilderIsFinalRank(state) &&
 		(work_packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT) != 0u)
 	{
-		status = SparkGlm52Pp13BuilderLoadMtpPreviousTargets(state,work_packet);
+		status = SparkGlm52Pp13BuilderLoadMtpPreviousTargets(
+			state,work_packet,
+			SPARK_GLM52_PP13_BUILDER_MTP_TARGET_SAME_INPUT_POSITION);
 		if (status == SPARK_STATUS_NOT_FOUND)
 			status = SPARK_STATUS_MODULE_NOT_VALIDATED;
 		if (status != SPARK_STATUS_OK)

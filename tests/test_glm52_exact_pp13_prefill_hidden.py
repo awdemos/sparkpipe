@@ -235,6 +235,36 @@ def test_mtp_full_vocab_workspace_uses_logical_lane_capacity(root: Path) -> None
             function_body)
 
 
+def test_mtp_previous_target_position_contracts_are_explicit(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    model_header = (root / "include" / "sparkpipe" /
+                    "spark_glm52_model.h").read_text(encoding="utf-8")
+    assert ("#define SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET 1u" in
+            model_header)
+    metadata_start = source.index(
+        "__global__ static void SparkGlm52Pp13BuilderMtpMetadataKernel(")
+    metadata_end = source.index(
+        "__global__ static void SparkGlm52Pp13BuilderMtpStoreKernel(",
+        metadata_start)
+    metadata_body = source[metadata_start:metadata_end]
+    assert "SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET" in metadata_body
+    load_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(")
+    load_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderStoreMtpPreviousTarget(",
+        load_start)
+    load_body = source[load_start:load_end]
+    assert "uint32_t previous_position_delta" in load_body
+    assert "+\n\t\t\t\tprevious_position_delta !=" in load_body
+    assert "host_mtp_previous_positions[request_slot_index] + 1u" not in load_body
+    assert source.count(
+        "SPARK_GLM52_PP13_BUILDER_MTP_TARGET_PRECEDES_INPUT_POSITION") == 2
+    assert source.count(
+        "SPARK_GLM52_PP13_BUILDER_MTP_TARGET_SAME_INPUT_POSITION") == 2
+
+
 def test_mtp_linear_plans_use_logical_rows(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
