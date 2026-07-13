@@ -1,0 +1,37 @@
+numeric	token=0	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=1	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=2	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=3	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=4	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=5	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=6	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=7	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=8	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=9	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=10	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=11	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=12	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=13	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=14	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=15	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=16	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=17	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=18	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=19	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=20	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=21	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=22	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=23	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	token=24	rank=0	layer=5	max_abs=0.000000	rel_l2=0.000000	cos=1.000000
+numeric	rank=1	layer=11	serial_missing
+numeric	rank=2	layer=17	serial_missing
+numeric	rank=3	layer=23	serial_missing
+numeric	rank=4	layer=29	serial_missing
+numeric	rank=5	layer=35	serial_missing
+numeric	rank=6	layer=41	serial_missing
+numeric	rank=7	layer=47	serial_missing
+numeric	rank=8	layer=53	serial_missing
+numeric	rank=9	layer=59	serial_missing
+numeric	rank=10	layer=65	serial_missing
+numeric	rank=11	layer=71	serial_missing
+numeric	jumps=0

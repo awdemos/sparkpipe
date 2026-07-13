@@ -37,7 +37,7 @@
 #define SPARK_GLM52_PP13_BUILDER_COPY_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 #define SPARK_GLM52_PP13_BUILDER_EXECUTION_LAYER_COUNT \
 	(SPARK_GLM52_PP13_BUILDER_LAYER_CAPACITY + 1u)
-#define SPARK_GLM52_PP13_BUILDER_LAYER_BUFFER_ALLOCATION_COUNT 53u
+#define SPARK_GLM52_PP13_BUILDER_LAYER_BUFFER_ALLOCATION_COUNT 55u
 #define SPARK_GLM52_PP13_BUILDER_LAYER_WEIGHT_ALLOCATION_COUNT 29u
 #define SPARK_GLM52_PP13_BUILDER_SHARED_BUFFER_ALLOCATION_COUNT 8u
 #define SPARK_GLM52_PP13_BUILDER_TABLE_ALLOCATION_COUNT 15u
@@ -65,6 +65,12 @@
 #define SPARK_GLM52_PP13_BUILDER_MTP_EH_INPUT_DIMENSION \
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u)
 #define SPARK_GLM52_PP13_BUILDER_MTP_NORM_COUNT_PER_LANE 2u
+#define SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS \
+	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * \
+	 SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION)
+#define SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS \
+	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * \
+	 SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION)
 #define SPARK_GLM52_PP13_BUILDER_MTP_EMBEDDING_TENSOR \
 	"sparkpipe.mtp.embed_tokens.weight"
 #define SPARK_GLM52_PP13_BUILDER_NVME_RECORD_MAGIC 0x564b4e53u
@@ -186,6 +192,8 @@ typedef struct SparkGlm52Pp13BuilderLayer
 	void *context_lengths;
 	void *first_block_token_offsets;
 	void *mla_cache;
+	void *key_nope_cache;
+	void *value_cache;
 	void *key_index_cache;
 	void *key_index_block_min;
 	void *key_index_block_max;
@@ -2279,6 +2287,12 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 		ALLOC_FIELD(mla_cache,
 			cache_token_capacity *
 				SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
+		ALLOC_FIELD(key_nope_cache,
+			cache_token_capacity *
+				SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
+		ALLOC_FIELD(value_cache,
+			cache_token_capacity *
+				SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 		if (requires_dsa_index_cache != 0u)
 		{
 			ALLOC_FIELD(key_index_cache,
@@ -2295,6 +2309,12 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 		ZERO_FIELD(mla_cache,
 			cache_token_capacity *
 				SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
+		ZERO_FIELD(key_nope_cache,
+			cache_token_capacity *
+				SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
+		ZERO_FIELD(value_cache,
+			cache_token_capacity *
+				SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 		if (requires_dsa_index_cache != 0u)
 		{
 			ZERO_FIELD(key_index_cache,
@@ -2363,6 +2383,8 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ALLOC_FIELD(context_lengths,b,uint32_t);
 	ALLOC_FIELD(first_block_token_offsets,b,uint32_t);
 	ALLOC_FIELD(mla_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
+	ALLOC_FIELD(key_nope_cache,cache_token_capacity * SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
+	ALLOC_FIELD(value_cache,cache_token_capacity * SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 	if (requires_dsa_index_cache != 0u)
 	{
 		ALLOC_FIELD(key_index_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
@@ -2372,6 +2394,8 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	}
 	ZERO_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
 	ZERO_FIELD(mla_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
+	ZERO_FIELD(key_nope_cache,cache_token_capacity * SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
+	ZERO_FIELD(value_cache,cache_token_capacity * SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 	if (requires_dsa_index_cache != 0u)
 	{
 		ZERO_FIELD(key_index_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
@@ -2585,8 +2609,8 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->cos_table = (const float *)state->cos_table;
 	node->sin_table = (const float *)state->sin_table;
 	node->mla_cache_bf16 = layer->mla_cache;
-	node->key_nope_cache_bf16 = 0;
-	node->value_cache_bf16 = 0;
+	node->key_nope_cache_bf16 = layer->key_nope_cache;
+	node->value_cache_bf16 = layer->value_cache;
 	node->attention_norm_weight_bf16 = layer->attention_norm_weight;
 	node->raw_query_a_norm_weight_bf16 = layer->raw_query_a_norm_weight;
 	node->raw_kv_a_norm_weight_bf16 = layer->raw_kv_a_norm_weight;
@@ -2616,7 +2640,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->projection_backend_mode =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
 	node->attention_execution_mode =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
 	node->dsa_score_tiles_f32 = state->dsa_score_tiles;
 	node->dsa_prefill_selected_u32 = state->dsa_prefill_selected;
 	node->dsa_prefill_row_context_lengths_u32 = state->dsa_prefill_row_context_lengths;
@@ -2643,6 +2667,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_PREBOUND_PROJECTIONS |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_GRAPH_REPLAY |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MLP |
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_TILED_ONLINE_ATTENTION |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_FORBID_DEBUG_SYNCHRONIZATION |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_STAGE_SLICE_PLAN |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
