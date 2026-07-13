@@ -2359,8 +2359,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeService(
 	service_configuration.abi_version = SPARK_GLM52_SERVICE_ABI_VERSION;
 	service_configuration.descriptor_bytes =
 		SPARK_GLM52_SERVICE_CONFIGURATION_DESCRIPTOR_BYTES;
-	service_configuration.flags =
-		SPARK_GLM52_SERVICE_CONFIGURATION_FLAG_AUTO_RELEASE_COMPLETED_MAPPINGS;
 	service_configuration.request_id_base = state->session_id_base;
 	service_configuration.serving_engine = &state->serving_engine;
 	service_configuration.client_sessions = state->client_sessions;
@@ -3419,6 +3417,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 			state->final_event_receive_error_count += 1u;
 	}
 	else if (event_status != SPARK_STATUS_BUSY)
+		state->final_event_receive_error_count += 1u;
+	release_status = SparkGlm52Pp13ServiceBackendDrainSequenceReleases(state);
+	if (release_status != SPARK_STATUS_OK && release_status != SPARK_STATUS_BUSY)
 		state->final_event_receive_error_count += 1u;
 	service_status = SPARK_STATUS_OK;
 	if (state->service_runtime_ready != 0u &&
