@@ -113,6 +113,7 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
             SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES)
         return SPARK_STATUS_ABI_MISMATCH;
     if (payload_bytes != expected_payload_bytes ||
+        message->control_generation == 0u ||
         message->lane_count == 0u ||
         message->lane_count > maximum_lane_count ||
         message->active_sequence_count != message->lane_count ||

@@ -22,6 +22,8 @@ static SparkGlm52CudaResidentIpcSubmitDecode *SparkTestBuildWideDecode(
     assert(message != 0);
     message->descriptor_bytes =
         SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES;
+    message->control_generation =
+        SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
     message->dispatch_kind =
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
     message->lane_count = lane_count;
@@ -58,6 +60,13 @@ static void SparkTestWideDecodePayload(void)
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
         SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
+    message->control_generation = 0u;
+    assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
+        message,payload_bytes,
+        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    message->control_generation =
+        SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
     assert(message->lanes[1023u].kv_block_offset == 1023u * 17u);
     assert(message->kv_physical_block_indices[
         message->lanes[1023u].kv_block_offset + 16u] ==
@@ -116,6 +125,8 @@ static void SparkTestInternalDirectoryDecodeHasNoBlockPayload(void)
     assert(message != 0);
     message->descriptor_bytes =
         SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES;
+    message->control_generation =
+        SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
     message->dispatch_kind =
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
     message->lane_count = SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT;
