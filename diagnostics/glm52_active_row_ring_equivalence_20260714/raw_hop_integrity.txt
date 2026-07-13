@@ -1,0 +1,1 @@
+raw_hop_integrity total=300 bad=0
