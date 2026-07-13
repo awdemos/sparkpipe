@@ -132,6 +132,7 @@ def main():
         manifest,"spark0_gateway","--kv-logical-blocks",
         arguments.kv_logical_blocks)
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
+    set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
     write_manifest(temporary,manifest)
     os.rename(temporary,arguments.output)
 

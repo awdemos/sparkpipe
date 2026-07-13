@@ -51,7 +51,7 @@ def main():
         assert result["max_active_sequence_count"] == 64
         assert result["roles"][0]["argv"] == ["--max-active","64"]
         assert result["roles"][1]["argv"] == [
-            "--max-active","64","--kv-pool-tokens","65536"]
+            "--max-active","64","--kv-pool-tokens","65536","--mtp"]
         assert result["roles"][2]["argv"] == [
             "--max-active","64","--kv-logical-blocks","1024","--mtp"]
         for role in result["roles"]:
