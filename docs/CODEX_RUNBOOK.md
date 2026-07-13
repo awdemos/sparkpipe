@@ -14,6 +14,9 @@ tokens through the installed release.
 
 - `main` is the advisor handoff branch.
 - Publish repository changes with `updaterepo`; do not manually push.
+- Run `updaterepo` from a checkout whose Git common directory is writable by
+  the task. Do not use a linked worktree whose `.git` points outside the
+  writable workspace.
 - Run host tests with `make -j`.
 - Build CUDA and releases on spark0 from a clean worktree at merged `main`.
 - Keep rank-local FP8 packs at the one configured stable root.
