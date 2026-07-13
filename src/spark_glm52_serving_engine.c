@@ -755,6 +755,36 @@ static SparkStatus SparkGlm52ServingApplyContextBudget(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52ServingResolveSubmittedSequence(
+    SparkGlm52RequestApi *request_api,
+    SparkGlm52RequestApiHandle request_handle,
+    uint64_t request_id,
+    uint64_t *sequence_id_out)
+{
+    SparkGlm52RequestApiCacheState cache_state;
+    SparkStatus status;
+
+    if (request_api == 0 || request_handle == 0u || request_id == 0u ||
+        sequence_id_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52RequestApiGetRequestCacheState(
+        request_api,
+        request_handle,
+        &cache_state);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (cache_state.request_id != request_id || cache_state.sequence_id == 0u)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    *sequence_id_out = cache_state.sequence_id;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52ServingSubmitPreparedRecord(
     SparkGlm52ServingEngine *engine,
     SparkGlm52ServingRequestRecord *record,
@@ -793,6 +823,21 @@ static SparkStatus SparkGlm52ServingSubmitPreparedRecord(
         &request_handle);
     if (status != SPARK_STATUS_OK)
     {
+        return status;
+    }
+    status = SparkGlm52ServingResolveSubmittedSequence(
+        engine->request_api,
+        request_handle,
+        request_id,
+        &sequence_id);
+    if (status != SPARK_STATUS_OK)
+    {
+        (void)SparkGlm52RequestApiCancelRequest(
+            engine->request_api,
+            request_handle);
+        (void)SparkGlm52RequestApiReleaseCompletedRequest(
+            engine->request_api,
+            request_handle);
         return status;
     }
 
