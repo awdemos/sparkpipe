@@ -760,6 +760,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeResidentPayload(
 	memset(message,0,(size_t)payload_bytes);
 	message->descriptor_bytes =
 		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES;
+	message->control_generation = state->session_id_base;
 	message->highest_priority =
 		decode_dispatch->request_dispatch->highest_priority;
 	message->request_flags = decode_dispatch->request_dispatch->flags;

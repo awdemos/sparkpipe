@@ -306,6 +306,17 @@ def main():
     backend_text = (
         ROOT / "src/spark_glm52_pp13_service_backend.c").read_text()
     if re.search(
+            r"message->control_generation\s*=\s*state->session_id_base\s*;",
+            backend_text) is None:
+        violations.append("attached decode IPC omits the gateway generation")
+    residentd_text = (
+        ROOT / "tools/sparkpipe_glm52_cuda_residentd.c").read_text()
+    if re.search(
+            r"packet->control_generation\s*=\s*"
+            r"message->control_generation\s*;",
+            residentd_text) is None:
+        violations.append("resident decode drops the attached control generation")
+    if re.search(
             r"kv_logical_block_capacity\s*<\s*"
             r"SPARK_GLM52_PP13_SERVICE_BACKEND_GPU_BLOCK_COUNT",
             backend_text):

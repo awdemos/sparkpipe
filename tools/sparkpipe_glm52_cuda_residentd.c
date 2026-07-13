@@ -1335,8 +1335,7 @@ static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(
     memset(packet, 0, sizeof(*packet));
     packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
     packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
-    packet->control_generation =
-        SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
+    packet->control_generation = message->control_generation;
     packet->descriptor_bytes =
         SparkGlm52Pp13WorkControlCalculatePacketBytes(message->lane_count);
     if (packet->descriptor_bytes == 0u)
