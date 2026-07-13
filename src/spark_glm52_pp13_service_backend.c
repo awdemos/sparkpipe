@@ -175,7 +175,6 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	uint32_t release_queue_count;
 	uint32_t release_batch_lane_count;
 	uint32_t release_batch_local_done;
-	uint64_t release_batch_resident_accept_target;
 	uint64_t release_batch_resident_error_baseline;
 	uint32_t initialized;
 	uint32_t tokenizer_ready;
@@ -1487,9 +1486,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendAwaitResidentSequenceRelease(
 	SparkGlm52Pp13ServiceBackendState *state)
 {
 	SparkGlm52CudaResidentIpcStats stats;
-	uint64_t processed_count;
 	SparkStatus status;
-	if (state == 0 || state->release_batch_resident_accept_target == 0u)
+	if (state == 0 || state->release_batch_local_done == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	status = SparkGlm52Pp13ServiceBackendResidentQueryStats(state,&stats);
 	if (status != SPARK_STATUS_OK)
@@ -1497,13 +1495,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendAwaitResidentSequenceRelease(
 	if (stats.work_queue_error_count >
 		state->release_batch_resident_error_baseline)
 		return SPARK_STATUS_IO_ERROR;
-	if (stats.work_queue_submit_count >
-		UINT64_MAX - stats.work_queue_error_count)
-		return SPARK_STATUS_INTERNAL_ERROR;
-	processed_count = stats.work_queue_submit_count +
-		stats.work_queue_error_count;
-	return processed_count >= state->release_batch_resident_accept_target
-		? SPARK_STATUS_OK : SPARK_STATUS_BUSY;
+	if (stats.work_queue_depth != 0u ||
+		stats.resident_driver_inflight != 0u ||
+		stats.builder_pending_work != 0u)
+		return SPARK_STATUS_BUSY;
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendPumpSequenceReleases(
@@ -1535,8 +1531,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPumpSequenceReleases(
 			state,&packet,&resident_stats);
 		if (status != SPARK_STATUS_OK)
 			return status;
-		state->release_batch_resident_accept_target =
-			resident_stats.work_queue_accepted_count;
 		state->release_batch_resident_error_baseline =
 			resident_stats.work_queue_error_count;
 		state->release_batch_local_done = 1u;
@@ -1554,7 +1548,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPumpSequenceReleases(
 	state->release_queue_count -= lane_count;
 	state->release_batch_lane_count = 0u;
 	state->release_batch_local_done = 0u;
-	state->release_batch_resident_accept_target = 0u;
 	state->release_batch_resident_error_baseline = 0u;
 	return SPARK_STATUS_OK;
 }
