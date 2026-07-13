@@ -5685,6 +5685,7 @@ static void SparkGlm52Pp13BuilderCompletePendingWork(
 		buffered_completion_required = 1u;
 	}
 	else if (status == SPARK_STATUS_OK &&
+		SparkGlm52Pp13BuilderWorkIsPlainDecodeBatch(work_packet) == 0u &&
 		SparkGlm52Pp13BuilderWorkNeedsCapturedCompletion(work_packet) &&
 		SparkGlm52Pp13BuilderIsFinalRank(state))
 	{
