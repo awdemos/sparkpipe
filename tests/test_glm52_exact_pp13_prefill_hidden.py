@@ -186,6 +186,17 @@ def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None
     assert ("state->speculative_verify_accepted_count + 1u;" not in
             function_body)
 
+    start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderEmitWideDecodeCompletions(")
+    end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(",
+        start)
+    function_body = source[start:end]
+    assert "completion.token_count = work_packet->rows_per_lane;" in function_body
+    assert ("completion.token_count = accepted_draft_count + 1u;" not in
+            function_body)
+    assert "execution_row_base + token_index" in function_body
+
 
 def test_mtp_full_vocab_workspace_uses_logical_lane_capacity(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
