@@ -199,6 +199,7 @@ def run_one(
     headers: dict[str, str],
     prompt: str,
     request_index: int,
+    start_barrier: threading.Barrier | None,
 ) -> dict[str, Any]:
     body = build_request_body(args, parsed, prompt)
     encoded_body = json.dumps(body, separators=(",", ":")).encode("utf-8")
@@ -211,6 +212,9 @@ def run_one(
     content_type = ""
     error = ""
     try:
+        if start_barrier is not None:
+            start_barrier.wait(timeout=args.timeout_s)
+            start = time.monotonic()
         connection = make_connection(parsed, args.timeout_s)
         connection.request("POST", request_path(parsed), body=encoded_body, headers=headers)
         response = connection.getresponse()
@@ -316,6 +320,13 @@ def parse_statuses(text: str) -> set[int]:
     return statuses
 
 
+def make_start_barrier(args: argparse.Namespace) -> tuple[threading.Barrier | None, int]:
+    worker_count = min(args.requests, args.concurrency)
+    if worker_count <= 1 or args.launch_spacing_ms > 0.0:
+        return None, 0
+    return threading.Barrier(worker_count + 1), worker_count
+
+
 def summarize(results: list[dict[str, Any]], elapsed_s: float, success_statuses: set[int]) -> dict[str, Any]:
     latencies = [float(r["elapsed_s"]) for r in results if not r.get("error")]
     ttfts = [float(r["ttft_s"]) for r in results if r.get("ttft_s") is not None]
@@ -364,6 +375,7 @@ def main() -> int:
     prompts = load_prompts(args)
     headers = build_headers(args)
     success_statuses = parse_statuses(args.success_statuses)
+    start_barrier, start_barrier_count = make_start_barrier(args)
     writer = JsonlWriter(output_jsonl)
     stop_event = threading.Event()
     health_thread: threading.Thread | None = None
@@ -379,6 +391,7 @@ def main() -> int:
             "concurrency": args.concurrency,
             "max_completion_tokens": args.max_completion_tokens,
             "stream": args.stream,
+            "start_barrier_count": start_barrier_count,
             "success_statuses": sorted(success_statuses),
             "output_jsonl": str(output_jsonl),
             "summary_json": str(summary_json),
@@ -392,10 +405,23 @@ def main() -> int:
             futures: list[concurrent.futures.Future[dict[str, Any]]] = []
             for request_index in range(args.requests):
                 prompt = prompts[request_index % len(prompts)]
-                future = executor.submit(run_one, args, parsed, headers, prompt, request_index)
+                request_barrier = (
+                    start_barrier if request_index < start_barrier_count else None
+                )
+                future = executor.submit(
+                    run_one,
+                    args,
+                    parsed,
+                    headers,
+                    prompt,
+                    request_index,
+                    request_barrier,
+                )
                 futures.append(future)
                 if args.launch_spacing_ms > 0.0:
                     time.sleep(args.launch_spacing_ms / 1000.0)
+            if start_barrier is not None:
+                start_barrier.wait(timeout=args.timeout_s)
             for future in concurrent.futures.as_completed(futures):
                 result = future.result()
                 results.append(result)

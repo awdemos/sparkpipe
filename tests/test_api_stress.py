@@ -16,7 +16,10 @@ SPEC.loader.exec_module(MODULE)
 
 def arguments():
     return argparse.Namespace(
+        concurrency=64,
+        launch_spacing_ms=0.0,
         model="glm-5.2",
+        requests=64,
         stream=True,
         temperature=0.0,
         max_completion_tokens=16,
@@ -24,6 +27,15 @@ def arguments():
 
 
 def main():
+    barrier, worker_count = MODULE.make_start_barrier(arguments())
+    assert barrier is not None
+    assert barrier.parties == 65
+    assert worker_count == 64
+    spaced = arguments()
+    spaced.launch_spacing_ms = 1.0
+    barrier, worker_count = MODULE.make_start_barrier(spaced)
+    assert barrier is None
+    assert worker_count == 0
     chat = MODULE.build_request_body(
         arguments(),
         urllib.parse.urlparse("http://spark0:18080/v1/chat/completions"),
