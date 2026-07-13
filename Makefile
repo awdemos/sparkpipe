@@ -96,6 +96,7 @@ COMMON_SOURCES := \
     src/spark_glm52_request_api.c \
     src/spark_glm52_long_context.c \
     src/spark_tokenizer.c \
+    src/spark_glm52_chat_template.c \
     src/spark_glm52_text_prompt.c \
     src/spark_glm52_prompt_pipeline.c \
     src/spark_glm52_serving_engine.c \

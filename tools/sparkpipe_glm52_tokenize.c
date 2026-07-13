@@ -3,23 +3,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "sparkpipe/spark_glm52_chat_template.h"
 #include "sparkpipe/spark_tokenizer.h"
 
 #include "sparkpipe/spark_glm52_model.h"
 
 #define SPARK_GLM52_TOKENIZE_DEFAULT_TOKEN_CAPACITY \
     SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS
-#define SPARK_GLM52_TOKENIZE_CHAT_FLAG_ADD_GENERATION_PROMPT 0x00000001u
-#define SPARK_GLM52_TOKENIZE_CHAT_FLAG_ENABLE_THINKING 0x00000002u
 
 static const char SparkGlm52TokenizerFileName[] = "tokenizer.json";
-
-typedef struct SparkGlm52TokenizeStringBuilder
-{
-    char *text;
-    uint32_t text_bytes;
-    uint32_t text_capacity;
-} SparkGlm52TokenizeStringBuilder;
 
 static int32_t SparkGlm52TokenizeParseU32(
     const char *text,
@@ -123,79 +115,6 @@ static uint32_t SparkGlm52TokenizeStringLengthU32(
     return (uint32_t)text_bytes;
 }
 
-static int32_t SparkGlm52TokenizeStringBuilderReserve(
-    SparkGlm52TokenizeStringBuilder *builder,
-    uint32_t needed_bytes)
-{
-    uint32_t resized_capacity;
-    char *resized_text;
-
-    if (builder == 0)
-    {
-        return -1;
-    }
-    if (needed_bytes <= builder->text_capacity)
-    {
-        return 0;
-    }
-    resized_capacity = builder->text_capacity == 0u ? 256u : builder->text_capacity;
-    while (resized_capacity < needed_bytes)
-    {
-        if (resized_capacity > 0x80000000u)
-        {
-            return -2;
-        }
-        resized_capacity *= 2u;
-    }
-    resized_text = (char *)realloc(builder->text, (size_t)resized_capacity);
-    if (resized_text == 0)
-    {
-        return -3;
-    }
-    builder->text = resized_text;
-    builder->text_capacity = resized_capacity;
-    return 0;
-}
-
-static int32_t SparkGlm52TokenizeStringBuilderAppend(
-    SparkGlm52TokenizeStringBuilder *builder,
-    const char *text,
-    uint32_t text_bytes)
-{
-    if (builder == 0 || (text == 0 && text_bytes != 0u))
-    {
-        return -1;
-    }
-    if (builder->text_bytes > 0xffffffffu - text_bytes - 1u)
-    {
-        return -2;
-    }
-    if (SparkGlm52TokenizeStringBuilderReserve(
-        builder,
-        builder->text_bytes + text_bytes + 1u) != 0)
-    {
-        return -3;
-    }
-    if (text_bytes != 0u)
-    {
-        memcpy(builder->text + builder->text_bytes, text, text_bytes);
-    }
-    builder->text_bytes += text_bytes;
-    builder->text[builder->text_bytes] = '\0';
-    return 0;
-}
-
-static void SparkGlm52TokenizeStringBuilderDestroy(
-    SparkGlm52TokenizeStringBuilder *builder)
-{
-    if (builder == 0)
-    {
-        return;
-    }
-    free(builder->text);
-    memset(builder, 0, sizeof(*builder));
-}
-
 static int32_t SparkGlm52TokenizeBuildTokenizerPath(
     const char *model_dir,
     char **tokenizer_json_path_out)
@@ -247,67 +166,55 @@ static int32_t SparkGlm52TokenizeBuildSimpleChatPrompt(
     char **chat_text_out,
     uint32_t *chat_text_bytes_out)
 {
-    SparkGlm52TokenizeStringBuilder builder;
-    uint32_t reasoning_effort_bytes;
-    const char *thinking_open;
+    SparkGlm52ChatTemplateWriter writer;
+    SparkStatus status;
+    char *chat_text;
 
     if (prompt == 0 || chat_text_out == 0 || chat_text_bytes_out == 0)
-    {
         return -1;
-    }
-    memset(&builder, 0, sizeof(builder));
     *chat_text_out = 0;
     *chat_text_bytes_out = 0u;
-    if (reasoning_effort == 0)
-    {
-        reasoning_effort = "Max";
-    }
-    reasoning_effort_bytes = SparkGlm52TokenizeStringLengthU32(reasoning_effort);
-    if (SparkGlm52TokenizeStringBuilderAppend(&builder, "[gMASK]<sop>", 12u) != 0)
-    {
-        SparkGlm52TokenizeStringBuilderDestroy(&builder);
+    status = SparkGlm52ChatTemplateInitializeWriter(
+        &writer,
+        0,
+        UINT32_MAX,
+        0u);
+    if (status != SPARK_STATUS_OK)
         return -2;
-    }
-    if ((chat_flags & SPARK_GLM52_TOKENIZE_CHAT_FLAG_ENABLE_THINKING) != 0u)
-    {
-        if (SparkGlm52TokenizeStringBuilderAppend(&builder, "<|system|>Reasoning Effort: ", 29u) != 0 ||
-            SparkGlm52TokenizeStringBuilderAppend(&builder, reasoning_effort, reasoning_effort_bytes) != 0)
-        {
-            SparkGlm52TokenizeStringBuilderDestroy(&builder);
-            return -3;
-        }
-    }
-    if (system_prompt != 0 && system_prompt_bytes != 0u)
-    {
-        if (SparkGlm52TokenizeStringBuilderAppend(&builder, "<|system|>", 10u) != 0 ||
-            SparkGlm52TokenizeStringBuilderAppend(&builder, system_prompt, system_prompt_bytes) != 0)
-        {
-            SparkGlm52TokenizeStringBuilderDestroy(&builder);
-            return -4;
-        }
-    }
-    if (SparkGlm52TokenizeStringBuilderAppend(&builder, "<|user|>", 8u) != 0 ||
-        SparkGlm52TokenizeStringBuilderAppend(&builder, prompt, prompt_bytes) != 0)
-    {
-        SparkGlm52TokenizeStringBuilderDestroy(&builder);
+    status = SparkGlm52ChatTemplateRenderSimple(
+        &writer,
+        prompt,
+        prompt_bytes,
+        system_prompt,
+        system_prompt_bytes,
+        reasoning_effort,
+        chat_flags);
+    if (status != SPARK_STATUS_OK || writer.text_bytes == UINT32_MAX)
         return -5;
-    }
-    if ((chat_flags & SPARK_GLM52_TOKENIZE_CHAT_FLAG_ADD_GENERATION_PROMPT) != 0u)
+    chat_text = (char *)malloc((size_t)writer.text_bytes + 1u);
+    if (chat_text == 0)
+        return -6;
+    status = SparkGlm52ChatTemplateInitializeWriter(
+        &writer,
+        chat_text,
+        writer.text_bytes + 1u,
+        0u);
+    if (status == SPARK_STATUS_OK)
+        status = SparkGlm52ChatTemplateRenderSimple(
+            &writer,
+            prompt,
+            prompt_bytes,
+            system_prompt,
+            system_prompt_bytes,
+            reasoning_effort,
+            chat_flags);
+    if (status != SPARK_STATUS_OK)
     {
-        thinking_open = (chat_flags & SPARK_GLM52_TOKENIZE_CHAT_FLAG_ENABLE_THINKING) != 0u ?
-            "<think>" : "<think></think>";
-        if (SparkGlm52TokenizeStringBuilderAppend(&builder, "<|assistant|>", 13u) != 0 ||
-            SparkGlm52TokenizeStringBuilderAppend(
-                &builder,
-                thinking_open,
-                SparkGlm52TokenizeStringLengthU32(thinking_open)) != 0)
-        {
-            SparkGlm52TokenizeStringBuilderDestroy(&builder);
-            return -6;
-        }
+        free(chat_text);
+        return -7;
     }
-    *chat_text_out = builder.text;
-    *chat_text_bytes_out = builder.text_bytes;
+    *chat_text_out = chat_text;
+    *chat_text_bytes_out = writer.text_bytes;
     return 0;
 }
 
@@ -388,8 +295,8 @@ int main(
     chat_text_bytes = 0u;
     token_capacity = SPARK_GLM52_TOKENIZE_DEFAULT_TOKEN_CAPACITY;
     chat_mode = 0u;
-    chat_flags = SPARK_GLM52_TOKENIZE_CHAT_FLAG_ADD_GENERATION_PROMPT |
-        SPARK_GLM52_TOKENIZE_CHAT_FLAG_ENABLE_THINKING;
+    chat_flags = SPARK_GLM52_CHAT_TEMPLATE_FLAG_ADD_GENERATION_PROMPT |
+        SPARK_GLM52_CHAT_TEMPLATE_FLAG_ENABLE_THINKING;
 
     for (arg_index = 1; arg_index < argc; ++arg_index)
     {
@@ -449,12 +356,12 @@ int main(
         }
         if (strcmp(argv[arg_index], "--no-add-generation-prompt") == 0)
         {
-            chat_flags &= ~SPARK_GLM52_TOKENIZE_CHAT_FLAG_ADD_GENERATION_PROMPT;
+            chat_flags &= ~SPARK_GLM52_CHAT_TEMPLATE_FLAG_ADD_GENERATION_PROMPT;
             continue;
         }
         if (strcmp(argv[arg_index], "--disable-thinking") == 0)
         {
-            chat_flags &= ~SPARK_GLM52_TOKENIZE_CHAT_FLAG_ENABLE_THINKING;
+            chat_flags &= ~SPARK_GLM52_CHAT_TEMPLATE_FLAG_ENABLE_THINKING;
             continue;
         }
         return SparkGlm52TokenizeUsage(argv[0]);

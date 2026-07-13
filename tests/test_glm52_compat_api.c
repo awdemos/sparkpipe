@@ -2,7 +2,12 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "sparkpipe/spark_glm52_chat_template.h"
 #include "sparkpipe/spark_glm52_compat_api.h"
+
+#define SPARK_TEST_GLM52_CHAT_BEGIN \
+	"[gMASK]<sop><|system|>Reasoning Effort: Max"
+#define SPARK_TEST_GLM52_CHAT_END "<|assistant|><think>"
 
 static void SparkTestCompatOpenAiChat(void)
 {
@@ -16,6 +21,11 @@ static void SparkTestCompatOpenAiChat(void)
         "]"
         "}";
     SparkGlm52CompatTextRequest request;
+    static const char Expected[] =
+		SPARK_TEST_GLM52_CHAT_BEGIN
+		"<|system|>You are terse."
+		"<|user|>Read this C code."
+		SPARK_TEST_GLM52_CHAT_END;
     char text[512];
 
     SparkGlm52CompatInitializeTextRequest(&request, text, sizeof(text));
@@ -26,8 +36,8 @@ static void SparkTestCompatOpenAiChat(void)
         ((uint32_t)strlen(RequestJson)),
         &request) == SPARK_STATUS_OK);
     assert(request.output_token_budget == 17u);
-    assert(request.text_bytes == strlen("system: You are terse.\nuser: Read this C code.\n"));
-    assert(strcmp(text, "system: You are terse.\nuser: Read this C code.\n") == 0);
+	assert(request.text_bytes == (uint32_t)(sizeof(Expected) - 1u));
+	assert(strcmp(text, Expected) == 0);
 }
 
 static void SparkTestCompatOpenAiPrompt(void)
@@ -63,10 +73,11 @@ static void SparkTestCompatOpenAiChatWithFiles(void)
         RequestJson,
         ((uint32_t)strlen(RequestJson)),
         &request) == SPARK_STATUS_OK);
-    assert(strstr(text, "user: Use the attachment.\n") != 0);
+	assert(strstr(text, SPARK_TEST_GLM52_CHAT_BEGIN "<|user|>Use the attachment.") != 0);
     assert(strstr(text, "[uploaded file: notes.txt]") != 0);
     assert(strstr(text, "alpha\nbeta") != 0);
     assert(strstr(text, "[/uploaded file]") != 0);
+	assert(strstr(text, SPARK_TEST_GLM52_CHAT_END) != 0);
 }
 
 static void SparkTestCompatAnthropicMessages(void)
@@ -83,6 +94,12 @@ static void SparkTestCompatAnthropicMessages(void)
         "]"
         "}";
     SparkGlm52CompatTextRequest request;
+    static const char Expected[] =
+		SPARK_TEST_GLM52_CHAT_BEGIN
+		"<|system|>Stay exact."
+		"<|user|>First second"
+		"<|assistant|><think></think>Ack"
+		SPARK_TEST_GLM52_CHAT_END;
     char text[512];
 
     SparkGlm52CompatInitializeTextRequest(&request, text, sizeof(text));
@@ -91,7 +108,43 @@ static void SparkTestCompatAnthropicMessages(void)
         ((uint32_t)strlen(RequestJson)),
         &request) == SPARK_STATUS_OK);
     assert(request.output_token_budget == 9u);
-    assert(strcmp(text, "system: Stay exact.\nuser: First second\nassistant: Ack\n") == 0);
+	assert(strcmp(text, Expected) == 0);
+}
+
+static void SparkTestCompatRejectsUnknownChatRole(void)
+{
+	static const char RequestJson[] =
+		"{\"messages\":[{\"role\":\"alien\",\"content\":\"no\"}]}";
+	SparkGlm52CompatTextRequest request;
+	char text[256];
+
+	SparkGlm52CompatInitializeTextRequest(&request, text, sizeof(text));
+	assert(SparkGlm52CompatPrepareOpenAiJson(
+		RequestJson,
+		(uint32_t)strlen(RequestJson),
+		&request) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static void SparkTestChatTemplateReasoningEffort(void)
+{
+	SparkGlm52ChatTemplateWriter writer;
+	char text[128];
+
+	assert(SparkGlm52ChatTemplateInitializeWriter(
+		&writer,
+		text,
+		(uint32_t)sizeof(text),
+		0u) == SPARK_STATUS_OK);
+	assert(SparkGlm52ChatTemplateBegin(
+		&writer,
+		"high",
+		SPARK_GLM52_CHAT_TEMPLATE_FLAG_ENABLE_THINKING) == SPARK_STATUS_OK);
+	assert(strcmp(
+		text,
+		"[gMASK]<sop><|system|>Reasoning Effort: High") == 0);
+	assert(SparkGlm52ChatTemplateEndMessage(
+		&writer,
+		(SparkGlm52ChatTemplateRole)-1) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestCompatRejectsSmallBuffer(void)
@@ -114,6 +167,8 @@ int main(void)
     SparkTestCompatOpenAiPrompt();
     SparkTestCompatOpenAiChatWithFiles();
     SparkTestCompatAnthropicMessages();
+	SparkTestCompatRejectsUnknownChatRole();
+	SparkTestChatTemplateReasoningEffort();
     SparkTestCompatRejectsSmallBuffer();
     return 0;
 }

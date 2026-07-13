@@ -3,7 +3,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "sparkpipe/spark_glm52_chat_template.h"
 #include "sparkpipe/spark_json.h"
+
+#define SPARK_GLM52_COMPAT_CHAT_FLAGS \
+	(SPARK_GLM52_CHAT_TEMPLATE_FLAG_ADD_GENERATION_PROMPT | \
+	 SPARK_GLM52_CHAT_TEMPLATE_FLAG_ENABLE_THINKING)
 
 static SparkStatus SparkGlm52CompatAppendBytes(
     SparkGlm52CompatTextRequest *request,
@@ -341,23 +346,105 @@ static SparkStatus SparkGlm52CompatAppendContentToken(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52CompatAppendRole(
-    const SparkJsonDocument *document,
-    int32_t message_token_index,
-    SparkGlm52CompatTextRequest *request)
+static SparkStatus SparkGlm52CompatInitializeTemplateWriter(
+	SparkGlm52CompatTextRequest *request,
+	SparkGlm52ChatTemplateWriter *writer)
 {
-    int32_t role_token_index;
-    SparkStatus status;
+	if ( request == 0 || writer == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return SparkGlm52ChatTemplateInitializeWriter(
+		writer,
+		request->text,
+		request->text_capacity,
+		request->text_bytes);
+}
 
-    role_token_index =
-        SparkJsonFindObjectMember(document, message_token_index, "role");
-    if ( role_token_index >= 0 )
-        status = SparkGlm52CompatAppendJsonString(document, role_token_index, request);
-    else
-        status = SparkGlm52CompatAppendLiteral(request, "user");
-    if ( status != SPARK_STATUS_OK )
-        return status;
-    return SparkGlm52CompatAppendLiteral(request, ": ");
+static SparkStatus SparkGlm52CompatBeginTemplate(
+	SparkGlm52CompatTextRequest *request)
+{
+	SparkGlm52ChatTemplateWriter writer;
+	SparkStatus status;
+
+	status = SparkGlm52CompatInitializeTemplateWriter(request, &writer);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	status = SparkGlm52ChatTemplateBegin(
+		&writer,
+		"Max",
+		SPARK_GLM52_COMPAT_CHAT_FLAGS);
+	request->text_bytes = writer.text_bytes;
+	return status;
+}
+
+static SparkStatus SparkGlm52CompatGetMessageRole(
+	const SparkJsonDocument *document,
+	int32_t message_token_index,
+	SparkGlm52ChatTemplateRole *role_out)
+{
+	int32_t role_token_index;
+
+	if ( document == 0 || role_out == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	role_token_index =
+		SparkJsonFindObjectMember(document, message_token_index, "role");
+	if ( role_token_index < 0 ||
+		SparkJsonStringEquals(document, role_token_index, "user") )
+		*role_out = SPARK_GLM52_CHAT_TEMPLATE_ROLE_USER;
+	else if ( SparkJsonStringEquals(document, role_token_index, "system") )
+		*role_out = SPARK_GLM52_CHAT_TEMPLATE_ROLE_SYSTEM;
+	else if ( SparkJsonStringEquals(document, role_token_index, "assistant") )
+		*role_out = SPARK_GLM52_CHAT_TEMPLATE_ROLE_ASSISTANT;
+	else if ( SparkJsonStringEquals(document, role_token_index, "tool") )
+		*role_out = SPARK_GLM52_CHAT_TEMPLATE_ROLE_TOOL;
+	else
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52CompatBeginMessage(
+	SparkGlm52CompatTextRequest *request,
+	SparkGlm52ChatTemplateRole role)
+{
+	SparkGlm52ChatTemplateWriter writer;
+	SparkStatus status;
+
+	status = SparkGlm52CompatInitializeTemplateWriter(request, &writer);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	status = SparkGlm52ChatTemplateBeginMessage(&writer, role);
+	request->text_bytes = writer.text_bytes;
+	return status;
+}
+
+static SparkStatus SparkGlm52CompatEndMessage(
+	SparkGlm52CompatTextRequest *request,
+	SparkGlm52ChatTemplateRole role)
+{
+	SparkGlm52ChatTemplateWriter writer;
+	SparkStatus status;
+
+	status = SparkGlm52CompatInitializeTemplateWriter(request, &writer);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	status = SparkGlm52ChatTemplateEndMessage(&writer, role);
+	request->text_bytes = writer.text_bytes;
+	return status;
+}
+
+static SparkStatus SparkGlm52CompatFinishTemplate(
+	SparkGlm52CompatTextRequest *request)
+{
+	SparkGlm52ChatTemplateWriter writer;
+	SparkStatus status;
+
+	status = SparkGlm52CompatInitializeTemplateWriter(request, &writer);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	status = SparkGlm52ChatTemplateFinish(
+		&writer,
+		SPARK_GLM52_COMPAT_CHAT_FLAGS);
+	request->text_bytes = writer.text_bytes;
+	return status;
 }
 
 static SparkStatus SparkGlm52CompatAppendMessages(
@@ -378,6 +465,7 @@ static SparkStatus SparkGlm52CompatAppendMessages(
     {
         int32_t message_token_index;
         int32_t content_token_index;
+		SparkGlm52ChatTemplateRole role;
 
         message_token_index =
             SparkJsonGetArrayElement(document, messages_token_index, message_index);
@@ -387,7 +475,13 @@ static SparkStatus SparkGlm52CompatAppendMessages(
             SparkJsonFindObjectMember(document, message_token_index, "content");
         if ( content_token_index < 0 )
             return SPARK_STATUS_INVALID_ARGUMENT;
-        status = SparkGlm52CompatAppendRole(document, message_token_index, request);
+		status = SparkGlm52CompatGetMessageRole(
+			document,
+			message_token_index,
+			&role);
+		if ( status != SPARK_STATUS_OK )
+			return status;
+		status = SparkGlm52CompatBeginMessage(request, role);
         if ( status != SPARK_STATUS_OK )
             return status;
         status = SparkGlm52CompatAppendContentToken(
@@ -396,7 +490,7 @@ static SparkStatus SparkGlm52CompatAppendMessages(
             request);
         if ( status != SPARK_STATUS_OK )
             return status;
-        status = SparkGlm52CompatAppendLiteral(request, "\n");
+		status = SparkGlm52CompatEndMessage(request, role);
         if ( status != SPARK_STATUS_OK )
             return status;
     }
@@ -446,6 +540,31 @@ static SparkStatus SparkGlm52CompatAppendFilesArray(
         }
     }
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52CompatAppendRequestFiles(
+	const SparkJsonDocument *document,
+	int32_t root_token_index,
+	SparkGlm52CompatTextRequest *request)
+{
+	int32_t attachments_token_index;
+	int32_t files_token_index;
+	SparkStatus status;
+
+	files_token_index =
+		SparkJsonFindObjectMember(document, root_token_index, "files");
+	status = SparkGlm52CompatAppendFilesArray(
+		document,
+		files_token_index,
+		request);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	attachments_token_index =
+		SparkJsonFindObjectMember(document, root_token_index, "attachments");
+	return SparkGlm52CompatAppendFilesArray(
+		document,
+		attachments_token_index,
+		request);
 }
 
 static SparkStatus SparkGlm52CompatPrepareCommon(
@@ -544,10 +663,14 @@ SparkStatus SparkGlm52CompatPrepareOpenAiJson(
         prompt_token_index =
             SparkJsonFindObjectMember(&document, root_token_index, "prompt");
         if ( messages_token_index >= 0 )
-            status = SparkGlm52CompatAppendMessages(
-                &document,
-                messages_token_index,
-                request);
+		{
+			status = SparkGlm52CompatBeginTemplate(request);
+			if ( status == SPARK_STATUS_OK )
+				status = SparkGlm52CompatAppendMessages(
+					&document,
+					messages_token_index,
+					request);
+		}
         else if ( prompt_token_index >= 0 )
             status = SparkGlm52CompatAppendJsonString(
                 &document,
@@ -556,24 +679,12 @@ SparkStatus SparkGlm52CompatPrepareOpenAiJson(
         else
             status = SPARK_STATUS_INVALID_ARGUMENT;
         if ( status == SPARK_STATUS_OK )
-        {
-            int32_t files_token_index;
-            int32_t attachments_token_index;
-
-            files_token_index =
-                SparkJsonFindObjectMember(&document, root_token_index, "files");
-            attachments_token_index =
-                SparkJsonFindObjectMember(&document, root_token_index, "attachments");
-            status = SparkGlm52CompatAppendFilesArray(
-                &document,
-                files_token_index,
-                request);
-            if ( status == SPARK_STATUS_OK )
-                status = SparkGlm52CompatAppendFilesArray(
-                    &document,
-                    attachments_token_index,
-                    request);
-        }
+			status = SparkGlm52CompatAppendRequestFiles(
+				&document,
+				root_token_index,
+				request);
+		if ( status == SPARK_STATUS_OK && messages_token_index >= 0 )
+			status = SparkGlm52CompatFinishTemplate(request);
     }
     SparkJsonDocumentDestroy(&document);
     return status;
@@ -598,18 +709,23 @@ SparkStatus SparkGlm52CompatPrepareAnthropicJson(
     if ( status == SPARK_STATUS_OK )
     {
         root_token_index = SparkJsonGetRootToken(&document);
+		status = SparkGlm52CompatBeginTemplate(request);
         system_token_index =
             SparkJsonFindObjectMember(&document, root_token_index, "system");
-        if ( system_token_index >= 0 )
+		if ( status == SPARK_STATUS_OK && system_token_index >= 0 )
         {
-            status = SparkGlm52CompatAppendLiteral(request, "system: ");
+			status = SparkGlm52CompatBeginMessage(
+				request,
+				SPARK_GLM52_CHAT_TEMPLATE_ROLE_SYSTEM);
             if ( status == SPARK_STATUS_OK )
                 status = SparkGlm52CompatAppendJsonString(
                     &document,
                     system_token_index,
                     request);
             if ( status == SPARK_STATUS_OK )
-                status = SparkGlm52CompatAppendLiteral(request, "\n");
+				status = SparkGlm52CompatEndMessage(
+					request,
+					SPARK_GLM52_CHAT_TEMPLATE_ROLE_SYSTEM);
         }
         messages_token_index =
             SparkJsonFindObjectMember(&document, root_token_index, "messages");
@@ -621,24 +737,12 @@ SparkStatus SparkGlm52CompatPrepareAnthropicJson(
         else if ( status == SPARK_STATUS_OK )
             status = SPARK_STATUS_INVALID_ARGUMENT;
         if ( status == SPARK_STATUS_OK )
-        {
-            int32_t files_token_index;
-            int32_t attachments_token_index;
-
-            files_token_index =
-                SparkJsonFindObjectMember(&document, root_token_index, "files");
-            attachments_token_index =
-                SparkJsonFindObjectMember(&document, root_token_index, "attachments");
-            status = SparkGlm52CompatAppendFilesArray(
-                &document,
-                files_token_index,
-                request);
-            if ( status == SPARK_STATUS_OK )
-                status = SparkGlm52CompatAppendFilesArray(
-                    &document,
-                    attachments_token_index,
-                    request);
-        }
+			status = SparkGlm52CompatAppendRequestFiles(
+				&document,
+				root_token_index,
+				request);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkGlm52CompatFinishTemplate(request);
     }
     SparkJsonDocumentDestroy(&document);
     return status;
