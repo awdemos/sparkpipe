@@ -235,6 +235,29 @@ def test_mtp_full_vocab_workspace_uses_logical_lane_capacity(root: Path) -> None
             function_body)
 
 
+def test_mtp_linear_plans_use_logical_rows(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    stage_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderPrepareStageLinearPlanRows(")
+    mtp_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderPrepareMtpLinearPlanRows(",
+        stage_start)
+    stage_body = source[stage_start:mtp_start]
+    assert "state->mtp_layer.linear_binding" not in stage_body
+
+    draft_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(")
+    draft_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpWeights(", draft_start)
+    draft_body = source[draft_start:draft_end]
+    prepare = "SparkGlm52Pp13BuilderPrepareMtpLinearPlanRows("
+    draft_loop = "for (draft_index = 0u;"
+    assert draft_body.index(prepare) < draft_body.index(draft_loop)
+    assert "state,active_sequence_count);" in draft_body
+
+
 def test_plain_wide_decode_bypasses_dspark_finalizer(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
