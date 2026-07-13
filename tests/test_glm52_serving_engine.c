@@ -202,7 +202,10 @@ static SparkStatus SparkTestServingDecode(
                 callback_context->expected_prompt_tokens[
                     SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT - 1u]);
             assert(decode_dispatch->decode_view->lanes[lane_index].
-                sequence_position == SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT);
+                sequence_position ==
+                    SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT - 1u);
+            assert(decode_dispatch->decode_view->lanes[lane_index].
+                context_token_count == SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT);
         }
         else
         {
@@ -212,7 +215,11 @@ static SparkStatus SparkTestServingDecode(
             assert(decode_dispatch->decode_view->lanes[lane_index].
                 sequence_position ==
                 SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT +
-                callback_context->decode_callback_count);
+                callback_context->decode_callback_count - 1u);
+            assert(decode_dispatch->decode_view->lanes[lane_index].
+                context_token_count ==
+                    SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT +
+                    callback_context->decode_callback_count);
         }
         decode_result->token_counts[lane_index] = 1u;
         decode_result->token_ids[lane_index][0u] =

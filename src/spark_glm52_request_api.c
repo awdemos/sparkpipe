@@ -5678,7 +5678,7 @@ SparkStatus SparkGlm52RequestApiDescribeDecodeDispatch(
 
         sequence_position =
             (uint64_t)slot->computed_prompt_token_count +
-            (uint64_t)slot->completed_decode_token_count;
+            (uint64_t)slot->completed_decode_token_count - 1u;
         if (sequence_position > UINT32_MAX - 1u)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
