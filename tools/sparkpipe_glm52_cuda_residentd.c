@@ -107,6 +107,7 @@ typedef struct SparkGlm52CudaResidentdRuntime
     uint64_t work_queue_accepted_count;
     uint64_t work_queue_submit_count;
     uint64_t work_queue_error_count;
+    uint64_t active_control_generation;
     uint32_t synthetic_failure_completion_active;
     SparkStatus deferred_failure_status;
     char blocker[SPARK_GLM52_CUDA_RESIDENT_IPC_ERROR_TEXT_BYTES];
@@ -965,7 +966,8 @@ static SparkStatus SparkGlm52CudaResidentdFillStats(
     stats->work_queue_submit_count = runtime->work_queue_submit_count;
     stats->work_queue_error_count = runtime->work_queue_error_count;
     stats->cuda_generation = configuration->cuda_generation;
-    stats->control_generation = configuration->control_generation;
+    stats->control_generation = runtime->active_control_generation != 0u
+        ? runtime->active_control_generation : configuration->control_generation;
     snprintf(stats->blocker, sizeof(stats->blocker), "%s", runtime->blocker);
     if (runtime->loaded_driver.interface != 0 &&
         runtime->loaded_driver.interface->snapshot != 0 &&
@@ -1184,6 +1186,16 @@ static void SparkGlm52CudaResidentdEmitWorkFailure(
 	runtime->synthetic_failure_completion_active = 0u;
 }
 
+static uint32_t SparkGlm52CudaResidentdWorkFailureIsNonfatal(
+    SparkStatus status)
+{
+    return status == SPARK_STATUS_INVALID_ARGUMENT ||
+        status == SPARK_STATUS_CAPACITY_EXCEEDED ||
+        status == SPARK_STATUS_NOT_FOUND ||
+        status == SPARK_STATUS_VALIDATION_FAILED ||
+        status == SPARK_STATUS_ABI_MISMATCH;
+}
+
 static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
     SparkGlm52CudaResidentdRuntime *runtime)
 {
@@ -1220,6 +1232,10 @@ static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
     SparkGlm52CudaResidentdPopQueuedWork(runtime);
     if (status == SPARK_STATUS_OK)
     {
+        if (queued_work.packet.control_generation >
+            runtime->active_control_generation)
+            runtime->active_control_generation =
+                queued_work.packet.control_generation;
         runtime->submitted_count += 1u;
         runtime->work_queue_submit_count += 1u;
         if ((queued_work.packet.flags &
@@ -1233,7 +1249,7 @@ static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
             runtime->driver_inflight_count -= 1u;
         runtime->submit_failed_count += 1u;
         runtime->work_queue_error_count += 1u;
-		if (status != SPARK_STATUS_CAPACITY_EXCEEDED)
+        if (SparkGlm52CudaResidentdWorkFailureIsNonfatal(status) == 0u)
 		{
 			runtime->state = SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_FAILED;
 			runtime->deferred_failure_status = status;
@@ -1248,8 +1264,9 @@ static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
 		else
 		{
 			fprintf(stderr,
-				"cuda_residentd_capacity_rejected rank=%u request=%llu "
+				"cuda_residentd_work_rejected status=%u rank=%u request=%llu "
 				"sequence=%llu lanes=%u\n",
+				(uint32_t)status,
 				runtime->rank_plan.rank_index,
 				(unsigned long long)queued_work.packet.request_id,
 				(unsigned long long)queued_work.packet.sequence_id,
@@ -1318,6 +1335,8 @@ static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(
     memset(packet, 0, sizeof(*packet));
     packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
     packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
+    packet->control_generation =
+        SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
     packet->descriptor_bytes =
         SparkGlm52Pp13WorkControlCalculatePacketBytes(message->lane_count);
     if (packet->descriptor_bytes == 0u)

@@ -270,6 +270,8 @@ int main(int argc,char **argv)
 	printf("rank=%u state=%u logical_lanes=%u execution_rows=%u "
 		"pipeline_requests=%u fp8_moe=%u/%u fp8_scaled_gemm=%u/%u "
 		"nvme_mode=%u nvme_record_bytes=%llu resident_pool_bytes=%llu "
+		"kv_blocks=%llu/%u resident_blocks=%llu swapped_blocks=%llu "
+		"queue=%u pending=%u inflight=%u control_generation=%llu "
 		"work=%llu/%llu async=%llu/%llu/%llu layer_major=%llu/%llu/%llu "
 		"gate=%s status=%u\n",
 		configuration.rank_index,stats.state,stats.logical_lane_capacity,
@@ -280,6 +282,14 @@ int main(int argc,char **argv)
 		stats.fp8_scaled_gemm_expected_plan_count,stats.kv_nvme_mode,
 		(unsigned long long)stats.kv_nvme_record_bytes,
 		(unsigned long long)stats.kv_resident_pool_bytes,
+		(unsigned long long)stats.kv_logical_block_count,
+		stats.kv_logical_block_capacity,
+		(unsigned long long)stats.kv_resident_block_count,
+		(unsigned long long)stats.kv_swapped_block_count,
+		stats.work_queue_depth,
+		stats.builder_pending_work,
+		stats.resident_driver_inflight,
+		(unsigned long long)stats.control_generation,
 		(unsigned long long)stats.work_queue_accepted_count,
 		(unsigned long long)stats.work_queue_submit_count,
 		(unsigned long long)stats.asynchronous_submit_count,

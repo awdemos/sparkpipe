@@ -4347,17 +4347,35 @@ static SparkStatus SparkGlm52Pp13BuilderExpandSpeculativeKvRows(
 	return SPARK_STATUS_OK;
 }
 
+static void SparkGlm52Pp13BuilderLogKvGenerationReset(
+	const SparkGlm52Pp13BuilderState *state,
+	uint64_t prior_control_generation)
+{
+	if (state->kv_state.control_generation == prior_control_generation)
+		return;
+	fprintf(stderr,
+		"pp13_kv_generation_reset rank=%u old=%llu new=%llu count=%llu\n",
+		state->rank_plan.rank_index,
+		(unsigned long long)prior_control_generation,
+		(unsigned long long)state->kv_state.control_generation,
+		(unsigned long long)state->kv_state.control_generation_reset_count);
+}
+
 static SparkStatus SparkGlm52Pp13BuilderPrepareWorkKvView(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52Pp13WorkControlPacket *work_packet)
 {
 	uint64_t kv_entries;
+	uint64_t prior_control_generation;
 	SparkStatus status;
 
+	prior_control_generation = state->kv_state.control_generation;
 	status = SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 		work_packet,&state->kv_state,&state->host_kv_view);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	SparkGlm52Pp13BuilderLogKvGenerationReset(
+		state,prior_control_generation);
 	kv_entries = (uint64_t)work_packet->active_sequence_count *
 		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
 	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
@@ -5761,10 +5779,12 @@ static SparkStatus SparkGlm52Pp13BuilderBuildResidentKvTable(
 {
 	SparkStatus flush_status;
 	SparkStatus status;
+	uint64_t prior_control_generation;
 	uint32_t nvme_enabled;
 
 	if (state == 0 || work_packet == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	prior_control_generation = state->kv_state.control_generation;
 	nvme_enabled = state->kv_nvme_fd >= 0 ? 1u : 0u;
 	if (nvme_enabled != 0u)
 	{
@@ -5776,6 +5796,9 @@ static SparkStatus SparkGlm52Pp13BuilderBuildResidentKvTable(
 	}
 	status = SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 		work_packet,&state->kv_state,&state->host_kv_view);
+	if (status == SPARK_STATUS_OK)
+		SparkGlm52Pp13BuilderLogKvGenerationReset(
+			state,prior_control_generation);
 	if (nvme_enabled != 0u)
 	{
 		flush_status = SparkGlm52Pp13BuilderKvNvmeFlushBatch(state);
@@ -6530,6 +6553,8 @@ static SparkStatus SparkGlm52Pp13BuilderDecode(
 	memset(&work_packet,0,sizeof(work_packet));
 	work_packet.magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
 	work_packet.abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
+	work_packet.control_generation =
+		SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
 	work_packet.descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(
 			decode_dispatch->request_count);

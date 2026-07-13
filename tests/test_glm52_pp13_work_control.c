@@ -104,6 +104,8 @@ static void SparkTestInitializeWorkPacket(
 	memset(packet,0,sizeof(*packet));
 	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
 	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
+	packet->control_generation =
+		SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
 	packet->active_sequence_count = 4u;
 	packet->descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(
@@ -731,6 +733,8 @@ static void SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease(void)
 	memset(&packet,0,sizeof(packet));
 	packet.magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
 	packet.abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
+	packet.control_generation =
+		SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
 	packet.descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(2u);
 	packet.flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES;
@@ -913,6 +917,55 @@ static void SparkTestGlm52Pp13WorkControlBuildPrefillBatch(void)
 		SPARK_STATUS_OK);
 }
 
+static void SparkTestGlm52Pp13WorkControlResetsOlderGeneration(void)
+{
+	static SparkTestWorkControlKvStorage storage;
+	SparkGlm52Pp13WorkControlKvState state;
+	SparkGlm52Pp13WorkControlPacket packet;
+	SparkGlm52KvBlockTableView view;
+
+	assert(SparkTestInitializeKvState(&state,&storage,1u) == SPARK_STATUS_OK);
+	SparkTestInitializeWorkPacket(&packet);
+	packet.flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL;
+	packet.control_generation = 100u;
+	packet.active_sequence_count = 1u;
+	packet.lane_count = 1u;
+	packet.execution_row_count = 1u;
+	packet.descriptor_bytes =
+		SparkGlm52Pp13WorkControlCalculatePacketBytes(1u);
+	packet.request_id = 101u;
+	packet.sequence_id = 201u;
+	packet.sequence_position = 0u;
+	packet.kv_block_table_token_count = 1u;
+	packet.lanes[0u].request_id = packet.request_id;
+	packet.lanes[0u].sequence_id = packet.sequence_id;
+	packet.lanes[0u].sequence_position = 0u;
+	packet.lanes[0u].context_token_count = 1u;
+	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
+		&packet,&state,&view) == SPARK_STATUS_OK);
+	assert(SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
+		&packet,&state) == SPARK_STATUS_OK);
+	assert(state.directory_entry_count == 1u);
+	assert(state.control_generation == 100u);
+	assert(state.control_generation_reset_count == 1u);
+	packet.control_generation = 200u;
+	packet.request_id = 102u;
+	packet.sequence_id = 202u;
+	packet.lanes[0u].request_id = packet.request_id;
+	packet.lanes[0u].sequence_id = packet.sequence_id;
+	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
+		&packet,&state,&view) == SPARK_STATUS_OK);
+	assert(state.directory_entry_count == 1u);
+	assert(state.allocated_physical_block_count == 1u);
+	assert(state.control_generation == 200u);
+	assert(state.control_generation_reset_count == 2u);
+	packet.control_generation = 100u;
+	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
+		&packet,&state,&view) == SPARK_STATUS_NOT_FOUND);
+	assert(state.directory_entry_count == 1u);
+	assert(state.control_generation == 200u);
+}
+
 int main(void)
 {
 	SparkTestGlm52Pp13WorkControlExecutionChunks();
@@ -928,5 +981,6 @@ int main(void)
 	SparkTestGlm52Pp13WorkControlB1024LayerMajorMtpVerify();
 	SparkTestGlm52Pp13WorkControlB1024PhysicalDirectory();
 	SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease();
+	SparkTestGlm52Pp13WorkControlResetsOlderGeneration();
 	return 0;
 }

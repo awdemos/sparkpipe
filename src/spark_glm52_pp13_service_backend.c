@@ -196,6 +196,16 @@ _Static_assert(
 
 static SparkGlm52Pp13ServiceBackendState SparkGlm52Pp13ServiceBackendSingleton;
 
+static SparkStatus SparkGlm52Pp13ServiceBackendStampWorkPacket(
+	const SparkGlm52Pp13ServiceBackendState *state,
+	SparkGlm52Pp13WorkControlPacket *packet)
+{
+	if (state == 0 || packet == 0 || state->session_id_base == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	packet->control_generation = state->session_id_base;
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendRegisterPendingDecode(
 	SparkGlm52Pp13ServiceBackendState *state,
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
@@ -637,6 +647,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitPrefillToResident(SparkGlm5
 		message.request_flags = prefill_dispatch->request_dispatch->flags;
 		status = SparkGlm52Pp13WorkControlBuildPrefillPacket(
 			prefill_dispatch,token_offset,&message.work_packet);
+		if (status == SPARK_STATUS_OK)
+			status = SparkGlm52Pp13ServiceBackendStampWorkPacket(
+				state,&message.work_packet);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		message.descriptor_bytes =
@@ -890,6 +903,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitDecodeChunksToResident(
 			lane_count = maximum_lanes_per_chunk;
 		status = SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 			decode_dispatch,lane_offset,lane_count,&packet);
+		if (status == SPARK_STATUS_OK)
+			status = SparkGlm52Pp13ServiceBackendStampWorkPacket(state,&packet);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13ServiceBackendSubmitWorkToResident(
 				state,&packet);
@@ -1359,6 +1374,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildReleasePacket(
 	packet->descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(lane_count);
 	packet->flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES;
+	packet->control_generation = state->session_id_base;
 	packet->active_sequence_count = lane_count;
 	packet->lane_count = lane_count;
 	packet->block_token_count =
@@ -1484,6 +1500,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 	memset(packet,0,sizeof(*packet));
 	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
 	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
+	packet->control_generation =
+		SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
 	packet->descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(lane_count);
 	if (packet->descriptor_bytes == 0u)
@@ -1642,6 +1660,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 			prefill_dispatch,
 			token_offset,
 			&packet);
+		if (status == SPARK_STATUS_OK)
+			status = SparkGlm52Pp13ServiceBackendStampWorkPacket(state,&packet);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		status = SparkGlm52Pp13WorkControlValidatePacket(
@@ -1689,6 +1709,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 			lane_count = maximum_lanes_per_chunk;
 		status = SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 			decode_dispatch,lane_offset,lane_count,&packet);
+		if (status == SPARK_STATUS_OK)
+			status = SparkGlm52Pp13ServiceBackendStampWorkPacket(state,&packet);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13WorkControlValidatePacket(
 				&packet,state->rank_plan.execution_row_capacity,
