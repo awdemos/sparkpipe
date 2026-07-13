@@ -4133,12 +4133,13 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
-        fprintf(
-            stderr,
-            "resident_stage_execute_reject step=input_transport status=%d slot=%u flags=0x%08x\n",
-            (int32_t)status,
-            pipeline_slot_index,
-            frame->flags);
+        if (status != SPARK_STATUS_BUSY)
+            fprintf(
+                stderr,
+                "resident_stage_execute_reject step=input_transport status=%d slot=%u flags=0x%08x\n",
+                (int32_t)status,
+                pipeline_slot_index,
+                frame->flags);
         return status;
     }
 
@@ -4158,13 +4159,14 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
             &state->rejected_count,
             1u,
             memory_order_relaxed);
-        fprintf(
-            stderr,
-            "resident_stage_execute_reject step=output_transport status=%d slot=%u flags=0x%08x out_session=%p\n",
-            (int32_t)status,
-            pipeline_slot_index,
-            frame->flags,
-            frame_context != 0 ? (void *)frame_context->hidden_output_transport_session : 0);
+        if (status != SPARK_STATUS_BUSY)
+            fprintf(
+                stderr,
+                "resident_stage_execute_reject step=output_transport status=%d slot=%u flags=0x%08x out_session=%p\n",
+                (int32_t)status,
+                pipeline_slot_index,
+                frame->flags,
+                frame_context != 0 ? (void *)frame_context->hidden_output_transport_session : 0);
         return status;
     }
 
