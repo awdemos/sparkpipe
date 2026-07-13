@@ -258,6 +258,40 @@ def test_mtp_linear_plans_use_logical_rows(root: Path) -> None:
     assert "state,active_sequence_count);" in draft_body
 
 
+def test_mtp_runtime_failures_name_the_failing_phase(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpLayer(")
+    end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpWeights(", start)
+    body = source[start:end]
+    for phase in (
+            "mtp_metadata",
+            "mtp_fusion",
+            "mtp_eh_projection",
+            "mtp_required_layer",
+            "mtp_prepare_linear_rows",
+            "mtp_full_vocab_greedy",
+            "mtp_store_draft"):
+        assert '"' + phase + '"' in body
+
+
+def test_layer_body_failures_are_never_silent(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(",
+        source.index("{", source.index(
+            "static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(")))
+    end = source.index("\n}\n", start)
+    body = source[start:end]
+    assert "getenv" not in body
+    assert "layer_body_failed" in body
+
+
 def test_plain_wide_decode_bypasses_dspark_finalizer(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
