@@ -35,6 +35,9 @@
 #if SPARK_VALIDATION_MAX_ACTIVE_SEQUENCE_COUNT < SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT
 #error "SPARK_VALIDATION_MAX_ACTIVE_SEQUENCE_COUNT must cover active sequences"
 #endif
+#ifndef SPARK_VALIDATION_EXACT_PP13_BATCH_BUCKET
+#define SPARK_VALIDATION_EXACT_PP13_BATCH_BUCKET 0u
+#endif
 #define SPARK_VALIDATION_BUFFER_SEQUENCE_COUNT \
     SPARK_VALIDATION_MAX_ACTIVE_SEQUENCE_COUNT
 #ifndef SPARK_VALIDATION_CACHE_TOKEN_CAPACITY
@@ -4862,6 +4865,13 @@ static bool SparkValidationBindRequiredLinearPlans(
         {
             node_context->linear_plans = plans;
             node_context->linear_plan_count = plan_count;
+            status = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveRows(
+                buffers->linear_plan_binding,
+                SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT);
+            if (status != SPARK_STATUS_OK)
+            {
+                return false;
+            }
             if (!SparkValidationBindRequiredQuantizedProjectionPlans(
                     buffers,
                     node_context,
@@ -5087,6 +5097,14 @@ static bool SparkValidationBindRequiredLinearPlans(
     }
     node_context->linear_plans = plans;
     node_context->linear_plan_count = plan_count;
+    status = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveRows(
+        buffers->linear_plan_binding,
+        SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkValidationReleaseLinearPlanBinding(buffers);
+        return false;
+    }
     if (!SparkValidationBindRequiredQuantizedProjectionPlans(
             buffers,
             node_context,
@@ -9228,13 +9246,25 @@ static bool SparkValidationInitializeExactPp13StageSlicePlan(
     {
         return false;
     }
-    bucket = SparkValidationExactPp13BucketForActiveCount();
+    bucket = SPARK_VALIDATION_EXACT_PP13_BATCH_BUCKET != 0u
+        ? SPARK_VALIDATION_EXACT_PP13_BATCH_BUCKET
+        : SparkValidationExactPp13BucketForActiveCount();
     if (bucket == 0u)
     {
         fprintf(
             stderr,
             "exact PP13 stage-slice validation supports B<=%u active sequences\n",
             SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
+        return false;
+    }
+    if (bucket < SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT ||
+        SparkGlm52StagePlanSelectBatchBucketValue(bucket) != bucket)
+    {
+        fprintf(
+            stderr,
+            "invalid exact PP13 batch bucket=%u active_sequences=%u\n",
+            bucket,
+            SPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT);
         return false;
     }
     stage_index = first_layer_index /

@@ -2977,6 +2977,37 @@ static uint32_t SparkGlm52Pp13BuilderExpectedFp8MoeLayerCount(
 	return expected_count;
 }
 
+static SparkStatus SparkGlm52Pp13BuilderPrepareLinearPlanRows(
+	SparkGlm52Pp13BuilderState *state,
+	uint32_t active_sequence_count)
+{
+	uint32_t layer_offset;
+	SparkStatus status;
+	if (state == 0 || active_sequence_count == 0u ||
+		active_sequence_count > state->rank_plan.execution_row_capacity)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	for (layer_offset = 0u;
+		 layer_offset < state->rank_plan.layer_count;
+		 ++layer_offset)
+	{
+		status = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveRows(
+			state->layers[layer_offset].linear_binding,
+			active_sequence_count);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
+	if (SparkGlm52Pp13BuilderMtpEnabled(state) &&
+		SparkGlm52Pp13BuilderIsFinalRank(state))
+	{
+		status = SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveRows(
+			state->mtp_layer.linear_binding,
+			active_sequence_count);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFusion(
 	SparkGlm52Pp13BuilderState *state,
 	const uint32_t *token_ids,
@@ -5908,6 +5939,9 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 		status = SparkGlm52Pp13BuilderLaunchSerialPrefillMetadata(
 			state,
 			work_packet->active_sequence_count);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderPrepareLinearPlanRows(
+			state,work_packet->execution_row_count);
 	if (status != SPARK_STATUS_OK)
 		goto cancel_work;
 	memset(&dispatch,0,sizeof(dispatch));
@@ -6282,6 +6316,10 @@ static SparkStatus SparkGlm52Pp13BuilderRunPrefillFrame(
 	uint32_t submit_retry;
 	SparkStatus status;
 
+	status = SparkGlm52Pp13BuilderPrepareLinearPlanRows(
+		state,dispatch->active_sequence_count);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	for (submit_retry = 0u; submit_retry < 25000u; ++submit_retry)
 	{
 		status = SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
@@ -6658,6 +6696,9 @@ static SparkStatus SparkGlm52Pp13BuilderDecode(
 		state->rank_plan.rank_index,
 		state->output_sideband,
 		&dispatch.hidden_output_packet);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderPrepareLinearPlanRows(
+			state,execution_row_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	status = SparkGlm52ResidentDecodeStageProductionRunnerSubmit(

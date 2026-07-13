@@ -16,6 +16,13 @@
 typedef struct SparkGlm52ResidentDecodeStageLinearPlanStorage
 {
     uint32_t initialized;
+    uint32_t prepared_active_sequence_count;
+    uint32_t input_dimension;
+    uint32_t output_dimension;
+    uint32_t output_is_f32;
+    uint32_t autotune_warmup_iterations;
+    uint32_t autotune_measurement_iterations;
+    uint32_t reserved0;
     cublasLtMatmulDesc_t matmul_descriptor;
     cublasLtMatrixLayout_t input_layout;
     cublasLtMatrixLayout_t weight_layout;
@@ -23,6 +30,11 @@ typedef struct SparkGlm52ResidentDecodeStageLinearPlanStorage
     cublasLtMatmulAlgo_t algorithm;
     void *workspace;
     uint64_t workspace_bytes;
+    uint64_t workspace_limit_bytes;
+    cudaStream_t cuda_stream;
+    const void *selection_input;
+    const void *selection_weight;
+    void *selection_output;
     void *quantized_weight_workspace;
     void *quantized_output_workspace;
     uint64_t quantized_output_workspace_bytes;
@@ -74,7 +86,7 @@ static SparkStatus SparkGlm52LinearPlanCublasToSparkStatus(
     return SPARK_STATUS_INTERNAL_ERROR;
 }
 
-static void SparkGlm52LinearPlanDestroyStorage(
+static void SparkGlm52LinearPlanDestroyCublasStorage(
     SparkGlm52ResidentDecodeStageLinearPlanStorage *storage)
 {
     if (storage == 0)
@@ -84,7 +96,41 @@ static void SparkGlm52LinearPlanDestroyStorage(
     if (storage->workspace != 0)
     {
         cudaFree(storage->workspace);
+        storage->workspace = 0;
     }
+    if (storage->output_layout != 0)
+    {
+        cublasLtMatrixLayoutDestroy(storage->output_layout);
+        storage->output_layout = 0;
+    }
+    if (storage->weight_layout != 0)
+    {
+        cublasLtMatrixLayoutDestroy(storage->weight_layout);
+        storage->weight_layout = 0;
+    }
+    if (storage->input_layout != 0)
+    {
+        cublasLtMatrixLayoutDestroy(storage->input_layout);
+        storage->input_layout = 0;
+    }
+    if (storage->matmul_descriptor != 0)
+    {
+        cublasLtMatmulDescDestroy(storage->matmul_descriptor);
+        storage->matmul_descriptor = 0;
+    }
+    memset(&storage->algorithm, 0, sizeof(storage->algorithm));
+    storage->workspace_bytes = 0u;
+    storage->prepared_active_sequence_count = 0u;
+}
+
+static void SparkGlm52LinearPlanDestroyStorage(
+    SparkGlm52ResidentDecodeStageLinearPlanStorage *storage)
+{
+    if (storage == 0)
+    {
+        return;
+    }
+    SparkGlm52LinearPlanDestroyCublasStorage(storage);
     if (storage->quantized_output_workspace != 0)
     {
         cudaFree(storage->quantized_output_workspace);
@@ -92,22 +138,6 @@ static void SparkGlm52LinearPlanDestroyStorage(
     if (storage->quantized_weight_workspace != 0)
     {
         cudaFree(storage->quantized_weight_workspace);
-    }
-    if (storage->output_layout != 0)
-    {
-        cublasLtMatrixLayoutDestroy(storage->output_layout);
-    }
-    if (storage->weight_layout != 0)
-    {
-        cublasLtMatrixLayoutDestroy(storage->weight_layout);
-    }
-    if (storage->input_layout != 0)
-    {
-        cublasLtMatrixLayoutDestroy(storage->input_layout);
-    }
-    if (storage->matmul_descriptor != 0)
-    {
-        cublasLtMatmulDescDestroy(storage->matmul_descriptor);
     }
     memset(storage, 0, sizeof(*storage));
 }
@@ -363,6 +393,90 @@ static SparkStatus SparkGlm52LinearPlanSelectAlgorithm(
     return SPARK_STATUS_INVALID_ARGUMENT;
 }
 
+static void SparkGlm52LinearPlanPublishPreparedStorage(
+    SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
+    SparkGlm52ResidentDecodeStageLinearPlanStorage *storage,
+    SparkGlm52ResidentDecodeStageLinearPlan *plan)
+{
+    plan->cublaslt_handle = (void *)binding->cublaslt_handle;
+    plan->matmul_descriptor = (void *)storage->matmul_descriptor;
+    plan->input_layout = (void *)storage->input_layout;
+    plan->weight_layout = (void *)storage->weight_layout;
+    plan->output_layout = (void *)storage->output_layout;
+    plan->algorithm = (const void *)&storage->algorithm;
+    plan->workspace = storage->workspace;
+    plan->workspace_bytes = storage->workspace_bytes;
+    plan->custom_state = storage;
+}
+
+static SparkStatus SparkGlm52LinearPlanPrepareOne(
+    SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
+    SparkGlm52ResidentDecodeStageLinearPlanStorage *storage,
+    SparkGlm52ResidentDecodeStageLinearPlan *plan,
+    uint32_t active_sequence_count)
+{
+    SparkGlm52ResidentDecodeStageLinearPlanStorage prepared;
+    uint64_t selected_workspace_bytes;
+    SparkStatus status;
+
+    if (binding == 0 || storage == 0 || plan == 0 ||
+        active_sequence_count == 0u ||
+        active_sequence_count > plan->maximum_active_sequence_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (storage->prepared_active_sequence_count == active_sequence_count)
+    {
+        SparkGlm52LinearPlanPublishPreparedStorage(binding, storage, plan);
+        return SPARK_STATUS_OK;
+    }
+    memset(&prepared, 0, sizeof(prepared));
+    status = SparkGlm52LinearPlanCreateDescriptors(
+        binding,
+        &prepared,
+        active_sequence_count,
+        storage->input_dimension,
+        storage->output_dimension,
+        storage->output_is_f32);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52LinearPlanSelectAlgorithm(
+            binding,
+            &prepared,
+            storage->selection_input,
+            storage->selection_weight,
+            storage->selection_output,
+            storage->workspace_limit_bytes,
+            storage->cuda_stream,
+            storage->autotune_warmup_iterations,
+            storage->autotune_measurement_iterations,
+            &selected_workspace_bytes);
+    }
+    if (status == SPARK_STATUS_OK && selected_workspace_bytes != 0u)
+    {
+        status = SparkGlm52LinearPlanCudaToSparkStatus(
+            cudaMalloc(&prepared.workspace, (size_t)selected_workspace_bytes));
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkGlm52LinearPlanDestroyCublasStorage(&prepared);
+        return status;
+    }
+    prepared.workspace_bytes = selected_workspace_bytes;
+    SparkGlm52LinearPlanDestroyCublasStorage(storage);
+    storage->matmul_descriptor = prepared.matmul_descriptor;
+    storage->input_layout = prepared.input_layout;
+    storage->weight_layout = prepared.weight_layout;
+    storage->output_layout = prepared.output_layout;
+    storage->algorithm = prepared.algorithm;
+    storage->workspace = prepared.workspace;
+    storage->workspace_bytes = prepared.workspace_bytes;
+    storage->prepared_active_sequence_count = active_sequence_count;
+    storage->initialized = 1u;
+    SparkGlm52LinearPlanPublishPreparedStorage(binding, storage, plan);
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52LinearPlanCreateOne(
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
     uint32_t plan_index,
@@ -376,8 +490,6 @@ static SparkStatus SparkGlm52LinearPlanCreateOne(
 {
     SparkGlm52ResidentDecodeStageLinearPlanStorage *storage;
     SparkGlm52ResidentDecodeStageLinearPlan *plan;
-    uint64_t selected_workspace_bytes;
-    SparkStatus status;
 
     if (binding == 0 || create_info == 0 ||
         plan_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT ||
@@ -388,46 +500,18 @@ static SparkStatus SparkGlm52LinearPlanCreateOne(
 
     storage = &binding->storage[plan_index];
     plan = &binding->plans[plan_index];
-    status = SparkGlm52LinearPlanCreateDescriptors(
-        binding,
-        storage,
-        create_info->maximum_active_sequence_count,
-        input_dimension,
-        output_dimension,
-        output_is_f32);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-
-    status = SparkGlm52LinearPlanSelectAlgorithm(
-        binding,
-        storage,
-        input,
-        weight,
-        output,
-        create_info->workspace_limit_bytes,
-        (cudaStream_t)create_info->cuda_stream,
-        create_info->autotune_warmup_iterations,
-        create_info->autotune_measurement_iterations,
-        &selected_workspace_bytes);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-
-    if (selected_workspace_bytes != 0u)
-    {
-        status = SparkGlm52LinearPlanCudaToSparkStatus(
-            cudaMalloc(&storage->workspace, (size_t)selected_workspace_bytes));
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-    }
-    storage->workspace_bytes = selected_workspace_bytes;
-    storage->initialized = 1u;
-
+    storage->input_dimension = input_dimension;
+    storage->output_dimension = output_dimension;
+    storage->output_is_f32 = output_is_f32;
+    storage->autotune_warmup_iterations =
+        create_info->autotune_warmup_iterations;
+    storage->autotune_measurement_iterations =
+        create_info->autotune_measurement_iterations;
+    storage->workspace_limit_bytes = create_info->workspace_limit_bytes;
+    storage->cuda_stream = (cudaStream_t)create_info->cuda_stream;
+    storage->selection_input = input;
+    storage->selection_weight = weight;
+    storage->selection_output = output;
     memset(plan, 0, sizeof(*plan));
     plan->abi_version = SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ABI_VERSION;
     plan->plan_kind = SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR;
@@ -436,17 +520,9 @@ static SparkStatus SparkGlm52LinearPlanCreateOne(
     plan->maximum_active_sequence_count =
         create_info->maximum_active_sequence_count;
     plan->output_is_f32 = output_is_f32;
-    plan->cublaslt_handle = (void *)binding->cublaslt_handle;
-    plan->matmul_descriptor = (void *)storage->matmul_descriptor;
-    plan->input_layout = (void *)storage->input_layout;
-    plan->weight_layout = (void *)storage->weight_layout;
-    plan->output_layout = (void *)storage->output_layout;
-    plan->algorithm = (const void *)&storage->algorithm;
-    plan->workspace = storage->workspace;
-    plan->workspace_bytes = storage->workspace_bytes;
     plan->alpha = 1.0f;
     plan->beta = 0.0f;
-    return SPARK_STATUS_OK;
+    return SparkGlm52LinearPlanPrepareOne(binding, storage, plan, 1u);
 }
 
 static uint64_t SparkGlm52LinearPlanDivideRoundUpU64(
@@ -1328,6 +1404,57 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
 
     *binding_out = binding;
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveRows(
+    SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
+    uint32_t active_sequence_count)
+{
+    uint32_t plan_index;
+    SparkStatus status;
+
+    if (binding == 0 ||
+        binding->abi_version !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BINDING_ABI_VERSION ||
+        active_sequence_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (plan_index = 0u; plan_index < binding->plan_count; ++plan_index)
+    {
+        if (binding->plans[plan_index].plan_kind !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR)
+        {
+            continue;
+        }
+        status = SparkGlm52LinearPlanPrepareOne(
+            binding,
+            &binding->storage[plan_index],
+            &binding->plans[plan_index],
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+uint32_t SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(
+    const SparkGlm52ResidentDecodeStageLinearPlan *plan)
+{
+    const SparkGlm52ResidentDecodeStageLinearPlanStorage *storage;
+
+    if (plan == 0 ||
+        plan->plan_kind !=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR ||
+        plan->custom_state == 0)
+    {
+        return 0u;
+    }
+    storage = (const SparkGlm52ResidentDecodeStageLinearPlanStorage *)
+        plan->custom_state;
+    return storage->prepared_active_sequence_count;
 }
 
 void SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(

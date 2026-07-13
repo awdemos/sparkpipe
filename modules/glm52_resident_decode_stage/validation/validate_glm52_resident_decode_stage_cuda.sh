@@ -52,6 +52,9 @@ fi
 nvcc_path="${NVCC:-nvcc}"
 cuda_architecture="${CUDA_ARCH:-sm_121a}"
 active_sequence_count="${GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT:-1}"
+maximum_active_sequence_count="${GLM52_VALIDATION_MAX_ACTIVE_SEQUENCE_COUNT:-${active_sequence_count}}"
+exact_pp13_batch_bucket="${GLM52_VALIDATION_EXACT_PP13_BATCH_BUCKET:-0}"
+expected_output_hidden="${GLM52_VALIDATION_EXPECTED_OUTPUT_HIDDEN_BF16:-}"
 
 if ! command -v "${nvcc_path}" >/dev/null 2>&1; then
     echo "nvcc unavailable for hardware validation" >&2
@@ -63,6 +66,20 @@ if [[ "${cuda_architecture}" != "sm_121a" ]]; then
 fi
 if ! [[ "${active_sequence_count}" =~ ^[0-9]+$ ]] || [[ "${active_sequence_count}" == "0" ]]; then
     echo "GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT must be a positive integer" >&2
+    exit 2
+fi
+if ! [[ "${maximum_active_sequence_count}" =~ ^[0-9]+$ ]] ||
+    [[ "${maximum_active_sequence_count}" == "0" ]] ||
+    (( maximum_active_sequence_count < active_sequence_count )); then
+    echo "GLM52_VALIDATION_MAX_ACTIVE_SEQUENCE_COUNT must cover active sequences" >&2
+    exit 2
+fi
+if ! [[ "${exact_pp13_batch_bucket}" =~ ^[0-9]+$ ]]; then
+    echo "GLM52_VALIDATION_EXACT_PP13_BATCH_BUCKET must be a nonnegative integer" >&2
+    exit 2
+fi
+if [[ -n "${expected_output_hidden}" && ! -s "${expected_output_hidden}" ]]; then
+    echo "GLM52_VALIDATION_EXPECTED_OUTPUT_HIDDEN_BF16 is missing or empty: ${expected_output_hidden}" >&2
     exit 2
 fi
 required_cuda_link_args=()
@@ -92,6 +109,8 @@ make -C "${repository_root}" "${common_target}" "${runtime_target}" "${compiler_
     --use_fast_math \
     -arch="${cuda_architecture}" \
     -DSPARK_VALIDATION_ACTIVE_SEQUENCE_COUNT="${active_sequence_count}u" \
+    -DSPARK_VALIDATION_MAX_ACTIVE_SEQUENCE_COUNT="${maximum_active_sequence_count}u" \
+    -DSPARK_VALIDATION_EXACT_PP13_BATCH_BUCKET="${exact_pp13_batch_bucket}u" \
     -I"${repository_root}/include" \
     -I"${module_directory}/include" \
     -I"${module_directory}/source" \
@@ -113,4 +132,12 @@ if [[ -n "${driver_path}" ]]; then
 else
     "${validation_directory}/glm52_resident_decode_stage_validator" \
         "${maximum_stage_microseconds}"
+fi
+if [[ -n "${expected_output_hidden}" ]]; then
+    if [[ -z "${GLM52_PIPELINE_OUTPUT_HIDDEN_BF16:-}" ]] ||
+        ! cmp -s "${expected_output_hidden}" "${GLM52_PIPELINE_OUTPUT_HIDDEN_BF16}"; then
+        echo "GLM52 validation output does not match expected hidden: ${expected_output_hidden}" >&2
+        exit 2
+    fi
+    echo "glm52_validation_expected_output_match=1 expected=${expected_output_hidden} actual=${GLM52_PIPELINE_OUTPUT_HIDDEN_BF16}"
 fi
