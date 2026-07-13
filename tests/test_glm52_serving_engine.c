@@ -748,11 +748,12 @@ static void SparkTestServingDynamicTokenStorageGrowsAndRecycles(void)
     request.token_ids = Fixture.prompt_tokens;
     request.output_token_budget = 7u;
     request.request_id = 9401u;
-    request.sequence_id = 19401u;
+    request.sequence_id = 0u;
     assert(SparkGlm52ServingEngineSubmitTokenIds(
         &Fixture.serving_engine,
         &request,
         &result) == SPARK_STATUS_OK);
+    assert(result.sequence_id != 0u);
     handle = result.request_handle;
     assert(Fixture.serving_engine.free_record_head == 1u);
     assert(Fixture.request_records[0u].token_ids != 0);
@@ -772,7 +773,7 @@ static void SparkTestServingDynamicTokenStorageGrowsAndRecycles(void)
     assert(Fixture.request_records[0u].token_capacity == 0u);
     assert(CallbackContext.release_callback_count == 1u);
     assert(CallbackContext.released_request_id == 9401u);
-    assert(CallbackContext.released_sequence_id == 19401u);
+    assert(CallbackContext.released_sequence_id == result.sequence_id);
     assert(CallbackContext.released_token_count ==
         SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT);
 }
