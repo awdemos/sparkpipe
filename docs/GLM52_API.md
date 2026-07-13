@@ -487,6 +487,11 @@ It translates JSON request bodies into `SparkGlm52ServiceSubmitText` calls.
 It does not implement HTTP, SSE, auth, rate limiting, or response JSON
 formatting.
 
+OpenAI `messages` and Anthropic `messages` are rendered with the GLM-5.2
+`[gMASK]<sop>` chat template, including the reasoning-effort prefix and
+assistant generation marker. OpenAI `prompt` is submitted unchanged for callers
+that already rendered a model prompt or intentionally use raw completion mode.
+
 The caller owns the prompt buffer:
 
 ```c
