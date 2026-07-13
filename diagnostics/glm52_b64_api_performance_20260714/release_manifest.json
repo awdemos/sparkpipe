@@ -1,0 +1,236 @@
+{
+  "files": [
+    {
+      "bytes": 242528,
+      "executable": true,
+      "path": "bin/sparkpipe_release_manager",
+      "restart_on_change": false,
+      "sha256": "6a0c15ce1a90de944d1d3a329f0a207083363af2959222d37d7076a4441656c8"
+    },
+    {
+      "bytes": 338296,
+      "executable": true,
+      "path": "bin/sparkpipe_glm52_cuda_residentd",
+      "resident_reload_boundary": true,
+      "sha256": "05dfe3861ef7a87e6a564b70a79f87fba81670f1aa5ef1276df5624f388ceac5"
+    },
+    {
+      "bytes": 455128,
+      "executable": true,
+      "path": "bin/sparkpipe_glm52_pp13_rank_daemon",
+      "sha256": "7dc10392215725244c269fd08e4397f2c193160b84108e78218008cab84752fa"
+    },
+    {
+      "bytes": 6593408,
+      "path": "lib/libglm52_pp13_node_context_builder.so",
+      "resident_reload_boundary": true,
+      "sha256": "b6c7e868e65a168ac52c5fc6d2331c513f8d1020148d38f732f33f7f9c54afd2"
+    },
+    {
+      "bytes": 105808,
+      "path": "lib/libhidden_transport_tcp_cuda.so",
+      "sha256": "37800e57b0a7eb07b10ca96e46680f0bd5610988b5def9b10236b5ddffa4280b"
+    },
+    {
+      "bytes": 5955192,
+      "path": "lib/model_driver.so",
+      "resident_reload_boundary": true,
+      "sha256": "29edfc1285d498effeb4fe1ff42e846d0f1a005c6d13e724f328b8c94fd33bba"
+    },
+    {
+      "bytes": 37450432,
+      "path": "lib/runtime_libs/libcute_dsl_runtime.so",
+      "sha256": "84d6d10a2de1447b11098c4b87333c38071184a4601f12d4655edae16d5a1b31"
+    },
+    {
+      "bytes": 1445856,
+      "path": "lib/runtime_libs/libtvm_ffi.so",
+      "sha256": "437b1bcc5f4d320335ee428932b74f04d9a133d4228372df91beeb8fe6bb2e7f"
+    },
+    {
+      "bytes": 1061136,
+      "executable": true,
+      "path": "bin/sparkpipe_glm52_http_gateway",
+      "sha256": "3f786239db58a72b8c807c67c77eab4be35f6a75f1a58efc4f27486a8e279ad4"
+    },
+    {
+      "bytes": 1238792,
+      "path": "lib/libglm52_pp13_service_backend.so",
+      "sha256": "a507e07176c91d27069e78c5bec42ca55ebb0f3bd7c05306bb4981657e1c1c4a"
+    },
+    {
+      "bytes": 7821515,
+      "path": "tokenizer/glm52_tokenizer.sptok",
+      "sha256": "146e52e385c95ef24b014c81179f49ce5220aabb54c2e80961b1021cc79abc90"
+    }
+  ],
+  "generation": 20260713220928,
+  "git_commit": "1d7f176b7c0cb4277d55fa914db4b6472de2de56",
+  "install_root": "/home/{host}/sparkpipe_runtime",
+  "max_active_sequence_count": 64,
+  "poll_interval_ms": 1000,
+  "rank_count": 13,
+  "release_id": "glm52-fp8-main-1d7f176b-b64-perf",
+  "roles": [
+    {
+      "argv": [
+        "--bind",
+        "0.0.0.0",
+        "--port",
+        "18080",
+        "--api-key-file",
+        "{install_root}/API_KEY",
+        "--require-service-backend",
+        "--service-backend-so",
+        "{install_root}/lib/libglm52_pp13_service_backend.so",
+        "--fp8-pack-root",
+        "/home/{host}/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1",
+        "--stagepack-root",
+        "/home/{host}/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1",
+        "--transport-so",
+        "{install_root}/lib/libhidden_transport_tcp_cuda.so",
+        "--driver-so",
+        "{install_root}/lib/model_driver.so",
+        "--node-context-builder-so",
+        "{install_root}/lib/libglm52_pp13_node_context_builder.so",
+        "--embedding-pack",
+        "/home/{host}/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1/stage_payload_manifest.json",
+        "--tokenizer",
+        "{install_root}/tokenizer/glm52_tokenizer.sptok",
+        "--program",
+        "decode",
+        "--node-target",
+        "cuda.sm121.glm52.resident_decode_stage.bf16",
+        "--max-active",
+        "64",
+        "--port-base",
+        "52100",
+        "--final-event-bind",
+        "0.0.0.0",
+        "--final-event-return-host",
+        "spark0",
+        "--cuda-resident-socket",
+        "{state_root}/cuda_resident_rank{rank}.sock",
+        "--kv-logical-blocks",
+        "256"
+      ],
+      "command": "bin/sparkpipe_glm52_http_gateway",
+      "env": [
+        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs",
+        "SPARKPIPE_RELEASE_ID=glm52-fp8-main-1d7f176b-b64-perf",
+        "SPARKPIPE_RELEASE_GIT_COMMIT=1d7f176b7c0cb4277d55fa914db4b6472de2de56",
+        "SPARKPIPE_RELEASE_GENERATION=20260713220928"
+      ],
+      "name": "spark0_gateway",
+      "restart_on_update": true,
+      "selector": "spark0"
+    },
+    {
+      "argv": [
+        "plan",
+        "--manifest",
+        "{state_root}/release_staging/sparkpipe.json",
+        "--host",
+        "{host}",
+        "--rank",
+        "{rank}",
+        "--role",
+        "pp13_cuda_residentd"
+      ],
+      "command": "bin/sparkpipe_release_manager",
+      "env": [
+        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs",
+        "SPARKPIPE_RELEASE_ID=glm52-fp8-main-1d7f176b-b64-perf",
+        "SPARKPIPE_RELEASE_GIT_COMMIT=1d7f176b7c0cb4277d55fa914db4b6472de2de56",
+        "SPARKPIPE_RELEASE_GENERATION=20260713220928"
+      ],
+      "name": "release_sync_probe",
+      "restart_on_update": true,
+      "selector": "rank"
+    },
+    {
+      "allow_resident_pack_cache": true,
+      "argv": [
+        "--rank",
+        "{rank}",
+        "--socket",
+        "{state_root}/cuda_resident_rank{rank}.sock",
+        "--fp8-pack-root",
+        "/home/{host}/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1",
+        "--stagepack-root",
+        "/home/{host}/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1",
+        "--transport-so",
+        "{install_root}/lib/libhidden_transport_tcp_cuda.so",
+        "--driver-so",
+        "{install_root}/lib/model_driver.so",
+        "--node-context-builder-so",
+        "{install_root}/lib/libglm52_pp13_node_context_builder.so",
+        "--embedding-pack",
+        "/home/{host}/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1/stage_payload_manifest.json",
+        "--max-active",
+        "64",
+        "--port-base",
+        "52100",
+        "--program",
+        "decode",
+        "--node-target",
+        "cuda.sm121.glm52.resident_decode_stage.bf16",
+        "--kv-pool-tokens",
+        "16384"
+      ],
+      "command": "bin/sparkpipe_glm52_cuda_residentd",
+      "env": [
+        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs",
+        "SPARKPIPE_FP8_MOE_ACCURATE_BF16_ACTIVATION=1",
+        "SPARKPIPE_RELEASE_ID=glm52-fp8-main-1d7f176b-b64-perf",
+        "SPARKPIPE_RELEASE_GIT_COMMIT=1d7f176b7c0cb4277d55fa914db4b6472de2de56",
+        "SPARKPIPE_RELEASE_GENERATION=20260713220928"
+      ],
+      "name": "pp13_cuda_residentd",
+      "restart_on_update": true,
+      "selector": "rank"
+    },
+    {
+      "allow_resident_pack_cache": false,
+      "argv": [
+        "--rank",
+        "{rank}",
+        "--cuda-resident-socket",
+        "{state_root}/cuda_resident_rank{rank}.sock",
+        "--max-active",
+        "64",
+        "--port-base",
+        "52100",
+        "--final-event-return-host",
+        "spark0"
+      ],
+      "command": "bin/sparkpipe_glm52_pp13_rank_daemon",
+      "env": [
+        "LD_LIBRARY_PATH={install_root}/lib:{install_root}/lib/runtime_libs",
+        "SPARKPIPE_RELEASE_ID=glm52-fp8-main-1d7f176b-b64-perf",
+        "SPARKPIPE_RELEASE_GIT_COMMIT=1d7f176b7c0cb4277d55fa914db4b6472de2de56",
+        "SPARKPIPE_RELEASE_GENERATION=20260713220928"
+      ],
+      "hosts": [
+        "spark1",
+        "spark2",
+        "spark3",
+        "spark4",
+        "spark5",
+        "spark6",
+        "spark7",
+        "spark8",
+        "spark9",
+        "sparka",
+        "sparkb",
+        "sparkc"
+      ],
+      "name": "pp13_rank_daemon",
+      "restart_on_update": true,
+      "selector": "host"
+    }
+  ],
+  "schema_version": 1,
+  "state_root": "/home/{host}/sparkpipe_state",
+  "stop_grace_ms": 5000
+}
