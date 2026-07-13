@@ -3161,7 +3161,7 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 				(uint32_t *)state->mtp_layer.restricted_selected_token_ids,
 				(float *)state->mtp_layer.restricted_selected_token_scores,
 				state->final_epilogue_workspace,state->exact_plan.workspace_bytes,
-				active_sequence_count,state->rank_plan.execution_row_capacity,
+				active_sequence_count,state->rank_plan.logical_lane_capacity,
 				SPARK_GLM52_MODEL_RMS_NORM_EPSILON,cuda_stream);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13BuilderStoreMtpDraft(

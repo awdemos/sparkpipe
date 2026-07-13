@@ -187,6 +187,21 @@ def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None
             function_body)
 
 
+def test_mtp_full_vocab_workspace_uses_logical_lane_capacity(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(")
+    end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpWeights(", start)
+    function_body = source[start:end]
+    assert ("active_sequence_count,state->rank_plan.logical_lane_capacity," in
+            function_body)
+    assert ("active_sequence_count,state->rank_plan.execution_row_capacity," not in
+            function_body)
+
+
 def test_plain_wide_decode_bypasses_dspark_finalizer(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -294,6 +309,7 @@ def main() -> None:
     test_fp8_phase_probe_targets_the_first_divergent_layer(root)
     test_fp8_validator_preserves_quantized_dense_execution(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
+    test_mtp_full_vocab_workspace_uses_logical_lane_capacity(root)
     test_plain_wide_decode_bypasses_dspark_finalizer(root)
     test_resident_block_stride_is_independent_of_the_physical_pool(root)
     test_service_backend_namespaces_ids_per_live_session(root)
