@@ -19,7 +19,6 @@
 #define SPARK_GLM52_GATEWAY_DEFAULT_PORT 8080u
 #define SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS 256u
 #define SPARK_GLM52_GATEWAY_BATCH_COALESCE_POLL_MS 1u
-#define SPARK_GLM52_GATEWAY_BATCH_COALESCE_POLL_COUNT 2u
 #define SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY 8u
 #define SPARK_GLM52_GATEWAY_STREAM_BODY_BYTES 4096u
 #define SPARK_GLM52_GATEWAY_STREAM_SLOT_BITS 16u
@@ -1498,15 +1497,11 @@ static void SparkGlm52GatewayCoalesceBatch(
 {
 	struct pollfd listen_poll;
 	int32_t poll_result;
-	uint32_t poll_index;
 
 	memset(&listen_poll,0,sizeof(listen_poll));
 	listen_poll.fd = listen_fd;
 	listen_poll.events = POLLIN;
-	for (poll_index = 0u;
-		 poll_index < SPARK_GLM52_GATEWAY_BATCH_COALESCE_POLL_COUNT &&
-			SparkGlm52GatewayShouldCoalesceBatch(runtime) != 0u;
-		 ++poll_index)
+	while (SparkGlm52GatewayShouldCoalesceBatch(runtime) != 0u)
 	{
 		listen_poll.revents = 0;
 		poll_result = poll(
