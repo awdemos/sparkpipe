@@ -849,6 +849,38 @@ static SparkStatus SparkGlm52CudaResidentdBuildPollFds(
     return status;
 }
 
+static SparkStatus SparkGlm52CudaResidentdProgressTransport(
+    SparkHiddenTransportSession *session)
+{
+    SparkHiddenTransportCompletion completion;
+    SparkStatus status;
+
+    if (session == 0)
+        return SPARK_STATUS_OK;
+    memset(&completion,0,sizeof(completion));
+    status = SparkHiddenTransportPoll(session,&completion);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    if (completion.status == SPARK_STATUS_BUSY)
+        return SPARK_STATUS_OK;
+    return completion.status;
+}
+
+static SparkStatus SparkGlm52CudaResidentdProgressTransports(
+    SparkGlm52CudaResidentdRuntime *runtime)
+{
+    SparkStatus status;
+
+    if (runtime == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    status = SparkGlm52CudaResidentdProgressTransport(
+        runtime->input_transport_session);
+    if (status == SPARK_STATUS_OK)
+        status = SparkGlm52CudaResidentdProgressTransport(
+            runtime->output_transport_session);
+    return status;
+}
+
 static SparkStatus SparkGlm52CudaResidentdBuildNodeContext(
     SparkGlm52CudaResidentdRuntime *runtime,
     const SparkGlm52CudaResidentdConfiguration *configuration)
@@ -1923,6 +1955,14 @@ int main(int argc, char **argv)
     exit_code = 0;
     while (SparkGlm52CudaResidentdRunning)
     {
+        status = SparkGlm52CudaResidentdProgressTransports(&runtime);
+        if (status != SPARK_STATUS_OK)
+        {
+            fprintf(stderr,"cuda_residentd_transport_progress_failed status=%u\n",
+                (uint32_t)status);
+            exit_code = 1;
+            break;
+        }
         SparkGlm52CudaResidentdProgressDriver(&runtime);
         while (SparkGlm52CudaResidentdPumpQueuedWork(&runtime) != 0u &&
             runtime.driver_inflight_count == 0u)
