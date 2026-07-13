@@ -366,16 +366,17 @@ SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
     else
     {
         runner->stats.submit_failed_count += 1u;
-        fprintf(
-            stderr,
-            "production_runner_submit_failed status=%d frame_flags=0x%08x active=%u tokens=%u slot=%u position=%llu frame_context=%p\n",
-            (int32_t)status,
-            frame.flags,
-            frame.active_slot_count,
-            frame.new_token_count,
-            frame.driver_dispatch_slot,
-            (unsigned long long)frame.sequence_position,
-            frame.user_context);
+        if ( status != SPARK_STATUS_BUSY )
+            fprintf(
+                stderr,
+                "production_runner_submit_failed status=%d frame_flags=0x%08x active=%u tokens=%u slot=%u position=%llu frame_context=%p\n",
+                (int32_t)status,
+                frame.flags,
+                frame.active_slot_count,
+                frame.new_token_count,
+                frame.driver_dispatch_slot,
+                (unsigned long long)frame.sequence_position,
+                frame.user_context);
     }
     return status;
 }
