@@ -208,6 +208,22 @@ def test_plain_wide_decode_bypasses_dspark_finalizer(root: Path) -> None:
         wide_finalize)
 
 
+def test_resident_block_limit_tracks_the_configured_physical_pool(
+        root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    helper = "SparkGlm52Pp13BuilderResidentMaxBlocksPerSequence"
+    start = source.index("static uint32_t " + helper + "(")
+    end = source.index("static uint32_t SparkGlm52Pp13BuilderIsFinalRank(", start)
+    function_body = source[start:end]
+    assert "state->configuration.kv_pool_token_capacity /" in function_body
+    assert "SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS" in function_body
+    assert function_body.count(
+        "SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE") == 2
+    assert source.count(helper + "(state)") == 2
+
+
 def test_service_backend_namespaces_ids_per_live_session(root: Path) -> None:
     source = (root / "src" /
               "spark_glm52_pp13_service_backend.c").read_text(
@@ -277,6 +293,7 @@ def main() -> None:
     test_fp8_validator_preserves_quantized_dense_execution(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
     test_plain_wide_decode_bypasses_dspark_finalizer(root)
+    test_resident_block_limit_tracks_the_configured_physical_pool(root)
     test_service_backend_namespaces_ids_per_live_session(root)
     test_final_event_pump_detects_disconnect_before_send(root)
     test_rank_queue_does_not_overtake_a_deferred_sequence_position(root)
