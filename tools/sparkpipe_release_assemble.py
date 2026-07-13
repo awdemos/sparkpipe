@@ -8,6 +8,22 @@ import os
 import shutil
 
 
+DIAGNOSTIC_ENVIRONMENT_BY_ROLE = {
+    "spark0_gateway": {
+        "SPARKPIPE_PP13_TRACE",
+    },
+    "pp13_cuda_residentd": {
+        "SPARKPIPE_STAGE_COMPLETION_DEBUG",
+        "SPARKPIPE_STAGE_PHASE_HASH",
+        "SPARKPIPE_HIDDEN_DUMP_DIR",
+    },
+    "pp13_rank_daemon": {
+        "SPARKPIPE_STAGE_COMPLETION_DEBUG",
+        "SPARKPIPE_PP13_TRACE",
+    },
+}
+
+
 def sha256(path):
     digest = hashlib.sha256()
     with open(path,"rb") as source:
@@ -72,6 +88,25 @@ def set_role_release_identity(manifest):
         role["env"] = environment
 
 
+def remove_runtime_diagnostics(manifest):
+    for role_name,names in DIAGNOSTIC_ENVIRONMENT_BY_ROLE.items():
+        matching_roles = [role for role in manifest["roles"]
+                          if role.get("name") == role_name]
+        if len(matching_roles) != 1:
+            raise SystemExit(
+                "release must contain exactly one role named " + role_name)
+        role = matching_roles[0]
+        environment = role.get("env",[])
+        found = {entry.split("=",1)[0] for entry in environment}
+        missing = names - found
+        if missing:
+            raise SystemExit(
+                "diagnostic environment is missing from " + role_name + ": " +
+                ",".join(sorted(missing)))
+        role["env"] = [entry for entry in environment
+                       if entry.split("=",1)[0] not in names]
+
+
 def write_manifest(root,manifest):
     for entry in manifest["files"]:
         path = os.path.join(root,entry["path"])
@@ -95,6 +130,7 @@ def main():
     parser.add_argument("--kv-pool-tokens",type=int)
     parser.add_argument("--kv-logical-blocks",type=int,required=True)
     parser.add_argument("--mtp",action="store_true")
+    parser.add_argument("--without-diagnostics",action="store_true")
     parser.add_argument("--replace",action="append",default=[])
     arguments = parser.parse_args()
     temporary = arguments.output + ".assembling." + str(os.getpid())
@@ -133,6 +169,8 @@ def main():
         arguments.kv_logical_blocks)
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
     set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
+    if arguments.without_diagnostics:
+        remove_runtime_diagnostics(manifest)
     write_manifest(temporary,manifest)
     os.rename(temporary,arguments.output)
 

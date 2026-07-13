@@ -26,9 +26,33 @@ def main():
             "max_active_sequence_count": 16,
             "files": [{"path": "bin/runtime", "bytes": 3, "sha256": "0" * 64}],
             "roles": [
-                {"name": "rank", "argv": ["--max-active", "16"]},
-                {"name": "pp13_cuda_residentd", "argv": ["--max-active", "16"]},
-                {"name": "spark0_gateway", "argv": ["--max-active", "16"]},
+                {
+                    "name": "pp13_rank_daemon",
+                    "argv": ["--max-active", "16"],
+                    "env": [
+                        "SPARKPIPE_STAGE_COMPLETION_DEBUG=1",
+                        "SPARKPIPE_PP13_TRACE=1",
+                        "KEEP_RANK=1",
+                    ],
+                },
+                {
+                    "name": "pp13_cuda_residentd",
+                    "argv": ["--max-active", "16"],
+                    "env": [
+                        "SPARKPIPE_STAGE_COMPLETION_DEBUG=1",
+                        "SPARKPIPE_STAGE_PHASE_HASH=1",
+                        "SPARKPIPE_HIDDEN_DUMP_DIR=/tmp/dumps",
+                        "KEEP_RESIDENT=1",
+                    ],
+                },
+                {
+                    "name": "spark0_gateway",
+                    "argv": ["--max-active", "16"],
+                    "env": [
+                        "SPARKPIPE_PP13_TRACE=1",
+                        "KEEP_GATEWAY=1",
+                    ],
+                },
             ],
         }
         (template / "sparkpipe.json").write_text(json.dumps(manifest),encoding="utf-8")
@@ -42,6 +66,7 @@ def main():
             "--kv-pool-tokens","65536",
             "--kv-logical-blocks","1024",
             "--mtp",
+            "--without-diagnostics",
             "--replace","bin/runtime=" + str(replacement),
         ],check=True)
         result = json.loads((output / "sparkpipe.json").read_text(encoding="utf-8"))
@@ -59,6 +84,17 @@ def main():
             assert "SPARKPIPE_RELEASE_GIT_COMMIT=abc123" in role["env"]
             assert any(item.startswith("SPARKPIPE_RELEASE_GENERATION=")
                        for item in role["env"])
+        assert "KEEP_RANK=1" in result["roles"][0]["env"]
+        assert "KEEP_RESIDENT=1" in result["roles"][1]["env"]
+        assert "KEEP_GATEWAY=1" in result["roles"][2]["env"]
+        diagnostic_names = {
+            "SPARKPIPE_STAGE_COMPLETION_DEBUG",
+            "SPARKPIPE_STAGE_PHASE_HASH",
+            "SPARKPIPE_HIDDEN_DUMP_DIR",
+            "SPARKPIPE_PP13_TRACE",
+        }
+        assert all(entry.split("=",1)[0] not in diagnostic_names
+                   for role in result["roles"] for entry in role["env"])
         assert result["files"][0]["bytes"] == 11
         assert result["files"][0]["sha256"] == expected
         assert (output / "bin" / "runtime").read_bytes() == b"new-runtime"

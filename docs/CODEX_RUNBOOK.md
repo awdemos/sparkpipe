@@ -130,6 +130,12 @@ Validate before serving:
     --manifest <new-release>/sparkpipe.json
 ```
 
+After byte-exact correctness is retained, add `--without-diagnostics` when
+assembling a performance release. The assembler removes the known stage dumps,
+phase hashes, completion logs, and PP13 packet tracing as one checked operation.
+It fails if the template does not contain the expected diagnostic environment;
+do not hand-edit the manifest or silently retain an instrumented role.
+
 The 1M-token pool is the B1 correctness configuration when rank12 also owns
 native MTP weights. It preserves one full-context lane while avoiding the old
 4M-token allocation. Increase concurrency only after measuring rank12 resident
