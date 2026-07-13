@@ -497,6 +497,72 @@ static void SparkTestGlm52SchedulerInterleavesPrefillAndDecode(void)
     assert(SparkGlm52SchedulerReleaseSequence(&scheduler, 31u) == SPARK_STATUS_OK);
 }
 
+static void SparkTestGlm52SchedulerFillsCurrentSparkPipeline(void)
+{
+    SparkGlm52PrefixCache cache;
+    SparkGlm52PrefixCacheEntry entries[128u];
+    SparkGlm52PrefixCacheSequenceBinding bindings[512u];
+    SparkGlm52SchedulerConfiguration configuration;
+    SparkGlm52Scheduler scheduler;
+    SparkGlm52SchedulerRequest request;
+    SparkGlm52SchedulerDecision decision;
+    SparkGlm52SchedulerDecision prefill_decision;
+    uint32_t tokens[16u];
+    uint32_t cohort_index;
+
+    SparkTestFillTokenIds(tokens, 16u, 9500u);
+    SparkTestInitializePrefixCache(&cache, entries, bindings, 128u, 512u);
+    SparkTestInitializeSchedulerConfiguration(
+        &configuration,
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        &cache);
+    configuration.queue_depth_per_spark =
+        SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT + 1u;
+    assert(SparkGlm52SchedulerInitialize(
+        &scheduler,
+        &configuration) == SPARK_STATUS_OK);
+
+    for (cohort_index = 0u;
+         cohort_index + 1u < SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT;
+         ++cohort_index)
+    {
+        SparkTestInitializeDecodeRequest(&request, 64u);
+        assert(SparkGlm52SchedulerAdmit(
+            &scheduler,
+            &request,
+            &decision) == SPARK_STATUS_OK);
+        assert(decision.accepted == 1u);
+    }
+
+    SparkTestInitializePrefillRequest(&request, 1u, 16u, 51u, tokens);
+    assert(SparkGlm52SchedulerAdmit(
+        &scheduler,
+        &request,
+        &prefill_decision) == SPARK_STATUS_OK);
+    assert(prefill_decision.accepted == 1u);
+    assert(SparkGlm52SchedulerComplete(
+        &scheduler,
+        &prefill_decision) == SPARK_STATUS_OK);
+
+    SparkTestInitializeDecodeRequest(&request, 64u);
+    assert(SparkGlm52SchedulerAdmit(
+        &scheduler,
+        &request,
+        &decision) == SPARK_STATUS_OK);
+    assert(decision.accepted == 1u);
+    assert(scheduler.spark_inflight_counts[0] ==
+        SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT);
+
+    SparkTestInitializePrefillRequest(&request, 1u, 16u, 52u, tokens);
+    assert(SparkGlm52SchedulerAdmit(
+        &scheduler,
+        &request,
+        &decision) == SPARK_STATUS_OK);
+    assert(decision.accepted == 0u);
+    assert(decision.rejected_status == SPARK_STATUS_BUSY);
+    assert(SparkGlm52SchedulerReleaseSequence(&scheduler, 51u) == SPARK_STATUS_OK);
+}
+
 
 static void SparkTestGlm52SchedulerPacksDecodeRequestsIntoSingleGraphDecision(void)
 {
@@ -1082,6 +1148,7 @@ int main(void)
     SparkTestGlm52SchedulerUsesVllmStyleChunkedPrefill();
     SparkTestGlm52SchedulerUsesIntegratedPrefixCacheAdmission();
     SparkTestGlm52SchedulerInterleavesPrefillAndDecode();
+    SparkTestGlm52SchedulerFillsCurrentSparkPipeline();
     SparkTestGlm52SchedulerPacksDecodeRequestsIntoSingleGraphDecision();
     SparkTestGlm52SchedulerDecodeBatchFillsMaxBucketFromOversubscribedQueue();
     SparkTestGlm52SchedulerUsesMeasuredDecodeBucketForMidSizedBatch();
