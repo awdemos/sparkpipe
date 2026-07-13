@@ -642,7 +642,7 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
     submit_request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
     submit_request.token_ids = Fixture.prompt_tokens;
     submit_request.output_token_budget =
-        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u;
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 2u;
     submit_request.request_id = 9301u;
     submit_request.sequence_id = 19301u;
     assert(SparkGlm52ServingEngineSubmitTokenIds(
@@ -650,7 +650,7 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
         &submit_request,
         &submit_result) == SPARK_STATUS_OK);
     assert(submit_result.output_token_budget ==
-        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u);
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 2u);
 
     status = SparkGlm52ServingEnginePump(
         &Fixture.serving_engine,
