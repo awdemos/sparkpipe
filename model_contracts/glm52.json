@@ -39,6 +39,7 @@
   "moe_top_k": 8,
   "moe_w1_component_count": 2,
   "mtp_draft_token_count": 6,
+  "mtp_input_position_offset": 1,
   "mxfp4_group_size": 32,
   "nvfp4_group_size": 16,
   "kv_pool_tokens": 4194304,

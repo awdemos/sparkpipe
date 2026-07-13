@@ -37,6 +37,7 @@ INTEGER_MACROS = {
     "SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT": "output_vocab_count",
     "SPARK_GLM52_MODEL_RESTRICTED_VOCAB_COUNT": "restricted_vocab_count",
     "SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT": "mtp_draft_token_count",
+    "SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET": "mtp_input_position_offset",
     "SPARK_GLM52_MODEL_MXFP4_GROUP_SIZE": "mxfp4_group_size",
     "SPARK_GLM52_MODEL_NVFP4_GROUP_SIZE": "nvfp4_group_size",
 }
