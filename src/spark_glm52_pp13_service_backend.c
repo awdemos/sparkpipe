@@ -190,6 +190,12 @@ _Static_assert(
 		SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_RESERVE_CAPACITY,
 	"scheduler depth must hold every decode cohort plus prefill reserve");
 _Static_assert(
+	((SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY +
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT - 1u) /
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) <=
+		SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY,
+	"work queue must hold a complete sequence-release drain");
+_Static_assert(
 	sizeof(SparkGlm52Pp13ServiceBackendState) <=
 		SPARK_GLM52_PP13_SERVICE_BACKEND_STATIC_STATE_CAPACITY_BYTES,
 	"service backend static state exceeds capacity");
@@ -1448,6 +1454,21 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPumpSequenceReleases(
 	state->release_queue_count -= lane_count;
 	state->release_batch_lane_count = 0u;
 	state->release_batch_local_done = 0u;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendDrainSequenceReleases(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	SparkStatus status;
+	if (state == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	while (state->release_queue_count != 0u)
+	{
+		status = SparkGlm52Pp13ServiceBackendPumpSequenceReleases(state);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
 	return SPARK_STATUS_OK;
 }
 
@@ -3274,12 +3295,13 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 	SparkGlm52Pp13RuntimeFinalEvent event;
 	SparkStatus event_status;
 	SparkStatus release_status;
+	SparkStatus service_status;
 	SparkStatus work_status;
 
 	state = (SparkGlm52Pp13ServiceBackendState *)backend_state;
 	if (state == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	release_status = SparkGlm52Pp13ServiceBackendPumpSequenceReleases(state);
+	release_status = SparkGlm52Pp13ServiceBackendDrainSequenceReleases(state);
 	if (release_status != SPARK_STATUS_OK && release_status != SPARK_STATUS_BUSY)
 		state->final_event_receive_error_count += 1u;
 	work_status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
@@ -3301,22 +3323,26 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 	}
 	else if (event_status != SPARK_STATUS_BUSY)
 		state->final_event_receive_error_count += 1u;
-	if (stats_out != 0)
+	service_status = SPARK_STATUS_OK;
+	if (state->service_runtime_ready != 0u &&
+		state->rank0_runtime_ready != 0u &&
+		state->first_blocker[0] == '\0')
+		service_status = SparkGlm52ServicePump(
+			&state->service,max_dispatch_steps,stats_out);
+	else if (stats_out != 0)
 	{
 		if (state->service_runtime_ready != 0u)
 			(void)SparkGlm52ServiceGetStats(&state->service,stats_out);
 		else
 			memset(stats_out,0,sizeof(*stats_out));
 	}
-	if (state->service_runtime_ready != 0u &&
-		state->rank0_runtime_ready != 0u &&
-		state->first_blocker[0] == '\0')
-		return SparkGlm52ServicePump(
-			&state->service,
-			max_dispatch_steps,
-			stats_out);
-	(void)max_dispatch_steps;
-	return SPARK_STATUS_OK;
+	release_status = SparkGlm52Pp13ServiceBackendDrainSequenceReleases(state);
+	work_status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);
+	if (release_status != SPARK_STATUS_OK)
+		return release_status;
+	if (work_status != SPARK_STATUS_OK)
+		return work_status;
+	return service_status;
 }
 
 static uint32_t SparkGlm52Pp13ServiceBackendTransportPollEvents(

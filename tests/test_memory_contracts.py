@@ -327,6 +327,17 @@ def main():
             r"configuration->kv_logical_block_capacity\s*==\s*0u",
             backend_text) is None:
         violations.append("attached KV geometry can silently default")
+    service_pump = backend_text.find(
+        "service_status = SparkGlm52ServicePump(")
+    release_drain = backend_text.find(
+        "release_status = SparkGlm52Pp13ServiceBackendDrainSequenceReleases(",
+        service_pump)
+    work_flush = backend_text.find(
+        "work_status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(",
+        release_drain)
+    if service_pump < 0 or release_drain < 0 or work_flush < 0:
+        violations.append(
+            "service pump does not drain generated sequence releases before idle")
     model_description_path = ROOT / (
         "examples/model_descriptions/glm52_resident_decode_stage_firmware.json")
     model_description = json.loads(model_description_path.read_text())
