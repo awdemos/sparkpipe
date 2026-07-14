@@ -142,10 +142,11 @@ Validate before serving:
 ```
 
 After byte-exact correctness is retained, add `--without-diagnostics` when
-assembling a performance release. The assembler removes the known stage dumps,
-phase hashes, completion logs, and PP13 packet tracing as one checked operation.
-It fails if the template does not contain the expected diagnostic environment;
-do not hand-edit the manifest or silently retain an instrumented role.
+assembling a performance release. The assembler installs the canonical
+diagnostic profile by default and removes it as one checked operation for a
+performance release. Template history cannot silently omit or retain stage
+dumps, phase hashes, completion logs, or PP13 packet tracing. Do not hand-edit
+the manifest.
 
 The 16,384-token physical pool and 256 logical blocks are the current measured
 B1 configuration when rank12 also owns native MTP weights. Increase either

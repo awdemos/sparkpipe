@@ -14,6 +14,7 @@ def main():
         root = pathlib.Path(directory)
         template = root / "template"
         output = root / "output"
+        diagnostic_output = root / "diagnostic-output"
         replacement = root / "replacement.bin"
         (template / "bin").mkdir(parents=True)
         (template / "bin" / "runtime").write_bytes(b"old")
@@ -29,33 +30,48 @@ def main():
                 {
                     "name": "pp13_rank_daemon",
                     "argv": ["--max-active", "16"],
-                    "env": [
-                        "SPARKPIPE_STAGE_COMPLETION_DEBUG=1",
-                        "SPARKPIPE_PP13_TRACE=1",
-                        "KEEP_RANK=1",
-                    ],
+                    "env": ["KEEP_RANK=1"],
                 },
                 {
                     "name": "pp13_cuda_residentd",
                     "argv": ["--max-active", "16"],
-                    "env": [
-                        "SPARKPIPE_STAGE_COMPLETION_DEBUG=1",
-                        "SPARKPIPE_STAGE_PHASE_HASH=1",
-                        "SPARKPIPE_HIDDEN_DUMP_DIR=/tmp/dumps",
-                        "KEEP_RESIDENT=1",
-                    ],
+                    "env": ["KEEP_RESIDENT=1"],
                 },
                 {
                     "name": "spark0_gateway",
                     "argv": ["--max-active", "16"],
-                    "env": [
-                        "SPARKPIPE_PP13_TRACE=1",
-                        "KEEP_GATEWAY=1",
-                    ],
+                    "env": ["KEEP_GATEWAY=1"],
                 },
             ],
         }
         (template / "sparkpipe.json").write_text(json.dumps(manifest),encoding="utf-8")
+        subprocess.run([
+            "python3",str(tool),
+            "--template",str(template),
+            "--output",str(diagnostic_output),
+            "--release-id","diagnostic",
+            "--git-commit","abc123",
+            "--max-active","64",
+            "--kv-pool-tokens","65536",
+            "--kv-logical-blocks","1024",
+            "--mtp",
+            "--replace","bin/runtime=" + str(replacement),
+        ],check=True)
+        diagnostic = json.loads(
+            (diagnostic_output / "sparkpipe.json").read_text(encoding="utf-8"))
+        diagnostic_by_role = {role["name"]: role for role in diagnostic["roles"]}
+        assert "SPARKPIPE_PP13_TRACE=1" in diagnostic_by_role[
+            "spark0_gateway"]["env"]
+        assert "SPARKPIPE_STAGE_COMPLETION_DEBUG=1" in diagnostic_by_role[
+            "pp13_cuda_residentd"]["env"]
+        assert "SPARKPIPE_STAGE_PHASE_HASH=1" in diagnostic_by_role[
+            "pp13_cuda_residentd"]["env"]
+        assert "SPARKPIPE_HIDDEN_DUMP_DIR={state_root}/hidden_dumps" in (
+            diagnostic_by_role["pp13_cuda_residentd"]["env"])
+        assert "SPARKPIPE_STAGE_COMPLETION_DEBUG=1" in diagnostic_by_role[
+            "pp13_rank_daemon"]["env"]
+        assert "SPARKPIPE_PP13_TRACE=1" in diagnostic_by_role[
+            "pp13_rank_daemon"]["env"]
         subprocess.run([
             "python3",str(tool),
             "--template",str(template),
