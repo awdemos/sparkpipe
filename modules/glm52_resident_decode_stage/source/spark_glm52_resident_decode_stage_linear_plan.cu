@@ -1411,6 +1411,7 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveR
     uint32_t active_sequence_count)
 {
     uint32_t plan_index;
+    uint32_t prepared_active_sequence_count;
     SparkStatus status;
 
     if (binding == 0 ||
@@ -1427,11 +1428,18 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveR
         {
             continue;
         }
+        prepared_active_sequence_count =
+            SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+                &binding->plans[plan_index], active_sequence_count);
+        if (prepared_active_sequence_count == 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
         status = SparkGlm52LinearPlanPrepareOne(
             binding,
             &binding->storage[plan_index],
             &binding->plans[plan_index],
-            active_sequence_count);
+            prepared_active_sequence_count);
         if (status != SPARK_STATUS_OK)
         {
             return status;

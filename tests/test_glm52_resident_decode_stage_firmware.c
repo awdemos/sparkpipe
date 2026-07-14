@@ -8,6 +8,7 @@
 #include "sparkpipe/spark_driver_compiler.h"
 #include "sparkpipe/spark_glm52_request_api.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
 #include "sparkpipe/spark_glm52_scheduler.h"
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_module_library.h"
@@ -15,6 +16,22 @@
 #include "test_support.h"
 
 #define SPARK_TEST_GLM52_PIPELINE_SLOT_COUNT 2u
+
+static void SparkTestGlm52ResidentDecodeStageLinearPlanPreparedRowContract(void)
+{
+    SparkGlm52ResidentDecodeStageLinearPlan linear_plan;
+    memset(&linear_plan, 0, sizeof(linear_plan));
+    linear_plan.maximum_active_sequence_count = 7u;
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 2u) == 2u);
+    linear_plan.output_is_f32 = 1u;
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 2u) == 1u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 0u) == 0u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 8u) == 0u);
+}
 
 typedef struct SparkGlm52ResidentDecodeStageTestCompletionState
 {
@@ -3471,6 +3488,7 @@ int main(void)
     void *inspection_handle;
     char error_buffer[1024];
 
+    SparkTestGlm52ResidentDecodeStageLinearPlanPreparedRowContract();
     SparkTestGlm52ResidentDecodeStageB12xRouterLogitsAbi();
     SparkTestGlm52ResidentDecodeStageSliceSubmit();
     SparkTestGlm52ResidentDecodeStageDensePrefixSliceRules();
