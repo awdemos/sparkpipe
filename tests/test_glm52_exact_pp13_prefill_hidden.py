@@ -220,29 +220,55 @@ def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None
     assert "execution_row_base + token_index" in function_body
 
 
-def test_mtp_full_vocab_head_uses_bounded_tensor_core_chunks(root: Path) -> None:
-    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
-              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
-                  encoding="utf-8")
-    assert ("#define SPARK_GLM52_PP13_BUILDER_MTP_HEAD_CHUNK_LANE_CAPACITY 32u" in
-            source)
-    start = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpHeadChunk(")
-    end = source.index(
+def test_target_and_mtp_heads_share_bounded_row_batched_tensor_core_gemm(
+        root: Path) -> None:
+    builder_source = (root / "modules" / "glm52_resident_decode_stage" /
+                      "source" /
+                      "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                          encoding="utf-8")
+    stage_source = (root / "modules" / "glm52_resident_decode_stage" /
+                    "source" /
+                    "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                        encoding="utf-8")
+    assert "MTP_HEAD_CHUNK_LANE_CAPACITY" not in builder_source
+    start = builder_source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedyRows(")
+    end = builder_source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedy(",
+        start)
+    row_function_body = builder_source[start:end]
+    assert "cublasGemmEx(" in row_function_body
+    assert "CUBLAS_GEMM_DEFAULT_TENSOR_OP" in row_function_body
+    assert "row_count" in row_function_body
+    start = end
+    end = builder_source.index(
         "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(",
         start)
-    function_body = source[start:end]
-    assert "cublasGemmEx(" in function_body
-    assert "CUBLAS_GEMM_DEFAULT_TENSOR_OP" in function_body
-    start = source.index(
+    function_body = builder_source[start:end]
+    assert "active_sequence_count" in function_body
+    assert "row_offset" in function_body
+    assert "full_vocab_head_row_capacity" in function_body
+    start = builder_source.index(
         "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(")
-    end = source.index(
+    end = builder_source.index(
         "static SparkStatus SparkGlm52Pp13BuilderLoadMtpWeights(", start)
-    function_body = source[start:end]
+    function_body = builder_source[start:end]
     assert "SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(" in function_body
     assert "SparkGlm52Sm121RequiredDecodeStageLaunchFullVocabGreedy(" not in function_body
-    assert ("state->mtp_head_row_capacity *\n\t\t\t"
-            "SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT" in source)
+    assert "SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET" in builder_source
+    assert ("state->exact_plan.final_token_launch_function =" in
+            builder_source)
+    assert "backend=cublas_bf16_tensor_core" in builder_source
+    assert "fail_closed=1" in builder_source
+    head_start = stage_source.index(
+        "static SparkStatus "
+        "SparkGlm52ResidentDecodeStageLaunchBuiltInFullVocabGreedyFinalTokenEpilogue(")
+    head_end = stage_source.index(
+        "extern \"C\" SparkStatus "
+        "SparkGlm52Sm121RequiredDecodeStageLaunchFullVocabGreedy(", head_start)
+    head_body = stage_source[head_start:head_end]
+    assert "exact_stage_slice_plan->final_token_launch_function" in head_body
+    assert "final_token_launch_function(" in head_body
 
 
 def test_mtp_previous_target_position_contracts_are_explicit(root: Path) -> None:
@@ -499,7 +525,7 @@ def main() -> None:
     test_fp8_phase_probe_targets_the_first_divergent_layer(root)
     test_fp8_validator_preserves_quantized_dense_execution(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
-    test_mtp_full_vocab_head_uses_bounded_tensor_core_chunks(root)
+    test_target_and_mtp_heads_share_bounded_row_batched_tensor_core_gemm(root)
     test_plain_wide_decode_bypasses_dspark_finalizer(root)
     test_resident_block_stride_is_independent_of_the_physical_pool(root)
     test_service_backend_namespaces_ids_per_live_session(root)

@@ -65,7 +65,6 @@
 #define SPARK_GLM52_PP13_BUILDER_MTP_EH_INPUT_DIMENSION \
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u)
 #define SPARK_GLM52_PP13_BUILDER_MTP_NORM_COUNT_PER_LANE 2u
-#define SPARK_GLM52_PP13_BUILDER_MTP_HEAD_CHUNK_LANE_CAPACITY 32u
 #define SPARK_GLM52_PP13_BUILDER_MTP_TARGET_PRECEDES_INPUT_POSITION \
 	SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA
 #define SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS \
@@ -299,7 +298,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	void *mtp_eh_proj_weight;
 	void *mtp_shared_head_norm_weight;
 	void *mtp_eh_input;
-	float *mtp_full_logits;
+	float *full_vocab_logits;
 	void *mtp_previous_target_hidden;
 	void *mtp_previous_target_hidden_store;
 	uint32_t *mtp_base_positions;
@@ -354,7 +353,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	cudaEvent_t query_event;
 	cudaEvent_t kv_event;
 	cudaEvent_t kv_io_event;
-	cublasHandle_t mtp_cublas_handle;
+	cublasHandle_t full_vocab_cublas_handle;
 	int32_t kv_nvme_fd;
 	void *kv_nvme_staging;
 	uint64_t kv_nvme_staging_bytes;
@@ -379,7 +378,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint64_t mtp_previous_sequence_id;
 	uint64_t mtp_previous_position;
 	uint32_t mtp_previous_valid;
-	uint32_t mtp_head_row_capacity;
+	uint32_t full_vocab_head_row_capacity;
 	uint32_t mtp_ready;
 	const SparkModelDriverInterface *driver_interface;
 	void *driver_instance;
@@ -3129,7 +3128,7 @@ static SparkStatus SparkGlm52Pp13BuilderProjectMtpEh(
 	alpha = 1.0f;
 	beta = 0.0f;
 	status = cublasGemmEx(
-		state->mtp_cublas_handle,
+		state->full_vocab_cublas_handle,
 		CUBLAS_OP_T,
 		CUBLAS_OP_N,
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
@@ -3151,39 +3150,82 @@ static SparkStatus SparkGlm52Pp13BuilderProjectMtpEh(
 	return SparkGlm52Pp13BuilderCublasStatus(status);
 }
 
-static SparkStatus SparkGlm52Pp13BuilderLaunchMtpHeadChunk(
+static SparkStatus SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedyRows(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+	const void *normalized_hidden_bf16,
+	uint32_t *selected_token_ids,
+	float *selected_token_scores,
 	uint32_t row_offset,
-	uint32_t row_count)
+	uint32_t row_count,
+	cudaStream_t stream)
 {
-	const uint16_t *input;
+	const uint16_t *input_rows;
 	float alpha;
 	float beta;
 	cublasStatus_t cublas_status;
-	input = (const uint16_t *)state->mtp_layer.normalized_hidden +
+	if (state == 0 || node_context == 0 || normalized_hidden_bf16 == 0 ||
+		selected_token_ids == 0 || selected_token_scores == 0 ||
+		stream != state->stream || state->full_vocab_cublas_handle == 0 ||
+		state->full_vocab_logits == 0 || row_count == 0u ||
+		row_count > state->full_vocab_head_row_capacity ||
+		node_context->restricted_lm_head_weight_bf16 == 0 ||
+		node_context->restricted_token_ids == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	input_rows = (const uint16_t *)normalized_hidden_bf16 +
 		((uint64_t)row_offset * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION);
 	alpha = 1.0f;
 	beta = 0.0f;
 	cublas_status = cublasGemmEx(
-		state->mtp_cublas_handle,CUBLAS_OP_T,CUBLAS_OP_N,
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT,row_count,
+		state->full_vocab_cublas_handle,CUBLAS_OP_T,CUBLAS_OP_N,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT,
+		row_count,
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,&alpha,
 		node_context->restricted_lm_head_weight_bf16,CUDA_R_16BF,
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,input,CUDA_R_16BF,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+		input_rows,CUDA_R_16BF,
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,&beta,
-		state->mtp_full_logits,CUDA_R_32F,
+		state->full_vocab_logits,CUDA_R_32F,
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT,CUBLAS_COMPUTE_32F,
 		CUBLAS_GEMM_DEFAULT_TENSOR_OP);
 	if (cublas_status != CUBLAS_STATUS_SUCCESS)
 		return SparkGlm52Pp13BuilderCublasStatus(cublas_status);
 	SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel<<<
-		row_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
-		state->mtp_full_logits,node_context->restricted_token_ids,
-		(uint32_t *)state->mtp_layer.restricted_selected_token_ids + row_offset,
-		(float *)state->mtp_layer.restricted_selected_token_scores + row_offset,
-		row_count);
+		row_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,stream>>>(
+		state->full_vocab_logits,node_context->restricted_token_ids,
+		selected_token_ids + row_offset,selected_token_scores + row_offset,row_count);
 	return SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
+}
+
+static SparkStatus SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedy(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+	const void *normalized_hidden_bf16,
+	uint32_t *selected_token_ids,
+	float *selected_token_scores,
+	uint32_t active_sequence_count,
+	cudaStream_t stream)
+{
+	uint32_t row_count;
+	uint32_t row_offset;
+	SparkStatus status;
+	if (state == 0 || active_sequence_count == 0u ||
+		active_sequence_count > state->rank_plan.execution_row_capacity ||
+		state->full_vocab_head_row_capacity == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SPARK_STATUS_OK;
+	for (row_offset = 0u;
+		 status == SPARK_STATUS_OK && row_offset < active_sequence_count;
+		 row_offset += row_count)
+	{
+		row_count = active_sequence_count - row_offset;
+		if (row_count > state->full_vocab_head_row_capacity)
+			row_count = state->full_vocab_head_row_capacity;
+		status = SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedyRows(
+			state,node_context,normalized_hidden_bf16,selected_token_ids,
+			selected_token_scores,row_offset,row_count,stream);
+	}
+	return status;
 }
 
 static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(
@@ -3192,11 +3234,9 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(
 	uint32_t active_sequence_count,
 	cudaStream_t stream)
 {
-	uint32_t row_count;
-	uint32_t row_offset;
 	SparkStatus status;
 	if (state == 0 || node_context == 0 || stream != state->stream ||
-		state->mtp_full_logits == 0 || state->mtp_head_row_capacity == 0u)
+		state->full_vocab_logits == 0 || state->full_vocab_head_row_capacity == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	SparkGlm52Pp13BuilderTargetFinalNormKernel<<<
 		active_sequence_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,stream>>>(
@@ -3205,17 +3245,37 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(
 		(uint16_t *)state->mtp_layer.normalized_hidden,active_sequence_count,
 		SPARK_GLM52_MODEL_RMS_NORM_EPSILON);
 	status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
-	for (row_offset = 0u;
-		 status == SPARK_STATUS_OK && row_offset < active_sequence_count;
-		 row_offset += row_count)
-	{
-		row_count = active_sequence_count - row_offset;
-		if (row_count > state->mtp_head_row_capacity)
-			row_count = state->mtp_head_row_capacity;
-		status = SparkGlm52Pp13BuilderLaunchMtpHeadChunk(
-			state,node_context,row_offset,row_count);
-	}
-	return status;
+	if (status != SPARK_STATUS_OK)
+		return status;
+	return SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedy(
+		state,node_context,state->mtp_layer.normalized_hidden,
+		(uint32_t *)state->mtp_layer.restricted_selected_token_ids,
+		(float *)state->mtp_layer.restricted_selected_token_scores,
+		active_sequence_count,stream);
+}
+
+static SparkStatus SparkGlm52Pp13BuilderLaunchTensorCoreFinalTokenHead(
+	const SparkGlm52ResidentDecodeStageExactStageSlicePlan *exact_stage_slice_plan,
+	const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+	const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+	uint32_t active_sequence_count,
+	void *cuda_stream)
+{
+	SparkGlm52Pp13BuilderState *state;
+	state = exact_stage_slice_plan != 0
+		? (SparkGlm52Pp13BuilderState *)exact_stage_slice_plan->final_token_state
+		: 0;
+	if (state == 0 || exact_stage_slice_plan != &state->exact_plan ||
+		pipeline_slot == 0 || cuda_stream != (void *)state->stream ||
+		pipeline_slot->normalized_hidden_bf16 == 0 ||
+		pipeline_slot->restricted_selected_token_ids == 0 ||
+		pipeline_slot->restricted_selected_token_scores == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedy(
+		state,node_context,pipeline_slot->normalized_hidden_bf16,
+		pipeline_slot->restricted_selected_token_ids,
+		pipeline_slot->restricted_selected_token_scores,
+		active_sequence_count,(cudaStream_t)cuda_stream);
 }
 
 static SparkStatus SparkGlm52Pp13BuilderLaunchMtpMetadata(
@@ -3415,17 +3475,43 @@ static SparkStatus SparkGlm52Pp13BuilderLoadMtpWeights(
 			state,(void **)&state->mtp_norm_inv,
 			(uint64_t)state->rank_plan.logical_lane_capacity *
 			SPARK_GLM52_PP13_BUILDER_MTP_NORM_COUNT_PER_LANE * sizeof(float));
-	state->mtp_head_row_capacity = state->rank_plan.logical_lane_capacity;
-	if (state->mtp_head_row_capacity >
-		SPARK_GLM52_PP13_BUILDER_MTP_HEAD_CHUNK_LANE_CAPACITY)
-		state->mtp_head_row_capacity =
-			SPARK_GLM52_PP13_BUILDER_MTP_HEAD_CHUNK_LANE_CAPACITY;
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaAlloc(
-			state,(void **)&state->mtp_full_logits,
-			(uint64_t)state->mtp_head_row_capacity *
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT * sizeof(float));
 	return status;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderInitializeTensorCoreFinalTokenHead(
+	SparkGlm52Pp13BuilderState *state)
+{
+	SparkStatus status;
+	if (state == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (!SparkGlm52Pp13BuilderIsFinalRank(state))
+		return SPARK_STATUS_OK;
+	state->full_vocab_head_row_capacity = state->rank_plan.execution_row_capacity;
+	if (state->full_vocab_head_row_capacity >
+		SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
+		state->full_vocab_head_row_capacity =
+			SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET;
+	if (state->full_vocab_head_row_capacity == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13BuilderCudaAlloc(
+		state,(void **)&state->full_vocab_logits,
+		(uint64_t)state->full_vocab_head_row_capacity *
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT * sizeof(float));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCublasStatus(
+			cublasCreate(&state->full_vocab_cublas_handle));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCublasStatus(
+			cublasSetStream(state->full_vocab_cublas_handle,state->stream));
+	if (status != SPARK_STATUS_OK)
+		return SparkGlm52Pp13BuilderReportStatus(
+			"initialize_tensor_core_final_token_head",
+			state->rank_plan.first_layer_index + state->rank_plan.layer_count - 1u,
+			status);
+	state->exact_plan.final_token_launch_function =
+		(void *)SparkGlm52Pp13BuilderLaunchTensorCoreFinalTokenHead;
+	state->exact_plan.final_token_state = state;
+	return SPARK_STATUS_OK;
 }
 
 static void SparkGlm52Pp13BuilderConfigureMtpLayer(
@@ -3526,12 +3612,6 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 			state,&state->mtp_layer,SPARK_GLM52_MODEL_MTP_LAYER_INDEX);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Sm121RequiredDecodeStageInitialize(&state->mtp_layer.node);
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCublasStatus(
-			cublasCreate(&state->mtp_cublas_handle));
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCublasStatus(
-			cublasSetStream(state->mtp_cublas_handle,state->stream));
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus(
 			"initialize_mtp",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
@@ -4155,6 +4235,8 @@ static SparkStatus SparkGlm52Pp13BuilderBuild(
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderInitializeExactPlan(state);
 	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderInitializeTensorCoreFinalTokenHead(state);
+	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderInitializeMtp(state);
 	for (layer_offset = 0u;
 		 status == SPARK_STATUS_OK && layer_offset < state->rank_plan.layer_count;
@@ -4221,6 +4303,18 @@ static SparkStatus SparkGlm52Pp13BuilderBuild(
 			(unsigned long long)state->cuda_builder_allocation_bytes,
 			(unsigned long long)state->cuda_largest_allocation_bytes,
 			(unsigned long long)state->host_mapped_allocation_bytes);
+		if (SparkGlm52Pp13BuilderIsFinalRank(state))
+		{
+			fprintf(
+				stderr,
+				"pp13_full_vocab_head rank=%u backend=cublas_bf16_tensor_core "
+				"maximum_rows=%u logits_workspace_bytes=%llu fail_closed=1\n",
+				state->rank_plan.rank_index,
+				state->full_vocab_head_row_capacity,
+				(unsigned long long)state->full_vocab_head_row_capacity *
+					SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
+					sizeof(float));
+		}
 		if (state->kv_nvme_fd >= 0)
 		{
 			fprintf(
@@ -4292,8 +4386,8 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 	}
 	if (state->dspark_backend_ready != 0u)
 		SparkGlm52DsparkDraftBackendTeardown(&state->dspark_backend);
-	if (state->mtp_cublas_handle != 0)
-		cublasDestroy(state->mtp_cublas_handle);
+	if (state->full_vocab_cublas_handle != 0)
+		cublasDestroy(state->full_vocab_cublas_handle);
 	if (state->stream != 0)
 		cudaStreamDestroy(state->stream);
 	if (state->query_stream != 0)
