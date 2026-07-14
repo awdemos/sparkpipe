@@ -2,6 +2,7 @@
 
 #include <cublas_v2.h>
 #include <cuda_bf16.h>
+#include <cuda_fp8.h>
 #include <cuda_runtime.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -43,7 +44,7 @@
 #define SPARK_GLM52_PP13_BUILDER_TABLE_ALLOCATION_COUNT 15u
 #define SPARK_GLM52_PP13_BUILDER_INPUT_ALLOCATION_COUNT 12u
 #define SPARK_GLM52_PP13_BUILDER_PLAN_ALLOCATION_COUNT 2u
-#define SPARK_GLM52_PP13_BUILDER_MTP_SUPPORT_ALLOCATION_COUNT 13u
+#define SPARK_GLM52_PP13_BUILDER_MTP_SUPPORT_ALLOCATION_COUNT 16u
 #define SPARK_GLM52_PP13_BUILDER_FINAL_OUTPUT_ALLOCATION_COUNT 2u
 #define SPARK_GLM52_PP13_BUILDER_MAX_ALLOCATIONS \
 	((SPARK_GLM52_PP13_BUILDER_EXECUTION_LAYER_COUNT * \
@@ -79,6 +80,8 @@
 #define SPARK_GLM52_PP13_BUILDER_NVME_RECORD_ABI_VERSION 2u
 #define SPARK_GLM52_PP13_BUILDER_NVME_ALIGNMENT 4096u
 #define SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT 7u
+#define SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK 128u
+#define SPARK_GLM52_PP13_BUILDER_FP8_E4M3_MAX 448.0f
 
 typedef enum SparkGlm52Pp13BuilderMtpGpuProfilePhase
 {
@@ -311,6 +314,10 @@ typedef struct SparkGlm52Pp13BuilderState
 	void *mtp_shared_head_norm_weight;
 	void *mtp_eh_input;
 	float *full_vocab_logits;
+	uint8_t *mtp_draft_lm_head_weight_fp8;
+	float *mtp_draft_lm_head_weight_scale_inv;
+	void *mtp_draft_head_workspace;
+	uint64_t mtp_draft_head_workspace_bytes;
 	void *mtp_previous_target_hidden;
 	void *mtp_previous_target_hidden_store;
 	uint64_t *mtp_gpu_profile_cycles;
@@ -393,6 +400,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint32_t mtp_previous_valid;
 	uint32_t mtp_gpu_profile_enabled;
 	uint32_t full_vocab_head_row_capacity;
+	uint32_t mtp_draft_head_ready;
 	uint32_t mtp_ready;
 	const SparkModelDriverInterface *driver_interface;
 	void *driver_instance;
@@ -901,8 +909,23 @@ __global__ static void SparkGlm52Pp13BuilderTargetFinalNormKernel(
 	}
 }
 
+__device__ static float SparkGlm52Pp13BuilderFullVocabLogitToFloat(
+	const float *logits,
+	uint64_t index)
+{
+	return logits[index];
+}
+
+__device__ static float SparkGlm52Pp13BuilderFullVocabLogitToFloat(
+	const uint16_t *logits,
+	uint64_t index)
+{
+	return SparkGlm52Pp13BuilderBf16ToFloat(logits[index]);
+}
+
+template <typename LogitType>
 __global__ static void SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel(
-	const float *__restrict__ logits,
+	const LogitType *__restrict__ logits,
 	const uint32_t *__restrict__ token_ids,
 	uint32_t *__restrict__ selected_token_ids,
 	float *__restrict__ selected_token_scores,
@@ -910,12 +933,8 @@ __global__ static void SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel(
 {
 	__shared__ float shared_scores[SPARK_GLM52_PP13_BUILDER_THREADS];
 	__shared__ uint32_t shared_tokens[SPARK_GLM52_PP13_BUILDER_THREADS];
-	uint32_t row_index;
-	uint32_t token_index;
-	uint32_t stride;
-	uint32_t best_token;
-	float best_score;
-	float score;
+	uint32_t row_index,token_index,stride,best_token;
+	float best_score,score;
 	row_index = blockIdx.x;
 	if (row_index >= row_count)
 		return;
@@ -925,8 +944,10 @@ __global__ static void SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel(
 		 token_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT;
 		 token_index += blockDim.x)
 	{
-		score = logits[((uint64_t)row_index *
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT) + token_index];
+		score = SparkGlm52Pp13BuilderFullVocabLogitToFloat(
+			logits,
+			((uint64_t)row_index *
+			 SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT) + token_index);
 		if (score > best_score ||
 			(score == best_score && token_ids[token_index] < best_token))
 		{
@@ -953,6 +974,68 @@ __global__ static void SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel(
 	{
 		selected_token_ids[row_index] = shared_tokens[0u];
 		selected_token_scores[row_index] = shared_scores[0u];
+	}
+}
+
+__device__ static uint64_t SparkGlm52Pp13BuilderMtpDraftHeadWeightIndex(
+	uint32_t tile_index,
+	uint32_t input_dimension)
+{
+	uint32_t output_index,input_index;
+	output_index = blockIdx.x *
+		SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK +
+		tile_index / SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK;
+	input_index = blockIdx.y *
+		SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK +
+		tile_index % SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK;
+	return ((uint64_t)output_index * input_dimension) + input_index;
+}
+
+__global__ static void SparkGlm52Pp13BuilderQuantizeMtpDraftHeadKernel(
+	const uint16_t *__restrict__ weight_bf16,
+	uint8_t *__restrict__ weight_fp8,
+	float *__restrict__ weight_scale_inv,
+	uint32_t input_dimension)
+{
+	__shared__ float shared_absmax[SPARK_GLM52_PP13_BUILDER_THREADS];
+	uint32_t tile_index,stride,input_block_count;
+	uint64_t weight_index;
+	float value,scale;
+	shared_absmax[threadIdx.x] = 0.0f;
+	for (tile_index = threadIdx.x;
+		 tile_index < SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK *
+			SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK;
+		 tile_index += blockDim.x)
+	{
+		weight_index = SparkGlm52Pp13BuilderMtpDraftHeadWeightIndex(
+			tile_index,input_dimension);
+		value = fabsf(SparkGlm52Pp13BuilderBf16ToFloat(weight_bf16[weight_index]));
+		shared_absmax[threadIdx.x] = fmaxf(shared_absmax[threadIdx.x],value);
+	}
+	__syncthreads();
+	for (stride = blockDim.x >> 1u; stride != 0u; stride >>= 1u)
+	{
+		if (threadIdx.x < stride)
+			shared_absmax[threadIdx.x] = fmaxf(
+				shared_absmax[threadIdx.x],shared_absmax[threadIdx.x + stride]);
+		__syncthreads();
+	}
+	scale = fmaxf(shared_absmax[0u] / SPARK_GLM52_PP13_BUILDER_FP8_E4M3_MAX,1.0e-8f);
+	input_block_count = input_dimension /
+		SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK;
+	if (threadIdx.x == 0u)
+		weight_scale_inv[((uint64_t)blockIdx.x * input_block_count) + blockIdx.y] =
+			scale;
+	for (tile_index = threadIdx.x;
+		 tile_index < SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK *
+			SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK;
+		 tile_index += blockDim.x)
+	{
+		weight_index = SparkGlm52Pp13BuilderMtpDraftHeadWeightIndex(
+			tile_index,input_dimension);
+		value = SparkGlm52Pp13BuilderBf16ToFloat(weight_bf16[weight_index]) / scale;
+		weight_fp8[weight_index] = __nv_cvt_float_to_fp8(
+			value,__NV_SATFINITE,__NV_E4M3);
 	}
 }
 
@@ -3289,7 +3372,7 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedyRows(
 		CUBLAS_GEMM_DEFAULT_TENSOR_OP);
 	if (cublas_status != CUBLAS_STATUS_SUCCESS)
 		return SparkGlm52Pp13BuilderCublasStatus(cublas_status);
-	SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel<<<
+	SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel<float><<<
 		row_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,stream>>>(
 		state->full_vocab_logits,node_context->restricted_token_ids,
 		selected_token_ids + row_offset,selected_token_scores + row_offset,row_count);
@@ -3335,7 +3418,13 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(
 {
 	SparkStatus status;
 	if (state == 0 || node_context == 0 || stream != state->stream ||
-		state->full_vocab_logits == 0 || state->full_vocab_head_row_capacity == 0u)
+		state->mtp_draft_head_ready == 0u || state->full_vocab_logits == 0 ||
+		state->mtp_draft_lm_head_weight_fp8 == 0 ||
+		state->mtp_draft_lm_head_weight_scale_inv == 0 ||
+		state->mtp_draft_head_workspace == 0 ||
+		active_sequence_count == 0u ||
+		active_sequence_count > state->rank_plan.logical_lane_capacity ||
+		active_sequence_count > state->full_vocab_head_row_capacity)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	SparkGlm52Pp13BuilderTargetFinalNormKernel<<<
 		active_sequence_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,stream>>>(
@@ -3346,11 +3435,31 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(
 	status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
 	if (status != SPARK_STATUS_OK)
 		return status;
-	return SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedy(
-		state,node_context,state->mtp_layer.normalized_hidden,
+	status = SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearScaledGemmBackend(
+		&state->fp8_scaled_gemm_backend,
+		state->mtp_layer.normalized_hidden,
+		state->mtp_draft_lm_head_weight_fp8,
+		state->mtp_draft_lm_head_weight_scale_inv,
+		state->mtp_draft_head_workspace,
+		state->mtp_draft_head_workspace_bytes,
+		state->full_vocab_logits,
+		active_sequence_count,
+		state->rank_plan.logical_lane_capacity,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT,
+		SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK,
+		0u,
+		(void *)stream);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel<uint16_t><<<
+		active_sequence_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,stream>>>(
+		(const uint16_t *)state->full_vocab_logits,
+		node_context->restricted_token_ids,
 		(uint32_t *)state->mtp_layer.restricted_selected_token_ids,
 		(float *)state->mtp_layer.restricted_selected_token_scores,
-		active_sequence_count,stream);
+		active_sequence_count);
+	return SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
 }
 
 static SparkStatus SparkGlm52Pp13BuilderLaunchTensorCoreFinalTokenHead(
@@ -3495,7 +3604,8 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 	uint32_t lane_index;
 	SparkStatus status;
 	state = plan != 0 ? (SparkGlm52Pp13BuilderState *)plan->opaque_state : 0;
-	if (state == 0 || state->mtp_ready == 0u || node_context == 0 ||
+	if (state == 0 || state->mtp_ready == 0u ||
+		state->mtp_draft_head_ready == 0u || node_context == 0 ||
 		base_slot == 0 || cuda_stream != (void *)state->stream ||
 		active_sequence_count == 0u ||
 		active_sequence_count > state->rank_plan.logical_lane_capacity ||
@@ -3644,6 +3754,68 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeTensorCoreFinalTokenHead(
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52Pp13BuilderInitializeMtpDraftHead(
+	SparkGlm52Pp13BuilderState *state,
+	const void *lm_head_weight_bf16)
+{
+	dim3 grid;
+	uint64_t weight_bytes,scale_count,scale_bytes;
+	SparkStatus status;
+	if (state == 0 || lm_head_weight_bf16 == 0 || state->mtp_ready == 0u ||
+		state->fp8_scaled_gemm_backend.launch_function == 0 ||
+		state->rank_plan.logical_lane_capacity == 0u ||
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT %
+			SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK != 0u ||
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION %
+			SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK != 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	weight_bytes = (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
+	scale_count =
+		(SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT /
+		 SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK) *
+		(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
+		 SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK);
+	scale_bytes = scale_count * sizeof(float);
+	state->mtp_draft_head_workspace_bytes =
+		SparkGlm52Sm121RequiredDecodeStageCalculateFp8E4m3ActivationLinearBackendWorkspaceBytes(
+			state->rank_plan.logical_lane_capacity,
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+			SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK,
+			state->fp8_scaled_gemm_backend.required_workspace_bytes);
+	if (state->mtp_draft_head_workspace_bytes == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13BuilderCudaAlloc(
+		state,(void **)&state->mtp_draft_lm_head_weight_fp8,weight_bytes);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaAlloc(
+			state,(void **)&state->mtp_draft_lm_head_weight_scale_inv,scale_bytes);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaAlloc(
+			state,&state->mtp_draft_head_workspace,
+			state->mtp_draft_head_workspace_bytes);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	grid = dim3(
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT /
+			SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
+			SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK,
+		1u);
+	SparkGlm52Pp13BuilderQuantizeMtpDraftHeadKernel<<<
+		grid,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
+		(const uint16_t *)lm_head_weight_bf16,
+		state->mtp_draft_lm_head_weight_fp8,
+		state->mtp_draft_lm_head_weight_scale_inv,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION);
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaStreamSynchronize(state->stream));
+	if (status == SPARK_STATUS_OK)
+		state->mtp_draft_head_ready = 1u;
+	return status;
+}
+
 static void SparkGlm52Pp13BuilderConfigureMtpLayer(
 	SparkGlm52Pp13BuilderState *state)
 {
@@ -3767,7 +3939,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 	state->mtp_draft_plan.draft_token_count =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
 	state->mtp_draft_plan.weight_format =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_BF16;
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
 	state->mtp_draft_plan.launch_function =
 		(void *)SparkGlm52Pp13BuilderLaunchMtpDraftPlan;
 	state->mtp_draft_plan.opaque_state = state;
@@ -3826,6 +3998,9 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 			status = SparkGlm52Pp13BuilderLoadLmHeadRestricted(
 				state,
 				&layer->restricted_lm_head_weight);
+		if (status == SPARK_STATUS_OK && SparkGlm52Pp13BuilderMtpEnabled(state))
+			status = SparkGlm52Pp13BuilderInitializeMtpDraftHead(
+				state,layer->restricted_lm_head_weight);
 		layer->node.final_norm_weight_bf16 = layer->final_norm_weight;
 		layer->node.restricted_lm_head_weight_bf16 =
 			layer->restricted_lm_head_weight;
@@ -3836,7 +4011,7 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 		(state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) != 0u &&
 		layer_offset + 1u == state->rank_plan.layer_count)
 	{
-		if (state->mtp_ready == 0u)
+		if (state->mtp_ready == 0u || state->mtp_draft_head_ready == 0u)
 			return SparkGlm52Pp13BuilderReportStatus(
 				"mtp_not_ready",layer_index,SPARK_STATUS_MODULE_NOT_VALIDATED);
 		layer->node.mtp_draft_plan = &state->mtp_draft_plan;
@@ -4456,6 +4631,25 @@ static SparkStatus SparkGlm52Pp13BuilderBuild(
 				(unsigned long long)state->full_vocab_head_row_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
 					sizeof(float));
+			if (SparkGlm52Pp13BuilderMtpEnabled(state))
+				fprintf(
+					stderr,
+					"pp13_mtp_draft_vocab_head rank=%u "
+					"backend=fp8_e4m3_block128_tensor_core maximum_rows=%u "
+					"weight_bytes=%llu scale_bytes=%llu workspace_bytes=%llu "
+					"target_verifier_backend=cublas_bf16_tensor_core fail_closed=1\n",
+					state->rank_plan.rank_index,
+					state->rank_plan.logical_lane_capacity,
+					(unsigned long long)
+						SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
+						SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,
+					(unsigned long long)
+						(SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT /
+						 SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK) *
+						(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION /
+						 SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK) *
+						sizeof(float),
+					(unsigned long long)state->mtp_draft_head_workspace_bytes);
 			if (state->mtp_gpu_profile_enabled != 0u)
 				fprintf(stderr,
 					"pp13_mtp_gpu_profile rank=%u phases=%u max_drafts=%u "

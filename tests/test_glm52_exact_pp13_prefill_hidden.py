@@ -220,7 +220,7 @@ def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None
     assert "execution_row_base + token_index" in function_body
 
 
-def test_target_and_mtp_heads_share_bounded_row_batched_tensor_core_gemm(
+def test_target_and_mtp_heads_use_distinct_fail_closed_tensor_core_gemms(
         root: Path) -> None:
     builder_source = (root / "modules" / "glm52_resident_decode_stage" /
                       "source" /
@@ -248,6 +248,16 @@ def test_target_and_mtp_heads_share_bounded_row_batched_tensor_core_gemm(
     assert "active_sequence_count" in function_body
     assert "row_offset" in function_body
     assert "full_vocab_head_row_capacity" in function_body
+    start = end
+    end = builder_source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchTensorCoreFinalTokenHead(",
+        start)
+    mtp_head_body = builder_source[start:end]
+    assert ("SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearScaledGemmBackend("
+            in mtp_head_body)
+    assert ("SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel<uint16_t><<<" in
+            mtp_head_body)
+    assert "SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedy(" not in mtp_head_body
     start = builder_source.index(
         "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(")
     end = builder_source.index(
@@ -259,6 +269,12 @@ def test_target_and_mtp_heads_share_bounded_row_batched_tensor_core_gemm(
     assert ("state->exact_plan.final_token_launch_function =" in
             builder_source)
     assert "backend=cublas_bf16_tensor_core" in builder_source
+    assert "backend=fp8_e4m3_block128_tensor_core" in builder_source
+    assert "target_verifier_backend=cublas_bf16_tensor_core" in builder_source
+    assert "SparkGlm52Pp13BuilderQuantizeMtpDraftHeadKernel<<<" in builder_source
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3" in
+            builder_source)
+    assert "state->mtp_draft_head_ready == 0u" in builder_source
     assert "fail_closed=1" in builder_source
     head_start = stage_source.index(
         "static SparkStatus "
@@ -551,7 +567,7 @@ def main() -> None:
     test_fp8_phase_probe_targets_the_first_divergent_layer(root)
     test_fp8_validator_preserves_quantized_dense_execution(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
-    test_target_and_mtp_heads_share_bounded_row_batched_tensor_core_gemm(root)
+    test_target_and_mtp_heads_use_distinct_fail_closed_tensor_core_gemms(root)
     test_plain_wide_decode_bypasses_dspark_finalizer(root)
     test_resident_block_stride_is_independent_of_the_physical_pool(root)
     test_service_backend_namespaces_ids_per_live_session(root)
