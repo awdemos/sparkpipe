@@ -130,6 +130,23 @@ def set_role_environment(manifest,specification):
     matching_roles[0]["env"] = environment
 
 
+def unset_role_environment(manifest,specification):
+    try:
+        role_name,name = specification.split("=",1)
+    except ValueError:
+        raise SystemExit("role environment removal must be ROLE=NAME")
+    if not role_name or not name or "=" in name:
+        raise SystemExit("role environment removal must be ROLE=NAME")
+    matching_roles = [role for role in manifest["roles"]
+                      if role.get("name") == role_name]
+    if len(matching_roles) != 1:
+        raise SystemExit(
+            "release must contain exactly one role named " + role_name)
+    environment = matching_roles[0].setdefault("env",[])
+    matching_roles[0]["env"] = [entry for entry in environment
+                                        if entry.split("=",1)[0] != name]
+
+
 def write_manifest(root,manifest):
     for entry in manifest["files"]:
         path = os.path.join(root,entry["path"])
@@ -152,9 +169,12 @@ def main():
     parser.add_argument("--max-active",type=int)
     parser.add_argument("--kv-pool-tokens",type=int)
     parser.add_argument("--kv-logical-blocks",type=int,required=True)
-    parser.add_argument("--mtp",action="store_true")
+    decode_mode = parser.add_mutually_exclusive_group(required=True)
+    decode_mode.add_argument("--mtp",action="store_true")
+    decode_mode.add_argument("--plain-decode",action="store_true")
     parser.add_argument("--without-diagnostics",action="store_true")
     parser.add_argument("--role-env",action="append",default=[])
+    parser.add_argument("--role-env-unset",action="append",default=[])
     parser.add_argument("--replace",action="append",default=[])
     arguments = parser.parse_args()
     temporary = arguments.output + ".assembling." + str(os.getpid())
@@ -194,6 +214,8 @@ def main():
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
     set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
     set_runtime_diagnostics(manifest,not arguments.without_diagnostics)
+    for specification in arguments.role_env_unset:
+        unset_role_environment(manifest,specification)
     for specification in arguments.role_env:
         set_role_environment(manifest,specification)
     write_manifest(temporary,manifest)
