@@ -219,6 +219,23 @@ typedef struct SparkGlm52Pp13BuilderLayer
 	SparkGlm52ResidentDecodeStageBulkPrefillPlan serial_prefill_bulk_plan;
 } SparkGlm52Pp13BuilderLayer;
 
+typedef struct SparkGlm52Pp13BuilderMtpKvTransaction
+{
+	uint64_t request_id;
+	uint64_t sequence_id;
+	uint64_t base_position;
+	uint64_t last_request_id;
+	uint64_t last_sequence_id;
+	uint64_t last_base_position;
+	uint32_t proposed_token_count;
+	uint32_t pinned_token_count;
+	uint32_t active;
+	uint32_t last_proposed_token_count;
+	uint32_t last_accepted_token_count;
+	uint32_t last_valid;
+	uint32_t physical_slots[SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT];
+} SparkGlm52Pp13BuilderMtpKvTransaction;
+
 typedef struct SparkGlm52Pp13BuilderState
 {
 	SparkGlm52Pp13NodeContextBuilderConfiguration configuration;
@@ -295,7 +312,9 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint64_t *host_physical_block_sequence_ids;
 	uint32_t *host_physical_block_logical_indices;
 	uint64_t *host_physical_block_last_used_epochs;
+	uint32_t *host_physical_block_pin_counts;
 	SparkGlm52Pp13WorkControlKvDirectoryEntry *host_kv_directory_entries;
+	SparkGlm52Pp13BuilderMtpKvTransaction *mtp_kv_transactions;
 	uint32_t *host_backing_block_free_next;
 	uint32_t *device_physical_block_indices;
 	uint32_t *device_lane_physical_block_counts;
@@ -1336,6 +1355,50 @@ __global__ static void SparkGlm52Pp13BuilderMtpGpuProfileKernel(
 	cycles[((uint64_t)draft_index *
 		SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT) + phase_index] =
 		global_time;
+}
+
+__global__ static void SparkGlm52Pp13BuilderClearSpeculativeKvRowsKernel(
+	const uint32_t *__restrict__ physical_slots,
+	uint32_t physical_slot_count,
+	uint32_t block_token_count,
+	uint16_t *__restrict__ mla_cache,
+	uint16_t *__restrict__ key_nope_cache,
+	uint16_t *__restrict__ value_cache,
+	uint16_t *__restrict__ key_index_cache,
+	uint8_t *__restrict__ dsa_summary_dirty_flags)
+{
+	uint32_t element_index;
+	uint32_t physical_slot;
+	uint32_t slot_index;
+	slot_index = blockIdx.x;
+	if (slot_index >= physical_slot_count)
+		return;
+	physical_slot = physical_slots[slot_index];
+	for (element_index = threadIdx.x;
+		 element_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
+		 element_index += blockDim.x)
+		mla_cache[((uint64_t)physical_slot *
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + element_index] = 0u;
+	for (element_index = threadIdx.x;
+		 element_index < SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS;
+		 element_index += blockDim.x)
+		key_nope_cache[((uint64_t)physical_slot *
+			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS) + element_index] = 0u;
+	for (element_index = threadIdx.x;
+		 element_index < SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS;
+		 element_index += blockDim.x)
+		value_cache[((uint64_t)physical_slot *
+			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS) + element_index] = 0u;
+	if (key_index_cache != 0)
+	{
+		for (element_index = threadIdx.x;
+			 element_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION;
+			 element_index += blockDim.x)
+			key_index_cache[((uint64_t)physical_slot *
+				SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION) + element_index] = 0u;
+		if (threadIdx.x == 0u)
+			dsa_summary_dirty_flags[physical_slot / block_token_count] = 1u;
+	}
 }
 
 static SparkStatus SparkGlm52Pp13BuilderReportStatus(
@@ -4326,6 +4389,8 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		(uint32_t *)malloc((size_t)(physical_block_count * sizeof(uint32_t)));
 	state->host_physical_block_last_used_epochs =
 		(uint64_t *)malloc((size_t)(physical_block_count * sizeof(uint64_t)));
+	state->host_physical_block_pin_counts =
+		(uint32_t *)calloc((size_t)physical_block_count,sizeof(uint32_t));
 	state->host_kv_directory_entries =
 		(SparkGlm52Pp13WorkControlKvDirectoryEntry *)malloc(
 			(size_t)((uint64_t)directory_capacity *
@@ -4344,17 +4409,23 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		(SparkModelDriverCompletion *)malloc(
 			(size_t)(state->rank_plan.logical_lane_capacity *
 				sizeof(SparkModelDriverCompletion)));
+	state->mtp_kv_transactions =
+		(SparkGlm52Pp13BuilderMtpKvTransaction *)calloc(
+			state->configuration.maximum_resident_sequence_count,
+			sizeof(SparkGlm52Pp13BuilderMtpKvTransaction));
 	if (state->host_physical_block_indices == 0 ||
 		state->host_lane_physical_block_counts == 0 ||
 		state->host_physical_block_states == 0 ||
 		state->host_physical_block_sequence_ids == 0 ||
 		state->host_physical_block_logical_indices == 0 ||
 		state->host_physical_block_last_used_epochs == 0 ||
+		state->host_physical_block_pin_counts == 0 ||
 		state->host_kv_directory_entries == 0 ||
 		(((state->configuration.flags &
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_NVME_KV) != 0u) &&
 		 state->host_backing_block_free_next == 0) ||
 		state->host_mtp_draft_budgets == 0 ||
+		state->mtp_kv_transactions == 0 ||
 		state->pending_work_completions == 0)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	status = SparkGlm52Pp13WorkControlInitializeKvState(
@@ -4371,6 +4442,9 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		state->host_physical_block_logical_indices,
 		state->host_physical_block_last_used_epochs,
 		state->host_kv_directory_entries);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13WorkControlConfigureKvPins(
+			&state->kv_state,state->host_physical_block_pin_counts);
 	if (status == SPARK_STATUS_OK &&
 		(state->configuration.flags &
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_NVME_KV) != 0u)
@@ -4761,7 +4835,9 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 	free(state->host_physical_block_sequence_ids);
 	free(state->host_physical_block_logical_indices);
 	free(state->host_physical_block_last_used_epochs);
+	free(state->host_physical_block_pin_counts);
 	free(state->host_kv_directory_entries);
+	free(state->mtp_kv_transactions);
 	free(state->host_backing_block_free_next);
 	free(state->host_prefill_lane_offsets);
 	free(state->host_prefill_lane_counts);
@@ -5983,6 +6059,7 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchVerifierMtpDraft(
 	SparkGlm52ResidentDecodeStagePipelineSlot base_slot;
 	uint32_t accepted_count;
 	uint32_t draft_token_count;
+	uint32_t lane_draft_token_count;
 	uint32_t lane_index;
 	SparkStatus status;
 	if (state == 0 || work_packet == 0 || draft_token_count_out == 0 ||
@@ -5993,12 +6070,18 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchVerifierMtpDraft(
 		state,work_packet->lane_count,work_packet->rows_per_lane);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	draft_token_count =
-		SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT;
+	draft_token_count = SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
 	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
 	{
 		accepted_count = SparkGlm52Pp13BuilderAcceptedMtpDraftCount(
 			state,work_packet,lane_index);
+		lane_draft_token_count = accepted_count + 1u;
+		if (lane_draft_token_count >
+			SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
+			lane_draft_token_count =
+				SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+		if (lane_draft_token_count < draft_token_count)
+			draft_token_count = lane_draft_token_count;
 		if (work_packet->lanes[lane_index].sequence_position >
 			UINT32_MAX - accepted_count)
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -6479,6 +6562,10 @@ static void SparkGlm52Pp13BuilderCollectPendingWorkCompletion(
 		state->pending_work_completion_count++] = *completion;
 }
 
+static SparkStatus SparkGlm52Pp13BuilderDiscardMtpKvTransactions(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlPacket *work_packet);
+
 static void SparkGlm52Pp13BuilderCompletePendingWork(
 	void *completion_context,
 	const SparkModelDriverCompletion *driver_completion)
@@ -6539,7 +6626,16 @@ static void SparkGlm52Pp13BuilderCompletePendingWork(
 		(state->pending_work_completion_overflow != 0u ||
 		 (buffered_completion_required != 0u &&
 		  state->pending_work_completion_count != work_packet->lane_count)))
-		status = SPARK_STATUS_CAPACITY_EXCEEDED;
+		 status = SPARK_STATUS_CAPACITY_EXCEEDED;
+	if (status != SPARK_STATUS_OK &&
+		SparkGlm52Pp13BuilderWorkIsMtpVerify(work_packet) != 0u)
+	{
+		SparkStatus discard_status;
+		discard_status = SparkGlm52Pp13BuilderDiscardMtpKvTransactions(
+			state,work_packet);
+		if (discard_status != SPARK_STATUS_OK)
+			status = discard_status;
+	}
 	if (status == SPARK_STATUS_OK)
 	{
 		status = SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
@@ -6586,6 +6682,352 @@ static void SparkGlm52Pp13BuilderCompletePendingWork(
 		else
 			completion_function(outer_completion_context,driver_completion);
 	}
+}
+
+static SparkGlm52Pp13BuilderMtpKvTransaction *
+SparkGlm52Pp13BuilderMtpKvTransactionForLane(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlLane *lane)
+{
+	if (state == 0 || lane == 0 || state->mtp_kv_transactions == 0 ||
+		lane->request_slot_index >=
+			state->configuration.maximum_resident_sequence_count)
+		return 0;
+	return &state->mtp_kv_transactions[lane->request_slot_index];
+}
+
+static SparkStatus SparkGlm52Pp13BuilderClearActiveMtpKvTransaction(
+	SparkGlm52Pp13BuilderState *state,
+	SparkGlm52Pp13BuilderMtpKvTransaction *transaction)
+{
+	uint32_t draft_index;
+	SparkStatus status;
+	if (state == 0 || transaction == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	for (draft_index = 0u;
+		 draft_index < transaction->pinned_token_count;
+		 ++draft_index)
+	{
+		status = SparkGlm52Pp13WorkControlUnpinPhysicalBlock(
+			&state->kv_state,
+			transaction->physical_slots[draft_index] /
+				state->kv_state.block_token_count);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
+	transaction->request_id = 0u;
+	transaction->sequence_id = 0u;
+	transaction->base_position = 0u;
+	transaction->proposed_token_count = 0u;
+	transaction->pinned_token_count = 0u;
+	transaction->active = 0u;
+	memset(transaction->physical_slots,0,sizeof(transaction->physical_slots));
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderDiscardMtpKvTransactions(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlPacket *work_packet)
+{
+	SparkGlm52Pp13BuilderMtpKvTransaction *transaction;
+	uint32_t transaction_index;
+	uint32_t lane_index;
+	SparkStatus status;
+	if (state == 0 || work_packet == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((work_packet->flags &
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u)
+	{
+		for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
+		{
+			for (transaction_index = 0u;
+				 transaction_index <
+					state->configuration.maximum_resident_sequence_count;
+				 ++transaction_index)
+			{
+				transaction = &state->mtp_kv_transactions[transaction_index];
+				if (transaction->active != 0u &&
+					transaction->sequence_id ==
+						work_packet->lanes[lane_index].sequence_id)
+				{
+					status = SparkGlm52Pp13BuilderClearActiveMtpKvTransaction(
+						state,transaction);
+					if (status != SPARK_STATUS_OK)
+						return status;
+					memset(transaction,0,sizeof(*transaction));
+					continue;
+				}
+				if (transaction->last_valid != 0u &&
+					transaction->last_sequence_id ==
+						work_packet->lanes[lane_index].sequence_id)
+					memset(transaction,0,sizeof(*transaction));
+			}
+		}
+		return SPARK_STATUS_OK;
+	}
+	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
+	{
+		transaction = SparkGlm52Pp13BuilderMtpKvTransactionForLane(
+			state,&work_packet->lanes[lane_index]);
+		if (transaction == 0)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		if (transaction->active != 0u)
+		{
+			if (transaction->request_id != work_packet->lanes[lane_index].request_id ||
+				transaction->sequence_id != work_packet->lanes[lane_index].sequence_id)
+				return SPARK_STATUS_INTERNAL_ERROR;
+			status = SparkGlm52Pp13BuilderClearActiveMtpKvTransaction(
+				state,transaction);
+			if (status != SPARK_STATUS_OK)
+				return status;
+		}
+		memset(transaction,0,sizeof(*transaction));
+	}
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderRecordMtpKvTransactions(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlPacket *work_packet,
+	uint32_t *created_out)
+{
+	SparkGlm52Pp13BuilderMtpKvTransaction *transaction;
+	const SparkGlm52Pp13WorkControlLane *lane;
+	uint32_t creation_mode;
+	uint32_t draft_index;
+	uint32_t lane_index;
+	uint32_t physical_block_index;
+	uint32_t block_index;
+	uint32_t block_token_index;
+	uint64_t position;
+	SparkStatus status;
+	if (state == 0 || work_packet == 0 || created_out == 0 ||
+		SparkGlm52Pp13BuilderWorkIsMtpVerify(work_packet) == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	*created_out = 0u;
+	creation_mode = UINT32_MAX;
+	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
+	{
+		lane = &work_packet->lanes[lane_index];
+		transaction = SparkGlm52Pp13BuilderMtpKvTransactionForLane(state,lane);
+		if (transaction == 0)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		if (transaction->active != 0u &&
+			(transaction->request_id != lane->request_id ||
+			 transaction->sequence_id != lane->sequence_id ||
+			 transaction->base_position != lane->sequence_position ||
+			 transaction->proposed_token_count != lane->speculative_token_count))
+			return SPARK_STATUS_BUSY;
+		if (creation_mode == UINT32_MAX)
+			creation_mode = transaction->active == 0u ? 1u : 0u;
+		else if (creation_mode != (transaction->active == 0u ? 1u : 0u))
+			return SPARK_STATUS_BUSY;
+	}
+	if (creation_mode == 0u)
+		return SPARK_STATUS_OK;
+	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
+	{
+		lane = &work_packet->lanes[lane_index];
+		transaction = SparkGlm52Pp13BuilderMtpKvTransactionForLane(state,lane);
+		transaction->request_id = lane->request_id;
+		transaction->sequence_id = lane->sequence_id;
+		transaction->base_position = lane->sequence_position;
+		transaction->proposed_token_count = lane->speculative_token_count;
+		for (draft_index = 0u;
+			 draft_index < lane->speculative_token_count;
+			 ++draft_index)
+		{
+			position = lane->sequence_position + 1u + draft_index;
+			block_index = (uint32_t)(position / work_packet->block_token_count);
+			block_token_index = (uint32_t)(position % work_packet->block_token_count);
+			if (block_index >= state->host_lane_physical_block_counts[lane_index])
+			{
+				status = SPARK_STATUS_CAPACITY_EXCEEDED;
+				goto fail;
+			}
+			physical_block_index = state->host_physical_block_indices[
+				((uint64_t)lane_index * state->kv_state.lane_stride) + block_index];
+			if (physical_block_index >= state->kv_state.physical_block_capacity ||
+				physical_block_index >
+					(UINT32_MAX - block_token_index) / work_packet->block_token_count)
+			{
+				status = SPARK_STATUS_CAPACITY_EXCEEDED;
+				goto fail;
+			}
+			transaction->physical_slots[draft_index] =
+				(physical_block_index * work_packet->block_token_count) +
+				block_token_index;
+			status = SparkGlm52Pp13WorkControlPinPhysicalBlock(
+				&state->kv_state,physical_block_index);
+			if (status != SPARK_STATUS_OK)
+				goto fail;
+			transaction->pinned_token_count += 1u;
+		}
+		transaction->active = 1u;
+	}
+	*created_out = 1u;
+	return SPARK_STATUS_OK;
+
+fail:
+	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
+	{
+		transaction = SparkGlm52Pp13BuilderMtpKvTransactionForLane(
+			state,&work_packet->lanes[lane_index]);
+		if (transaction != 0 && transaction->request_id ==
+			work_packet->lanes[lane_index].request_id)
+			(void)SparkGlm52Pp13BuilderClearActiveMtpKvTransaction(
+				state,transaction);
+	}
+	return status;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderLaunchMtpKvRollback(
+	SparkGlm52Pp13BuilderState *state,
+	uint32_t physical_slot_count)
+{
+	SparkGlm52Pp13BuilderLayer *layer;
+	uint32_t layer_offset;
+	SparkStatus status;
+	if (state == 0 || physical_slot_count == 0u ||
+		physical_slot_count > state->rank_plan.execution_row_capacity)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
+		state->device_decode_positions,state->host_decode_positions,
+		(size_t)physical_slot_count * sizeof(uint32_t),cudaMemcpyHostToDevice,
+		state->stream));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	for (layer_offset = 0u;
+		 layer_offset < state->rank_plan.layer_count;
+		 ++layer_offset)
+	{
+		layer = &state->layers[layer_offset];
+		SparkGlm52Pp13BuilderClearSpeculativeKvRowsKernel<<<
+			physical_slot_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
+			(const uint32_t *)state->device_decode_positions,physical_slot_count,
+			state->kv_state.block_token_count,(uint16_t *)layer->mla_cache,
+			(uint16_t *)layer->key_nope_cache,(uint16_t *)layer->value_cache,
+			(uint16_t *)layer->key_index_cache,
+			(uint8_t *)layer->dsa_summary_dirty_flags);
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
+	if (state->mtp_ready != 0u)
+	{
+		layer = &state->mtp_layer;
+		SparkGlm52Pp13BuilderClearSpeculativeKvRowsKernel<<<
+			physical_slot_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
+			(const uint32_t *)state->device_decode_positions,physical_slot_count,
+			state->kv_state.block_token_count,(uint16_t *)layer->mla_cache,
+			(uint16_t *)layer->key_nope_cache,(uint16_t *)layer->value_cache,
+			(uint16_t *)layer->key_index_cache,
+			(uint8_t *)layer->dsa_summary_dirty_flags);
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
+	status = SparkGlm52Pp13BuilderCudaStatus(
+		cudaEventRecord(state->kv_event,state->stream));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaStatus(
+			cudaStreamWaitEvent(state->kv_stream,state->kv_event,0u));
+	return status;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderApplyMtpKvResolutions(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlPacket *work_packet)
+{
+	SparkGlm52Pp13BuilderMtpKvTransaction *transaction;
+	const SparkGlm52Pp13WorkControlLane *lane;
+	uint32_t draft_index;
+	uint32_t lane_index;
+	uint32_t rejected_slot_count;
+	uint64_t resolution_base_position;
+	SparkStatus status;
+	if (state == 0 || work_packet == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	rejected_slot_count = 0u;
+	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
+	{
+		lane = &work_packet->lanes[lane_index];
+		transaction = SparkGlm52Pp13BuilderMtpKvTransactionForLane(state,lane);
+		if (transaction == 0)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		if (lane->mtp_resolution_proposed_token_count == 0u)
+		{
+			if (transaction->active != 0u &&
+				transaction->sequence_id == lane->sequence_id)
+				return SPARK_STATUS_BUSY;
+			continue;
+		}
+		if (lane->sequence_position <
+			(uint64_t)lane->mtp_resolution_accepted_token_count + 1u)
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		resolution_base_position = lane->sequence_position -
+			(uint64_t)lane->mtp_resolution_accepted_token_count - 1u;
+		if (transaction->active == 0u)
+		{
+			if (transaction->last_valid == 0u ||
+				transaction->last_request_id != lane->request_id ||
+				transaction->last_sequence_id != lane->sequence_id ||
+				transaction->last_base_position !=
+					resolution_base_position ||
+				transaction->last_proposed_token_count !=
+					lane->mtp_resolution_proposed_token_count ||
+				transaction->last_accepted_token_count !=
+					lane->mtp_resolution_accepted_token_count)
+				return SPARK_STATUS_INVALID_ARGUMENT;
+			continue;
+		}
+		if (transaction->request_id != lane->request_id ||
+			transaction->sequence_id != lane->sequence_id ||
+			transaction->base_position != resolution_base_position ||
+			transaction->proposed_token_count !=
+				lane->mtp_resolution_proposed_token_count)
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		for (draft_index = lane->mtp_resolution_accepted_token_count;
+			 draft_index < transaction->proposed_token_count;
+			 ++draft_index)
+		{
+			if (rejected_slot_count >= state->rank_plan.execution_row_capacity)
+				return SPARK_STATUS_CAPACITY_EXCEEDED;
+			state->host_decode_positions[rejected_slot_count++] =
+				transaction->physical_slots[draft_index];
+		}
+	}
+	if (rejected_slot_count != 0u)
+	{
+		status = SparkGlm52Pp13BuilderLaunchMtpKvRollback(
+			state,rejected_slot_count);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
+	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
+	{
+		lane = &work_packet->lanes[lane_index];
+		if (lane->mtp_resolution_proposed_token_count == 0u)
+			continue;
+		transaction = SparkGlm52Pp13BuilderMtpKvTransactionForLane(state,lane);
+		if (transaction->active == 0u)
+			continue;
+		resolution_base_position = lane->sequence_position -
+			(uint64_t)lane->mtp_resolution_accepted_token_count - 1u;
+		transaction->last_request_id = lane->request_id;
+		transaction->last_sequence_id = lane->sequence_id;
+		transaction->last_base_position = resolution_base_position;
+		transaction->last_proposed_token_count =
+			lane->mtp_resolution_proposed_token_count;
+		transaction->last_accepted_token_count =
+			lane->mtp_resolution_accepted_token_count;
+		transaction->last_valid = 1u;
+		status = SparkGlm52Pp13BuilderClearActiveMtpKvTransaction(
+			state,transaction);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52Pp13BuilderBuildResidentKvTable(
@@ -6637,6 +7079,7 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 {
 	SparkGlm52Pp13BuilderState *state;
 	SparkGlm52ResidentDecodeStageProductionRunnerDispatch dispatch;
+	uint32_t mtp_transaction_created;
 	SparkStatus status;
 	state = (SparkGlm52Pp13BuilderState *)builder_state;
 	if (state == 0 || work_packet == 0 || state->runner_ready == 0u)
@@ -6651,8 +7094,14 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 		return SPARK_STATUS_BUSY;
 	if ((work_packet->flags &
 		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u)
+	{
+		status = SparkGlm52Pp13BuilderDiscardMtpKvTransactions(
+			state,work_packet);
+		if (status != SPARK_STATUS_OK)
+			return status;
 		return SparkGlm52Pp13WorkControlReleasePacketSequences(
 			work_packet,&state->kv_state);
+	}
 	if (work_packet->execution_row_count >
 		state->rank_plan.execution_row_capacity)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -6661,6 +7110,9 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	if (work_packet->active_sequence_count > 1u &&
 		SparkGlm52Pp13BuilderWorkCapturesDspark(work_packet) != 0u)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	status = SparkGlm52Pp13BuilderApplyMtpKvResolutions(state,work_packet);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	status = SparkGlm52Pp13BuilderBuildResidentKvTable(state,work_packet);
 	if (status != SPARK_STATUS_OK)
 		return status;
@@ -6767,6 +7219,14 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 		if (status != SPARK_STATUS_OK)
 			goto cancel_work;
 	}
+	mtp_transaction_created = 0u;
+	if (SparkGlm52Pp13BuilderWorkIsMtpVerify(work_packet) != 0u)
+	{
+		status = SparkGlm52Pp13BuilderRecordMtpKvTransactions(
+			state,work_packet,&mtp_transaction_created);
+		if (status != SPARK_STATUS_OK)
+			goto cancel_work;
+	}
 	state->captured_completion_valid = 0u;
 	state->dspark_ready_draft_valid = 0u;
 	state->pending_work_packet = *work_packet;
@@ -6784,6 +7244,9 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	{
 		if (state->pending_work_active != 0u)
 			state->pending_work_active = 0u;
+		if (mtp_transaction_created != 0u)
+			(void)SparkGlm52Pp13BuilderDiscardMtpKvTransactions(
+				state,work_packet);
 		goto cancel_work;
 	}
 	state->asynchronous_submit_count += 1u;

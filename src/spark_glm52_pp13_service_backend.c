@@ -1693,6 +1693,13 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 		target_lane->context_token_count = required_context_token_count;
 		target_lane->input_token_id = decode_dispatch->input_token_ids[source_index];
 		target_lane->mtp_draft_token_count = mtp_budget;
+		target_lane->mtp_resolution_proposed_token_count =
+			(uint8_t)source_lane->mtp_resolution_proposed_token_count;
+		target_lane->mtp_resolution_accepted_token_count =
+			(uint8_t)source_lane->mtp_resolution_accepted_token_count;
+		target_lane->mtp_resolution_reserved0 = 0u;
+		if (target_lane->mtp_resolution_proposed_token_count != 0u)
+			packet->flags |= SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE;
 		if (speculative_verify != 0u)
 		{
 			target_lane->speculative_token_count =
