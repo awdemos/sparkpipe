@@ -609,6 +609,8 @@ SparkStatus SparkGlm52RequestApiSubmit(
     slot->remaining_thinking_token_budget = request->thinking_token_budget;
     slot->remaining_output_token_budget = request->output_token_budget;
     slot->max_prefill_tokens_per_step = request->max_prefill_tokens_per_step;
+    slot->mtp_next_draft_token_budget =
+        SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT;
     slot->request_id = request->request_id;
     if (request->sequence_id != 0u)
     {
@@ -4359,6 +4361,46 @@ static uint32_t SparkGlm52RequestApiSlotRemainingDecodeBudget(
         slot->remaining_output_token_budget;
 }
 
+static uint32_t SparkGlm52RequestApiDecodeBatchMtpBudget(
+    const SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot *const *selected_slots,
+    uint32_t request_count)
+{
+    uint32_t budget;
+    uint32_t request_index;
+
+    if (!SparkGlm52RequestApiMtpCommitIsEnabled(api) ||
+        selected_slots == 0 || request_count == 0u)
+    {
+        return 0u;
+    }
+    budget = SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+    for (request_index = 0u; request_index < request_count; ++request_index)
+    {
+        const SparkGlm52RequestApiSlot *slot;
+        uint32_t lane_budget;
+
+        slot = selected_slots[request_index];
+        if (slot == 0 ||
+            (slot->flags &
+                SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION) != 0u ||
+            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) < 3u)
+        {
+            return 0u;
+        }
+        lane_budget = SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) - 2u;
+        if (lane_budget > slot->mtp_next_draft_token_budget)
+        {
+            lane_budget = slot->mtp_next_draft_token_budget;
+        }
+        if (lane_budget < budget)
+        {
+            budget = lane_budget;
+        }
+    }
+    return budget;
+}
+
 static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiSlot *first_slot,
@@ -4375,6 +4417,7 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
     uint32_t require_resident_batch_members;
     uint32_t batch_disables_speculation;
     uint32_t batch_minimum_remaining_budget;
+    uint32_t mtp_draft_token_budget;
     SparkStatus status;
 
     batch_disables_speculation = 0u;
@@ -4391,12 +4434,13 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
         require_resident_batch_members,
         selected_slots,
         batch_target);
+    mtp_draft_token_budget = SparkGlm52RequestApiDecodeBatchMtpBudget(
+        api,selected_slots,request_count);
     status = SparkGlm52RequestApiApplyActiveKvBlockBudget(
         api,
         selected_slots,
         &request_count,
-        SparkGlm52RequestApiMtpCommitIsEnabled(api)
-            ? SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT : 0u);
+        mtp_draft_token_budget);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -4416,8 +4460,7 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
         status = SparkGlm52RequestApiEnsureDecodeSlotKvCapacity(
             api,
             selected_slots[request_index],
-            SparkGlm52RequestApiMtpCommitIsEnabled(api)
-                ? SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT : 0u,
+            mtp_draft_token_budget,
             0);
         if (status != SPARK_STATUS_OK)
         {
@@ -4503,16 +4546,12 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
                 SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
         }
     }
-    if (SparkGlm52RequestApiMtpCommitIsEnabled(api) &&
+    if (mtp_draft_token_budget != 0u &&
         batch_disables_speculation == 0u &&
         batch_minimum_remaining_budget >= 3u)
     {
         dispatch->flags |= SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT;
-        dispatch->mtp_draft_token_budget =
-            batch_minimum_remaining_budget - 2u <
-                SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT
-                    ? batch_minimum_remaining_budget - 2u
-                    : SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+        dispatch->mtp_draft_token_budget = mtp_draft_token_budget;
     }
     if ((dispatch->flags &
             SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u)
@@ -4965,6 +5004,13 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
         if (slot->mtp_draft_token_count != proposed_token_count)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        slot->mtp_next_draft_token_budget = accepted_draft_token_count + 1u;
+        if (slot->mtp_next_draft_token_budget >
+            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
+        {
+            slot->mtp_next_draft_token_budget =
+                SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
         }
         memset(slot->mtp_draft_token_ids, 0, sizeof(slot->mtp_draft_token_ids));
         slot->mtp_draft_token_count = 0u;

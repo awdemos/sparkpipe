@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_REQUEST_API_ABI_VERSION 4u
+#define SPARK_GLM52_REQUEST_API_ABI_VERSION 5u
 #define SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52RequestApiConfiguration))
 #define SPARK_GLM52_REQUEST_API_DESCRIPTOR_BYTES \
@@ -99,6 +99,7 @@ extern "C" {
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY 0x00000400u
 #define SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT \
     SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT
+#define SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT 1u
 
 #define SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY 8u
 #define SPARK_GLM52_REQUEST_API_SLOT_HASH_SLOTS 4096u
@@ -166,6 +167,7 @@ typedef struct SparkGlm52RequestApiSlot
     uint32_t free_slot_next;
     const uint32_t *prompt_token_ids;
     uint32_t mtp_draft_token_count;
+    uint32_t mtp_next_draft_token_budget;
     uint32_t mtp_draft_token_ids[SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
 } SparkGlm52RequestApiSlot;
 

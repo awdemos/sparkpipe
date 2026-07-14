@@ -3190,7 +3190,9 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 	SparkGlm52Pp13BuilderState *state;
 	const uint32_t *token_ids;
 	const void *hidden_bf16;
+	uint32_t draft_token_count;
 	uint32_t draft_index;
+	uint32_t lane_index;
 	SparkStatus status;
 	state = plan != 0 ? (SparkGlm52Pp13BuilderState *)plan->opaque_state : 0;
 	if (state == 0 || state->mtp_ready == 0u || node_context == 0 ||
@@ -3202,13 +3204,22 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 		base_slot->mtp_draft_hidden_bf16 == 0 ||
 		base_slot->mtp_draft_token_ids == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	draft_token_count = 0u;
+	for (lane_index = 0u; lane_index < active_sequence_count; ++lane_index)
+	{
+		if (state->host_mtp_draft_budgets[lane_index] > draft_token_count)
+			draft_token_count = state->host_mtp_draft_budgets[lane_index];
+	}
+	if (draft_token_count == 0u ||
+		draft_token_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	status = SparkGlm52Pp13BuilderPrepareMtpLinearPlanRows(
 		state,active_sequence_count);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus(
 			"mtp_prepare_linear_rows",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 	for (draft_index = 0u;
-		 draft_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
+		 draft_index < draft_token_count;
 		 ++draft_index)
 	{
 		token_ids = draft_index == 0u
