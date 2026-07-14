@@ -272,7 +272,7 @@ def test_mtp_previous_target_position_contracts_are_explicit(root: Path) -> None
     draft_body = source[draft_start:draft_end]
     assert "state->mtp_use_previous_for_draft" not in source
     assert "state->mtp_previous_target_hidden" not in draft_body
-    assert "base_slot->layer_output_hidden_bf16" in draft_body
+    assert "base_slot->normalized_hidden_bf16" in draft_body
     assert ("state,token_ids,base_slot->positions,hidden_bf16,draft_index" in
             draft_body)
 
