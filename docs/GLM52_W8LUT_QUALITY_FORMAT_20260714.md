@@ -49,7 +49,7 @@ recipe for the production path: e4m3 with 128×128 block amax scaling
 | exact zeros in source | — | 0 in 2.64B weights |
 | per-tensor metadata | [I/128,H/128] f32 scales | one u16 (`e0`) |
 
-Reproduce: `modules/glm52_w8lut_quality_weights/source/w8lut_np.py` +
+Reproduce: `tools/glm52_w8lut_codec.py` +
 `realdata_result.json` (retained numbers).
 
 ## 3. Format (normative reference: `source/w8lut.h`, `source/w8lut_ref.c`)
@@ -85,13 +85,28 @@ REGION_W2_WEIGHT    : u8 codes                                         [E][H][I]
 REGION_W2_SCALE_INV : u16 e0                                           [E][1]
 ```
 
+W8LUT is a physically separate pack family. Files use the `.spw8lut` extension,
+`SPARKGLM52W8LUT` wire magic, and `w8lut_moe_pack_manifest.json` in a dedicated pack
+directory. The packer refuses to replace an existing `.spw8lut` file or manifest and
+refuses any destination containing `.spfp8`, B12x, or unrelated artifacts. It never
+opens, edits, relocates, or aliases the working FP8 pack set.
+
+Generation is explicit and fail-closed:
+
+```
+make -j glm52_w8lut_resident_pack \
+    W8LUT_MODEL_DIR=/stable/bf16/zai-org/GLM-5.2 \
+    W8LUT_MOE_PACK_OUTPUT_DIR=/stable/packs/glm52_w8lut_pp13_stage00 \
+    W8LUT_MOE_PACK_LAYERS=3,4,5 \
+    W8LUT_MOE_PACK_JOBS=3
+```
+
 Per-expert-per-component `e0` (each expert's up / gate / down slice gets its own window)
 is strictly finer than the per-tensor windows measured in §2, so §2 is a lower bound on
 quality. Conversion source is the **BF16 master** (`zai-org/GLM-5.2`), never the FP8
 checkpoint — requantizing FP8 would bake e4m3 error into W8LUT. Packer verifies every
 slice (decode == RNE reference in-window, re-encode idempotence) and writes a manifest.
-`source/w8lut_np.py` `encode()` is the conversion core; `source/w8lut_convert.py` is an
-interim generic converter for offline experiments only.
+`tools/glm52_w8lut_codec.py` `encode()` is the production resident-pack conversion core.
 
 ## 5. Trunk and MTP to BF16
 
@@ -147,7 +162,7 @@ the JIT-KV interaction need confirming against `GLM52_B1024_JIT_KV_INTEGRATION.m
 |---|---|---|
 | G0 | `make test_ref` — RNE goldens (carry, ties, subnormal boundary), inf/nan reject, window/threshold goldens, property maxrel ≤ 2⁻⁵, decode→re-encode idempotence | PASS, author machine (offline; no runtime status) |
 | G0b | `make crosscheck` — numpy encoder ≡ C reference, bit-for-bit | PASS, author machine |
-| G1/G2 | `make test_gpu` on a Spark | pending — kernels uncompiled by author |
+| G1/G2 | `make glm52_w8lut_quality_cuda_gate` on spark0, SM121, merged commit `07c4e77a` | PASS: 12,582,912-code expand bit-exact; GEMV mirror bit-exact; FP64 spot maxrel 4.16e-05 |
 | G3 | per-layer ‖out−BF16ref‖: W8LUT strictly closer than FP8, every layer (`glm52_transformers_stage_reference.py` provides the reference harness pattern) | pending |
 | G4 | `source/kl_eval.py`: mean KL(BF16 ‖ cand) over ≥2M teacher-forced tokens; accept KL_w8lut ≤ 0.5 × KL_fp8 (expected ~0.25×) | pending |
 | G5 | matched release measurements per the ledger: decode B64/B1024, prefill, N-run + cross-rank bit-identity soak | pending |

@@ -14,7 +14,6 @@ docs/GLM52_W8LUT_QUALITY_FORMAT_20260714.md.
 
 source/w8lut.h,w8lut_ref.c      normative format reference
 source/w8lut_kernels.cu         candidate expand + fused deterministic gemv
-source/w8lut_np.py              vectorized encoder (pack-builder core)
-source/w8lut_convert.py         interim generic converter (experiments only)
+tools/glm52_w8lut_codec.py      vectorized encoder shared with the production packer
 source/kl_eval.py               G4 logit-KL harness
 source/realdata_result.json     retained offline measurement
