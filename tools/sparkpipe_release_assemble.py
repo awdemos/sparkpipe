@@ -22,6 +22,10 @@ DIAGNOSTIC_ENVIRONMENT_BY_ROLE = {
         "SPARKPIPE_PP13_TRACE": "1",
     },
 }
+DIAGNOSTIC_ENVIRONMENT_NAMES = {
+    key for values in DIAGNOSTIC_ENVIRONMENT_BY_ROLE.values()
+    for key in values
+}
 
 
 def sha256(path):
@@ -89,6 +93,11 @@ def set_role_release_identity(manifest):
 
 
 def set_runtime_diagnostics(manifest,enabled):
+    for role in manifest["roles"]:
+        environment = role.get("env",[])
+        role["env"] = [entry for entry in environment
+                       if entry.split("=",1)[0] not in
+                       DIAGNOSTIC_ENVIRONMENT_NAMES]
     for role_name,values in DIAGNOSTIC_ENVIRONMENT_BY_ROLE.items():
         matching_roles = [role for role in manifest["roles"]
                           if role.get("name") == role_name]
@@ -96,9 +105,6 @@ def set_runtime_diagnostics(manifest,enabled):
             raise SystemExit(
                 "release must contain exactly one role named " + role_name)
         role = matching_roles[0]
-        environment = role.get("env",[])
-        role["env"] = [entry for entry in environment
-                       if entry.split("=",1)[0] not in values]
         if enabled:
             role["env"].extend(key + "=" + value
                                for key,value in values.items())
