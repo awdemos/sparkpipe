@@ -17638,24 +17638,41 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFullVocabGreedyFina
     cudaStream_t cuda_stream,
     uint32_t active_sequence_count)
 {
-    uint64_t candidate_count;
+	SparkGlm52ResidentDecodeStageExactFinalTokenTailLaunchFunction
+		final_token_launch_function;
+	uint64_t candidate_count;
     float *candidate_scores;
     uint32_t *candidate_tokens;
     dim3 candidate_grid;
     SparkStatus status;
 
-    if (!SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
-            exact_stage_slice_plan) ||
-        active_sequence_count == 0u ||
-        active_sequence_count > exact_stage_slice_plan->maximum_active_sequence_count ||
+	if (exact_stage_slice_plan == 0 ||
+		active_sequence_count == 0u ||
+		active_sequence_count > exact_stage_slice_plan->maximum_active_sequence_count ||
         node_context->restricted_lm_head_weight_bf16 == 0 ||
         node_context->restricted_token_ids == 0 ||
         pipeline_slot->normalized_hidden_bf16 == 0 ||
         pipeline_slot->restricted_selected_token_ids == 0 ||
         pipeline_slot->restricted_selected_token_scores == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
+	{
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	if (exact_stage_slice_plan->final_token_launch_function != 0)
+	{
+		final_token_launch_function =
+			(SparkGlm52ResidentDecodeStageExactFinalTokenTailLaunchFunction)
+				exact_stage_slice_plan->final_token_launch_function;
+		status = final_token_launch_function(
+			exact_stage_slice_plan,node_context,pipeline_slot,
+			active_sequence_count,(void *)cuda_stream);
+		if (status != SPARK_STATUS_OK)
+			return status;
+		return SparkGlm52ResidentDecodeStageCheckCudaLaunch(
+			node_context,cuda_slot_state,cuda_stream);
+	}
+	if (!SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
+			exact_stage_slice_plan))
+		return SPARK_STATUS_INVALID_ARGUMENT;
     candidate_count =
         SparkGlm52ResidentDecodeStageFinalTokenCandidateRowCapacity(
             exact_stage_slice_plan) *
@@ -18758,8 +18775,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
                 status);
         }
     }
-    else if (SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
-            exact_stage_slice_plan))
+    else if ((exact_stage_slice_plan != 0 &&
+              exact_stage_slice_plan->final_token_launch_function != 0) ||
+             SparkGlm52ResidentDecodeStageExactPlanUsesBuiltInFusedFinalTokenEpilogue(
+                 exact_stage_slice_plan))
     {
         status = SparkGlm52ResidentDecodeStageLaunchBuiltInFullVocabGreedyFinalTokenEpilogue(
             exact_stage_slice_plan,
