@@ -261,8 +261,17 @@ def test_mtp_previous_target_position_contracts_are_explicit(root: Path) -> None
     assert "host_mtp_previous_positions[request_slot_index] + 1u" not in load_body
     assert source.count(
         "SPARK_GLM52_PP13_BUILDER_MTP_TARGET_PRECEDES_INPUT_POSITION") == 2
-    assert source.count(
-        "SPARK_GLM52_PP13_BUILDER_MTP_TARGET_SAME_INPUT_POSITION") == 2
+    assert "SPARK_GLM52_PP13_BUILDER_MTP_TARGET_SAME_INPUT_POSITION" not in source
+    draft_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(")
+    draft_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpWeights(", draft_start)
+    draft_body = source[draft_start:draft_end]
+    assert "state->mtp_use_previous_for_draft" not in source
+    assert "state->mtp_previous_target_hidden" not in draft_body
+    assert "base_slot->layer_output_hidden_bf16" in draft_body
+    assert ("state,token_ids,base_slot->positions,hidden_bf16,draft_index" in
+            draft_body)
 
 
 def test_mtp_linear_plans_use_logical_rows(root: Path) -> None:

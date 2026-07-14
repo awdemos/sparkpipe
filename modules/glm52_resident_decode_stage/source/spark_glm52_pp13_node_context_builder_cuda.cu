@@ -65,7 +65,6 @@
 #define SPARK_GLM52_PP13_BUILDER_MTP_EH_INPUT_DIMENSION \
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u)
 #define SPARK_GLM52_PP13_BUILDER_MTP_NORM_COUNT_PER_LANE 2u
-#define SPARK_GLM52_PP13_BUILDER_MTP_TARGET_SAME_INPUT_POSITION 0u
 #define SPARK_GLM52_PP13_BUILDER_MTP_TARGET_PRECEDES_INPUT_POSITION \
 	SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET
 #define SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS \
@@ -378,7 +377,6 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint64_t mtp_previous_sequence_id;
 	uint64_t mtp_previous_position;
 	uint32_t mtp_previous_valid;
-	uint32_t mtp_use_previous_for_draft;
 	uint32_t mtp_ready;
 	const SparkModelDriverInterface *driver_interface;
 	void *driver_instance;
@@ -3191,10 +3189,8 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 {
 	SparkGlm52Pp13BuilderState *state;
 	const uint32_t *token_ids;
-	const uint32_t *base_positions;
 	const void *hidden_bf16;
 	uint32_t draft_index;
-	uint32_t use_previous;
 	SparkStatus status;
 	state = plan != 0 ? (SparkGlm52Pp13BuilderState *)plan->opaque_state : 0;
 	if (state == 0 || state->mtp_ready == 0u || node_context == 0 ||
@@ -3211,9 +3207,6 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus(
 			"mtp_prepare_linear_rows",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
-	use_previous = state->mtp_use_previous_for_draft;
-	base_positions = use_previous != 0u
-		? state->mtp_base_positions : base_slot->positions;
 	for (draft_index = 0u;
 		 draft_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
 		 ++draft_index)
@@ -3222,12 +3215,10 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 			? base_slot->restricted_selected_token_ids
 			: (const uint32_t *)state->mtp_layer.restricted_selected_token_ids;
 		hidden_bf16 = draft_index == 0u
-			? (use_previous != 0u
-				? state->mtp_previous_target_hidden
-				: base_slot->layer_output_hidden_bf16)
+			? base_slot->layer_output_hidden_bf16
 			: state->mtp_layer.layer_output_hidden;
 		status = SparkGlm52Pp13BuilderLaunchMtpLayer(
-			state,token_ids,base_positions,hidden_bf16,draft_index,
+			state,token_ids,base_slot->positions,hidden_bf16,draft_index,
 			active_sequence_count,(cudaStream_t)cuda_stream);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Sm121RequiredDecodeStageLaunchFullVocabGreedy(
@@ -3251,8 +3242,6 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 			return SparkGlm52Pp13BuilderReportStatus(
 				"mtp_store_draft",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 	}
-	if (use_previous != 0u)
-		state->mtp_previous_valid = 0u;
 	return SPARK_STATUS_OK;
 }
 
@@ -6042,19 +6031,6 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	}
 	state->captured_completion_valid = 0u;
 	state->dspark_ready_draft_valid = 0u;
-	state->mtp_use_previous_for_draft = 0u;
-	if (SparkGlm52Pp13BuilderIsFinalRank(state) &&
-		(work_packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT) != 0u)
-	{
-		status = SparkGlm52Pp13BuilderLoadMtpPreviousTargets(
-			state,work_packet,
-			SPARK_GLM52_PP13_BUILDER_MTP_TARGET_SAME_INPUT_POSITION);
-		if (status == SPARK_STATUS_NOT_FOUND)
-			status = SPARK_STATUS_MODULE_NOT_VALIDATED;
-		if (status != SPARK_STATUS_OK)
-			goto cancel_work;
-		state->mtp_use_previous_for_draft = 1u;
-	}
 	state->pending_work_packet = *work_packet;
 	state->pending_work_completion_function = completion_function;
 	state->pending_work_completion_context = completion_context;
