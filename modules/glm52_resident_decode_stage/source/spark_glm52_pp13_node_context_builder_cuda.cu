@@ -4503,6 +4503,7 @@ static SparkStatus SparkGlm52Pp13BuilderUploadMtpBudget(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	for (lane_index = 0u; lane_index < active_sequence_count; ++lane_index)
 		state->host_mtp_draft_budgets[lane_index] = mtp_draft_token_count;
+	state->mtp_draft_plan.graph_draft_token_count = mtp_draft_token_count;
 	return SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
 		state->layers[0].mtp_draft_token_budgets,
 		state->host_mtp_draft_budgets,
@@ -4516,12 +4517,14 @@ static SparkStatus SparkGlm52Pp13BuilderUploadWorkMtpBudgets(
 	const SparkGlm52Pp13WorkControlPacket *work_packet)
 {
 	uint32_t lane_index;
+	uint32_t graph_draft_token_count;
 	if (state == 0 || work_packet == 0 ||
 		work_packet->lane_count == 0u ||
 		work_packet->lane_count > state->rank_plan.logical_lane_capacity ||
 		state->host_mtp_draft_budgets == 0 ||
 		state->layers[0].mtp_draft_token_budgets == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	graph_draft_token_count = 0u;
 	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
 	{
 		if (work_packet->lanes[lane_index].mtp_draft_token_count >
@@ -4529,7 +4532,12 @@ static SparkStatus SparkGlm52Pp13BuilderUploadWorkMtpBudgets(
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		state->host_mtp_draft_budgets[lane_index] =
 			work_packet->lanes[lane_index].mtp_draft_token_count;
+		if (graph_draft_token_count <
+			work_packet->lanes[lane_index].mtp_draft_token_count)
+			graph_draft_token_count =
+				work_packet->lanes[lane_index].mtp_draft_token_count;
 	}
+	state->mtp_draft_plan.graph_draft_token_count = graph_draft_token_count;
 	return SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
 		state->layers[0].mtp_draft_token_budgets,
 		state->host_mtp_draft_budgets,

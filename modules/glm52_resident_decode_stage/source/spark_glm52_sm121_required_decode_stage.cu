@@ -16282,6 +16282,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchMtpDraft(
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION ||
             node_context->mtp_draft_plan->draft_token_count !=
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT ||
+            node_context->mtp_draft_plan->graph_draft_token_count >
+                node_context->mtp_draft_plan->draft_token_count ||
             node_context->mtp_draft_plan->launch_function == 0)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -17168,6 +17170,12 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeGraphSignature(
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->b12x_moe_dispatch_plan));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->restricted_logits_plan));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->mtp_draft_plan));
+    if (node_context->mtp_draft_plan != 0)
+    {
+        signature = SparkGlm52ResidentDecodeStageMixGraphSignature(
+            signature,
+            node_context->mtp_draft_plan->graph_draft_token_count);
+    }
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->full_stage_plan));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(node_context->bulk_prefill_plan));
     signature = SparkGlm52ResidentDecodeStageMixFp8MoePlanGraphSignature(signature, node_context);
@@ -17364,6 +17372,126 @@ static void SparkGlm52ResidentDecodeStagePhaseHashLayerState(
         graph_capture_active,
         pipeline_slot,
         cuda_stream);
+}
+
+static cudaGraphExec_t SparkGlm52ResidentDecodeStageFindCachedGraph(
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state,
+    uint32_t active_sequence_count,
+    uint64_t graph_specialization_signature)
+{
+    uint32_t graph_index;
+
+    if (cuda_slot_state == 0)
+        return 0;
+    if (cuda_slot_state->cuda_graph_exec != 0 &&
+        cuda_slot_state->graph_active_sequence_count == active_sequence_count &&
+        cuda_slot_state->graph_specialization_signature ==
+            graph_specialization_signature)
+        return (cudaGraphExec_t)cuda_slot_state->cuda_graph_exec;
+    for (graph_index = 0u;
+         graph_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_GRAPH_SPARE_ENTRY_COUNT;
+         ++graph_index)
+    {
+        if (cuda_slot_state->cuda_graph_exec_cache[graph_index] != 0 &&
+            cuda_slot_state->graph_cache_active_sequence_counts[graph_index] ==
+                active_sequence_count &&
+            cuda_slot_state->graph_cache_specialization_signatures[graph_index] ==
+                graph_specialization_signature)
+        {
+            cuda_slot_state->graph_cache_clock += 1u;
+            cuda_slot_state->graph_cache_last_use_epochs[graph_index] =
+                cuda_slot_state->graph_cache_clock;
+            return (cudaGraphExec_t)
+                cuda_slot_state->cuda_graph_exec_cache[graph_index];
+        }
+    }
+    return 0;
+}
+
+static uint32_t SparkGlm52ResidentDecodeStageSelectGraphCacheVictim(
+    const SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state)
+{
+    uint64_t oldest_epoch;
+    uint32_t graph_index;
+    uint32_t target_index;
+
+    target_index = 0u;
+    oldest_epoch = UINT64_MAX;
+    for (graph_index = 0u;
+         graph_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_GRAPH_SPARE_ENTRY_COUNT;
+         ++graph_index)
+    {
+        if (cuda_slot_state->cuda_graph_exec_cache[graph_index] == 0)
+            return graph_index;
+        if (cuda_slot_state->graph_cache_last_use_epochs[graph_index] <
+            oldest_epoch)
+        {
+            oldest_epoch =
+                cuda_slot_state->graph_cache_last_use_epochs[graph_index];
+            target_index = graph_index;
+        }
+    }
+    return target_index;
+}
+
+static void SparkGlm52ResidentDecodeStageRetainCurrentGraph(
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state)
+{
+    uint32_t target_index;
+
+    if (cuda_slot_state == 0 || cuda_slot_state->cuda_graph_exec == 0)
+        return;
+    target_index = SparkGlm52ResidentDecodeStageSelectGraphCacheVictim(
+        cuda_slot_state);
+    if (cuda_slot_state->cuda_graph_exec_cache[target_index] != 0)
+        cudaGraphExecDestroy((cudaGraphExec_t)
+            cuda_slot_state->cuda_graph_exec_cache[target_index]);
+    cuda_slot_state->cuda_graph_exec_cache[target_index] =
+        cuda_slot_state->cuda_graph_exec;
+    cuda_slot_state->graph_cache_active_sequence_counts[target_index] =
+        cuda_slot_state->graph_active_sequence_count;
+    cuda_slot_state->graph_cache_specialization_signatures[target_index] =
+        cuda_slot_state->graph_specialization_signature;
+    cuda_slot_state->graph_cache_clock += 1u;
+    cuda_slot_state->graph_cache_last_use_epochs[target_index] =
+        cuda_slot_state->graph_cache_clock;
+    cuda_slot_state->cuda_graph_exec = 0;
+    cuda_slot_state->graph_active_sequence_count = 0u;
+    cuda_slot_state->graph_specialization_signature = 0u;
+}
+
+static void SparkGlm52ResidentDecodeStageDestroyGraphCache(
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state)
+{
+    uint32_t graph_index;
+
+    if (cuda_slot_state == 0)
+        return;
+    if (cuda_slot_state->cuda_graph_exec != 0)
+        cudaGraphExecDestroy((cudaGraphExec_t)cuda_slot_state->cuda_graph_exec);
+    for (graph_index = 0u;
+         graph_index <
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_GRAPH_SPARE_ENTRY_COUNT;
+         ++graph_index)
+    {
+        if (cuda_slot_state->cuda_graph_exec_cache[graph_index] != 0)
+            cudaGraphExecDestroy((cudaGraphExec_t)
+                cuda_slot_state->cuda_graph_exec_cache[graph_index]);
+    }
+    cuda_slot_state->cuda_graph_exec = 0;
+    cuda_slot_state->graph_active_sequence_count = 0u;
+    cuda_slot_state->graph_specialization_signature = 0u;
+    memset(cuda_slot_state->cuda_graph_exec_cache,0,
+        sizeof(cuda_slot_state->cuda_graph_exec_cache));
+    memset(cuda_slot_state->graph_cache_active_sequence_counts,0,
+        sizeof(cuda_slot_state->graph_cache_active_sequence_counts));
+    memset(cuda_slot_state->graph_cache_specialization_signatures,0,
+        sizeof(cuda_slot_state->graph_cache_specialization_signatures));
+    memset(cuda_slot_state->graph_cache_last_use_epochs,0,
+        sizeof(cuda_slot_state->graph_cache_last_use_epochs));
+    cuda_slot_state->graph_cache_clock = 0u;
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageFinishSubmit(
@@ -19706,6 +19834,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateStageSlice(
 static void SparkGlm52Sm121RequiredDecodeStageQuiesceGraphs(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
+    SparkGlm52ResidentDecodeStageCudaPipelineSlotState *cuda_slot_state;
     uint32_t pipeline_slot_index;
 
     if (node_context == 0 || node_context->pipeline_slots == 0)
@@ -19718,18 +19847,11 @@ static void SparkGlm52Sm121RequiredDecodeStageQuiesceGraphs(
     {
         cudaStreamSynchronize((cudaStream_t)
             node_context->pipeline_slots[pipeline_slot_index].cuda_stream);
-        if (node_context->cuda_pipeline_slot_states != 0 &&
-            node_context->cuda_pipeline_slot_states[pipeline_slot_index].cuda_graph_exec != 0)
+        if (node_context->cuda_pipeline_slot_states != 0)
         {
-            cudaGraphExecDestroy((cudaGraphExec_t)
-                node_context->cuda_pipeline_slot_states[
-                    pipeline_slot_index].cuda_graph_exec);
-            node_context->cuda_pipeline_slot_states[
-                pipeline_slot_index].cuda_graph_exec = 0;
-            node_context->cuda_pipeline_slot_states[
-                pipeline_slot_index].graph_active_sequence_count = 0u;
-            node_context->cuda_pipeline_slot_states[
-                pipeline_slot_index].graph_specialization_signature = 0u;
+            cuda_slot_state = &node_context->cuda_pipeline_slot_states[
+                pipeline_slot_index];
+            SparkGlm52ResidentDecodeStageDestroyGraphCache(cuda_slot_state);
         }
     }
 }
@@ -21577,6 +21699,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
     const SparkGlm52ResidentDecodeStageExactStageSlicePlan *exact_stage_slice_plan;
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *first_cuda_slot_state;
+    cudaGraphExec_t graph_exec;
     cudaStream_t typed_cuda_stream;
     cudaError_t cuda_status;
     uint64_t graph_specialization_signature;
@@ -21624,17 +21747,20 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
             runtime_kv_block_table,
             frame_context);
 
+    graph_exec = 0;
     if (first_node_context->enable_cuda_graph_replay != 0u &&
         SparkGlm52ResidentDecodeStageFrameIsPrefill(frame_context) == 0u &&
-        first_cuda_slot_state != 0 &&
-        first_cuda_slot_state->cuda_graph_exec != 0 &&
-        first_cuda_slot_state->graph_active_sequence_count ==
-            active_sequence_count &&
-        first_cuda_slot_state->graph_specialization_signature ==
-            graph_specialization_signature)
+        first_cuda_slot_state != 0)
+    {
+        graph_exec = SparkGlm52ResidentDecodeStageFindCachedGraph(
+            first_cuda_slot_state,
+            active_sequence_count,
+            graph_specialization_signature);
+    }
+    if (graph_exec != 0)
     {
         cuda_status = cudaGraphLaunch(
-            (cudaGraphExec_t)first_cuda_slot_state->cuda_graph_exec,
+            graph_exec,
             typed_cuda_stream);
         if (cuda_status != cudaSuccess)
         {
@@ -21668,11 +21794,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSli
              first_cuda_slot_state->graph_specialization_signature !=
                     graph_specialization_signature))
         {
-            cudaGraphExecDestroy(
-                (cudaGraphExec_t)first_cuda_slot_state->cuda_graph_exec);
-            first_cuda_slot_state->cuda_graph_exec = 0;
-            first_cuda_slot_state->graph_active_sequence_count = 0u;
-            first_cuda_slot_state->graph_specialization_signature = 0u;
+            SparkGlm52ResidentDecodeStageRetainCurrentGraph(
+                first_cuda_slot_state);
         }
         cuda_status = cudaStreamBeginCapture(
             typed_cuda_stream,
