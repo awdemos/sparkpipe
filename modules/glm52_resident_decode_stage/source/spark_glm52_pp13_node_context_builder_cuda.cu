@@ -3200,6 +3200,7 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 		active_sequence_count == 0u ||
 		active_sequence_count > state->rank_plan.logical_lane_capacity ||
 		base_slot->positions == 0 || base_slot->layer_output_hidden_bf16 == 0 ||
+		base_slot->normalized_hidden_bf16 == 0 ||
 		base_slot->restricted_selected_token_ids == 0 ||
 		base_slot->mtp_draft_hidden_bf16 == 0 ||
 		base_slot->mtp_draft_token_ids == 0)
@@ -3226,7 +3227,7 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 			? base_slot->restricted_selected_token_ids
 			: (const uint32_t *)state->mtp_layer.restricted_selected_token_ids;
 		hidden_bf16 = draft_index == 0u
-			? base_slot->layer_output_hidden_bf16
+			? base_slot->normalized_hidden_bf16
 			: state->mtp_layer.layer_output_hidden;
 		status = SparkGlm52Pp13BuilderLaunchMtpLayer(
 			state,token_ids,base_slot->positions,hidden_bf16,draft_index,
