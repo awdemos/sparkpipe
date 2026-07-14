@@ -35,7 +35,7 @@ def main():
                 {
                     "name": "pp13_cuda_residentd",
                     "argv": ["--max-active", "16"],
-                    "env": ["KEEP_RESIDENT=1"],
+                    "env": ["KEEP_RESIDENT=1", "SPARKPIPE_PP13_TRACE=1"],
                 },
                 {
                     "name": "spark0_gateway",
@@ -68,6 +68,8 @@ def main():
             "pp13_cuda_residentd"]["env"]
         assert "SPARKPIPE_HIDDEN_DUMP_DIR={state_root}/hidden_dumps" in (
             diagnostic_by_role["pp13_cuda_residentd"]["env"])
+        assert "SPARKPIPE_PP13_TRACE=1" not in diagnostic_by_role[
+            "pp13_cuda_residentd"]["env"]
         assert "SPARKPIPE_STAGE_COMPLETION_DEBUG=1" in diagnostic_by_role[
             "pp13_rank_daemon"]["env"]
         assert "SPARKPIPE_PP13_TRACE=1" in diagnostic_by_role[
