@@ -6781,7 +6781,6 @@ static SparkStatus SparkGlm52Pp13BuilderDiscardMtpKvTransactions(
 			if (status != SPARK_STATUS_OK)
 				return status;
 		}
-		memset(transaction,0,sizeof(*transaction));
 	}
 	return SPARK_STATUS_OK;
 }

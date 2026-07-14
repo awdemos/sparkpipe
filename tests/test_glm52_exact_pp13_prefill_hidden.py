@@ -443,6 +443,27 @@ def test_mtp_gpu_profile_is_graph_compatible_and_explicitly_enabled(
     assert "graph_compatible=1" in source
 
 
+def test_mtp_retry_cleanup_preserves_resolution_receipt(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    first = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderDiscardMtpKvTransactions(")
+    start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderDiscardMtpKvTransactions(",
+        first + 1)
+    end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderRecordMtpKvTransactions(",
+        start)
+    body = source[start:end]
+    non_release = body.index(
+        "\tfor (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)",
+        body.index("\t\treturn SPARK_STATUS_OK;\n\t}"))
+    retry_cleanup = body[non_release:]
+    assert "SparkGlm52Pp13BuilderClearActiveMtpKvTransaction(" in retry_cleanup
+    assert "memset(transaction,0,sizeof(*transaction));" not in retry_cleanup
+
+
 def test_layer_body_failures_are_never_silent(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_sm121_required_decode_stage.cu").read_text(
@@ -577,6 +598,7 @@ def main() -> None:
     test_final_event_pump_detects_disconnect_before_send(root)
     test_rank_queue_does_not_overtake_a_deferred_sequence_position(root)
     test_short_context_bypasses_indexshare_for_exact_prefix_attention(root)
+    test_mtp_retry_cleanup_preserves_resolution_receipt(root)
 
 
 if __name__ == "__main__":
