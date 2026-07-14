@@ -437,6 +437,9 @@ def test_mtp_gpu_profile_is_graph_compatible_and_explicitly_enabled(
         assert phase in source
     assert 'state,"decode",work_packet->lane_count,maximum_draft_count' in source
     assert 'state,"verify_followup",work_packet->lane_count,draft_token_count' in source
+    assert ("draft_token_count =\n\t\t"
+            "SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT;" in source)
+    assert "draft_token_count = accepted_count + 1u;" not in source
     assert "graph_compatible=1" in source
 
 
