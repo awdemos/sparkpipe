@@ -4384,11 +4384,11 @@ static uint32_t SparkGlm52RequestApiDecodeBatchMtpBudget(
         if (slot == 0 ||
             (slot->flags &
                 SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION) != 0u ||
-            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) < 3u)
+            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) < 2u)
         {
             return 0u;
         }
-        lane_budget = SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) - 2u;
+        lane_budget = SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) - 1u;
         if (lane_budget > slot->mtp_next_draft_token_budget)
         {
             lane_budget = slot->mtp_next_draft_token_budget;
@@ -4416,12 +4416,10 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
     uint32_t batch_target;
     uint32_t require_resident_batch_members;
     uint32_t batch_disables_speculation;
-    uint32_t batch_minimum_remaining_budget;
     uint32_t mtp_draft_token_budget;
     SparkStatus status;
 
     batch_disables_speculation = 0u;
-    batch_minimum_remaining_budget = 0xffffffffu;
     batch_target = SparkGlm52RequestApiDecodeBatchingIsEnabled(api)
         ? api->decode_batch_target
         : 1u;
@@ -4534,12 +4532,6 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
         {
             batch_disables_speculation = 1u;
         }
-        if (SparkGlm52RequestApiSlotRemainingDecodeBudget(selected_slot) <
-            batch_minimum_remaining_budget)
-        {
-            batch_minimum_remaining_budget =
-                SparkGlm52RequestApiSlotRemainingDecodeBudget(selected_slot);
-        }
         if (SparkGlm52RequestApiSlotCanUseDspark(api, selected_slot))
         {
             dispatch->flags |=
@@ -4547,8 +4539,7 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
         }
     }
     if (mtp_draft_token_budget != 0u &&
-        batch_disables_speculation == 0u &&
-        batch_minimum_remaining_budget >= 3u)
+        batch_disables_speculation == 0u)
     {
         dispatch->flags |= SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT;
         dispatch->mtp_draft_token_budget = mtp_draft_token_budget;
@@ -5114,7 +5105,7 @@ SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
         if (slot == 0 ||
             slot->state != SPARK_GLM52_REQUEST_API_STATE_READY_DECODE ||
             slot->mtp_draft_token_count != 0u ||
-            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) <=
+            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) <
                 draft_token_count)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -5180,6 +5171,23 @@ static void SparkGlm52RequestApiTraceMtpVerify(
     fprintf(stderr,"\n");
 }
 
+static void SparkGlm52RequestApiConstrainMtpAcceptedAllCommit(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    SparkGlm52DsparkVerifyResult *verify_result)
+{
+    if (dispatch == 0 || verify_result == 0 ||
+        (dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u ||
+        verify_result->accepted_draft_token_count !=
+            verify_result->proposed_token_count)
+    {
+        return;
+    }
+    verify_result->committed_token_count =
+        verify_result->accepted_draft_token_count;
+    verify_result->fallback_token_id = 0u;
+}
+
 SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiDispatch *dispatch,
@@ -5232,6 +5240,9 @@ SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
         {
             return status;
         }
+        SparkGlm52RequestApiConstrainMtpAcceptedAllCommit(
+            dispatch,
+            &verify_result);
         SparkGlm52RequestApiTraceMtpVerify(
             dispatch,
             verifier_token_ids,
