@@ -43,7 +43,7 @@
 #define SPARK_GLM52_PP13_BUILDER_TABLE_ALLOCATION_COUNT 15u
 #define SPARK_GLM52_PP13_BUILDER_INPUT_ALLOCATION_COUNT 12u
 #define SPARK_GLM52_PP13_BUILDER_PLAN_ALLOCATION_COUNT 2u
-#define SPARK_GLM52_PP13_BUILDER_MTP_SUPPORT_ALLOCATION_COUNT 11u
+#define SPARK_GLM52_PP13_BUILDER_MTP_SUPPORT_ALLOCATION_COUNT 12u
 #define SPARK_GLM52_PP13_BUILDER_FINAL_OUTPUT_ALLOCATION_COUNT 2u
 #define SPARK_GLM52_PP13_BUILDER_MAX_ALLOCATIONS \
 	((SPARK_GLM52_PP13_BUILDER_EXECUTION_LAYER_COUNT * \
@@ -65,6 +65,7 @@
 #define SPARK_GLM52_PP13_BUILDER_MTP_EH_INPUT_DIMENSION \
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u)
 #define SPARK_GLM52_PP13_BUILDER_MTP_NORM_COUNT_PER_LANE 2u
+#define SPARK_GLM52_PP13_BUILDER_MTP_HEAD_CHUNK_LANE_CAPACITY 32u
 #define SPARK_GLM52_PP13_BUILDER_MTP_TARGET_PRECEDES_INPUT_POSITION \
 	SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA
 #define SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS \
@@ -298,6 +299,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	void *mtp_eh_proj_weight;
 	void *mtp_shared_head_norm_weight;
 	void *mtp_eh_input;
+	float *mtp_full_logits;
 	void *mtp_previous_target_hidden;
 	void *mtp_previous_target_hidden_store;
 	uint32_t *mtp_base_positions;
@@ -377,6 +379,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint64_t mtp_previous_sequence_id;
 	uint64_t mtp_previous_position;
 	uint32_t mtp_previous_valid;
+	uint32_t mtp_head_row_capacity;
 	uint32_t mtp_ready;
 	const SparkModelDriverInterface *driver_interface;
 	void *driver_instance;
@@ -882,6 +885,61 @@ __global__ static void SparkGlm52Pp13BuilderTargetFinalNormKernel(
 		output_bf16[((uint64_t)lane_index *
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION) + hidden_index] =
 			SparkGlm52Pp13BuilderFloatToBf16(value);
+	}
+}
+
+__global__ static void SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel(
+	const float *__restrict__ logits,
+	const uint32_t *__restrict__ token_ids,
+	uint32_t *__restrict__ selected_token_ids,
+	float *__restrict__ selected_token_scores,
+	uint32_t row_count)
+{
+	__shared__ float shared_scores[SPARK_GLM52_PP13_BUILDER_THREADS];
+	__shared__ uint32_t shared_tokens[SPARK_GLM52_PP13_BUILDER_THREADS];
+	uint32_t row_index;
+	uint32_t token_index;
+	uint32_t stride;
+	uint32_t best_token;
+	float best_score;
+	float score;
+	row_index = blockIdx.x;
+	if (row_index >= row_count)
+		return;
+	best_score = -3.4028234663852886e+38f;
+	best_token = UINT32_MAX;
+	for (token_index = threadIdx.x;
+		 token_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT;
+		 token_index += blockDim.x)
+	{
+		score = logits[((uint64_t)row_index *
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT) + token_index];
+		if (score > best_score ||
+			(score == best_score && token_ids[token_index] < best_token))
+		{
+			best_score = score;
+			best_token = token_ids[token_index];
+		}
+	}
+	shared_scores[threadIdx.x] = best_score;
+	shared_tokens[threadIdx.x] = best_token;
+	__syncthreads();
+	for (stride = blockDim.x >> 1u; stride != 0u; stride >>= 1u)
+	{
+		if (threadIdx.x < stride &&
+			(shared_scores[threadIdx.x + stride] > shared_scores[threadIdx.x] ||
+			 (shared_scores[threadIdx.x + stride] == shared_scores[threadIdx.x] &&
+			  shared_tokens[threadIdx.x + stride] < shared_tokens[threadIdx.x])))
+		{
+			shared_scores[threadIdx.x] = shared_scores[threadIdx.x + stride];
+			shared_tokens[threadIdx.x] = shared_tokens[threadIdx.x + stride];
+		}
+		__syncthreads();
+	}
+	if (threadIdx.x == 0u)
+	{
+		selected_token_ids[row_index] = shared_tokens[0u];
+		selected_token_scores[row_index] = shared_scores[0u];
 	}
 }
 
@@ -3093,6 +3151,73 @@ static SparkStatus SparkGlm52Pp13BuilderProjectMtpEh(
 	return SparkGlm52Pp13BuilderCublasStatus(status);
 }
 
+static SparkStatus SparkGlm52Pp13BuilderLaunchMtpHeadChunk(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+	uint32_t row_offset,
+	uint32_t row_count)
+{
+	const uint16_t *input;
+	float alpha;
+	float beta;
+	cublasStatus_t cublas_status;
+	input = (const uint16_t *)state->mtp_layer.normalized_hidden +
+		((uint64_t)row_offset * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION);
+	alpha = 1.0f;
+	beta = 0.0f;
+	cublas_status = cublasGemmEx(
+		state->mtp_cublas_handle,CUBLAS_OP_T,CUBLAS_OP_N,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT,row_count,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,&alpha,
+		node_context->restricted_lm_head_weight_bf16,CUDA_R_16BF,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,input,CUDA_R_16BF,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,&beta,
+		state->mtp_full_logits,CUDA_R_32F,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT,CUBLAS_COMPUTE_32F,
+		CUBLAS_GEMM_DEFAULT_TENSOR_OP);
+	if (cublas_status != CUBLAS_STATUS_SUCCESS)
+		return SparkGlm52Pp13BuilderCublasStatus(cublas_status);
+	SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel<<<
+		row_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
+		state->mtp_full_logits,node_context->restricted_token_ids,
+		(uint32_t *)state->mtp_layer.restricted_selected_token_ids + row_offset,
+		(float *)state->mtp_layer.restricted_selected_token_scores + row_offset,
+		row_count);
+	return SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
+}
+
+static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+	uint32_t active_sequence_count,
+	cudaStream_t stream)
+{
+	uint32_t row_count;
+	uint32_t row_offset;
+	SparkStatus status;
+	if (state == 0 || node_context == 0 || stream != state->stream ||
+		state->mtp_full_logits == 0 || state->mtp_head_row_capacity == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	SparkGlm52Pp13BuilderTargetFinalNormKernel<<<
+		active_sequence_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,stream>>>(
+		(const uint16_t *)state->mtp_layer.layer_output_hidden,
+		(const uint16_t *)state->mtp_shared_head_norm_weight,
+		(uint16_t *)state->mtp_layer.normalized_hidden,active_sequence_count,
+		SPARK_GLM52_MODEL_RMS_NORM_EPSILON);
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
+	for (row_offset = 0u;
+		 status == SPARK_STATUS_OK && row_offset < active_sequence_count;
+		 row_offset += row_count)
+	{
+		row_count = active_sequence_count - row_offset;
+		if (row_count > state->mtp_head_row_capacity)
+			row_count = state->mtp_head_row_capacity;
+		status = SparkGlm52Pp13BuilderLaunchMtpHeadChunk(
+			state,node_context,row_offset,row_count);
+	}
+	return status;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderLaunchMtpMetadata(
 	SparkGlm52Pp13BuilderState *state,
 	const uint32_t *base_positions,
@@ -3233,16 +3358,8 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 			state,token_ids,base_slot->positions,hidden_bf16,draft_index,
 			active_sequence_count,(cudaStream_t)cuda_stream);
 		if (status == SPARK_STATUS_OK)
-			status = SparkGlm52Sm121RequiredDecodeStageLaunchFullVocabGreedy(
-				state->mtp_layer.layer_output_hidden,state->mtp_shared_head_norm_weight,
-				state->mtp_layer.normalized_hidden,
-				node_context->restricted_lm_head_weight_bf16,
-				node_context->restricted_token_ids,0,
-				(uint32_t *)state->mtp_layer.restricted_selected_token_ids,
-				(float *)state->mtp_layer.restricted_selected_token_scores,
-				state->final_epilogue_workspace,state->exact_plan.workspace_bytes,
-				active_sequence_count,state->rank_plan.logical_lane_capacity,
-				SPARK_GLM52_MODEL_RMS_NORM_EPSILON,cuda_stream);
+			status = SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(
+				state,node_context,active_sequence_count,(cudaStream_t)cuda_stream);
 		if (status != SPARK_STATUS_OK)
 			return SparkGlm52Pp13BuilderReportStatus(
 				"mtp_full_vocab_greedy",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
@@ -3298,6 +3415,16 @@ static SparkStatus SparkGlm52Pp13BuilderLoadMtpWeights(
 			state,(void **)&state->mtp_norm_inv,
 			(uint64_t)state->rank_plan.logical_lane_capacity *
 			SPARK_GLM52_PP13_BUILDER_MTP_NORM_COUNT_PER_LANE * sizeof(float));
+	state->mtp_head_row_capacity = state->rank_plan.logical_lane_capacity;
+	if (state->mtp_head_row_capacity >
+		SPARK_GLM52_PP13_BUILDER_MTP_HEAD_CHUNK_LANE_CAPACITY)
+		state->mtp_head_row_capacity =
+			SPARK_GLM52_PP13_BUILDER_MTP_HEAD_CHUNK_LANE_CAPACITY;
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaAlloc(
+			state,(void **)&state->mtp_full_logits,
+			(uint64_t)state->mtp_head_row_capacity *
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT * sizeof(float));
 	return status;
 }
 
