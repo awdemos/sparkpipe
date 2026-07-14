@@ -148,13 +148,16 @@ OpenAI and Anthropic response formatting over decoded text
 
 ## Speculative Decode
 
-Status: optional work, not required for baseline inference.
+Status: plain decode is the correctness baseline. One-draft MTP correctness and
+throughput still require live measurement. Multirow MTP is not working.
 
 Missing:
 
 ```text
-MTP one-time artifact generation for chosen buckets
-MTP correctness and acceptance-rate gates
+one-draft MTP losslessness and throughput measurement
+distributed accepted-row KV commit across all 13 ranks
+distributed rejected-row KV rollback across all 13 ranks
+multirow MTP correctness and acceptance-rate gates
 DSpark speculator resident loading
 DSpark tap wiring into the serving pipeline
 DSpark acceptance-rate benchmark

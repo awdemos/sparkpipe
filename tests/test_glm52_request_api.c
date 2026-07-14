@@ -3008,7 +3008,7 @@ static void SparkTestRequestApiMtpDraftRequiresSpeculativeVerify(void)
         SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
         prompt,
         16u,
-        2u);
+        3u);
     request.thinking_token_budget = 0u;
     assert(SparkGlm52RequestApiSubmit(
         &fixture.api,
@@ -3081,8 +3081,8 @@ static void SparkTestRequestApiMtpDraftRequiresSpeculativeVerify(void)
         2u) ==
         SPARK_STATUS_OK);
     assert(dispatch.speculative_accepted_token_counts[0u] == 1u);
-    assert(dispatch.speculative_committed_token_counts[0u] == 1u);
-    assert(dispatch.speculative_fallback_token_ids[0u] == 0u);
+    assert(dispatch.speculative_committed_token_counts[0u] == 2u);
+    assert(dispatch.speculative_fallback_token_ids[0u] == 92000u);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,
         &dispatch) == SPARK_STATUS_OK);
@@ -3092,13 +3092,13 @@ static void SparkTestRequestApiMtpDraftRequiresSpeculativeVerify(void)
         &cache_state) == SPARK_STATUS_OK);
     assert(cache_state.state == SPARK_GLM52_REQUEST_API_STATE_COMPLETED);
     assert(fixture.api.request_slots[0u].completed_decode_token_count ==
-        2u);
+        3u);
     assert(fixture.api.request_slots[0u].mtp_draft_token_count == 0u);
     assert(fixture.api.mtp_verify_dispatch_count == 1u);
     assert(fixture.api.mtp_accepted_draft_token_count ==
         SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT);
     assert(fixture.api.mtp_committed_token_count ==
-        1u);
+        2u);
 }
 
 static void SparkTestRequestApiCompleteAdaptiveMtpCycle(
@@ -3141,20 +3141,18 @@ static void SparkTestRequestApiCompleteAdaptiveMtpCycle(
     assert(SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
         &fixture->api,&dispatch,verifier_token_ids,verifier_token_count,
         verifier_token_count) == SPARK_STATUS_OK);
-    expected_committed_token_count = accepted_draft_token_count == expected_budget
-        ? accepted_draft_token_count : accepted_draft_token_count + 1u;
+    expected_committed_token_count = accepted_draft_token_count + 1u;
     assert(dispatch.speculative_accepted_token_counts[0u] ==
         accepted_draft_token_count);
     assert(dispatch.speculative_committed_token_counts[0u] ==
         expected_committed_token_count);
     assert(dispatch.speculative_fallback_token_ids[0u] ==
-        (accepted_draft_token_count == expected_budget
-            ? 0u : verifier_token_ids[accepted_draft_token_count]));
+        verifier_token_ids[accepted_draft_token_count]);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture->api,&dispatch) == SPARK_STATUS_OK);
 }
 
-static void SparkTestRequestApiMtpDraftBudgetAdaptsToAcceptance(void)
+static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
 {
     SparkTestRequestApiFixture fixture;
     SparkGlm52RequestApiSubmitRequest request;
@@ -3178,11 +3176,11 @@ static void SparkTestRequestApiMtpDraftBudgetAdaptsToAcceptance(void)
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     SparkTestRequestApiCompleteAdaptiveMtpCycle(&fixture,1u,1u,93000u);
-    SparkTestRequestApiCompleteAdaptiveMtpCycle(&fixture,2u,1u,94000u);
-    SparkTestRequestApiCompleteAdaptiveMtpCycle(&fixture,2u,2u,95000u);
+    SparkTestRequestApiCompleteAdaptiveMtpCycle(&fixture,1u,0u,94000u);
+    SparkTestRequestApiCompleteAdaptiveMtpCycle(&fixture,1u,1u,95000u);
     assert(SparkGlm52RequestApiScheduleNext(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
-    assert(dispatch.mtp_draft_token_budget == 3u);
+    assert(dispatch.mtp_draft_token_budget == 1u);
     assert(SparkGlm52RequestApiCancelDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     assert(SparkGlm52RequestApiCancelRequest(
@@ -3287,7 +3285,7 @@ static void SparkTestRequestApiMtpVerifyCapsPackedExecutionRows(void)
     for (request_index = 0u; request_index < request_count; ++request_index)
     {
         fixture.api.request_slots[request_index].mtp_next_draft_token_budget =
-            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+            SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT;
     }
 
     assert(SparkGlm52RequestApiScheduleNext(
@@ -3323,7 +3321,8 @@ static void SparkTestRequestApiMtpVerifyCapsPackedExecutionRows(void)
         &dispatch,
         &draft_token_ids[0u][0u],
         SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT,
-        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT) == SPARK_STATUS_OK);
+        SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT) ==
+        SPARK_STATUS_OK);
 
     assert(SparkGlm52RequestApiScheduleNext(
         &fixture.api,
@@ -3331,7 +3330,7 @@ static void SparkTestRequestApiMtpVerifyCapsPackedExecutionRows(void)
     assert(dispatch.kind ==
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
     assert(dispatch.request_count == execution_row_budget /
-        (SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 1u));
+        (SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT + 1u));
     assert(dispatch.request_count * (dispatch.speculative_token_count + 1u) <=
         execution_row_budget);
     assert(SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
@@ -3339,7 +3338,8 @@ static void SparkTestRequestApiMtpVerifyCapsPackedExecutionRows(void)
         &dispatch,
         &verifier_token_ids[0u][0u],
         SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT,
-        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT) == SPARK_STATUS_OK);
+        SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT + 1u) ==
+        SPARK_STATUS_OK);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,
         &dispatch) == SPARK_STATUS_OK);
@@ -3716,7 +3716,7 @@ int main(void)
 {
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
     SparkTestRequestApiMtpDraftRequiresSpeculativeVerify();
-    SparkTestRequestApiMtpDraftBudgetAdaptsToAcceptance();
+    SparkTestRequestApiMtpDraftBudgetRemainsTransactional();
     SparkTestRequestApiMtpBudgetLeavesVerifierFallbackHeadroom();
     SparkTestRequestApiMtpVerifyCapsPackedExecutionRows();
     SparkTestRequestApiBatchesReadyDecodeRequestsAndConsumesBudgets();
