@@ -6,8 +6,8 @@ import tempfile
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import w8lut_np as W
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
+import glm52_w8lut_codec as W
 
 
 def main():

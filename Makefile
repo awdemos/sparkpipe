@@ -37,6 +37,11 @@ B12X_MOE_PACK_REQUIRE_REUSE ?= 1
 B12X_MOE_PACK_VERIFY_REUSED_SHA256 ?= 0
 B12X_MOE_PACK_JOBS ?= 1
 B12X_MOE_PACK_PACKAGE_MODE ?= hardlink
+W8LUT_MODEL_DIR ?=
+W8LUT_MOE_PACK_OUTPUT_DIR ?=
+W8LUT_MOE_PACK_LAYERS ?= 3,4,5,6,7,8
+W8LUT_MOE_PACK_JOBS ?= 1
+W8LUT_MOE_PACK_MAX_ACTIVE ?= 1024
 GLM52_VALIDATION_MODE ?= dense_to_layer3_routed
 GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT ?= 1
 GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX ?= 3
@@ -187,6 +192,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_dspark_manifest.py \
 	tests/test_glm52_b12x_pack_worker.py \
 	tests/test_glm52_fp8_pack_layout.py \
+	tests/test_glm52_w8lut_pack_layout.py \
 	tests/test_glm52_b12x_relocate_aot_bundle.py \
 	tests/test_glm52_b12x_deterministic_finalize.py \
 	tests/test_glm52_final_from_hidden_mode.py \
@@ -227,6 +233,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     cuda_glm52_resident_decode_stage_publish \
     glm52_w8lut_quality_cuda_gate \
     glm52_w8lut_quality_reference \
+    glm52_w8lut_resident_pack \
     glm52_flashinfer_b12x_moe_adapter \
     glm52_b12x_prepare_spark_env \
     glm52_b12x_aot_compile \
@@ -572,6 +579,18 @@ glm52_w8lut_quality_cuda_gate:
 	@command -v $(NVCC) >/dev/null 2>&1 || \
 		{ echo "glm52_w8lut_quality_cuda_gate requires nvcc" >&2; exit 2; }
 	$(MAKE) -C modules/glm52_w8lut_quality_weights test_gpu NVCC=$(NVCC) CUDA_ARCH=sm_121a
+
+glm52_w8lut_resident_pack:
+	@test -n "$(W8LUT_MODEL_DIR)" || \
+		{ echo "set W8LUT_MODEL_DIR to the BF16 GLM-5.2 model directory" >&2; exit 2; }
+	@test -n "$(W8LUT_MOE_PACK_OUTPUT_DIR)" || \
+		{ echo "set W8LUT_MOE_PACK_OUTPUT_DIR to a dedicated W8LUT pack directory" >&2; exit 2; }
+	python3 tools/glm52_w8lut_resident_pack.py \
+		--model-dir "$(W8LUT_MODEL_DIR)" \
+		--output-dir "$(W8LUT_MOE_PACK_OUTPUT_DIR)" \
+		--layers "$(W8LUT_MOE_PACK_LAYERS)" \
+		--jobs "$(W8LUT_MOE_PACK_JOBS)" \
+		--max-active "$(W8LUT_MOE_PACK_MAX_ACTIVE)"
 
 cuda_glm52_resident_decode_stage_publish: $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \

@@ -17,10 +17,22 @@ import struct
 import tempfile
 from typing import Any, BinaryIO, Dict, Iterable, List, Tuple
 
-from glm52_model_contract import load_model_contract
+from glm52_resident_pack_common import (
+    EXPERT_COUNT,
+    HIDDEN_DIMENSION,
+    INTERMEDIATE_DIMENSION,
+    MODEL_CONTRACT,
+    TOP_K,
+    W1_COMPONENT_COUNT,
+    PackFailure,
+    SafetensorReader,
+    align_up,
+    import_torch,
+    parse_layers,
+    tensor_name,
+)
 
 
-MODEL_CONTRACT = load_model_contract()
 MAGIC = b"SPARKGLM52FP8\0\0"
 MAGIC_FIELD_BYTES = 16
 WIRE_MAGIC = MAGIC.ljust(MAGIC_FIELD_BYTES, b"\0")
@@ -33,11 +45,6 @@ HEADER_PREFIX_STRUCT = struct.Struct(
 )
 REGION_STRUCT = struct.Struct("<QQ")
 REGION_COUNT = 4
-HIDDEN_DIMENSION = MODEL_CONTRACT["hidden_dimension"]
-INTERMEDIATE_DIMENSION = MODEL_CONTRACT["moe_intermediate_dimension"]
-EXPERT_COUNT = MODEL_CONTRACT["moe_expert_count"]
-TOP_K = MODEL_CONTRACT["moe_top_k"]
-W1_COMPONENT_COUNT = MODEL_CONTRACT["moe_w1_component_count"]
 FP8_SCALE_BLOCK = MODEL_CONTRACT["fp8_scale_block"]
 FLOAT32_BYTES = struct.calcsize("<f")
 CUDA_ARCHITECTURE_SM121 = 121
@@ -51,10 +58,6 @@ REGION_W1_WEIGHT = 0
 REGION_W1_SCALE_INV = 1
 REGION_W2_WEIGHT = 2
 REGION_W2_SCALE_INV = 3
-
-
-class PackFailure(RuntimeError):
-    pass
 
 
 @dataclass(frozen=True)
@@ -76,14 +79,6 @@ class Fp8MoePackHeader:
     cuda_architecture: int
     reserved0: int
     reserved1: int
-
-
-def import_torch() -> Any:
-    try:
-        import torch
-    except ImportError as error:
-        raise PackFailure("torch is required to build GLM-5.2 FP8 packs") from error
-    return torch
 
 
 def fp8_scale_inv_row_block_major_byte_count(rows: int, column_blocks: int) -> int:
@@ -129,52 +124,12 @@ def transposed_fp8_scale_inv_bytes_to_runtime_row_block_major(
     return bytes(runtime)
 
 
-class SafetensorReader:
-    def __init__(self, model_dir: Path) -> None:
-        try:
-            from safetensors import safe_open
-        except ImportError as error:
-            raise PackFailure(
-                "safetensors is required to build GLM-5.2 FP8 packs"
-            ) from error
-        index_path = model_dir / "model.safetensors.index.json"
-        self.model_dir = model_dir
-        self.safe_open = safe_open
-        self.weight_map = json.loads(index_path.read_text(encoding="utf-8"))["weight_map"]
-        self.handles: Dict[str, Any] = {}
-
-    def tensor(self, name: str) -> Any:
-        shard = self.weight_map.get(name)
-        if shard is None:
-            raise PackFailure(f"missing tensor in index: {name}")
-        if shard not in self.handles:
-            path = self.model_dir / shard
-            if not path.exists():
-                raise PackFailure(f"missing safetensors shard: {path}")
-            self.handles[shard] = self.safe_open(str(path), framework="pt", device="cpu")
-        handle = self.handles[shard]
-        if name not in handle.keys():
-            raise PackFailure(f"missing tensor in shard {shard}: {name}")
-        return handle.get_tensor(name)
-
-    def close(self) -> None:
-        self.handles.clear()
-
-
-def align_up(value: int, alignment: int) -> int:
-    return ((value + alignment - 1) // alignment) * alignment
-
-
 def scale_extent(dimension: int) -> int:
     return (dimension + FP8_SCALE_BLOCK - 1) // FP8_SCALE_BLOCK
 
 
 def scale_shape(rows: int, columns: int) -> Tuple[int, int]:
     return scale_extent(rows), scale_extent(columns)
-
-
-def tensor_name(layer: int, expert: int, projection: str, suffix: str) -> str:
-    return f"model.layers.{layer}.mlp.experts.{expert}.{projection}.{suffix}"
 
 
 def reserve_regions() -> List[Dict[str, int]]:
@@ -426,15 +381,6 @@ def write_layer_pack(
         return {"layer": layer, "path": str(output_path), "bytes": expected_bytes, "reused": False, "max_active": max_active}
     finally:
         reader.close()
-
-
-def parse_layers(value: str) -> List[int]:
-    layers: List[int] = []
-    for item in value.replace(";", ",").split(","):
-        item = item.strip()
-        if item:
-            layers.append(int(item))
-    return layers
 
 
 def worker(argument: Tuple[str, str, int, int, bool, bool]) -> Dict[str, Any]:
