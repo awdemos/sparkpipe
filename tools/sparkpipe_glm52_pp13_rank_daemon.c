@@ -1461,6 +1461,20 @@ static void SparkGlm52Pp13DaemonCompletion(
         event.token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
     memcpy(event.token_ids,completion->token_ids,
         event.token_count * sizeof(event.token_ids[0u]));
+    event.draft_token_count = completion->draft_token_count;
+    if ((((completion->completion_flags &
+            SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS) != 0u) !=
+         (event.draft_token_count != 0u)) ||
+        event.draft_token_count >
+        SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY)
+    {
+        fprintf(stderr,"pp13_final_event_invalid_draft count=%u flags=0x%x\n",
+            event.draft_token_count,completion->completion_flags);
+        runtime->final_event_send_error_count += 1u;
+        return;
+    }
+    memcpy(event.draft_token_ids,completion->draft_token_ids,
+        event.draft_token_count * sizeof(event.draft_token_ids[0u]));
     event.request_id = completion->request_id;
     event.sequence_id = completion->sequence_id;
     event.sequence_position = completion->sequence_position;

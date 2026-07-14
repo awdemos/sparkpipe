@@ -4429,6 +4429,52 @@ static SparkStatus SparkGlm52Pp13BuilderExpandSpeculativeKvRows(
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52Pp13BuilderCompactSpeculativeKvRows(
+	SparkGlm52Pp13BuilderState *state,
+	uint32_t logical_lane_count,
+	uint32_t rows_per_lane)
+{
+	uint64_t destination_base;
+	uint64_t source_base;
+	uint32_t copy_count;
+	uint32_t lane_index;
+	SparkStatus status;
+	if (state == 0 || logical_lane_count == 0u || rows_per_lane < 2u ||
+		state->active_kv_block_count == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	for (lane_index = 0u; lane_index < logical_lane_count; ++lane_index)
+	{
+		source_base = (uint64_t)lane_index * rows_per_lane *
+			SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
+		destination_base = (uint64_t)lane_index *
+			SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
+		copy_count = state->host_lane_physical_block_counts[
+			lane_index * rows_per_lane];
+		if (copy_count == 0u || copy_count > state->active_kv_block_count)
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		memmove(state->host_physical_block_indices + destination_base,
+			state->host_physical_block_indices + source_base,
+			(size_t)copy_count * sizeof(uint32_t));
+		state->host_lane_physical_block_counts[lane_index] = copy_count;
+	}
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy2DAsync(
+		state->device_physical_block_indices,
+		(size_t)SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE * sizeof(uint32_t),
+		state->host_physical_block_indices,
+		(size_t)SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE * sizeof(uint32_t),
+		(size_t)state->active_kv_block_count * sizeof(uint32_t),
+		logical_lane_count,cudaMemcpyHostToDevice,state->stream));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
+			state->device_lane_physical_block_counts,
+			state->host_lane_physical_block_counts,
+			(size_t)logical_lane_count * sizeof(uint32_t),
+			cudaMemcpyHostToDevice,state->stream));
+	if (status == SPARK_STATUS_OK)
+		state->device_kv_view.lane_count = logical_lane_count;
+	return status;
+}
+
 static void SparkGlm52Pp13BuilderLogKvGenerationReset(
 	const SparkGlm52Pp13BuilderState *state,
 	uint64_t prior_control_generation)
@@ -5342,6 +5388,94 @@ static SparkStatus SparkGlm52Pp13BuilderEmitWideDecodeCompletions(
 	return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkGlm52Pp13BuilderAcceptedMtpDraftCount(
+	const SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlPacket *work_packet,
+	uint32_t lane_index)
+{
+	const SparkGlm52Pp13WorkControlLane *lane;
+	uint32_t accepted_count;
+	uint32_t execution_row_base;
+	lane = &work_packet->lanes[lane_index];
+	execution_row_base = lane_index * work_packet->rows_per_lane;
+	accepted_count = 0u;
+	while (accepted_count < lane->speculative_token_count &&
+		state->host_decode_result_token_ids[execution_row_base + accepted_count] ==
+			lane->speculative_draft_token_ids[accepted_count])
+		accepted_count += 1u;
+	return accepted_count;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderLaunchVerifierMtpDraft(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlPacket *work_packet,
+	uint32_t *draft_token_count_out)
+{
+	SparkGlm52Pp13BuilderLayer *final_layer;
+	SparkGlm52ResidentDecodeStagePipelineSlot base_slot;
+	uint32_t accepted_count;
+	uint32_t draft_token_count;
+	uint32_t lane_index;
+	SparkStatus status;
+	if (state == 0 || work_packet == 0 || draft_token_count_out == 0 ||
+		state->host_decode_token_ids == 0 || state->host_decode_positions == 0 ||
+		state->mtp_base_positions == 0 || state->device_decode_token_ids == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13BuilderCompactSpeculativeKvRows(
+		state,work_packet->lane_count,work_packet->rows_per_lane);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	draft_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
+	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
+	{
+		accepted_count = SparkGlm52Pp13BuilderAcceptedMtpDraftCount(
+			state,work_packet,lane_index);
+		if (draft_token_count > accepted_count + 1u)
+			draft_token_count = accepted_count + 1u;
+		if (work_packet->lanes[lane_index].sequence_position >
+			UINT32_MAX - accepted_count)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		state->host_decode_token_ids[lane_index] =
+			state->host_decode_result_token_ids[
+				(lane_index * work_packet->rows_per_lane) + accepted_count];
+		state->host_decode_positions[lane_index] = (uint32_t)
+			(work_packet->lanes[lane_index].sequence_position + accepted_count);
+	}
+	status = SparkGlm52Pp13BuilderUploadMtpBudget(
+		state,work_packet->lane_count,draft_token_count);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
+			state->device_decode_token_ids,state->host_decode_token_ids,
+			(size_t)work_packet->lane_count * sizeof(uint32_t),
+			cudaMemcpyHostToDevice,state->stream));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
+			state->mtp_base_positions,state->host_decode_positions,
+			(size_t)work_packet->lane_count * sizeof(uint32_t),
+			cudaMemcpyHostToDevice,state->stream));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	final_layer = &state->layers[state->rank_plan.layer_count - 1u];
+	base_slot = final_layer->slot;
+	base_slot.positions = state->mtp_base_positions;
+	base_slot.normalized_hidden_bf16 = state->mtp_previous_target_hidden;
+	base_slot.restricted_selected_token_ids =
+		(uint32_t *)state->device_decode_token_ids;
+	status = SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
+		&state->mtp_draft_plan,&final_layer->node,&base_slot,
+		work_packet->lane_count,(void *)state->stream);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy(
+		state->host_mtp_committed_token_ids,final_layer->mtp_draft_token_ids,
+		(size_t)work_packet->lane_count *
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
+			sizeof(uint32_t),cudaMemcpyDeviceToHost));
+	if (status == SPARK_STATUS_OK)
+		*draft_token_count_out = draft_token_count;
+	return status;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52Pp13WorkControlPacket *work_packet,
@@ -5355,6 +5489,7 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 	uint32_t block_count;
 	uint32_t execution_row_base;
 	uint32_t lane_index;
+	uint32_t next_draft_token_count;
 	uint32_t request_slot_index;
 	uint32_t token_index;
 	SparkStatus status;
@@ -5387,12 +5522,8 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 		const SparkGlm52Pp13WorkControlLane *lane;
 		lane = &work_packet->lanes[lane_index];
 		execution_row_base = lane_index * work_packet->rows_per_lane;
-		accepted_draft_count = 0u;
-		while (accepted_draft_count < lane->speculative_token_count &&
-			state->host_decode_result_token_ids[
-				execution_row_base + accepted_draft_count] ==
-			lane->speculative_draft_token_ids[accepted_draft_count])
-			accepted_draft_count += 1u;
+		accepted_draft_count = SparkGlm52Pp13BuilderAcceptedMtpDraftCount(
+			state,work_packet,lane_index);
 		state->host_decode_positions[lane_index] =
 			execution_row_base + accepted_draft_count;
 		request_slot_index = lane->request_slot_index;
@@ -5465,16 +5596,18 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 	}
 	if (status != SPARK_STATUS_OK)
 		return status;
-	/* Publish only after the replacement MTP state has been enqueued. */
+	next_draft_token_count = 0u;
+	status = SparkGlm52Pp13BuilderLaunchVerifierMtpDraft(
+		state,work_packet,&next_draft_token_count);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
 	{
 		const SparkGlm52Pp13WorkControlLane *lane;
 		lane = &work_packet->lanes[lane_index];
 		execution_row_base = lane_index * work_packet->rows_per_lane;
-		if (state->host_decode_positions[lane_index] < execution_row_base)
-			return SPARK_STATUS_INTERNAL_ERROR;
-		accepted_draft_count =
-			state->host_decode_positions[lane_index] - execution_row_base;
+		accepted_draft_count = SparkGlm52Pp13BuilderAcceptedMtpDraftCount(
+			state,work_packet,lane_index);
 		if (accepted_draft_count > lane->speculative_token_count)
 			return SPARK_STATUS_INTERNAL_ERROR;
 		completion = state->captured_completion;
@@ -5495,6 +5628,21 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 			 token_index < SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
 			 ++token_index)
 			completion.token_ids[token_index] = 0u;
+		completion.completion_flags |=
+			SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS;
+		completion.draft_token_count = next_draft_token_count;
+		for (token_index = 0u;
+			 token_index < next_draft_token_count;
+			 ++token_index)
+			completion.draft_token_ids[token_index] =
+				state->host_mtp_committed_token_ids[
+					((uint64_t)lane_index *
+					 SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT) +
+					token_index];
+		for (token_index = next_draft_token_count;
+			 token_index < SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY;
+			 ++token_index)
+			completion.draft_token_ids[token_index] = 0u;
 		if (completion_function != 0)
 			completion_function(completion_context,&completion);
 	}

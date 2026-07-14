@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_RUNTIME_ABI_VERSION 3u
+#define SPARK_GLM52_PP13_RUNTIME_ABI_VERSION 4u
 #define SPARK_GLM52_PP13_RUNTIME_RANK_PLAN_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52Pp13RuntimeRankPlan))
 #define SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT \
@@ -115,6 +115,8 @@ typedef struct SparkGlm52Pp13RuntimeFinalEvent
     uint32_t completion_flags;
     uint32_t token_count;
     uint32_t token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
+    uint32_t draft_token_count;
+    uint32_t draft_token_ids[SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY];
     uint64_t request_id;
     uint64_t sequence_id;
     uint64_t sequence_position;

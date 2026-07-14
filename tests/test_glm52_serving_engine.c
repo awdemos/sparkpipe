@@ -18,7 +18,7 @@
 #define SPARK_TEST_SERVING_EVENT_CAPACITY 16384u
 #define SPARK_TEST_SERVING_LANE_CAPACITY \
     SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT
-#define SPARK_TEST_SERVING_MTP_STOP_TOKEN_ID 90003u
+#define SPARK_TEST_SERVING_MTP_STOP_TOKEN_ID 90005u
 
 typedef struct SparkTestServingFixture
 {
@@ -279,9 +279,9 @@ static SparkStatus SparkTestServingMtpDecode(
             SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
         assert((decode_dispatch->request_dispatch->flags &
             SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u);
-        expected_budget =
-            SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT;
-        assert(callback_context->decode_callback_count == 1u);
+        expected_budget = callback_context->decode_callback_count;
+        assert(callback_context->decode_callback_count == 1u ||
+            callback_context->decode_callback_count == 2u);
         assert(decode_dispatch->request_dispatch->speculative_token_count ==
             expected_budget);
         for (lane_index = 0u;
@@ -294,8 +294,19 @@ static SparkStatus SparkTestServingMtpDecode(
                  ++token_index)
             {
                 decode_result->token_ids[lane_index][token_index] =
-                    90001u + token_index;
+                    90001u +
+                    ((callback_context->decode_callback_count - 1u) * 2u) +
+                    token_index;
             }
+            decode_result->draft_token_counts[lane_index] =
+                expected_budget + 1u;
+            for (token_index = 0u;
+                 token_index < decode_result->draft_token_counts[lane_index];
+                 ++token_index)
+                decode_result->draft_token_ids[lane_index][token_index] =
+                    90001u +
+                    (callback_context->decode_callback_count * 2u) +
+                    token_index;
         }
     }
 
@@ -650,14 +661,14 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
     SparkGlm52ServingInitializeSubmitTokenIdsRequest(&submit_request);
     submit_request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
     submit_request.token_ids = Fixture.prompt_tokens;
-    submit_request.output_token_budget = 3u;
+    submit_request.output_token_budget = 6u;
     submit_request.request_id = 9301u;
     submit_request.sequence_id = 19301u;
     assert(SparkGlm52ServingEngineSubmitTokenIds(
         &Fixture.serving_engine,
         &submit_request,
         &submit_result) == SPARK_STATUS_OK);
-    assert(submit_result.output_token_budget == 3u);
+    assert(submit_result.output_token_budget == 6u);
 
     status = SparkGlm52ServingEnginePump(
         &Fixture.serving_engine,
@@ -665,17 +676,16 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
         16u,
         &stats);
     assert(status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_OK);
-    assert(CallbackContext.decode_callback_count == 2u);
-    assert(stats.decode_dispatch_count == 2u);
-    assert(stats.decoded_token_count == 3u);
+    assert(CallbackContext.decode_callback_count == 3u);
+    assert(stats.decode_dispatch_count == 3u);
+    assert(stats.decoded_token_count == 6u);
     assert(stats.mtp_draft_token_count ==
-        SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT);
-    assert(stats.mtp_verify_dispatch_count == 1u);
-    assert(stats.mtp_draft_ready_count == 1u);
+        SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT + 2u);
+    assert(stats.mtp_verify_dispatch_count == 2u);
+    assert(stats.mtp_draft_ready_count == 2u);
     assert(stats.mtp_accepted_draft_token_count ==
-        SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT);
-    assert(stats.mtp_committed_token_count ==
-        2u);
+        SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT + 2u);
+    assert(stats.mtp_committed_token_count == 5u);
     assert(stats.mtp_rejected_token_count == 0u);
 
     token_event_count = 0u;
@@ -694,7 +704,7 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
             completion_event_count += 1u;
         }
     }
-    assert(token_event_count == 3u);
+    assert(token_event_count == 6u);
     assert(completion_event_count == 1u);
 }
 

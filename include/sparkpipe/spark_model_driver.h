@@ -9,10 +9,12 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 4u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 5u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
+#define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS 0x00000001u
+#define SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS 0x00000002u
 
 #define SPARK_MODEL_DRIVER_PROGRAM_FLAG_EXTERNAL_COMPLETION 0x00000001u
 #define SPARK_MODEL_DRIVER_PROGRAM_FLAG_STREAM_ORDERED 0x00000002u
@@ -75,6 +77,8 @@ typedef struct SparkModelDriverCompletion
     uint32_t completion_flags;
     uint32_t token_count;
     uint32_t token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
+    uint32_t draft_token_count;
+    uint32_t draft_token_ids[SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY];
     SparkStatus status;
     SparkModelDriverResidencyToken residency;
     uint64_t queue_delay_ns;

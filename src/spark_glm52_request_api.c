@@ -5061,6 +5061,9 @@ SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
     uint32_t lane_stride,
     uint32_t draft_token_count)
 {
+	uint32_t arm_draft_token_count;
+	uint32_t dispatch_is_mtp_producer;
+	uint32_t dispatch_is_mtp_verify;
     uint32_t request_index;
     uint32_t token_index;
     SparkStatus status;
@@ -5070,16 +5073,23 @@ SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
     {
         return status;
     }
+    dispatch_is_mtp_producer = completed_decode_dispatch != 0 &&
+        completed_decode_dispatch->kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
+        (completed_decode_dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u;
+    dispatch_is_mtp_verify = completed_decode_dispatch != 0 &&
+        completed_decode_dispatch->kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
+        (completed_decode_dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u;
     if (completed_decode_dispatch == 0 ||
         completed_decode_dispatch->abi_version !=
             SPARK_GLM52_REQUEST_API_ABI_VERSION ||
         completed_decode_dispatch->descriptor_bytes !=
             SPARK_GLM52_REQUEST_API_DISPATCH_DESCRIPTOR_BYTES ||
         completed_decode_dispatch->accepted == 0u ||
-        completed_decode_dispatch->kind !=
-            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
-        (completed_decode_dispatch->flags &
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) == 0u ||
+        (dispatch_is_mtp_producer == 0u && dispatch_is_mtp_verify == 0u) ||
         completed_decode_dispatch->request_count == 0u ||
         completed_decode_dispatch->request_count >
             SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT ||
@@ -5087,12 +5097,14 @@ SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
         draft_token_count == 0u ||
         draft_token_count >
             SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT ||
-        draft_token_count > completed_decode_dispatch->mtp_draft_token_budget ||
+        (dispatch_is_mtp_producer != 0u &&
+         draft_token_count > completed_decode_dispatch->mtp_draft_token_budget) ||
         lane_stride < draft_token_count)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
+    arm_draft_token_count = draft_token_count;
     for (request_index = 0u;
          request_index < completed_decode_dispatch->request_count;
          ++request_index)
@@ -5102,16 +5114,37 @@ SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
         slot = SparkGlm52RequestApiFindSlotByHandle(
             api,
             completed_decode_dispatch->request_handles[request_index]);
-        if (slot == 0 ||
-            slot->state != SPARK_GLM52_REQUEST_API_STATE_READY_DECODE ||
-            slot->mtp_draft_token_count != 0u ||
-            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) <=
-                draft_token_count)
+        if (slot == 0)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
+        if (slot->state == SPARK_GLM52_REQUEST_API_STATE_COMPLETED ||
+            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) <= 1u)
+            return SPARK_STATUS_NOT_FOUND;
+        if (slot->state != SPARK_GLM52_REQUEST_API_STATE_READY_DECODE ||
+            slot->mtp_draft_token_count != 0u)
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        if (arm_draft_token_count >=
+            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot))
+            arm_draft_token_count =
+                SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) - 1u;
+        if (dispatch_is_mtp_verify != 0u &&
+            arm_draft_token_count > slot->mtp_next_draft_token_budget)
+            arm_draft_token_count = slot->mtp_next_draft_token_budget;
+    }
+    if (arm_draft_token_count == 0u)
+        return SPARK_STATUS_NOT_FOUND;
+    for (request_index = 0u;
+         request_index < completed_decode_dispatch->request_count;
+         ++request_index)
+    {
+        SparkGlm52RequestApiSlot *slot;
+
+        slot = SparkGlm52RequestApiFindSlotByHandle(
+            api,
+            completed_decode_dispatch->request_handles[request_index]);
         for (token_index = 0u;
-             token_index < draft_token_count;
+             token_index < arm_draft_token_count;
              ++token_index)
         {
             slot->mtp_draft_token_ids[token_index] =
@@ -5123,7 +5156,7 @@ SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
         {
             slot->mtp_draft_token_ids[token_index] = 0u;
         }
-        slot->mtp_draft_token_count = draft_token_count;
+        slot->mtp_draft_token_count = arm_draft_token_count;
         slot->state = SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY;
         api->mtp_draft_ready_count += 1u;
     }
