@@ -300,6 +300,22 @@ def test_mtp_linear_plans_use_logical_rows(root: Path) -> None:
     assert "state,active_sequence_count);" in draft_body
 
 
+def test_mtp_draft_plan_honors_runtime_token_budget(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(")
+    end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpWeights(", start)
+    body = source[start:end]
+    assert "state->host_mtp_draft_budgets[lane_index]" in body
+    assert "draft_index < draft_token_count" in body
+    assert ("draft_index < "
+            "SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT" not in
+            body)
+
+
 def test_mtp_runtime_failures_name_the_failing_phase(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
