@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 7u
+#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 8u
 #define SPARK_GLM52_SERVICE_BACKEND_INTERFACE_BYTES \
 	((uint32_t)sizeof(SparkGlm52ServiceBackendInterface))
 #define SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES \
@@ -50,7 +50,8 @@ typedef struct SparkGlm52ServiceBackendConfiguration
 	uint32_t max_active_sequence_count;
 	uint32_t port_base;
 	uint32_t kv_logical_block_capacity;
-	const char *fp8_pack_root;
+	uint32_t model_quantization_mode;
+	const char *moe_pack_root;
 	const char *stagepack_root;
 	const char *transport_shared_object_path;
 	const char *driver_shared_object_path;

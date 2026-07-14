@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 12u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 13u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT \
 	16384u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS 256u
@@ -32,14 +32,15 @@ extern "C" {
 	((uint32_t)sizeof(SparkGlm52Pp13NodeContextBuilderInterface))
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_KV_STATS_BYTES \
 	((uint32_t)sizeof(SparkGlm52Pp13NodeContextBuilderKvStats))
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_FP8_MOE_BACKEND_NONE 0u
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_FP8_MOE_BACKEND_BUILTIN_FLASHINFER_GROUPED 1u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_NONE 0u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED 1u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA 2u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_DISABLED 0u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_SYNCHRONOUS_FULL_HISTORY 1u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_BATCHED_COHORT_JIT 2u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_ASYNC_SELECTED_JIT 3u
 
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_FP8_PACKS 0x00000001u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RESIDENT_MOE_PACKS 0x00000001u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_STAGE_SLICE 0x00000002u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK0_TOKEN_INPUT 0x00000004u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK_WORK_DISPATCH 0x00000008u
@@ -49,7 +50,7 @@ extern "C" {
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_ASYNC_WORK 0x00000080u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_LAYER_MAJOR_MTP_VERIFY 0x00000100u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_REQUIRED_PRODUCTION_CAPS \
-	(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_FP8_PACKS | \
+	(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RESIDENT_MOE_PACKS | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_STAGE_SLICE | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK0_TOKEN_INPUT | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RANK_WORK_DISPATCH | \
@@ -80,7 +81,7 @@ typedef struct SparkGlm52Pp13NodeContextBuilderConfiguration
 	uint32_t port_base;
 	uint32_t kv_pool_token_capacity;
 	uint32_t maximum_resident_sequence_count;
-	const char *fp8_pack_root;
+	const char *moe_pack_root;
 	const char *stagepack_root;
 	const char *embedding_pack_path;
 	const char *node_target;
@@ -141,12 +142,12 @@ typedef struct SparkGlm52Pp13NodeContextBuilderKvStats
 	uint32_t last_layer_major_logical_lane_count;
 	uint32_t last_layer_major_rows_per_lane;
 	uint32_t last_layer_major_execution_row_count;
-	uint32_t fp8_moe_backend_kind;
-	uint32_t fp8_moe_bound_layer_count;
-	uint32_t fp8_moe_expected_layer_count;
+	uint32_t moe_backend_kind;
+	uint32_t moe_bound_layer_count;
+	uint32_t moe_expected_layer_count;
 	uint32_t fp8_scaled_gemm_bound_plan_count;
 	uint32_t fp8_scaled_gemm_expected_plan_count;
-	uint32_t reserved0;
+	uint32_t model_quantization_mode;
 	uint64_t asynchronous_submit_count;
 	uint64_t asynchronous_completion_count;
 	uint64_t asynchronous_failure_count;

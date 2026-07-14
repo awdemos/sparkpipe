@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 16u
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 17u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAGIC 0x52445543u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS \
     (SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS)
@@ -178,12 +178,12 @@ typedef struct SparkGlm52CudaResidentIpcStats
     uint32_t last_layer_major_logical_lane_count;
     uint32_t last_layer_major_rows_per_lane;
     uint32_t last_layer_major_execution_row_count;
-    uint32_t fp8_moe_backend_kind;
-    uint32_t fp8_moe_bound_layer_count;
-    uint32_t fp8_moe_expected_layer_count;
+    uint32_t moe_backend_kind;
+    uint32_t moe_bound_layer_count;
+    uint32_t moe_expected_layer_count;
     uint32_t fp8_scaled_gemm_bound_plan_count;
     uint32_t fp8_scaled_gemm_expected_plan_count;
-    uint32_t layer_major_reserved0;
+    uint32_t model_quantization_mode;
     uint64_t layer_major_submit_count;
     uint64_t layer_major_completion_count;
     uint64_t layer_major_failure_count;

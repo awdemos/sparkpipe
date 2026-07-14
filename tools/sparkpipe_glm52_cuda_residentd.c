@@ -54,7 +54,7 @@ static volatile sig_atomic_t SparkGlm52CudaResidentdWakeWriteFd = -1;
 typedef struct SparkGlm52CudaResidentdConfiguration
 {
     const char *socket_path;
-    const char *fp8_pack_root;
+    const char *moe_pack_root;
     const char *stagepack_root;
     const char *transport_shared_object_path;
     const char *driver_path;
@@ -71,6 +71,7 @@ typedef struct SparkGlm52CudaResidentdConfiguration
     uint32_t kv_nvme_block_capacity;
     uint32_t kv_nvme_batch_block_count;
     uint32_t port_base;
+    uint32_t model_quantization_mode;
     uint32_t dspark_enabled;
 	uint32_t mtp_enabled;
     uint32_t dspark_maximum_context_token_count;
@@ -184,6 +185,8 @@ static void SparkGlm52CudaResidentdInitializeConfiguration(
     configuration->kv_nvme_batch_block_count =
         SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_NVME_BATCH_BLOCK_COUNT;
     configuration->port_base = SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE;
+    configuration->model_quantization_mode =
+        SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE;
     configuration->dspark_maximum_context_token_count = 2048u;
 }
 
@@ -327,11 +330,21 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
         *index += 1;
         return 0;
     }
-    if (strcmp(argv[*index], "--fp8-pack-root") == 0)
+    if (strcmp(argv[*index], "--moe-pack-root") == 0)
     {
         if ((*index + 1) >= argc)
             return -7;
-        configuration->fp8_pack_root = argv[*index + 1];
+        configuration->moe_pack_root = argv[*index + 1];
+        *index += 1;
+        return 0;
+    }
+    if (strcmp(argv[*index], "--model-quantization") == 0)
+    {
+        if ((*index + 1) >= argc ||
+            SparkGlm52Pp13RuntimeParseQuantizationMode(
+                argv[*index + 1],&configuration->model_quantization_mode) !=
+                SPARK_STATUS_OK)
+            return -21;
         *index += 1;
         return 0;
     }
@@ -427,12 +440,14 @@ static SparkStatus SparkGlm52CudaResidentdValidateConfiguration(
     static char default_socket_path[128];
 
     if (configuration->rank_is_set == 0u ||
-        configuration->fp8_pack_root == 0 ||
+        configuration->moe_pack_root == 0 ||
         configuration->stagepack_root == 0 ||
         configuration->transport_shared_object_path == 0 ||
         configuration->driver_path == 0 ||
         configuration->node_context_builder_shared_object_path == 0 ||
         configuration->embedding_pack_path == 0 ||
+		SparkGlm52Pp13RuntimeQuantizationModeName(
+			configuration->model_quantization_mode) == 0 ||
 		configuration->kv_pool_token_capacity == 0u ||
 		configuration->kv_pool_token_capacity > SPARK_GLM52_KV_POOL_TOKENS ||
 		(configuration->kv_pool_token_capacity % SPARK_GLM52_KV_BLOCK_TOKENS) != 0u ||
@@ -440,6 +455,10 @@ static SparkStatus SparkGlm52CudaResidentdValidateConfiguration(
 		configuration->max_active_sequence_count >
 			SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT)
         return SPARK_STATUS_INVALID_ARGUMENT;
+    if (configuration->model_quantization_mode ==
+            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT &&
+        configuration->mtp_enabled != 0u)
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
     if (configuration->max_active_sequence_count >=
             SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT &&
         (configuration->kv_nvme_path == 0 ||
@@ -901,7 +920,7 @@ static SparkStatus SparkGlm52CudaResidentdBuildNodeContext(
 	builder_configuration.maximum_resident_sequence_count =
 		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT;
     builder_configuration.port_base = configuration->port_base;
-    builder_configuration.fp8_pack_root = configuration->fp8_pack_root;
+    builder_configuration.moe_pack_root = configuration->moe_pack_root;
     builder_configuration.stagepack_root = configuration->stagepack_root;
     builder_configuration.embedding_pack_path = configuration->embedding_pack_path;
     builder_configuration.node_target = configuration->node_target;
@@ -1031,6 +1050,7 @@ static SparkStatus SparkGlm52CudaResidentdInitialize(
         configuration->rank_index,
         configuration->max_active_sequence_count,
         configuration->port_base,
+        configuration->model_quantization_mode,
         &runtime->rank_plan,
         runtime->blocker,
         sizeof(runtime->blocker));
@@ -1047,9 +1067,9 @@ static SparkStatus SparkGlm52CudaResidentdInitialize(
         sizeof(runtime->work_queue[0u]));
     if (runtime->work_queue == 0)
         return SPARK_STATUS_INTERNAL_ERROR;
-    status = SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
+    status = SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
         &runtime->rank_plan,
-        configuration->fp8_pack_root,
+        configuration->moe_pack_root,
         runtime->blocker,
         sizeof(runtime->blocker));
     if (status != SPARK_STATUS_OK)
@@ -1256,15 +1276,17 @@ static SparkStatus SparkGlm52CudaResidentdFillStats(
                 kv_stats.last_layer_major_rows_per_lane;
             stats->last_layer_major_execution_row_count =
                 kv_stats.last_layer_major_execution_row_count;
-            stats->fp8_moe_backend_kind = kv_stats.fp8_moe_backend_kind;
-            stats->fp8_moe_bound_layer_count =
-                kv_stats.fp8_moe_bound_layer_count;
-            stats->fp8_moe_expected_layer_count =
-                kv_stats.fp8_moe_expected_layer_count;
+            stats->moe_backend_kind = kv_stats.moe_backend_kind;
+            stats->moe_bound_layer_count =
+                kv_stats.moe_bound_layer_count;
+            stats->moe_expected_layer_count =
+                kv_stats.moe_expected_layer_count;
             stats->fp8_scaled_gemm_bound_plan_count =
                 kv_stats.fp8_scaled_gemm_bound_plan_count;
             stats->fp8_scaled_gemm_expected_plan_count =
                 kv_stats.fp8_scaled_gemm_expected_plan_count;
+            stats->model_quantization_mode =
+                kv_stats.model_quantization_mode;
             stats->layer_major_submit_count =
                 kv_stats.layer_major_submit_count;
             stats->layer_major_completion_count =
@@ -1864,7 +1886,10 @@ static void SparkGlm52CudaResidentdPrintReady(
     printf("stage=%u:%u\n",
         runtime->rank_plan.first_layer_index,
         runtime->rank_plan.layer_count);
-    printf("fp8_pack_root=%s\n", configuration->fp8_pack_root);
+    printf("model_quantization=%s\n",
+        SparkGlm52Pp13RuntimeQuantizationModeName(
+            configuration->model_quantization_mode));
+    printf("moe_pack_root=%s\n", configuration->moe_pack_root);
     printf("transport_so=%s\n", configuration->transport_shared_object_path);
     printf("driver_so=%s\n", configuration->driver_path);
     printf("node_context_builder_so=%s\n",
@@ -1885,8 +1910,8 @@ static void SparkGlm52CudaResidentdPrintReady(
         printf("logical_lane_capacity=%u\n",kv_stats.logical_lane_capacity);
         printf("execution_row_capacity=%u\n",kv_stats.execution_row_capacity);
         printf("fp8_moe_layers=%u/%u\n",
-            kv_stats.fp8_moe_bound_layer_count,
-            kv_stats.fp8_moe_expected_layer_count);
+            kv_stats.moe_bound_layer_count,
+            kv_stats.moe_expected_layer_count);
         printf("fp8_scaled_gemm_plans=%u/%u\n",
             kv_stats.fp8_scaled_gemm_bound_plan_count,
             kv_stats.fp8_scaled_gemm_expected_plan_count);
@@ -1904,7 +1929,7 @@ static void SparkGlm52CudaResidentdPrintReady(
 static void SparkGlm52CudaResidentdUsage(const char *program)
 {
     fprintf(stderr,
-        "usage: %s --rank n --socket path --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--mtp] [--dspark --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--kv-pool-tokens n] [--kv-nvme-path path --kv-nvme-blocks n --kv-nvme-batch-blocks n] [--port-base n]\n",
+        "usage: %s --rank n --socket path --model-quantization fp8|w8lut --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--mtp] [--dspark --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--kv-pool-tokens n] [--kv-nvme-path path --kv-nvme-blocks n --kv-nvme-batch-blocks n] [--port-base n]\n",
         program);
 }
 

@@ -34,7 +34,8 @@ Example for rank 0:
 ```sh
 /home/spark0/sparkpipe_runtime/bin/sparkpipe_glm52_pp13_rank_daemon \
     --rank 0 \
-    --fp8-pack-root /home/spark0/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1 \
+    --model-quantization fp8 \
+    --moe-pack-root /home/spark0/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1 \
     --transport-so /home/spark0/sparkpipe_runtime/lib/libsparkpipe_hidden_transport_production.so \
     --driver-so /home/spark0/sparkpipe_runtime/lib/libglm52_pp13_rank_driver.so \
     --node-target cuda.sm121.glm52.pp13.fp8 \
@@ -46,7 +47,8 @@ Example for rank 12:
 ```sh
 /home/sparkc/sparkpipe_runtime/bin/sparkpipe_glm52_pp13_rank_daemon \
     --rank 12 \
-    --fp8-pack-root /home/sparkc/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1 \
+    --model-quantization fp8 \
+    --moe-pack-root /home/sparkc/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1 \
     --transport-so /home/sparkc/sparkpipe_runtime/lib/libsparkpipe_hidden_transport_production.so \
     --driver-so /home/sparkc/sparkpipe_runtime/lib/libglm52_pp13_rank_driver.so \
     --node-target cuda.sm121.glm52.pp13.fp8 \

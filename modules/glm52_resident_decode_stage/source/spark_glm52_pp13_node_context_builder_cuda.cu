@@ -24,6 +24,7 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_required_cuda.h"
+#include "sparkpipe/spark_glm52_resident_decode_stage_w8lut_moe_plan.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_glm52_stagepack.h"
@@ -130,7 +131,9 @@ typedef struct SparkGlm52Pp13BuilderLayer
 	SparkGlm52ResidentDecodeStageCudaPipelineSlotState cuda_slot;
 	SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *linear_binding;
 	SparkGlm52ResidentDecodeStageFp8MoeResidentBinding fp8_moe_binding;
+	SparkGlm52ResidentDecodeStageW8lutMoeResidentBinding w8lut_moe_binding;
 	uint32_t fp8_moe_ready;
+	uint32_t w8lut_moe_ready;
 	void *raw_query_a_weight_fp8;
 	void *raw_query_a_scale;
 	void *raw_query_b_weight_fp8;
@@ -301,8 +304,8 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint64_t cuda_builder_allocation_bytes;
 	uint64_t cuda_largest_allocation_bytes;
 	uint64_t host_mapped_allocation_bytes;
-	uint32_t fp8_moe_bound_layer_count;
-	uint32_t fp8_moe_expected_layer_count;
+	uint32_t moe_bound_layer_count;
+	uint32_t moe_expected_layer_count;
 	uint32_t fp8_scaled_gemm_bound_plan_count;
 	uint32_t fp8_scaled_gemm_expected_plan_count;
 	uint32_t active_kv_block_count;
@@ -361,8 +364,8 @@ typedef struct SparkGlm52Pp13BuilderState
 	void *output_sideband;
 	void *final_epilogue_workspace;
 	void *fp8_scaled_gemm_workspace;
-	void *shared_fp8_moe_workspace;
-	uint64_t shared_fp8_moe_workspace_bytes;
+	void *shared_moe_workspace;
+	uint64_t shared_moe_workspace_bytes;
 	uint32_t *host_prefill_lane_offsets;
 	uint32_t *host_prefill_lane_counts;
 	uint32_t *host_decode_positions;
@@ -2959,8 +2962,10 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->dsa_prefill_row_capacity = SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS;
 	node->dsa_score_row_capacity =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_TILE_ROWS;
-	node->model_quantization_mode =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
+	node->model_quantization_mode = state->rank_plan.quantization_mode ==
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
+		? SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT
+		: SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
 	node->layer_index = layer_index;
 	node->device_probe_hash_slots = state->device_probe_hash_slots;
 	node->kv_block_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
@@ -3041,10 +3046,21 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	}
 	else
 	{
-		node->layer_progression_mode =
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK;
-		node->mlp_execution_mode =
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
+		if (state->rank_plan.quantization_mode ==
+			SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+		{
+			node->layer_progression_mode =
+				SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK;
+			node->mlp_execution_mode =
+				SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE;
+		}
+		else
+		{
+			node->layer_progression_mode =
+				SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK;
+			node->mlp_execution_mode =
+				SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
+		}
 		node->moe_router_weight_bf16 = layer->router_weight;
 		node->moe_router_score_bias_f32 = (const float *)layer->router_bias;
 		node->moe_routed_scaling_factor =
@@ -3212,8 +3228,9 @@ static SparkStatus SparkGlm52Pp13BuilderBindFp8Moe(
 	SparkStatus status;
 	if (layer_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER)
 		return SPARK_STATUS_OK;
-	status = SparkGlm52Pp13RuntimeBuildFp8PackPath(
-		state->configuration.fp8_pack_root,
+	status = SparkGlm52Pp13RuntimeBuildMoePackPath(
+		state->configuration.moe_pack_root,
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
 		layer_index,
 		path,
 		(uint32_t)sizeof(path));
@@ -3226,13 +3243,13 @@ static SparkStatus SparkGlm52Pp13BuilderBindFp8Moe(
 	create_info.maximum_active_sequence_count =
 		SparkGlm52Pp13BuilderLayerActiveRowCapacity(state,layer);
 	create_info.pack_path = path;
-	if (layer != &state->mtp_layer && state->shared_fp8_moe_workspace != 0)
+	if (layer != &state->mtp_layer && state->shared_moe_workspace != 0)
 	{
 		create_info.flags =
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_BINDING_CREATE_FLAG_EXTERNAL_WORKSPACE;
-		create_info.external_workspace = state->shared_fp8_moe_workspace;
+		create_info.external_workspace = state->shared_moe_workspace;
 		create_info.external_workspace_bytes =
-			state->shared_fp8_moe_workspace_bytes;
+			state->shared_moe_workspace_bytes;
 	}
 	status = SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateFromPackFile(
 		&layer->fp8_moe_binding,
@@ -3247,19 +3264,93 @@ static SparkStatus SparkGlm52Pp13BuilderBindFp8Moe(
 			&layer->fp8_moe_binding);
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
 	}
-	if (layer != &state->mtp_layer && state->shared_fp8_moe_workspace == 0)
+	if (layer != &state->mtp_layer && state->shared_moe_workspace == 0)
 	{
-		state->shared_fp8_moe_workspace = layer->fp8_moe_binding.workspace;
-		state->shared_fp8_moe_workspace_bytes =
+		state->shared_moe_workspace = layer->fp8_moe_binding.workspace;
+		state->shared_moe_workspace_bytes =
 			layer->fp8_moe_binding.plan.workspace_bytes;
 	}
 	layer->node.fp8_moe_plan = &layer->fp8_moe_binding.plan;
 	layer->fp8_moe_ready = 1u;
-	state->fp8_moe_bound_layer_count += 1u;
+	state->moe_bound_layer_count += 1u;
 	return SPARK_STATUS_OK;
 }
 
-static uint32_t SparkGlm52Pp13BuilderExpectedFp8MoeLayerCount(
+static SparkStatus SparkGlm52Pp13BuilderBindW8lutMoe(
+	SparkGlm52Pp13BuilderState *state,
+	SparkGlm52Pp13BuilderLayer *layer,
+	uint32_t layer_index)
+{
+	SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingCreateInfo create_info;
+	char path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
+	SparkStatus status;
+	if (layer_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER)
+		return SPARK_STATUS_OK;
+	status = SparkGlm52Pp13RuntimeBuildMoePackPath(
+		state->configuration.moe_pack_root,
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,
+		layer_index,
+		path,
+		(uint32_t)sizeof(path));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	memset(&create_info,0,sizeof(create_info));
+	create_info.abi_version =
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_BINDING_CREATE_ABI_VERSION;
+	create_info.layer_index = layer_index;
+	create_info.maximum_active_sequence_count =
+		SparkGlm52Pp13BuilderLayerActiveRowCapacity(state,layer);
+	create_info.pack_path = path;
+	if (state->shared_moe_workspace != 0)
+	{
+		create_info.flags =
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_BINDING_CREATE_FLAG_EXTERNAL_WORKSPACE;
+		create_info.external_workspace = state->shared_moe_workspace;
+		create_info.external_workspace_bytes =
+			state->shared_moe_workspace_bytes;
+	}
+	status = SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingCreateFromPackFile(
+		&layer->w8lut_moe_binding,
+		&create_info);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	if (layer->w8lut_moe_binding.backend_kind !=
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_BACKEND_BUILTIN_BF16_WMMA ||
+		layer->w8lut_moe_binding.plan.launch_function == 0)
+	{
+		SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingDestroy(
+			&layer->w8lut_moe_binding);
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	}
+	if (state->shared_moe_workspace == 0)
+	{
+		state->shared_moe_workspace = layer->w8lut_moe_binding.workspace;
+		state->shared_moe_workspace_bytes =
+			layer->w8lut_moe_binding.plan.workspace_bytes;
+	}
+	layer->node.w8lut_moe_plan = &layer->w8lut_moe_binding.plan;
+	layer->w8lut_moe_ready = 1u;
+	state->moe_bound_layer_count += 1u;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderBindMoe(
+	SparkGlm52Pp13BuilderState *state,
+	SparkGlm52Pp13BuilderLayer *layer,
+	uint32_t layer_index)
+{
+	if (state == 0 || layer == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (state->rank_plan.quantization_mode ==
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+		return SparkGlm52Pp13BuilderBindFp8Moe(state,layer,layer_index);
+	if (state->rank_plan.quantization_mode ==
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+		return SparkGlm52Pp13BuilderBindW8lutMoe(state,layer,layer_index);
+	return SPARK_STATUS_INVALID_ARGUMENT;
+}
+
+static uint32_t SparkGlm52Pp13BuilderExpectedMoeLayerCount(
 	const SparkGlm52Pp13BuilderState *state)
 {
 	uint32_t first_routed_layer;
@@ -3982,7 +4073,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 			status = SPARK_STATUS_CAPACITY_EXCEEDED;
 	}
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderBindFp8Moe(
+		status = SparkGlm52Pp13BuilderBindMoe(
 			state,&state->mtp_layer,SPARK_GLM52_MODEL_MTP_LAYER_INDEX);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderBindLayerPlans(
@@ -4041,9 +4132,9 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 			state->layers[layer_offset - 1u].layer_output_hidden;
 	SparkGlm52Pp13BuilderWireLayerSerialPrefillPlan(state,layer);
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderBindFp8Moe(state,layer,layer_index);
+		status = SparkGlm52Pp13BuilderBindMoe(state,layer,layer_index);
 	if (status != SPARK_STATUS_OK)
-		return SparkGlm52Pp13BuilderReportStatus("bind_fp8_moe",layer_index,status);
+		return SparkGlm52Pp13BuilderReportStatus("bind_moe",layer_index,status);
 	if (status == SPARK_STATUS_OK &&
 		(state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) != 0u &&
 		layer_offset + 1u == state->rank_plan.layer_count)
@@ -4496,7 +4587,7 @@ static SparkStatus SparkGlm52Pp13BuilderValidateConfiguration(
 		(configuration->flags &
 			~SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_KNOWN_FLAGS) != 0u ||
 		configuration->rank_plan == 0 ||
-		configuration->fp8_pack_root == 0 ||
+		configuration->moe_pack_root == 0 ||
 		configuration->stagepack_root == 0 ||
 		configuration->max_active_sequence_count == 0u ||
 		configuration->max_active_sequence_count >
@@ -4547,6 +4638,11 @@ static SparkStatus SparkGlm52Pp13BuilderValidateConfiguration(
 			(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK |
 			 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_MTP))
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (configuration->rank_plan->quantization_mode ==
+			SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT &&
+		(configuration->flags &
+			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_MTP) != 0u)
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
 	if ((configuration->flags &
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK) != 0u &&
 		(configuration->dspark_maximum_lane_count == 0u ||
@@ -4635,10 +4731,10 @@ static SparkStatus SparkGlm52Pp13BuilderBuild(
 		status = SparkGlm52Pp13BuilderBuildLayer(state,layer_offset);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderInitializeDsparkBackend(state);
-	state->fp8_moe_expected_layer_count =
-		SparkGlm52Pp13BuilderExpectedFp8MoeLayerCount(state);
+	state->moe_expected_layer_count =
+		SparkGlm52Pp13BuilderExpectedMoeLayerCount(state);
 	if (status == SPARK_STATUS_OK &&
-		state->fp8_moe_bound_layer_count != state->fp8_moe_expected_layer_count)
+		state->moe_bound_layer_count != state->moe_expected_layer_count)
 		status = SPARK_STATUS_MODULE_NOT_VALIDATED;
 	if (status == SPARK_STATUS_OK &&
 		(state->fp8_scaled_gemm_expected_plan_count == 0u ||
@@ -4787,6 +4883,9 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 		if (state->layers[index].fp8_moe_ready != 0u)
 			SparkGlm52ResidentDecodeStageFp8MoeResidentBindingDestroy(
 				&state->layers[index].fp8_moe_binding);
+		if (state->layers[index].w8lut_moe_ready != 0u)
+			SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingDestroy(
+				&state->layers[index].w8lut_moe_binding);
 	}
 	if (state->mtp_layer.linear_binding != 0)
 		SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(
@@ -4794,6 +4893,9 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 	if (state->mtp_layer.fp8_moe_ready != 0u)
 		SparkGlm52ResidentDecodeStageFp8MoeResidentBindingDestroy(
 			&state->mtp_layer.fp8_moe_binding);
+	if (state->mtp_layer.w8lut_moe_ready != 0u)
+		SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingDestroy(
+			&state->mtp_layer.w8lut_moe_binding);
 	for (index = 0u; index < state->allocation_count; ++index)
 	{
 		if (state->allocation_is_host_mapped[index] != 0u)
@@ -8075,14 +8177,17 @@ static SparkStatus SparkGlm52Pp13BuilderGetKvStats(
 		state->last_layer_major_rows_per_lane;
 	stats->last_layer_major_execution_row_count =
 		state->last_layer_major_execution_row_count;
-	stats->fp8_moe_backend_kind =
-		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_FP8_MOE_BACKEND_BUILTIN_FLASHINFER_GROUPED;
-	stats->fp8_moe_bound_layer_count = state->fp8_moe_bound_layer_count;
-	stats->fp8_moe_expected_layer_count = state->fp8_moe_expected_layer_count;
+	stats->moe_backend_kind = state->rank_plan.quantization_mode ==
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
+		? SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA
+		: SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED;
+	stats->moe_bound_layer_count = state->moe_bound_layer_count;
+	stats->moe_expected_layer_count = state->moe_expected_layer_count;
 	stats->fp8_scaled_gemm_bound_plan_count =
 		state->fp8_scaled_gemm_bound_plan_count;
 	stats->fp8_scaled_gemm_expected_plan_count =
 		state->fp8_scaled_gemm_expected_plan_count;
+	stats->model_quantization_mode = state->rank_plan.quantization_mode;
 	stats->asynchronous_submit_count = state->asynchronous_submit_count;
 	stats->asynchronous_completion_count = state->asynchronous_completion_count;
 	stats->asynchronous_failure_count = state->asynchronous_failure_count;

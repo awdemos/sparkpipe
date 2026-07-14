@@ -55,7 +55,7 @@
 
 typedef struct SparkGlm52Pp13DaemonConfig
 {
-    const char *fp8_pack_root;
+    const char *moe_pack_root;
     const char *stagepack_root;
     const char *transport_shared_object_path;
     const char *driver_path;
@@ -72,6 +72,7 @@ typedef struct SparkGlm52Pp13DaemonConfig
     uint32_t transport_busy_poll;
     uint32_t max_active_sequence_count;
     uint32_t port_base;
+    uint32_t model_quantization_mode;
 } SparkGlm52Pp13DaemonConfig;
 
 typedef struct SparkGlm52Pp13DaemonRuntime
@@ -178,6 +179,8 @@ static void SparkGlm52Pp13DaemonInitializeConfig(
     configuration->max_active_sequence_count =
         SPARK_GLM52_PP13_DAEMON_DEFAULT_MAX_ACTIVE;
     configuration->port_base = SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE;
+    configuration->model_quantization_mode =
+        SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE;
 }
 
 static int32_t SparkGlm52Pp13DaemonParseU32(
@@ -244,11 +247,21 @@ static int32_t SparkGlm52Pp13DaemonApplyArgument(
         *index += 1;
         return 0;
     }
-    if (strcmp(argv[*index],"--fp8-pack-root") == 0)
+    if (strcmp(argv[*index],"--moe-pack-root") == 0)
     {
         if ((*index + 1) >= argc)
             return -2;
-        configuration->fp8_pack_root = argv[*index + 1];
+        configuration->moe_pack_root = argv[*index + 1];
+        *index += 1;
+        return 0;
+    }
+    if (strcmp(argv[*index],"--model-quantization") == 0)
+    {
+        if ((*index + 1) >= argc ||
+            SparkGlm52Pp13RuntimeParseQuantizationMode(
+                argv[*index + 1],&configuration->model_quantization_mode) !=
+                SPARK_STATUS_OK)
+            return -14;
         *index += 1;
         return 0;
     }
@@ -379,9 +392,12 @@ static int32_t SparkGlm52Pp13DaemonParseArguments(
     }
     if (configuration->rank_is_set == 0u)
         return -2;
+    if (SparkGlm52Pp13RuntimeQuantizationModeName(
+            configuration->model_quantization_mode) == 0)
+        return -3;
     if (configuration->cuda_resident_socket_path != 0)
         return 0;
-    if (configuration->fp8_pack_root == 0 ||
+    if (configuration->moe_pack_root == 0 ||
         configuration->stagepack_root == 0 ||
         configuration->transport_shared_object_path == 0 ||
         configuration->driver_path == 0 ||
@@ -1104,10 +1120,14 @@ static SparkStatus SparkGlm52Pp13DaemonConnectCudaResident(
          stats.execution_row_capacity != runtime->rank_plan.execution_row_capacity ||
          stats.kv_physical_block_capacity == 0u ||
          stats.kv_logical_block_capacity < stats.kv_physical_block_capacity ||
-         stats.fp8_moe_backend_kind !=
-            SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_FP8_MOE_BACKEND_BUILTIN_FLASHINFER_GROUPED ||
-         stats.fp8_moe_bound_layer_count == 0u ||
-         stats.fp8_moe_bound_layer_count != stats.fp8_moe_expected_layer_count ||
+         stats.model_quantization_mode != runtime->rank_plan.quantization_mode ||
+         stats.moe_backend_kind !=
+            (runtime->rank_plan.quantization_mode ==
+                SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
+                ? SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA
+                : SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED) ||
+         stats.moe_bound_layer_count == 0u ||
+         stats.moe_bound_layer_count != stats.moe_expected_layer_count ||
          (stats.kv_nvme_enabled != 0u &&
           stats.kv_nvme_mode !=
             SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_SYNCHRONOUS_FULL_HISTORY &&
@@ -1131,7 +1151,7 @@ static SparkStatus SparkGlm52Pp13DaemonConnectCudaResident(
             stderr,
             "rank_cuda_resident_contract_mismatch rank=%u logical=%u/%u "
 			"execution=%u/%u kv_blocks=%u logical_blocks=%u "
-			"fp8_backend=%u fp8_layers=%u/%u nvme=%u "
+			"quantization=%u/%u moe_backend=%u moe_layers=%u/%u nvme=%u "
             "nvme_mode=%u "
             "blocker=%.*s\n",
             runtime->rank_plan.rank_index,
@@ -1141,9 +1161,11 @@ static SparkStatus SparkGlm52Pp13DaemonConnectCudaResident(
             runtime->rank_plan.execution_row_capacity,
 			stats.kv_physical_block_capacity,
 			stats.kv_logical_block_capacity,
-            stats.fp8_moe_backend_kind,
-            stats.fp8_moe_bound_layer_count,
-            stats.fp8_moe_expected_layer_count,
+            stats.model_quantization_mode,
+            runtime->rank_plan.quantization_mode,
+            stats.moe_backend_kind,
+            stats.moe_bound_layer_count,
+            stats.moe_expected_layer_count,
             stats.kv_nvme_enabled,
             stats.kv_nvme_mode,
             (int32_t)sizeof(stats.blocker),
@@ -1629,7 +1651,7 @@ static SparkStatus SparkGlm52Pp13DaemonBuildNodeContext(
 	builder_configuration.maximum_resident_sequence_count =
 		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT;
     builder_configuration.port_base = configuration->port_base;
-    builder_configuration.fp8_pack_root = configuration->fp8_pack_root;
+    builder_configuration.moe_pack_root = configuration->moe_pack_root;
     builder_configuration.stagepack_root = configuration->stagepack_root;
     builder_configuration.embedding_pack_path =
         configuration->embedding_pack_path;
@@ -2746,6 +2768,7 @@ static SparkStatus SparkGlm52Pp13DaemonInitialize(
         configuration->rank_index,
         configuration->max_active_sequence_count,
         configuration->port_base,
+        configuration->model_quantization_mode,
         &runtime->rank_plan,
         error_buffer,
         error_buffer_bytes);
@@ -2796,9 +2819,9 @@ static SparkStatus SparkGlm52Pp13DaemonInitialize(
         }
         return SPARK_STATUS_OK;
     }
-    status = SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
+    status = SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
         &runtime->rank_plan,
-        configuration->fp8_pack_root,
+        configuration->moe_pack_root,
         error_buffer,
         error_buffer_bytes);
     if (status != SPARK_STATUS_OK)
@@ -2942,8 +2965,11 @@ static void SparkGlm52Pp13DaemonPrintReady(
     printf("cuda_resident_socket=%s\n",
         configuration->cuda_resident_socket_path != 0 ?
             configuration->cuda_resident_socket_path : "");
-    printf("fp8_pack_root=%s\n",
-        configuration->fp8_pack_root != 0 ? configuration->fp8_pack_root : "");
+    printf("model_quantization=%s\n",
+        SparkGlm52Pp13RuntimeQuantizationModeName(
+            configuration->model_quantization_mode));
+    printf("moe_pack_root=%s\n",
+        configuration->moe_pack_root != 0 ? configuration->moe_pack_root : "");
     printf("stagepack_root=%s\n",
         configuration->stagepack_root != 0 ? configuration->stagepack_root : "");
     printf("transport_so=%s\n",
@@ -3020,7 +3046,7 @@ int main(int argc,char **argv)
     if (SparkGlm52Pp13DaemonParseArguments(&configuration,argc,argv) < 0)
     {
         fprintf(stderr,
-            "usage: %s --rank n [--cuda-resident-socket path | --fp8-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path] [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--transport-busy-poll]\n",
+            "usage: %s --rank n [--cuda-resident-socket path | --model-quantization fp8|w8lut --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path] [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--transport-busy-poll]\n",
             argv[0]);
         return 2;
     }

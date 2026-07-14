@@ -11,13 +11,14 @@
 typedef struct SparkGlm52Pp13GateConfig
 {
     const char *config_path;
-    const char *fp8_pack_root;
+    const char *moe_pack_root;
     const char *generated_root;
     const char *transport_shared_object_path;
     uint32_t rank_index;
     uint32_t rank_is_set;
     uint32_t max_active_sequence_count;
     uint32_t port_base;
+    uint32_t model_quantization_mode;
     uint32_t require_pack_files;
     uint32_t require_spark_host_rdma_preflight;
     uint32_t generate_missing_runtime_files;
@@ -57,6 +58,8 @@ static void SparkGlm52Pp13GateInitializeConfig(
     configuration->max_active_sequence_count =
         SPARK_GLM52_PP13_GATE_DEFAULT_MAX_ACTIVE;
     configuration->port_base = SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE;
+    configuration->model_quantization_mode =
+        SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE;
     configuration->require_pack_files = 1u;
     configuration->require_spark_host_rdma_preflight = 0u;
     configuration->generate_missing_runtime_files = 1u;
@@ -112,6 +115,7 @@ static SparkStatus SparkGlm52Pp13GateLoadConfigFile(
     SparkStatus status;
     int32_t root;
     uint32_t value;
+    const char *quantization_name;
 
     if (configuration->config_path == 0)
     {
@@ -131,11 +135,21 @@ static SparkStatus SparkGlm52Pp13GateLoadConfigFile(
         return SPARK_STATUS_SCHEMA_ERROR;
     }
     status = SparkGlm52Pp13GateGetOptionalStringPointer(
-        document,root,"fp8_pack_root",&configuration->fp8_pack_root);
+        document,root,"moe_pack_root",&configuration->moe_pack_root);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
+    quantization_name = 0;
+    status = SparkGlm52Pp13GateGetOptionalStringPointer(
+        document,root,"model_quantization",&quantization_name);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    if (quantization_name != 0 &&
+        SparkGlm52Pp13RuntimeParseQuantizationMode(
+            quantization_name,&configuration->model_quantization_mode) !=
+            SPARK_STATUS_OK)
+        return SPARK_STATUS_SCHEMA_ERROR;
     status = SparkGlm52Pp13GateGetOptionalStringPointer(
         document,root,"generated_root",&configuration->generated_root);
     if (status != SPARK_STATUS_OK)
@@ -227,13 +241,23 @@ static int SparkGlm52Pp13GateApplyArgument(
         *index += 1;
         return 0;
     }
-    if (strcmp(argv[*index],"--fp8-pack-root") == 0)
+    if (strcmp(argv[*index],"--moe-pack-root") == 0)
     {
         if (*index + 1 >= argc)
         {
             return -3;
         }
-        configuration->fp8_pack_root = argv[*index + 1];
+        configuration->moe_pack_root = argv[*index + 1];
+        *index += 1;
+        return 0;
+    }
+    if (strcmp(argv[*index],"--model-quantization") == 0)
+    {
+        if (*index + 1 >= argc ||
+            SparkGlm52Pp13RuntimeParseQuantizationMode(
+                argv[*index + 1],&configuration->model_quantization_mode) !=
+                SPARK_STATUS_OK)
+            return -10;
         *index += 1;
         return 0;
     }
@@ -360,7 +384,7 @@ static SparkStatus SparkGlm52Pp13GateBuildRankDirectory(
 
 static SparkStatus SparkGlm52Pp13GateWritePackList(
     const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
-    const char *fp8_pack_root,
+    const char *moe_pack_root,
     const char *path)
 {
     char pack_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
@@ -368,7 +392,7 @@ static SparkStatus SparkGlm52Pp13GateWritePackList(
     SparkStatus status;
     uint32_t layer_index;
 
-    if (rank_plan == 0 || fp8_pack_root == 0 || path == 0)
+    if (rank_plan == 0 || moe_pack_root == 0 || path == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -390,8 +414,9 @@ static SparkStatus SparkGlm52Pp13GateWritePackList(
         {
             continue;
         }
-        status = SparkGlm52Pp13RuntimeBuildFp8PackPath(
-            fp8_pack_root,layer_index,pack_path,sizeof(pack_path));
+        status = SparkGlm52Pp13RuntimeBuildMoePackPath(
+            moe_pack_root,rank_plan->quantization_mode,
+            layer_index,pack_path,sizeof(pack_path));
         if (status != SPARK_STATUS_OK)
         {
             fclose(file);
@@ -408,7 +433,7 @@ static SparkStatus SparkGlm52Pp13GateWritePackList(
 
 static SparkStatus SparkGlm52Pp13GateWriteRankManifest(
     const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
-    const char *fp8_pack_root,
+    const char *moe_pack_root,
     const char *path)
 {
     FILE *file;
@@ -427,13 +452,15 @@ static SparkStatus SparkGlm52Pp13GateWriteRankManifest(
         return SPARK_STATUS_IO_ERROR;
     }
     fprintf(file,"{\n");
-	fprintf(file,"  \"format\": \"sparkpipe.glm52.pp13.fp8.rank_runtime.v2\",\n");
+	fprintf(file,"  \"format\": \"sparkpipe.glm52.pp13.rank_runtime.v3\",\n");
     fprintf(file,"  \"rank\": %u,\n",rank_plan->rank_index);
     fprintf(file,"  \"host\": \"%s\",\n",rank_plan->host_name);
     fprintf(file,"  \"first_layer\": %u,\n",rank_plan->first_layer_index);
     fprintf(file,"  \"layer_count\": %u,\n",rank_plan->layer_count);
-    fprintf(file,"  \"quantization\": \"fp8_e4m3\",\n");
-    fprintf(file,"  \"fp8_pack_root\": \"%s\",\n",fp8_pack_root != 0 ? fp8_pack_root : "");
+    fprintf(file,"  \"quantization\": \"%s\",\n",
+        SparkGlm52Pp13RuntimeQuantizationModeName(
+            rank_plan->quantization_mode));
+    fprintf(file,"  \"moe_pack_root\": \"%s\",\n",moe_pack_root != 0 ? moe_pack_root : "");
     fprintf(file,"  \"listen_port\": %u,\n",rank_plan->listen_port);
     fprintf(file,"  \"next_port\": %u,\n",rank_plan->next_port);
     fprintf(file,"  \"previous_host\": \"%s\",\n",rank_plan->previous_host_name);
@@ -503,20 +530,20 @@ static SparkStatus SparkGlm52Pp13GateGenerateRuntimeFiles(
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     written = snprintf(
-        pack_list_path,sizeof(pack_list_path),"%s/fp8_stage_packs.tsv",
+        pack_list_path,sizeof(pack_list_path),"%s/moe_stage_packs.tsv",
         rank_directory);
     if (written < 0 || (uint32_t)written >= sizeof(pack_list_path))
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     status = SparkGlm52Pp13GateWriteRankManifest(
-        rank_plan,configuration->fp8_pack_root,manifest_path);
+        rank_plan,configuration->moe_pack_root,manifest_path);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
     return SparkGlm52Pp13GateWritePackList(
-        rank_plan,configuration->fp8_pack_root,pack_list_path);
+        rank_plan,configuration->moe_pack_root,pack_list_path);
 }
 
 static SparkStatus SparkGlm52Pp13GateOpenTransportSessions(
@@ -584,7 +611,7 @@ static SparkStatus SparkGlm52Pp13GateOpenTransportSessions(
 
 static void SparkGlm52Pp13GatePrintPlan(
     const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
-    const char *fp8_pack_root,
+    const char *moe_pack_root,
     const char *transport_shared_object_path,
     SparkStatus pack_status,
     SparkStatus transport_status,
@@ -597,8 +624,10 @@ static void SparkGlm52Pp13GatePrintPlan(
     printf("host=%s\n",rank_plan->host_name);
     printf("stage=%u:%u\n",
         rank_plan->first_layer_index,rank_plan->layer_count);
-    printf("quantization=fp8_e4m3\n");
-    printf("fp8_pack_root=%s\n",fp8_pack_root != 0 ? fp8_pack_root : "");
+    printf("quantization=%s\n",
+        SparkGlm52Pp13RuntimeQuantizationModeName(
+            rank_plan->quantization_mode));
+    printf("moe_pack_root=%s\n",moe_pack_root != 0 ? moe_pack_root : "");
     printf("pack_status=%s\n",SparkStatusToString(pack_status));
     printf("transport_preflight_status=%s\n",SparkStatusToString(transport_status));
     printf("transport_so=%s\n",
@@ -694,6 +723,7 @@ int main(int argc,char **argv)
         configuration.rank_index,
         configuration.max_active_sequence_count,
         configuration.port_base,
+        configuration.model_quantization_mode,
         &rank_plan,
         error_buffer,
         sizeof(error_buffer));
@@ -707,8 +737,8 @@ int main(int argc,char **argv)
     pack_status = SPARK_STATUS_OK;
     if (configuration.require_pack_files != 0u)
     {
-        pack_status = SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
-            &rank_plan,configuration.fp8_pack_root,error_buffer,
+        pack_status = SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
+            &rank_plan,configuration.moe_pack_root,error_buffer,
             sizeof(error_buffer));
     }
     transport_status = SPARK_STATUS_OK;
@@ -754,7 +784,7 @@ int main(int argc,char **argv)
     }
     SparkGlm52Pp13GatePrintPlan(
         &rank_plan,
-        configuration.fp8_pack_root,
+        configuration.moe_pack_root,
         configuration.transport_shared_object_path,
         pack_status,
         transport_status,

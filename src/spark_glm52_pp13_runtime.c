@@ -48,6 +48,35 @@ uint32_t SparkGlm52Pp13RuntimeDsaCandidateBucket(
     return candidate_count;
 }
 
+SparkStatus SparkGlm52Pp13RuntimeParseQuantizationMode(
+    const char *name,
+    uint32_t *quantization_mode_out)
+{
+    if (name == 0 || quantization_mode_out == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (strcmp(name,"fp8") == 0)
+        *quantization_mode_out =
+            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
+    else if (strcmp(name,"w8lut") == 0)
+        *quantization_mode_out =
+            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
+    else
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    return SPARK_STATUS_OK;
+}
+
+const char *SparkGlm52Pp13RuntimeQuantizationModeName(
+    uint32_t quantization_mode)
+{
+    if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+        return "fp8";
+    if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+        return "w8lut";
+    return 0;
+}
+
 static uint32_t SparkGlm52Pp13RuntimePathIsPresent(const char *path)
 {
     struct stat path_status;
@@ -149,6 +178,7 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     uint32_t rank_index,
     uint32_t logical_lane_capacity,
     uint32_t port_base,
+    uint32_t quantization_mode,
     SparkGlm52Pp13RuntimeRankPlan *rank_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
@@ -160,6 +190,10 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     if (rank_plan == 0 || logical_lane_capacity == 0u ||
         logical_lane_capacity > SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET ||
         rank_index >= SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT ||
+        (quantization_mode !=
+             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT &&
+         quantization_mode !=
+             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT) ||
         port_base > (65535u - SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT))
     {
         return SparkGlm52Pp13RuntimeReport(
@@ -207,7 +241,7 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     rank_plan->hidden_dimension = SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION;
     rank_plan->bytes_per_sequence =
         SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE;
-    rank_plan->quantization_mode = SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE;
+    rank_plan->quantization_mode = quantization_mode;
     rank_plan->max_packet_bytes =
         (uint64_t)SPARK_GLM52_PP13_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
         (uint64_t)rank_plan->execution_row_capacity;
@@ -327,8 +361,10 @@ SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
         rank_plan->hidden_dimension != SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION ||
         rank_plan->bytes_per_sequence !=
             SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE ||
-        rank_plan->quantization_mode !=
-            SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE ||
+        (rank_plan->quantization_mode !=
+             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT &&
+         rank_plan->quantization_mode !=
+             SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT) ||
         rank_plan->max_packet_bytes !=
             ((uint64_t)SPARK_GLM52_PP13_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
              (uint64_t)rank_plan->execution_row_capacity))
@@ -380,8 +416,9 @@ SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
         "");
 }
 
-SparkStatus SparkGlm52Pp13RuntimeBuildFp8PackPath(
+SparkStatus SparkGlm52Pp13RuntimeBuildMoePackPath(
     const char *pack_root,
+    uint32_t quantization_mode,
     uint32_t layer_index,
     char *pack_path,
     uint32_t pack_path_bytes)
@@ -394,12 +431,31 @@ SparkStatus SparkGlm52Pp13RuntimeBuildFp8PackPath(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    written = snprintf(
-        pack_path,
-        pack_path_bytes,
-        "%s/glm52_layer_%04u_fp8_moe.spfp8",
-        pack_root,
-        layer_index);
+    if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+    {
+        written = snprintf(
+            pack_path,
+            pack_path_bytes,
+            "%s/glm52_layer_%04u_fp8_moe.spfp8",
+            pack_root,
+            layer_index);
+    }
+    else if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+    {
+        written = snprintf(
+            pack_path,
+            pack_path_bytes,
+            "%s/glm52_layer_%04u_w8lut_moe.spw8lut",
+            pack_root,
+            layer_index);
+    }
+    else
+    {
+        pack_path[0] = '\0';
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     if (written < 0 || (uint32_t)written >= pack_path_bytes)
     {
         pack_path[0] = '\0';
@@ -408,7 +464,7 @@ SparkStatus SparkGlm52Pp13RuntimeBuildFp8PackPath(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
+SparkStatus SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
     const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
     const char *pack_root,
     char *error_buffer,
@@ -416,8 +472,11 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
 {
     char pack_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
     char manifest_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
+    char foreign_manifest_path[SPARK_GLM52_PP13_RUNTIME_PACK_PATH_BYTES];
     SparkStatus status;
     uint32_t layer_index;
+    const char *manifest_name;
+    const char *foreign_manifest_name;
     int written;
 
     status = SparkGlm52Pp13RuntimeValidateRankPlan(
@@ -434,14 +493,22 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
-            "FP8 pack root is empty");
+            "MoE pack root is empty");
     }
+    manifest_name = rank_plan->quantization_mode ==
+            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT
+        ? SPARK_GLM52_PP13_RUNTIME_FP8_PACK_MANIFEST
+        : SPARK_GLM52_PP13_RUNTIME_W8LUT_PACK_MANIFEST;
+    foreign_manifest_name = rank_plan->quantization_mode ==
+            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT
+        ? SPARK_GLM52_PP13_RUNTIME_W8LUT_PACK_MANIFEST
+        : SPARK_GLM52_PP13_RUNTIME_FP8_PACK_MANIFEST;
     written = snprintf(
         manifest_path,
         sizeof(manifest_path),
         "%s/%s",
         pack_root,
-        SPARK_GLM52_PP13_RUNTIME_FP8_PACK_MANIFEST);
+        manifest_name);
     if (written < 0 || (uint32_t)written >= sizeof(manifest_path))
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -452,7 +519,23 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_NOT_FOUND,
-            "FP8 resident pack manifest is missing");
+            "resident MoE pack manifest is missing");
+    }
+    written = snprintf(
+        foreign_manifest_path,
+        sizeof(foreign_manifest_path),
+        "%s/%s",
+        pack_root,
+        foreign_manifest_name);
+    if (written < 0 || (uint32_t)written >= sizeof(foreign_manifest_path))
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    if (SparkGlm52Pp13RuntimePathIsPresent(foreign_manifest_path))
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_MODULE_NOT_VALIDATED,
+            "resident MoE pack root mixes quantization formats");
     }
     for (layer_index = rank_plan->first_layer_index;
          layer_index < rank_plan->first_layer_index + rank_plan->layer_count;
@@ -462,8 +545,9 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
         {
             continue;
         }
-        status = SparkGlm52Pp13RuntimeBuildFp8PackPath(
+        status = SparkGlm52Pp13RuntimeBuildMoePackPath(
             pack_root,
+            rank_plan->quantization_mode,
             layer_index,
             pack_path,
             sizeof(pack_path));
@@ -477,7 +561,7 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_NOT_FOUND,
-                "FP8 resident layer pack is missing");
+                "resident MoE layer pack is missing");
         }
     }
     return SparkGlm52Pp13RuntimeReport(

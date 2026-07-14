@@ -630,6 +630,7 @@ status = SparkGlm52Pp13RuntimeBuildRankPlan(
     rank_index,
     max_active_sequence_count,
     SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE,
+    SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
     &rank_plan,
     error_buffer,
     sizeof(error_buffer));

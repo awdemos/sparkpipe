@@ -21,10 +21,12 @@ static void SparkTestGlm52CudaResidentGateAcceptsMeasuredB1024(void)
 	stats.max_active_sequence_count = 1024u;
 	stats.logical_lane_capacity = 1024u;
 	stats.execution_row_capacity = 7168u;
-	stats.fp8_moe_backend_kind =
-		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_FP8_MOE_BACKEND_BUILTIN_FLASHINFER_GROUPED;
-	stats.fp8_moe_bound_layer_count = 3u;
-	stats.fp8_moe_expected_layer_count = 3u;
+	stats.model_quantization_mode =
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
+	stats.moe_backend_kind =
+		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED;
+	stats.moe_bound_layer_count = 3u;
+	stats.moe_expected_layer_count = 3u;
 	stats.fp8_scaled_gemm_bound_plan_count = 42u;
 	stats.fp8_scaled_gemm_expected_plan_count = 42u;
 	stats.kv_nvme_enabled = 1u;
@@ -48,16 +50,30 @@ static void SparkTestGlm52CudaResidentGateAcceptsMeasuredB1024(void)
 	stats.last_layer_major_execution_row_count = 7168u;
 	assert(SparkGlm52CudaResidentGateValidateStats(
 		&stats,0u,
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
 		SPARK_GLM52_CUDA_RESIDENT_GATE_REQUIRE_WORK |
 		SPARK_GLM52_CUDA_RESIDENT_GATE_REQUIRE_LAYER_MAJOR) ==
 		SPARK_STATUS_OK);
 	stats.fp8_scaled_gemm_bound_plan_count -= 1u;
 	assert(SparkGlm52CudaResidentGateValidateStats(
-		&stats,0u,0u) == SPARK_STATUS_MODULE_NOT_VALIDATED);
+		&stats,0u,
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u) == SPARK_STATUS_MODULE_NOT_VALIDATED);
 	stats.fp8_scaled_gemm_bound_plan_count += 1u;
 	stats.kv_nvme_pending_load_count = 1u;
 	assert(SparkGlm52CudaResidentGateValidateStats(
-		&stats,0u,0u) == SPARK_STATUS_MODULE_NOT_VALIDATED);
+		&stats,0u,
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u) == SPARK_STATUS_MODULE_NOT_VALIDATED);
+	stats.kv_nvme_pending_load_count = 0u;
+	stats.model_quantization_mode =
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
+	stats.moe_backend_kind =
+		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA;
+	assert(SparkGlm52CudaResidentGateValidateStats(
+		&stats,0u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,0u) ==
+		SPARK_STATUS_OK);
+	assert(SparkGlm52CudaResidentGateValidateStats(
+		&stats,0u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u) ==
+		SPARK_STATUS_MODULE_NOT_VALIDATED);
 }
 
 int main(void)
