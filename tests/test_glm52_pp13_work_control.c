@@ -19,6 +19,7 @@ typedef struct SparkTestWorkControlKvStorage
 	uint64_t block_sequence_ids[SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY];
 	uint32_t block_logical_indices[SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY];
 	uint64_t block_last_used_epochs[SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY];
+	uint32_t block_pin_counts[SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY];
 	SparkGlm52Pp13WorkControlKvDirectoryEntry
 		directory_entries[SPARK_TEST_KV_DIRECTORY_CAPACITY];
 } SparkTestWorkControlKvStorage;
@@ -80,8 +81,9 @@ static SparkStatus SparkTestInitializeKvState(
 	SparkTestWorkControlKvStorage *storage,
 	uint32_t lane_capacity)
 {
+	SparkStatus status;
 	memset(storage,0,sizeof(*storage));
-	return SparkGlm52Pp13WorkControlInitializeKvState(
+	status = SparkGlm52Pp13WorkControlInitializeKvState(
 		state,
 		lane_capacity,
 		SPARK_TEST_KV_LANE_STRIDE,
@@ -95,6 +97,10 @@ static SparkStatus SparkTestInitializeKvState(
 		storage->block_logical_indices,
 		storage->block_last_used_epochs,
 		storage->directory_entries);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	return SparkGlm52Pp13WorkControlConfigureKvPins(
+		state,storage->block_pin_counts);
 }
 
 static void SparkTestInitializeWorkPacket(
@@ -818,6 +824,10 @@ static void SparkTestGlm52Pp13WorkControlBuildDecodeBatch(void)
 		block_counts[lane_index] = 1u;
 		block_indices[lane_index][0u] = 40u + lane_index;
 	}
+	decode_view.lanes[0u].mtp_resolution_base_position = 29u;
+	decode_view.lanes[0u].mtp_resolution_proposed_token_count = 3u;
+	decode_view.lanes[0u].mtp_resolution_accepted_token_count = 1u;
+	decode_view.lanes[0u].mtp_resolution_committed_token_count = 2u;
 	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
 		&decode_dispatch,0u,&packet) == SPARK_STATUS_OK);
 	assert(packet.active_sequence_count == 4u);
@@ -826,8 +836,14 @@ static void SparkTestGlm52Pp13WorkControlBuildDecodeBatch(void)
 	assert(packet.lanes[3u].request_id == 103u);
 	assert(packet.lanes[3u].input_token_id == 303u);
 	assert(packet.lanes[3u].request_slot_index == 3u);
+	assert((packet.flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE) != 0u);
+	assert(packet.lanes[0u].mtp_resolution_proposed_token_count == 3u);
+	assert(packet.lanes[0u].mtp_resolution_accepted_token_count == 1u);
 	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,4u,1u) ==
 		SPARK_STATUS_OK);
+	packet.flags &= ~SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE;
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,4u,1u) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestGlm52Pp13WorkControlBuildPrefillBatch(void)
@@ -966,6 +982,46 @@ static void SparkTestGlm52Pp13WorkControlResetsOlderGeneration(void)
 	assert(state.control_generation == 200u);
 }
 
+static void SparkTestGlm52Pp13WorkControlPinsSpeculativeBlocks(void)
+{
+	static SparkTestWorkControlKvStorage storage;
+	SparkGlm52Pp13WorkControlKvState state;
+	SparkGlm52Pp13WorkControlPacket packet;
+	SparkGlm52KvBlockTableView view;
+	uint32_t physical_block_index;
+	assert(SparkTestInitializeKvState(&state,&storage,1u) == SPARK_STATUS_OK);
+	SparkTestInitializeWorkPacket(&packet);
+	packet.flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL;
+	packet.active_sequence_count = 1u;
+	packet.lane_count = 1u;
+	packet.execution_row_count = 1u;
+	packet.descriptor_bytes =
+		SparkGlm52Pp13WorkControlCalculatePacketBytes(1u);
+	packet.sequence_position = 0u;
+	packet.kv_block_table_token_count = 1u;
+	packet.lanes[0u].request_id = packet.request_id;
+	packet.lanes[0u].sequence_id = packet.sequence_id;
+	packet.lanes[0u].sequence_position = 0u;
+	packet.lanes[0u].request_slot_index = 0u;
+	packet.lanes[0u].context_token_count = 1u;
+	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
+		&packet,&state,&view) == SPARK_STATUS_OK);
+	physical_block_index = view.host_physical_block_indices[0u];
+	assert(SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
+		&packet,&state) == SPARK_STATUS_OK);
+	assert(SparkGlm52Pp13WorkControlPinPhysicalBlock(
+		&state,physical_block_index) == SPARK_STATUS_OK);
+	assert(state.physical_block_pin_counts[physical_block_index] == 1u);
+	assert(SparkGlm52Pp13WorkControlReleaseSequence(
+		&state,packet.sequence_id,1u) == SPARK_STATUS_BUSY);
+	assert(state.directory_entry_count == 1u);
+	assert(SparkGlm52Pp13WorkControlUnpinPhysicalBlock(
+		&state,physical_block_index) == SPARK_STATUS_OK);
+	assert(SparkGlm52Pp13WorkControlReleaseSequence(
+		&state,packet.sequence_id,1u) == SPARK_STATUS_OK);
+	assert(state.directory_entry_count == 0u);
+}
+
 int main(void)
 {
 	SparkTestGlm52Pp13WorkControlExecutionChunks();
@@ -982,5 +1038,6 @@ int main(void)
 	SparkTestGlm52Pp13WorkControlB1024PhysicalDirectory();
 	SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease();
 	SparkTestGlm52Pp13WorkControlResetsOlderGeneration();
+	SparkTestGlm52Pp13WorkControlPinsSpeculativeBlocks();
 	return 0;
 }

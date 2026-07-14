@@ -3176,11 +3176,11 @@ static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,1u,93000u);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,0u,94000u);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,2u,0u,94000u);
     SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,1u,95000u);
     assert(SparkGlm52RequestApiScheduleNext(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
-    assert(dispatch.mtp_draft_token_budget == 1u);
+    assert(dispatch.mtp_draft_token_budget == 2u);
     assert(SparkGlm52RequestApiCancelDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     assert(SparkGlm52RequestApiCancelRequest(
@@ -3217,6 +3217,10 @@ static void SparkTestRequestApiMtpRejectedDraftStaysOutsideNextContext(void)
         &fixture.api,&dispatch,&decode_view) == SPARK_STATUS_OK);
     assert(decode_view.lanes[0u].sequence_position == 17u);
     assert(decode_view.lanes[0u].context_token_count == 18u);
+    assert(decode_view.lanes[0u].mtp_resolution_base_position == 16u);
+    assert(decode_view.lanes[0u].mtp_resolution_proposed_token_count == 1u);
+    assert(decode_view.lanes[0u].mtp_resolution_accepted_token_count == 0u);
+    assert(decode_view.lanes[0u].mtp_resolution_committed_token_count == 1u);
     assert(SparkGlm52RequestApiCancelDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     assert(SparkGlm52RequestApiCancelRequest(

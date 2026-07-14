@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_REQUEST_API_ABI_VERSION 5u
+#define SPARK_GLM52_REQUEST_API_ABI_VERSION 6u
 #define SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52RequestApiConfiguration))
 #define SPARK_GLM52_REQUEST_API_DESCRIPTOR_BYTES \
@@ -168,6 +168,11 @@ typedef struct SparkGlm52RequestApiSlot
     const uint32_t *prompt_token_ids;
     uint32_t mtp_draft_token_count;
     uint32_t mtp_next_draft_token_budget;
+    uint64_t mtp_resolution_base_position;
+    uint32_t mtp_resolution_proposed_token_count;
+    uint32_t mtp_resolution_accepted_token_count;
+    uint32_t mtp_resolution_committed_token_count;
+    uint32_t mtp_resolution_reserved0;
     uint32_t mtp_draft_token_ids[SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
 } SparkGlm52RequestApiSlot;
 
@@ -297,6 +302,11 @@ typedef struct SparkGlm52RequestApiDecodeDispatchLaneView
     uint64_t request_id;
     uint64_t sequence_id;
     SparkGlm52RequestApiHandle request_handle;
+    uint64_t mtp_resolution_base_position;
+    uint32_t mtp_resolution_proposed_token_count;
+    uint32_t mtp_resolution_accepted_token_count;
+    uint32_t mtp_resolution_committed_token_count;
+    uint32_t mtp_resolution_reserved0;
 } SparkGlm52RequestApiDecodeDispatchLaneView;
 
 typedef struct SparkGlm52RequestApiDecodeDispatchView

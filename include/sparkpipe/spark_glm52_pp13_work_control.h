@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 7u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 8u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION UINT64_C(1)
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
@@ -39,13 +39,15 @@ extern "C" {
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY 0x00000008u
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY 0x00000010u
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES 0x00000020u
+#define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE 0x00000040u
 #define SPARK_GLM52_PP13_WORK_CONTROL_KNOWN_FLAGS \
 	(SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY | \
-	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES)
+	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES | \
+	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE)
 #define SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT \
 	((SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT > \
 	  SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) ? \
@@ -101,7 +103,9 @@ typedef struct SparkGlm52Pp13WorkControlLane
 	uint32_t input_token_id;
 	uint32_t mtp_draft_token_count;
 	uint32_t speculative_token_count;
-	uint32_t reserved0;
+	uint8_t mtp_resolution_proposed_token_count;
+	uint8_t mtp_resolution_accepted_token_count;
+	uint16_t mtp_resolution_reserved0;
 	uint32_t speculative_draft_token_ids[
 		SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT];
 } SparkGlm52Pp13WorkControlLane;
@@ -163,6 +167,7 @@ typedef struct SparkGlm52Pp13WorkControlKvState
 	uint64_t *physical_block_sequence_ids;
 	uint32_t *physical_block_logical_indices;
 	uint64_t *physical_block_last_used_epochs;
+	uint32_t *physical_block_pin_counts;
 	SparkGlm52Pp13WorkControlKvDirectoryEntry *directory_entries;
 	uint32_t *backing_block_free_next;
 	SparkGlm52Pp13WorkControlKvSwapStoreFunction swap_store_function;
@@ -211,6 +216,15 @@ SparkStatus SparkGlm52Pp13WorkControlConfigureKvSwap(
 	SparkGlm52Pp13WorkControlKvSwapStoreFunction swap_store_function,
 	SparkGlm52Pp13WorkControlKvSwapLoadFunction swap_load_function,
 	void *swap_context);
+SparkStatus SparkGlm52Pp13WorkControlConfigureKvPins(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint32_t *physical_block_pin_counts);
+SparkStatus SparkGlm52Pp13WorkControlPinPhysicalBlock(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint32_t physical_block_index);
+SparkStatus SparkGlm52Pp13WorkControlUnpinPhysicalBlock(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint32_t physical_block_index);
 uint32_t SparkGlm52Pp13WorkControlBlockCount(
 	uint32_t token_count,
 	uint32_t block_token_count);
