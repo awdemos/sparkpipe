@@ -811,7 +811,8 @@ static bool SparkGlm52ResidentDecodeStageMtpDraftPlanIsUsable(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT ||
         mtp_draft_plan->weight_format >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1 ||
-        mtp_draft_plan->reserved != 0u ||
+        mtp_draft_plan->graph_draft_token_count >
+            mtp_draft_plan->draft_token_count ||
         mtp_draft_plan->launch_function == 0 ||
         (mtp_draft_plan->workspace_bytes != 0u &&
             mtp_draft_plan->workspace == 0))

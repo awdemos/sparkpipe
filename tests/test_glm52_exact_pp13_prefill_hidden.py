@@ -316,6 +316,32 @@ def test_mtp_draft_plan_honors_runtime_token_budget(root: Path) -> None:
             body)
 
 
+def test_mtp_runtime_depth_specializes_and_caches_cuda_graphs(root: Path) -> None:
+    builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                   encoding="utf-8")
+    required = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+                "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                    encoding="utf-8")
+    header = (root / "modules" / "glm52_resident_decode_stage" / "include" /
+              "sparkpipe" /
+              "spark_glm52_resident_decode_stage_firmware.h").read_text(
+                  encoding="utf-8")
+    assert ("state->mtp_draft_plan.graph_draft_token_count = "
+            "mtp_draft_token_count;" in builder)
+    assert ("state->mtp_draft_plan.graph_draft_token_count = "
+            "graph_draft_token_count;" in builder)
+    assert ("node_context->mtp_draft_plan->graph_draft_token_count" in
+            required)
+    assert "SparkGlm52ResidentDecodeStageFindCachedGraph(" in required
+    assert "SparkGlm52ResidentDecodeStageRetainCurrentGraph(" in required
+    assert "SparkGlm52ResidentDecodeStageDestroyGraphCache(" in required
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_GRAPH_VARIANT_COUNT" in
+            header)
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_GRAPH_SPARE_ENTRY_COUNT" in
+            header)
+
+
 def test_mtp_runtime_failures_name_the_failing_phase(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
