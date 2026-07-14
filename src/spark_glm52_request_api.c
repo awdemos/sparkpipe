@@ -4984,9 +4984,7 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
     if (mtp_verify != 0u)
     {
         if (committed_token_count != accepted_draft_token_count + 1u ||
-            slot->computed_prompt_token_count == 0u ||
-            slot->completed_decode_token_count >
-                UINT64_MAX - slot->computed_prompt_token_count)
+            slot->computed_prompt_token_count == 0u)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
