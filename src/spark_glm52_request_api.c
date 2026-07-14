@@ -4374,7 +4374,7 @@ static uint32_t SparkGlm52RequestApiDecodeBatchMtpBudget(
     {
         return 0u;
     }
-    budget = SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+    budget = SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT;
     for (request_index = 0u; request_index < request_count; ++request_index)
     {
         const SparkGlm52RequestApiSlot *slot;
@@ -4996,13 +4996,8 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        slot->mtp_next_draft_token_budget = accepted_draft_token_count + 1u;
-        if (slot->mtp_next_draft_token_budget >
-            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
-        {
-            slot->mtp_next_draft_token_budget =
-                SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
-        }
+        slot->mtp_next_draft_token_budget =
+            SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT;
         memset(slot->mtp_draft_token_ids, 0, sizeof(slot->mtp_draft_token_ids));
         slot->mtp_draft_token_count = 0u;
         api->mtp_accepted_draft_token_count += accepted_draft_token_count;

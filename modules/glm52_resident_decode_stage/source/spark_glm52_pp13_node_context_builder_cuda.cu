@@ -5993,13 +5993,12 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchVerifierMtpDraft(
 		state,work_packet->lane_count,work_packet->rows_per_lane);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	draft_token_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
+	draft_token_count =
+		SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT;
 	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
 	{
 		accepted_count = SparkGlm52Pp13BuilderAcceptedMtpDraftCount(
 			state,work_packet,lane_index);
-		if (draft_token_count > accepted_count + 1u)
-			draft_token_count = accepted_count + 1u;
 		if (work_packet->lanes[lane_index].sequence_position >
 			UINT32_MAX - accepted_count)
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
