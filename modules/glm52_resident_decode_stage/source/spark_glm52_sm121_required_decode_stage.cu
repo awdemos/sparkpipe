@@ -79,6 +79,7 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_PROBE_HOST_BUFFER_BYTES \
     (SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION * \
      ((uint32_t)sizeof(uint16_t)))
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_DENSE_ROW_STRIDE 1u
 
 #ifndef SPARK_GLM52_REQUIRED_SYMBOL_REFERENCE
 #if defined(__GNUC__) || defined(__clang__)
@@ -7009,6 +7010,7 @@ void SparkGlm52ResidentDecodeStageFusedFinalTokenCandidateKernel(
     float *__restrict__ restricted_logits,
     float *__restrict__ candidate_scores,
     uint32_t *__restrict__ candidate_tokens,
+    uint32_t candidate_row_stride,
     uint32_t active_sequence_count)
 {
     __shared__ float partial_sums[SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_SIZE][8u];
@@ -7033,6 +7035,7 @@ void SparkGlm52ResidentDecodeStageFusedFinalTokenCandidateKernel(
         (group_index * SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_SIZE) +
         token_offset;
     if (sequence_index >= active_sequence_count ||
+        candidate_row_stride == 0u ||
         row_index > SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT ||
         group_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT ||
         token_offset >= SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_SIZE ||
@@ -7179,7 +7182,7 @@ void SparkGlm52ResidentDecodeStageFusedFinalTokenCandidateKernel(
     {
         candidate_index =
             ((((uint64_t)sequence_index *
-               (uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u)) +
+               (uint64_t)candidate_row_stride) +
               (uint64_t)row_index) *
              (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT) +
             (uint64_t)group_index;
@@ -7375,6 +7378,7 @@ static __global__ void SparkGlm52ResidentDecodeStageFusedFinalTokenCommitKernel(
 static __global__ void SparkGlm52ResidentDecodeStageFullVocabGreedyCommitKernel(
     const float *__restrict__ candidate_scores,
     const uint32_t *__restrict__ candidate_tokens,
+    uint32_t candidate_row_stride,
     uint32_t *__restrict__ restricted_selected_token_ids,
     float *__restrict__ restricted_selected_token_scores,
     uint32_t active_sequence_count)
@@ -7390,7 +7394,8 @@ static __global__ void SparkGlm52ResidentDecodeStageFullVocabGreedyCommitKernel(
 
     sequence_index = blockIdx.x;
     thread_index = threadIdx.x;
-    if (sequence_index >= active_sequence_count)
+    if (sequence_index >= active_sequence_count ||
+        candidate_row_stride == 0u)
     {
         return;
     }
@@ -7406,7 +7411,7 @@ static __global__ void SparkGlm52ResidentDecodeStageFullVocabGreedyCommitKernel(
 
         candidate_index =
             ((uint64_t)sequence_index *
-             (uint64_t)(SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) *
+             (uint64_t)candidate_row_stride *
              (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT) +
             (uint64_t)group_index;
         score = candidate_scores[candidate_index];
@@ -17514,6 +17519,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFullVocabGreedyFina
         pipeline_slot->restricted_logits,
         candidate_scores,
         candidate_tokens,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_DENSE_ROW_STRIDE,
         active_sequence_count);
     status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
         node_context,
@@ -17532,6 +17538,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFullVocabGreedyFina
         cuda_stream>>>(
         candidate_scores,
         candidate_tokens,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_DENSE_ROW_STRIDE,
         pipeline_slot->restricted_selected_token_ids,
         pipeline_slot->restricted_selected_token_scores,
         active_sequence_count);
@@ -17615,6 +17622,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFullVocabGreedy(
         logits_f32,
         candidate_scores,
         candidate_tokens,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_DENSE_ROW_STRIDE,
         active_sequence_count);
     if (cudaGetLastError() != cudaSuccess)
     {
@@ -17627,6 +17635,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFullVocabGreedy(
         (cudaStream_t)cuda_stream>>>(
         candidate_scores,
         candidate_tokens,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_DENSE_ROW_STRIDE,
         selected_token_ids,
         selected_token_scores,
         active_sequence_count);
@@ -17750,6 +17759,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltInFusedFinalTokenEpil
         pipeline_slot->restricted_logits,
         candidate_scores,
         candidate_tokens,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u,
         active_sequence_count);
     status = SparkGlm52ResidentDecodeStageCheckCudaLaunch(
         node_context,
