@@ -18,7 +18,34 @@ do not change any runtime status by themselves.
 
 ## Accepted Measurements
 
-The last retained full-ring performance measurement is:
+The latest retained matched B1 comparison is:
+
+```text
+commit:          f5364187449c45e14d5013a2e5b8243a2beabf4d
+plain release:   glm52-fp8-main-f5364187-b1-plain-work-order
+plain generation: 20260714043233
+MTP release:     glm52-fp8-main-f5364187-b1-mtp1-work-order
+MTP generation:  20260714042436
+topology:        13 Spark ranks
+live lanes:      1
+transport:       host-staged TCP
+```
+
+Raw output is under `diagnostics/glm52_mtp_b1_f536418_20260714/`. The detailed
+receipt is `docs/GLM52_MTP_B1_MEASUREMENT_20260714.md`.
+
+| Surface | Status | Retained result |
+| --- | --- | --- |
+| B1 plain decode | `MEASURED` | 64 tokens in 17.236 s, 3.713 token events/s, 0.454 s average TTFT |
+| B1 serialized one-draft MTP | `MEASURED` | 64 tokens in 15.835 s, 4.042 token events/s, 0.689 s average TTFT; advisor commit e10c0b0 was not deployed |
+| Matched MTP gain | `MEASURED` | 1.089x token throughput, 8.135% lower average latency, 51.647% higher TTFT |
+| Greedy output parity | `OBSERVED` | all four requests emitted the same 32 token IDs and text |
+| MTP activity | `OBSERVED` | 22 drafts, 22 verifies, 16 accepted drafts, 6 rejected drafts, 48 decode dispatches |
+| Model accuracy | `NOT_MEASURED` | no corpus, perplexity, long-context, or retained reference-equivalence score |
+| DSpark correctness and throughput | `NOT_MEASURED` | no retained full-ring token, acceptance, or throughput receipt |
+| B4/B16/B64/B256/B1024 serving | `NOT_WORKING` | active release admits one request, active sequence, and lane |
+
+The prior retained full-ring performance measurement is:
 
 ```text
 commit:      9cc386a4ad1fa6827e7e36fba8fb1b4a7e16f00c
@@ -54,6 +81,23 @@ receipt is `docs/GLM52_FP8_SCALED_GEMM_ACTIVATION_20260712.md`.
 | Final LM-head throughput | `NOT_MEASURED` | no isolated or end-to-end retained timing for the active scalar BF16 head |
 
 ## Current Release Observation
+
+The active measured release after the matched comparison is:
+
+```text
+commit:      f5364187449c45e14d5013a2e5b8243a2beabf4d
+release:     glm52-fp8-main-f5364187-b1-mtp1-work-order
+generation:  20260714042436
+topology:    13 Spark ranks
+live lanes:  1
+```
+
+Two sequential 32-token requests completed with identical output. Final health
+reported no live request, no queue backlog, no dropped event, and
+`mtp_status=OBSERVED`. Accuracy remains `NOT_MEASURED`; this result covers one
+prompt and measures throughput, not model quality.
+
+## Prior Release Observation
 
 The honesty rewrite was deployed after the accepted performance measurement:
 
