@@ -157,10 +157,12 @@ is not a long-context or B16 claim.
 
 Serve the immutable release from spark0. Apply roles in this order:
 
-1. `pp13_cuda_residentd` on ranks 0 through 12 concurrently.
-2. Wait for every PID, Unix socket, rank-local pack, and CUDA allocation.
-3. `pp13_rank_daemon` on ranks 1 through 12 concurrently.
-4. `spark0_gateway` on rank 0.
+1. Stop `spark0_gateway` and verify its PID is gone.
+2. Stop `pp13_rank_daemon` on ranks 1 through 12 and verify every PID is gone.
+3. Apply `pp13_cuda_residentd` on ranks 0 through 12 concurrently.
+4. Wait for every resident to report `state=ready` with no work frames received.
+5. Apply `pp13_rank_daemon` on ranks 1 through 12 concurrently.
+6. Apply `spark0_gateway` on rank 0.
 
 Each role uses the installed release manager:
 
@@ -177,8 +179,10 @@ Each role uses the installed release manager:
 ```
 
 Do not launch a second resident beside an existing allocation. The resident
-agent must stop the old generation before starting the new one. Compare the
-installed builder and driver hashes on all 13 ranks with the manifest.
+agent stops its old generation, but it does not quiesce the gateway or rank
+daemons. Leaving either control role alive can replay buffered work into the
+fresh resident and invalidate the test. Compare the installed builder and
+driver hashes on all 13 ranks with the manifest.
 
 ## Actual Inference Gate
 

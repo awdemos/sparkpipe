@@ -1,3 +1,4 @@
+UPDATEREPO_BASE_BRANCH="main"
 UPDATEREPO_VALIDATE_COMMANDS+=("make -j test")
 UPDATEREPO_VALIDATE_COMMANDS+=("make -j glm52_pp13_service_backend tools")
 if command -v nvcc >/dev/null 2>&1
