@@ -241,7 +241,9 @@ def test_mtp_previous_target_position_contracts_are_explicit(root: Path) -> None
                   encoding="utf-8")
     model_header = (root / "include" / "sparkpipe" /
                     "spark_glm52_model.h").read_text(encoding="utf-8")
-    assert ("#define SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET 1u" in
+    assert ("#define SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA 1u" in
+            model_header)
+    assert ("#define SPARK_GLM52_MODEL_MTP_EXECUTION_POSITION_OFFSET 0u" in
             model_header)
     metadata_start = source.index(
         "__global__ static void SparkGlm52Pp13BuilderMtpMetadataKernel(")
@@ -249,7 +251,7 @@ def test_mtp_previous_target_position_contracts_are_explicit(root: Path) -> None
         "__global__ static void SparkGlm52Pp13BuilderMtpStoreKernel(",
         metadata_start)
     metadata_body = source[metadata_start:metadata_end]
-    assert "SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET" in metadata_body
+    assert "SPARK_GLM52_MODEL_MTP_EXECUTION_POSITION_OFFSET" in metadata_body
     load_start = source.index(
         "static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(")
     load_end = source.index(
@@ -257,6 +259,7 @@ def test_mtp_previous_target_position_contracts_are_explicit(root: Path) -> None
         load_start)
     load_body = source[load_start:load_end]
     assert "uint32_t previous_position_delta" in load_body
+    assert "SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA" in load_body
     assert "+\n\t\t\t\tprevious_position_delta !=" in load_body
     assert "host_mtp_previous_positions[request_slot_index] + 1u" not in load_body
     assert source.count(
