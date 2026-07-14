@@ -4,6 +4,27 @@
 
 #include <assert.h>
 
+static void SparkTestRankDaemonBuildPacket(
+    SparkGlm52Pp13WorkControlPacket *packet,
+    uint64_t sequence_id,
+    uint64_t sequence_position,
+    uint32_t flags)
+{
+    memset(packet,0,sizeof(*packet));
+    packet->descriptor_bytes =
+        SparkGlm52Pp13WorkControlCalculatePacketBytes(1u);
+    packet->flags = flags;
+    packet->control_generation = 7u;
+    packet->request_id = sequence_id;
+    packet->sequence_id = sequence_id;
+    packet->sequence_position = sequence_position;
+    packet->active_sequence_count = 1u;
+    packet->lane_count = 1u;
+    packet->lanes[0u].request_id = sequence_id;
+    packet->lanes[0u].sequence_id = sequence_id;
+    packet->lanes[0u].sequence_position = sequence_position;
+}
+
 static void SparkTestRankDaemonReadsSplitResidentMessage(void)
 {
     static SparkGlm52Pp13DaemonRuntime runtime;
@@ -53,8 +74,95 @@ static void SparkTestRankDaemonReadsSplitResidentMessage(void)
     close(sockets[1]);
 }
 
+static void SparkTestRankDaemonPacketIdentityIncludesPhase(void)
+{
+    static SparkGlm52Pp13DaemonRuntime runtime;
+    SparkGlm52Pp13WorkControlPacket decode;
+    SparkGlm52Pp13WorkControlPacket prefill;
+    memset(&runtime,0,sizeof(runtime));
+    SparkGlm52Pp13DaemonInitializeWorkQueue(&runtime);
+    SparkTestRankDaemonBuildPacket(&prefill,41u,8u,
+        SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL);
+    decode = prefill;
+    decode.flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT;
+    assert(SparkGlm52Pp13DaemonQueueWork(&runtime,&prefill) == SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13DaemonQueueWork(&runtime,&decode) == SPARK_STATUS_OK);
+    assert(runtime.work_queue_count == 2u);
+    assert(runtime.work_duplicate_count == 0u);
+    assert(SparkGlm52Pp13DaemonQueueWork(&runtime,&decode) == SPARK_STATUS_OK);
+    assert(runtime.work_queue_count == 2u);
+    assert(runtime.work_duplicate_count == 1u);
+}
+
+static void SparkTestRankDaemonFindsLaneDependency(void)
+{
+    static SparkGlm52Pp13DaemonRuntime runtime;
+    SparkGlm52Pp13WorkControlPacket current;
+    SparkGlm52Pp13WorkControlPacket earlier;
+    memset(&runtime,0,sizeof(runtime));
+    SparkGlm52Pp13DaemonInitializeWorkQueue(&runtime);
+    SparkTestRankDaemonBuildPacket(&earlier,51u,4u,
+        SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL);
+    earlier.lane_count = 2u;
+    earlier.active_sequence_count = 2u;
+    earlier.descriptor_bytes =
+        SparkGlm52Pp13WorkControlCalculatePacketBytes(2u);
+    earlier.lanes[1u].request_id = 52u;
+    earlier.lanes[1u].sequence_id = 52u;
+    earlier.lanes[1u].sequence_position = 4u;
+    SparkTestRankDaemonBuildPacket(&current,52u,5u,
+        SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL);
+    assert(SparkGlm52Pp13DaemonQueueWork(&runtime,&earlier) == SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13DaemonQueueWork(&runtime,&current) == SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13DaemonHasQueuedDependency(&runtime,
+        &runtime.work_queue[1u]) == 1u);
+    SparkGlm52Pp13DaemonPopWork(&runtime);
+    assert(SparkGlm52Pp13DaemonHasQueuedDependency(&runtime,
+        &runtime.work_queue[runtime.work_queue_head]) == 0u);
+}
+
+static void SparkTestRankDaemonDecodeWaitsForSamePositionPrefill(void)
+{
+    static SparkGlm52Pp13DaemonRuntime runtime;
+    SparkGlm52Pp13WorkControlPacket decode;
+    SparkGlm52Pp13WorkControlPacket prefill;
+    memset(&runtime,0,sizeof(runtime));
+    SparkGlm52Pp13DaemonInitializeWorkQueue(&runtime);
+    SparkTestRankDaemonBuildPacket(&prefill,61u,8u,
+        SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL);
+    SparkTestRankDaemonBuildPacket(&decode,61u,8u,
+        SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT);
+    assert(SparkGlm52Pp13DaemonQueueWork(&runtime,&prefill) == SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13DaemonQueueWork(&runtime,&decode) == SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13DaemonHasQueuedDependency(&runtime,
+        &runtime.work_queue[1u]) == 1u);
+}
+
+static void SparkTestRankDaemonForwardWaitPreservesFifo(void)
+{
+    static SparkGlm52Pp13DaemonRuntime runtime;
+    SparkGlm52Pp13WorkControlPacket packet;
+    memset(&runtime,0,sizeof(runtime));
+    SparkGlm52Pp13DaemonInitializeWorkQueue(&runtime);
+    SparkTestRankDaemonBuildPacket(&packet,71u,0u,
+        SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL);
+    assert(SparkGlm52Pp13DaemonQueueWork(&runtime,&packet) == SPARK_STATUS_OK);
+    packet.sequence_position = 1u;
+    packet.lanes[0u].sequence_position = 1u;
+    assert(SparkGlm52Pp13DaemonQueueWork(&runtime,&packet) == SPARK_STATUS_OK);
+    runtime.work_queue_state[runtime.work_queue_head] =
+        SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING_FORWARD;
+    assert(SparkGlm52Pp13DaemonPumpQueuedWork(&runtime) == 0u);
+    assert(runtime.work_queue_head == 0u);
+    assert(runtime.work_queue_count == 2u);
+}
+
 int main(void)
 {
     SparkTestRankDaemonReadsSplitResidentMessage();
+    SparkTestRankDaemonPacketIdentityIncludesPhase();
+    SparkTestRankDaemonFindsLaneDependency();
+    SparkTestRankDaemonDecodeWaitsForSamePositionPrefill();
+    SparkTestRankDaemonForwardWaitPreservesFifo();
     return 0;
 }

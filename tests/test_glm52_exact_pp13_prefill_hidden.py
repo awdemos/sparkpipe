@@ -418,12 +418,18 @@ def test_rank_queue_does_not_overtake_a_deferred_sequence_position(
     start = source.index("static uint32_t SparkGlm52Pp13DaemonPumpQueuedWork(")
     end = source.index("static void SparkGlm52Pp13DaemonHandleWork(", start)
     function_body = source[start:end]
-    predecessor = "SparkGlm52Pp13DaemonHasQueuedPredecessor(runtime,packet)"
+    predecessor = "SparkGlm52Pp13DaemonHasQueuedDependency(runtime,packet)"
     forward = "SparkGlm52Pp13DaemonForwardWork(runtime,packet)"
     submit = "SparkGlm52Pp13DaemonSubmitWork(runtime,packet)"
     assert predecessor in source
     assert function_body.index(predecessor) < function_body.index(forward)
     assert function_body.index(predecessor) < function_body.index(submit)
+    forward_wait = function_body.index(
+        "SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING_FORWARD")
+    submit_wait = function_body.index(
+        "SPARK_GLM52_PP13_DAEMON_WORK_STATE_WAITING_SUBMIT")
+    assert forward_wait < submit_wait
+    assert "return 0u;" in function_body[forward_wait:submit_wait]
 
 
 def test_short_context_bypasses_indexshare_for_exact_prefix_attention(
