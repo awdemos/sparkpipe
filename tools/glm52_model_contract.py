@@ -37,9 +37,14 @@ INTEGER_MACROS = {
     "SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT": "output_vocab_count",
     "SPARK_GLM52_MODEL_RESTRICTED_VOCAB_COUNT": "restricted_vocab_count",
     "SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT": "mtp_draft_token_count",
-    "SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET": "mtp_input_position_offset",
+    "SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA":
+        "mtp_target_hidden_position_delta",
     "SPARK_GLM52_MODEL_MXFP4_GROUP_SIZE": "mxfp4_group_size",
     "SPARK_GLM52_MODEL_NVFP4_GROUP_SIZE": "nvfp4_group_size",
+}
+NONNEGATIVE_INTEGER_MACROS = {
+    "SPARK_GLM52_MODEL_MTP_EXECUTION_POSITION_OFFSET":
+        "mtp_execution_position_offset",
 }
 FLOAT_MACROS = {
     "SPARK_GLM52_MODEL_RMS_NORM_EPSILON": "rms_norm_epsilon",
@@ -81,6 +86,9 @@ def load_model_contract(root: Path | None = None) -> Dict[str, Any]:
     contract = json.loads((base / CONTRACT_RELATIVE_PATH).read_text())
     for key in INTEGER_MACROS.values():
         if not isinstance(contract.get(key), int) or contract[key] <= 0:
+            raise ValueError(f"invalid GLM-5.2 model contract field: {key}")
+    for key in NONNEGATIVE_INTEGER_MACROS.values():
+        if not isinstance(contract.get(key), int) or contract[key] < 0:
             raise ValueError(f"invalid GLM-5.2 model contract field: {key}")
     for key in FLOAT_MACROS.values():
         value = contract.get(key)
@@ -126,6 +134,8 @@ def render_float(value: float) -> str:
 def render_c_header(contract: Dict[str, Any]) -> str:
     lines = ["#pragma once", "", "#include <stdint.h>", ""]
     for name, key in INTEGER_MACROS.items():
+        lines.append(f"#define {name} {contract[key]}u")
+    for name, key in NONNEGATIVE_INTEGER_MACROS.items():
         lines.append(f"#define {name} {contract[key]}u")
     eos_token_ids = contract["eos_token_ids"]
     for name, key in EOS_TOKEN_MACROS.items():

@@ -66,7 +66,7 @@
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION * 2u)
 #define SPARK_GLM52_PP13_BUILDER_MTP_NORM_COUNT_PER_LANE 2u
 #define SPARK_GLM52_PP13_BUILDER_MTP_TARGET_PRECEDES_INPUT_POSITION \
-	SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET
+	SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA
 #define SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS \
 	(SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT * \
 	 SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION)
@@ -1127,7 +1127,7 @@ __global__ static void SparkGlm52Pp13BuilderMtpMetadataKernel(
 	if (lane_index >= active_sequence_count)
 		return;
 	position = base_positions[lane_index] +
-		SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET + draft_index;
+		SPARK_GLM52_MODEL_MTP_EXECUTION_POSITION_OFFSET + draft_index;
 	block_index = position / block_token_count;
 	block_token_index = position - (block_index * block_token_count);
 	physical_block_index = physical_block_indices[
@@ -5492,7 +5492,7 @@ static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(
 	SparkStatus status;
 	if (state == 0 || work_packet == 0 || state->mtp_ready == 0u ||
 		previous_position_delta >
-			SPARK_GLM52_MODEL_MTP_INPUT_POSITION_OFFSET ||
+			SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA ||
 		!SparkGlm52Pp13BuilderIsFinalRank(state) ||
 		work_packet->lane_count == 0u ||
 		work_packet->lane_count > state->rank_plan.logical_lane_capacity ||
