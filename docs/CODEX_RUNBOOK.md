@@ -111,8 +111,9 @@ python3 tools/sparkpipe_release_assemble.py \
     --release-id <release-id> \
     --git-commit <full-merged-sha> \
     --max-active 1 \
-    --kv-pool-tokens 1048576 \
-    --kv-logical-blocks 16384 \
+    --kv-pool-tokens 16384 \
+    --kv-logical-blocks 256 \
+    --mtp \
     --replace bin/sparkpipe_release_manager=build/sparkpipe_release_manager \
     --replace bin/sparkpipe_glm52_cuda_residentd=build/sparkpipe_glm52_cuda_residentd \
     --replace bin/sparkpipe_glm52_pp13_rank_daemon=build/sparkpipe_glm52_pp13_rank_daemon \
@@ -122,6 +123,11 @@ python3 tools/sparkpipe_release_assemble.py \
     --replace lib/libhidden_transport_tcp_cuda.so=build/libhidden_transport_tcp_cuda.so \
     --replace lib/model_driver.so=build/packages/glm52_resident_decode_stage/stages/stage_000/model_driver.so
 ```
+
+`--mtp` is mandatory for an MTP release. Omit it only for an intentionally
+named plain-decode control release. Validate the resulting role commands and
+require `--mtp` on both the resident and gateway roles before serving an MTP
+release.
 
 Validate before serving:
 
@@ -136,10 +142,10 @@ phase hashes, completion logs, and PP13 packet tracing as one checked operation.
 It fails if the template does not contain the expected diagnostic environment;
 do not hand-edit the manifest or silently retain an instrumented role.
 
-The 1M-token pool is the B1 correctness configuration when rank12 also owns
-native MTP weights. It preserves one full-context lane while avoiding the old
-4M-token allocation. Increase concurrency only after measuring rank12 resident
-memory headroom; this configuration is not a B16 claim.
+The 16,384-token physical pool and 256 logical blocks are the current measured
+B1 configuration when rank12 also owns native MTP weights. Increase either
+value only after measuring rank12 resident memory headroom; this configuration
+is not a long-context or B16 claim.
 
 ## Deploy The Ring
 
