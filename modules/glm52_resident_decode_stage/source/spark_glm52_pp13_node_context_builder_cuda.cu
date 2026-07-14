@@ -43,7 +43,7 @@
 #define SPARK_GLM52_PP13_BUILDER_TABLE_ALLOCATION_COUNT 15u
 #define SPARK_GLM52_PP13_BUILDER_INPUT_ALLOCATION_COUNT 12u
 #define SPARK_GLM52_PP13_BUILDER_PLAN_ALLOCATION_COUNT 2u
-#define SPARK_GLM52_PP13_BUILDER_MTP_SUPPORT_ALLOCATION_COUNT 12u
+#define SPARK_GLM52_PP13_BUILDER_MTP_SUPPORT_ALLOCATION_COUNT 13u
 #define SPARK_GLM52_PP13_BUILDER_FINAL_OUTPUT_ALLOCATION_COUNT 2u
 #define SPARK_GLM52_PP13_BUILDER_MAX_ALLOCATIONS \
 	((SPARK_GLM52_PP13_BUILDER_EXECUTION_LAYER_COUNT * \
@@ -78,6 +78,18 @@
 #define SPARK_GLM52_PP13_BUILDER_NVME_RECORD_MAGIC 0x564b4e53u
 #define SPARK_GLM52_PP13_BUILDER_NVME_RECORD_ABI_VERSION 2u
 #define SPARK_GLM52_PP13_BUILDER_NVME_ALIGNMENT 4096u
+#define SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT 7u
+
+typedef enum SparkGlm52Pp13BuilderMtpGpuProfilePhase
+{
+	SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_START = 0,
+	SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_METADATA = 1,
+	SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_FUSION = 2,
+	SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_EH_PROJECTION = 3,
+	SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_REQUIRED_LAYER = 4,
+	SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_VOCAB_HEAD = 5,
+	SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_STORE = 6
+} SparkGlm52Pp13BuilderMtpGpuProfilePhase;
 
 typedef struct SparkGlm52Pp13BuilderNvmeRecordHeader
 {
@@ -301,6 +313,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	float *full_vocab_logits;
 	void *mtp_previous_target_hidden;
 	void *mtp_previous_target_hidden_store;
+	uint64_t *mtp_gpu_profile_cycles;
 	uint32_t *mtp_base_positions;
 	uint32_t *device_mtp_request_slot_indices;
 	float *mtp_norm_inv;
@@ -378,6 +391,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint64_t mtp_previous_sequence_id;
 	uint64_t mtp_previous_position;
 	uint32_t mtp_previous_valid;
+	uint32_t mtp_gpu_profile_enabled;
 	uint32_t full_vocab_head_row_capacity;
 	uint32_t mtp_ready;
 	const SparkModelDriverInterface *driver_interface;
@@ -1225,6 +1239,22 @@ __global__ static void SparkGlm52Pp13BuilderMtpStoreKernel(
 			token_ids[lane_index];
 }
 
+__global__ static void SparkGlm52Pp13BuilderMtpGpuProfileKernel(
+	uint64_t *__restrict__ cycles,
+	uint32_t draft_index,
+	uint32_t phase_index)
+{
+	uint64_t global_time;
+	if (cycles == 0 || blockIdx.x != 0u || threadIdx.x != 0u ||
+		draft_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT ||
+		phase_index >= SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT)
+		return;
+	asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(global_time));
+	cycles[((uint64_t)draft_index *
+		SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT) + phase_index] =
+		global_time;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderReportStatus(
 	const char *step,
 	uint32_t layer_index,
@@ -1234,6 +1264,75 @@ static SparkStatus SparkGlm52Pp13BuilderReportStatus(
 		fprintf(stderr,"pp13_builder_error layer=%u step=%s status=%d\n",
 			layer_index,step == 0 ? "unknown" : step,(int)status);
 	return status;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderMarkMtpGpuProfile(
+	SparkGlm52Pp13BuilderState *state,
+	uint32_t draft_index,
+	SparkGlm52Pp13BuilderMtpGpuProfilePhase phase,
+	cudaStream_t stream)
+{
+	if (state == 0 || stream == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (state->mtp_gpu_profile_enabled == 0u)
+		return SPARK_STATUS_OK;
+	if (state->mtp_gpu_profile_cycles == 0 ||
+		draft_index >= SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT ||
+		(uint32_t)phase >= SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT)
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	SparkGlm52Pp13BuilderMtpGpuProfileKernel<<<1u,1u,0u,stream>>>(
+		state->mtp_gpu_profile_cycles,draft_index,(uint32_t)phase);
+	return SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
+}
+
+static SparkStatus SparkGlm52Pp13BuilderReportMtpGpuProfile(
+	SparkGlm52Pp13BuilderState *state,
+	const char *source,
+	uint32_t row_count,
+	uint32_t draft_token_count)
+{
+	uint64_t cycles[
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
+		SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT];
+	uint64_t *draft_cycles;
+	uint32_t draft_index;
+	uint32_t phase_index;
+	SparkStatus status;
+	if (state == 0 || source == 0 || row_count == 0u ||
+		draft_token_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (state->mtp_gpu_profile_enabled == 0u || draft_token_count == 0u)
+		return SPARK_STATUS_OK;
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy(
+		cycles,state->mtp_gpu_profile_cycles,sizeof(cycles),cudaMemcpyDeviceToHost));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	for (draft_index = 0u; draft_index < draft_token_count; ++draft_index)
+	{
+		draft_cycles = cycles + ((uint64_t)draft_index *
+			SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT);
+		for (phase_index = 1u;
+			 phase_index < SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT;
+			 ++phase_index)
+		{
+			if (draft_cycles[phase_index - 1u] == 0u ||
+				draft_cycles[phase_index] < draft_cycles[phase_index - 1u])
+				return SPARK_STATUS_INTERNAL_ERROR;
+		}
+		fprintf(stderr,
+			"mtp_gpu_profile source=%s rows=%u draft=%u metadata_ns=%llu "
+			"fusion_ns=%llu eh_projection_ns=%llu required_layer_ns=%llu "
+			"vocab_head_ns=%llu store_ns=%llu total_ns=%llu\n",
+			source,row_count,draft_index,
+			(unsigned long long)(draft_cycles[1u] - draft_cycles[0u]),
+			(unsigned long long)(draft_cycles[2u] - draft_cycles[1u]),
+			(unsigned long long)(draft_cycles[3u] - draft_cycles[2u]),
+			(unsigned long long)(draft_cycles[4u] - draft_cycles[3u]),
+			(unsigned long long)(draft_cycles[5u] - draft_cycles[4u]),
+			(unsigned long long)(draft_cycles[6u] - draft_cycles[5u]),
+			(unsigned long long)(draft_cycles[6u] - draft_cycles[0u]));
+	}
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52Pp13BuilderRememberAllocationWithKind(
@@ -3318,22 +3417,38 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpLayer(
 	SparkStatus status;
 	status = SparkGlm52Pp13BuilderLaunchMtpMetadata(
 		state,base_positions,draft_index,active_sequence_count,stream);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderMarkMtpGpuProfile(
+			state,draft_index,
+			SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_METADATA,stream);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus(
 			"mtp_metadata",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 	status = SparkGlm52Pp13BuilderLaunchMtpFusion(
 		state,token_ids,(const uint32_t *)state->mtp_layer.positions,
 		hidden_bf16,active_sequence_count,stream);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderMarkMtpGpuProfile(
+			state,draft_index,
+			SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_FUSION,stream);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus(
 			"mtp_fusion",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 	status = SparkGlm52Pp13BuilderProjectMtpEh(state,active_sequence_count);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderMarkMtpGpuProfile(
+			state,draft_index,
+			SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_EH_PROJECTION,stream);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus(
 			"mtp_eh_projection",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 	status = SparkGlm52Sm121RequiredDecodeStageLaunch(
 		&state->mtp_layer.node,&state->mtp_layer.slot,0u,
 		active_sequence_count,0,stream);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderMarkMtpGpuProfile(
+			state,draft_index,
+			SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_REQUIRED_LAYER,stream);
 	return SparkGlm52Pp13BuilderReportStatus(
 		"mtp_required_layer",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 }
@@ -3414,18 +3529,33 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(
 		hidden_bf16 = draft_index == 0u
 			? base_slot->normalized_hidden_bf16
 			: state->mtp_layer.layer_output_hidden;
-		status = SparkGlm52Pp13BuilderLaunchMtpLayer(
+		status = SparkGlm52Pp13BuilderMarkMtpGpuProfile(
+			state,draft_index,
+			SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_START,
+			(cudaStream_t)cuda_stream);
+		if (status == SPARK_STATUS_OK)
+			status = SparkGlm52Pp13BuilderLaunchMtpLayer(
 			state,token_ids,base_slot->positions,hidden_bf16,draft_index,
 			active_sequence_count,(cudaStream_t)cuda_stream);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(
 				state,node_context,active_sequence_count,(cudaStream_t)cuda_stream);
+		if (status == SPARK_STATUS_OK)
+			status = SparkGlm52Pp13BuilderMarkMtpGpuProfile(
+				state,draft_index,
+				SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_VOCAB_HEAD,
+				(cudaStream_t)cuda_stream);
 		if (status != SPARK_STATUS_OK)
 			return SparkGlm52Pp13BuilderReportStatus(
 				"mtp_full_vocab_greedy",SPARK_GLM52_MODEL_MTP_LAYER_INDEX,status);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13BuilderStoreMtpDraft(
 				state,base_slot,draft_index,active_sequence_count,
+				(cudaStream_t)cuda_stream);
+		if (status == SPARK_STATUS_OK)
+			status = SparkGlm52Pp13BuilderMarkMtpGpuProfile(
+				state,draft_index,
+				SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_STORE,
 				(cudaStream_t)cuda_stream);
 		if (status != SPARK_STATUS_OK)
 			return SparkGlm52Pp13BuilderReportStatus(
@@ -3553,6 +3683,8 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 	if (!SparkGlm52Pp13BuilderMtpEnabled(state) ||
 		!SparkGlm52Pp13BuilderIsFinalRank(state))
 		return SPARK_STATUS_OK;
+	state->mtp_gpu_profile_enabled =
+		getenv("SPARKPIPE_MTP_GPU_PROFILE") != 0 ? 1u : 0u;
 	status = SparkGlm52Pp13BuilderAllocateLayerBuffers(
 		state,&state->mtp_layer,UINT32_MAX,
 		state->rank_plan.logical_lane_capacity,
@@ -3588,6 +3720,16 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 		status = SparkGlm52Pp13BuilderCudaAlloc(
 			state,(void **)&state->device_mtp_request_slot_indices,
 			(uint64_t)state->rank_plan.logical_lane_capacity * sizeof(uint32_t));
+	if (status == SPARK_STATUS_OK && state->mtp_gpu_profile_enabled != 0u)
+		status = SparkGlm52Pp13BuilderCudaAlloc(
+			state,(void **)&state->mtp_gpu_profile_cycles,
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
+			SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT * sizeof(uint64_t));
+	if (status == SPARK_STATUS_OK && state->mtp_gpu_profile_enabled != 0u)
+		status = SparkGlm52Pp13BuilderCudaZero(
+			state->mtp_gpu_profile_cycles,
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
+			SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT * sizeof(uint64_t));
 	if (status == SPARK_STATUS_OK)
 	{
 		state->host_mtp_request_slot_indices = (uint32_t *)malloc(
@@ -4314,6 +4456,13 @@ static SparkStatus SparkGlm52Pp13BuilderBuild(
 				(unsigned long long)state->full_vocab_head_row_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
 					sizeof(float));
+			if (state->mtp_gpu_profile_enabled != 0u)
+				fprintf(stderr,
+					"pp13_mtp_gpu_profile rank=%u phases=%u max_drafts=%u "
+					"graph_compatible=1\n",
+					state->rank_plan.rank_index,
+					SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT,
+					SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT);
 		}
 		if (state->kv_nvme_fd >= 0)
 		{
@@ -5576,6 +5725,10 @@ static SparkStatus SparkGlm52Pp13BuilderEmitWideDecodeCompletions(
 		if (status != SPARK_STATUS_OK)
 			return status;
 	}
+	status = SparkGlm52Pp13BuilderReportMtpGpuProfile(
+		state,"decode",work_packet->lane_count,maximum_draft_count);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
 	{
 		completion = state->captured_completion;
@@ -5692,6 +5845,9 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchVerifierMtpDraft(
 		(size_t)work_packet->lane_count *
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
 			sizeof(uint32_t),cudaMemcpyDeviceToHost));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderReportMtpGpuProfile(
+			state,"verify_followup",work_packet->lane_count,draft_token_count);
 	if (status == SPARK_STATUS_OK)
 		*draft_token_count_out = draft_token_count;
 	return status;
