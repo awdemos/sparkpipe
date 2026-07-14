@@ -225,6 +225,8 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
 .PHONY: all clean test tools demo FORCE \
     cuda_glm52_resident_decode_stage \
     cuda_glm52_resident_decode_stage_publish \
+    glm52_w8lut_quality_cuda_gate \
+    glm52_w8lut_quality_reference \
     glm52_flashinfer_b12x_moe_adapter \
     glm52_b12x_prepare_spark_env \
     glm52_b12x_aot_compile \
@@ -519,7 +521,7 @@ build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decod
 build/test_glm52_resident_decode_stage_production_runner: tests/test_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_resident_decode_stage_production_runner.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-test: $(TEST_BINARIES) build/sparkpipe_glm52_prefill_dryrun
+test: $(TEST_BINARIES) build/sparkpipe_glm52_prefill_dryrun glm52_w8lut_quality_reference
 	@set -e; \
 	for test_binary in $(TEST_BINARIES); do \
 		echo "RUN $$test_binary"; \
@@ -562,6 +564,14 @@ glm52_fp8_scaled_gemm_cuda_gate: cuda_glm52_resident_decode_stage $(B12X_ADAPTER
 		$(GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS) \
 		-lcublasLt -lcublas -ldl \
 		-o $(GLM52_FP8_SCALED_GEMM_CUDA_GATE)
+
+glm52_w8lut_quality_reference:
+	$(MAKE) -C modules/glm52_w8lut_quality_weights test_ref crosscheck
+
+glm52_w8lut_quality_cuda_gate:
+	@command -v $(NVCC) >/dev/null 2>&1 || \
+		{ echo "glm52_w8lut_quality_cuda_gate requires nvcc" >&2; exit 2; }
+	$(MAKE) -C modules/glm52_w8lut_quality_weights test_gpu NVCC=$(NVCC) CUDA_ARCH=sm_121a
 
 cuda_glm52_resident_decode_stage_publish: $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
@@ -729,6 +739,7 @@ tree_summary:
 	@printf "test_executables="; printf '%s\n' $(TEST_NAMES) | wc -l
 
 clean:
+	$(MAKE) -C modules/glm52_w8lut_quality_weights clean
 	rm -rf build
 
 -include $(COMMON_OBJECTS:.o=.d) $(COMPILER_OBJECTS:.o=.d) \
