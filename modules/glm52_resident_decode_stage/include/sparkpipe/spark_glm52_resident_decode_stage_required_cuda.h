@@ -247,10 +247,10 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchSiluMulFp8E4m3ActivationQuan
     uint32_t scale_block_size,
     void *cuda_stream);
 
-#define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_MOE_PACKED_ROUTE_VIEW_ABI_VERSION 1u
-#define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_FP8_MOE_PACKED_ROUTE_WORKSPACE_ALIGNMENT_BYTES 256ull
+#define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_MOE_PACKED_ROUTE_VIEW_ABI_VERSION 1u
+#define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_MOE_PACKED_ROUTE_WORKSPACE_ALIGNMENT_BYTES 256ull
 
-typedef struct SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteView
+typedef struct SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView
 {
     uint32_t abi_version;
     uint32_t maximum_token_count;
@@ -268,27 +268,33 @@ typedef struct SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteView
     uint32_t *packed_route_rows_by_token_route;
     float *packed_route_weights;
     uint32_t *packed_route_count;
-} SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteView;
+} SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView;
 
-uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateFp8MoePackedRouteWorkspaceBytes(
+uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateMoePackedRouteWorkspaceBytes(
     uint32_t maximum_token_count,
     uint32_t top_k,
     uint32_t expert_count);
 
-SparkStatus SparkGlm52Sm121RequiredDecodeStageResolveFp8MoePackedRouteWorkspace(
+SparkStatus SparkGlm52Sm121RequiredDecodeStageResolveMoePackedRouteWorkspace(
     uint32_t maximum_token_count,
     uint32_t top_k,
     uint32_t expert_count,
     void *workspace,
     uint64_t workspace_bytes,
-    SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteView *packed_route_view_out);
+    SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView *packed_route_view_out);
 
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedRouteBuild(
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBuild(
     const uint32_t *topk_expert_ids,
     const float *topk_weights,
-    SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteView *packed_route_view,
+    SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView *packed_route_view,
     uint32_t active_sequence_count,
     void *cuda_stream);
+
+uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateW8lutMoeWorkspaceBytes(
+    const SparkGlm52ResidentDecodeStageW8lutMoePlan *w8lut_moe_plan);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan(
+    SparkGlm52ResidentDecodeStageW8lutMoePlan *w8lut_moe_plan);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedHiddenQuantize(
     const void *hidden_bf16,
@@ -335,7 +341,7 @@ typedef struct SparkGlm52Sm121RequiredDecodeStageFp8MoeGroupedBackendArguments
     uint32_t reserved0;
     uint32_t reserved1;
     uint32_t reserved2;
-    const SparkGlm52Sm121RequiredDecodeStageFp8MoePackedRouteView *packed_route_view;
+    const SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView *packed_route_view;
     const uint8_t *packed_hidden_fp8_e4m3;
     const float *packed_hidden_scale_f32;
     const float *packed_hidden_amax_f32;

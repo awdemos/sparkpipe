@@ -1,74 +1,14 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_fp8_moe_plan.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_required_cuda.h"
 #include "sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h"
+#include "spark_glm52_resident_decode_stage_pack_io.h"
 
 #include <cuda_runtime_api.h>
 
 #include <errno.h>
-#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-
-static SparkStatus SparkGlm52Fp8MoePlanCudaToSparkStatus(cudaError_t cuda_status)
-{
-	if (cuda_status == cudaSuccess)
-		return SPARK_STATUS_OK;
-	if (cuda_status == cudaErrorMemoryAllocation)
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	return SPARK_STATUS_INTERNAL_ERROR;
-}
-
-static SparkStatus SparkGlm52Fp8MoePlanCheckedAddU64(uint64_t left,uint64_t right,uint64_t *sum_out)
-{
-	if (sum_out == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (left > (UINT64_MAX - right))
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	*sum_out = (left + right);
-	return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkGlm52Fp8MoePlanReadExact(FILE *file,void *destination,uint64_t byte_count)
-{
-	if (file == 0 || destination == 0 || byte_count > (uint64_t)((size_t)-1))
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (byte_count == 0u)
-		return SPARK_STATUS_OK;
-	return fread(destination,1u,(size_t)byte_count,file) == (size_t)byte_count
-		? SPARK_STATUS_OK
-		: SPARK_STATUS_IO_ERROR;
-}
-
-static SparkStatus SparkGlm52Fp8MoePlanSeek(FILE *file,uint64_t file_offset)
-{
-	if (file == 0 || file_offset > (uint64_t)LONG_MAX)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	return fseek(file,(long)file_offset,SEEK_SET) == 0
-		? SPARK_STATUS_OK
-		: SPARK_STATUS_IO_ERROR;
-}
-
-static SparkStatus SparkGlm52Fp8MoePlanFileSize(FILE *file,uint64_t *file_size_out)
-{
-	long original_offset,end_offset;
-
-	if (file == 0 || file_size_out == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	original_offset = ftell(file);
-	if (original_offset < 0)
-		return SPARK_STATUS_IO_ERROR;
-	if (fseek(file,0,SEEK_END) != 0)
-		return SPARK_STATUS_IO_ERROR;
-	end_offset = ftell(file);
-	if (end_offset < 0)
-		return SPARK_STATUS_IO_ERROR;
-	if (fseek(file,original_offset,SEEK_SET) != 0)
-		return SPARK_STATUS_IO_ERROR;
-	*file_size_out = (uint64_t)end_offset;
-	return SPARK_STATUS_OK;
-}
 
 static uint64_t SparkGlm52Fp8MoePlanExpectedRegionBytes(uint32_t region_index)
 {
@@ -93,7 +33,7 @@ static SparkStatus SparkGlm52Fp8MoePlanValidateRegion(const SparkGlm52ResidentDe
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	region = &header->regions[region_index];
 	expected_bytes = SparkGlm52Fp8MoePlanExpectedRegionBytes(region_index);
-	status = SparkGlm52Fp8MoePlanCheckedAddU64(region->offset,region->bytes,&end_offset);
+	status = SparkGlm52ResidentPackIoCheckedAdd(region->offset,region->bytes,&end_offset);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	if (region->offset < SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_HEADER_BYTES ||
@@ -146,64 +86,6 @@ static SparkStatus SparkGlm52Fp8MoePlanValidatePackHeader(const SparkGlm52Reside
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52Fp8MoePlanLoadRegionToDevice(FILE *file,const SparkGlm52ResidentDecodeStageFp8MoePackRegion *region,void **device_pointer_out)
-{
-	enum
-	{
-		SparkGlm52Fp8MoePlanCopyChunkBytes = 64u * 1024u * 1024u
-	};
-
-	uint8_t *host_buffer,*device_bytes;
-	uint64_t copied_bytes,remaining_bytes;
-	size_t chunk_bytes;
-	SparkStatus status;
-	cudaError_t cuda_status;
-
-	if (file == 0 || region == 0 || device_pointer_out == 0 || region->bytes > (uint64_t)((size_t)-1))
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	*device_pointer_out = 0;
-	cuda_status = cudaMalloc(device_pointer_out,(size_t)region->bytes);
-	status = SparkGlm52Fp8MoePlanCudaToSparkStatus(cuda_status);
-	if (status != SPARK_STATUS_OK)
-		return status;
-	host_buffer = (uint8_t *)malloc(SparkGlm52Fp8MoePlanCopyChunkBytes);
-	if (host_buffer == 0)
-	{
-		cudaFree(*device_pointer_out);
-		*device_pointer_out = 0;
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	}
-	status = SparkGlm52Fp8MoePlanSeek(file,region->offset);
-	device_bytes = (uint8_t *)(*device_pointer_out);
-	copied_bytes = 0u;
-	while (status == SPARK_STATUS_OK && copied_bytes < region->bytes)
-	{
-		remaining_bytes = (region->bytes - copied_bytes);
-		chunk_bytes = remaining_bytes > SparkGlm52Fp8MoePlanCopyChunkBytes ? (size_t)SparkGlm52Fp8MoePlanCopyChunkBytes : (size_t)remaining_bytes;
-		status = SparkGlm52Fp8MoePlanReadExact(file,host_buffer,(uint64_t)chunk_bytes);
-		if (status != SPARK_STATUS_OK)
-			break;
-		cuda_status = cudaMemcpy(device_bytes + copied_bytes,host_buffer,chunk_bytes,cudaMemcpyHostToDevice);
-		status = SparkGlm52Fp8MoePlanCudaToSparkStatus(cuda_status);
-		copied_bytes += (uint64_t)chunk_bytes;
-	}
-	free(host_buffer);
-	if (status != SPARK_STATUS_OK)
-	{
-		cudaFree(*device_pointer_out);
-		*device_pointer_out = 0;
-	}
-	return status;
-}
-
-static void SparkGlm52Fp8MoePlanFreeDevicePointer(void **device_pointer_cell)
-{
-	if (device_pointer_cell != 0 && *device_pointer_cell != 0)
-	{
-		cudaFree(*device_pointer_cell);
-		*device_pointer_cell = 0;
-	}
-}
 
 static void SparkGlm52Fp8MoePlanPopulateBinding(SparkGlm52ResidentDecodeStageFp8MoeResidentBinding *binding,const SparkGlm52ResidentDecodeStageFp8MoePackHeader *header,uint32_t maximum_active_sequence_count)
 {
@@ -265,21 +147,21 @@ SparkStatus SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateFromPackFile
 	file = fopen(create_info->pack_path,"rb");
 	if (file == 0)
 		return errno == ENOENT ? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_IO_ERROR;
-	status = SparkGlm52Fp8MoePlanReadExact(file,header_bytes,sizeof(header_bytes));
+	status = SparkGlm52ResidentPackIoRead(file,header_bytes,sizeof(header_bytes));
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Fp8MoePlanParseHeader(header_bytes,&header);
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Fp8MoePlanFileSize(file,&file_size);
+		status = SparkGlm52ResidentPackIoFileSize(file,&file_size);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Fp8MoePlanValidatePackHeader(&header,create_info,file_size);
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Fp8MoePlanLoadRegionToDevice(file,&header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W1_WEIGHT],(void **)&binding->w1_weight_fp8_e4m3);
+		status = SparkGlm52ResidentPackIoLoadDeviceRegion(file,header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W1_WEIGHT].offset,header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W1_WEIGHT].bytes,(void **)&binding->w1_weight_fp8_e4m3);
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Fp8MoePlanLoadRegionToDevice(file,&header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W1_SCALE_INV],(void **)&binding->w1_scale_inv_f32);
+		status = SparkGlm52ResidentPackIoLoadDeviceRegion(file,header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W1_SCALE_INV].offset,header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W1_SCALE_INV].bytes,(void **)&binding->w1_scale_inv_f32);
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Fp8MoePlanLoadRegionToDevice(file,&header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W2_WEIGHT],(void **)&binding->w2_weight_fp8_e4m3);
+		status = SparkGlm52ResidentPackIoLoadDeviceRegion(file,header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W2_WEIGHT].offset,header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W2_WEIGHT].bytes,(void **)&binding->w2_weight_fp8_e4m3);
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Fp8MoePlanLoadRegionToDevice(file,&header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W2_SCALE_INV],(void **)&binding->w2_scale_inv_f32);
+		status = SparkGlm52ResidentPackIoLoadDeviceRegion(file,header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W2_SCALE_INV].offset,header.regions[SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_PACK_REGION_W2_SCALE_INV].bytes,(void **)&binding->w2_scale_inv_f32);
 	fclose(file);
 	file = 0;
 	if (status == SPARK_STATUS_OK)
@@ -305,7 +187,7 @@ SparkStatus SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateFromPackFile
 		else
 		{
 			cuda_status = cudaMalloc(&binding->workspace,(size_t)workspace_bytes);
-			status = SparkGlm52Fp8MoePlanCudaToSparkStatus(cuda_status);
+			status = SparkGlm52ResidentPackIoCudaStatus(cuda_status);
 			if (status == SPARK_STATUS_OK)
 				binding->workspace_owned = 1u;
 		}
@@ -331,12 +213,12 @@ void SparkGlm52ResidentDecodeStageFp8MoeResidentBindingDestroy(SparkGlm52Residen
 {
 	if (binding == 0)
 		return;
-	SparkGlm52Fp8MoePlanFreeDevicePointer((void **)&binding->w1_weight_fp8_e4m3);
-	SparkGlm52Fp8MoePlanFreeDevicePointer((void **)&binding->w1_scale_inv_f32);
-	SparkGlm52Fp8MoePlanFreeDevicePointer((void **)&binding->w2_weight_fp8_e4m3);
-	SparkGlm52Fp8MoePlanFreeDevicePointer((void **)&binding->w2_scale_inv_f32);
+	SparkGlm52ResidentPackIoFreeDevice((void **)&binding->w1_weight_fp8_e4m3);
+	SparkGlm52ResidentPackIoFreeDevice((void **)&binding->w1_scale_inv_f32);
+	SparkGlm52ResidentPackIoFreeDevice((void **)&binding->w2_weight_fp8_e4m3);
+	SparkGlm52ResidentPackIoFreeDevice((void **)&binding->w2_scale_inv_f32);
 	if (binding->workspace_owned != 0u)
-		SparkGlm52Fp8MoePlanFreeDevicePointer(&binding->workspace);
+		SparkGlm52ResidentPackIoFreeDevice(&binding->workspace);
 	else
 		binding->workspace = 0;
 	memset(binding,0,sizeof(*binding));
