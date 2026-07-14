@@ -123,6 +123,19 @@ typedef struct SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo
     void *dsa_weights_output_bf16;
 } SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo;
 
+static inline uint32_t
+SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+    const SparkGlm52ResidentDecodeStageLinearPlan *plan,
+    uint32_t active_sequence_count)
+{
+    if (plan == 0 || active_sequence_count == 0u ||
+        active_sequence_count > plan->maximum_active_sequence_count)
+    {
+        return 0u;
+    }
+    return plan->output_is_f32 != 0u ? 1u : active_sequence_count;
+}
+
 SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreate(
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding **binding_out,
     const SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo *create_info);

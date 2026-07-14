@@ -12705,6 +12705,14 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_FP8_E4M3_ROW_MAJOR)
     {
         cublasStatus_t cublas_status;
+        const uint8_t *row_input;
+        uint8_t *row_output;
+        uint64_t input_row_bytes;
+        uint64_t output_row_bytes;
+        uint64_t output_element_bytes;
+        uint32_t launch_count;
+        uint32_t prepared_active_sequence_count;
+        uint32_t row_index;
         float alpha;
         float beta;
 
@@ -12718,15 +12726,20 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
+        prepared_active_sequence_count =
+            SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+                linear_plan, active_sequence_count);
         if (linear_plan->plan_kind ==
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR &&
-            SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(
-                linear_plan) != active_sequence_count)
+            (prepared_active_sequence_count == 0u ||
+             SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(
+                linear_plan) != prepared_active_sequence_count))
         {
             fprintf(
                 stderr,
-                "linear_plan_active_rows_mismatch prepared=%u active=%u input=%u output=%u\n",
+                "linear_plan_active_rows_mismatch prepared=%u required=%u active=%u input=%u output=%u\n",
                 SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(linear_plan),
+                prepared_active_sequence_count,
                 active_sequence_count,
                 linear_plan->input_dimension,
                 linear_plan->output_dimension);
@@ -12734,23 +12747,43 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
         }
         alpha = linear_plan->alpha != 0.0f ? linear_plan->alpha : 1.0f;
         beta = linear_plan->beta;
-        cublas_status = cublasLtMatmul(
-            (cublasLtHandle_t)linear_plan->cublaslt_handle,
-            (cublasLtMatmulDesc_t)linear_plan->matmul_descriptor,
-            &alpha,
-            input,
-            (cublasLtMatrixLayout_t)linear_plan->input_layout,
-            weight,
-            (cublasLtMatrixLayout_t)linear_plan->weight_layout,
-            &beta,
-            output,
-            (cublasLtMatrixLayout_t)linear_plan->output_layout,
-            output,
-            (cublasLtMatrixLayout_t)linear_plan->output_layout,
-            (const cublasLtMatmulAlgo_t *)linear_plan->algorithm,
-            linear_plan->workspace,
-            (size_t)linear_plan->workspace_bytes,
-            cuda_stream);
+        input_row_bytes = (uint64_t)linear_plan->input_dimension *
+            (uint64_t)sizeof(uint16_t);
+        output_element_bytes = linear_plan->output_is_f32 != 0u
+            ? (uint64_t)sizeof(float) : (uint64_t)sizeof(uint16_t);
+        output_row_bytes = (uint64_t)linear_plan->output_dimension *
+            output_element_bytes;
+        launch_count = prepared_active_sequence_count == active_sequence_count
+            ? 1u : active_sequence_count;
+        cublas_status = CUBLAS_STATUS_SUCCESS;
+        for (row_index = 0u; row_index < launch_count; ++row_index)
+        {
+            row_input = (const uint8_t *)input +
+                ((uint64_t)row_index * input_row_bytes);
+            row_output = (uint8_t *)output +
+                ((uint64_t)row_index * output_row_bytes);
+            cublas_status = cublasLtMatmul(
+                (cublasLtHandle_t)linear_plan->cublaslt_handle,
+                (cublasLtMatmulDesc_t)linear_plan->matmul_descriptor,
+                &alpha,
+                row_input,
+                (cublasLtMatrixLayout_t)linear_plan->input_layout,
+                weight,
+                (cublasLtMatrixLayout_t)linear_plan->weight_layout,
+                &beta,
+                row_output,
+                (cublasLtMatrixLayout_t)linear_plan->output_layout,
+                row_output,
+                (cublasLtMatrixLayout_t)linear_plan->output_layout,
+                (const cublasLtMatmulAlgo_t *)linear_plan->algorithm,
+                linear_plan->workspace,
+                (size_t)linear_plan->workspace_bytes,
+                cuda_stream);
+            if (cublas_status != CUBLAS_STATUS_SUCCESS)
+            {
+                break;
+            }
+        }
         if (cublas_status != CUBLAS_STATUS_SUCCESS &&
             getenv("GLM52_LAYER_BODY_DEBUG") != 0)
         {
