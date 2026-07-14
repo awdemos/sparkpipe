@@ -85,6 +85,8 @@ def main():
             "--kv-logical-blocks","1024",
             "--mtp",
             "--without-diagnostics",
+            "--role-env","pp13_cuda_residentd=SPARKPIPE_MTP_GPU_PROFILE=1",
+            "--role-env","spark0_gateway=KEEP_GATEWAY=2",
             "--replace","bin/runtime=" + str(replacement),
         ],check=True)
         result = json.loads((output / "sparkpipe.json").read_text(encoding="utf-8"))
@@ -104,7 +106,9 @@ def main():
                        for item in role["env"])
         assert "KEEP_RANK=1" in result["roles"][0]["env"]
         assert "KEEP_RESIDENT=1" in result["roles"][1]["env"]
-        assert "KEEP_GATEWAY=1" in result["roles"][2]["env"]
+        assert "SPARKPIPE_MTP_GPU_PROFILE=1" in result["roles"][1]["env"]
+        assert "KEEP_GATEWAY=2" in result["roles"][2]["env"]
+        assert "KEEP_GATEWAY=1" not in result["roles"][2]["env"]
         diagnostic_names = {
             "SPARKPIPE_STAGE_COMPLETION_DEBUG",
             "SPARKPIPE_STAGE_PHASE_HASH",
