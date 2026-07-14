@@ -3334,6 +3334,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 		event->status != (uint32_t)SPARK_STATUS_OK ||
 		(event->completion_flags &
 			SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u ||
+		(((event->completion_flags &
+			SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS) != 0u) !=
+		 (event->draft_token_count != 0u)) ||
+		event->draft_token_count >
+			SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT ||
 		(event->extension_flags &
 			~SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_KNOWN_FLAGS) != 0u)
 		return SPARK_STATUS_VALIDATION_FAILED;
@@ -3374,6 +3379,12 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 		event->token_ids,
 		token_count * sizeof(pending->result.token_ids[lane_index][0u]));
 	pending->result.token_counts[lane_index] = token_count;
+	pending->result.draft_token_counts[lane_index] = event->draft_token_count;
+	memcpy(
+		pending->result.draft_token_ids[lane_index],
+		event->draft_token_ids,
+		event->draft_token_count *
+			sizeof(pending->result.draft_token_ids[lane_index][0u]));
 	pending->lane_done[lane_index] = 1u;
 	pending->done_count += 1u;
 	if (pending->done_count != pending->dispatch.request_count)

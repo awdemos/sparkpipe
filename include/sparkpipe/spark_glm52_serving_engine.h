@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SERVING_ENGINE_ABI_VERSION 3u
+#define SPARK_GLM52_SERVING_ENGINE_ABI_VERSION 4u
 #define SPARK_GLM52_SERVING_ENGINE_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52ServingEngineConfiguration))
 #define SPARK_GLM52_SERVING_ENGINE_DESCRIPTOR_BYTES \
@@ -247,6 +247,10 @@ typedef struct SparkGlm52ServingDecodeResult
     uint32_t lane_flags[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     uint32_t token_ids[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT][
         SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE];
+    uint32_t draft_token_counts[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+    uint32_t draft_token_ids[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT][
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
 } SparkGlm52ServingDecodeResult;
 
 typedef SparkStatus (*SparkGlm52ServingPrefillFunction)(

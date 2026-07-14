@@ -1403,6 +1403,19 @@ static SparkStatus SparkGlm52ServingValidateDecodeResult(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
+        if (decode_result->draft_token_counts[lane_index] >
+            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        if (decode_result->draft_token_counts[lane_index] != 0u &&
+            (dispatch->kind !=
+                SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH ||
+             (dispatch->flags &
+                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u))
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
         if (dispatch->kind !=
                 SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
             (dispatch->flags &
@@ -1455,6 +1468,41 @@ static SparkStatus SparkGlm52ServingCaptureMtpDraftTokens(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     *draft_token_count_out = 0u;
+    if (decode_result != 0 && decode_result->lane_count != 0u &&
+        decode_result->draft_token_counts[0u] != 0u)
+    {
+        draft_token_count = decode_result->draft_token_counts[0u];
+        if (dispatch->kind !=
+                SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH ||
+            (dispatch->flags &
+                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u ||
+            draft_token_ids == 0 || draft_lane_stride < draft_token_count)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        for (lane_index = 0u;
+             lane_index < decode_result->lane_count;
+             ++lane_index)
+        {
+            uint32_t draft_index;
+
+            if (decode_result->draft_token_counts[lane_index] !=
+                draft_token_count)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            for (draft_index = 0u;
+                 draft_index < draft_token_count;
+                 ++draft_index)
+            {
+                draft_token_ids[(uint64_t)lane_index * draft_lane_stride +
+                    draft_index] =
+                    decode_result->draft_token_ids[lane_index][draft_index];
+            }
+        }
+        *draft_token_count_out = draft_token_count;
+        return SPARK_STATUS_OK;
+    }
     if (dispatch->kind != SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
         (dispatch->flags &
             SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) == 0u)
@@ -1878,13 +1926,16 @@ SparkStatus SparkGlm52ServingEngineCompleteDecodeDispatch(
             mtp_draft_token_ids,
             SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT,
             mtp_draft_token_count);
-        if (status != SPARK_STATUS_OK)
+        if (status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND)
         {
             return status;
         }
-        engine->stats.mtp_draft_token_count +=
-            (uint64_t)mtp_draft_token_count *
-            (uint64_t)dispatch->request_count;
+        if (status == SPARK_STATUS_OK)
+        {
+            engine->stats.mtp_draft_token_count +=
+                (uint64_t)mtp_draft_token_count *
+                (uint64_t)dispatch->request_count;
+        }
     }
     if ((dispatch->flags &
             SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
