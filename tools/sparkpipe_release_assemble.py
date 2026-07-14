@@ -10,16 +10,16 @@ import shutil
 
 DIAGNOSTIC_ENVIRONMENT_BY_ROLE = {
     "spark0_gateway": {
-        "SPARKPIPE_PP13_TRACE",
+        "SPARKPIPE_PP13_TRACE": "1",
     },
     "pp13_cuda_residentd": {
-        "SPARKPIPE_STAGE_COMPLETION_DEBUG",
-        "SPARKPIPE_STAGE_PHASE_HASH",
-        "SPARKPIPE_HIDDEN_DUMP_DIR",
+        "SPARKPIPE_STAGE_COMPLETION_DEBUG": "1",
+        "SPARKPIPE_STAGE_PHASE_HASH": "1",
+        "SPARKPIPE_HIDDEN_DUMP_DIR": "{state_root}/hidden_dumps",
     },
     "pp13_rank_daemon": {
-        "SPARKPIPE_STAGE_COMPLETION_DEBUG",
-        "SPARKPIPE_PP13_TRACE",
+        "SPARKPIPE_STAGE_COMPLETION_DEBUG": "1",
+        "SPARKPIPE_PP13_TRACE": "1",
     },
 }
 
@@ -88,8 +88,8 @@ def set_role_release_identity(manifest):
         role["env"] = environment
 
 
-def remove_runtime_diagnostics(manifest):
-    for role_name,names in DIAGNOSTIC_ENVIRONMENT_BY_ROLE.items():
+def set_runtime_diagnostics(manifest,enabled):
+    for role_name,values in DIAGNOSTIC_ENVIRONMENT_BY_ROLE.items():
         matching_roles = [role for role in manifest["roles"]
                           if role.get("name") == role_name]
         if len(matching_roles) != 1:
@@ -97,14 +97,11 @@ def remove_runtime_diagnostics(manifest):
                 "release must contain exactly one role named " + role_name)
         role = matching_roles[0]
         environment = role.get("env",[])
-        found = {entry.split("=",1)[0] for entry in environment}
-        missing = names - found
-        if missing:
-            raise SystemExit(
-                "diagnostic environment is missing from " + role_name + ": " +
-                ",".join(sorted(missing)))
         role["env"] = [entry for entry in environment
-                       if entry.split("=",1)[0] not in names]
+                       if entry.split("=",1)[0] not in values]
+        if enabled:
+            role["env"].extend(key + "=" + value
+                               for key,value in values.items())
 
 
 def write_manifest(root,manifest):
@@ -169,8 +166,7 @@ def main():
         arguments.kv_logical_blocks)
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
     set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
-    if arguments.without_diagnostics:
-        remove_runtime_diagnostics(manifest)
+    set_runtime_diagnostics(manifest,not arguments.without_diagnostics)
     write_manifest(temporary,manifest)
     os.rename(temporary,arguments.output)
 
