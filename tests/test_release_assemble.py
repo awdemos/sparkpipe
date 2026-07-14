@@ -15,6 +15,7 @@ def main():
         template = root / "template"
         output = root / "output"
         diagnostic_output = root / "diagnostic-output"
+        plain_output = root / "plain-output"
         replacement = root / "replacement.bin"
         (template / "bin").mkdir(parents=True)
         (template / "bin" / "runtime").write_bytes(b"old")
@@ -35,7 +36,8 @@ def main():
                 {
                     "name": "pp13_cuda_residentd",
                     "argv": ["--max-active", "16"],
-                    "env": ["KEEP_RESIDENT=1", "SPARKPIPE_PP13_TRACE=1"],
+                    "env": ["KEEP_RESIDENT=1", "SPARKPIPE_PP13_TRACE=1",
+                            "SPARKPIPE_MTP_GPU_PROFILE=1"],
                 },
                 {
                     "name": "spark0_gateway",
@@ -85,7 +87,7 @@ def main():
             "--kv-logical-blocks","1024",
             "--mtp",
             "--without-diagnostics",
-            "--role-env","pp13_cuda_residentd=SPARKPIPE_MTP_GPU_PROFILE=1",
+            "--role-env-unset","pp13_cuda_residentd=SPARKPIPE_MTP_GPU_PROFILE",
             "--role-env","spark0_gateway=KEEP_GATEWAY=2",
             "--replace","bin/runtime=" + str(replacement),
         ],check=True)
@@ -106,7 +108,7 @@ def main():
                        for item in role["env"])
         assert "KEEP_RANK=1" in result["roles"][0]["env"]
         assert "KEEP_RESIDENT=1" in result["roles"][1]["env"]
-        assert "SPARKPIPE_MTP_GPU_PROFILE=1" in result["roles"][1]["env"]
+        assert "SPARKPIPE_MTP_GPU_PROFILE=1" not in result["roles"][1]["env"]
         assert "KEEP_GATEWAY=2" in result["roles"][2]["env"]
         assert "KEEP_GATEWAY=1" not in result["roles"][2]["env"]
         diagnostic_names = {
@@ -121,6 +123,30 @@ def main():
         assert result["files"][0]["sha256"] == expected
         assert (output / "bin" / "runtime").read_bytes() == b"new-runtime"
         assert list(root.glob("output.assembling.*")) == []
+        missing_mode = subprocess.run([
+            "python3",str(tool),
+            "--template",str(template),
+            "--output",str(root / "missing-mode"),
+            "--release-id","missing-mode",
+            "--git-commit","abc123",
+            "--kv-logical-blocks","1024",
+        ],capture_output=True,text=True)
+        assert missing_mode.returncode != 0
+        assert "one of the arguments --mtp --plain-decode is required" in (
+            missing_mode.stderr)
+        subprocess.run([
+            "python3",str(tool),
+            "--template",str(diagnostic_output),
+            "--output",str(plain_output),
+            "--release-id","plain",
+            "--git-commit","abc123",
+            "--kv-logical-blocks","1024",
+            "--plain-decode",
+            "--without-diagnostics",
+        ],check=True)
+        plain = json.loads(
+            (plain_output / "sparkpipe.json").read_text(encoding="utf-8"))
+        assert all("--mtp" not in role["argv"] for role in plain["roles"])
 
 
 if __name__ == "__main__":
