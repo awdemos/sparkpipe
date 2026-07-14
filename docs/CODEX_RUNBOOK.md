@@ -129,6 +129,11 @@ named plain-decode control release. Validate the resulting role commands and
 require `--mtp` on both the resident and gateway roles before serving an MTP
 release.
 
+MTP is capped at one draft token until all 13 ranks implement a distributed
+speculative-KV commit and rollback transaction. Do not raise the draft budget
+from measured acceptance alone; multirow verification leaves rejected future
+KV rows resident on ranks that never receive the final-rank acceptance count.
+
 Validate before serving:
 
 ```sh
