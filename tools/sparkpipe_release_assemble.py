@@ -110,6 +110,26 @@ def set_runtime_diagnostics(manifest,enabled):
                                for key,value in values.items())
 
 
+def set_role_environment(manifest,specification):
+    try:
+        role_name,assignment = specification.split("=",1)
+        name,value = assignment.split("=",1)
+    except ValueError:
+        raise SystemExit("role environment must be ROLE=NAME=VALUE")
+    if not role_name or not name:
+        raise SystemExit("role environment must be ROLE=NAME=VALUE")
+    matching_roles = [role for role in manifest["roles"]
+                      if role.get("name") == role_name]
+    if len(matching_roles) != 1:
+        raise SystemExit(
+            "release must contain exactly one role named " + role_name)
+    environment = matching_roles[0].setdefault("env",[])
+    environment = [entry for entry in environment
+                   if entry.split("=",1)[0] != name]
+    environment.append(name + "=" + value)
+    matching_roles[0]["env"] = environment
+
+
 def write_manifest(root,manifest):
     for entry in manifest["files"]:
         path = os.path.join(root,entry["path"])
@@ -134,6 +154,7 @@ def main():
     parser.add_argument("--kv-logical-blocks",type=int,required=True)
     parser.add_argument("--mtp",action="store_true")
     parser.add_argument("--without-diagnostics",action="store_true")
+    parser.add_argument("--role-env",action="append",default=[])
     parser.add_argument("--replace",action="append",default=[])
     arguments = parser.parse_args()
     temporary = arguments.output + ".assembling." + str(os.getpid())
@@ -173,6 +194,8 @@ def main():
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
     set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
     set_runtime_diagnostics(manifest,not arguments.without_diagnostics)
+    for specification in arguments.role_env:
+        set_role_environment(manifest,specification)
     write_manifest(temporary,manifest)
     os.rename(temporary,arguments.output)
 
