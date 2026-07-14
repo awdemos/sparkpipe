@@ -398,6 +398,32 @@ def test_mtp_runtime_failures_name_the_failing_phase(root: Path) -> None:
         assert '"' + phase + '"' in body
 
 
+def test_mtp_gpu_profile_is_graph_compatible_and_explicitly_enabled(
+        root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    assert 'getenv("SPARKPIPE_MTP_GPU_PROFILE")' in source
+    assert "SparkGlm52Pp13BuilderMtpGpuProfileKernel<<<1u,1u,0u,stream>>>" in source
+    assert 'asm volatile("mov.u64 %0, %%globaltimer;"' in source
+    assert "cudaEvent" not in source[source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderMarkMtpGpuProfile("):
+        source.index(
+            "static SparkStatus SparkGlm52Pp13BuilderReportMtpGpuProfile(")]
+    for phase in (
+            "MTP_GPU_PROFILE_START",
+            "MTP_GPU_PROFILE_METADATA",
+            "MTP_GPU_PROFILE_FUSION",
+            "MTP_GPU_PROFILE_EH_PROJECTION",
+            "MTP_GPU_PROFILE_REQUIRED_LAYER",
+            "MTP_GPU_PROFILE_VOCAB_HEAD",
+            "MTP_GPU_PROFILE_STORE"):
+        assert phase in source
+    assert 'state,"decode",work_packet->lane_count,maximum_draft_count' in source
+    assert 'state,"verify_followup",work_packet->lane_count,draft_token_count' in source
+    assert "graph_compatible=1" in source
+
+
 def test_layer_body_failures_are_never_silent(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_sm121_required_decode_stage.cu").read_text(
