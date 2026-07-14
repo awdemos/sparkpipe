@@ -23,6 +23,7 @@ typedef struct SparkGlm52CudaResidentGateConfiguration
 	uint32_t rank_index;
 	uint32_t rank_is_set;
 	uint32_t flags;
+	uint32_t model_quantization_mode;
 } SparkGlm52CudaResidentGateConfiguration;
 
 static SparkStatus SparkGlm52CudaResidentGateReadFull(
@@ -80,6 +81,7 @@ static SparkStatus SparkGlm52CudaResidentGateWriteFull(
 static SparkStatus SparkGlm52CudaResidentGateValidateStats(
 	const SparkGlm52CudaResidentIpcStats *stats,
 	uint32_t expected_rank_index,
+	uint32_t expected_quantization_mode,
 	uint32_t flags)
 {
 	const uint32_t required_capability_flags =
@@ -101,11 +103,15 @@ static SparkStatus SparkGlm52CudaResidentGateValidateStats(
 		stats->execution_row_capacity !=
 			SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET *
 			SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE ||
-		stats->fp8_moe_backend_kind !=
-			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_FP8_MOE_BACKEND_BUILTIN_FLASHINFER_GROUPED ||
-		stats->fp8_moe_bound_layer_count == 0u ||
-		stats->fp8_moe_bound_layer_count !=
-			stats->fp8_moe_expected_layer_count ||
+		stats->model_quantization_mode != expected_quantization_mode ||
+		stats->moe_backend_kind !=
+			(expected_quantization_mode ==
+				SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
+				? SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA
+				: SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED) ||
+		stats->moe_bound_layer_count == 0u ||
+		stats->moe_bound_layer_count !=
+			stats->moe_expected_layer_count ||
 		stats->fp8_scaled_gemm_bound_plan_count == 0u ||
 		stats->fp8_scaled_gemm_bound_plan_count !=
 			stats->fp8_scaled_gemm_expected_plan_count ||
@@ -176,6 +182,8 @@ static int32_t SparkGlm52CudaResidentGateParseArguments(
 	int index;
 
 	memset(configuration,0,sizeof(*configuration));
+	configuration->model_quantization_mode =
+		SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE;
 	for (index = 1; index < argc; ++index)
 	{
 		if (strcmp(argv[index],"--socket") == 0 && index + 1 < argc)
@@ -184,6 +192,15 @@ static int32_t SparkGlm52CudaResidentGateParseArguments(
 			SparkGlm52CudaResidentGateParseU32(
 				argv[++index],&configuration->rank_index) == 0)
 			configuration->rank_is_set = 1u;
+		else if (strcmp(argv[index],"--model-quantization") == 0)
+		{
+			if (index + 1 >= argc ||
+				SparkGlm52Pp13RuntimeParseQuantizationMode(
+					argv[index + 1],&configuration->model_quantization_mode) !=
+					SPARK_STATUS_OK)
+				return -1;
+			index += 1;
+		}
 		else if (strcmp(argv[index],"--require-work") == 0)
 			configuration->flags |=
 				SPARK_GLM52_CUDA_RESIDENT_GATE_REQUIRE_WORK;
@@ -258,7 +275,7 @@ int main(int argc,char **argv)
 			&configuration,argc,argv) != 0)
 	{
 		fprintf(stderr,
-			"usage: %s --socket path --rank n [--require-work] "
+			"usage: %s --socket path --rank n [--model-quantization fp8|w8lut] [--require-work] "
 			"[--require-layer-major]\n",argv[0]);
 		return 2;
 	}
@@ -266,9 +283,10 @@ int main(int argc,char **argv)
 	status = SparkGlm52CudaResidentGateQuery(&configuration,&stats);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52CudaResidentGateValidateStats(
-			&stats,configuration.rank_index,configuration.flags);
+			&stats,configuration.rank_index,
+			configuration.model_quantization_mode,configuration.flags);
 	printf("rank=%u state=%u logical_lanes=%u execution_rows=%u "
-		"pipeline_requests=%u fp8_moe=%u/%u fp8_scaled_gemm=%u/%u "
+		"pipeline_requests=%u quantization=%s moe=%u/%u fp8_scaled_gemm=%u/%u "
 		"nvme_mode=%u nvme_record_bytes=%llu resident_pool_bytes=%llu "
 		"kv_blocks=%llu/%u resident_blocks=%llu swapped_blocks=%llu "
 		"queue=%u pending=%u inflight=%u control_generation=%llu "
@@ -277,7 +295,9 @@ int main(int argc,char **argv)
 		configuration.rank_index,stats.state,stats.logical_lane_capacity,
 		stats.execution_row_capacity,
 		SPARK_GLM52_STAGE_PLAN_PIPELINE_INFLIGHT_REQUEST_CAPACITY,
-		stats.fp8_moe_bound_layer_count,stats.fp8_moe_expected_layer_count,
+		SparkGlm52Pp13RuntimeQuantizationModeName(
+			configuration.model_quantization_mode),
+		stats.moe_bound_layer_count,stats.moe_expected_layer_count,
 		stats.fp8_scaled_gemm_bound_plan_count,
 		stats.fp8_scaled_gemm_expected_plan_count,stats.kv_nvme_mode,
 		(unsigned long long)stats.kv_nvme_record_bytes,

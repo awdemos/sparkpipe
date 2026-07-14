@@ -27,10 +27,12 @@ extern "C" {
 #define SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_MAGIC 0x35454650u
 #define SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION \
     SPARK_GLM52_MODEL_HIDDEN_DIMENSION
-#define SPARK_GLM52_PP13_RUNTIME_QUANTIZATION_MODE \
+#define SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE \
     SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT
 #define SPARK_GLM52_PP13_RUNTIME_FP8_PACK_MANIFEST \
     "fp8_moe_pack_manifest.json"
+#define SPARK_GLM52_PP13_RUNTIME_W8LUT_PACK_MANIFEST \
+    "w8lut_moe_pack_manifest.json"
 #define SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE \
     SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES
 #define SPARK_GLM52_PP13_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE \
@@ -91,6 +93,13 @@ typedef struct SparkGlm52Pp13RuntimeRankPlan
 uint32_t SparkGlm52Pp13RuntimeDsaCandidateBucket(
     uint32_t context_token_count);
 
+SparkStatus SparkGlm52Pp13RuntimeParseQuantizationMode(
+    const char *name,
+    uint32_t *quantization_mode_out);
+
+const char *SparkGlm52Pp13RuntimeQuantizationModeName(
+    uint32_t quantization_mode);
+
 typedef struct SparkGlm52Pp13RuntimeFinalEventRoute
 {
     uint32_t abi_version;
@@ -149,6 +158,7 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     uint32_t rank_index,
     uint32_t logical_lane_capacity,
     uint32_t port_base,
+    uint32_t quantization_mode,
     SparkGlm52Pp13RuntimeRankPlan *rank_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes);
@@ -158,13 +168,14 @@ SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
     char *error_buffer,
     uint32_t error_buffer_bytes);
 
-SparkStatus SparkGlm52Pp13RuntimeBuildFp8PackPath(
+SparkStatus SparkGlm52Pp13RuntimeBuildMoePackPath(
     const char *pack_root,
+    uint32_t quantization_mode,
     uint32_t layer_index,
     char *pack_path,
     uint32_t pack_path_bytes);
 
-SparkStatus SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
+SparkStatus SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
     const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
     const char *pack_root,
     char *error_buffer,

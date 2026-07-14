@@ -429,10 +429,14 @@ static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(SparkGlm52Pp1
 		 stats.kv_physical_block_capacity == 0u ||
 		 stats.kv_physical_block_capacity > stats.kv_logical_block_capacity ||
 		 stats.kv_logical_block_capacity != state->kv_logical_block_capacity ||
-		 stats.fp8_moe_backend_kind !=
-			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_FP8_MOE_BACKEND_BUILTIN_FLASHINFER_GROUPED ||
-		 stats.fp8_moe_bound_layer_count == 0u ||
-		 stats.fp8_moe_bound_layer_count != stats.fp8_moe_expected_layer_count ||
+		 stats.model_quantization_mode != state->rank_plan.quantization_mode ||
+		 stats.moe_backend_kind !=
+			(state->rank_plan.quantization_mode ==
+				SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
+				? SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA
+				: SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED) ||
+		 stats.moe_bound_layer_count == 0u ||
+		 stats.moe_bound_layer_count != stats.moe_expected_layer_count ||
 		 stats.fp8_scaled_gemm_bound_plan_count == 0u ||
 		 stats.fp8_scaled_gemm_bound_plan_count !=
 			stats.fp8_scaled_gemm_expected_plan_count ||
@@ -458,8 +462,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(SparkGlm52Pp1
 		fprintf(
 			stderr,
 			"pp13_resident_contract_mismatch logical=%u/%u execution=%u/%u "
-			"kv_blocks=%u logical_blocks=%u/%u fp8_backend=%u "
-			"fp8_layers=%u/%u fp8_scaled_gemm=%u/%u nvme=%u nvme_mode=%u "
+			"kv_blocks=%u logical_blocks=%u/%u quantization=%u/%u moe_backend=%u "
+			"moe_layers=%u/%u fp8_scaled_gemm=%u/%u nvme=%u nvme_mode=%u "
 			"blocker=%.*s\n",
 			stats.logical_lane_capacity,
 			state->rank_plan.logical_lane_capacity,
@@ -468,9 +472,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(SparkGlm52Pp1
 			stats.kv_physical_block_capacity,
 			stats.kv_logical_block_capacity,
 			state->kv_logical_block_capacity,
-			stats.fp8_moe_backend_kind,
-			stats.fp8_moe_bound_layer_count,
-			stats.fp8_moe_expected_layer_count,
+			stats.model_quantization_mode,
+			state->rank_plan.quantization_mode,
+			stats.moe_backend_kind,
+			stats.moe_bound_layer_count,
+			stats.moe_expected_layer_count,
 			stats.fp8_scaled_gemm_bound_plan_count,
 			stats.fp8_scaled_gemm_expected_plan_count,
 			stats.kv_nvme_enabled,
@@ -2549,7 +2555,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildNodeContext(
 		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT;
 	builder_configuration.port_base =
 		SparkGlm52Pp13ServiceBackendPortBase(configuration);
-	builder_configuration.fp8_pack_root = configuration->fp8_pack_root;
+	builder_configuration.moe_pack_root = configuration->moe_pack_root;
 	builder_configuration.stagepack_root = configuration->stagepack_root;
 	builder_configuration.embedding_pack_path =
 		configuration->embedding_pack_path;
@@ -2557,13 +2563,15 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildNodeContext(
 	builder_configuration.rank_plan = &state->rank_plan;
 	fprintf(
 		stderr,
-		"pp13_build_context load_builder rank=%u first=%u layers=%u max_active=%u builder=%s fp8=%s stagepack=%s\n",
+		"pp13_build_context load_builder rank=%u first=%u layers=%u max_active=%u builder=%s quantization=%s moe=%s stagepack=%s\n",
 		state->rank_plan.rank_index,
 		state->rank_plan.first_layer_index,
 		state->rank_plan.layer_count,
 		builder_configuration.max_active_sequence_count,
 		configuration->node_context_builder_shared_object_path,
-		configuration->fp8_pack_root,
+		SparkGlm52Pp13RuntimeQuantizationModeName(
+			state->rank_plan.quantization_mode),
+		configuration->moe_pack_root,
 		configuration->stagepack_root);
 	status = SparkGlm52Pp13NodeContextBuilderLoadInterfaceFromSharedObject(
 		configuration->node_context_builder_shared_object_path,
@@ -2747,6 +2755,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 		0u,
 		SparkGlm52Pp13ServiceBackendMaxActive(configuration),
 		SparkGlm52Pp13ServiceBackendPortBase(configuration),
+		configuration->model_quantization_mode,
 		&state->rank_plan,
 		error_buffer,
 		sizeof(error_buffer));
@@ -2761,14 +2770,14 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRank0(
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13ServiceBackendRank0Fail(
 			state,status,error_buffer,"failed to build final event route");
-	status = SparkGlm52Pp13RuntimeValidateStageFp8PackFiles(
+	status = SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
 		&state->rank_plan,
-		configuration->fp8_pack_root,
+		configuration->moe_pack_root,
 		error_buffer,
 		sizeof(error_buffer));
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13ServiceBackendRank0Fail(
-			state,status,error_buffer,"failed to validate rank0 FP8 packs");
+			state,status,error_buffer,"failed to validate rank0 MoE packs");
 	if (configuration->cuda_resident_socket_path != 0)
 	{
 		if (strlen(configuration->cuda_resident_socket_path) >= sizeof(state->cuda_resident_socket_path))
@@ -2814,6 +2823,14 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 			(SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_DSPARK |
 			 SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP))
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (SparkGlm52Pp13RuntimeQuantizationModeName(
+			configuration->model_quantization_mode) == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (configuration->model_quantization_mode ==
+			SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT &&
+		(configuration->flags &
+			SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP) != 0u)
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
 	if (configuration->kv_logical_block_capacity != 0u &&
 		configuration->kv_logical_block_capacity >
 			UINT32_MAX - SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY)
@@ -2856,9 +2873,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 	}
 	state->cuda_resident_next_sequence_number = state->session_id_base;
 	status = SparkGlm52Pp13ServiceBackendRequireText(
-		configuration->fp8_pack_root,
+		configuration->moe_pack_root,
 		state,
-		"FP8 pack root is missing");
+		"MoE pack root is missing");
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13ServiceBackendRequireText(
 			configuration->stagepack_root,

@@ -55,7 +55,8 @@ static SparkStatus SparkGlm52StagePlanNormalizeQuantizationMode(
         return SPARK_STATUS_OK;
     }
     if (quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
+        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
     {
         *normalized_quantization_mode_out = quantization_mode;
         return SPARK_STATUS_OK;

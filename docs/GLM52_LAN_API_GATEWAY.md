@@ -45,7 +45,8 @@ build/sparkpipe_glm52_http_gateway \
     --port 8080 \
     --api-key-file /home/spark0/sparkpipe_runtime/API_KEY \
     --service-backend-so /home/spark0/sparkpipe_runtime/libglm52_pp13_service_backend.so \
-    --fp8-pack-root /srv/sparkpipe/packs/glm52/fp8_pp13 \
+    --model-quantization fp8 \
+    --moe-pack-root /srv/sparkpipe/packs/glm52/fp8_pp13 \
     --transport-so /home/spark0/sparkpipe_runtime/libspark_hidden_transport.so \
     --driver-so /home/spark0/sparkpipe_runtime/model_driver.so \
     --program glm52.pp13.rank.production \

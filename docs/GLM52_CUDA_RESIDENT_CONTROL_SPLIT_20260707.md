@@ -29,7 +29,8 @@ Start residentd first on every rank:
 bin/sparkpipe_glm52_cuda_residentd \
   --rank 7 \
   --socket /home/spark7/sparkpipe_state/cuda_resident_rank7.sock \
-  --fp8-pack-root /home/spark7/sparkpipe_runtime/packs/fp8 \
+  --model-quantization fp8 \
+  --moe-pack-root /home/spark7/sparkpipe_runtime/packs/fp8 \
   --stagepack-root /home/spark7/sparkpipe_runtime/packs/stage \
   --transport-so /home/spark7/sparkpipe_runtime/lib/libhidden_transport_tcp_cuda.so \
   --driver-so /home/spark7/sparkpipe_runtime/lib/model_driver.so \

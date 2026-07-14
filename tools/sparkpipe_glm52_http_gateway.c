@@ -12,6 +12,7 @@
 
 #include "sparkpipe/spark_glm52_service_backend.h"
 #include "sparkpipe/spark_glm52_http_gateway.h"
+#include "sparkpipe/spark_glm52_pp13_runtime.h"
 
 #define SPARK_GLM52_GATEWAY_REQUEST_BYTES (SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_UPLOAD_BYTES + (1024u * 1024u))
 #define SPARK_GLM52_GATEWAY_RESPONSE_BYTES (128u * 1024u)
@@ -42,7 +43,7 @@ typedef struct SparkGlm52GatewayConfig
 	const char *api_key;
 	const char *api_key_file;
 	const char *service_backend_path;
-	const char *fp8_pack_root;
+	const char *moe_pack_root;
 	const char *stagepack_root;
 	const char *transport_shared_object_path;
 	const char *driver_shared_object_path;
@@ -61,6 +62,7 @@ typedef struct SparkGlm52GatewayConfig
 	uint32_t max_active_sequence_count;
 	uint32_t kv_logical_block_capacity;
 	uint32_t port_base;
+	uint32_t model_quantization_mode;
 	uint32_t dspark_enabled;
 	uint32_t mtp_enabled;
 } SparkGlm52GatewayConfig;
@@ -114,6 +116,8 @@ static void SparkGlm52GatewayInitializeConfig(
 	configuration->pump_steps = SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS;
 	configuration->max_active_sequence_count = 1024u;
 	configuration->port_base = 52100u;
+	configuration->model_quantization_mode =
+		SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE;
 }
 
 static int32_t SparkGlm52GatewayInitializePendingStreams(
@@ -336,11 +340,21 @@ static int32_t SparkGlm52GatewayApplyArgument(
 		*index += 1;
 		return 0;
 	}
-	if (strcmp(argv[*index],"--fp8-pack-root") == 0)
+	if (strcmp(argv[*index],"--moe-pack-root") == 0)
 	{
 		if ((*index + 1) >= argc)
 			return -7;
-		configuration->fp8_pack_root = argv[*index + 1];
+		configuration->moe_pack_root = argv[*index + 1];
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--model-quantization") == 0)
+	{
+		if ((*index + 1) >= argc ||
+			SparkGlm52Pp13RuntimeParseQuantizationMode(
+				argv[*index + 1],&configuration->model_quantization_mode) !=
+				SPARK_STATUS_OK)
+			return -25;
 		*index += 1;
 		return 0;
 	}
@@ -736,7 +750,9 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 	backend_configuration.port_base = runtime->configuration.port_base;
 	backend_configuration.kv_logical_block_capacity =
 		runtime->configuration.kv_logical_block_capacity;
-	backend_configuration.fp8_pack_root = runtime->configuration.fp8_pack_root;
+	backend_configuration.model_quantization_mode =
+		runtime->configuration.model_quantization_mode;
+	backend_configuration.moe_pack_root = runtime->configuration.moe_pack_root;
 	backend_configuration.stagepack_root =
 		runtime->configuration.stagepack_root;
 	backend_configuration.transport_shared_object_path =
@@ -1527,7 +1543,7 @@ int main(int argc,char **argv)
 	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
 	if (SparkGlm52GatewayParseArguments(&runtime.configuration,argc,argv) < 0)
 	{
-		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--fp8-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--program name] [--node-target target] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path] [--max-active n] [--kv-logical-blocks n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--cuda-resident-socket path] [--mtp] [--dspark]\n",argv[0]);
+		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--model-quantization fp8|w8lut] [--moe-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--program name] [--node-target target] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path] [--max-active n] [--kv-logical-blocks n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--cuda-resident-socket path] [--mtp] [--dspark]\n",argv[0]);
 		return 2;
 	}
 	if (SparkGlm52GatewayInitializePendingStreams(&runtime) < 0)
