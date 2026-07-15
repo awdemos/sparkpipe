@@ -7174,6 +7174,27 @@ static SparkStatus SparkGlm52Pp13BuilderMtpResolutionFailure(
 	return status;
 }
 
+static uint32_t SparkGlm52Pp13BuilderContinuesMtpKvTransaction(
+	const SparkGlm52Pp13WorkControlPacket *work_packet,
+	const SparkGlm52Pp13WorkControlLane *lane,
+	const SparkGlm52Pp13BuilderMtpKvTransaction *transaction)
+{
+	uint64_t base_position;
+	if (work_packet == 0 || lane == 0 || transaction == 0 ||
+		work_packet->speculative_token_index == 0u ||
+		SparkGlm52Pp13BuilderWorkIsMtpVerify(work_packet) == 0u ||
+		lane->mtp_resolution_proposed_token_count != 0u ||
+		transaction->active == 0u ||
+		transaction->request_id != lane->request_id ||
+		transaction->sequence_id != lane->sequence_id ||
+		transaction->proposed_token_count != lane->speculative_token_count)
+		return 0u;
+	if (SparkGlm52Pp13BuilderMtpTransactionBasePosition(
+			work_packet,lane,&base_position) != SPARK_STATUS_OK)
+		return 0u;
+	return transaction->base_position == base_position;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderApplyMtpKvResolutions(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52Pp13WorkControlPacket *work_packet)
@@ -7199,7 +7220,9 @@ static SparkStatus SparkGlm52Pp13BuilderApplyMtpKvResolutions(
 		if (lane->mtp_resolution_proposed_token_count == 0u)
 		{
 			if (transaction->active != 0u &&
-				transaction->sequence_id == lane->sequence_id)
+				transaction->sequence_id == lane->sequence_id &&
+				SparkGlm52Pp13BuilderContinuesMtpKvTransaction(
+					work_packet,lane,transaction) == 0u)
 				return SparkGlm52Pp13BuilderMtpResolutionFailure(
 					state,lane,transaction,"resolution_pending",
 					SPARK_STATUS_BUSY);

@@ -464,6 +464,29 @@ def test_mtp_retry_cleanup_preserves_resolution_receipt(root: Path) -> None:
     assert "memset(transaction,0,sizeof(*transaction));" not in retry_cleanup
 
 
+def test_mtp_serial_train_continuation_keeps_transaction_open(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static uint32_t SparkGlm52Pp13BuilderContinuesMtpKvTransaction(")
+    end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderApplyMtpKvResolutions(",
+        start)
+    helper = source[start:end]
+    assert "work_packet->speculative_token_index == 0u" in helper
+    assert "SparkGlm52Pp13BuilderWorkIsMtpVerify(work_packet) == 0u" in helper
+    assert "transaction->request_id != lane->request_id" in helper
+    assert "transaction->sequence_id != lane->sequence_id" in helper
+    assert "transaction->proposed_token_count != lane->speculative_token_count" in helper
+    assert "transaction->base_position == base_position" in helper
+    apply_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderBuildResidentKvTable(", end)
+    apply_body = source[end:apply_end]
+    assert ("SparkGlm52Pp13BuilderContinuesMtpKvTransaction(\n"
+            "\t\t\t\t\twork_packet,lane,transaction) == 0u" in apply_body)
+
+
 def test_layer_body_failures_are_never_silent(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_sm121_required_decode_stage.cu").read_text(
