@@ -515,6 +515,35 @@ def test_attached_resident_decode_preserves_mtp_resolution(root: Path) -> None:
     assert "SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE" in daemon_body
 
 
+def test_attached_prefill_uses_ordered_socket_backpressure(root: Path) -> None:
+    backend = (root / "src" /
+               "spark_glm52_pp13_service_backend.c").read_text(
+                   encoding="utf-8")
+    daemon = (root / "tools" /
+              "sparkpipe_glm52_cuda_residentd.c").read_text(
+                  encoding="utf-8")
+    submit_start = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendSubmitPrefillToResident(")
+    submit_end = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeResidentPayload(",
+        submit_start)
+    submit_body = backend[submit_start:submit_end]
+    forward = "SparkGlm52Pp13ServiceBackendForwardPrefillPacket("
+    local = "SparkGlm52Pp13ServiceBackendSubmitPrefillPacket("
+    assert submit_body.index(forward) < submit_body.index(local)
+    assert "retry_count" not in submit_body
+    assert "nanosleep" not in submit_body
+    poll_start = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdBuildPollFds(")
+    poll_end = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdProgressTransport(",
+        poll_start)
+    poll_body = daemon[poll_start:poll_end]
+    assert "runtime->work_queue_count <" in poll_body
+    assert "SPARK_GLM52_CUDA_RESIDENTD_WORK_QUEUE_CAPACITY" in poll_body
+    assert "? POLLIN : 0" in poll_body
+
+
 def test_layer_body_failures_are_never_silent(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_sm121_required_decode_stage.cu").read_text(
@@ -652,6 +681,7 @@ def main() -> None:
     test_mtp_retry_cleanup_preserves_resolution_receipt(root)
     test_mtp_serial_train_continuation_keeps_transaction_open(root)
     test_attached_resident_decode_preserves_mtp_resolution(root)
+    test_attached_prefill_uses_ordered_socket_backpressure(root)
 
 
 if __name__ == "__main__":
