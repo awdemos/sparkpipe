@@ -4957,6 +4957,26 @@ static void SparkGlm52RequestApiFinishSlotAfterDecode(
     }
 }
 
+static uint32_t SparkGlm52RequestApiNextMtpDraftTokenBudget(
+    uint32_t proposed_token_count,
+    uint32_t accepted_draft_token_count)
+{
+    uint32_t next_budget;
+
+    next_budget = accepted_draft_token_count == proposed_token_count
+        ? proposed_token_count + 1u
+        : accepted_draft_token_count;
+    if (next_budget == 0u)
+    {
+        next_budget = SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT;
+    }
+    if (next_budget > SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
+    {
+        next_budget = SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+    }
+    return next_budget;
+}
+
 static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiSlot *slot,
@@ -5016,13 +5036,10 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        slot->mtp_next_draft_token_budget = accepted_draft_token_count + 1u;
-        if (slot->mtp_next_draft_token_budget >
-            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
-        {
-            slot->mtp_next_draft_token_budget =
-                SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
-        }
+        slot->mtp_next_draft_token_budget =
+            SparkGlm52RequestApiNextMtpDraftTokenBudget(
+                proposed_token_count,
+                accepted_draft_token_count);
         slot->mtp_resolution_base_position = resolution_base_position;
         slot->mtp_resolution_proposed_token_count = proposed_token_count;
         slot->mtp_resolution_accepted_token_count = accepted_draft_token_count;
