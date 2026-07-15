@@ -222,6 +222,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
 	uint32_t lane_offset,
 	uint32_t lane_count,
+	uint32_t speculative_token_index,
 	SparkGlm52Pp13WorkControlPacket *packet);
 static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 	SparkGlm52Pp13ServiceBackendState *state,
@@ -927,6 +928,22 @@ static uint32_t SparkGlm52Pp13ServiceBackendDecodeIsMtpVerify(
 			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u;
 }
 
+static uint32_t SparkGlm52Pp13ServiceBackendDecodeUsesSingleLaneMtpTrain(
+	const SparkGlm52ServingDecodeDispatch *decode_dispatch)
+{
+	return SparkGlm52Pp13ServiceBackendDecodeIsMtpVerify(decode_dispatch) != 0u &&
+		decode_dispatch->request_count == 1u;
+}
+
+static uint32_t SparkGlm52Pp13ServiceBackendDecodeWorkFrameCount(
+	const SparkGlm52ServingDecodeDispatch *decode_dispatch)
+{
+	if (SparkGlm52Pp13ServiceBackendDecodeUsesSingleLaneMtpTrain(
+			decode_dispatch) != 0u)
+		return decode_dispatch->speculative_token_count + 1u;
+	return 1u;
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendPlanDecodeChunks(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
 	uint32_t execution_row_capacity,
@@ -939,7 +956,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPlanDecodeChunks(
 		decode_dispatch->request_count == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	rows_per_lane = 1u;
-	if ((decode_dispatch->request_dispatch->flags &
+	if (SparkGlm52Pp13ServiceBackendDecodeUsesSingleLaneMtpTrain(
+			decode_dispatch) == 0u &&
+		(decode_dispatch->request_dispatch->flags &
 			(SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
 			 SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY)) != 0u)
 	{
@@ -963,6 +982,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitDecodeChunksToResident(
 	SparkGlm52Pp13WorkControlPacket packet;
 	uint32_t chunk_count;
 	uint32_t chunk_index;
+	uint32_t frame_count;
+	uint32_t frame_index;
 	uint32_t lane_count;
 	uint32_t lane_offset;
 	uint32_t maximum_lanes_per_chunk;
@@ -976,21 +997,26 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitDecodeChunksToResident(
 		&maximum_lanes_per_chunk,&chunk_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	frame_count = SparkGlm52Pp13ServiceBackendDecodeWorkFrameCount(
+		decode_dispatch);
 	lane_offset = 0u;
 	for (chunk_index = 0u; chunk_index < chunk_count; ++chunk_index)
 	{
 		lane_count = decode_dispatch->request_count - lane_offset;
 		if (lane_count > maximum_lanes_per_chunk)
 			lane_count = maximum_lanes_per_chunk;
-		status = SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
-			decode_dispatch,lane_offset,lane_count,&packet);
-		if (status == SPARK_STATUS_OK)
-			status = SparkGlm52Pp13ServiceBackendStampWorkPacket(state,&packet);
-		if (status == SPARK_STATUS_OK)
-			status = SparkGlm52Pp13ServiceBackendSubmitWorkToResident(
-				state,&packet,0);
-		if (status != SPARK_STATUS_OK)
-			return status;
+		for (frame_index = 0u; frame_index < frame_count; ++frame_index)
+		{
+			status = SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
+				decode_dispatch,lane_offset,lane_count,frame_index,&packet);
+			if (status == SPARK_STATUS_OK)
+				status = SparkGlm52Pp13ServiceBackendStampWorkPacket(state,&packet);
+			if (status == SPARK_STATUS_OK)
+				status = SparkGlm52Pp13ServiceBackendSubmitWorkToResident(
+					state,&packet,0);
+			if (status != SPARK_STATUS_OK)
+				return status;
+		}
 		lane_offset += lane_count;
 	}
 	return lane_offset == decode_dispatch->request_count
@@ -1577,6 +1603,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
 	uint32_t lane_offset,
 	uint32_t lane_count,
+	uint32_t speculative_token_index,
 	SparkGlm52Pp13WorkControlPacket *packet)
 {
 	uint32_t dspark_verify;
@@ -1599,7 +1626,17 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 		(decode_dispatch->dispatch_kind !=
 				SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
 		 decode_dispatch->dispatch_kind !=
-				SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH))
+			SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH))
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (SparkGlm52Pp13ServiceBackendDecodeUsesSingleLaneMtpTrain(
+			decode_dispatch) != 0u)
+	{
+		if (lane_offset != 0u || lane_count != 1u)
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		return SparkGlm52Pp13WorkControlBuildDecodePacket(
+			decode_dispatch,speculative_token_index,packet);
+	}
+	if (speculative_token_index != 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	dspark_verify = (decode_dispatch->request_dispatch->flags &
 		SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u;
@@ -1817,6 +1854,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 	SparkGlm52Pp13WorkControlPacket packet;
 	uint32_t chunk_count;
 	uint32_t chunk_index;
+	uint32_t frame_count;
+	uint32_t frame_index;
 	uint32_t lane_count;
 	uint32_t lane_offset;
 	uint32_t maximum_lanes_per_chunk;
@@ -1828,7 +1867,10 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 		&maximum_lanes_per_chunk,&chunk_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	if (chunk_count > SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY -
+	frame_count = SparkGlm52Pp13ServiceBackendDecodeWorkFrameCount(
+		decode_dispatch);
+	if ((uint64_t)chunk_count * frame_count >
+		SPARK_GLM52_PP13_SERVICE_BACKEND_WORK_QUEUE_CAPACITY -
 		state->work_queue_count)
 		return SPARK_STATUS_BUSY;
 	lane_offset = 0u;
@@ -1837,18 +1879,21 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 		lane_count = decode_dispatch->request_count - lane_offset;
 		if (lane_count > maximum_lanes_per_chunk)
 			lane_count = maximum_lanes_per_chunk;
-		status = SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
-			decode_dispatch,lane_offset,lane_count,&packet);
-		if (status == SPARK_STATUS_OK)
-			status = SparkGlm52Pp13ServiceBackendStampWorkPacket(state,&packet);
-		if (status == SPARK_STATUS_OK)
-			status = SparkGlm52Pp13WorkControlValidatePacket(
-				&packet,state->rank_plan.execution_row_capacity,
-				SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
-		if (status == SPARK_STATUS_OK)
-			status = SparkGlm52Pp13ServiceBackendEnqueueWorkPacket(state,&packet);
-		if (status != SPARK_STATUS_OK)
-			return status;
+		for (frame_index = 0u; frame_index < frame_count; ++frame_index)
+		{
+			status = SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
+				decode_dispatch,lane_offset,lane_count,frame_index,&packet);
+			if (status == SPARK_STATUS_OK)
+				status = SparkGlm52Pp13ServiceBackendStampWorkPacket(state,&packet);
+			if (status == SPARK_STATUS_OK)
+				status = SparkGlm52Pp13WorkControlValidatePacket(
+					&packet,state->rank_plan.execution_row_capacity,
+					SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
+			if (status == SPARK_STATUS_OK)
+				status = SparkGlm52Pp13ServiceBackendEnqueueWorkPacket(state,&packet);
+			if (status != SPARK_STATUS_OK)
+				return status;
+		}
 		lane_offset += lane_count;
 	}
 	if (lane_offset != decode_dispatch->request_count)
