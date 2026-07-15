@@ -1220,8 +1220,8 @@ static SparkStatus SparkGlm52CudaResidentdAdvanceControlGeneration(
         return SPARK_STATUS_VALIDATION_FAILED;
     if (control_generation == previous_generation)
         return SPARK_STATUS_OK;
-	dropped_work = runtime->work_queue_count + runtime->pending_prefill_active +
-		(runtime->driver_inflight_count != 0u ? 1u : 0u);
+    dropped_work = runtime->work_queue_count + runtime->pending_prefill_active +
+        (runtime->driver_inflight_count != 0u ? 1u : 0u);
 	runtime->work_queue_head = 0u;
     runtime->work_queue_count = 0u;
     runtime->pending_prefill_active = 0u;
@@ -1474,7 +1474,7 @@ static SparkStatus SparkGlm52CudaResidentdEnqueueWork(
         packet,runtime->rank_plan.execution_row_capacity,1u);
     if (status != SPARK_STATUS_OK)
         return status;
-	if (packet->control_generation != 0u)
+    if (packet->control_generation != 0u)
 	{
 		status = SparkGlm52CudaResidentdAdvanceControlGeneration(
 			runtime,configuration,packet->control_generation);
@@ -1811,9 +1811,9 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(
         status = SPARK_STATUS_MODULE_NOT_VALIDATED;
     if (status == SPARK_STATUS_OK && runtime->pending_prefill_active != 0u)
         status = SPARK_STATUS_BUSY;
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52CudaResidentdEnqueueWork(
-			runtime,configuration,packet,client_fd);
+    if (status == SPARK_STATUS_OK)
+        status = SparkGlm52CudaResidentdEnqueueWork(
+            runtime,configuration,packet,client_fd);
     if (status == SPARK_STATUS_BUSY &&
         runtime->pending_prefill_active == 0u)
     {
