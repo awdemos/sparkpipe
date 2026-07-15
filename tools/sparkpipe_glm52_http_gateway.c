@@ -18,7 +18,7 @@
 #define SPARK_GLM52_GATEWAY_RESPONSE_BYTES (128u * 1024u)
 #define SPARK_GLM52_GATEWAY_COMPAT_TEXT_BYTES SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_UPLOAD_BYTES
 #define SPARK_GLM52_GATEWAY_DEFAULT_PORT 8080u
-#define SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS 256u
+#define SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS 1u
 #define SPARK_GLM52_GATEWAY_BATCH_COALESCE_POLL_MS 10u
 #define SPARK_GLM52_GATEWAY_BACKEND_POLL_FD_CAPACITY 8u
 #define SPARK_GLM52_GATEWAY_STREAM_BODY_BYTES 4096u
@@ -627,6 +627,15 @@ static void SparkGlm52GatewayPumpService(SparkGlm52GatewayRuntime *runtime)
 	}
 }
 
+static int32_t SparkGlm52GatewayPollTimeout(
+	const SparkGlm52GatewayRuntime *runtime)
+{
+	if (runtime != 0 && runtime->pump_log_valid != 0u &&
+		runtime->last_pump_status == SPARK_STATUS_OK)
+		return 0;
+	return -1;
+}
+
 static int16_t SparkGlm52GatewayPollEventsFromBackend(uint32_t backend_events)
 {
 	int16_t events;
@@ -681,25 +690,28 @@ static uint32_t SparkGlm52GatewayAppendBackendPollFds(
 static uint32_t SparkGlm52GatewayAppendPendingStreamPollFds(
 	SparkGlm52GatewayRuntime *runtime,
 	struct pollfd *fds,
+	uint32_t *stream_slot_indices,
 	uint32_t fd_capacity,
 	uint32_t fd_count)
 {
 	SparkGlm52GatewayPendingStream *stream;
 	uint32_t slot_index;
 
-	if (runtime == 0 || fds == 0)
+	if (runtime == 0 || fds == 0 || stream_slot_indices == 0)
 		return fd_count;
 	for (slot_index = 0u;
 		 slot_index < runtime->pending_stream_capacity && fd_count < fd_capacity;
 		 ++slot_index)
 	{
 		stream = &runtime->pending_streams[slot_index];
-		if (stream->active == 0u || stream->fd < 0 ||
-			stream->output_bytes == 0u)
+		if (stream->active == 0u || stream->fd < 0)
 			continue;
 		memset(&fds[fd_count],0,sizeof(fds[fd_count]));
 		fds[fd_count].fd = stream->fd;
-		fds[fd_count].events = POLLOUT;
+		fds[fd_count].events = POLLIN;
+		if (stream->output_bytes != 0u)
+			fds[fd_count].events |= POLLOUT;
+		stream_slot_indices[fd_count] = slot_index;
 		fd_count += 1u;
 	}
 	return fd_count;
@@ -852,6 +864,44 @@ static void SparkGlm52GatewayCancelPendingStream(
 			stream->submit_result.client_request_id);
 	}
 	SparkGlm52GatewayReleasePendingStream(runtime,slot_index);
+}
+
+static void SparkGlm52GatewayHandlePendingStreamPollFds(
+	SparkGlm52GatewayRuntime *runtime,
+	const struct pollfd *fds,
+	const uint32_t *stream_slot_indices,
+	uint32_t first_fd,
+	uint32_t fd_count)
+{
+	SparkGlm52GatewayPendingStream *stream;
+	ssize_t received;
+	uint32_t fd_index;
+	uint32_t slot_index;
+	uint8_t byte;
+
+	if (runtime == 0 || fds == 0 || stream_slot_indices == 0)
+		return;
+	for (fd_index = first_fd; fd_index < fd_count; ++fd_index)
+	{
+		slot_index = stream_slot_indices[fd_index];
+		if (slot_index >= runtime->pending_stream_capacity)
+			continue;
+		stream = &runtime->pending_streams[slot_index];
+		if (stream->active == 0u || stream->fd != fds[fd_index].fd)
+			continue;
+		if ((fds[fd_index].revents & (POLLERR | POLLHUP | POLLNVAL)) != 0)
+		{
+			SparkGlm52GatewayCancelPendingStream(runtime,slot_index);
+			continue;
+		}
+		if ((fds[fd_index].revents & POLLIN) == 0)
+			continue;
+		received = recv(stream->fd,&byte,1u,MSG_PEEK | MSG_DONTWAIT);
+		if (received == 0 ||
+			(received < 0 && errno != EINTR && errno != EAGAIN &&
+			 errno != EWOULDBLOCK))
+			SparkGlm52GatewayCancelPendingStream(runtime,slot_index);
+	}
 }
 
 static SparkStatus SparkGlm52GatewayFlushPendingStream(
@@ -1533,9 +1583,12 @@ int main(int argc,char **argv)
 {
 	static SparkGlm52GatewayRuntime runtime;
 	struct pollfd poll_fds[SPARK_GLM52_GATEWAY_POLL_FD_CAPACITY];
+	uint32_t poll_stream_slots[SPARK_GLM52_GATEWAY_POLL_FD_CAPACITY];
 	int32_t listen_fd;
 	int32_t poll_result;
+	int32_t poll_timeout;
 	uint32_t fd_count;
+	uint32_t pending_stream_fd_start;
 	uint32_t slot_index;
 
 	(void)signal(SIGPIPE,SIG_IGN);
@@ -1574,6 +1627,7 @@ int main(int argc,char **argv)
 		runtime.configuration.port);
 	for (;;)
 	{
+		SparkGlm52GatewayFlushPendingStreams(&runtime);
 		SparkGlm52GatewayPumpService(&runtime);
 		SparkGlm52GatewayDispatchServiceEvents(&runtime);
 		SparkGlm52GatewayFlushPendingStreams(&runtime);
@@ -1587,21 +1641,27 @@ int main(int argc,char **argv)
 			poll_fds,
 			SPARK_GLM52_GATEWAY_POLL_FD_CAPACITY,
 			fd_count);
+		pending_stream_fd_start = fd_count;
 		fd_count = SparkGlm52GatewayAppendPendingStreamPollFds(
 			&runtime,
 			poll_fds,
+			poll_stream_slots,
 			SPARK_GLM52_GATEWAY_POLL_FD_CAPACITY,
 			fd_count);
-		poll_result = poll(poll_fds,fd_count,-1);
+		poll_timeout = SparkGlm52GatewayPollTimeout(&runtime);
+		poll_result = poll(poll_fds,fd_count,poll_timeout);
 		if (poll_result < 0)
 		{
 			if (errno == EINTR)
 				continue;
 			break;
 		}
-		SparkGlm52GatewayPumpService(&runtime);
-		SparkGlm52GatewayDispatchServiceEvents(&runtime);
-		SparkGlm52GatewayFlushPendingStreams(&runtime);
+		SparkGlm52GatewayHandlePendingStreamPollFds(
+			&runtime,
+			poll_fds,
+			poll_stream_slots,
+			pending_stream_fd_start,
+			fd_count);
 		if ((poll_fds[0].revents & POLLIN) != 0)
 		{
 			(void)SparkGlm52GatewayAcceptReadyClients(&runtime,listen_fd);

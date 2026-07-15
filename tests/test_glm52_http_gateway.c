@@ -58,6 +58,52 @@ static void SparkTestHttpGatewayCoalescesOnlyIdlePartialBatch(void)
 	assert(SparkGlm52GatewayShouldCoalesceBatch(&runtime) == 0u);
 }
 
+static void SparkTestHttpGatewayPollsBetweenDispatches(void)
+{
+	static SparkGlm52GatewayRuntime runtime;
+
+	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
+	assert(runtime.configuration.pump_steps == 1u);
+	assert(SparkGlm52GatewayPollTimeout(&runtime) == -1);
+	runtime.pump_log_valid = 1u;
+	runtime.last_pump_status = SPARK_STATUS_OK;
+	assert(SparkGlm52GatewayPollTimeout(&runtime) == 0);
+	runtime.last_pump_status = SPARK_STATUS_BUSY;
+	assert(SparkGlm52GatewayPollTimeout(&runtime) == -1);
+}
+
+static void SparkTestHttpGatewayCancelsDisconnectedStream(void)
+{
+	static SparkGlm52GatewayRuntime runtime;
+	SparkGlm52GatewayPendingStream *stream;
+	struct pollfd poll_fds[2u];
+	uint32_t poll_stream_slots[2u];
+	uint64_t client_request_id;
+	uint32_t fd_count;
+	uint32_t slot_index;
+	int32_t sockets[2u];
+
+	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
+	runtime.configuration.max_active_sequence_count = 4u;
+	assert(SparkGlm52GatewayInitializePendingStreams(&runtime) == 0);
+	assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
+	stream = SparkGlm52GatewayAllocatePendingStream(
+		&runtime,sockets[0u],&slot_index,&client_request_id);
+	assert(stream != 0);
+	memset(poll_fds,0,sizeof(poll_fds));
+	fd_count = SparkGlm52GatewayAppendPendingStreamPollFds(
+		&runtime,poll_fds,poll_stream_slots,2u,0u);
+	assert(fd_count == 1u);
+	assert((poll_fds[0u].events & POLLIN) != 0);
+	assert(close(sockets[1u]) == 0);
+	assert(poll(poll_fds,fd_count,1000) == 1);
+	SparkGlm52GatewayHandlePendingStreamPollFds(
+		&runtime,poll_fds,poll_stream_slots,0u,fd_count);
+	assert(runtime.pending_streams[slot_index].active == 0u);
+	assert(runtime.pending_stream_count == 0u);
+	(void)client_request_id;
+}
+
 static void SparkTestHttpGatewayRoutes(void)
 {
 	SparkGlm52HttpGatewayRequest request;
@@ -251,6 +297,8 @@ int main(void)
 {
 	SparkTestHttpGatewayQueuesBeyondActiveLanes();
 	SparkTestHttpGatewayCoalescesOnlyIdlePartialBatch();
+	SparkTestHttpGatewayPollsBetweenDispatches();
+	SparkTestHttpGatewayCancelsDisconnectedStream();
 	SparkTestHttpGatewayRoutes();
 	SparkTestHttpGatewayBuildsCorsPreflight();
 	SparkTestHttpGatewayBuildsHealth();
