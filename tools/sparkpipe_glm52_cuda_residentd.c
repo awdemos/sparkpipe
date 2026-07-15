@@ -1716,6 +1716,7 @@ static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(
         execution_row_count > execution_row_capacity)
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     packet->execution_row_count = (uint32_t)execution_row_count;
+    packet->execution_batch_bucket = message->execution_batch_bucket;
     packet->new_token_count = speculative_verify != 0u
         ? packet->rows_per_lane : mtp_budget + 1u;
     packet->priority = message->highest_priority;

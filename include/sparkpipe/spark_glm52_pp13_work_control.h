@@ -14,7 +14,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 8u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 9u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION UINT64_C(1)
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
@@ -137,7 +137,7 @@ typedef struct SparkGlm52Pp13WorkControlPacket
 	uint32_t lane_count;
 	uint32_t rows_per_lane;
 	uint32_t execution_row_count;
-	uint32_t reserved0;
+	uint32_t execution_batch_bucket;
 	SparkGlm52Pp13WorkControlLane
 		lanes[SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT];
 } SparkGlm52Pp13WorkControlPacket;
@@ -187,6 +187,10 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 	uint32_t max_pipeline_slot_count);
 uint32_t SparkGlm52Pp13WorkControlCalculatePacketBytes(
 	uint32_t active_sequence_count);
+SparkStatus SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+	const SparkGlm52RequestApiDispatch *request_dispatch,
+	uint32_t logical_lane_count,
+	uint32_t *batch_bucket_out);
 SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
 	uint32_t speculative_token_index,

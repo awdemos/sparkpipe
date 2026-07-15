@@ -28,6 +28,8 @@ static SparkGlm52CudaResidentIpcSubmitDecode *SparkTestBuildWideDecode(
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
     message->lane_count = lane_count;
     message->active_sequence_count = lane_count;
+    message->execution_batch_bucket =
+        SparkGlm52StagePlanSelectBatchBucketValue(lane_count);
     message->kv_block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
     message->kv_block_index_count = block_index_count;
     for (lane_index = 0u; lane_index < lane_count; ++lane_index)
@@ -60,6 +62,12 @@ static void SparkTestWideDecodePayload(void)
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
         SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
+    message->execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B512;
+    assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
+        message,payload_bytes,
+        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    message->execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B1024;
     message->control_generation = 0u;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
@@ -131,6 +139,7 @@ static void SparkTestInternalDirectoryDecodeHasNoBlockPayload(void)
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
     message->lane_count = SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT;
     message->active_sequence_count = message->lane_count;
+    message->execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B1024;
     message->kv_block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
     message->resident_flags =
         SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_FLAG_INTERNAL_KV_DIRECTORY;
@@ -189,6 +198,7 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
     packet->active_sequence_count = packet->lane_count;
     packet->rows_per_lane = SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT + 1u;
     packet->execution_row_count = packet->lane_count * packet->rows_per_lane;
+    packet->execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B1024;
     packet->new_token_count = packet->rows_per_lane;
     packet->speculative_token_count =
         SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT;

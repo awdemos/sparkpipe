@@ -18,6 +18,34 @@ uint32_t SparkGlm52Pp13WorkControlCalculatePacketBytes(
 	return packet_bytes <= UINT32_MAX ? (uint32_t)packet_bytes : 0u;
 }
 
+SparkStatus SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+	const SparkGlm52RequestApiDispatch *request_dispatch,
+	uint32_t logical_lane_count,
+	uint32_t *batch_bucket_out)
+{
+	uint32_t batch_bucket;
+	if (request_dispatch == 0 || batch_bucket_out == 0 ||
+		logical_lane_count == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (request_dispatch->kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL)
+		batch_bucket = request_dispatch->prefill_decision.batch_bucket;
+	else if (request_dispatch->kind ==
+		SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH)
+		batch_bucket = request_dispatch->prefill_batch_decision.batch_bucket;
+	else if (request_dispatch->kind ==
+			SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
+		 request_dispatch->kind ==
+			SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+		batch_bucket = request_dispatch->decode_batch_decision.batch_bucket;
+	else
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) == 0u ||
+		batch_bucket < logical_lane_count)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	*batch_bucket_out = batch_bucket;
+	return SPARK_STATUS_OK;
+}
+
 static void SparkGlm52Pp13WorkControlSetDecodeFlags(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
 	uint32_t mtp_budget,
@@ -191,6 +219,12 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	packet->execution_row_count =
 		packet->lane_count * packet->rows_per_lane;
+	status = SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+		decode_dispatch->request_dispatch,
+		packet->lane_count,
+		&packet->execution_batch_bucket);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	packet->new_token_count = speculative_verify != 0u &&
 		single_lane_mtp_train == 0u
 		? packet->rows_per_lane : mtp_budget + 1u;
@@ -299,6 +333,11 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	packet->lane_count = active_lane_count;
 	packet->rows_per_lane = 1u;
 	packet->execution_row_count = active_lane_count;
+	if (SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+			prefill_dispatch->request_dispatch,
+			active_lane_count,
+			&packet->execution_batch_bucket) != SPARK_STATUS_OK)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	packet->descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(active_lane_count);
 	packet->request_id = packet->lanes[0u].request_id;
@@ -394,7 +433,7 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 			packet->speculative_token_index != 0u ||
 			packet->rows_per_lane != 0u ||
 			packet->execution_row_count != 0u ||
-			packet->reserved0 != 0u)
+			packet->execution_batch_bucket != 0u)
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		for (token_index = 0u;
 			 token_index < SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT;
@@ -473,7 +512,9 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		expected_execution_row_count > UINT32_MAX ||
 		expected_execution_row_count > max_active_sequence_count ||
 		packet->execution_row_count != (uint32_t)expected_execution_row_count ||
-		packet->reserved0 != 0u)
+		SparkGlm52StagePlanBatchBucketIsSupported(
+			packet->execution_batch_bucket) == 0u ||
+		packet->lane_count > packet->execution_batch_bucket)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (packet->input_token_id >= SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT)
 		return SPARK_STATUS_INVALID_ARGUMENT;

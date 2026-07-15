@@ -7496,7 +7496,7 @@ static void SparkGlm52Pp13BuilderLogSubmitFailure(
 {
 	if (state == 0 || work_packet == 0 || step == 0 || status == SPARK_STATUS_BUSY)
 		return;
-	fprintf(stderr,"pp13_builder_submit_failed rank=%u step=%s status=%u request=%llu sequence=%llu position=%llu flags=0x%x rows=%u lanes=%u\n",state->rank_plan.rank_index,step,(uint32_t)status,(unsigned long long)work_packet->request_id,(unsigned long long)work_packet->sequence_id,(unsigned long long)work_packet->sequence_position,work_packet->flags,work_packet->execution_row_count,work_packet->lane_count);
+	fprintf(stderr,"pp13_builder_submit_failed rank=%u step=%s status=%u request=%llu sequence=%llu position=%llu flags=0x%x rows=%u lanes=%u bucket=%u\n",state->rank_plan.rank_index,step,(uint32_t)status,(unsigned long long)work_packet->request_id,(unsigned long long)work_packet->sequence_id,(unsigned long long)work_packet->sequence_position,work_packet->flags,work_packet->execution_row_count,work_packet->lane_count,work_packet->execution_batch_bucket);
 }
 
 static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
@@ -7536,6 +7536,10 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	if (work_packet->execution_row_count >
 		state->rank_plan.execution_row_capacity)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	if (work_packet->execution_batch_bucket >
+		state->rank_plan.logical_lane_capacity)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	state->exact_plan.batch_bucket = work_packet->execution_batch_bucket;
 	if (SparkGlm52Pp13BuilderWorkIsDsparkVerify(work_packet) != 0u)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
 	if (work_packet->active_sequence_count > 1u &&

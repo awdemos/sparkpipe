@@ -936,8 +936,6 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
          exact_stage_slice_plan->batch_bucket < required_active_sequence_count) ||
         (layer_major_speculative_verify != 0u &&
          (exact_stage_slice_plan->logical_lane_capacity == 0u ||
-          exact_stage_slice_plan->logical_lane_capacity >
-            exact_stage_slice_plan->batch_bucket ||
           exact_stage_slice_plan->maximum_speculative_rows_per_lane < 2u ||
           exact_stage_slice_plan->maximum_speculative_rows_per_lane >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u ||

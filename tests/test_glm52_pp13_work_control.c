@@ -127,6 +127,7 @@ static void SparkTestInitializeWorkPacket(
 	packet->lane_count = packet->active_sequence_count;
 	packet->rows_per_lane = 1u;
 	packet->execution_row_count = packet->lane_count;
+	packet->execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
 	for (uint32_t lane_index = 0u;
 		 lane_index < packet->lane_count;
 		 ++lane_index)
@@ -183,6 +184,10 @@ static void SparkTestGlm52Pp13WorkControlPacket(void)
 	SparkTestInitializeWorkPacket(&packet);
 	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
 		SPARK_STATUS_OK);
+	packet.execution_batch_bucket = 0u;
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
+	packet.execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
 	packet.new_token_count = 9u;
 	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
@@ -439,6 +444,7 @@ static void SparkTestGlm52Pp13WorkControlB1024MtpBatch(void)
 	SparkTestInitializeWorkPacket(&packet);
 	packet.active_sequence_count = SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT;
 	packet.lane_count = packet.active_sequence_count;
+	packet.execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B1024;
 	packet.descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(packet.lane_count);
 	packet.execution_row_count = packet.lane_count;
@@ -482,6 +488,7 @@ static void SparkTestGlm52Pp13WorkControlB1024LayerMajorMtpVerify(void)
 	packet.active_sequence_count =
 		SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT;
 	packet.lane_count = packet.active_sequence_count;
+	packet.execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B1024;
 	packet.descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(packet.lane_count);
 	packet.speculative_token_count =
@@ -559,6 +566,7 @@ static void SparkTestGlm52Pp13WorkControlB1024PhysicalDirectory(void)
 	SparkTestInitializeWorkPacket(&packet);
 	packet.active_sequence_count = 1024u;
 	packet.lane_count = 1024u;
+	packet.execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B1024;
 	packet.execution_row_count = 1024u;
 	packet.descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(packet.lane_count);
@@ -798,6 +806,8 @@ static void SparkTestGlm52Pp13WorkControlBuildDecodeBatch(void)
 	request_dispatch.kind = SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
 	request_dispatch.request_count = 4u;
 	request_dispatch.highest_priority = 77u;
+	request_dispatch.decode_batch_decision.batch_bucket =
+		SPARK_GLM52_STAGE_PLAN_BUCKET_B64;
 	memset(&decode_view,0,sizeof(decode_view));
 	decode_view.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
 	decode_view.descriptor_bytes =
@@ -845,6 +855,7 @@ static void SparkTestGlm52Pp13WorkControlBuildDecodeBatch(void)
 	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
 		&decode_dispatch,0u,&packet) == SPARK_STATUS_OK);
 	assert(packet.active_sequence_count == 4u);
+	assert(packet.execution_batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B64);
 	assert(packet.descriptor_bytes ==
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(4u));
 	assert(packet.lanes[3u].request_id == 103u);
@@ -877,6 +888,8 @@ static void SparkTestGlm52Pp13WorkControlBuildPackedMtpVerify(void)
 	request_dispatch.flags =
 		SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY;
 	request_dispatch.request_count = 1u;
+	request_dispatch.decode_batch_decision.batch_bucket =
+		SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
 	request_dispatch.request_ids[0u] = 100u;
 	request_dispatch.sequence_ids[0u] = 200u;
 	memset(&decode_view,0,sizeof(decode_view));
@@ -903,6 +916,7 @@ static void SparkTestGlm52Pp13WorkControlBuildPackedMtpVerify(void)
 	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
 		&decode_dispatch,0u,&packet) == SPARK_STATUS_OK);
 	assert(packet.rows_per_lane == 4u && packet.execution_row_count == 4u);
+	assert(packet.execution_batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B16);
 	assert(packet.new_token_count == 4u);
 	assert(packet.sequence_position == 32u && packet.input_token_id == 300u);
 	assert((packet.flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE) != 0u);
@@ -931,6 +945,8 @@ static void SparkTestGlm52Pp13WorkControlBuildPrefillBatch(void)
 	request_dispatch.kind = SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH;
 	request_dispatch.request_count = 4u;
 	request_dispatch.highest_priority = 81u;
+	request_dispatch.prefill_batch_decision.batch_bucket =
+		SPARK_GLM52_STAGE_PLAN_BUCKET_B32;
 	memset(&prefill_view,0,sizeof(prefill_view));
 	prefill_view.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
 	prefill_view.descriptor_bytes =
@@ -985,6 +1001,7 @@ static void SparkTestGlm52Pp13WorkControlBuildPrefillBatch(void)
 	assert(SparkGlm52Pp13WorkControlBuildPrefillPacket(
 		&prefill_dispatch,1u,&packet) == SPARK_STATUS_OK);
 	assert(packet.active_sequence_count == 3u);
+	assert(packet.execution_batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B32);
 	assert(packet.descriptor_bytes ==
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(3u));
 	assert(SparkGlm52CudaResidentIpcCalculateSubmitPrefillBytes(&packet) ==
