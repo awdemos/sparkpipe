@@ -8,6 +8,9 @@
 #define SPARK_TEST_GLM52_CHAT_BEGIN \
 	"[gMASK]<sop><|system|>Reasoning Effort: Max"
 #define SPARK_TEST_GLM52_CHAT_END "<|assistant|><think>"
+#define SPARK_TEST_GLM52_NO_THINK_CHAT_BEGIN "[gMASK]<sop>"
+#define SPARK_TEST_GLM52_NO_THINK_CHAT_END \
+	"<|assistant|><think></think>"
 
 static void SparkTestCompatOpenAiChat(void)
 {
@@ -54,6 +57,49 @@ static void SparkTestCompatOpenAiPrompt(void)
         &request) == SPARK_STATUS_OK);
     assert(request.output_token_budget == 5u);
     assert(strcmp(text, "plain prompt") == 0);
+}
+
+static void SparkTestCompatOpenAiThinkingBudgets(void)
+{
+	static const char NoThinkJson[] =
+		"{\"thinking_budget_tokens\":0,"
+		"\"messages\":[{\"role\":\"user\",\"content\":\"Answer.\"}]}";
+	static const char ThinkJson[] =
+		"{\"thinking_token_budget\":1024,"
+		"\"messages\":[{\"role\":\"user\",\"content\":\"Answer.\"}]}";
+	static const char ConflictJson[] =
+		"{\"thinking_budget_tokens\":0,\"thinking_token_budget\":1024,"
+		"\"messages\":[{\"role\":\"user\",\"content\":\"Answer.\"}]}";
+	SparkGlm52CompatTextRequest request;
+	char text[256];
+
+	SparkGlm52CompatInitializeTextRequest(&request, text, sizeof(text));
+	assert(SparkGlm52CompatPrepareOpenAiJson(
+		NoThinkJson,
+		(uint32_t)strlen(NoThinkJson),
+		&request) == SPARK_STATUS_OK);
+	assert(request.thinking_token_budget == 0u);
+	assert(strcmp(
+		text,
+		SPARK_TEST_GLM52_NO_THINK_CHAT_BEGIN
+		"<|user|>Answer."
+		SPARK_TEST_GLM52_NO_THINK_CHAT_END) == 0);
+	SparkGlm52CompatInitializeTextRequest(&request, text, sizeof(text));
+	assert(SparkGlm52CompatPrepareOpenAiJson(
+		ThinkJson,
+		(uint32_t)strlen(ThinkJson),
+		&request) == SPARK_STATUS_OK);
+	assert(request.thinking_token_budget == 1024u);
+	assert(strcmp(
+		text,
+		SPARK_TEST_GLM52_CHAT_BEGIN
+		"<|user|>Answer."
+		SPARK_TEST_GLM52_CHAT_END) == 0);
+	SparkGlm52CompatInitializeTextRequest(&request, text, sizeof(text));
+	assert(SparkGlm52CompatPrepareOpenAiJson(
+		ConflictJson,
+		(uint32_t)strlen(ConflictJson),
+		&request) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 
@@ -165,6 +211,7 @@ int main(void)
 {
     SparkTestCompatOpenAiChat();
     SparkTestCompatOpenAiPrompt();
+	SparkTestCompatOpenAiThinkingBudgets();
     SparkTestCompatOpenAiChatWithFiles();
     SparkTestCompatAnthropicMessages();
 	SparkTestCompatRejectsUnknownChatRole();

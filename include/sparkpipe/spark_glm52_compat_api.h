@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_COMPAT_API_ABI_VERSION 1u
+#define SPARK_GLM52_COMPAT_API_ABI_VERSION 2u
 #define SPARK_GLM52_COMPAT_TEXT_REQUEST_BYTES \
     ((uint32_t)sizeof(SparkGlm52CompatTextRequest))
 
@@ -18,6 +18,7 @@ typedef struct SparkGlm52CompatTextRequest
     uint32_t abi_version;
     uint32_t descriptor_bytes;
     uint32_t flags;
+    uint32_t chat_template_flags;
     uint32_t priority;
     uint32_t thinking_token_budget;
     uint32_t output_token_budget;
