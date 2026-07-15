@@ -9,6 +9,7 @@ generated .spstage files and should not open Hugging Face shard files.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -20,11 +21,13 @@ from typing import Any, BinaryIO, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 
 FORMAT = "sparkpipe.glm52.pp13.stagepack.v1"
+MODEL_QUANTIZATION_W8LUT = "w8lut"
 STAGE_COUNT = 13
 LAYER_COUNT = 78
 MTP_LAYER_INDEX = LAYER_COUNT
 LAYERS_PER_STAGE = 6
 INDEX_FILE = "stagepack_index.json"
+SOURCE_INDEX_FILE = "model.safetensors.index.json"
 STAGE_FILE_TEMPLATE = "stage_{stage_index:02d}_non_moe.spstage"
 MTP_STAGE_FILE = "stage_12_mtp.spstage"
 REGION_ALIGNMENT = 4096
@@ -35,6 +38,17 @@ MTP_EMBEDDING_SOURCE = "model.embed_tokens.weight"
 
 class StagePackFailure(RuntimeError):
     pass
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        while True:
+            chunk = file.read(16 * 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def align_up(value: int, alignment: int) -> int:
@@ -76,7 +90,7 @@ def read_safetensors_header(path: Path) -> Tuple[Dict[str, Any], int]:
 
 
 def load_weight_map(model_dir: Path) -> Mapping[str, str]:
-    index_path = model_dir / "model.safetensors.index.json"
+    index_path = model_dir / SOURCE_INDEX_FILE
     if not index_path.exists():
         raise StagePackFailure(f"missing safetensors index: {index_path}")
     index = json.loads(index_path.read_text(encoding="utf-8"))
@@ -175,6 +189,37 @@ def collect_mtp_tensors(
     return {stage_index: tensor_names}, shard_names
 
 
+def source_tensor_name(name: str) -> str:
+    return MTP_EMBEDDING_SOURCE if name == MTP_EMBEDDING_ALIAS else name
+
+
+def validate_w8lut_source_dtypes(
+    stage_tensors: Mapping[int, Sequence[str]],
+    weight_map: Mapping[str, str],
+    headers: Mapping[str, Mapping[str, Any]],
+) -> None:
+    for tensor_names in stage_tensors.values():
+        for name in tensor_names:
+            source_name = source_tensor_name(name)
+            shard_name = str(weight_map[source_name])
+            item = headers[shard_name].get(source_name)
+            if not isinstance(item, dict):
+                raise StagePackFailure(
+                    f"tensor metadata is missing: {source_name}"
+                )
+            dtype = item.get("dtype")
+            if source_name.endswith(".weight_scale_inv"):
+                raise StagePackFailure(
+                    "W8LUT stage packs require the BF16 master checkpoint, "
+                    f"but found quantization scale tensor: {source_name}"
+                )
+            if source_name.endswith(".weight") and dtype != "BF16":
+                raise StagePackFailure(
+                    "W8LUT non-expert weights must be BF16: "
+                    f"{source_name} has dtype {dtype}"
+                )
+
+
 def copy_exact(file_in: BinaryIO, file_out: BinaryIO, byte_count: int) -> None:
     remaining = byte_count
     while remaining > 0:
@@ -255,11 +300,7 @@ def write_stage_pack(
     ) as temp_file:
         temp_path = Path(temp_file.name)
         for name in tensor_names:
-            source_name = (
-                MTP_EMBEDDING_SOURCE
-                if name == MTP_EMBEDDING_ALIAS
-                else name
-            )
+            source_name = source_tensor_name(name)
             shard_name = str(weight_map[source_name])
             header = headers[shard_name]
             aligned_offset = align_up(temp_file.tell(), REGION_ALIGNMENT)
@@ -326,8 +367,16 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
     else:
         stage_tensors, shard_names = collect_stage_tensors(weight_map, selected_stages)
     headers, payload_bases = load_source_headers(model_dir, shard_names)
+    if args.model_quantization == MODEL_QUANTIZATION_W8LUT:
+        validate_w8lut_source_dtypes(stage_tensors, weight_map, headers)
     index["format"] = FORMAT
     index["model_quantization"] = args.model_quantization
+    index["source_model_dir"] = str(model_dir)
+    index["source_model_index_sha256"] = sha256_file(
+        model_dir / SOURCE_INDEX_FILE
+    )
+    if args.model_quantization == MODEL_QUANTIZATION_W8LUT:
+        index["non_expert_weight_dtype"] = "BF16"
     index["topology"] = "pp13_fixed6"
     index["stage_count"] = STAGE_COUNT
     index["layers_per_stage"] = LAYERS_PER_STAGE
@@ -385,6 +434,12 @@ def build_stage_packs(args: argparse.Namespace) -> Dict[str, Any]:
         "format": FORMAT,
         "output_dir": str(output_dir),
         "model_quantization": args.model_quantization,
+        "source_model_index_sha256": index["source_model_index_sha256"],
+        "non_expert_weight_dtype": (
+            "BF16"
+            if args.model_quantization == MODEL_QUANTIZATION_W8LUT
+            else None
+        ),
         "stages": built,
         "tensor_count": len(index["tensor_map"]),
     }
@@ -394,7 +449,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build GLM-5.2 PP13 stage-local non-MoE packs")
     parser.add_argument("--model-dir", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--model-quantization", choices=("fp8", "nvfp4"), required=True)
+    parser.add_argument(
+        "--model-quantization",
+        choices=("fp8", "nvfp4", MODEL_QUANTIZATION_W8LUT),
+        required=True,
+    )
     parser.add_argument("--stages", default="all")
     parser.add_argument("--reuse", action="store_true")
     parser.add_argument("--mtp-only", action="store_true")

@@ -193,6 +193,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_b12x_pack_worker.py \
 	tests/test_glm52_fp8_pack_layout.py \
 	tests/test_glm52_w8lut_pack_layout.py \
+	tests/test_glm52_w8lut_stage_pack_watch.py \
 	tests/test_glm52_b12x_relocate_aot_bundle.py \
 	tests/test_glm52_b12x_deterministic_finalize.py \
 	tests/test_glm52_final_from_hidden_mode.py \
