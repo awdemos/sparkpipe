@@ -5064,6 +5064,82 @@ static SparkStatus SparkGlm52Pp13BuilderAttachDriver(
 	return status;
 }
 
+static SparkStatus SparkGlm52Pp13BuilderQuiesceStreams(
+	SparkGlm52Pp13BuilderState *state)
+{
+	if (cudaStreamSynchronize(state->stream) != cudaSuccess)
+		return SPARK_STATUS_IO_ERROR;
+	if (cudaStreamSynchronize(state->query_stream) != cudaSuccess)
+		return SPARK_STATUS_IO_ERROR;
+	if (cudaStreamSynchronize(state->kv_stream) != cudaSuccess)
+		return SPARK_STATUS_IO_ERROR;
+	return SPARK_STATUS_OK;
+}
+
+static void SparkGlm52Pp13BuilderClearGenerationState(
+	SparkGlm52Pp13BuilderState *state)
+{
+	memset(state->mtp_kv_transactions,0,
+		(size_t)state->configuration.maximum_resident_sequence_count *
+			sizeof(state->mtp_kv_transactions[0u]));
+	if (state->host_mtp_previous_valid != 0)
+		memset(state->host_mtp_previous_valid,0,
+			state->configuration.maximum_resident_sequence_count);
+	state->mtp_previous_request_id = 0u;
+	state->mtp_previous_sequence_id = 0u;
+	state->mtp_previous_position = 0u;
+	state->mtp_previous_valid = 0u;
+	state->captured_completion_valid = 0u;
+	state->dspark_ready_draft_valid = 0u;
+	state->pending_work_active = 0u;
+	state->pending_work_completion_function = 0;
+	state->pending_work_completion_context = 0;
+	state->pending_work_completion_count = 0u;
+	state->pending_work_completion_overflow = 0u;
+	state->runner_ready = 0u;
+	state->driver_interface = 0;
+	state->driver_instance = 0;
+	state->program = 0;
+	state->output_transport_session = 0;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderResetControlGeneration(
+	void *builder_state,
+	uint64_t control_generation)
+{
+	SparkGlm52Pp13BuilderState *state;
+	SparkStatus status;
+	uint32_t dropped_work;
+	state = (SparkGlm52Pp13BuilderState *)builder_state;
+	if (state == 0 || control_generation == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13BuilderQuiesceStreams(state);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	if (state->kv_nvme_pending_store_count != 0u ||
+		state->kv_nvme_pending_load_count != 0u)
+	{
+		status = SparkGlm52Pp13BuilderKvNvmeFlushBatch(state);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
+	dropped_work = state->pending_work_active;
+	if (state->pending_work_active != 0u)
+		(void)SparkGlm52Pp13WorkControlCancelHostKvBlockTable(
+			&state->pending_work_packet,&state->kv_state);
+	status = SparkGlm52Pp13WorkControlAdvanceKvGeneration(
+		&state->kv_state,control_generation);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	SparkGlm52Pp13BuilderClearGenerationState(state);
+	state->asynchronous_failure_count += dropped_work;
+	fprintf(stderr,
+		"pp13_builder_control_generation_reset rank=%u generation=%llu dropped=%u\n",
+		state->rank_plan.rank_index,
+		(unsigned long long)control_generation,dropped_work);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52KvBlockTableView *source_view)
@@ -8439,7 +8515,8 @@ static const SparkGlm52Pp13NodeContextBuilderInterface SparkGlm52Pp13BuilderInte
 	SparkGlm52Pp13BuilderDecode,
 	SparkGlm52Pp13BuilderSubmitWork,
 	SparkGlm52Pp13BuilderTakeDsparkDraft,
-	SparkGlm52Pp13BuilderGetKvStats
+	SparkGlm52Pp13BuilderGetKvStats,
+	SparkGlm52Pp13BuilderResetControlGeneration
 };
 
 extern "C" const SparkGlm52Pp13NodeContextBuilderInterface *

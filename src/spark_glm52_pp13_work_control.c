@@ -885,16 +885,28 @@ static void SparkGlm52Pp13WorkControlResetKvGeneration(
 	state->control_generation_reset_count += 1u;
 }
 
+SparkStatus SparkGlm52Pp13WorkControlAdvanceKvGeneration(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint64_t control_generation)
+{
+	if (state == 0 || control_generation == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (control_generation < state->control_generation)
+		return SPARK_STATUS_VALIDATION_FAILED;
+	if (control_generation != state->control_generation)
+		SparkGlm52Pp13WorkControlResetKvGeneration(state,control_generation);
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13WorkControlSelectKvGeneration(
 	const SparkGlm52Pp13WorkControlPacket *packet,
 	SparkGlm52Pp13WorkControlKvState *state)
 {
-	if (packet->control_generation < state->control_generation)
-		return SPARK_STATUS_NOT_FOUND;
-	if (packet->control_generation != state->control_generation)
-		SparkGlm52Pp13WorkControlResetKvGeneration(
-			state,packet->control_generation);
-	return SPARK_STATUS_OK;
+	SparkStatus status;
+	status = SparkGlm52Pp13WorkControlAdvanceKvGeneration(
+		state,packet->control_generation);
+	return status == SPARK_STATUS_VALIDATION_FAILED
+		? SPARK_STATUS_NOT_FOUND : status;
 }
 
 static void SparkGlm52Pp13WorkControlResetReadinessCounts(

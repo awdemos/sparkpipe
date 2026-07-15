@@ -219,6 +219,9 @@ SparkStatus SparkGlm52Pp13WorkControlConfigureKvSwap(
 SparkStatus SparkGlm52Pp13WorkControlConfigureKvPins(
 	SparkGlm52Pp13WorkControlKvState *state,
 	uint32_t *physical_block_pin_counts);
+SparkStatus SparkGlm52Pp13WorkControlAdvanceKvGeneration(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint64_t control_generation);
 SparkStatus SparkGlm52Pp13WorkControlPinPhysicalBlock(
 	SparkGlm52Pp13WorkControlKvState *state,
 	uint32_t physical_block_index);

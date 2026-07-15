@@ -45,6 +45,10 @@ SparkStatus SparkGlm52Pp13NodeContextBuilderValidateInterface(
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_NVME_KV) != 0u &&
 		builder_interface->get_kv_stats == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((required_capability_flags &
+			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_CONTROL_GENERATION_RESET) != 0u &&
+		builder_interface->reset_control_generation == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	return SPARK_STATUS_OK;
 }
 
