@@ -3648,6 +3648,10 @@ int main(void)
     void *inspection_handle;
     char error_buffer[1024];
 
+    assert(SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_EXECUTION_ROW_COUNT == 7168u);
+    assert(256u *
+        (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) <=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_EXECUTION_ROW_COUNT);
     SparkTestGlm52ResidentDecodeStageLinearPlanPreparedRowContract();
     SparkTestGlm52ResidentDecodeStageB12xRouterLogitsAbi();
     SparkTestGlm52ResidentDecodeStageSliceSubmit();
