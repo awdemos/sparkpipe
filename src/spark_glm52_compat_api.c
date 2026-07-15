@@ -597,6 +597,14 @@ static SparkStatus SparkGlm52CompatPrepareCommon(
     status = SparkGlm52CompatReadOptionalUInt32(
         document,
         root_token_index,
+        "priority",
+        &request->priority,
+        0);
+    if ( status != SPARK_STATUS_OK )
+        return status;
+    status = SparkGlm52CompatReadOptionalUInt32(
+        document,
+        root_token_index,
         "max_tokens",
         &request->output_token_budget,
         0);

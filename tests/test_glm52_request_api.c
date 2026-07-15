@@ -767,7 +767,7 @@ static void SparkTestRequestApiBatchesReadyDecodeRequestsAndConsumesBudgets(void
         &request,
         11u,
         5011u,
-        10u,
+        20u,
         first_prompt,
         16u,
         2u);
@@ -811,8 +811,8 @@ static void SparkTestRequestApiBatchesReadyDecodeRequestsAndConsumesBudgets(void
     assert(first_dispatch.kind ==
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
     assert(first_dispatch.request_count == 2u);
-    assert(first_dispatch.request_handles[0] == second_handle);
-    assert(first_dispatch.request_handles[1] == first_handle);
+    assert(first_dispatch.request_handles[0] == first_handle);
+    assert(first_dispatch.request_handles[1] == second_handle);
     assert(first_dispatch.decode_batch_decision.active_sequence_count == 2u);
     assert((first_dispatch.decode_batch_decision.decision_flags &
         SPARK_GLM52_SCHEDULER_DECISION_FLAG_ADAPTIVE_DECODE_PACK) != 0u);
@@ -979,6 +979,124 @@ static void SparkTestRequestApiCohortsSamePromptRequestsAndSharesBlocks(void)
             &fixture.api,
             handles[request_index]) == SPARK_STATUS_OK);
     }
+}
+
+static void SparkTestRequestApiWidePrefixFamilyCannotBeatHigherPriority(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiHandle low_handles[4u];
+    SparkGlm52RequestApiHandle high_handle;
+    uint32_t low_prompt[32u];
+    uint32_t high_prompt[32u];
+    uint32_t request_index;
+
+    SparkTestFillTokenIds(low_prompt, 32u, 61000u);
+    memcpy(high_prompt, low_prompt, sizeof(high_prompt));
+    SparkTestInitializeFixture(&fixture);
+    fixture.api.configuration_flags |=
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ADAPTIVE_PIPELINE_BATCHING;
+    for (request_index = 0u; request_index < 4u; ++request_index)
+    {
+        SparkTestInitializeSubmitRequest(
+            &request,
+            200u + request_index,
+            7200u + request_index,
+            10u,
+            low_prompt,
+            32u,
+            1u);
+        assert(SparkGlm52RequestApiSubmit(
+            &fixture.api,
+            &request,
+            &low_handles[request_index]) == SPARK_STATUS_OK);
+    }
+    SparkTestInitializeSubmitRequest(
+        &request,
+        300u,
+        7300u,
+        100u,
+        high_prompt,
+        32u,
+        1u);
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,
+        &request,
+        &high_handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(dispatch.request_count == 1u);
+    assert(dispatch.request_handles[0u] == high_handle);
+    assert(dispatch.shared_prefix_token_count == 0u);
+    for (request_index = 0u; request_index < 4u; ++request_index)
+    {
+        assert(fixture.api.request_slots[request_index].state ==
+            SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL);
+    }
+}
+
+static void SparkTestRequestApiLateHighPriorityUsesNextAvailablePipelineSlot(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch low_dispatch;
+    SparkGlm52RequestApiDispatch high_dispatch;
+    SparkGlm52RequestApiHandle low_handle;
+    SparkGlm52RequestApiHandle high_handle;
+    uint32_t low_prompt[16u];
+    uint32_t high_prompt[16u];
+
+    SparkTestFillTokenIds(low_prompt, 16u, 63000u);
+    SparkTestFillTokenIds(high_prompt, 16u, 64000u);
+    SparkTestInitializeFixture(&fixture);
+    SparkTestInitializeSubmitRequest(
+        &request,
+        400u,
+        7400u,
+        10u,
+        low_prompt,
+        16u,
+        1u);
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,
+        &request,
+        &low_handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &low_dispatch) == SPARK_STATUS_OK);
+    assert(low_dispatch.request_handles[0u] == low_handle);
+    SparkTestInitializeSubmitRequest(
+        &request,
+        401u,
+        7401u,
+        100u,
+        high_prompt,
+        16u,
+        1u);
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,
+        &request,
+        &high_handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &high_dispatch) == SPARK_STATUS_OK);
+    assert(high_dispatch.accepted == 0u);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &low_dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,
+        &high_dispatch) == SPARK_STATUS_OK);
+    assert(high_dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
+        high_dispatch.kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH);
+    assert(high_dispatch.request_count == 1u);
+    assert(high_dispatch.request_handles[0u] == high_handle);
+    assert(fixture.api.request_slots[0u].state ==
+        SPARK_GLM52_REQUEST_API_STATE_READY_DECODE);
 }
 
 static void SparkTestBuildSharedPrefixPrompt(
@@ -2051,19 +2169,22 @@ static void SparkTestRequestApiDecodeBatchUsesMeasuredB64ForSeventeenReadyReques
         &dispatch) == SPARK_STATUS_OK);
 }
 
-static void SparkTestRequestApiAsyncJitPrefetchHoldsDispatchUntilResident(void)
+static void SparkTestRequestApiAsyncJitPrefetchOverlapsResidentWork(void)
 {
     SparkTestRequestApiFixture fixture;
     SparkGlm52RequestApiSubmitRequest request;
     SparkGlm52RequestApiDispatch dispatch;
-    SparkGlm52RequestApiHandle handle;
+    SparkGlm52RequestApiHandle high_priority_handle;
+    SparkGlm52RequestApiHandle low_priority_handle;
     uint32_t prompt[32u];
+    uint32_t low_priority_prompt[32u];
     uint32_t matched_token_count;
     uint32_t physical_block_count;
     uint32_t physical_block_indices[4u];
     uint32_t cold_physical_block_index;
 
     SparkTestFillTokenIds(prompt, 32u, 180000u);
+    SparkTestFillTokenIds(low_priority_prompt, 32u, 181000u);
     SparkTestInitializeFixture(&fixture);
     SparkTestRequestApiWarmsPrefixCacheAndReleases(
         &fixture,
@@ -2097,12 +2218,25 @@ static void SparkTestRequestApiAsyncJitPrefetchHoldsDispatchUntilResident(void)
     assert(SparkGlm52RequestApiSubmit(
         &fixture.api,
         &request,
-        &handle) == SPARK_STATUS_OK);
+        &high_priority_handle) == SPARK_STATUS_OK);
+    SparkTestInitializeSubmitRequest(
+        &request,
+        1801u,
+        11801u,
+        10u,
+        low_priority_prompt,
+        32u,
+        1u);
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,
+        &request,
+        &low_priority_handle) == SPARK_STATUS_OK);
 
     assert(SparkGlm52RequestApiScheduleNext(
         &fixture.api,
-        &dispatch) == SPARK_STATUS_BUSY);
-    assert(dispatch.accepted == 0u);
+        &dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.accepted == 1u);
+    assert(dispatch.request_handles[0u] == low_priority_handle);
     assert((dispatch.flags &
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_JIT_PREFETCH_PENDING) != 0u);
     assert(fixture.prefetch_capture.async_start_count == 1u);
@@ -2114,13 +2248,16 @@ static void SparkTestRequestApiAsyncJitPrefetchHoldsDispatchUntilResident(void)
         SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
     assert(fixture.api.request_slots[0u].state ==
         SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,
+        &dispatch) == SPARK_STATUS_OK);
 
     assert(SparkGlm52RequestApiScheduleNext(
         &fixture.api,
         &dispatch) == SPARK_STATUS_OK);
     assert(dispatch.accepted == 1u);
     assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
-    assert(dispatch.request_handles[0u] == handle);
+    assert(dispatch.request_handles[0u] == high_priority_handle);
     assert((dispatch.flags &
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_JIT_PREFETCHED_KV) != 0u);
     assert(fixture.prefetch_capture.async_start_count == 1u);
@@ -2135,7 +2272,10 @@ static void SparkTestRequestApiAsyncJitPrefetchHoldsDispatchUntilResident(void)
         &dispatch) == SPARK_STATUS_OK);
     assert(SparkGlm52RequestApiCancelRequest(
         &fixture.api,
-        handle) == SPARK_STATUS_OK);
+        high_priority_handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiCancelRequest(
+        &fixture.api,
+        low_priority_handle) == SPARK_STATUS_OK);
 }
 
 static void SparkTestRequestApiDoesNotGreenlightMissingJitKv(void)
@@ -3298,7 +3438,7 @@ static void SparkTestRequestApiMtpVerifyCapsPackedExecutionRows(void)
             &request,
             1540u + request_index,
             11540u + request_index,
-            SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY + request_index,
+            SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
             prompts[request_index],
             16u,
             SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT + 2u);
@@ -3525,7 +3665,7 @@ static void SparkTestRequestApiAdmitsThirteenThousandWithFreeList(void)
     free(slots);
 }
 
-static void SparkTestRequestApiDecodeBatchPacksTopPriorityMembersInOrder(void)
+static void SparkTestRequestApiDecodeBatchBackfillsByDescendingPriority(void)
 {
     SparkTestRequestApiFixture fixture;
     SparkGlm52RequestApiSubmitRequest request;
@@ -3579,6 +3719,53 @@ static void SparkTestRequestApiDecodeBatchPacksTopPriorityMembersInOrder(void)
         &dispatch) == SPARK_STATUS_OK);
 }
 
+static void SparkTestRequestApiAdaptiveWidthBackfillsWithoutGrowingPriorityClass(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiHandle low_handle;
+    SparkGlm52RequestApiHandle high_handle;
+    uint32_t prompts[2u][16u];
+    uint32_t slot_index;
+
+    SparkTestInitializeFixture(&fixture);
+    fixture.api.configuration_flags |=
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ADAPTIVE_PIPELINE_BATCHING;
+    SparkTestFillTokenIds(prompts[0u],16u,66000u);
+    SparkTestFillTokenIds(prompts[1u],16u,67000u);
+    SparkTestInitializeSubmitRequest(
+        &request,720u,8720u,10u,prompts[0u],16u,2u);
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,&request,&low_handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    SparkTestInitializeSubmitRequest(
+        &request,721u,8721u,100u,prompts[1u],16u,2u);
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,&request,&high_handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    for (slot_index = 2u; slot_index < 15u; ++slot_index)
+    {
+        fixture.api.request_slots[slot_index].state =
+            SPARK_GLM52_REQUEST_API_STATE_RUNNING_DECODE;
+        fixture.api.request_slots[slot_index].priority = 100u;
+    }
+    fixture.api.running_request_count = 13u;
+    assert(SparkGlm52RequestApiCurrentPipelineBatchWidth(&fixture.api) == 2u);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.request_count == 2u);
+    assert(dispatch.request_handles[0u] == high_handle);
+    assert(dispatch.request_handles[1u] == low_handle);
+    assert(dispatch.highest_priority == 100u);
+}
+
 static void SparkTestRequestApiCapsDecodeBatchByActiveKvBlocks(void)
 {
     SparkTestRequestApiFixture fixture;
@@ -3597,7 +3784,7 @@ static void SparkTestRequestApiCapsDecodeBatchByActiveKvBlocks(void)
             &request,
             800u + request_index,
             8800u + request_index,
-            10u + (request_index * 10u),
+            10u,
             prompts[request_index],
             16u,
             2u);
@@ -3618,8 +3805,8 @@ static void SparkTestRequestApiCapsDecodeBatchByActiveKvBlocks(void)
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
     assert(dispatch.request_count == 2u);
-    assert(dispatch.request_handles[0u] == handles[3u]);
-    assert(dispatch.request_handles[1u] == handles[2u]);
+    assert(dispatch.request_handles[0u] == handles[0u]);
+    assert(dispatch.request_handles[1u] == handles[1u]);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
 }
@@ -3712,7 +3899,7 @@ static void SparkTestRequestApiReservesMtpDraftKvBlocks(void)
             &request,
             900u + request_index,
             8900u + request_index,
-            10u + (request_index * 10u),
+            10u,
             prompts[request_index],
             26u,
             8u);
@@ -3757,17 +3944,33 @@ static void SparkTestRequestApiReservesMtpDraftKvBlocks(void)
 static void SparkTestRequestApiUsesAdaptivePipelineBatchWidth(void)
 {
     SparkTestRequestApiFixture fixture;
+    uint32_t slot_index;
 
     SparkTestInitializeFixture(&fixture);
     assert(SparkGlm52RequestApiCurrentPipelineBatchWidth(&fixture.api) ==
         fixture.api.decode_batch_target);
     fixture.api.configuration_flags |=
         SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ADAPTIVE_PIPELINE_BATCHING;
-    fixture.api.queued_request_count = 13u;
+    for (slot_index = 0u; slot_index < 13u; ++slot_index)
+    {
+        fixture.api.request_slots[slot_index].state =
+            SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL;
+        fixture.api.request_slots[slot_index].priority = 10u;
+    }
     assert(SparkGlm52RequestApiCurrentPipelineBatchWidth(&fixture.api) == 1u);
-    fixture.api.queued_request_count = 12u;
-    fixture.api.running_request_count = 14u;
+    for (slot_index = 0u; slot_index < 13u; ++slot_index)
+    {
+        fixture.api.request_slots[slot_index].state =
+            SPARK_GLM52_REQUEST_API_STATE_RUNNING_DECODE;
+    }
+    fixture.api.request_slots[13u].state =
+        SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL;
+    fixture.api.request_slots[13u].priority = 10u;
     assert(SparkGlm52RequestApiCurrentPipelineBatchWidth(&fixture.api) == 2u);
+    fixture.api.request_slots[14u].state =
+        SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL;
+    fixture.api.request_slots[14u].priority = 100u;
+    assert(SparkGlm52RequestApiCurrentPipelineBatchWidth(&fixture.api) == 1u);
 }
 
 int main(void)
@@ -3782,20 +3985,23 @@ int main(void)
 	SparkTestRequestApiFillsDecodeBatchBeforeEqualPriorityDecode();
     SparkTestRequestApiHoldsPrefillAtGlobalResidentKvLimit();
     SparkTestRequestApiCohortsSamePromptRequestsAndSharesBlocks();
+    SparkTestRequestApiWidePrefixFamilyCannotBeatHigherPriority();
+    SparkTestRequestApiLateHighPriorityUsesNextAvailablePipelineSlot();
     SparkTestRequestApiCohortsArbitrarySharedPrefixWithSuffixes();
     SparkTestRequestApiChoosesWiderSharedPrefixFamily();
     SparkTestRequestApiBatchesVariableOneBlockSuffixes();
     SparkTestRequestApiAdaptivePrefillChoosesFullResidentBucketOverOlderSingleton();
     SparkTestRequestApiRealtimePrefillBypassesFullBulkBatch();
     SparkTestRequestApiDecodeBatchUsesMeasuredB64ForSeventeenReadyRequests();
-    SparkTestRequestApiDecodeBatchPacksTopPriorityMembersInOrder();
+    SparkTestRequestApiDecodeBatchBackfillsByDescendingPriority();
+    SparkTestRequestApiAdaptiveWidthBackfillsWithoutGrowingPriorityClass();
     SparkTestRequestApiCapsDecodeBatchByActiveKvBlocks();
     SparkTestRequestApiReservesMtpDraftKvBlocks();
     SparkTestRequestApiOpportunisticLookaheadDoesNotBlockReadyPriorityPrefill();
     SparkTestRequestApiPrefetchesLiveNonresidentDecodeBlocks();
     SparkTestRequestApiBatchesDecodeAfterBatchCriticalPrefetch();
     SparkTestRequestApiBatchesPrefillAfterBatchCriticalPrefetch();
-    SparkTestRequestApiAsyncJitPrefetchHoldsDispatchUntilResident();
+    SparkTestRequestApiAsyncJitPrefetchOverlapsResidentWork();
     SparkTestRequestApiDoesNotGreenlightMissingJitKv();
     SparkTestRequestApiTrimsResidentKvWithoutEvictingNearFuturePrefix();
     SparkTestRequestApiEvictsColdResidentBlocksButKeepsLookaheadHotset();
