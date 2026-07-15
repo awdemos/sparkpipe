@@ -3105,7 +3105,8 @@ static void SparkTestRequestApiCompleteTransactionalMtpCycle(
     SparkTestRequestApiFixture *fixture,
     uint32_t expected_budget,
     uint32_t accepted_draft_token_count,
-    uint32_t token_seed)
+    uint32_t token_seed,
+    SparkGlm52RequestApiDispatch *completed_dispatch)
 {
     SparkGlm52RequestApiDispatch dispatch;
     uint32_t draft_token_ids[SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
@@ -3150,6 +3151,10 @@ static void SparkTestRequestApiCompleteTransactionalMtpCycle(
         verifier_token_ids[accepted_draft_token_count]);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture->api,&dispatch) == SPARK_STATUS_OK);
+    if (completed_dispatch != 0)
+    {
+        *completed_dispatch = dispatch;
+    }
 }
 
 static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
@@ -3175,9 +3180,12 @@ static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
     assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,1u,93000u);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,2u,0u,94000u);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,1u,95000u);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(
+        &fixture,1u,1u,93000u,0);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(
+        &fixture,2u,0u,94000u,0);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(
+        &fixture,1u,1u,95000u,0);
     assert(SparkGlm52RequestApiScheduleNext(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     assert(dispatch.mtp_draft_token_budget == 2u);
@@ -3193,7 +3201,9 @@ static void SparkTestRequestApiMtpDraftBudgetCapsScheduledRows(void)
     SparkGlm52RequestApiSubmitRequest request;
     SparkGlm52RequestApiDispatch dispatch;
     SparkGlm52RequestApiHandle handle;
+    uint32_t draft_token_ids[SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
     uint32_t prompt[16u];
+    uint32_t token_index;
 
     SparkTestFillTokenIds(prompt,16u,153600u);
     SparkTestInitializeFixture(&fixture);
@@ -3210,12 +3220,29 @@ static void SparkTestRequestApiMtpDraftBudgetCapsScheduledRows(void)
     assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,1u,96000u);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,2u,2u,97000u);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,3u,3u,98000u);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(
+        &fixture,1u,1u,96000u,0);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(
+        &fixture,2u,2u,97000u,0);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(
+        &fixture,3u,3u,98000u,&dispatch);
+    for (token_index = 0u;
+         token_index < SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
+         ++token_index)
+    {
+        draft_token_ids[token_index] = 99000u + token_index;
+    }
+    assert(SparkGlm52RequestApiArmMtpVerifyDispatch(
+        &fixture.api,
+        &dispatch,
+        draft_token_ids,
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT,
+        SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT) == SPARK_STATUS_OK);
     assert(SparkGlm52RequestApiScheduleNext(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
-    assert(dispatch.mtp_draft_token_budget ==
+    assert(dispatch.kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
+    assert(dispatch.speculative_token_count ==
         SPARK_GLM52_REQUEST_API_MTP_SCHEDULED_DRAFT_TOKEN_COUNT);
     assert(SparkGlm52RequestApiCancelDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
@@ -3246,7 +3273,8 @@ static void SparkTestRequestApiMtpRejectedDraftStaysOutsideNextContext(void)
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,0u,96000u);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(
+        &fixture,1u,0u,96000u,0);
     assert(SparkGlm52RequestApiScheduleNext(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     assert(SparkGlm52RequestApiDescribeDecodeDispatch(
