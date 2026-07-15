@@ -157,6 +157,35 @@ static void SparkTestRankDaemonForwardWaitPreservesFifo(void)
     assert(runtime.work_queue_count == 2u);
 }
 
+static void SparkTestRankDaemonBackpressuresFullWorkQueue(void)
+{
+    static SparkGlm52Pp13DaemonRuntime runtime;
+    int32_t sockets[2];
+    uint8_t byte;
+
+    memset(&runtime,0,sizeof(runtime));
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
+    assert(SparkGlm52Pp13DaemonSetNonblocking(sockets[0]) == 0);
+    runtime.work_listen_fd = 0;
+    runtime.work_input_socket_fd = sockets[0];
+    runtime.work_queue_count = SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
+    byte = 0x5au;
+    assert(write(sockets[1],&byte,sizeof(byte)) == (ssize_t)sizeof(byte));
+    assert(SparkGlm52Pp13DaemonWorkInputCanRead(&runtime) == 0u);
+    assert(SparkGlm52Pp13DaemonPumpWorkControl(&runtime) == 0u);
+    assert(runtime.work_read_offset == 0u);
+    assert(recv(sockets[0],&byte,sizeof(byte),MSG_PEEK) ==
+        (ssize_t)sizeof(byte));
+    runtime.work_queue_count -= 1u;
+    assert(SparkGlm52Pp13DaemonWorkInputCanRead(&runtime) == 1u);
+    assert(SparkGlm52Pp13DaemonPumpWorkControl(&runtime) == 1u);
+    assert(runtime.work_read_offset == 1u);
+    runtime.work_queue_count = SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
+    assert(SparkGlm52Pp13DaemonWorkInputCanRead(&runtime) == 1u);
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
 int main(void)
 {
     SparkTestRankDaemonReadsSplitResidentMessage();
@@ -164,5 +193,6 @@ int main(void)
     SparkTestRankDaemonFindsLaneDependency();
     SparkTestRankDaemonDecodeWaitsForSamePositionPrefill();
     SparkTestRankDaemonForwardWaitPreservesFifo();
+    SparkTestRankDaemonBackpressuresFullWorkQueue();
     return 0;
 }
