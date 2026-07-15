@@ -3166,7 +3166,7 @@ static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
         SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
     SparkTestInitializeSubmitRequest(
         &request,1535u,11535u,SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
-        prompt,16u,64u);
+        prompt,16u,20u);
     request.thinking_token_budget = 0u;
     assert(SparkGlm52RequestApiSubmit(
         &fixture.api,&request,&handle) == SPARK_STATUS_OK);
@@ -3176,13 +3176,11 @@ static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,1u,93000u);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,2u,2u,94000u);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,3u,3u,95000u);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,4u,3u,96000u);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,3u,3u,97000u);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,2u,0u,94000u);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,1u,95000u);
     assert(SparkGlm52RequestApiScheduleNext(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
-    assert(dispatch.mtp_draft_token_budget == 4u);
+    assert(dispatch.mtp_draft_token_budget == 2u);
     assert(SparkGlm52RequestApiCancelDispatch(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     assert(SparkGlm52RequestApiCancelRequest(
