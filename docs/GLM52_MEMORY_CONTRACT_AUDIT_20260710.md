@@ -26,9 +26,9 @@ generated build output and vendored third-party code.
   seed.
 - Query latent and query RoPE allocations cover all attention heads.
 
-## Open P0: Expanded K/V Cache Addressing
+## Closed P0: Expanded K/V Cache Addressing
 
-The PP13 builder allocates the expanded caches as:
+The former PP13 tiled-attention builder allocated the expanded caches as:
 
 ```text
 key_nope elements = max_active * selected_token_count * qk_nope_head_dimension
@@ -53,7 +53,7 @@ therefore address 128 times beyond the allocated expanded cache.
 
 Allocating the full expanded cache is not a valid fix. With the current model
 geometry, full BF16 key-nope plus value storage is about 224 GiB per layer.
-The required design is:
+The tiled path would require a separate bounded expansion workspace:
 
 1. Keep full-context resident storage in the 576-element MLA representation.
 2. Expand only selected tokens into a bounded attention workspace.
@@ -63,8 +63,12 @@ The required design is:
 5. Give the MLA cache and expanded workspace separate capacity fields and
    validate both at the kernel boundary.
 
-Until that path is connected, short-context inference can run but the current
-expanded K/V path is not safe for the declared long-context capacity.
+The PP13 production builder instead uses absorbed MLA directly, keeps only the
+576-element compressed cache row, and leaves the expanded K/V pointers null.
+Speculative rollback clears the compressed MLA row and DSA index row only. The
+exact FP8 five-token six-layer gate on GB10 measured a worst final-layer
+relative L2 of `0.026662` and minimum cosine of `0.999645` against the official
+model.
 
 ## Permanent Gate
 
