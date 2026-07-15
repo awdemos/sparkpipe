@@ -38,7 +38,9 @@ static SparkStatus SparkTestServiceBackendGetView(
 	view->configured_kv_context_limit_tokens =
 		SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
 	view->configured_max_active_sequences = 1u;
-	view->configured_decode_batch_target = 1u;
+	view->adaptive_decode_batch_width = 1u;
+	view->decode_batch_capacity = 1u;
+	view->prefill_wave_token_count = 16u;
 	view->service = (SparkGlm52ServiceRuntime *)(uintptr_t)0x1000u;
 	view->release_id = "test-release";
 	view->release_git_commit = "test-commit";

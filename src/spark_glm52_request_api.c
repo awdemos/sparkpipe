@@ -157,6 +157,13 @@ static uint32_t SparkGlm52RequestApiDecodeBatchingIsEnabled(
         SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING) != 0u;
 }
 
+static uint32_t SparkGlm52RequestApiAdaptivePipelineBatchingIsEnabled(
+    const SparkGlm52RequestApi *api)
+{
+    return (api->configuration_flags &
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ADAPTIVE_PIPELINE_BATCHING) != 0u;
+}
+
 static uint32_t SparkGlm52RequestApiPrefixCohortingIsEnabled(
     const SparkGlm52RequestApi *api)
 {
@@ -501,6 +508,26 @@ SparkStatus SparkGlm52RequestApiInitialize(
     }
     api->free_slot_head = 0u;
     return SPARK_STATUS_OK;
+}
+
+uint32_t SparkGlm52RequestApiCurrentPipelineBatchWidth(
+    const SparkGlm52RequestApi *api)
+{
+    uint32_t active_request_count;
+
+    if (api == 0 || api->scheduler == 0 || api->decode_batch_target == 0u)
+    {
+        return 0u;
+    }
+    if (!SparkGlm52RequestApiAdaptivePipelineBatchingIsEnabled(api))
+    {
+        return api->decode_batch_target;
+    }
+    active_request_count = api->queued_request_count + api->running_request_count;
+    return SparkGlm52SchedulerSelectPipelineBatchWidth(
+        api->scheduler,
+        active_request_count,
+        api->decode_batch_target);
 }
 
 static uint32_t SparkGlm52RequestApiSlotHasRealtimePriority(
@@ -1181,7 +1208,7 @@ static uint32_t SparkGlm52RequestApiEvaluatePrefillBatchShape(
 
     if (SparkGlm52RequestApiPrefillBatchingIsEnabled(api))
     {
-        batch_target = api->decode_batch_target;
+        batch_target = SparkGlm52RequestApiCurrentPipelineBatchWidth(api);
         if (batch_target > SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT)
         {
             batch_target = SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT;
@@ -3204,7 +3231,8 @@ static uint32_t SparkGlm52RequestApiSchedulerMaxPrefillTokensPerStep(
     uint32_t max_prefill_tokens_per_step;
 
     max_prefill_tokens_per_step = slot->max_prefill_tokens_per_step;
-    if (max_prefill_tokens_per_step == 0u)
+    if (max_prefill_tokens_per_step == 0u ||
+        max_prefill_tokens_per_step > api->scheduler->max_prefill_tokens_per_step)
     {
         max_prefill_tokens_per_step = api->scheduler->max_prefill_tokens_per_step;
     }
@@ -3809,7 +3837,7 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
         return SPARK_STATUS_NOT_FOUND;
     }
 
-    batch_target = api->decode_batch_target;
+    batch_target = SparkGlm52RequestApiCurrentPipelineBatchWidth(api);
     if (batch_target > SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT)
     {
         batch_target = SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT;
@@ -4175,7 +4203,7 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     }
 
     batch_target = SparkGlm52RequestApiDecodeBatchingIsEnabled(api)
-        ? api->decode_batch_target
+        ? SparkGlm52RequestApiCurrentPipelineBatchWidth(api)
         : 1u;
     if (batch_target > SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT)
     {
@@ -4421,7 +4449,7 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
 
     batch_disables_speculation = 0u;
     batch_target = SparkGlm52RequestApiDecodeBatchingIsEnabled(api)
-        ? api->decode_batch_target
+        ? SparkGlm52RequestApiCurrentPipelineBatchWidth(api)
         : 1u;
     require_resident_batch_members =
         SparkGlm52RequestApiSlotHasRealtimePriority(first_slot) ||
@@ -4559,6 +4587,7 @@ static uint32_t SparkGlm52RequestApiShouldFillDecodeBatch(
 	const SparkGlm52RequestApiSlot *decode_slot)
 {
 	const SparkGlm52RequestApiSlot *slot;
+	uint32_t batch_target;
 	uint32_t ready_decode_count;
 	uint32_t slot_index;
 
@@ -4568,17 +4597,18 @@ static uint32_t SparkGlm52RequestApiShouldFillDecodeBatch(
 		(SparkGlm52RequestApiSlotHasRealtimePriority(decode_slot) != 0u &&
 		 SparkGlm52RequestApiSlotHasRealtimePriority(prefill_slot) == 0u))
 		return 0u;
+	batch_target = SparkGlm52RequestApiCurrentPipelineBatchWidth(api);
 	ready_decode_count = 0u;
 	for (slot_index = 0u;
 		 slot_index < api->request_capacity &&
-			ready_decode_count < api->decode_batch_target;
+			ready_decode_count < batch_target;
 		 ++slot_index)
 	{
 		slot = &api->request_slots[slot_index];
 		if (SparkGlm52RequestApiSlotIsSchedulableDecode(slot))
 			ready_decode_count += 1u;
 	}
-	return ready_decode_count < api->decode_batch_target;
+	return ready_decode_count < batch_target;
 }
 
 SparkStatus SparkGlm52RequestApiScheduleNext(

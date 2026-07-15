@@ -454,7 +454,8 @@ static uint32_t SparkGlm52SchedulerRequestMaxPrefillTokensPerStep(
     uint32_t max_prefill_tokens_per_step;
 
     max_prefill_tokens_per_step = request->max_scheduled_prompt_token_count;
-    if (max_prefill_tokens_per_step == 0u)
+    if (max_prefill_tokens_per_step == 0u ||
+        max_prefill_tokens_per_step > scheduler->max_prefill_tokens_per_step)
     {
         max_prefill_tokens_per_step = scheduler->max_prefill_tokens_per_step;
     }
@@ -752,6 +753,30 @@ SparkStatus SparkGlm52SchedulerInitialize(
     scheduler->configuration_flags = configuration_flags;
     scheduler->prefix_cache = configuration->prefix_cache;
     return SPARK_STATUS_OK;
+}
+
+uint32_t SparkGlm52SchedulerSelectPipelineBatchWidth(
+    const SparkGlm52Scheduler *scheduler,
+    uint32_t active_request_count,
+    uint32_t batch_capacity)
+{
+    uint32_t batch_width;
+
+    if (scheduler == 0 || scheduler->spark_count == 0u ||
+        active_request_count == 0u || batch_capacity == 0u)
+    {
+        return 0u;
+    }
+    batch_width = active_request_count / scheduler->spark_count;
+    if (active_request_count % scheduler->spark_count != 0u)
+    {
+        batch_width += 1u;
+    }
+    if (batch_width > batch_capacity)
+    {
+        batch_width = batch_capacity;
+    }
+    return batch_width;
 }
 
 SparkStatus SparkGlm52SchedulerAdmit(
