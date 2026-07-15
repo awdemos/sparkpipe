@@ -631,6 +631,17 @@ static void SparkGlm52Pp13DaemonAppendTransportPollFds(
     }
 }
 
+static uint32_t SparkGlm52Pp13DaemonWorkInputCanRead(
+    const SparkGlm52Pp13DaemonRuntime *runtime)
+{
+    if (runtime == 0 || runtime->work_input_socket_fd < 0)
+        return 0u;
+    if (runtime->work_read_offset != 0u)
+        return 1u;
+    return runtime->work_queue_count <
+        SPARK_GLM52_PP13_DAEMON_WORK_QUEUE_CAPACITY;
+}
+
 static uint32_t SparkGlm52Pp13DaemonWaitForEvents(
     SparkGlm52Pp13DaemonRuntime *runtime,
     uint64_t timeout_ns)
@@ -658,7 +669,7 @@ static uint32_t SparkGlm52Pp13DaemonWaitForEvents(
             runtime->work_listen_fd,
             POLLIN,
             SPARK_GLM52_PP13_DAEMON_POLL_KIND_WORK);
-    if (runtime->work_input_socket_fd >= 0)
+    if (SparkGlm52Pp13DaemonWorkInputCanRead(runtime) != 0u)
         (void)SparkGlm52Pp13DaemonAppendPollFd(
             fds,
             fd_kinds,
@@ -2458,6 +2469,8 @@ static uint32_t SparkGlm52Pp13DaemonPumpWorkControl(
         return progress;
     for (;;)
     {
+		if (SparkGlm52Pp13DaemonWorkInputCanRead(runtime) == 0u)
+			return progress;
 		packet = (SparkGlm52Pp13WorkControlPacket *)runtime->work_read_buffer;
 		expected_bytes = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES;
 		if (runtime->work_read_offset >=
