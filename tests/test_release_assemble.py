@@ -16,6 +16,7 @@ def main():
         output = root / "output"
         diagnostic_output = root / "diagnostic-output"
         plain_output = root / "plain-output"
+        w8_output = root / "w8-output"
         replacement = root / "replacement.bin"
         (template / "bin").mkdir(parents=True)
         (template / "bin" / "runtime").write_bytes(b"old")
@@ -161,6 +162,42 @@ def main():
         plain = json.loads(
             (plain_output / "sparkpipe.json").read_text(encoding="utf-8"))
         assert all("--mtp" not in role["argv"] for role in plain["roles"])
+        subprocess.run([
+            "python3",str(tool),
+            "--template",str(template),
+            "--output",str(w8_output),
+            "--release-id","w8",
+            "--git-commit","abc123",
+            "--kv-logical-blocks","1024",
+            "--model-quantization","w8lut",
+            "--stagepack-root","/home/{host}/artifacts/w8-stage",
+            "--moe-pack-root","/home/{host}/artifacts/w8-moe",
+            "--mtp",
+        ],check=True)
+        w8 = json.loads(
+            (w8_output / "sparkpipe.json").read_text(encoding="utf-8"))
+        w8_by_role = {role["name"]: role for role in w8["roles"]}
+        for role_name in ("spark0_gateway","pp13_cuda_residentd"):
+            arguments = w8_by_role[role_name]["argv"]
+            assert arguments[arguments.index("--model-quantization") + 1] == (
+                "w8lut")
+            assert arguments[arguments.index("--stagepack-root") + 1] == (
+                "/home/{host}/artifacts/w8-stage")
+            assert arguments[arguments.index("--moe-pack-root") + 1] == (
+                "/home/{host}/artifacts/w8-moe")
+        missing_w8_stage = subprocess.run([
+            "python3",str(tool),
+            "--template",str(template),
+            "--output",str(root / "missing-w8-stage"),
+            "--release-id","missing-w8-stage",
+            "--git-commit","abc123",
+            "--kv-logical-blocks","1024",
+            "--model-quantization","w8lut",
+            "--moe-pack-root","/w8-moe",
+            "--mtp",
+        ],capture_output=True,text=True)
+        assert missing_w8_stage.returncode != 0
+        assert "--stagepack-root is required" in missing_w8_stage.stderr
 
 
 if __name__ == "__main__":
