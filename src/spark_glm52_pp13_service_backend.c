@@ -415,6 +415,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(SparkGlm52Pp1
 	hello.descriptor_bytes = SPARK_GLM52_CUDA_RESIDENT_IPC_HELLO_BYTES;
 	hello.rank_index = state->rank_plan.rank_index;
 	hello.rank_count = SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT;
+	hello.control_generation = state->session_id_base;
 	hello.process_id = (uint64_t)getpid();
 	status = SparkGlm52Pp13ServiceBackendResidentWriteMessage(state,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_HELLO,&hello,sizeof(hello));
 	if (status == SPARK_STATUS_OK)

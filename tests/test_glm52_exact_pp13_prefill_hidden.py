@@ -563,9 +563,33 @@ def test_attached_prefill_uses_ordered_socket_backpressure(root: Path) -> None:
         "static SparkStatus SparkGlm52CudaResidentdProgressTransport(",
         poll_start)
     poll_body = daemon[poll_start:poll_end]
-    assert "runtime->work_queue_count <" in poll_body
-    assert "SPARK_GLM52_CUDA_RESIDENTD_WORK_QUEUE_CAPACITY" in poll_body
-    assert "? POLLIN : 0" in poll_body
+    assert ("fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].events = "
+            "POLLIN;" in poll_body)
+    assert "runtime->work_queue_count <" not in poll_body
+    connect_start = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(")
+    connect_end = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendEnsureCudaResident(",
+        connect_start)
+    connect_body = backend[connect_start:connect_end]
+    assert "hello.control_generation = state->session_id_base;" in connect_body
+    generation_start = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdAdvanceControlGeneration(")
+    generation_end = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdFillStats(",
+        generation_start)
+    generation_body = daemon[generation_start:generation_end]
+    assert "control_generation < previous_generation" in generation_body
+    assert "runtime->work_queue_head = 0u;" in generation_body
+    assert "runtime->work_queue_count = 0u;" in generation_body
+    assert "runtime->work_queue_error_count += dropped_work;" in generation_body
+    enqueue_start = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdEnqueueWork(")
+    enqueue_end = daemon.index(
+        "static void SparkGlm52CudaResidentdPopQueuedWork(",enqueue_start)
+    enqueue_body = daemon[enqueue_start:enqueue_end]
+    assert "packet->control_generation != 0u" in enqueue_body
+    assert "SparkGlm52CudaResidentdAdvanceControlGeneration(" in enqueue_body
 
 
 def test_layer_body_failures_are_never_silent(root: Path) -> None:
