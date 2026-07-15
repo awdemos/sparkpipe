@@ -145,6 +145,23 @@ static void SparkTestInternalDirectoryDecodeHasNoBlockPayload(void)
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
         SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
+    message->lanes[0u].mtp_resolution_proposed_token_count = 3u;
+    message->lanes[0u].mtp_resolution_accepted_token_count = 1u;
+    assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
+        message,payload_bytes,
+        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
+    message->lanes[0u].mtp_resolution_accepted_token_count = 4u;
+    assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
+        message,payload_bytes,
+        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    message->lanes[0u].mtp_resolution_accepted_token_count = 1u;
+    message->lanes[0u].mtp_resolution_reserved0 = 1u;
+    assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
+        message,payload_bytes,
+        SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    message->lanes[0u].mtp_resolution_reserved0 = 0u;
     message->lanes[9u].kv_block_count = 1u;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,

@@ -1627,6 +1627,13 @@ static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(
         target_lane->context_token_count = required_context_token_count;
         target_lane->input_token_id = source_lane->input_token_id;
         target_lane->mtp_draft_token_count = mtp_budget;
+        target_lane->mtp_resolution_proposed_token_count =
+            source_lane->mtp_resolution_proposed_token_count;
+        target_lane->mtp_resolution_accepted_token_count =
+            source_lane->mtp_resolution_accepted_token_count;
+        target_lane->mtp_resolution_reserved0 = 0u;
+        if (target_lane->mtp_resolution_proposed_token_count != 0u)
+            packet->flags |= SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE;
         if (speculative_verify != 0u)
         {
             target_lane->speculative_token_count =
