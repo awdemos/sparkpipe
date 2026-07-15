@@ -879,6 +879,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeResidentPayload(
 			decode_dispatch->request_dispatch->mtp_draft_token_budget : 0u;
 		target_lane->speculative_token_count =
 			decode_dispatch->speculative_token_count;
+		target_lane->mtp_resolution_proposed_token_count =
+			(uint8_t)lane->mtp_resolution_proposed_token_count;
+		target_lane->mtp_resolution_accepted_token_count =
+			(uint8_t)lane->mtp_resolution_accepted_token_count;
+		target_lane->mtp_resolution_reserved0 = 0u;
 		target_lane->kv_block_offset = 0u;
 		target_lane->kv_block_count = 0u;
 		memcpy(target_lane->speculative_draft_token_ids,

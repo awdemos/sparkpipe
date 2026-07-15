@@ -487,6 +487,32 @@ def test_mtp_serial_train_continuation_keeps_transaction_open(root: Path) -> Non
             "\t\t\t\t\twork_packet,lane,transaction) == 0u" in apply_body)
 
 
+def test_attached_resident_decode_preserves_mtp_resolution(root: Path) -> None:
+    backend = (root / "src" / "spark_glm52_pp13_service_backend.c").read_text(
+        encoding="utf-8")
+    daemon = (root / "tools" / "sparkpipe_glm52_cuda_residentd.c").read_text(
+        encoding="utf-8")
+    backend_start = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeResidentPayload(")
+    backend_end = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendSubmitDecodeToResident(",
+        backend_start)
+    backend_body = backend[backend_start:backend_end]
+    daemon_start = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(")
+    daemon_end = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(",
+        daemon_start)
+    daemon_body = daemon[daemon_start:daemon_end]
+    for field in ("mtp_resolution_proposed_token_count",
+                  "mtp_resolution_accepted_token_count"):
+        assert f"target_lane->{field}" in backend_body
+        assert f"lane->{field}" in backend_body
+        assert f"target_lane->{field}" in daemon_body
+        assert f"source_lane->{field}" in daemon_body
+    assert "SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE" in daemon_body
+
+
 def test_layer_body_failures_are_never_silent(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_sm121_required_decode_stage.cu").read_text(
@@ -622,6 +648,8 @@ def main() -> None:
     test_rank_queue_does_not_overtake_a_deferred_sequence_position(root)
     test_short_context_bypasses_indexshare_for_exact_prefix_attention(root)
     test_mtp_retry_cleanup_preserves_resolution_receipt(root)
+    test_mtp_serial_train_continuation_keeps_transaction_open(root)
+    test_attached_resident_decode_preserves_mtp_resolution(root)
 
 
 if __name__ == "__main__":

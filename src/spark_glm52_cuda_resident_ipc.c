@@ -150,6 +150,13 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
             lane->context_token_count == 0u ||
             lane->speculative_token_count !=
                 message->speculative_token_count ||
+            lane->mtp_resolution_reserved0 != 0u ||
+            (lane->mtp_resolution_proposed_token_count == 0u &&
+             lane->mtp_resolution_accepted_token_count != 0u) ||
+            lane->mtp_resolution_proposed_token_count >
+                SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT ||
+            lane->mtp_resolution_accepted_token_count >
+                lane->mtp_resolution_proposed_token_count ||
             lane->kv_block_offset != expected_block_offset ||
             (internal_kv_directory != 0u && lane->kv_block_count != 0u) ||
             (internal_kv_directory == 0u && lane->kv_block_count == 0u) ||
