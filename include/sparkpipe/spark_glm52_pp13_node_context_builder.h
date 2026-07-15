@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 13u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 14u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT \
 	16384u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS 256u
@@ -49,6 +49,7 @@ extern "C" {
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_NVME_KV 0x00000040u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_ASYNC_WORK 0x00000080u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_LAYER_MAJOR_MTP_VERIFY 0x00000100u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_CONTROL_GENERATION_RESET 0x00000200u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_REQUIRED_PRODUCTION_CAPS \
 	(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RESIDENT_MOE_PACKS | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_STAGE_SLICE | \
@@ -58,7 +59,8 @@ extern "C" {
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_MTP_DRAFT | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_NVME_KV | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_ASYNC_WORK | \
-	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_LAYER_MAJOR_MTP_VERIFY)
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_LAYER_MAJOR_MTP_VERIFY | \
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_CONTROL_GENERATION_RESET)
 
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK \
 	0x00000001u
@@ -204,6 +206,9 @@ typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderTakeDsparkDraftFunction)(
 typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderGetKvStatsFunction)(
 	void *builder_state,
 	SparkGlm52Pp13NodeContextBuilderKvStats *stats);
+typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderResetControlGenerationFunction)(
+	void *builder_state,
+	uint64_t control_generation);
 
 typedef struct SparkGlm52Pp13NodeContextBuilderInterface
 {
@@ -221,6 +226,8 @@ typedef struct SparkGlm52Pp13NodeContextBuilderInterface
 	SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction submit_work;
 	SparkGlm52Pp13NodeContextBuilderTakeDsparkDraftFunction take_dspark_draft;
 	SparkGlm52Pp13NodeContextBuilderGetKvStatsFunction get_kv_stats;
+	SparkGlm52Pp13NodeContextBuilderResetControlGenerationFunction
+		reset_control_generation;
 } SparkGlm52Pp13NodeContextBuilderInterface;
 
 typedef const SparkGlm52Pp13NodeContextBuilderInterface *(

@@ -605,6 +605,10 @@ def test_attached_prefill_uses_ordered_socket_backpressure(root: Path) -> None:
     assert "runtime->work_queue_head = 0u;" in generation_body
     assert "runtime->work_queue_count = 0u;" in generation_body
     assert "runtime->work_queue_error_count += dropped_work;" in generation_body
+    assert "SparkGlm52CudaResidentdResetControlRuntime(" in generation_body
+    assert "reset_control_generation(" in daemon
+    assert "SparkHiddenTransportClose(runtime->input_transport_session);" in daemon
+    assert "SparkGlm52CudaResidentdCreateDriverInstance(" in daemon
     enqueue_start = daemon.index(
         "static SparkStatus SparkGlm52CudaResidentdEnqueueWork(")
     enqueue_end = daemon.index(

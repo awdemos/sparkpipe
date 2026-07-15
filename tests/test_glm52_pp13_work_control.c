@@ -1030,6 +1030,12 @@ static void SparkTestGlm52Pp13WorkControlResetsOlderGeneration(void)
 	assert(state.directory_entry_count == 1u);
 	assert(state.control_generation == 100u);
 	assert(state.control_generation_reset_count == 1u);
+	assert(SparkGlm52Pp13WorkControlAdvanceKvGeneration(
+		&state,200u) == SPARK_STATUS_OK);
+	assert(state.directory_entry_count == 0u);
+	assert(state.allocated_physical_block_count == 0u);
+	assert(state.control_generation == 200u);
+	assert(state.control_generation_reset_count == 2u);
 	packet.control_generation = 200u;
 	packet.request_id = 102u;
 	packet.sequence_id = 202u;
@@ -1042,6 +1048,8 @@ static void SparkTestGlm52Pp13WorkControlResetsOlderGeneration(void)
 	assert(state.control_generation == 200u);
 	assert(state.control_generation_reset_count == 2u);
 	packet.control_generation = 100u;
+	assert(SparkGlm52Pp13WorkControlAdvanceKvGeneration(
+		&state,100u) == SPARK_STATUS_VALIDATION_FAILED);
 	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 		&packet,&state,&view) == SPARK_STATUS_NOT_FOUND);
 	assert(state.directory_entry_count == 1u);
