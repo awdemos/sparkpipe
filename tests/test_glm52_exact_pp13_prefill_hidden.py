@@ -522,6 +522,11 @@ def test_attached_prefill_uses_ordered_socket_backpressure(root: Path) -> None:
     daemon = (root / "tools" /
               "sparkpipe_glm52_cuda_residentd.c").read_text(
                   encoding="utf-8")
+    assert (
+        "#define SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_TOKENS \\\n"
+        "\tSPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS"
+        in backend)
+    assert "SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_TOKENS 512u" not in backend
     submit_start = backend.index(
         "static SparkStatus SparkGlm52Pp13ServiceBackendSubmitPrefillToResident(")
     submit_end = backend.index(
