@@ -100,6 +100,11 @@ SparkStatus SparkGlm52Pp13RuntimeParseQuantizationMode(
 const char *SparkGlm52Pp13RuntimeQuantizationModeName(
     uint32_t quantization_mode);
 
+SparkStatus SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+    uint32_t quantization_mode,
+    uint32_t bound_plan_count,
+    uint32_t expected_plan_count);
+
 typedef struct SparkGlm52Pp13RuntimeFinalEventRoute
 {
     uint32_t abi_version;

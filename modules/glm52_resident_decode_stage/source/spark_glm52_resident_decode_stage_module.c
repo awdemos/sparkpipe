@@ -220,9 +220,7 @@ static bool SparkGlm52ResidentDecodeStageMlpExecutionUsesQuantizedPlan(
     return node_context->mlp_execution_mode ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE ||
         node_context->mlp_execution_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE ||
-        node_context->mlp_execution_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE;
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
 }
 
 static bool SparkGlm52ResidentDecodeStageLinearPlanIsUsable(
@@ -2415,7 +2413,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageLayerPointers(
             node_context->mlp_execution_mode !=
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE ||
             node_context->projection_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3 ||
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16 ||
             !SparkGlm52ResidentDecodeStagePointerIsAligned(
                 node_context->post_attention_norm_weight_bf16,
                 2u) ||
@@ -2585,7 +2583,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
             node_context) ==
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT &&
         node_context->projection_mode !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3)
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16)
     {
         SparkGlm52ResidentDecodeStageReportValidationFailure(
             node_context,

@@ -13,6 +13,14 @@ extern "C" {
 #define SPARK_GLM52_STAGEPACK_MAX_RANK 8u
 #define SPARK_GLM52_STAGEPACK_INDEX_FILE "stagepack_index.json"
 #define SPARK_GLM52_STAGEPACK_FORMAT "sparkpipe.glm52.pp13.stagepack.v1"
+#define SPARK_GLM52_STAGEPACK_W8LUT_MODEL_QUANTIZATION "w8lut"
+#define SPARK_GLM52_STAGEPACK_W8LUT_NON_EXPERT_DTYPE "BF16"
+#define SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FILE "w8lut_moe_pack_manifest.json"
+#define SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FORMAT \
+	"sparkpipe.glm52.w8lut.resident_moe_pack.v1"
+#define SPARK_GLM52_STAGEPACK_W8LUT_PACK_MAGIC "SPARKGLM52W8LUT"
+#define SPARK_GLM52_STAGEPACK_W8LUT_PACK_EXTENSION ".spw8lut"
+#define SPARK_GLM52_STAGEPACK_W8LUT_QUANT_MODE 3u
 
 typedef struct SparkGlm52StagePackTensorSpec
 {
@@ -37,6 +45,10 @@ SparkStatus SparkGlm52StagePackResolveTensor(
 	const char *stagepack_root,
 	const SparkGlm52StagePackTensorSpec *spec,
 	SparkGlm52StagePackTensorRegion *region);
+
+SparkStatus SparkGlm52StagePackValidateW8lutContract(
+	const char *stagepack_root,
+	const char *w8lut_pack_root);
 
 #ifdef __cplusplus
 }

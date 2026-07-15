@@ -1,5 +1,6 @@
 #include "sparkpipe/spark_glm52_stagepack.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -103,6 +104,178 @@ static SparkStatus SparkGlm52StagePackValidateFileRange(
 	if ((uint64_t)file_status.st_size < (file_offset + tensor_bytes))
 		return SPARK_STATUS_IO_ERROR;
 	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52StagePackCopyRootString(
+	const SparkJsonDocument *document,
+	const char *member_name,
+	char **value_out)
+{
+	int32_t root_token_index,member_token_index;
+
+	if (document == 0 || member_name == 0 || value_out == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	*value_out = 0;
+	root_token_index = SparkJsonGetRootToken(document);
+	member_token_index = SparkJsonFindObjectMember(
+		document,root_token_index,member_name);
+	if (member_token_index < 0 ||
+		SparkJsonCopyString(document,member_token_index,value_out) !=
+			SPARK_STATUS_OK)
+		return SPARK_STATUS_SCHEMA_ERROR;
+	return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkGlm52StagePackSha256IsValid(const char *text)
+{
+	uint32_t index;
+
+	if (text == 0 || strlen(text) != 64u)
+		return 0u;
+	for (index=0u; index<64u; ++index)
+	{
+		if (isxdigit((unsigned char)text[index]) == 0)
+			return 0u;
+	}
+	return 1u;
+}
+
+static SparkStatus SparkGlm52StagePackRequireRootString(
+	const SparkJsonDocument *document,
+	int32_t root_token_index,
+	const char *member_name,
+	const char *expected_value)
+{
+	int32_t token_index;
+
+	if (expected_value == 0)
+		return SPARK_STATUS_OK;
+	token_index = SparkJsonFindObjectMember(
+		document,root_token_index,member_name);
+	if (token_index < 0 ||
+		SparkJsonStringEquals(document,token_index,expected_value) == 0)
+		return SPARK_STATUS_SCHEMA_ERROR;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52StagePackValidateW8lutDocument(
+	const SparkJsonDocument *document,
+	const char *expected_format,
+	const char *expected_dtype,
+	const char *expected_quantization,
+	const char *expected_magic,
+	const char *expected_extension)
+{
+	uint64_t quant_mode;
+	int32_t root_token_index,token_index;
+	SparkStatus status;
+
+	root_token_index = SparkJsonGetRootToken(document);
+	status = SparkGlm52StagePackRequireRootString(
+		document,root_token_index,"format",expected_format);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52StagePackRequireRootString(
+			document,root_token_index,"non_expert_weight_dtype",expected_dtype);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52StagePackRequireRootString(
+			document,root_token_index,"model_quantization",expected_quantization);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52StagePackRequireRootString(
+			document,root_token_index,"pack_magic",expected_magic);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52StagePackRequireRootString(
+			document,root_token_index,"pack_extension",expected_extension);
+	if (status != SPARK_STATUS_OK || expected_magic == 0)
+		return status;
+	token_index = SparkJsonFindObjectMember(
+		document,root_token_index,"quant_mode");
+	if (token_index < 0 ||
+		SparkJsonGetUInt64(document,token_index,&quant_mode) != SPARK_STATUS_OK ||
+		quant_mode != SPARK_GLM52_STAGEPACK_W8LUT_QUANT_MODE)
+		return SPARK_STATUS_SCHEMA_ERROR;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52StagePackReadW8lutContract(
+	const char *root,
+	const char *index_file,
+	const char *expected_format,
+	const char *expected_dtype,
+	const char *expected_quantization,
+	const char *expected_magic,
+	const char *expected_extension,
+	char **source_sha256_out)
+{
+	SparkJsonDocument document;
+	char path[SPARK_GLM52_STAGEPACK_PATH_BYTES];
+	char *source_sha256;
+	SparkStatus status;
+
+	if (source_sha256_out == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	*source_sha256_out = 0;
+	source_sha256 = 0;
+	status = SparkGlm52StagePackBuildPath(
+		root,index_file,path,(uint32_t)sizeof(path));
+	SparkJsonDocumentReset(&document);
+	if (status == SPARK_STATUS_OK)
+		status = SparkJsonLoadFile(path,&document);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52StagePackValidateW8lutDocument(
+			&document,expected_format,expected_dtype,expected_quantization,
+			expected_magic,expected_extension);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52StagePackCopyRootString(
+			&document,"source_model_index_sha256",&source_sha256);
+	if (status == SPARK_STATUS_OK &&
+		SparkGlm52StagePackSha256IsValid(source_sha256) == 0u)
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	SparkJsonDocumentDestroy(&document);
+	if (status != SPARK_STATUS_OK)
+	{
+		free(source_sha256);
+		return status;
+	}
+	*source_sha256_out = source_sha256;
+	return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52StagePackValidateW8lutContract(
+	const char *stagepack_root,
+	const char *w8lut_pack_root)
+{
+	char *stagepack_sha256,*w8lut_sha256;
+	SparkStatus status;
+
+	if (stagepack_root == 0 || w8lut_pack_root == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	stagepack_sha256 = 0;
+	w8lut_sha256 = 0;
+	status = SparkGlm52StagePackReadW8lutContract(
+		stagepack_root,
+		SPARK_GLM52_STAGEPACK_INDEX_FILE,
+		SPARK_GLM52_STAGEPACK_FORMAT,
+		SPARK_GLM52_STAGEPACK_W8LUT_NON_EXPERT_DTYPE,
+		SPARK_GLM52_STAGEPACK_W8LUT_MODEL_QUANTIZATION,
+		0,
+		0,
+		&stagepack_sha256);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52StagePackReadW8lutContract(
+			w8lut_pack_root,
+			SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FILE,
+			SPARK_GLM52_STAGEPACK_W8LUT_MANIFEST_FORMAT,
+			0,
+			0,
+			SPARK_GLM52_STAGEPACK_W8LUT_PACK_MAGIC,
+			SPARK_GLM52_STAGEPACK_W8LUT_PACK_EXTENSION,
+			&w8lut_sha256);
+	if (status == SPARK_STATUS_OK &&
+		strcmp(stagepack_sha256,w8lut_sha256) != 0)
+		status = SPARK_STATUS_SCHEMA_ERROR;
+	free(stagepack_sha256);
+	free(w8lut_sha256);
+	return status;
 }
 
 static SparkStatus SparkGlm52StagePackReadTensorRegion(

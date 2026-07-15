@@ -6438,6 +6438,38 @@ static __global__ void SparkGlm52ResidentDecodeStageSiluMulKernel(
     }
 }
 
+static __global__ void SparkGlm52ResidentDecodeStageW8lutRouteSiluMulKernel(
+    const uint16_t *__restrict__ w1_output_bf16,
+    uint16_t *__restrict__ intermediate_bf16,
+    uint32_t routed_row_count,
+    uint32_t intermediate_dimension)
+{
+    uint32_t column_index;
+    uint32_t row_index;
+    uint64_t row_base;
+    float gate_value;
+    float up_value;
+    float silu_value;
+
+    row_index = blockIdx.y;
+    column_index = (blockIdx.x * blockDim.x) + threadIdx.x;
+    if (row_index >= routed_row_count || column_index >= intermediate_dimension)
+    {
+        return;
+    }
+    row_base = (uint64_t)row_index * intermediate_dimension *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_W1_COMPONENT_COUNT;
+    up_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+        w1_output_bf16[row_base + column_index]);
+    gate_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+        w1_output_bf16[
+            row_base + intermediate_dimension + column_index]);
+    silu_value = gate_value / (1.0f + __expf(-gate_value));
+    intermediate_bf16[
+        ((uint64_t)row_index * intermediate_dimension) + column_index] =
+        SparkGlm52ResidentDecodeStageFloatToBf16(silu_value * up_value);
+}
+
 static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 2)
 void SparkGlm52ResidentDecodeStageRestrictedLogitsKernel(
     const uint16_t *__restrict__ normalized_hidden_bf16,
@@ -12656,7 +12688,6 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchW8lutMoeTensorCore(
     cudaError_t cuda_status;
     uint32_t routed_row_count;
     uint32_t tile_launch_count;
-    uint64_t intermediate_value_count;
     dim3 w1_grid;
     dim3 w2_grid;
     dim3 finalize_grid;
@@ -12766,17 +12797,20 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchW8lutMoeTensorCore(
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_W1_COMPONENT_COUNT,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_W1_COMPONENT_COUNT,
         plan->intermediate_dimension);
-    intermediate_value_count =
-        (uint64_t)routed_row_count * plan->intermediate_dimension;
-    SparkGlm52ResidentDecodeStageSiluMulKernel<<<
-        SparkGlm52ResidentDecodeStageElementBlockCount(intermediate_value_count),
+    SparkGlm52ResidentDecodeStageW8lutRouteSiluMulKernel<<<
+        dim3(
+            (plan->intermediate_dimension +
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS - 1u) /
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+            routed_row_count,
+            1u),
         SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
         0u,
         cuda_stream>>>(
-        view.w1_output_bf16 + plan->intermediate_dimension,
         view.w1_output_bf16,
         view.intermediate_bf16,
-        intermediate_value_count);
+        routed_row_count,
+        plan->intermediate_dimension);
     w2_grid = dim3(
         (plan->hidden_dimension +
          SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_WMMA_N - 1u) /
