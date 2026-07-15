@@ -850,7 +850,10 @@ static SparkStatus SparkGlm52CudaResidentdBuildPollFds(
     {
         fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].fd =
             runtime->client_fds[slot];
-        fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].events = POLLIN;
+        fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].events =
+            runtime->work_queue_count <
+                SPARK_GLM52_CUDA_RESIDENTD_WORK_QUEUE_CAPACITY
+            ? POLLIN : 0;
     }
     fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_WAKE].fd = runtime->wake_pipe_read_fd;
     fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_WAKE].events = POLLIN;
