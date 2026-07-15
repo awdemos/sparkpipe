@@ -58,12 +58,8 @@ static void SparkGlm52Pp13WorkControlSetMtpResolutionFlag(
 static uint32_t SparkGlm52Pp13WorkControlUsesSingleLaneMtpTrain(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch)
 {
-	return decode_dispatch != 0 && decode_dispatch->request_dispatch != 0 &&
-		decode_dispatch->dispatch_kind ==
-			SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
-		decode_dispatch->active_sequence_count == 1u &&
-		(decode_dispatch->request_dispatch->flags &
-			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u;
+	(void)decode_dispatch;
+	return 0u;
 }
 
 static SparkStatus SparkGlm52Pp13WorkControlBuildDecodeLanes(

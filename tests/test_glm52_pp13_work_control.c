@@ -860,7 +860,7 @@ static void SparkTestGlm52Pp13WorkControlBuildDecodeBatch(void)
 		SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static void SparkTestGlm52Pp13WorkControlBuildMtpTrain(void)
+static void SparkTestGlm52Pp13WorkControlBuildPackedMtpVerify(void)
 {
 	static SparkGlm52RequestApiDispatch request_dispatch;
 	static SparkGlm52RequestApiDecodeDispatchView decode_view;
@@ -902,23 +902,14 @@ static void SparkTestGlm52Pp13WorkControlBuildMtpTrain(void)
 			400u + token_index;
 	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
 		&decode_dispatch,0u,&packet) == SPARK_STATUS_OK);
-	assert(packet.rows_per_lane == 1u && packet.execution_row_count == 1u);
+	assert(packet.rows_per_lane == 4u && packet.execution_row_count == 4u);
+	assert(packet.new_token_count == 4u);
 	assert(packet.sequence_position == 32u && packet.input_token_id == 300u);
 	assert((packet.flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE) != 0u);
 	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,7u,1u) ==
 		SPARK_STATUS_OK);
 	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
-		&decode_dispatch,2u,&packet) == SPARK_STATUS_OK);
-	assert(packet.sequence_position == 34u && packet.input_token_id == 401u);
-	assert((packet.flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE) == 0u);
-	assert(packet.lanes[0u].mtp_resolution_proposed_token_count == 0u);
-	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,7u,1u) ==
-		SPARK_STATUS_OK);
-	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
-		&decode_dispatch,3u,&packet) == SPARK_STATUS_OK);
-	assert(packet.sequence_position == 35u && packet.input_token_id == 402u);
-	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
-		&decode_dispatch,4u,&packet) == SPARK_STATUS_INVALID_ARGUMENT);
+		&decode_dispatch,1u,&packet) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestGlm52Pp13WorkControlBuildPrefillBatch(void)
@@ -1107,7 +1098,7 @@ int main(void)
 	SparkTestGlm52Pp13WorkControlDsparkVerify();
 	SparkTestGlm52Pp13WorkControlMtpVerify();
 	SparkTestGlm52Pp13WorkControlBuildDecodeBatch();
-	SparkTestGlm52Pp13WorkControlBuildMtpTrain();
+	SparkTestGlm52Pp13WorkControlBuildPackedMtpVerify();
 	SparkTestGlm52Pp13WorkControlBuildPrefillBatch();
 	SparkTestGlm52Pp13WorkControlB1024MtpBatch();
 	SparkTestGlm52Pp13WorkControlB1024LayerMajorMtpVerify();

@@ -936,8 +936,8 @@ static uint32_t SparkGlm52Pp13ServiceBackendDecodeIsMtpVerify(
 static uint32_t SparkGlm52Pp13ServiceBackendDecodeUsesSingleLaneMtpTrain(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch)
 {
-	return SparkGlm52Pp13ServiceBackendDecodeIsMtpVerify(decode_dispatch) != 0u &&
-		decode_dispatch->request_count == 1u;
+	(void)decode_dispatch;
+	return 0u;
 }
 
 static uint32_t SparkGlm52Pp13ServiceBackendDecodeWorkFrameCount(
