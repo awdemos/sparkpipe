@@ -466,6 +466,25 @@ def test_mtp_retry_cleanup_preserves_resolution_receipt(root: Path) -> None:
     assert "memset(transaction,0,sizeof(*transaction));" not in retry_cleanup
 
 
+def test_mtp_transaction_uses_expanded_execution_row(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderRecordMtpKvTransactions(")
+    end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpKvRollback(",
+        start)
+    body = source[start:end]
+    assert ("execution_row_index =\n\t\t\t"
+            "lane_index * work_packet->rows_per_lane;" in body)
+    assert ("state->host_lane_physical_block_counts[execution_row_index]"
+            in body)
+    assert ("((uint64_t)execution_row_index * state->kv_state.lane_stride)"
+            in body)
+    assert "state->host_lane_physical_block_counts[lane_index]" not in body
+
+
 def test_mtp_serial_train_continuation_keeps_transaction_open(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
