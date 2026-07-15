@@ -7910,7 +7910,7 @@ static bool SparkGlm52ResidentDecodeStageBlackwellQuantizedTensorCorePlanShapeIs
         (linear_plan->output_dimension & 15u) == 0u &&
         linear_plan->maximum_active_sequence_count != 0u &&
         linear_plan->maximum_active_sequence_count <=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT;
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_EXECUTION_ROW_COUNT;
 }
 
 static bool SparkGlm52ResidentDecodeStagePlanKindIsBlackwellQuantizedTensorCore(
