@@ -64,6 +64,46 @@ def set_role_argument(manifest,role_name,argument,value):
         arguments.extend([argument,str(value)])
 
 
+def get_role_argument(manifest,role_name,argument):
+    matching_roles = [role for role in manifest["roles"] if role.get("name") == role_name]
+    if len(matching_roles) != 1:
+        raise SystemExit("release must contain exactly one role named " + role_name)
+    arguments = matching_roles[0].setdefault("argv",[])
+    matches = [index for index,item in enumerate(arguments) if item == argument]
+    if len(matches) != 1 or matches[0] + 1 >= len(arguments):
+        raise SystemExit("role must contain exactly one valued argument: " + argument)
+    return arguments[matches[0] + 1]
+
+
+def remove_role_argument(manifest,role_name,argument):
+    matching_roles = [role for role in manifest["roles"] if role.get("name") == role_name]
+    if len(matching_roles) != 1:
+        raise SystemExit("release must contain exactly one role named " + role_name)
+    arguments = matching_roles[0].setdefault("argv",[])
+    matches = [index for index,item in enumerate(arguments) if item == argument]
+    if len(matches) > 1:
+        raise SystemExit("role argument occurs more than once: " + argument)
+    if matches:
+        index = matches[0]
+        if index + 1 >= len(arguments):
+            raise SystemExit("role argument is missing its value: " + argument)
+        del arguments[index:index + 2]
+
+
+def set_model_arguments(manifest,model_quantization,moe_pack_root):
+    roles = ["spark0_gateway","pp13_cuda_residentd"]
+    if moe_pack_root is None:
+        if model_quantization != "fp8":
+            raise SystemExit("--moe-pack-root is required for non-FP8 releases")
+        moe_pack_root = get_role_argument(
+            manifest,"pp13_cuda_residentd","--stagepack-root")
+    for role_name in roles:
+        remove_role_argument(manifest,role_name,"--fp8-pack-root")
+        set_role_argument(
+            manifest,role_name,"--model-quantization",model_quantization)
+        set_role_argument(manifest,role_name,"--moe-pack-root",moe_pack_root)
+
+
 def set_role_switch(manifest,role_name,argument,enabled):
     matching_roles = [role for role in manifest["roles"] if role.get("name") == role_name]
     if len(matching_roles) != 1:
@@ -169,6 +209,9 @@ def main():
     parser.add_argument("--max-active",type=int)
     parser.add_argument("--kv-pool-tokens",type=int)
     parser.add_argument("--kv-logical-blocks",type=int,required=True)
+    parser.add_argument(
+        "--model-quantization",choices=["fp8","w8lut"],default="fp8")
+    parser.add_argument("--moe-pack-root")
     decode_mode = parser.add_mutually_exclusive_group(required=True)
     decode_mode.add_argument("--mtp",action="store_true")
     decode_mode.add_argument("--plain-decode",action="store_true")
@@ -211,6 +254,8 @@ def main():
     set_role_argument(
         manifest,"spark0_gateway","--kv-logical-blocks",
         arguments.kv_logical_blocks)
+    set_model_arguments(
+        manifest,arguments.model_quantization,arguments.moe_pack_root)
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
     set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
     set_runtime_diagnostics(manifest,not arguments.without_diagnostics)

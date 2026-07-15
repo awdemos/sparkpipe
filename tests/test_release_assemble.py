@@ -35,13 +35,21 @@ def main():
                 },
                 {
                     "name": "pp13_cuda_residentd",
-                    "argv": ["--max-active", "16"],
+                    "argv": [
+                        "--max-active", "16",
+                        "--fp8-pack-root", "/packs",
+                        "--stagepack-root", "/packs",
+                    ],
                     "env": ["KEEP_RESIDENT=1", "SPARKPIPE_PP13_TRACE=1",
                             "SPARKPIPE_MTP_GPU_PROFILE=1"],
                 },
                 {
                     "name": "spark0_gateway",
-                    "argv": ["--max-active", "16"],
+                    "argv": [
+                        "--max-active", "16",
+                        "--fp8-pack-root", "/packs",
+                        "--stagepack-root", "/packs",
+                    ],
                     "env": ["KEEP_GATEWAY=1"],
                 },
             ],
@@ -98,9 +106,15 @@ def main():
         assert result["max_active_sequence_count"] == 64
         assert result["roles"][0]["argv"] == ["--max-active","64"]
         assert result["roles"][1]["argv"] == [
-            "--max-active","64","--kv-pool-tokens","65536","--mtp"]
+            "--max-active","64","--stagepack-root","/packs",
+            "--kv-pool-tokens","65536","--model-quantization","fp8",
+            "--moe-pack-root","/packs","--mtp"]
         assert result["roles"][2]["argv"] == [
-            "--max-active","64","--kv-logical-blocks","1024","--mtp"]
+            "--max-active","64","--stagepack-root","/packs",
+            "--kv-logical-blocks","1024","--model-quantization","fp8",
+            "--moe-pack-root","/packs","--mtp"]
+        assert all("--fp8-pack-root" not in role["argv"]
+                   for role in result["roles"])
         for role in result["roles"]:
             assert "SPARKPIPE_RELEASE_ID=new" in role["env"]
             assert "SPARKPIPE_RELEASE_GIT_COMMIT=abc123" in role["env"]
