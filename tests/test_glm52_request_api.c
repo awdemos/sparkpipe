@@ -3187,6 +3187,42 @@ static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
         &fixture.api,handle) == SPARK_STATUS_OK);
 }
 
+static void SparkTestRequestApiMtpDraftBudgetCapsScheduledRows(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch dispatch;
+    SparkGlm52RequestApiHandle handle;
+    uint32_t prompt[16u];
+
+    SparkTestFillTokenIds(prompt,16u,153600u);
+    SparkTestInitializeFixture(&fixture);
+    fixture.api.configuration_flags |=
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+    SparkTestInitializeSubmitRequest(
+        &request,1536u,11536u,SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
+        prompt,16u,40u);
+    request.thinking_token_budget = 0u;
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,&request,&handle) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,1u,96000u);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,2u,2u,97000u);
+    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,3u,3u,98000u);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.mtp_draft_token_budget ==
+        SPARK_GLM52_REQUEST_API_MTP_SCHEDULED_DRAFT_TOKEN_COUNT);
+    assert(SparkGlm52RequestApiCancelDispatch(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiCancelRequest(
+        &fixture.api,handle) == SPARK_STATUS_OK);
+}
+
 static void SparkTestRequestApiMtpRejectedDraftStaysOutsideNextContext(void)
 {
     SparkTestRequestApiFixture fixture;
@@ -3759,6 +3795,7 @@ int main(void)
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
     SparkTestRequestApiMtpDraftRequiresSpeculativeVerify();
     SparkTestRequestApiMtpDraftBudgetRemainsTransactional();
+    SparkTestRequestApiMtpDraftBudgetCapsScheduledRows();
     SparkTestRequestApiMtpRejectedDraftStaysOutsideNextContext();
     SparkTestRequestApiMtpBudgetLeavesVerifierFallbackHeadroom();
     SparkTestRequestApiMtpVerifyCapsPackedExecutionRows();
