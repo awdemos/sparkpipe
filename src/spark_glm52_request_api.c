@@ -5018,10 +5018,10 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
         }
         slot->mtp_next_draft_token_budget = accepted_draft_token_count + 1u;
         if (slot->mtp_next_draft_token_budget >
-            SPARK_GLM52_REQUEST_API_MTP_ADAPTIVE_MAX_DRAFT_TOKEN_COUNT)
+            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
         {
             slot->mtp_next_draft_token_budget =
-                SPARK_GLM52_REQUEST_API_MTP_ADAPTIVE_MAX_DRAFT_TOKEN_COUNT;
+                SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
         }
         slot->mtp_resolution_base_position = resolution_base_position;
         slot->mtp_resolution_proposed_token_count = proposed_token_count;

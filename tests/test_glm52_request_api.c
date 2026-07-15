@@ -3178,7 +3178,6 @@ static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
     SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,1u,93000u);
     SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,2u,0u,94000u);
     SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,1u,1u,95000u);
-    SparkTestRequestApiCompleteTransactionalMtpCycle(&fixture,2u,2u,95500u);
     assert(SparkGlm52RequestApiScheduleNext(
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
     assert(dispatch.mtp_draft_token_budget == 2u);

@@ -6301,17 +6301,16 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchVerifierMtpDraft(
 		state,work_packet->lane_count,work_packet->rows_per_lane);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	draft_token_count =
-		SPARK_GLM52_REQUEST_API_MTP_ADAPTIVE_MAX_DRAFT_TOKEN_COUNT;
+	draft_token_count = SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
 	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
 	{
 		accepted_count = SparkGlm52Pp13BuilderAcceptedMtpDraftCount(
 			state,work_packet,lane_index);
 		lane_draft_token_count = accepted_count + 1u;
 		if (lane_draft_token_count >
-			SPARK_GLM52_REQUEST_API_MTP_ADAPTIVE_MAX_DRAFT_TOKEN_COUNT)
+			SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
 			lane_draft_token_count =
-				SPARK_GLM52_REQUEST_API_MTP_ADAPTIVE_MAX_DRAFT_TOKEN_COUNT;
+				SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
 		if (lane_draft_token_count < draft_token_count)
 			draft_token_count = lane_draft_token_count;
 		if (work_packet->lanes[lane_index].sequence_position >

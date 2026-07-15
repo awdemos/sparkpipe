@@ -1,0 +1,1 @@
+128635 /home/spark0/sparkpipe_state/run/spark0_gateway.pid.log

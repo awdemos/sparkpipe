@@ -1,0 +1,35 @@
+{
+  "schema": "sparkpipe.glm52.mtp_depth_cap_falsification.v1",
+  "hardware": "13-rank Spark FP8 ring",
+  "batch_size": 1,
+  "prompt_count": 8,
+  "tokens_per_prompt": 64,
+  "accuracy_status": "NOT_MEASURED",
+  "output_token_sequences_equal": true,
+  "baseline": {
+    "git_commit": "ebb32153d7c1a04865208b42d154a2dd67d4f47b",
+    "release_id": "glm52-fp8-main-ebb32153-b1-mtp-control-trace-r4",
+    "maximum_draft_depth": 6,
+    "token_count": 512,
+    "elapsed_s": 72.50746019708458,
+    "tokens_per_s": 7.061342358542394,
+    "verify_dispatch_count": 225,
+    "depth_proposed": [225, 177, 75, 5, 0, 0],
+    "depth_accepted": [187, 82, 7, 0, 0, 0]
+  },
+  "experiment": {
+    "git_commit": "b50310375fd345dc245a851d912ecde4904d2825",
+    "release_id": "glm52-fp8-main-b503103-b1-mtp-depth2-r6",
+    "maximum_draft_depth": 2,
+    "token_count": 512,
+    "elapsed_s": 78.65970020694658,
+    "tokens_per_s": 6.509050996291292,
+    "ttft_mean_s": 0.4153185346222017,
+    "ttft_min_s": 0.39299635309726,
+    "ttft_max_s": 0.4830830879509449,
+    "verify_dispatch_count": 230,
+    "depth_proposed": [230, 180, 0, 0, 0, 0],
+    "depth_accepted": [190, 82, 0, 0, 0, 0]
+  },
+  "relative_throughput_change_percent": -7.821336712034254
+}
