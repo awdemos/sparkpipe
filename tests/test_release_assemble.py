@@ -63,6 +63,7 @@ def main():
             "--release-id","diagnostic",
             "--git-commit","abc123",
             "--max-active","64",
+            "--decode-batch-target","13",
             "--kv-pool-tokens","65536",
             "--kv-logical-blocks","1024",
             "--mtp",
@@ -92,6 +93,7 @@ def main():
             "--release-id","new",
             "--git-commit","abc123",
             "--max-active","64",
+            "--decode-batch-target","13",
             "--kv-pool-tokens","65536",
             "--kv-logical-blocks","1024",
             "--mtp",
@@ -113,7 +115,7 @@ def main():
         assert result["roles"][2]["argv"] == [
             "--max-active","64","--stagepack-root","/packs",
             "--kv-logical-blocks","1024","--model-quantization","fp8",
-            "--moe-pack-root","/packs","--mtp"]
+            "--moe-pack-root","/packs","--decode-batch-target","13","--mtp"]
         assert all("--fp8-pack-root" not in role["argv"]
                    for role in result["roles"])
         for role in result["roles"]:
@@ -145,6 +147,7 @@ def main():
             "--release-id","missing-mode",
             "--git-commit","abc123",
             "--kv-logical-blocks","1024",
+            "--decode-batch-target","13",
         ],capture_output=True,text=True)
         assert missing_mode.returncode != 0
         assert "one of the arguments --mtp --plain-decode is required" in (
@@ -156,6 +159,7 @@ def main():
             "--release-id","plain",
             "--git-commit","abc123",
             "--kv-logical-blocks","1024",
+            "--decode-batch-target","13",
             "--plain-decode",
             "--without-diagnostics",
         ],check=True)
@@ -169,6 +173,7 @@ def main():
             "--release-id","w8",
             "--git-commit","abc123",
             "--kv-logical-blocks","1024",
+            "--decode-batch-target","13",
             "--model-quantization","w8lut",
             "--stagepack-root","/home/{host}/artifacts/w8-stage",
             "--moe-pack-root","/home/{host}/artifacts/w8-moe",
@@ -192,6 +197,7 @@ def main():
             "--release-id","missing-w8-stage",
             "--git-commit","abc123",
             "--kv-logical-blocks","1024",
+            "--decode-batch-target","13",
             "--model-quantization","w8lut",
             "--moe-pack-root","/w8-moe",
             "--mtp",

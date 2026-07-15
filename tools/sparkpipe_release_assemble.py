@@ -213,6 +213,7 @@ def main():
     parser.add_argument("--release-id",required=True)
     parser.add_argument("--git-commit",required=True)
     parser.add_argument("--max-active",type=int)
+    parser.add_argument("--decode-batch-target",type=int,required=True)
     parser.add_argument("--kv-pool-tokens",type=int)
     parser.add_argument("--kv-logical-blocks",type=int,required=True)
     parser.add_argument(
@@ -258,6 +259,11 @@ def main():
             arguments.kv_pool_tokens)
     if arguments.kv_logical_blocks < 1:
         raise SystemExit("kv-logical-blocks must be positive")
+    if arguments.decode_batch_target < 1:
+        raise SystemExit("decode-batch-target must be positive")
+    if (arguments.max_active is not None and
+            arguments.decode_batch_target > arguments.max_active):
+        raise SystemExit("decode-batch-target must not exceed max-active")
     set_role_argument(
         manifest,"spark0_gateway","--kv-logical-blocks",
         arguments.kv_logical_blocks)
@@ -266,6 +272,9 @@ def main():
         arguments.model_quantization,
         arguments.moe_pack_root,
         arguments.stagepack_root)
+    set_role_argument(
+        manifest,"spark0_gateway","--decode-batch-target",
+        arguments.decode_batch_target)
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
     set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
     set_runtime_diagnostics(manifest,not arguments.without_diagnostics)

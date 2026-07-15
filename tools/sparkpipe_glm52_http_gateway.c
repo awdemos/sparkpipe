@@ -60,6 +60,7 @@ typedef struct SparkGlm52GatewayConfig
 	uint32_t require_service_backend;
 	uint32_t pump_steps;
 	uint32_t max_active_sequence_count;
+	uint32_t decode_batch_target;
 	uint32_t kv_logical_block_capacity;
 	uint32_t port_base;
 	uint32_t model_quantization_mode;
@@ -115,6 +116,8 @@ static void SparkGlm52GatewayInitializeConfig(
 	configuration->port = SPARK_GLM52_GATEWAY_DEFAULT_PORT;
 	configuration->pump_steps = SPARK_GLM52_GATEWAY_DEFAULT_PUMP_STEPS;
 	configuration->max_active_sequence_count = 1024u;
+	configuration->decode_batch_target =
+		SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT;
 	configuration->port_base = 52100u;
 	configuration->model_quantization_mode =
 		SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE;
@@ -132,6 +135,10 @@ static int32_t SparkGlm52GatewayInitializePendingStreams(
 		runtime->configuration.max_active_sequence_count >
 			SPARK_GLM52_GATEWAY_STREAM_SLOT_MASK)
 		return -1;
+	if (runtime->configuration.decode_batch_target == 0u ||
+		runtime->configuration.decode_batch_target >
+			runtime->configuration.max_active_sequence_count)
+		return -2;
 	runtime->pending_stream_capacity =
 		SPARK_GLM52_GATEWAY_PENDING_STREAM_CAPACITY;
 	runtime->pending_stream_free_head = 0u;
@@ -429,6 +436,16 @@ static int32_t SparkGlm52GatewayApplyArgument(
 			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0)
 			return -15;
 		configuration->max_active_sequence_count = parsed;
+		*index += 1;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--decode-batch-target") == 0)
+	{
+		if ((*index + 1) >= argc ||
+			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0 ||
+			parsed == 0u)
+			return -22;
+		configuration->decode_batch_target = parsed;
 		*index += 1;
 		return 0;
 	}
@@ -747,6 +764,8 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 		SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES;
 	backend_configuration.max_active_sequence_count =
 		runtime->configuration.max_active_sequence_count;
+	backend_configuration.decode_batch_target =
+		runtime->configuration.decode_batch_target;
 	backend_configuration.port_base = runtime->configuration.port_base;
 	backend_configuration.kv_logical_block_capacity =
 		runtime->configuration.kv_logical_block_capacity;
@@ -1543,7 +1562,7 @@ int main(int argc,char **argv)
 	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
 	if (SparkGlm52GatewayParseArguments(&runtime.configuration,argc,argv) < 0)
 	{
-		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--model-quantization fp8|w8lut] [--moe-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--program name] [--node-target target] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path] [--max-active n] [--kv-logical-blocks n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--cuda-resident-socket path] [--mtp] [--dspark]\n",argv[0]);
+		fprintf(stderr,"usage: %s [--bind ip] [--port n] [--api-key key] [--api-key-file path] [--service-backend-so path] [--require-service-backend] [--pump-steps n] [--model-quantization fp8|w8lut] [--moe-pack-root dir] [--stagepack-root dir] [--transport-so path] [--driver-so path] [--program name] [--node-target target] [--node-context-builder-so path] [--embedding-pack path] [--tokenizer path] [--max-active n] [--decode-batch-target n] [--kv-logical-blocks n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--cuda-resident-socket path] [--mtp] [--dspark]\n",argv[0]);
 		return 2;
 	}
 	if (SparkGlm52GatewayInitializePendingStreams(&runtime) < 0)

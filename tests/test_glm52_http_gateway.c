@@ -19,6 +19,7 @@ static void SparkTestHttpGatewayQueuesBeyondActiveLanes(void)
 
 	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
 	runtime.configuration.max_active_sequence_count = 4u;
+	runtime.configuration.decode_batch_target = 4u;
 	assert(SparkGlm52GatewayInitializePendingStreams(&runtime) == 0);
 	assert(runtime.pending_stream_capacity ==
 		SPARK_GLM52_GATEWAY_PENDING_STREAM_CAPACITY);
@@ -157,6 +158,7 @@ static void SparkTestHttpGatewayBuildsServiceHealth(void)
     backend_view.configured_kv_context_limit_tokens =
         SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS;
     backend_view.configured_max_active_sequences = 1u;
+	backend_view.configured_decode_batch_target = 1u;
     backend_view.speculation_configuration_flags =
         SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP;
     backend_view.release_id = "release-1";
@@ -174,6 +176,7 @@ static void SparkTestHttpGatewayBuildsServiceHealth(void)
     assert(strstr(
         body,
         "\"configured_kv_context_limit_tokens\":1048576") != 0);
+	assert(strstr(body,"\"configured_decode_batch_target\":1") != 0);
     assert(strstr(body, "\"release_git_commit\":\"abcdef\"") != 0);
     assert(strstr(
         body,

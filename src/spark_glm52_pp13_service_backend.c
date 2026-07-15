@@ -2354,7 +2354,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeDspark(
 
 static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRequestApi(
 	SparkGlm52Pp13ServiceBackendState *state,
-	uint32_t lane_capacity)
+	uint32_t lane_capacity,
+	uint32_t decode_batch_target)
 {
 	SparkGlm52RequestApiConfiguration request_api_configuration;
 	SparkStatus status;
@@ -2382,7 +2383,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRequestApi(
 		SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY;
 	request_api_configuration.prefetch_lane_count =
 		SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
-	request_api_configuration.decode_batch_target = lane_capacity;
+	request_api_configuration.decode_batch_target = decode_batch_target;
 	request_api_configuration.max_resident_kv_block_count =
 		state->kv_physical_block_capacity;
 	/* The rank plan is built after the service runtime during startup. */
@@ -2495,7 +2496,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeServiceRuntime(
 
 	lane_capacity =
 		SparkGlm52Pp13ServiceBackendServiceLaneCapacity(configuration);
-	if (lane_capacity == 0u)
+	if (lane_capacity == 0u || configuration->decode_batch_target == 0u ||
+		configuration->decode_batch_target > lane_capacity)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	status = SparkGlm52Pp13ServiceBackendAllocateServiceStorage(
 		state,
@@ -2511,7 +2513,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeServiceRuntime(
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13ServiceBackendInitializeRequestApi(
 			state,
-			lane_capacity);
+			lane_capacity,
+			configuration->decode_batch_target);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13ServiceBackendInitializeServingEngine(
 			state,
@@ -2928,6 +2931,10 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 		configuration->kv_logical_block_capacity >
 			UINT32_MAX - SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (configuration->decode_batch_target == 0u ||
+		configuration->decode_batch_target >
+			SparkGlm52Pp13ServiceBackendServiceLaneCapacity(configuration))
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (configuration->cuda_resident_socket_path != 0 &&
 		configuration->kv_logical_block_capacity == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -3092,6 +3099,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendGetView(
 		SPARK_GLM52_PP13_SERVICE_BACKEND_CONTEXT_TOKENS;
 	view->configured_max_active_sequences =
 		state->rank_plan.logical_lane_capacity;
+	view->configured_decode_batch_target =
+		state->request_api.decode_batch_target;
 	view->transport_capability_flags =
 		state->transport_library.transport_interface.capability_flags;
 	view->speculation_configuration_flags =
