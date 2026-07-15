@@ -311,6 +311,7 @@ static void SparkTestGlm52SchedulerUsesVllmStyleChunkedPrefill(void)
         &configuration) == SPARK_STATUS_OK);
 
     SparkTestInitializePrefillRequest(&request, 64u, 1024u, 21u, tokens);
+    request.max_scheduled_prompt_token_count = 256u;
     assert(SparkGlm52SchedulerAdmit(
         &scheduler,
         &request,
@@ -1141,6 +1142,32 @@ static void SparkTestGlm52SchedulerRejectsInvalidInputs(void)
         &decision) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkTestGlm52SchedulerSelectsPipelineBatchWidth(void)
+{
+    SparkGlm52Scheduler scheduler;
+
+    memset(&scheduler, 0, sizeof(scheduler));
+    scheduler.spark_count = SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT;
+    assert(SparkGlm52SchedulerSelectPipelineBatchWidth(
+        &scheduler, 0u, 256u) == 0u);
+    assert(SparkGlm52SchedulerSelectPipelineBatchWidth(
+        &scheduler, 1u, 256u) == 1u);
+    assert(SparkGlm52SchedulerSelectPipelineBatchWidth(
+        &scheduler, 4u, 256u) == 1u);
+    assert(SparkGlm52SchedulerSelectPipelineBatchWidth(
+        &scheduler, 13u, 256u) == 1u);
+    assert(SparkGlm52SchedulerSelectPipelineBatchWidth(
+        &scheduler, 14u, 256u) == 2u);
+    assert(SparkGlm52SchedulerSelectPipelineBatchWidth(
+        &scheduler, 92u, 256u) == 8u);
+    assert(SparkGlm52SchedulerSelectPipelineBatchWidth(
+        &scheduler, 184u, 256u) == 15u);
+    assert(SparkGlm52SchedulerSelectPipelineBatchWidth(
+        &scheduler, 256u, 256u) == 20u);
+    assert(SparkGlm52SchedulerSelectPipelineBatchWidth(
+        &scheduler, 13312u, 256u) == 256u);
+}
+
 int main(void)
 {
     SparkTestGlm52SchedulerAdmitsCurrentSparkPp13Decode();
@@ -1156,5 +1183,6 @@ int main(void)
     SparkTestGlm52SchedulerExposesKvBlockTableAndCancelsReservation();
     SparkTestGlm52SchedulerBuildsBatchedPrefillKvTables();
     SparkTestGlm52SchedulerRejectsInvalidInputs();
+    SparkTestGlm52SchedulerSelectsPipelineBatchWidth();
     return 0;
 }

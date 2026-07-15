@@ -327,6 +327,11 @@ SparkStatus SparkGlm52SchedulerInitialize(
     SparkGlm52Scheduler *scheduler,
     const SparkGlm52SchedulerConfiguration *configuration);
 
+uint32_t SparkGlm52SchedulerSelectPipelineBatchWidth(
+    const SparkGlm52Scheduler *scheduler,
+    uint32_t active_request_count,
+    uint32_t batch_capacity);
+
 SparkStatus SparkGlm52SchedulerAdmit(
     SparkGlm52Scheduler *scheduler,
     const SparkGlm52SchedulerRequest *request,

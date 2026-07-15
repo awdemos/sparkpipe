@@ -514,7 +514,9 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         "\"local_control_ready\":%u,"
         "\"configured_kv_context_limit_tokens\":%u,"
         "\"configured_max_active_sequences\":%u,"
-		"\"configured_decode_batch_target\":%u,"
+		"\"adaptive_decode_batch_width\":%u,"
+		"\"decode_batch_capacity\":%u,"
+		"\"prefill_wave_token_count\":%u,"
         "\"transport_shared_object\":\"%s\","
         "\"bound_transport_interface_flags\":%u,"
         "\"transport_binding_status\":\"%s\","
@@ -561,7 +563,9 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         view->local_control_ready != 0u ? 1u : 0u,
         view->configured_kv_context_limit_tokens,
         view->configured_max_active_sequences,
-		view->configured_decode_batch_target,
+		view->adaptive_decode_batch_width,
+		view->decode_batch_capacity,
+		view->prefill_wave_token_count,
         escaped_transport,
         view->transport_capability_flags,
         transport_status,

@@ -3754,6 +3754,22 @@ static void SparkTestRequestApiReservesMtpDraftKvBlocks(void)
         &fixture.api,&dispatch) == SPARK_STATUS_OK);
 }
 
+static void SparkTestRequestApiUsesAdaptivePipelineBatchWidth(void)
+{
+    SparkTestRequestApiFixture fixture;
+
+    SparkTestInitializeFixture(&fixture);
+    assert(SparkGlm52RequestApiCurrentPipelineBatchWidth(&fixture.api) ==
+        fixture.api.decode_batch_target);
+    fixture.api.configuration_flags |=
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ADAPTIVE_PIPELINE_BATCHING;
+    fixture.api.queued_request_count = 13u;
+    assert(SparkGlm52RequestApiCurrentPipelineBatchWidth(&fixture.api) == 1u);
+    fixture.api.queued_request_count = 12u;
+    fixture.api.running_request_count = 14u;
+    assert(SparkGlm52RequestApiCurrentPipelineBatchWidth(&fixture.api) == 2u);
+}
+
 int main(void)
 {
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
@@ -3792,5 +3808,6 @@ int main(void)
     SparkTestRequestApiDescribesAndCopiesFullPrefillTokenWindows();
     SparkTestRequestApiSubmitsCTextPromptToPrefillSchedule();
     SparkTestRequestApiAdmitsThirteenThousandWithFreeList();
+    SparkTestRequestApiUsesAdaptivePipelineBatchWidth();
     return 0;
 }
