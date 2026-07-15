@@ -6,7 +6,7 @@
 #include "sparkpipe/spark_glm52_chat_template.h"
 #include "sparkpipe/spark_json.h"
 
-#define SPARK_GLM52_COMPAT_CHAT_FLAGS \
+#define SPARK_GLM52_COMPAT_DEFAULT_CHAT_FLAGS \
 	(SPARK_GLM52_CHAT_TEMPLATE_FLAG_ADD_GENERATION_PROMPT | \
 	 SPARK_GLM52_CHAT_TEMPLATE_FLAG_ENABLE_THINKING)
 
@@ -58,14 +58,19 @@ static SparkStatus SparkGlm52CompatReadOptionalUInt32(
     const SparkJsonDocument *document,
     int32_t root_token_index,
     const char *member_name,
-    uint32_t *value)
+    uint32_t *value,
+    uint32_t *present_out)
 {
     int32_t member_token_index;
 
+    if ( present_out != 0 )
+        *present_out = 0u;
     member_token_index =
         SparkJsonFindObjectMember(document, root_token_index, member_name);
     if ( member_token_index < 0 )
         return SPARK_STATUS_OK;
+    if ( present_out != 0 )
+        *present_out = 1u;
     return SparkJsonGetUInt32(document, member_token_index, value);
 }
 
@@ -371,7 +376,7 @@ static SparkStatus SparkGlm52CompatBeginTemplate(
 	status = SparkGlm52ChatTemplateBegin(
 		&writer,
 		"Max",
-		SPARK_GLM52_COMPAT_CHAT_FLAGS);
+		request->chat_template_flags);
 	request->text_bytes = writer.text_bytes;
 	return status;
 }
@@ -442,7 +447,7 @@ static SparkStatus SparkGlm52CompatFinishTemplate(
 		return status;
 	status = SparkGlm52ChatTemplateFinish(
 		&writer,
-		SPARK_GLM52_COMPAT_CHAT_FLAGS);
+		request->chat_template_flags);
 	request->text_bytes = writer.text_bytes;
 	return status;
 }
@@ -572,6 +577,10 @@ static SparkStatus SparkGlm52CompatPrepareCommon(
     SparkGlm52CompatTextRequest *request)
 {
     int32_t root_token_index;
+    uint32_t thinking_budget;
+    uint32_t thinking_budget_alias;
+    uint32_t thinking_budget_present;
+    uint32_t thinking_budget_alias_present;
     SparkStatus status;
 
     if ( request == 0 || request->abi_version != SPARK_GLM52_COMPAT_API_ABI_VERSION ||
@@ -583,20 +592,56 @@ static SparkStatus SparkGlm52CompatPrepareCommon(
         return SPARK_STATUS_INVALID_ARGUMENT;
     request->text_bytes = 0u;
     request->text[0] = '\0';
+    request->thinking_token_budget = 0u;
+    request->chat_template_flags = SPARK_GLM52_COMPAT_DEFAULT_CHAT_FLAGS;
     status = SparkGlm52CompatReadOptionalUInt32(
         document,
         root_token_index,
         "max_tokens",
-        &request->output_token_budget);
+        &request->output_token_budget,
+        0);
     if ( status != SPARK_STATUS_OK )
         return status;
     status = SparkGlm52CompatReadOptionalUInt32(
         document,
         root_token_index,
         "max_completion_tokens",
-        &request->output_token_budget);
+        &request->output_token_budget,
+        0);
     if ( status != SPARK_STATUS_OK )
         return status;
+    thinking_budget = 0u;
+    thinking_budget_alias = 0u;
+    status = SparkGlm52CompatReadOptionalUInt32(
+        document,
+        root_token_index,
+        "thinking_budget_tokens",
+        &thinking_budget,
+        &thinking_budget_present);
+    if ( status != SPARK_STATUS_OK )
+        return status;
+    status = SparkGlm52CompatReadOptionalUInt32(
+        document,
+        root_token_index,
+        "thinking_token_budget",
+        &thinking_budget_alias,
+        &thinking_budget_alias_present);
+    if ( status != SPARK_STATUS_OK )
+        return status;
+    if ( thinking_budget_present != 0u &&
+        thinking_budget_alias_present != 0u &&
+        thinking_budget != thinking_budget_alias )
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if ( thinking_budget_present == 0u && thinking_budget_alias_present == 0u )
+        return SPARK_STATUS_OK;
+    if ( thinking_budget_present == 0u )
+        thinking_budget = thinking_budget_alias;
+    request->thinking_token_budget = thinking_budget;
+    request->chat_template_flags =
+        SPARK_GLM52_CHAT_TEMPLATE_FLAG_ADD_GENERATION_PROMPT;
+    if ( thinking_budget != 0u )
+        request->chat_template_flags |=
+            SPARK_GLM52_CHAT_TEMPLATE_FLAG_ENABLE_THINKING;
     return SPARK_STATUS_OK;
 }
 
@@ -633,6 +678,7 @@ void SparkGlm52CompatInitializeTextRequest(
     memset(request, 0, sizeof(*request));
     request->abi_version = SPARK_GLM52_COMPAT_API_ABI_VERSION;
     request->descriptor_bytes = SPARK_GLM52_COMPAT_TEXT_REQUEST_BYTES;
+    request->chat_template_flags = SPARK_GLM52_COMPAT_DEFAULT_CHAT_FLAGS;
     request->text = text;
     request->text_capacity = text_capacity;
     if ( text != 0 && text_capacity != 0u )
