@@ -222,8 +222,6 @@ typedef struct SparkGlm52Pp13BuilderLayer
 	void *context_lengths;
 	void *first_block_token_offsets;
 	void *mla_cache;
-	void *key_nope_cache;
-	void *value_cache;
 	void *key_index_cache;
 	void *key_index_block_min;
 	void *key_index_block_max;
@@ -1375,8 +1373,6 @@ __global__ static void SparkGlm52Pp13BuilderClearSpeculativeKvRowsKernel(
 	uint32_t physical_slot_count,
 	uint32_t block_token_count,
 	uint16_t *__restrict__ mla_cache,
-	uint16_t *__restrict__ key_nope_cache,
-	uint16_t *__restrict__ value_cache,
 	uint16_t *__restrict__ key_index_cache,
 	uint8_t *__restrict__ dsa_summary_dirty_flags)
 {
@@ -1392,16 +1388,6 @@ __global__ static void SparkGlm52Pp13BuilderClearSpeculativeKvRowsKernel(
 		 element_index += blockDim.x)
 		mla_cache[((uint64_t)physical_slot *
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + element_index] = 0u;
-	for (element_index = threadIdx.x;
-		 element_index < SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS;
-		 element_index += blockDim.x)
-		key_nope_cache[((uint64_t)physical_slot *
-			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS) + element_index] = 0u;
-	for (element_index = threadIdx.x;
-		 element_index < SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS;
-		 element_index += blockDim.x)
-		value_cache[((uint64_t)physical_slot *
-			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS) + element_index] = 0u;
 	if (key_index_cache != 0)
 	{
 		for (element_index = threadIdx.x;
@@ -2604,12 +2590,6 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 		ALLOC_FIELD(mla_cache,
 			cache_token_capacity *
 				SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
-		ALLOC_FIELD(key_nope_cache,
-			cache_token_capacity *
-				SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
-		ALLOC_FIELD(value_cache,
-			cache_token_capacity *
-				SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 		if (requires_dsa_index_cache != 0u)
 		{
 			ALLOC_FIELD(key_index_cache,
@@ -2626,12 +2606,6 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 		ZERO_FIELD(mla_cache,
 			cache_token_capacity *
 				SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
-		ZERO_FIELD(key_nope_cache,
-			cache_token_capacity *
-				SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
-		ZERO_FIELD(value_cache,
-			cache_token_capacity *
-				SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 		if (requires_dsa_index_cache != 0u)
 		{
 			ZERO_FIELD(key_index_cache,
@@ -2700,8 +2674,6 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ALLOC_FIELD(context_lengths,b,uint32_t);
 	ALLOC_FIELD(first_block_token_offsets,b,uint32_t);
 	ALLOC_FIELD(mla_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
-	ALLOC_FIELD(key_nope_cache,cache_token_capacity * SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
-	ALLOC_FIELD(value_cache,cache_token_capacity * SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 	if (requires_dsa_index_cache != 0u)
 	{
 		ALLOC_FIELD(key_index_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
@@ -2711,8 +2683,6 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	}
 	ZERO_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
 	ZERO_FIELD(mla_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
-	ZERO_FIELD(key_nope_cache,cache_token_capacity * SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
-	ZERO_FIELD(value_cache,cache_token_capacity * SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 	if (requires_dsa_index_cache != 0u)
 	{
 		ZERO_FIELD(key_index_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
@@ -2935,8 +2905,8 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->cos_table = (const float *)state->cos_table;
 	node->sin_table = (const float *)state->sin_table;
 	node->mla_cache_bf16 = layer->mla_cache;
-	node->key_nope_cache_bf16 = layer->key_nope_cache;
-	node->value_cache_bf16 = layer->value_cache;
+	node->key_nope_cache_bf16 = 0;
+	node->value_cache_bf16 = 0;
 	node->attention_norm_weight_bf16 = layer->attention_norm_weight;
 	node->raw_query_a_norm_weight_bf16 = layer->raw_query_a_norm_weight;
 	node->raw_kv_a_norm_weight_bf16 = layer->raw_kv_a_norm_weight;
@@ -2977,7 +2947,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 		? SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT
 		: SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
 	node->attention_execution_mode =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
 	node->dsa_score_tiles_f32 = state->dsa_score_tiles;
 	node->dsa_prefill_selected_u32 = state->dsa_prefill_selected;
 	node->dsa_prefill_row_context_lengths_u32 = state->dsa_prefill_row_context_lengths;
@@ -3005,7 +2975,6 @@ static void SparkGlm52Pp13BuilderWireLayer(
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_PREBOUND_PROJECTIONS |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_GRAPH_REPLAY |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MLP |
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_TILED_ONLINE_ATTENTION |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_FORBID_DEBUG_SYNCHRONIZATION |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_STAGE_SLICE_PLAN |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
@@ -7229,7 +7198,6 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpKvRollback(
 			physical_slot_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
 			(const uint32_t *)state->device_decode_positions,physical_slot_count,
 			state->kv_state.block_token_count,(uint16_t *)layer->mla_cache,
-			(uint16_t *)layer->key_nope_cache,(uint16_t *)layer->value_cache,
 			(uint16_t *)layer->key_index_cache,
 			(uint8_t *)layer->dsa_summary_dirty_flags);
 		status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
@@ -7243,7 +7211,6 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpKvRollback(
 			physical_slot_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
 			(const uint32_t *)state->device_decode_positions,physical_slot_count,
 			state->kv_state.block_token_count,(uint16_t *)layer->mla_cache,
-			(uint16_t *)layer->key_nope_cache,(uint16_t *)layer->value_cache,
 			(uint16_t *)layer->key_index_cache,
 			(uint8_t *)layer->dsa_summary_dirty_flags);
 		status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
