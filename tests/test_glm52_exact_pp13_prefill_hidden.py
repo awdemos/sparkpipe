@@ -557,6 +557,28 @@ def test_attached_prefill_uses_ordered_socket_backpressure(root: Path) -> None:
     assert submit_body.index(forward) < submit_body.index(local)
     assert "retry_count" not in submit_body
     assert "nanosleep" not in submit_body
+    defer_start = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(")
+    defer_end = daemon.index(
+        "static uint32_t SparkGlm52CudaResidentdPumpPendingPrefill(",
+        defer_start)
+    defer_body = daemon[defer_start:defer_end]
+    assert "runtime->pending_prefill_work.packet = *packet;" in defer_body
+    assert "runtime->pending_prefill_work.client_fd = client_fd;" in defer_body
+    assert "runtime->pending_prefill_active = 1u;" in defer_body
+    assert "return SPARK_STATUS_OK;" in defer_body
+    pump_start = defer_end
+    pump_end = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdHandleSubmitDecode(",
+        pump_start)
+    pump_body = daemon[pump_start:pump_end]
+    assert "SparkGlm52CudaResidentdEnqueueWork(" in pump_body
+    assert "if (status == SPARK_STATUS_BUSY)\n        return 0u;" in pump_body
+    assert "deferred_prefill_work_failed" in pump_body
+    main_start = daemon.index("int main(int argc, char **argv)")
+    main_body = daemon[main_start:]
+    assert "SparkGlm52CudaResidentdPumpPendingPrefill(" in main_body
+    assert "active_client_fd" not in daemon
     poll_start = daemon.index(
         "static SparkStatus SparkGlm52CudaResidentdBuildPollFds(")
     poll_end = daemon.index(
