@@ -168,6 +168,18 @@ static void SparkTestGlm52Pp13RuntimeFp8Packs(void)
         "w8lut",&rank_plan.quantization_mode) == SPARK_STATUS_OK);
     assert(strcmp(SparkGlm52Pp13RuntimeQuantizationModeName(
         rank_plan.quantization_mode),"w8lut") == 0);
+    assert(SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,42u,42u) ==
+        SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u,0u) ==
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
+    assert(SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,0u,0u) ==
+        SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,1u,1u) ==
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
     assert(SparkGlm52Pp13RuntimeParseQuantizationMode(
         "auto",&rank_plan.quantization_mode) == SPARK_STATUS_INVALID_ARGUMENT);
 }

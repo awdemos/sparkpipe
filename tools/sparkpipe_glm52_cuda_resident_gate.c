@@ -112,9 +112,10 @@ static SparkStatus SparkGlm52CudaResidentGateValidateStats(
 		stats->moe_bound_layer_count == 0u ||
 		stats->moe_bound_layer_count !=
 			stats->moe_expected_layer_count ||
-		stats->fp8_scaled_gemm_bound_plan_count == 0u ||
-		stats->fp8_scaled_gemm_bound_plan_count !=
-			stats->fp8_scaled_gemm_expected_plan_count ||
+		SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+			stats->model_quantization_mode,
+			stats->fp8_scaled_gemm_bound_plan_count,
+			stats->fp8_scaled_gemm_expected_plan_count) != SPARK_STATUS_OK ||
 		stats->kv_nvme_enabled == 0u ||
 		(stats->kv_nvme_mode !=
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_BATCHED_COHORT_JIT &&

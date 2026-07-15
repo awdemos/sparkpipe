@@ -134,30 +134,40 @@ typedef struct SparkGlm52Pp13BuilderLayer
 	SparkGlm52ResidentDecodeStageW8lutMoeResidentBinding w8lut_moe_binding;
 	uint32_t fp8_moe_ready;
 	uint32_t w8lut_moe_ready;
+	void *raw_query_a_weight_bf16;
 	void *raw_query_a_weight_fp8;
 	void *raw_query_a_scale;
+	void *raw_query_b_weight_bf16;
 	void *raw_query_b_weight_fp8;
 	void *raw_query_b_scale;
+	void *raw_kv_a_weight_bf16;
 	void *raw_kv_a_weight_fp8;
 	void *raw_kv_a_scale;
+	void *raw_kv_b_weight_bf16;
 	void *raw_kv_b_weight_fp8;
 	void *raw_kv_b_scale;
+	void *attention_output_weight_bf16;
 	void *attention_output_weight_fp8;
 	void *attention_output_scale;
 	void *attention_norm_weight;
 	void *raw_query_a_norm_weight;
 	void *raw_kv_a_norm_weight;
 	void *post_attention_norm_weight;
+	void *dense_gate_weight_bf16;
 	void *dense_gate_weight_fp8;
 	void *dense_gate_scale;
+	void *dense_up_weight_bf16;
 	void *dense_up_weight_fp8;
 	void *dense_up_scale;
+	void *dense_down_weight_bf16;
 	void *dense_down_weight_fp8;
 	void *dense_down_scale;
 	void *router_weight;
 	void *router_bias;
+	void *index_query_weight_bf16;
 	void *index_query_weight_fp8;
 	void *index_query_scale;
+	void *index_key_weight_bf16;
 	void *index_key_weight_fp8;
 	void *index_key_scale;
 	void *index_weights_proj_weight;
@@ -2716,58 +2726,65 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkGlm52Pp13BuilderUsesW8lut(
+	const SparkGlm52Pp13BuilderState *state)
+{
+	return state != 0 && state->rank_plan.quantization_mode ==
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderLoadLayerWeights(
 	SparkGlm52Pp13BuilderState *state,
 	SparkGlm52Pp13BuilderLayer *layer,
 	uint32_t layer_index)
 {
+	uint32_t w8lut;
 	SparkStatus status;
 #define LOAD(suffix, dtype, bpe, rank, d0, d1, field) \
 	do { status = SparkGlm52Pp13BuilderLoadLayerTensor(state,layer_index,suffix,dtype,bpe,rank,d0,d1,&layer->field); if (status != SPARK_STATUS_OK) return status; } while (0)
+#define LOAD_WEIGHT(suffix, d0, d1, bf16_field, fp8_field, scale_field) \
+	do { \
+		if (w8lut != 0u) \
+			LOAD(suffix,"BF16",sizeof(uint16_t),2u,d0,d1,bf16_field); \
+		else \
+		{ \
+			LOAD(suffix,"F8_E4M3",sizeof(uint8_t),2u,d0,d1,fp8_field); \
+			LOAD(suffix "_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(d0),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(d1),scale_field); \
+		} \
+	} while (0)
+	w8lut = SparkGlm52Pp13BuilderUsesW8lut(state);
 	LOAD("input_layernorm.weight","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,1u,attention_norm_weight);
 	LOAD("post_attention_layernorm.weight","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,1u,post_attention_norm_weight);
 	LOAD("self_attn.q_a_layernorm.weight","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,1u,raw_query_a_norm_weight);
 	LOAD("self_attn.kv_a_layernorm.weight","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,1u,raw_kv_a_norm_weight);
-	LOAD("self_attn.q_a_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,raw_query_a_weight_fp8);
-	LOAD("self_attn.q_a_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),raw_query_a_scale);
-	LOAD("self_attn.q_b_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,raw_query_b_weight_fp8);
-	LOAD("self_attn.q_b_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION),raw_query_b_scale);
-	LOAD("self_attn.kv_a_proj_with_mqa.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,raw_kv_a_weight_fp8);
-	LOAD("self_attn.kv_a_proj_with_mqa.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),raw_kv_a_scale);
-	LOAD("self_attn.kv_b_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,raw_kv_b_weight_fp8);
-	LOAD("self_attn.kv_b_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION),raw_kv_b_scale);
-	LOAD("self_attn.o_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,attention_output_weight_fp8);
-	LOAD("self_attn.o_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION),attention_output_scale);
+	LOAD_WEIGHT("self_attn.q_a_proj.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,raw_query_a_weight_bf16,raw_query_a_weight_fp8,raw_query_a_scale);
+	LOAD_WEIGHT("self_attn.q_b_proj.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_B_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,raw_query_b_weight_bf16,raw_query_b_weight_fp8,raw_query_b_scale);
+	LOAD_WEIGHT("self_attn.kv_a_proj_with_mqa.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_A_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,raw_kv_a_weight_bf16,raw_kv_a_weight_fp8,raw_kv_a_scale);
+	LOAD_WEIGHT("self_attn.kv_b_proj.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_KV_B_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION,raw_kv_b_weight_bf16,raw_kv_b_weight_fp8,raw_kv_b_scale);
+	LOAD_WEIGHT("self_attn.o_proj.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_PROJECTION_DIMENSION,attention_output_weight_bf16,attention_output_weight_fp8,attention_output_scale);
 	if (SparkGlm52Pp13BuilderDsaSourceLayer(layer_index) == layer_index)
 	{
-		LOAD("self_attn.indexer.wq_b.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,index_query_weight_fp8);
-		LOAD("self_attn.indexer.wq_b.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION),index_query_scale);
-		LOAD("self_attn.indexer.wk.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,index_key_weight_fp8);
-		LOAD("self_attn.indexer.wk.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),index_key_scale);
+		LOAD_WEIGHT("self_attn.indexer.wq_b.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_QUERY_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_QUERY_A_DIMENSION,index_query_weight_bf16,index_query_weight_fp8,index_query_scale);
+		LOAD_WEIGHT("self_attn.indexer.wk.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,index_key_weight_bf16,index_key_weight_fp8,index_key_scale);
 		LOAD("self_attn.indexer.weights_proj.weight","BF16",sizeof(uint16_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_WEIGHT_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,index_weights_proj_weight);
 		LOAD("self_attn.indexer.k_norm.weight","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,1u,index_key_norm_weight);
 		LOAD("self_attn.indexer.k_norm.bias","BF16",sizeof(uint16_t),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,1u,index_key_norm_bias);
 	}
 	if (layer_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER)
 	{
-		LOAD("mlp.gate_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_gate_weight_fp8);
-		LOAD("mlp.gate_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),dense_gate_scale);
-		LOAD("mlp.up_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_up_weight_fp8);
-		LOAD("mlp.up_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),dense_up_scale);
-		LOAD("mlp.down_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,dense_down_weight_fp8);
-		LOAD("mlp.down_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION),dense_down_scale);
+		LOAD_WEIGHT("mlp.gate_proj.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_gate_weight_bf16,dense_gate_weight_fp8,dense_gate_scale);
+		LOAD_WEIGHT("mlp.up_proj.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_up_weight_bf16,dense_up_weight_fp8,dense_up_scale);
+		LOAD_WEIGHT("mlp.down_proj.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION,dense_down_weight_bf16,dense_down_weight_fp8,dense_down_scale);
 	}
 	else
 	{
 		LOAD("mlp.gate.weight","BF16",sizeof(uint16_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,router_weight);
 		LOAD("mlp.gate.e_score_correction_bias","F32",sizeof(float),1u,SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT,1u,router_bias);
-		LOAD("mlp.shared_experts.gate_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_gate_weight_fp8);
-		LOAD("mlp.shared_experts.gate_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),dense_gate_scale);
-		LOAD("mlp.shared_experts.up_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_up_weight_fp8);
-		LOAD("mlp.shared_experts.up_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),dense_up_scale);
-		LOAD("mlp.shared_experts.down_proj.weight","F8_E4M3",sizeof(uint8_t),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,dense_down_weight_fp8);
-		LOAD("mlp.shared_experts.down_proj.weight_scale_inv","F32",sizeof(float),2u,SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION),SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_EXTENT(SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION),dense_down_scale);
+		LOAD_WEIGHT("mlp.shared_experts.gate_proj.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_gate_weight_bf16,dense_gate_weight_fp8,dense_gate_scale);
+		LOAD_WEIGHT("mlp.shared_experts.up_proj.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,dense_up_weight_bf16,dense_up_weight_fp8,dense_up_scale);
+		LOAD_WEIGHT("mlp.shared_experts.down_proj.weight",SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION,dense_down_weight_bf16,dense_down_weight_fp8,dense_down_scale);
 	}
+#undef LOAD_WEIGHT
 #undef LOAD
 	return SPARK_STATUS_OK;
 }
@@ -2844,8 +2861,10 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	SparkGlm52ResidentDecodeStageNodeContext *node;
 	uint32_t source_layer;
 	uint32_t group_end;
+	uint32_t w8lut;
 	slot = &layer->slot;
 	node = &layer->node;
+	w8lut = SparkGlm52Pp13BuilderUsesW8lut(state);
 	memset(slot,0,sizeof(*slot));
 	slot->cuda_stream = (void *)state->stream;
 	slot->input_hidden_bf16 = layer->input_hidden;
@@ -2921,21 +2940,29 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->attention_norm_weight_bf16 = layer->attention_norm_weight;
 	node->raw_query_a_norm_weight_bf16 = layer->raw_query_a_norm_weight;
 	node->raw_kv_a_norm_weight_bf16 = layer->raw_kv_a_norm_weight;
+	node->raw_query_a_weight_bf16 = layer->raw_query_a_weight_bf16;
 	node->raw_query_a_weight_fp8_e4m3 = (const uint8_t *)layer->raw_query_a_weight_fp8;
 	node->raw_query_a_weight_scale_inv_f32 = (const float *)layer->raw_query_a_scale;
+	node->raw_query_b_weight_bf16 = layer->raw_query_b_weight_bf16;
 	node->raw_query_b_weight_fp8_e4m3 = (const uint8_t *)layer->raw_query_b_weight_fp8;
 	node->raw_query_b_weight_scale_inv_f32 = (const float *)layer->raw_query_b_scale;
+	node->raw_kv_a_weight_bf16 = layer->raw_kv_a_weight_bf16;
 	node->raw_kv_a_weight_fp8_e4m3 = (const uint8_t *)layer->raw_kv_a_weight_fp8;
 	node->raw_kv_a_weight_scale_inv_f32 = (const float *)layer->raw_kv_a_scale;
+	node->raw_kv_b_weight_bf16 = layer->raw_kv_b_weight_bf16;
 	node->raw_kv_b_weight_fp8_e4m3 = (const uint8_t *)layer->raw_kv_b_weight_fp8;
 	node->raw_kv_b_weight_scale_inv_f32 = (const float *)layer->raw_kv_b_scale;
+	node->attention_output_weight_bf16 = layer->attention_output_weight_bf16;
 	node->attention_output_weight_fp8_e4m3 = (const uint8_t *)layer->attention_output_weight_fp8;
 	node->attention_output_weight_scale_inv_f32 = (const float *)layer->attention_output_scale;
 	node->post_attention_norm_weight_bf16 = layer->post_attention_norm_weight;
+	node->dense_gate_weight_bf16 = layer->dense_gate_weight_bf16;
 	node->dense_gate_weight_fp8_e4m3 = (const uint8_t *)layer->dense_gate_weight_fp8;
 	node->dense_gate_weight_scale_inv_f32 = (const float *)layer->dense_gate_scale;
+	node->dense_up_weight_bf16 = layer->dense_up_weight_bf16;
 	node->dense_up_weight_fp8_e4m3 = (const uint8_t *)layer->dense_up_weight_fp8;
 	node->dense_up_weight_scale_inv_f32 = (const float *)layer->dense_up_scale;
+	node->dense_down_weight_bf16 = layer->dense_down_weight_bf16;
 	node->dense_down_weight_fp8_e4m3 = (const uint8_t *)layer->dense_down_weight_fp8;
 	node->dense_down_weight_scale_inv_f32 = (const float *)layer->dense_down_scale;
 	node->final_norm_weight_bf16 = layer->final_norm_weight;
@@ -2943,9 +2970,12 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->restricted_token_ids = (const uint32_t *)state->restricted_token_ids;
 	node->pipeline_slots = slot;
 	node->cuda_pipeline_slot_states = &layer->cuda_slot;
-	node->projection_mode = SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
-	node->projection_backend_mode =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
+	node->projection_mode = w8lut != 0u
+		? SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16
+		: SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
+	node->projection_backend_mode = w8lut != 0u
+		? SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT
+		: SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
 	node->attention_execution_mode =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
 	node->dsa_score_tiles_f32 = state->dsa_score_tiles;
@@ -2962,8 +2992,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->dsa_prefill_row_capacity = SPARK_GLM52_PP13_BUILDER_PREFILL_ROWS;
 	node->dsa_score_row_capacity =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_TILE_ROWS;
-	node->model_quantization_mode = state->rank_plan.quantization_mode ==
-		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
+	node->model_quantization_mode = w8lut != 0u
 		? SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT
 		: SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
 	node->layer_index = layer_index;
@@ -2995,8 +3024,10 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->index_softmax_scale = SPARK_GLM52_MODEL_DSA_INDEX_SOFTMAX_SCALE;
 	node->dsa_index_head_count = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_COUNT;
 	node->dsa_index_head_dimension = SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_HEAD_DIMENSION;
+	node->index_query_weight_bf16 = layer->index_query_weight_bf16;
 	node->index_query_weight_fp8_e4m3 = (const uint8_t *)layer->index_query_weight_fp8;
 	node->index_query_weight_scale_inv_f32 = (const float *)layer->index_query_scale;
+	node->index_key_weight_bf16 = layer->index_key_weight_bf16;
 	node->index_key_weight_fp8_e4m3 = (const uint8_t *)layer->index_key_weight_fp8;
 	node->index_key_weight_scale_inv_f32 = (const float *)layer->index_key_scale;
 	node->index_weights_proj_weight_bf16 = layer->index_weights_proj_weight;
@@ -3039,15 +3070,15 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	{
 		node->layer_progression_mode =
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP;
-		node->mlp_execution_mode =
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE;
+		node->mlp_execution_mode = w8lut != 0u
+			? SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_TENSOR_CORE
+			: SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE;
 		node->dense_intermediate_dimension =
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION;
 	}
 	else
 	{
-		if (state->rank_plan.quantization_mode ==
-			SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+		if (w8lut != 0u)
 		{
 			node->layer_progression_mode =
 				SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK;
@@ -3086,12 +3117,15 @@ static SparkStatus SparkGlm52Pp13BuilderBindLayerPlans(
 	SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo create_info;
 	SparkGlm52ResidentDecodeStageLinearPlan *plans;
 	uint32_t bound_fp8_plan_count;
+	uint32_t bf16_plan_count;
 	uint32_t expected_fp8_plan_count;
 	uint32_t plan_index;
 	uint32_t plan_count;
 	uint32_t mask;
+	uint32_t w8lut;
 	SparkStatus status;
 	memset(&create_info,0,sizeof(create_info));
+	w8lut = SparkGlm52Pp13BuilderUsesW8lut(state);
 	create_info.abi_version =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_BINDING_ABI_VERSION;
 	create_info.maximum_active_sequence_count =
@@ -3125,10 +3159,13 @@ static SparkStatus SparkGlm52Pp13BuilderBindLayerPlans(
 	create_info.autotune_measurement_iterations = 1u;
 	create_info.cuda_stream = (void *)state->stream;
 	create_info.dense_input_bf16 = layer->post_attention_normalized_hidden;
+	create_info.dense_gate_weight_bf16 = layer->dense_gate_weight_bf16;
 	create_info.dense_gate_weight_fp8_e4m3 = layer->dense_gate_weight_fp8;
 	create_info.dense_gate_weight_scale_inv_f32 = layer->dense_gate_scale;
+	create_info.dense_up_weight_bf16 = layer->dense_up_weight_bf16;
 	create_info.dense_up_weight_fp8_e4m3 = layer->dense_up_weight_fp8;
 	create_info.dense_up_weight_scale_inv_f32 = layer->dense_up_scale;
+	create_info.dense_down_weight_bf16 = layer->dense_down_weight_bf16;
 	create_info.dense_down_weight_fp8_e4m3 = layer->dense_down_weight_fp8;
 	create_info.dense_down_weight_scale_inv_f32 = layer->dense_down_scale;
 	create_info.dense_gate_output_bf16 = layer->moe_gate;
@@ -3139,21 +3176,26 @@ static SparkStatus SparkGlm52Pp13BuilderBindLayerPlans(
 	create_info.router_weight_bf16 = layer->router_weight;
 	create_info.router_logits_f32 = layer->moe_router_logits;
 	create_info.raw_projection_input_bf16 = layer->normalized_hidden;
+	create_info.raw_query_a_weight_bf16 = layer->raw_query_a_weight_bf16;
 	create_info.raw_query_a_weight_fp8_e4m3 = layer->raw_query_a_weight_fp8;
 	create_info.raw_query_a_weight_scale_inv_f32 = layer->raw_query_a_scale;
 	create_info.raw_query_a_output_bf16 = layer->raw_query_a;
 	create_info.raw_query_b_input_bf16 = layer->raw_query_a_norm;
+	create_info.raw_query_b_weight_bf16 = layer->raw_query_b_weight_bf16;
 	create_info.raw_query_b_weight_fp8_e4m3 = layer->raw_query_b_weight_fp8;
 	create_info.raw_query_b_weight_scale_inv_f32 = layer->raw_query_b_scale;
 	create_info.raw_query_b_output_bf16 = layer->raw_query_b;
+	create_info.raw_kv_a_weight_bf16 = layer->raw_kv_a_weight_bf16;
 	create_info.raw_kv_a_weight_fp8_e4m3 = layer->raw_kv_a_weight_fp8;
 	create_info.raw_kv_a_weight_scale_inv_f32 = layer->raw_kv_a_scale;
 	create_info.raw_kv_a_output_bf16 = layer->raw_kv_a;
 	create_info.raw_kv_b_input_bf16 = layer->raw_kv_a_norm;
+	create_info.raw_kv_b_weight_bf16 = layer->raw_kv_b_weight_bf16;
 	create_info.raw_kv_b_weight_fp8_e4m3 = layer->raw_kv_b_weight_fp8;
 	create_info.raw_kv_b_weight_scale_inv_f32 = layer->raw_kv_b_scale;
 	create_info.raw_kv_b_output_bf16 = layer->raw_kv_b;
 	create_info.attention_output_input_bf16 = layer->attention_output_latent;
+	create_info.attention_output_weight_bf16 = layer->attention_output_weight_bf16;
 	create_info.attention_output_weight_fp8_e4m3 = layer->attention_output_weight_fp8;
 	create_info.attention_output_weight_scale_inv_f32 = layer->attention_output_scale;
 	create_info.attention_output_bf16 = layer->attention_projected_hidden;
@@ -3161,10 +3203,12 @@ static SparkStatus SparkGlm52Pp13BuilderBindLayerPlans(
 	create_info.restricted_lm_head_weight_bf16 = layer->restricted_lm_head_weight;
 	create_info.restricted_logits_f32 = layer->restricted_logits;
 	create_info.dsa_query_input_bf16 = layer->raw_query_a_norm;
+	create_info.dsa_query_weight_bf16 = layer->index_query_weight_bf16;
 	create_info.dsa_query_weight_fp8_e4m3 = layer->index_query_weight_fp8;
 	create_info.dsa_query_weight_scale_inv_f32 = layer->index_query_scale;
 	create_info.dsa_query_output_bf16 = layer->query_index_heads;
 	create_info.dsa_key_input_bf16 = layer->normalized_hidden;
+	create_info.dsa_key_weight_bf16 = layer->index_key_weight_bf16;
 	create_info.dsa_key_weight_fp8_e4m3 = layer->index_key_weight_fp8;
 	create_info.dsa_key_weight_scale_inv_f32 = layer->index_key_scale;
 	create_info.dsa_key_output_bf16 = layer->current_key_index;
@@ -3181,17 +3225,35 @@ static SparkStatus SparkGlm52Pp13BuilderBindLayerPlans(
 		&plan_count);
 	if (plans == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	status = SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedRegularLinearPlans(
-		plans,
-		plan_count);
-	if (status != SPARK_STATUS_OK)
-		return status;
-	status = SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearPlansScaledGemmBackend(
-		plans,
-		plan_count,
-		&state->fp8_scaled_gemm_backend);
-	if (status != SPARK_STATUS_OK)
-		return status;
+	if (w8lut != 0u)
+	{
+		bf16_plan_count = 0u;
+		for (plan_index = 0u; plan_index < plan_count; ++plan_index)
+		{
+			if (plans[plan_index].plan_kind ==
+				SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR)
+				bf16_plan_count += 1u;
+			else if (plans[plan_index].plan_kind !=
+				SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_UNUSED)
+				return SPARK_STATUS_MODULE_NOT_VALIDATED;
+		}
+		if (bf16_plan_count == 0u)
+			return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	}
+	else
+	{
+		status = SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedRegularLinearPlans(
+			plans,
+			plan_count);
+		if (status != SPARK_STATUS_OK)
+			return status;
+		status = SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearPlansScaledGemmBackend(
+			plans,
+			plan_count,
+			&state->fp8_scaled_gemm_backend);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
 	bound_fp8_plan_count = 0u;
 	expected_fp8_plan_count = 0u;
 	for (plan_index = 0u; plan_index < plan_count; ++plan_index)
@@ -3204,7 +3266,8 @@ static SparkStatus SparkGlm52Pp13BuilderBindLayerPlans(
 			plans[plan_index].custom_launch_function != 0)
 			bound_fp8_plan_count += 1u;
 	}
-	if (expected_fp8_plan_count == 0u ||
+	if ((w8lut == 0u && expected_fp8_plan_count == 0u) ||
+		(w8lut != 0u && expected_fp8_plan_count != 0u) ||
 		bound_fp8_plan_count != expected_fp8_plan_count ||
 		state->fp8_scaled_gemm_expected_plan_count >
 			UINT32_MAX - expected_fp8_plan_count ||
@@ -3573,9 +3636,6 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(
 	SparkStatus status;
 	if (state == 0 || node_context == 0 || stream != state->stream ||
 		state->mtp_draft_head_ready == 0u || state->full_vocab_logits == 0 ||
-		state->mtp_draft_lm_head_weight_fp8 == 0 ||
-		state->mtp_draft_lm_head_weight_scale_inv == 0 ||
-		state->mtp_draft_head_workspace == 0 ||
 		active_sequence_count == 0u ||
 		active_sequence_count > state->rank_plan.logical_lane_capacity ||
 		active_sequence_count > state->full_vocab_head_row_capacity)
@@ -3589,6 +3649,18 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(
 	status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
 	if (status != SPARK_STATUS_OK)
 		return status;
+	if (SparkGlm52Pp13BuilderUsesW8lut(state) != 0u)
+	{
+		return SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedyRows(
+			state,node_context,state->mtp_layer.normalized_hidden,
+			(uint32_t *)state->mtp_layer.restricted_selected_token_ids,
+			(float *)state->mtp_layer.restricted_selected_token_scores,
+			0u,active_sequence_count,stream);
+	}
+	if (state->mtp_draft_lm_head_weight_fp8 == 0 ||
+		state->mtp_draft_lm_head_weight_scale_inv == 0 ||
+		state->mtp_draft_head_workspace == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	status = SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearScaledGemmBackend(
 		&state->fp8_scaled_gemm_backend,
 		state->mtp_layer.normalized_hidden,
@@ -3916,8 +3988,14 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtpDraftHead(
 	uint64_t weight_bytes,scale_count,scale_bytes;
 	SparkStatus status;
 	if (state == 0 || lm_head_weight_bf16 == 0 || state->mtp_ready == 0u ||
-		state->fp8_scaled_gemm_backend.launch_function == 0 ||
-		state->rank_plan.logical_lane_capacity == 0u ||
+		state->rank_plan.logical_lane_capacity == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (SparkGlm52Pp13BuilderUsesW8lut(state) != 0u)
+	{
+		state->mtp_draft_head_ready = 1u;
+		return SPARK_STATUS_OK;
+	}
+	if (state->fp8_scaled_gemm_backend.launch_function == 0 ||
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT %
 			SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK != 0u ||
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION %
@@ -4093,7 +4171,9 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 	state->mtp_draft_plan.draft_token_count =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
 	state->mtp_draft_plan.weight_format =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
+		SparkGlm52Pp13BuilderUsesW8lut(state) != 0u
+		? SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_BF16
+		: SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
 	state->mtp_draft_plan.launch_function =
 		(void *)SparkGlm52Pp13BuilderLaunchMtpDraftPlan;
 	state->mtp_draft_plan.opaque_state = state;
@@ -4266,6 +4346,8 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeFp8ScaledGemm(
 {
 	uint64_t workspace_bytes;
 	SparkStatus status;
+	if (SparkGlm52Pp13BuilderUsesW8lut(state) != 0u)
+		return SPARK_STATUS_OK;
 	workspace_bytes =
 		SparkGlm52Sm121RequiredDecodeStageCalculateBuiltinFp8ScaledGemmWorkspaceBytes();
 	if (workspace_bytes == 0u)
@@ -4638,11 +4720,6 @@ static SparkStatus SparkGlm52Pp13BuilderValidateConfiguration(
 			(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK |
 			 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_MTP))
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (configuration->rank_plan->quantization_mode ==
-			SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT &&
-		(configuration->flags &
-			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_MTP) != 0u)
-		return SPARK_STATUS_MODULE_NOT_VALIDATED;
 	if ((configuration->flags &
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK) != 0u &&
 		(configuration->dspark_maximum_lane_count == 0u ||
@@ -4669,6 +4746,15 @@ static SparkStatus SparkGlm52Pp13BuilderInitialize(
 	status = SparkGlm52Pp13BuilderValidateConfiguration(configuration);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	if (configuration->rank_plan->quantization_mode ==
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+	{
+		status = SparkGlm52StagePackValidateW8lutContract(
+			configuration->stagepack_root,
+			configuration->moe_pack_root);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
 	state = (SparkGlm52Pp13BuilderState *)calloc(1u,sizeof(*state));
 	if (state == 0)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -4736,11 +4822,11 @@ static SparkStatus SparkGlm52Pp13BuilderBuild(
 	if (status == SPARK_STATUS_OK &&
 		state->moe_bound_layer_count != state->moe_expected_layer_count)
 		status = SPARK_STATUS_MODULE_NOT_VALIDATED;
-	if (status == SPARK_STATUS_OK &&
-		(state->fp8_scaled_gemm_expected_plan_count == 0u ||
-		 state->fp8_scaled_gemm_bound_plan_count !=
-			state->fp8_scaled_gemm_expected_plan_count))
-		status = SPARK_STATUS_MODULE_NOT_VALIDATED;
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+			state->rank_plan.quantization_mode,
+			state->fp8_scaled_gemm_bound_plan_count,
+			state->fp8_scaled_gemm_expected_plan_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	memset(&state->slice_context,0,sizeof(state->slice_context));
@@ -4801,7 +4887,17 @@ static SparkStatus SparkGlm52Pp13BuilderBuild(
 				(unsigned long long)state->full_vocab_head_row_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_OUTPUT_VOCAB_COUNT *
 					sizeof(float));
-			if (SparkGlm52Pp13BuilderMtpEnabled(state))
+			if (SparkGlm52Pp13BuilderMtpEnabled(state) &&
+				SparkGlm52Pp13BuilderUsesW8lut(state) != 0u)
+				fprintf(
+					stderr,
+					"pp13_mtp_draft_vocab_head rank=%u "
+					"backend=cublas_bf16_tensor_core maximum_rows=%u "
+					"weight_copy_bytes=0 workspace_bytes=0 "
+					"target_verifier_backend=cublas_bf16_tensor_core fail_closed=1\n",
+					state->rank_plan.rank_index,
+					state->rank_plan.logical_lane_capacity);
+			else if (SparkGlm52Pp13BuilderMtpEnabled(state))
 				fprintf(
 					stderr,
 					"pp13_mtp_draft_vocab_head rank=%u "

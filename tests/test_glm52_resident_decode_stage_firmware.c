@@ -1430,7 +1430,7 @@ static void SparkPrepareW8lutResidentDecodeStageNodeContext(
     const SparkGlm52ResidentDecodeStageW8lutMoePlan *plan)
 {
     node_context->projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16;
     node_context->layer_progression_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK;
     node_context->mlp_execution_mode =
@@ -1489,6 +1489,15 @@ static void SparkTestGlm52ResidentDecodeStageW8lutModelVariantValidation(void)
         &host_services,
         &module_state) == SPARK_STATUS_OK);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
+    node_context.projection_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+    node_context.projection_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16;
     node_context.model_quantization_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
     module_state = 0;
@@ -1499,6 +1508,13 @@ static void SparkTestGlm52ResidentDecodeStageW8lutModelVariantValidation(void)
     node_context.model_quantization_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT;
     plan.launch_function = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+    SparkTestInitializeW8lutMoePlan(&plan);
+    plan.capability_flags &=
+        ~SPARK_GLM52_RESIDENT_DECODE_STAGE_W8LUT_MOE_CAPABILITY_ROUTE_STRIDED_SILU;
     assert(SparkGlm52ResidentDecodeStageInitialize(
         &configuration,
         &host_services,

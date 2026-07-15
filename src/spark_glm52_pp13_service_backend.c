@@ -438,9 +438,10 @@ static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(SparkGlm52Pp1
 				: SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED) ||
 		 stats.moe_bound_layer_count == 0u ||
 		 stats.moe_bound_layer_count != stats.moe_expected_layer_count ||
-		 stats.fp8_scaled_gemm_bound_plan_count == 0u ||
-		 stats.fp8_scaled_gemm_bound_plan_count !=
-			stats.fp8_scaled_gemm_expected_plan_count ||
+		 SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+			stats.model_quantization_mode,
+			stats.fp8_scaled_gemm_bound_plan_count,
+			stats.fp8_scaled_gemm_expected_plan_count) != SPARK_STATUS_OK ||
 		 (stats.kv_nvme_enabled != 0u &&
 		  stats.kv_nvme_mode !=
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_SYNCHRONOUS_FULL_HISTORY &&
@@ -2876,11 +2877,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitialize(
 	if (SparkGlm52Pp13RuntimeQuantizationModeName(
 			configuration->model_quantization_mode) == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (configuration->model_quantization_mode ==
-			SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT &&
-		(configuration->flags &
-			SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP) != 0u)
-		return SPARK_STATUS_MODULE_NOT_VALIDATED;
 	if (configuration->kv_logical_block_capacity != 0u &&
 		configuration->kv_logical_block_capacity >
 			UINT32_MAX - SPARK_GLM52_PP13_SERVICE_BACKEND_REQUEST_CAPACITY)

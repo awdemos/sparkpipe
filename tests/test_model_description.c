@@ -89,6 +89,14 @@ int main(void)
     assert(decode_program->scheduling.private_queue_count == 0u);
     assert(decode_program->scheduling.validated_latency_ns == 0u);
     assert(decode_program->scheduling.host_staging_bytes_per_submit_ceiling == 0u);
+    assert(strstr(description.metadata_json,
+        "glm52_w8lut_8bit_experts_bf16_trunk") != 0);
+    assert(strstr(description.metadata_json,
+        "sparkpipe.glm52.w8lut.resident_moe_pack.v1") != 0);
+    assert(strstr(description.metadata_json,
+        "source_model_index_sha256") != 0);
+    assert(strstr(decode_program->operations[0].configuration_json,
+        "SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan") != 0);
     SparkModelDescriptionDestroy(&description);
 
     SparkTestEnsureBuildDirectory();

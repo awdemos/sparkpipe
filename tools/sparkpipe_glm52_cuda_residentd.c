@@ -455,10 +455,6 @@ static SparkStatus SparkGlm52CudaResidentdValidateConfiguration(
 		configuration->max_active_sequence_count >
 			SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT)
         return SPARK_STATUS_INVALID_ARGUMENT;
-    if (configuration->model_quantization_mode ==
-            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT &&
-        configuration->mtp_enabled != 0u)
-        return SPARK_STATUS_MODULE_NOT_VALIDATED;
     if (configuration->max_active_sequence_count >=
             SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT &&
         (configuration->kv_nvme_path == 0 ||

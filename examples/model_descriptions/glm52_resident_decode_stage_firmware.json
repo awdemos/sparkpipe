@@ -283,6 +283,33 @@
         "resident_layer_progression": "SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK",
         "moe_execution": "FP8 E4M3 tensor-core MoE plan through SparkGlm52ResidentDecodeStageFp8MoePlan",
         "projection_contract": "RAW_GLM_FP8_E4M3 Q/KV/O projections with FP32 inverse scales"
+      },
+      {
+        "name": "glm52_w8lut_8bit_experts_bf16_trunk",
+        "stage_plan_quantization_constant": "SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT",
+        "resident_layer_progression": "SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK",
+        "moe_execution": "W8LUT routed experts decoded tile-locally into BF16 WMMA operands through SparkGlm52ResidentDecodeStageW8lutMoePlan",
+        "projection_contract": "RAW_GLM_BF16 attention, DSA, dense, shared-expert, embedding, normalization, and vocabulary-head tensors",
+        "hf_tensor_contract_member": "hf_tensor_contract",
+        "stagepack_contract": {
+          "format": "sparkpipe.glm52.pp13.stagepack.v1",
+          "model_quantization": "w8lut",
+          "non_expert_weight_dtype": "BF16",
+          "index_file": "stagepack_index.json"
+        },
+        "resident_moe_pack_contract": {
+          "format": "sparkpipe.glm52.w8lut.resident_moe_pack.v1",
+          "manifest_file": "w8lut_moe_pack_manifest.json",
+          "file_pattern": "glm52_layer_%04u_w8lut_moe.spw8lut",
+          "pack_magic": "SPARKGLM52W8LUT",
+          "quant_mode": 3,
+          "includes_mtp_layer": 78,
+          "contains_all_experts": true,
+          "expert_count": 256,
+          "gate_up_order": "up_gate"
+        },
+        "source_identity_contract": "stagepack and W8LUT manifests must contain the same 64-hex source_model_index_sha256",
+        "fallback_allowed": false
       }
     ]
   },
@@ -312,7 +339,9 @@
                   "SparkGlm52Sm121RequiredDecodeStageQuiesce",
                   "SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice",
                   "SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill",
-                  "SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPrefill"
+                  "SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPrefill",
+                  "SparkGlm52Sm121RequiredDecodeStageCalculateW8lutMoeWorkspaceBytes",
+                  "SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan"
                 ],
                 "required_primitive_modules": [
                   {

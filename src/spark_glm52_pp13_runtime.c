@@ -77,6 +77,27 @@ const char *SparkGlm52Pp13RuntimeQuantizationModeName(
     return 0;
 }
 
+SparkStatus SparkGlm52Pp13RuntimeValidateFp8PlanCounts(
+    uint32_t quantization_mode,
+    uint32_t bound_plan_count,
+    uint32_t expected_plan_count)
+{
+    if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+    {
+        return expected_plan_count != 0u &&
+            bound_plan_count == expected_plan_count
+            ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }
+    if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+    {
+        return bound_plan_count == 0u && expected_plan_count == 0u
+            ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }
+    return SPARK_STATUS_INVALID_ARGUMENT;
+}
+
 static uint32_t SparkGlm52Pp13RuntimePathIsPresent(const char *path)
 {
     struct stat path_status;
