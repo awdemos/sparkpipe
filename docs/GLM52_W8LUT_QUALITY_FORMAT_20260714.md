@@ -108,6 +108,39 @@ checkpoint — requantizing FP8 would bake e4m3 error into W8LUT. Packer verifie
 slice (decode == RNE reference in-window, re-encode idempotence) and writes a manifest.
 `tools/glm52_w8lut_codec.py` `encode()` is the production resident-pack conversion core.
 
+### Rank-local BF16 plus W8LUT conversion
+
+`tools/glm52_w8lut_stage_pack_watch.py` derives the PP13 layer assignment from the
+checked-in model contract. `--layers auto` maps rank 0 to routed layers 3–5, ranks
+1–11 to six routed layers each, and rank 12 to layers 72–77 plus MTP layer 78. It
+waits only for the exact source shards used by that rank's outputs, rather than every
+file conservatively assigned by an older waterfall manifest.
+
+When `--stage-packer` and `--stage-output-dir` are supplied, one invocation creates
+both isolated pack families from the rank-local BF16 master shards:
+
+```
+python3 tools/glm52_w8lut_stage_pack_watch.py \
+    --manifest /tmp/ds4_waterfall_manifest_glm52_bf16.json \
+    --rank 2 \
+    --model-dir /home/spark2/models/hf/zai-org/GLM-5.2 \
+    --output-dir /home/spark2/sparkpipe_artifacts/glm52_w8lut_resident_moe_pp13_stage_v1 \
+    --packer tools/glm52_w8lut_resident_pack.py \
+    --stage-packer tools/glm52_stage_pack.py \
+    --stage-output-dir /home/spark2/sparkpipe_artifacts/glm52_w8lut_bf16_pp13_stage_payload_v1 \
+    --layers auto
+```
+
+The StagePack index identifies `model_quantization=w8lut`, records the BF16 source
+index SHA-256, and rejects non-BF16 non-expert weights or FP8 scale tensors. Existing
+FP8 StagePacks and `.spfp8` expert packs live in different directories and are not
+opened or replaced.
+
+This is the data-format prerequisite only. The current node-context builder still
+binds FP8 attention, dense, shared-expert, and DSA projections in W8LUT mode. Loading
+the new BF16 StagePacks into those projection plans remains a separate runtime change;
+no mixed W8LUT-expert/BF16-trunk inference status is claimed here.
+
 ## 5. Trunk and MTP to BF16
 
 | tensors | today | change |

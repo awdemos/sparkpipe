@@ -134,6 +134,79 @@ def main() -> int:
             "file"] == module.MTP_STAGE_FILE
         assert supplement_index["tensor_map"][module.MTP_EMBEDDING_ALIAS][
             "file"] == module.MTP_STAGE_FILE
+        w8_model_dir = root / "w8-model"
+        w8_output_dir = root / "w8-stagepacks"
+        w8_model_dir.mkdir()
+        w8_tensors = {
+            "model.layers.18.input_layernorm.weight": (
+                "BF16", [4], b"12345678"
+            ),
+            "model.layers.18.self_attn.q_proj.weight": (
+                "BF16", [2, 2], b"QWERASDF"
+            ),
+            "model.layers.18.mlp.experts.0.gate_proj.weight": (
+                "BF16", [2, 2], b"SKIPSKIP"
+            ),
+        }
+        write_safetensors(
+            w8_model_dir / "model-00001-of-00001.safetensors",
+            w8_tensors,
+        )
+        (w8_model_dir / "model.safetensors.index.json").write_text(
+            json.dumps({
+                "metadata": {
+                    "total_size": sum(len(item[2]) for item in w8_tensors.values())
+                },
+                "weight_map": {
+                    name: "model-00001-of-00001.safetensors"
+                    for name in w8_tensors
+                },
+            }),
+            encoding="utf-8",
+        )
+        w8_args = type(
+            "Args",
+            (),
+            {
+                "model_dir": w8_model_dir,
+                "output_dir": w8_output_dir,
+                "model_quantization": module.MODEL_QUANTIZATION_W8LUT,
+                "stages": "3",
+                "reuse": False,
+                "mtp_only": False,
+            },
+        )()
+        module.build_stage_packs(w8_args)
+        w8_index = json.loads(
+            (w8_output_dir / module.INDEX_FILE).read_text(encoding="utf-8")
+        )
+        assert w8_index["model_quantization"] == "w8lut"
+        assert w8_index["non_expert_weight_dtype"] == "BF16"
+        assert len(w8_index["source_model_index_sha256"]) == 64
+        assert w8_index["tensor_map"][
+            "model.layers.18.self_attn.q_proj.weight"
+        ]["dtype"] == "BF16"
+        assert "model.layers.18.mlp.experts.0.gate_proj.weight" not in w8_index[
+            "tensor_map"
+        ]
+        bad_args = type(
+            "Args",
+            (),
+            {
+                "model_dir": model_dir,
+                "output_dir": root / "bad-w8-stagepacks",
+                "model_quantization": module.MODEL_QUANTIZATION_W8LUT,
+                "stages": "3",
+                "reuse": False,
+                "mtp_only": False,
+            },
+        )()
+        try:
+            module.build_stage_packs(bad_args)
+        except module.StagePackFailure as error:
+            assert "must be BF16" in str(error)
+        else:
+            raise AssertionError("W8LUT stage pack accepted a non-BF16 weight")
     return 0
 
 
