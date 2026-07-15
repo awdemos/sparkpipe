@@ -415,6 +415,20 @@ static void SparkTestGlm52Pp13WorkControlMtpVerify(void)
 		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY;
 	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
+	packet.flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY;
+	packet.rows_per_lane = 1u;
+	packet.execution_row_count = 1u;
+	packet.new_token_count = 1u;
+	packet.speculative_token_index = 3u;
+	packet.sequence_position += 3u;
+	packet.lanes[0u].sequence_position = packet.sequence_position;
+	packet.input_token_id = packet.speculative_draft_token_ids[2u];
+	packet.lanes[0u].input_token_id = packet.input_token_id;
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
+		SPARK_STATUS_OK);
+	packet.speculative_token_index = packet.speculative_token_count + 1u;
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestGlm52Pp13WorkControlB1024MtpBatch(void)
@@ -846,6 +860,67 @@ static void SparkTestGlm52Pp13WorkControlBuildDecodeBatch(void)
 		SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkTestGlm52Pp13WorkControlBuildMtpTrain(void)
+{
+	static SparkGlm52RequestApiDispatch request_dispatch;
+	static SparkGlm52RequestApiDecodeDispatchView decode_view;
+	static SparkGlm52ServingDecodeDispatch decode_dispatch;
+	SparkGlm52Pp13WorkControlPacket packet;
+	SparkGlm52KvBlockTableView kv_view;
+	uint32_t token_index;
+	memset(&request_dispatch,0,sizeof(request_dispatch));
+	request_dispatch.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
+	request_dispatch.descriptor_bytes =
+		SPARK_GLM52_REQUEST_API_DISPATCH_DESCRIPTOR_BYTES;
+	request_dispatch.kind =
+		SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
+	request_dispatch.flags =
+		SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY;
+	request_dispatch.request_count = 1u;
+	request_dispatch.request_ids[0u] = 100u;
+	request_dispatch.sequence_ids[0u] = 200u;
+	memset(&decode_view,0,sizeof(decode_view));
+	decode_view.lane_count = 1u;
+	decode_view.lanes[0u].sequence_position = 32u;
+	decode_view.lanes[0u].context_token_count = 33u;
+	decode_view.lanes[0u].request_slot_index = 7u;
+	decode_view.lanes[0u].mtp_resolution_proposed_token_count = 2u;
+	decode_view.lanes[0u].mtp_resolution_accepted_token_count = 1u;
+	memset(&kv_view,0,sizeof(kv_view));
+	memset(&decode_dispatch,0,sizeof(decode_dispatch));
+	decode_dispatch.dispatch_kind =
+		SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
+	decode_dispatch.request_count = 1u;
+	decode_dispatch.active_sequence_count = 1u;
+	decode_dispatch.request_dispatch = &request_dispatch;
+	decode_dispatch.decode_view = &decode_view;
+	decode_dispatch.kv_block_table_view = &kv_view;
+	decode_dispatch.input_token_ids[0u] = 300u;
+	decode_dispatch.speculative_token_count = 3u;
+	for (token_index = 0u; token_index < 3u; ++token_index)
+		decode_dispatch.speculative_draft_token_ids[0u][token_index] =
+			400u + token_index;
+	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
+		&decode_dispatch,0u,&packet) == SPARK_STATUS_OK);
+	assert(packet.rows_per_lane == 1u && packet.execution_row_count == 1u);
+	assert(packet.sequence_position == 32u && packet.input_token_id == 300u);
+	assert((packet.flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE) != 0u);
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,7u,1u) ==
+		SPARK_STATUS_OK);
+	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
+		&decode_dispatch,2u,&packet) == SPARK_STATUS_OK);
+	assert(packet.sequence_position == 34u && packet.input_token_id == 401u);
+	assert((packet.flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE) == 0u);
+	assert(packet.lanes[0u].mtp_resolution_proposed_token_count == 0u);
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,7u,1u) ==
+		SPARK_STATUS_OK);
+	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
+		&decode_dispatch,3u,&packet) == SPARK_STATUS_OK);
+	assert(packet.sequence_position == 35u && packet.input_token_id == 402u);
+	assert(SparkGlm52Pp13WorkControlBuildDecodePacket(
+		&decode_dispatch,4u,&packet) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 static void SparkTestGlm52Pp13WorkControlBuildPrefillBatch(void)
 {
 	static SparkGlm52RequestApiDispatch request_dispatch;
@@ -1032,6 +1107,7 @@ int main(void)
 	SparkTestGlm52Pp13WorkControlDsparkVerify();
 	SparkTestGlm52Pp13WorkControlMtpVerify();
 	SparkTestGlm52Pp13WorkControlBuildDecodeBatch();
+	SparkTestGlm52Pp13WorkControlBuildMtpTrain();
 	SparkTestGlm52Pp13WorkControlBuildPrefillBatch();
 	SparkTestGlm52Pp13WorkControlB1024MtpBatch();
 	SparkTestGlm52Pp13WorkControlB1024LayerMajorMtpVerify();
