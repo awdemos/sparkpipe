@@ -902,6 +902,12 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeResidentPayload(
 	message->dispatch_kind = decode_dispatch->dispatch_kind;
 	message->lane_count = lane_count;
 	message->active_sequence_count = lane_count;
+	status = SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+		decode_dispatch->request_dispatch,
+		lane_count,
+		&message->execution_batch_bucket);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	message->speculative_token_count =
 		decode_dispatch->speculative_token_count;
 	message->kv_block_token_count = kv_view->block_token_count;
@@ -1749,6 +1755,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 	if (execution_row_count > UINT32_MAX)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	packet->execution_row_count = (uint32_t)execution_row_count;
+	if (SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+			decode_dispatch->request_dispatch,
+			lane_count,
+			&packet->execution_batch_bucket) != SPARK_STATUS_OK)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	packet->new_token_count = speculative_verify != 0u
 		? packet->rows_per_lane : mtp_budget + 1u;
 	packet->priority = decode_dispatch->request_dispatch->highest_priority;

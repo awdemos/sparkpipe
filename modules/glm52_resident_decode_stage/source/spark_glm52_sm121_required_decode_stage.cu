@@ -21857,12 +21857,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateExactPp13StageSlicePlan(
         exact_stage_slice_plan->first_layer_index + 6u >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT ||
         exact_stage_slice_plan->stage_index >= 13u ||
-        (plan_supports_layer_major_speculative_verify == 0u &&
+        (layer_major_speculative_verify == 0u &&
          active_sequence_count > exact_stage_slice_plan->batch_bucket) ||
         (plan_supports_layer_major_speculative_verify != 0u &&
          (exact_stage_slice_plan->logical_lane_capacity == 0u ||
-          exact_stage_slice_plan->logical_lane_capacity >
-            exact_stage_slice_plan->batch_bucket ||
           exact_stage_slice_plan->maximum_speculative_rows_per_lane < 2u ||
           exact_stage_slice_plan->final_token_candidate_row_capacity <
             exact_stage_slice_plan->maximum_active_sequence_count)) ||
@@ -21874,6 +21872,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateExactPp13StageSlicePlan(
           frame_context->logical_lane_count == 0u ||
           frame_context->logical_lane_count >
             exact_stage_slice_plan->logical_lane_capacity ||
+          frame_context->logical_lane_count >
+            exact_stage_slice_plan->batch_bucket ||
           frame_context->rows_per_lane < 2u ||
           frame_context->rows_per_lane >
             exact_stage_slice_plan->maximum_speculative_rows_per_lane ||
@@ -22229,7 +22229,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageSlice
     SparkGlm52ResidentDecodeStageCudaPipelineSlotState *first_cuda_slot_state,
     cudaStream_t cuda_stream)
 {
+    uint32_t layer_major_speculative_verify;
     SparkStatus status;
+
+    layer_major_speculative_verify = frame_context != 0 &&
+        (frame_context->flags &
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY) != 0u;
 
     if (exact_stage_slice_plan == 0 ||
         exact_stage_slice_plan->stage_index != StageIndex ||
@@ -22237,9 +22242,11 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinExactPp13StageSlice
         exact_stage_slice_plan->layer_count != 6u ||
         exact_stage_slice_plan->batch_bucket != BatchBucket ||
         exact_stage_slice_plan->maximum_active_sequence_count < active_sequence_count ||
-        (active_sequence_count > BatchBucket &&
-         (exact_stage_slice_plan->capability_flags &
-          SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_LAYER_MAJOR_SPECULATIVE_VERIFY) == 0u) ||
+        (layer_major_speculative_verify == 0u &&
+         active_sequence_count > BatchBucket) ||
+        (layer_major_speculative_verify != 0u &&
+         (frame_context == 0 ||
+          frame_context->logical_lane_count > BatchBucket)) ||
         final_token_stage != FinalTokenStage)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;

@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 18u
+#define SPARK_GLM52_CUDA_RESIDENT_IPC_ABI_VERSION 19u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAGIC 0x52445543u
 #define SPARK_GLM52_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS \
     (SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS)
@@ -240,6 +240,7 @@ typedef struct SparkGlm52CudaResidentIpcSubmitDecode
     uint32_t dispatch_kind;
     uint32_t lane_count;
     uint32_t active_sequence_count;
+    uint32_t execution_batch_bucket;
     uint32_t speculative_token_count;
     uint32_t kv_block_token_count;
     uint32_t kv_block_index_count;

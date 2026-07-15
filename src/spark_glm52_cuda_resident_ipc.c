@@ -117,6 +117,9 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message->lane_count == 0u ||
         message->lane_count > maximum_lane_count ||
         message->active_sequence_count != message->lane_count ||
+        SparkGlm52StagePlanBatchBucketIsSupported(
+            message->execution_batch_bucket) == 0u ||
+        message->lane_count > message->execution_batch_bucket ||
         message->kv_block_token_count == 0u)
         return SPARK_STATUS_INVALID_ARGUMENT;
     if ((message->resident_flags &
