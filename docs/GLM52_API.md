@@ -549,6 +549,7 @@ Supported request fields:
 prompt
 messages[].role
 messages[].content
+priority
 max_tokens
 max_completion_tokens
 ```
@@ -567,6 +568,13 @@ string as supplied.
 `max_completion_tokens` is preferred over `max_tokens` when both are present.
 The selected value becomes `output_token_budget`.
 
+`priority` is an optional unsigned integer. A larger value has preference over
+every ready request with a smaller value. Sparkpipe chooses execution width
+from the highest ready priority class, packs that class first, and may use
+otherwise-unused rows for lower-priority work without enlarging the selected
+execution width. Omitting `priority`, or supplying zero, uses the default
+priority.
+
 ### Anthropic Mapping
 
 Supported request fields:
@@ -577,6 +585,7 @@ messages[].role
 messages[].content
 messages[].content[].type == "text"
 messages[].content[].text
+priority
 max_tokens
 ```
 

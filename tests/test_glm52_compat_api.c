@@ -17,6 +17,7 @@ static void SparkTestCompatOpenAiChat(void)
     static const char RequestJson[] =
         "{"
         "\"model\":\"glm-5.2\","
+        "\"priority\":123,"
         "\"max_tokens\":17,"
         "\"messages\":["
         "{\"role\":\"system\",\"content\":\"You are terse.\"},"
@@ -39,6 +40,7 @@ static void SparkTestCompatOpenAiChat(void)
         ((uint32_t)strlen(RequestJson)),
         &request) == SPARK_STATUS_OK);
     assert(request.output_token_budget == 17u);
+	assert(request.priority == 123u);
 	assert(request.text_bytes == (uint32_t)(sizeof(Expected) - 1u));
 	assert(strcmp(text, Expected) == 0);
 }
@@ -131,6 +133,7 @@ static void SparkTestCompatAnthropicMessages(void)
     static const char RequestJson[] =
         "{"
         "\"model\":\"glm-5.2\","
+        "\"priority\":456,"
         "\"system\":\"Stay exact.\","
         "\"max_tokens\":9,"
         "\"messages\":["
@@ -154,6 +157,7 @@ static void SparkTestCompatAnthropicMessages(void)
         ((uint32_t)strlen(RequestJson)),
         &request) == SPARK_STATUS_OK);
     assert(request.output_token_budget == 9u);
+	assert(request.priority == 456u);
 	assert(strcmp(text, Expected) == 0);
 }
 
