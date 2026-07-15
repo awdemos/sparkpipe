@@ -90,17 +90,23 @@ def remove_role_argument(manifest,role_name,argument):
         del arguments[index:index + 2]
 
 
-def set_model_arguments(manifest,model_quantization,moe_pack_root):
+def set_model_arguments(
+        manifest,model_quantization,moe_pack_root,stagepack_root):
     roles = ["spark0_gateway","pp13_cuda_residentd"]
-    if moe_pack_root is None:
-        if model_quantization != "fp8":
-            raise SystemExit("--moe-pack-root is required for non-FP8 releases")
-        moe_pack_root = get_role_argument(
+    if model_quantization != "fp8" and stagepack_root is None:
+        raise SystemExit("--stagepack-root is required for non-FP8 releases")
+    if model_quantization != "fp8" and moe_pack_root is None:
+        raise SystemExit("--moe-pack-root is required for non-FP8 releases")
+    if stagepack_root is None:
+        stagepack_root = get_role_argument(
             manifest,"pp13_cuda_residentd","--stagepack-root")
+    if moe_pack_root is None:
+        moe_pack_root = stagepack_root
     for role_name in roles:
         remove_role_argument(manifest,role_name,"--fp8-pack-root")
         set_role_argument(
             manifest,role_name,"--model-quantization",model_quantization)
+        set_role_argument(manifest,role_name,"--stagepack-root",stagepack_root)
         set_role_argument(manifest,role_name,"--moe-pack-root",moe_pack_root)
 
 
@@ -211,6 +217,7 @@ def main():
     parser.add_argument("--kv-logical-blocks",type=int,required=True)
     parser.add_argument(
         "--model-quantization",choices=["fp8","w8lut"],default="fp8")
+    parser.add_argument("--stagepack-root")
     parser.add_argument("--moe-pack-root")
     decode_mode = parser.add_mutually_exclusive_group(required=True)
     decode_mode.add_argument("--mtp",action="store_true")
@@ -255,7 +262,10 @@ def main():
         manifest,"spark0_gateway","--kv-logical-blocks",
         arguments.kv_logical_blocks)
     set_model_arguments(
-        manifest,arguments.model_quantization,arguments.moe_pack_root)
+        manifest,
+        arguments.model_quantization,
+        arguments.moe_pack_root,
+        arguments.stagepack_root)
     set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
     set_role_switch(manifest,"pp13_cuda_residentd","--mtp",arguments.mtp)
     set_runtime_diagnostics(manifest,not arguments.without_diagnostics)

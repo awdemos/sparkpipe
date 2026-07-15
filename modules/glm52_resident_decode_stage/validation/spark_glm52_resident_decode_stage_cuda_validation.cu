@@ -10782,6 +10782,7 @@ int main(int argc, char **argv)
     uint32_t exact_pp13_model_quantization;
     uint32_t routed_chain_first_layer_index;
     uint32_t routed_chain_layer_count;
+    uint32_t routed_fixture_layer_index;
     uint32_t enable_graph_replay;
     uint32_t production_timing;
     uint32_t dense_chain_current_token_only;
@@ -11174,6 +11175,11 @@ int main(int argc, char **argv)
         fprintf(stderr, "GLM52 routed chain slice exceeds final layer first=%u count=%u\n", routed_chain_first_layer_index, routed_chain_layer_count);
         return 2;
     }
+    routed_fixture_layer_index =
+        use_routed_chain_from_hidden != 0u ||
+        use_routed_chain_from_hidden_final != 0u
+        ? routed_chain_first_layer_index
+        : SPARK_VALIDATION_FIRST_ROUTED_LAYER_INDEX;
     if (use_prefill_kv != 0u &&
         (use_input_embedding == 0u ||
          use_attention_bf16 == 0u ||
@@ -11416,14 +11422,18 @@ int main(int argc, char **argv)
                 model_directory,
                 (use_layer3_router != 0u ||
                  use_layer3_shared_expert != 0u ||
-                 use_layer3_routed_expert != 0u) ? 3u : dense_layer_index,
+                 use_layer3_routed_expert != 0u)
+                    ? routed_fixture_layer_index
+                    : dense_layer_index,
                 &layer0_attention)
             : SparkValidationLoadLayer0AttentionBf16Fixture(
                 &buffers,
                 model_directory,
                 (use_layer3_router != 0u ||
                  use_layer3_shared_expert != 0u ||
-                 use_layer3_routed_expert != 0u) ? 3u : dense_layer_index,
+                 use_layer3_routed_expert != 0u)
+                    ? routed_fixture_layer_index
+                    : dense_layer_index,
                 &layer0_attention)))
     {
         return 2;
@@ -11449,9 +11459,10 @@ int main(int argc, char **argv)
     }
     if ((use_layer3_router != 0u ||
          use_layer3_routed_expert != 0u) &&
-        !SparkValidationLoadLayer3RouterBf16Fixture(
+        !SparkValidationLoadRoutedLayerRouterBf16Fixture(
             &buffers,
             model_directory,
+            routed_fixture_layer_index,
             &layer3_router))
     {
         return 2;
