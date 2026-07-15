@@ -7074,6 +7074,7 @@ static SparkStatus SparkGlm52Pp13BuilderRecordMtpKvTransactions(
 	uint32_t creation_mode;
 	uint32_t draft_index;
 	uint32_t lane_index;
+	uint32_t execution_row_index;
 	uint32_t physical_block_index;
 	uint32_t block_index;
 	uint32_t block_token_index;
@@ -7111,6 +7112,8 @@ static SparkStatus SparkGlm52Pp13BuilderRecordMtpKvTransactions(
 	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
 	{
 		lane = &work_packet->lanes[lane_index];
+		execution_row_index =
+			lane_index * work_packet->rows_per_lane;
 		status = SparkGlm52Pp13BuilderMtpTransactionBasePosition(
 			work_packet,lane,&base_position);
 		if (status != SPARK_STATUS_OK)
@@ -7132,13 +7135,14 @@ static SparkStatus SparkGlm52Pp13BuilderRecordMtpKvTransactions(
 			position = base_position + 1u + draft_index;
 			block_index = (uint32_t)(position / work_packet->block_token_count);
 			block_token_index = (uint32_t)(position % work_packet->block_token_count);
-			if (block_index >= state->host_lane_physical_block_counts[lane_index])
+			if (block_index >=
+				state->host_lane_physical_block_counts[execution_row_index])
 			{
 				status = SPARK_STATUS_CAPACITY_EXCEEDED;
 				goto fail;
 			}
 			physical_block_index = state->host_physical_block_indices[
-				((uint64_t)lane_index * state->kv_state.lane_stride) + block_index];
+				((uint64_t)execution_row_index * state->kv_state.lane_stride) + block_index];
 			if (physical_block_index >= state->kv_state.physical_block_capacity ||
 				physical_block_index >
 					(UINT32_MAX - block_token_index) / work_packet->block_token_count)
