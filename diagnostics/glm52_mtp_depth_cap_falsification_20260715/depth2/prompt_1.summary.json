@@ -1,0 +1,21 @@
+{
+  "elapsed_s": 10.723022751975805,
+  "error_count": 0,
+  "http_failure_count": 0,
+  "latency_avg_s": 10.720840803929605,
+  "latency_p50_s": 10.720840803929605,
+  "latency_p95_s": 10.720840803929605,
+  "latency_p99_s": 10.720840803929605,
+  "request_count": 1,
+  "requests_per_s": 0.09325728604051892,
+  "status_counts": {
+    "202": 1
+  },
+  "time_unix": 1784108322.8176525,
+  "token_events": 64,
+  "token_events_per_s": 5.968466306593211,
+  "ttft_avg_s": 0.4052565769525245,
+  "ttft_p50_s": 0.4052565769525245,
+  "ttft_p95_s": 0.4052565769525245,
+  "type": "summary"
+}

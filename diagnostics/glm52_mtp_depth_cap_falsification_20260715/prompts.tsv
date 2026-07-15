@@ -1,0 +1,9 @@
+baseline_index	depth2_index	prompt
+0	0	CUDA memory ordering bug:
+1	1	PostgreSQL deadlock diagnosis:
+2	3	The capital of France is
+3	4	TLS certificate verification failure:
+4	5	Linux kernel panic trace:
+5	7	The integral converges when
+6	8	Molecular docking affinity prediction
+7	9	HTTP cache invalidation requires
