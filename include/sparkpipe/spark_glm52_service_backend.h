@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 8u
+#define SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION 9u
 #define SPARK_GLM52_SERVICE_BACKEND_INTERFACE_BYTES \
 	((uint32_t)sizeof(SparkGlm52ServiceBackendInterface))
 #define SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES \
@@ -48,6 +48,7 @@ typedef struct SparkGlm52ServiceBackendConfiguration
 	uint32_t descriptor_bytes;
 	uint32_t flags;
 	uint32_t max_active_sequence_count;
+	uint32_t decode_batch_target;
 	uint32_t port_base;
 	uint32_t kv_logical_block_capacity;
 	uint32_t model_quantization_mode;
@@ -76,7 +77,7 @@ typedef struct SparkGlm52ServiceBackendView
 	uint32_t transport_capability_flags;
 	uint32_t speculation_configuration_flags;
 	uint32_t request_api_configuration_flags;
-	uint32_t reserved0;
+	uint32_t configured_decode_batch_target;
 	uint64_t release_generation;
 	SparkGlm52ServiceRuntime *service;
 	const SparkTokenizer *tokenizer;
