@@ -83,6 +83,8 @@ struct SparkGlm52ResidentDecodeStageState
 {
     SparkModelDriverCompletionFunction completion_function;
     void *completion_context;
+    SparkModelDriverWakeFunction wake_function;
+    void *wake_context;
     const SparkGlm52ResidentDecodeStageNodeContext *node_context;
     const SparkGlm52ResidentDecodeStageNodeContext *const *stage_slice_node_contexts;
     const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan;
@@ -3195,6 +3197,9 @@ static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
         memory_order_release);
     if (pending_completion->hidden_output_transport_active == 0u)
         SparkGlm52ResidentDecodeStageTryComplete(pending_completion);
+    else if (pending_completion->owner->wake_function != 0)
+        pending_completion->owner->wake_function(
+            pending_completion->owner->wake_context);
 }
 
 SparkStatus SparkGlm52ResidentDecodeStageInitialize(
@@ -3289,6 +3294,8 @@ SparkStatus SparkGlm52ResidentDecodeStageInitialize(
     }
     state->completion_function = host_services->completion_function;
     state->completion_context = host_services->completion_context;
+    state->wake_function = host_services->wake_function;
+    state->wake_context = host_services->wake_context;
     state->node_context = node_context;
     if (slice_node_context != 0)
     {

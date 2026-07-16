@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_driver_compiler.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_model_driver.h"
+#include "sparkpipe/spark_module_abi.h"
 #include "test_support.h"
 
 typedef struct SparkTestCompletionState
@@ -98,6 +99,7 @@ int main(void)
     struct stat gathered_link_unit_status;
     char gathered_link_unit_path[SPARK_DRIVER_COMPILER_PATH_BYTES];
     char error_buffer[1024];
+    char module_abi_marker[64];
     char *generated_source;
     char *compiled_manifest;
 
@@ -126,13 +128,20 @@ int main(void)
     generated_source = SparkTestReadFile(compile_report.generated_source_path);
     assert(strstr(generated_source, "SparkTestAddOneExecute(instance->operation_0_state, frame)") != 0);
     assert(strstr(generated_source, "SparkTestDoubleExecute(instance->operation_1_state, frame)") != 0);
+    assert(strstr(generated_source, "instance->host_services.wake_function = request->wake_function") != 0);
+    assert(strstr(generated_source, "instance->host_services.wake_context = request->wake_context") != 0);
     assert(strstr(generated_source, "SparkResolveValidatedModule") == 0);
     assert(strstr(generated_source, "for (") == 0);
     free(generated_source);
 
     compiled_manifest = SparkTestReadFile(compile_report.manifest_path);
     assert(strstr(compiled_manifest, "\"validation_recipe\": \"test.module.validator.v1\"") != 0);
-    assert(strstr(compiled_manifest, "\"module_abi_version\": 2") != 0);
+    assert(snprintf(
+        module_abi_marker,
+        sizeof(module_abi_marker),
+        "\"module_abi_version\": %u",
+        SPARK_FIRMWARE_MODULE_ABI_VERSION) > 0);
+    assert(strstr(compiled_manifest, module_abi_marker) != 0);
     assert(strstr(compiled_manifest, "\"execute_symbol\": \"SparkTestAddOneExecute\"") != 0);
     free(compiled_manifest);
 

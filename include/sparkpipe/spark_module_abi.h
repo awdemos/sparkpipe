@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_FIRMWARE_MODULE_ABI_VERSION 2u
+#define SPARK_FIRMWARE_MODULE_ABI_VERSION 3u
 
 typedef struct SparkFirmwareModuleConfiguration
 {
@@ -29,6 +29,8 @@ typedef struct SparkFirmwareModuleHostServices
 {
     SparkModelDriverCompletionFunction completion_function;
     void *completion_context;
+    SparkModelDriverWakeFunction wake_function;
+    void *wake_context;
     const char *node_id;
     const char *node_target;
     void *node_context;

@@ -595,6 +595,12 @@ static void SparkGlm52CudaResidentdSignalWake(
         return;
 }
 
+static void SparkGlm52CudaResidentdDriverWake(void *wake_context)
+{
+    SparkGlm52CudaResidentdSignalWake(
+        (SparkGlm52CudaResidentdRuntime *)wake_context);
+}
+
 static void SparkGlm52CudaResidentdDrainWakePipe(
     SparkGlm52CudaResidentdRuntime *runtime)
 {
@@ -1097,6 +1103,8 @@ static SparkStatus SparkGlm52CudaResidentdCreateDriverInstance(
     create_request.node_context = runtime->builder_result.node_context;
     create_request.completion_function = SparkGlm52CudaResidentdCompletion;
     create_request.completion_context = runtime;
+    create_request.wake_function = SparkGlm52CudaResidentdDriverWake;
+    create_request.wake_context = runtime;
     status = runtime->loaded_driver.interface->create(
         &create_request,
         &runtime->driver_instance);

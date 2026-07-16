@@ -77,6 +77,15 @@ static void SparkGlm52ResidentDecodeStageTestCompletion(
     state->completion_count += 1u;
 }
 
+static void SparkGlm52ResidentDecodeStageTestWake(void *wake_context)
+{
+    uint32_t *wake_count;
+
+    wake_count = (uint32_t *)wake_context;
+    assert(wake_count != 0);
+    *wake_count += 1u;
+}
+
 static void SparkTestInitializePrefillBridgeFixture(
     SparkGlm52ResidentDecodeStagePrefillBridgeFixture *fixture)
 {
@@ -1703,6 +1712,7 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
     SparkModelDriverAdmissionRequest admission_request;
     SparkModelDriverAdmissionDecision admission_decision;
     SparkModelDriverRuntimeSnapshot snapshot;
+    uint32_t wake_count;
     void *module_state;
 
     SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
@@ -1747,12 +1757,15 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
                &output_session) == SPARK_STATUS_OK);
 
     memset(&completion_state, 0, sizeof(completion_state));
+    wake_count = 0u;
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
     memset(&host_services, 0, sizeof(host_services));
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
+    host_services.wake_function = SparkGlm52ResidentDecodeStageTestWake;
+    host_services.wake_context = &wake_count;
     host_services.node_context = &slice_node_context;
 
     module_state = 0;
@@ -1820,6 +1833,7 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
     assert(output_statistics.send_count == 0u);
 
     SparkGlm52ResidentDecodeStageFakeStreamComplete(&fake_streams[0]);
+    assert(wake_count == 1u);
     memset(&admission_request, 0, sizeof(admission_request));
     admission_request.descriptor_bytes = sizeof(admission_request);
     admission_request.program_id = 1u;

@@ -9,7 +9,7 @@
 extern "C" {
 #endif
 
-#define SPARK_MODEL_DRIVER_ABI_VERSION 5u
+#define SPARK_MODEL_DRIVER_ABI_VERSION 6u
 #define SPARK_MODEL_DRIVER_INTERFACE_SYMBOL "SparkModelDriverGetInterface"
 #define SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY 8u
 #define SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY 8u
@@ -88,6 +88,7 @@ typedef struct SparkModelDriverCompletion
 } SparkModelDriverCompletion;
 
 typedef void (*SparkModelDriverCompletionFunction)(void *completion_context, const SparkModelDriverCompletion *completion);
+typedef void (*SparkModelDriverWakeFunction)(void *wake_context);
 
 typedef struct SparkModelDriverFrame
 {
@@ -208,6 +209,8 @@ typedef struct SparkModelDriverCreateRequest
     void *node_context;
     SparkModelDriverCompletionFunction completion_function;
     void *completion_context;
+    SparkModelDriverWakeFunction wake_function;
+    void *wake_context;
 } SparkModelDriverCreateRequest;
 
 typedef SparkStatus (*SparkModelDriverProgramSubmitFunction)(void *driver_instance, SparkModelDriverFrame *frame);
