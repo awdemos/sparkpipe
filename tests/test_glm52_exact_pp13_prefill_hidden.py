@@ -43,6 +43,22 @@ def test_pp13_rank_capacity_is_not_fixed_batch(root: Path) -> None:
             "RUNTIME_KV_BLOCK_TABLE" in reserved_block)
 
 
+def test_pp13_runtime_kv_view_uses_per_lane_block_capacity(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    prepare_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(")
+    prepare_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderApplyMtpTreeKvRows(",
+        prepare_start)
+    prepare_body = source[prepare_start:prepare_end]
+    assert ("state->device_kv_view.lane_capacity =\n"
+            "\t\tstate->device_kv_view.lane_stride;" in prepare_body)
+    assert ("state->device_kv_view.lane_capacity =\n"
+            "\t\tstate->rank_plan.execution_row_capacity;" not in prepare_body)
+
+
 def test_pp13_builder_uses_compressed_absorbed_mla(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(

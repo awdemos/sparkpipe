@@ -5616,7 +5616,7 @@ static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(
 	state->device_kv_view.lane_stride =
 		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
 	state->device_kv_view.lane_capacity =
-		state->rank_plan.execution_row_capacity;
+		state->device_kv_view.lane_stride;
 	state->device_kv_view.physical_block_indices =
 		state->device_physical_block_indices;
 	state->device_kv_view.lane_physical_block_counts =
