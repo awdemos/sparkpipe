@@ -42,7 +42,7 @@
 	(SPARK_GLM52_PP13_BUILDER_LAYER_CAPACITY + 1u)
 #define SPARK_GLM52_PP13_BUILDER_LAYER_BUFFER_ALLOCATION_COUNT 55u
 #define SPARK_GLM52_PP13_BUILDER_LAYER_WEIGHT_ALLOCATION_COUNT 29u
-#define SPARK_GLM52_PP13_BUILDER_SHARED_BUFFER_ALLOCATION_COUNT 8u
+#define SPARK_GLM52_PP13_BUILDER_SHARED_BUFFER_ALLOCATION_COUNT 10u
 #define SPARK_GLM52_PP13_BUILDER_TABLE_ALLOCATION_COUNT 15u
 #define SPARK_GLM52_PP13_BUILDER_INPUT_ALLOCATION_COUNT 12u
 #define SPARK_GLM52_PP13_BUILDER_PLAN_ALLOCATION_COUNT 2u
@@ -237,8 +237,6 @@ typedef struct SparkGlm52Pp13BuilderLayer
 	cudaEvent_t dsa_prefetch_event;
 	SparkGlm52ResidentDecodeStageFp8KvCachePlan fp8_kv_cache_plan;
 	SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan dsa_prefetch_plan;
-	SparkGlm52ResidentDecodeStagePagedPrefillPlan serial_prefill_paged_plan;
-	SparkGlm52ResidentDecodeStageBulkPrefillPlan serial_prefill_bulk_plan;
 } SparkGlm52Pp13BuilderLayer;
 
 typedef struct SparkGlm52Pp13BuilderMtpKvTransaction
@@ -319,7 +317,6 @@ typedef struct SparkGlm52Pp13BuilderState
 	SparkGlm52Pp13WorkControlKvState kv_state;
 	SparkGlm52KvBlockTableView host_kv_view;
 	SparkGlm52KvBlockTableView device_kv_view;
-	SparkGlm52ResidentDecodeStagePrefillFrameView prefill_frame_view;
 	SparkGlm52Pp13NodeContextBuilderResult result;
 	void *allocations[SPARK_GLM52_PP13_BUILDER_MAX_ALLOCATIONS];
 	uint8_t allocation_is_host_mapped[SPARK_GLM52_PP13_BUILDER_MAX_ALLOCATIONS];
@@ -336,6 +333,9 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint32_t active_kv_block_count;
 	uint32_t *host_physical_block_indices;
 	uint32_t *host_lane_physical_block_counts;
+	uint32_t *host_uploaded_physical_block_indices;
+	uint32_t *host_uploaded_lane_physical_block_counts;
+	uint8_t *host_uploaded_lane_valid;
 	uint8_t *host_physical_block_states;
 	uint64_t *host_physical_block_sequence_ids;
 	uint32_t *host_physical_block_logical_indices;
@@ -391,8 +391,6 @@ typedef struct SparkGlm52Pp13BuilderState
 	void *fp8_scaled_gemm_workspace;
 	void *shared_moe_workspace;
 	uint64_t shared_moe_workspace_bytes;
-	uint32_t *host_prefill_lane_offsets;
-	uint32_t *host_prefill_lane_counts;
 	uint32_t *host_decode_positions;
 	uint32_t *host_decode_token_ids;
 	uint32_t *host_decode_result_token_ids;
@@ -402,14 +400,6 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint64_t *host_mtp_previous_sequence_ids;
 	uint64_t *host_mtp_previous_positions;
 	uint8_t *host_mtp_previous_valid;
-	void *device_prefill_token_ids;
-	void *device_prefill_positions;
-	void *device_prefill_slot_mapping;
-	void *device_prefill_context_lengths;
-	void *device_prefill_first_block_token_offsets;
-	void *device_prefill_token_counts;
-	void *device_prefill_hidden;
-	void *device_prefill_output_hidden;
 	void *device_decode_positions;
 	void *device_decode_token_ids;
 	void *device_mtp_draft_token_budgets;
@@ -702,38 +692,6 @@ static SparkStatus SparkGlm52Pp13BuilderCublasStatus(cublasStatus_t status)
 	return SPARK_STATUS_IO_ERROR;
 }
 
-__global__ static void SparkGlm52Pp13BuilderGatherPrefillEmbeddingKernel(
-	const uint32_t *__restrict__ token_ids,
-	const uint32_t *__restrict__ lane_counts,
-	const uint32_t *__restrict__ embedding_bf16_words,
-	uint32_t *__restrict__ output_bf16_words,
-	uint32_t lane_count,
-	uint32_t token_stride,
-	uint32_t hidden_words)
-{
-	uint64_t word_index;
-	uint64_t route_index;
-	uint32_t lane_index;
-	uint32_t token_index;
-	uint32_t hidden_word_index;
-	uint32_t token_id;
-	word_index = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
-	if (word_index >= (uint64_t)lane_count * token_stride * hidden_words)
-		return;
-	route_index = word_index / hidden_words;
-	hidden_word_index = (uint32_t)(word_index - (route_index * hidden_words));
-	lane_index = (uint32_t)(route_index / token_stride);
-	token_index = (uint32_t)(route_index - ((uint64_t)lane_index * token_stride));
-	if (token_index >= lane_counts[lane_index])
-	{
-		output_bf16_words[word_index] = 0u;
-		return;
-	}
-	token_id = token_ids[(lane_index * token_stride) + token_index];
-	output_bf16_words[word_index] =
-		embedding_bf16_words[((uint64_t)token_id * hidden_words) + hidden_word_index];
-}
-
 __global__ static void SparkGlm52Pp13BuilderBuildDecodeMetadataKernel(
 	const uint32_t *__restrict__ decode_positions,
 	const uint32_t *__restrict__ block_table,
@@ -767,79 +725,6 @@ __global__ static void SparkGlm52Pp13BuilderBuildDecodeMetadataKernel(
 	}
 	physical_block_index = block_table[(lane_index * lane_stride) + block_index];
 	slot_mapping[lane_index] =
-		(physical_block_index * block_token_count) + in_block_index;
-}
-
-__global__ static void SparkGlm52Pp13BuilderBuildDecodeSparseTokenIndicesKernel(
-	const uint32_t *__restrict__ decode_positions,
-	uint32_t lane_count,
-	uint32_t *__restrict__ sparse_token_indices)
-{
-	uint32_t global_index;
-	uint32_t lane_index;
-	uint32_t sparse_index;
-	uint32_t context_length;
-	global_index = (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x);
-	if (global_index >=
-		lane_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT)
-		return;
-	lane_index = global_index /
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT;
-	sparse_index = global_index -
-		(lane_index * SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT);
-	context_length = decode_positions[lane_index] + 1u;
-	sparse_token_indices[global_index] = sparse_index < context_length
-		? sparse_index
-		: SPARK_GLM52_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID;
-}
-
-__global__ static void SparkGlm52Pp13BuilderBuildBulkPrefillMetadataKernel(
-	const uint32_t *__restrict__ positions,
-	const uint32_t *__restrict__ lane_token_counts,
-	const uint32_t *__restrict__ block_table,
-	const uint32_t *__restrict__ lane_block_counts,
-	uint32_t lane_stride,
-	uint32_t block_token_count,
-	uint32_t lane_count,
-	uint32_t token_stride,
-	uint32_t *__restrict__ prompt_positions,
-	uint32_t *__restrict__ prompt_slot_mapping,
-	uint32_t *__restrict__ prompt_context_lengths,
-	uint32_t *__restrict__ prompt_first_block_token_offsets)
-{
-	uint32_t global_index,lane_index,token_index,position;
-	uint32_t block_index,in_block_index,physical_block_index;
-	global_index = (uint32_t)(blockIdx.x * blockDim.x + threadIdx.x);
-	if (global_index >= lane_count * token_stride)
-		return;
-	lane_index = global_index / token_stride;
-	token_index = global_index - (lane_index * token_stride);
-	position = positions[global_index];
-	if (token_index == 0u)
-	{
-		prompt_context_lengths[lane_index] =
-			position + lane_token_counts[lane_index];
-		prompt_first_block_token_offsets[lane_index] =
-			position % block_token_count;
-	}
-	if (token_index >= lane_token_counts[lane_index])
-	{
-		prompt_positions[global_index] = position;
-		prompt_slot_mapping[global_index] =
-			SPARK_GLM52_PP13_BUILDER_INVALID_SLOT;
-		return;
-	}
-	block_index = position / block_token_count;
-	in_block_index = position - (block_index * block_token_count);
-	prompt_positions[global_index] = position;
-	if (block_index >= lane_block_counts[lane_index])
-	{
-		prompt_slot_mapping[global_index] =
-			SPARK_GLM52_PP13_BUILDER_INVALID_SLOT;
-		return;
-	}
-	physical_block_index = block_table[(lane_index * lane_stride) + block_index];
-	prompt_slot_mapping[global_index] =
 		(physical_block_index * block_token_count) + in_block_index;
 }
 
@@ -1696,6 +1581,32 @@ static SparkStatus SparkGlm52Pp13BuilderCudaHostMappedAlloc(
 	}
 	state->host_mapped_allocation_bytes += bytes;
 	*device_pointer_out = device_pointer;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderCudaHostPinnedAlloc(
+	SparkGlm52Pp13BuilderState *state,
+	void **host_pointer_out,
+	uint64_t bytes)
+{
+	void *host_pointer;
+	SparkStatus status;
+	if (state == 0 || host_pointer_out == 0 || bytes == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	host_pointer = 0;
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaHostAlloc(
+		&host_pointer,(size_t)bytes,cudaHostAllocPortable));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13BuilderRememberAllocationWithKind(
+		state,host_pointer,1u);
+	if (status != SPARK_STATUS_OK)
+	{
+		cudaFreeHost(host_pointer);
+		return status;
+	}
+	state->host_mapped_allocation_bytes += bytes;
+	*host_pointer_out = host_pointer;
 	return SPARK_STATUS_OK;
 }
 
@@ -2735,7 +2646,6 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	uint32_t active_row_capacity,
 	uint32_t mtp_row_capacity,
 	uint64_t cache_token_capacity,
-	uint32_t max_blocks_per_sequence,
 	uint32_t requires_dsa_index_cache)
 {
 	uint64_t b;
@@ -2888,7 +2798,9 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ALLOC_FIELD(phase_clock_cycles,SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_COUNT,uint64_t);
 	ALLOC_FIELD(positions,b,uint32_t);
 	ALLOC_FIELD(slot_mapping,b,uint32_t);
-	ALLOC_FIELD(block_table,b * max_blocks_per_sequence,uint32_t);
+	layer->block_table = state->device_physical_block_indices;
+	if (layer->block_table == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	ALLOC_FIELD(context_lengths,b,uint32_t);
 	ALLOC_FIELD(first_block_token_offsets,b,uint32_t);
 	if (fp8 != 0u)
@@ -2993,72 +2905,6 @@ static SparkStatus SparkGlm52Pp13BuilderLoadLayerWeights(
 #undef LOAD_WEIGHT
 #undef LOAD
 	return SPARK_STATUS_OK;
-}
-
-static void SparkGlm52Pp13BuilderWireLayerSerialPrefillPlan(
-	SparkGlm52Pp13BuilderState *state,
-	SparkGlm52Pp13BuilderLayer *layer)
-{
-	memset(&layer->serial_prefill_paged_plan,0,sizeof(layer->serial_prefill_paged_plan));
-	layer->serial_prefill_paged_plan.abi_version =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_PLAN_ABI_VERSION;
-	layer->serial_prefill_paged_plan.descriptor_bytes =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_PLAN_DESCRIPTOR_BYTES;
-	layer->serial_prefill_paged_plan.block_token_count =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
-	layer->serial_prefill_paged_plan.maximum_prompt_token_count =
-		SPARK_GLM52_PP13_BUILDER_MAX_PREFILL_TOKENS;
-	layer->serial_prefill_paged_plan.maximum_active_sequence_count =
-		state->rank_plan.logical_lane_capacity;
-	layer->serial_prefill_paged_plan.hidden_dimension =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
-	layer->serial_prefill_paged_plan.cache_token_elements =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
-	layer->serial_prefill_paged_plan.prompt_positions =
-		(const uint32_t *)state->device_prefill_positions;
-	layer->serial_prefill_paged_plan.prompt_slot_mapping =
-		(const uint32_t *)state->device_prefill_slot_mapping;
-	layer->serial_prefill_paged_plan.prompt_context_lengths =
-		(const uint32_t *)state->device_prefill_context_lengths;
-	layer->serial_prefill_paged_plan.prompt_first_block_token_offsets =
-		(const uint32_t *)state->device_prefill_first_block_token_offsets;
-	layer->serial_prefill_paged_plan.prompt_block_table =
-		(const uint32_t *)state->device_physical_block_indices;
-	layer->serial_prefill_paged_plan.prompt_hidden_bf16 =
-		layer->slot.input_hidden_bf16;
-	layer->serial_prefill_paged_plan.prompt_token_counts =
-		(const uint32_t *)state->device_prefill_token_counts;
-	layer->serial_prefill_paged_plan.prompt_token_stride = 1u;
-	layer->serial_prefill_paged_plan.query_tile_token_count =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_QUERY_TILE_TOKENS;
-	layer->serial_prefill_paged_plan.key_tile_token_count =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PAGED_PREFILL_KEY_TILE_TOKENS;
-	layer->serial_prefill_paged_plan.prompt_query_latent_bf16 =
-		layer->query_latent;
-	layer->serial_prefill_paged_plan.prompt_rotated_query_rope_bf16 =
-		layer->rotated_query_rope;
-	layer->serial_prefill_paged_plan.prompt_attention_output_latent_bf16 =
-		layer->attention_output_latent;
-	layer->serial_prefill_paged_plan.prompt_output_hidden_bf16 =
-		layer->layer_output_hidden;
-	layer->serial_prefill_paged_plan.validated_maximum_latency_ns =
-		0u;
-
-	memset(&layer->serial_prefill_bulk_plan,0,sizeof(layer->serial_prefill_bulk_plan));
-	layer->serial_prefill_bulk_plan.abi_version =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_PLAN_ABI_VERSION;
-	layer->serial_prefill_bulk_plan.maximum_active_sequence_count =
-		state->rank_plan.logical_lane_capacity;
-	layer->serial_prefill_bulk_plan.maximum_prompt_token_count =
-		SPARK_GLM52_PP13_BUILDER_MAX_PREFILL_TOKENS;
-	layer->serial_prefill_bulk_plan.capability_flags =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_PAGED_ATTENTION_CAPABILITIES |
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_RUNTIME_PREFILL_VIEW;
-	layer->serial_prefill_bulk_plan.opaque_state =
-		&layer->serial_prefill_paged_plan;
-	layer->serial_prefill_bulk_plan.validated_maximum_latency_ns =
-		0u;
-	layer->node.bulk_prefill_plan = &layer->serial_prefill_bulk_plan;
 }
 
 static void SparkGlm52Pp13BuilderWireLayer(
@@ -4438,7 +4284,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 		state->rank_plan.logical_lane_capacity,
 		state->rank_plan.logical_lane_capacity,
 		state->configuration.kv_pool_token_capacity,
-		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE,0u);
+		0u);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderLoadLayerWeights(
 			state,&state->mtp_layer,SPARK_GLM52_MODEL_MTP_LAYER_INDEX);
@@ -4535,7 +4381,6 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 		state->rank_plan.execution_row_capacity,
 		state->rank_plan.logical_lane_capacity,
 		state->configuration.kv_pool_token_capacity,
-		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE,
 		SparkGlm52Pp13BuilderDsaSourceLayer(layer_index) == layer_index ? 1u : 0u);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus("allocate_layer_buffers",layer_index,status);
@@ -4556,7 +4401,6 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 	if (layer_offset > 0u)
 		layer->slot.input_hidden_bf16 =
 			state->layers[layer_offset - 1u].layer_output_hidden;
-	SparkGlm52Pp13BuilderWireLayerSerialPrefillPlan(state,layer);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderBindMoe(state,layer,layer_index);
 	if (status != SPARK_STATUS_OK)
@@ -4711,58 +4555,15 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeRank0InputBuffers(
 {
 	uint64_t max_active;
 	uint64_t logical_lane_capacity;
-	uint64_t prefill_tokens;
-	uint64_t prefill_hidden_words;
-	uint64_t prefill_hidden_bytes;
 	uint32_t rank_has_previous;
 	SparkStatus status;
 	max_active = state->rank_plan.execution_row_capacity;
 	logical_lane_capacity = state->rank_plan.logical_lane_capacity;
-	prefill_tokens = logical_lane_capacity *
-		SPARK_GLM52_PP13_BUILDER_MAX_PREFILL_TOKENS;
-	prefill_hidden_words =
-		prefill_tokens *
-		(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u);
-	prefill_hidden_bytes = prefill_hidden_words * sizeof(uint32_t);
 	rank_has_previous =
 		(state->rank_plan.flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u;
 	status = SPARK_STATUS_OK;
 	if (rank_has_previous == 0u)
-	{
 		status = SparkGlm52Pp13BuilderLoadEmbedding(state);
-		if (status == SPARK_STATUS_OK)
-			status = SparkGlm52Pp13BuilderCudaAlloc(
-				state,&state->device_prefill_token_ids,
-				prefill_tokens * sizeof(uint32_t));
-		if (status == SPARK_STATUS_OK)
-			status = SparkGlm52Pp13BuilderCudaAlloc(
-				state,&state->device_prefill_hidden,
-				prefill_hidden_bytes);
-		if (status == SPARK_STATUS_OK)
-			status = SparkGlm52Pp13BuilderCudaAlloc(
-				state,&state->device_prefill_output_hidden,
-				prefill_hidden_bytes);
-	}
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaAlloc(
-			state,&state->device_prefill_positions,
-			prefill_tokens * sizeof(uint32_t));
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaAlloc(
-			state,&state->device_prefill_slot_mapping,
-			prefill_tokens * sizeof(uint32_t));
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaAlloc(
-			state,&state->device_prefill_context_lengths,
-			logical_lane_capacity * sizeof(uint32_t));
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaAlloc(
-			state,&state->device_prefill_first_block_token_offsets,
-			logical_lane_capacity * sizeof(uint32_t));
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaAlloc(
-			state,&state->device_prefill_token_counts,
-			logical_lane_capacity * sizeof(uint32_t));
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderCudaAlloc(
 			state,&state->device_decode_positions,
@@ -4777,10 +4578,6 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeRank0InputBuffers(
 			logical_lane_capacity * sizeof(uint32_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	state->host_prefill_lane_offsets =
-		(uint32_t *)malloc((size_t)(logical_lane_capacity * sizeof(uint32_t)));
-	state->host_prefill_lane_counts =
-		(uint32_t *)malloc((size_t)(logical_lane_capacity * sizeof(uint32_t)));
 	state->host_decode_positions =
 		(uint32_t *)malloc((size_t)(max_active * sizeof(uint32_t)));
 	state->host_decode_token_ids =
@@ -4792,9 +4589,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeRank0InputBuffers(
 			(size_t)(logical_lane_capacity *
 				SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
 				sizeof(uint32_t)));
-	if (state->host_prefill_lane_offsets == 0 ||
-		state->host_prefill_lane_counts == 0 ||
-		state->host_decode_positions == 0 ||
+	if (state->host_decode_positions == 0 ||
 		state->host_decode_token_ids == 0 ||
 		state->host_decode_result_token_ids == 0 ||
 		state->host_mtp_committed_token_ids == 0)
@@ -4894,12 +4689,24 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 			state,
 			(void **)&state->device_mtp_request_slot_indices,
 			max_active * sizeof(uint32_t));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaHostPinnedAlloc(
+			state,
+			(void **)&state->host_physical_block_indices,
+			kv_entries * sizeof(uint32_t));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaHostPinnedAlloc(
+			state,
+			(void **)&state->host_lane_physical_block_counts,
+			max_active * sizeof(uint32_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	state->host_physical_block_indices =
-		(uint32_t *)malloc((size_t)(kv_entries * sizeof(uint32_t)));
-	state->host_lane_physical_block_counts =
-		(uint32_t *)malloc((size_t)(max_active * sizeof(uint32_t)));
+	state->host_uploaded_physical_block_indices =
+		(uint32_t *)calloc((size_t)kv_entries,sizeof(uint32_t));
+	state->host_uploaded_lane_physical_block_counts =
+		(uint32_t *)calloc((size_t)max_active,sizeof(uint32_t));
+	state->host_uploaded_lane_valid =
+		(uint8_t *)calloc((size_t)max_active,sizeof(uint8_t));
 	state->host_physical_block_states =
 		(uint8_t *)malloc((size_t)(physical_block_count * sizeof(uint8_t)));
 	state->host_physical_block_sequence_ids =
@@ -4936,6 +4743,9 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 			sizeof(SparkGlm52Pp13BuilderMtpKvTransaction));
 	if (state->host_physical_block_indices == 0 ||
 		state->host_lane_physical_block_counts == 0 ||
+		state->host_uploaded_physical_block_indices == 0 ||
+		state->host_uploaded_lane_physical_block_counts == 0 ||
+		state->host_uploaded_lane_valid == 0 ||
 		state->host_physical_block_states == 0 ||
 		state->host_physical_block_sequence_ids == 0 ||
 		state->host_physical_block_logical_indices == 0 ||
@@ -5382,8 +5192,9 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 		(void)flock(state->kv_nvme_fd,LOCK_UN);
 		close(state->kv_nvme_fd);
 	}
-	free(state->host_physical_block_indices);
-	free(state->host_lane_physical_block_counts);
+	free(state->host_uploaded_physical_block_indices);
+	free(state->host_uploaded_lane_physical_block_counts);
+	free(state->host_uploaded_lane_valid);
 	free(state->host_physical_block_states);
 	free(state->host_physical_block_sequence_ids);
 	free(state->host_physical_block_logical_indices);
@@ -5392,8 +5203,6 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 	free(state->host_kv_directory_entries);
 	free(state->mtp_kv_transactions);
 	free(state->host_backing_block_free_next);
-	free(state->host_prefill_lane_offsets);
-	free(state->host_prefill_lane_counts);
 	free(state->host_decode_positions);
 	free(state->host_decode_token_ids);
 	free(state->host_decode_result_token_ids);
@@ -5465,6 +5274,11 @@ static SparkStatus SparkGlm52Pp13BuilderQuiesceStreams(
 static void SparkGlm52Pp13BuilderClearGenerationState(
 	SparkGlm52Pp13BuilderState *state)
 {
+	if (state->host_uploaded_lane_valid != 0)
+		memset(
+			state->host_uploaded_lane_valid,
+			0,
+			(size_t)state->rank_plan.execution_row_capacity);
 	memset(state->mtp_kv_transactions,0,
 		(size_t)state->configuration.maximum_resident_sequence_count *
 			sizeof(state->mtp_kv_transactions[0u]));
@@ -5526,6 +5340,165 @@ static SparkStatus SparkGlm52Pp13BuilderResetControlGeneration(
 	return SPARK_STATUS_OK;
 }
 
+static void SparkGlm52Pp13BuilderInvalidateDeviceKvDirectory(
+	SparkGlm52Pp13BuilderState *state)
+{
+	if (state == 0 || state->host_uploaded_lane_valid == 0)
+		return;
+	memset(
+		state->host_uploaded_lane_valid,
+		0,
+		(size_t)state->rank_plan.execution_row_capacity);
+}
+
+static SparkStatus SparkGlm52Pp13BuilderStageKvLane(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52KvBlockTableView *source_view,
+	const uint32_t *source_blocks,
+	const uint32_t *source_counts,
+	uint32_t lane_index,
+	uint32_t physical_block_capacity,
+	uint32_t *copy_count_out)
+{
+	uint64_t destination_base;
+	uint64_t source_base;
+	uint32_t block_index;
+	uint32_t copy_count;
+	copy_count = source_counts[lane_index];
+	if (copy_count == 0u || copy_count > source_view->lane_stride ||
+		copy_count > SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	destination_base = (uint64_t)lane_index *
+		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
+	source_base = (uint64_t)lane_index * source_view->lane_stride;
+	for (block_index = 0u; block_index < copy_count; ++block_index)
+	{
+		if (source_blocks[source_base + block_index] >= physical_block_capacity)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	if (source_blocks + source_base !=
+		state->host_physical_block_indices + destination_base)
+		memmove(
+			state->host_physical_block_indices + destination_base,
+			source_blocks + source_base,
+			(size_t)copy_count * sizeof(uint32_t));
+	state->host_lane_physical_block_counts[lane_index] = copy_count;
+	*copy_count_out = copy_count;
+	return SPARK_STATUS_OK;
+}
+
+static void SparkGlm52Pp13BuilderAccumulateKvLaneDelta(
+	SparkGlm52Pp13BuilderState *state,
+	uint32_t lane_index,
+	uint32_t *dirty_begin,
+	uint32_t *dirty_end,
+	uint32_t *counts_changed)
+{
+	uint64_t base;
+	uint32_t block_index;
+	uint32_t copy_count;
+	uint32_t previous_count;
+	base = (uint64_t)lane_index *
+		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
+	copy_count = state->host_lane_physical_block_counts[lane_index];
+	previous_count =
+		state->host_uploaded_lane_physical_block_counts[lane_index];
+	if (state->host_uploaded_lane_valid[lane_index] == 0u)
+	{
+		*dirty_begin = 0u;
+		if (copy_count > *dirty_end)
+			*dirty_end = copy_count;
+		*counts_changed = 1u;
+	}
+	else if (copy_count != previous_count)
+	{
+		*counts_changed = 1u;
+		if (copy_count > previous_count && previous_count < *dirty_begin)
+			*dirty_begin = previous_count;
+		if (copy_count > previous_count && copy_count > *dirty_end)
+			*dirty_end = copy_count;
+	}
+	for (block_index = 0u; block_index < copy_count; ++block_index)
+	{
+		if (state->host_physical_block_indices[base + block_index] ==
+			state->host_uploaded_physical_block_indices[base + block_index])
+			continue;
+		if (block_index < *dirty_begin)
+			*dirty_begin = block_index;
+		if (block_index + 1u > *dirty_end)
+			*dirty_end = block_index + 1u;
+	}
+}
+
+static void SparkGlm52Pp13BuilderFindKvDirectoryDelta(
+	SparkGlm52Pp13BuilderState *state,
+	uint32_t lane_count,
+	uint32_t *dirty_begin_out,
+	uint32_t *dirty_end_out,
+	uint32_t *counts_changed_out)
+{
+	uint32_t lane_index;
+	*dirty_begin_out = SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
+	*dirty_end_out = 0u;
+	*counts_changed_out = 0u;
+	for (lane_index = 0u; lane_index < lane_count; ++lane_index)
+		SparkGlm52Pp13BuilderAccumulateKvLaneDelta(
+			state,lane_index,dirty_begin_out,dirty_end_out,counts_changed_out);
+}
+
+static SparkStatus SparkGlm52Pp13BuilderUploadKvDirectoryDelta(
+	SparkGlm52Pp13BuilderState *state,
+	uint32_t lane_count,
+	uint32_t dirty_begin,
+	uint32_t dirty_end,
+	uint32_t counts_changed)
+{
+	uint64_t base;
+	uint32_t copy_count;
+	uint32_t copy_end;
+	uint32_t lane_index;
+	size_t pitch_bytes;
+	SparkStatus status;
+	pitch_bytes =
+		(size_t)SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE *
+		sizeof(uint32_t);
+	status = SPARK_STATUS_OK;
+	if (dirty_end > dirty_begin)
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy2DAsync(
+			state->device_physical_block_indices + dirty_begin,
+			pitch_bytes,
+			state->host_physical_block_indices + dirty_begin,
+			pitch_bytes,
+			(size_t)(dirty_end - dirty_begin) * sizeof(uint32_t),
+			lane_count,
+			cudaMemcpyHostToDevice,
+			state->stream));
+	if (status == SPARK_STATUS_OK && counts_changed != 0u)
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
+			state->device_lane_physical_block_counts,
+			state->host_lane_physical_block_counts,
+			(size_t)lane_count * sizeof(uint32_t),
+			cudaMemcpyHostToDevice,
+			state->stream));
+	if (status != SPARK_STATUS_OK)
+		return status;
+	for (lane_index = 0u; lane_index < lane_count; ++lane_index)
+	{
+		base = (uint64_t)lane_index *
+			SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
+		copy_count = state->host_lane_physical_block_counts[lane_index];
+		copy_end = dirty_end < copy_count ? dirty_end : copy_count;
+		if (copy_end > dirty_begin)
+			memmove(
+				state->host_uploaded_physical_block_indices + base + dirty_begin,
+				state->host_physical_block_indices + base + dirty_begin,
+				(size_t)(copy_end - dirty_begin) * sizeof(uint32_t));
+		state->host_uploaded_lane_physical_block_counts[lane_index] = copy_count;
+		state->host_uploaded_lane_valid[lane_index] = 1u;
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52KvBlockTableView *source_view)
@@ -5533,12 +5506,12 @@ static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(
 	const uint32_t *source_blocks;
 	const uint32_t *source_counts;
 	uint32_t lane_index;
-	uint32_t block_index;
 	uint32_t copy_count;
+	uint32_t counts_changed;
+	uint32_t dirty_begin;
+	uint32_t dirty_end;
 	uint32_t maximum_copy_count;
 	uint32_t physical_block_capacity;
-	uint64_t destination_base;
-	uint64_t source_base;
 	SparkStatus status;
 	if (state == 0 || source_view == 0 ||
 		source_view->abi_version != SPARK_GLM52_KV_CACHE_ABI_VERSION ||
@@ -5550,7 +5523,9 @@ static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(
 		source_view->block_token_count !=
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS ||
 		source_view->physical_block_indices == 0 ||
-		source_view->lane_physical_block_counts == 0)
+		source_view->lane_physical_block_counts == 0 ||
+		source_view->host_physical_block_indices == 0 ||
+		source_view->host_lane_physical_block_counts == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (state->configuration.kv_pool_token_capacity == 0u ||
 		state->configuration.kv_pool_token_capacity %
@@ -5558,59 +5533,23 @@ static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	physical_block_capacity = state->configuration.kv_pool_token_capacity /
 		source_view->block_token_count;
-	source_blocks = source_view->host_physical_block_indices != 0 ?
-		source_view->host_physical_block_indices :
-		source_view->physical_block_indices;
-	source_counts = source_view->host_lane_physical_block_counts != 0 ?
-		source_view->host_lane_physical_block_counts :
-		source_view->lane_physical_block_counts;
+	source_blocks = source_view->host_physical_block_indices;
+	source_counts = source_view->host_lane_physical_block_counts;
 	maximum_copy_count = 0u;
 	for (lane_index = 0u; lane_index < source_view->lane_count; ++lane_index)
 	{
-		copy_count = source_counts[lane_index];
-		if (copy_count == 0u ||
-			copy_count > source_view->lane_stride ||
-			copy_count > SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE)
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		status = SparkGlm52Pp13BuilderStageKvLane(
+			state,source_view,source_blocks,source_counts,lane_index,
+			physical_block_capacity,&copy_count);
+		if (status != SPARK_STATUS_OK)
+			return status;
 		if (copy_count > maximum_copy_count)
 			maximum_copy_count = copy_count;
-		state->host_lane_physical_block_counts[lane_index] = copy_count;
-		destination_base =
-			(uint64_t)lane_index *
-			(uint64_t)SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
-		source_base =
-			(uint64_t)lane_index * (uint64_t)source_view->lane_stride;
-		for (block_index = 0u; block_index < copy_count; ++block_index)
-		{
-			if (source_blocks[source_base + block_index] >=
-				physical_block_capacity)
-				return SPARK_STATUS_CAPACITY_EXCEEDED;
-		}
-		if (source_blocks + source_base !=
-			state->host_physical_block_indices + destination_base)
-			memmove(
-				state->host_physical_block_indices + destination_base,
-				source_blocks + source_base,
-				(size_t)copy_count * sizeof(uint32_t));
 	}
-	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy2DAsync(
-		state->device_physical_block_indices,
-		(size_t)SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE *
-			sizeof(uint32_t),
-		state->host_physical_block_indices,
-		(size_t)SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE *
-			sizeof(uint32_t),
-		(size_t)maximum_copy_count * sizeof(uint32_t),
-		source_view->lane_count,
-		cudaMemcpyHostToDevice,
-		state->stream));
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
-			state->device_lane_physical_block_counts,
-			state->host_lane_physical_block_counts,
-			(size_t)source_view->lane_count * sizeof(uint32_t),
-			cudaMemcpyHostToDevice,
-			state->stream));
+	SparkGlm52Pp13BuilderFindKvDirectoryDelta(
+		state,source_view->lane_count,&dirty_begin,&dirty_end,&counts_changed);
+	status = SparkGlm52Pp13BuilderUploadKvDirectoryDelta(
+		state,source_view->lane_count,dirty_begin,dirty_end,counts_changed);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	state->device_kv_view = *source_view;
@@ -5786,6 +5725,7 @@ static SparkStatus SparkGlm52Pp13BuilderExpandSpeculativeKvRows(
 	if (status != SPARK_STATUS_OK)
 		return status;
 	state->device_kv_view.lane_count = (uint32_t)execution_row_count;
+	SparkGlm52Pp13BuilderInvalidateDeviceKvDirectory(state);
 	return SPARK_STATUS_OK;
 }
 
@@ -5831,7 +5771,10 @@ static SparkStatus SparkGlm52Pp13BuilderCompactSpeculativeKvRows(
 			(size_t)logical_lane_count * sizeof(uint32_t),
 			cudaMemcpyHostToDevice,state->stream));
 	if (status == SPARK_STATUS_OK)
+	{
 		state->device_kv_view.lane_count = logical_lane_count;
+		SparkGlm52Pp13BuilderInvalidateDeviceKvDirectory(state);
+	}
 	return status;
 }
 
@@ -5853,7 +5796,6 @@ static SparkStatus SparkGlm52Pp13BuilderPrepareWorkKvView(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52Pp13WorkControlPacket *work_packet)
 {
-	uint64_t kv_entries;
 	uint64_t prior_control_generation;
 	SparkStatus status;
 
@@ -5864,33 +5806,8 @@ static SparkStatus SparkGlm52Pp13BuilderPrepareWorkKvView(
 		return status;
 	SparkGlm52Pp13BuilderLogKvGenerationReset(
 		state,prior_control_generation);
-	kv_entries = (uint64_t)work_packet->active_sequence_count *
-		SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE;
-	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
-		state->device_physical_block_indices,
-		state->host_physical_block_indices,
-		(size_t)(kv_entries * sizeof(uint32_t)),
-		cudaMemcpyHostToDevice,
-		state->stream));
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
-			state->device_lane_physical_block_counts,
-			state->host_lane_physical_block_counts,
-			(size_t)(work_packet->active_sequence_count * sizeof(uint32_t)),
-			cudaMemcpyHostToDevice,
-			state->stream));
-	if (status != SPARK_STATUS_OK)
-		return status;
-	state->device_kv_view = state->host_kv_view;
-	state->device_kv_view.physical_block_indices =
-		state->device_physical_block_indices;
-	state->device_kv_view.lane_physical_block_counts =
-		state->device_lane_physical_block_counts;
-	state->device_kv_view.host_physical_block_indices =
-		state->host_physical_block_indices;
-	state->device_kv_view.host_lane_physical_block_counts =
-		state->host_lane_physical_block_counts;
-	return SPARK_STATUS_OK;
+	return SparkGlm52Pp13BuilderPrepareDeviceKvView(
+		state,&state->host_kv_view);
 }
 
 static SparkStatus SparkGlm52Pp13BuilderUploadMtpBudget(
@@ -5963,8 +5880,6 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(
 	uint32_t active_sequence_count)
 {
 	uint32_t block_count;
-	uint32_t sparse_block_count;
-	uint32_t layer_offset;
 	SparkStatus status;
 
 	if (state == 0 || active_sequence_count == 0u ||
@@ -5973,69 +5888,27 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(
 	block_count =
 		(active_sequence_count + SPARK_GLM52_PP13_BUILDER_THREADS - 1u) /
 		SPARK_GLM52_PP13_BUILDER_THREADS;
-	sparse_block_count = (
-		(active_sequence_count *
-		 SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT) +
-		SPARK_GLM52_PP13_BUILDER_THREADS - 1u) /
-		SPARK_GLM52_PP13_BUILDER_THREADS;
 	if (state->active_kv_block_count == 0u ||
 		state->active_kv_block_count >
 			SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	for (layer_offset = 0u;
-		 layer_offset < state->rank_plan.layer_count;
-		 ++layer_offset)
-	{
-		if (layer_offset != 0u &&
-			state->layers[layer_offset].block_table ==
-				state->layers[0u].block_table &&
-			state->layers[layer_offset].sparse_token_indices ==
-				state->layers[0u].sparse_token_indices)
-			continue;
-		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy2DAsync(
-			state->layers[layer_offset].block_table,
-			(size_t)SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE *
-				sizeof(uint32_t),
-			state->device_physical_block_indices,
-			(size_t)SPARK_GLM52_PP13_BUILDER_MAX_BLOCKS_PER_SEQUENCE *
-				sizeof(uint32_t),
-			(size_t)state->active_kv_block_count * sizeof(uint32_t),
+	SparkGlm52Pp13BuilderBuildDecodeMetadataKernel<<<
+		block_count,
+		SPARK_GLM52_PP13_BUILDER_THREADS,
+		0,
+		state->stream>>>(
+			(const uint32_t *)state->device_decode_positions,
+			state->device_kv_view.physical_block_indices,
+			state->device_kv_view.lane_physical_block_counts,
+			state->device_kv_view.lane_stride,
+			state->device_kv_view.block_token_count,
 			active_sequence_count,
-			cudaMemcpyDeviceToDevice,
-			state->stream));
-		if (status != SPARK_STATUS_OK)
-			return status;
-		SparkGlm52Pp13BuilderBuildDecodeMetadataKernel<<<
-			block_count,
-			SPARK_GLM52_PP13_BUILDER_THREADS,
-			0,
-			state->stream>>>(
-				(const uint32_t *)state->device_decode_positions,
-				state->device_kv_view.physical_block_indices,
-				state->device_kv_view.lane_physical_block_counts,
-				state->device_kv_view.lane_stride,
-				state->device_kv_view.block_token_count,
-				active_sequence_count,
-				(uint32_t *)state->layers[layer_offset].positions,
-				(uint32_t *)state->layers[layer_offset].slot_mapping,
-				(uint32_t *)state->layers[layer_offset].context_lengths,
-				(uint32_t *)state->layers[layer_offset].first_block_token_offsets);
-		status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
-		if (status != SPARK_STATUS_OK)
-			return status;
-		SparkGlm52Pp13BuilderBuildDecodeSparseTokenIndicesKernel<<<
-			sparse_block_count,
-			SPARK_GLM52_PP13_BUILDER_THREADS,
-			0,
-			state->stream>>>(
-				(const uint32_t *)state->device_decode_positions,
-				active_sequence_count,
-				(uint32_t *)state->layers[layer_offset].sparse_token_indices);
-		status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
-		if (status != SPARK_STATUS_OK)
-			return status;
-	}
-	return SPARK_STATUS_OK;
+			(uint32_t *)state->layers[0u].positions,
+			(uint32_t *)state->layers[0u].slot_mapping,
+			(uint32_t *)state->layers[0u].context_lengths,
+			(uint32_t *)state->layers[0u].first_block_token_offsets);
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
+	return status;
 }
 
 static SparkStatus SparkGlm52Pp13BuilderUploadWorkDecodePositions(
@@ -6112,11 +5985,7 @@ static SparkStatus SparkGlm52Pp13BuilderUploadWorkTokenIdsAndEmbedding(
 			 ++row_offset)
 		{
 			state->host_decode_token_ids[execution_row_index++] =
-				(work_packet->flags &
-				 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u
-					? work_packet->prefill_token_ids[
-						(lane_index * work_packet->rows_per_lane) + row_offset]
-					: row_offset == 0u
+				row_offset == 0u
 					? work_packet->lanes[lane_index].input_token_id
 					: work_packet->lanes[lane_index].speculative_draft_token_ids[
 						row_offset - 1u];
@@ -6145,73 +6014,6 @@ static SparkStatus SparkGlm52Pp13BuilderUploadWorkTokenIdsAndEmbedding(
 			execution_row_index,
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u);
 	return SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
-}
-
-static SparkStatus SparkGlm52Pp13BuilderPrepareBulkPrefillView(
-	SparkGlm52Pp13BuilderState *state,
-	const SparkGlm52Pp13WorkControlPacket *work_packet)
-{
-	uint32_t block_count,lane_index;
-	SparkStatus status;
-	if (state == 0 || work_packet == 0 ||
-		(work_packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) == 0u ||
-		work_packet->lane_count == 0u || work_packet->rows_per_lane == 0u ||
-		work_packet->execution_row_count > state->rank_plan.execution_row_capacity)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
-		state->host_prefill_lane_counts[lane_index] =
-			work_packet->lanes[lane_index].prefill_token_count;
-	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
-		state->device_prefill_token_counts,state->host_prefill_lane_counts,
-		(size_t)work_packet->lane_count * sizeof(uint32_t),
-		cudaMemcpyHostToDevice,state->stream));
-	if (status != SPARK_STATUS_OK)
-		return status;
-	block_count = (work_packet->execution_row_count +
-		SPARK_GLM52_PP13_BUILDER_THREADS - 1u) /
-		SPARK_GLM52_PP13_BUILDER_THREADS;
-	SparkGlm52Pp13BuilderBuildBulkPrefillMetadataKernel<<<
-		block_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
-			(const uint32_t *)state->device_decode_positions,
-			(const uint32_t *)state->device_prefill_token_counts,
-			state->device_kv_view.physical_block_indices,
-			state->device_kv_view.lane_physical_block_counts,
-			state->device_kv_view.lane_stride,
-			state->device_kv_view.block_token_count,
-			work_packet->lane_count,work_packet->rows_per_lane,
-			(uint32_t *)state->device_prefill_positions,
-			(uint32_t *)state->device_prefill_slot_mapping,
-			(uint32_t *)state->device_prefill_context_lengths,
-			(uint32_t *)state->device_prefill_first_block_token_offsets);
-	status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
-	if (status != SPARK_STATUS_OK)
-		return status;
-	memset(&state->prefill_frame_view,0,sizeof(state->prefill_frame_view));
-	state->prefill_frame_view.abi_version =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION;
-	state->prefill_frame_view.descriptor_bytes =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_DESCRIPTOR_BYTES;
-	state->prefill_frame_view.active_sequence_count = work_packet->lane_count;
-	state->prefill_frame_view.prompt_token_offset =
-		(uint32_t)work_packet->sequence_position;
-	state->prefill_frame_view.prompt_token_count = work_packet->rows_per_lane;
-	state->prefill_frame_view.prompt_token_stride = work_packet->rows_per_lane;
-	state->prefill_frame_view.hidden_dimension =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
-	state->prefill_frame_view.prompt_positions =
-		(const uint32_t *)state->device_prefill_positions;
-	state->prefill_frame_view.prompt_slot_mapping =
-		(const uint32_t *)state->device_prefill_slot_mapping;
-	state->prefill_frame_view.prompt_context_lengths =
-		(const uint32_t *)state->device_prefill_context_lengths;
-	state->prefill_frame_view.prompt_first_block_token_offsets =
-		(const uint32_t *)state->device_prefill_first_block_token_offsets;
-	state->prefill_frame_view.prompt_token_counts =
-		(const uint32_t *)state->device_prefill_token_counts;
-	state->prefill_frame_view.prompt_hidden_bf16 = state->layers[0].input_hidden;
-	state->prefill_frame_view.prompt_output_hidden_bf16 =
-		state->layers[state->rank_plan.layer_count - 1u].layer_output_hidden;
-	return SPARK_STATUS_OK;
 }
 
 static void SparkGlm52Pp13BuilderBuildPacket(
@@ -7360,14 +7162,6 @@ static SparkStatus SparkGlm52Pp13BuilderStoreMtpPreviousTarget(
 		const SparkGlm52Pp13WorkControlLane *lane;
 		lane = &work_packet->lanes[lane_index];
 		target_position = lane->sequence_position;
-		if ((work_packet->flags &
-				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u)
-		{
-			if (lane->prefill_token_count == 0u ||
-				target_position > UINT64_MAX - lane->prefill_token_count + 1u)
-				return SPARK_STATUS_CAPACITY_EXCEEDED;
-			target_position += lane->prefill_token_count - 1u;
-		}
 		if (lane->request_slot_index >=
 				state->configuration.maximum_resident_sequence_count ||
 			target_position > UINT32_MAX)
@@ -7390,14 +7184,7 @@ static SparkStatus SparkGlm52Pp13BuilderStoreMtpPreviousTarget(
 	if (status != SPARK_STATUS_OK)
 		return status;
 	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
-	{
 		state->host_decode_positions[lane_index] = lane_index;
-		if ((work_packet->flags &
-				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u)
-			state->host_decode_positions[lane_index] =
-				(lane_index * work_packet->rows_per_lane) +
-				work_packet->lanes[lane_index].prefill_token_count - 1u;
-	}
 	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
 		state->device_decode_positions,state->host_decode_positions,
 		(size_t)work_packet->lane_count * sizeof(uint32_t),
@@ -7439,10 +7226,7 @@ static SparkStatus SparkGlm52Pp13BuilderStoreMtpPreviousTarget(
 		state->host_mtp_previous_sequence_ids[request_slot_index] =
 			work_packet->lanes[lane_index].sequence_id;
 		state->host_mtp_previous_positions[request_slot_index] =
-			work_packet->lanes[lane_index].sequence_position +
-			(((work_packet->flags &
-				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u)
-				? work_packet->lanes[lane_index].prefill_token_count - 1u : 0u);
+			work_packet->lanes[lane_index].sequence_position;
 		state->host_mtp_previous_valid[request_slot_index] = 1u;
 	}
 	state->mtp_previous_request_id = work_packet->lanes[0u].request_id;
@@ -8426,19 +8210,12 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 		status = SparkGlm52Pp13BuilderUploadWorkTokenIdsAndEmbedding(
 			state,work_packet);
 	}
-	if (status == SPARK_STATUS_OK &&
-		(work_packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) == 0u)
+	if (status == SPARK_STATUS_OK)
 	{
 		failure_step = "decode_metadata";
 		status = SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(
 			state,
 			work_packet->execution_row_count);
-	}
-	if (status == SPARK_STATUS_OK &&
-		(work_packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u)
-	{
-		failure_step = "bulk_prefill_view";
-		status = SparkGlm52Pp13BuilderPrepareBulkPrefillView(state,work_packet);
 	}
 	if (status == SPARK_STATUS_OK)
 	{
@@ -8470,8 +8247,6 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	dispatch.new_token_count = work_packet->new_token_count;
 	dispatch.pipeline_slot = work_packet->pipeline_slot;
 	dispatch.kv_block_table = &state->device_kv_view;
-	if ((work_packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u)
-		dispatch.prefill_view = &state->prefill_frame_view;
 	if ((work_packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT) != 0u &&
 		work_packet->mtp_draft_token_count != 0u)
 		dispatch.mtp_draft_token_budgets =
@@ -8733,18 +8508,15 @@ static SparkStatus SparkGlm52Pp13BuilderPreparePrefillFrame(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
 	uint32_t token_offset,
-	uint32_t token_count,
 	SparkGlm52Pp13WorkControlPacket *work_packet)
 {
-	uint32_t block_count;
-	uint32_t execution_row_index;
-	uint32_t lane_index;
-	uint32_t row_offset;
-	uint64_t word_count;
 	SparkStatus status;
 
 	status = SparkGlm52Pp13WorkControlBuildPrefillPacket(
-		prefill_dispatch,token_offset,token_count,work_packet);
+		prefill_dispatch,
+		token_offset,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_FULL_STAGE_PREFILL_TOKEN_COUNT,
+		work_packet);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderPrepareWorkKvView(state,work_packet);
 	if (status == SPARK_STATUS_OK && token_offset == 0u)
@@ -8754,95 +8526,16 @@ static SparkStatus SparkGlm52Pp13BuilderPreparePrefillFrame(
 			state,work_packet->kv_block_table_token_count);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderUploadMtpBudget(
-			state,work_packet->lane_count,0u);
+			state,work_packet->active_sequence_count,0u);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderUploadWorkDecodePositions(state,work_packet);
-	if (status != SPARK_STATUS_OK)
-		return status;
-	execution_row_index = 0u;
-	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
-	{
-		state->host_prefill_lane_counts[lane_index] =
-			work_packet->lanes[lane_index].prefill_token_count;
-		for (row_offset = 0u; row_offset < token_count; ++row_offset)
-			state->host_decode_token_ids[execution_row_index++] =
-				work_packet->prefill_token_ids[
-					(lane_index * token_count) + row_offset];
-	}
-	if (execution_row_index != work_packet->execution_row_count)
-		return SPARK_STATUS_INTERNAL_ERROR;
-	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
-		state->device_decode_token_ids,state->host_decode_token_ids,
-		(size_t)execution_row_index * sizeof(uint32_t),
-		cudaMemcpyHostToDevice,state->stream));
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
-			state->device_prefill_token_counts,state->host_prefill_lane_counts,
-			(size_t)work_packet->lane_count * sizeof(uint32_t),
-			cudaMemcpyHostToDevice,state->stream));
-	if (status != SPARK_STATUS_OK)
-		return status;
-	block_count = (work_packet->execution_row_count +
-		SPARK_GLM52_PP13_BUILDER_THREADS - 1u) /
-		SPARK_GLM52_PP13_BUILDER_THREADS;
-	SparkGlm52Pp13BuilderBuildBulkPrefillMetadataKernel<<<
-		block_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
-			(const uint32_t *)state->device_decode_positions,
-			(const uint32_t *)state->device_prefill_token_counts,
-			state->device_kv_view.physical_block_indices,
-			state->device_kv_view.lane_physical_block_counts,
-			state->device_kv_view.lane_stride,
-			state->device_kv_view.block_token_count,
-			work_packet->lane_count,token_count,
-			(uint32_t *)state->device_prefill_positions,
-			(uint32_t *)state->device_prefill_slot_mapping,
-			(uint32_t *)state->device_prefill_context_lengths,
-			(uint32_t *)state->device_prefill_first_block_token_offsets);
-	status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
-	if (status != SPARK_STATUS_OK)
-		return status;
-	word_count = (uint64_t)work_packet->execution_row_count *
-		(SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u);
-	block_count = (uint32_t)((word_count +
-		SPARK_GLM52_PP13_BUILDER_THREADS - 1u) /
-		SPARK_GLM52_PP13_BUILDER_THREADS);
-	SparkGlm52Pp13BuilderGatherPrefillEmbeddingKernel<<<
-		block_count,SPARK_GLM52_PP13_BUILDER_THREADS,0,state->stream>>>(
-			(const uint32_t *)state->device_decode_token_ids,
-			(const uint32_t *)state->device_prefill_token_counts,
-			(const uint32_t *)state->embedding_weight,
-			(uint32_t *)state->layers[0].input_hidden,
-			work_packet->lane_count,token_count,
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION / 2u);
-	status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
-	if (status != SPARK_STATUS_OK)
-		return status;
-	memset(&state->prefill_frame_view,0,sizeof(state->prefill_frame_view));
-	state->prefill_frame_view.abi_version =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION;
-	state->prefill_frame_view.descriptor_bytes =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_DESCRIPTOR_BYTES;
-	state->prefill_frame_view.active_sequence_count = work_packet->lane_count;
-	state->prefill_frame_view.prompt_token_offset =
-		(uint32_t)work_packet->sequence_position;
-	state->prefill_frame_view.prompt_token_count = token_count;
-	state->prefill_frame_view.prompt_token_stride = token_count;
-	state->prefill_frame_view.hidden_dimension =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
-	state->prefill_frame_view.prompt_positions =
-		(const uint32_t *)state->device_prefill_positions;
-	state->prefill_frame_view.prompt_slot_mapping =
-		(const uint32_t *)state->device_prefill_slot_mapping;
-	state->prefill_frame_view.prompt_context_lengths =
-		(const uint32_t *)state->device_prefill_context_lengths;
-	state->prefill_frame_view.prompt_first_block_token_offsets =
-		(const uint32_t *)state->device_prefill_first_block_token_offsets;
-	state->prefill_frame_view.prompt_token_counts =
-		(const uint32_t *)state->device_prefill_token_counts;
-	state->prefill_frame_view.prompt_hidden_bf16 = state->layers[0].input_hidden;
-	state->prefill_frame_view.prompt_output_hidden_bf16 =
-		state->layers[state->rank_plan.layer_count - 1u].layer_output_hidden;
-	return SPARK_STATUS_OK;
+		status = SparkGlm52Pp13BuilderUploadWorkTokenIdsAndEmbedding(
+			state,work_packet);
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(
+			state,work_packet->execution_row_count);
+	return status;
 }
 
 static SparkStatus SparkGlm52Pp13BuilderBuildPrefillRunnerDispatch(
@@ -8866,10 +8559,10 @@ static SparkStatus SparkGlm52Pp13BuilderBuildPrefillRunnerDispatch(
 	dispatch->active_sequence_count = work_packet->execution_row_count;
 	dispatch->logical_lane_count = work_packet->lane_count;
 	dispatch->rows_per_lane = work_packet->rows_per_lane;
-	dispatch->new_token_count = work_packet->new_token_count;
+	dispatch->new_token_count =
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_FULL_STAGE_PREFILL_TOKEN_COUNT;
 	dispatch->pipeline_slot = work_packet->pipeline_slot;
 	dispatch->kv_block_table = &state->device_kv_view;
-	dispatch->prefill_view = &state->prefill_frame_view;
 	dispatch->mtp_draft_token_budgets =
 		(const uint32_t *)state->layers[0].mtp_draft_token_budgets;
 	dispatch->hidden_output_transport_session = state->output_transport_session;
@@ -8934,8 +8627,6 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 	SparkGlm52Pp13BuilderState *state;
 	SparkGlm52ResidentDecodeStageProductionRunnerDispatch dispatch;
 	SparkGlm52Pp13WorkControlPacket work_packet;
-	uint32_t chunk_token_count;
-	uint32_t maximum_chunk_token_count;
 	uint32_t token_offset;
 	uint32_t submit_retry;
 	const char *debug_enabled;
@@ -8959,24 +8650,13 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 			SPARK_GLM52_PP13_BUILDER_MAX_PREFILL_TOKENS)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	debug_enabled = getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG");
-	maximum_chunk_token_count = state->rank_plan.execution_row_capacity /
-		prefill_dispatch->lane_count;
-	if (maximum_chunk_token_count >
-		SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET)
-		maximum_chunk_token_count =
-			SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET;
-	if (maximum_chunk_token_count == 0u)
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	for (token_offset = 0u;
 		 token_offset < prefill_dispatch->prompt_token_count;
-		 token_offset += chunk_token_count)
+		 ++token_offset)
 	{
-		chunk_token_count = prefill_dispatch->prompt_token_count - token_offset;
-		if (chunk_token_count > maximum_chunk_token_count)
-			chunk_token_count = maximum_chunk_token_count;
 		memset(&work_packet,0,sizeof(work_packet));
 		status = SparkGlm52Pp13BuilderPreparePrefillFrame(
-			state,prefill_dispatch,token_offset,chunk_token_count,&work_packet);
+			state,prefill_dispatch,token_offset,&work_packet);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13BuilderBuildPrefillRunnerDispatch(
 				state,&work_packet,&dispatch);
@@ -9004,10 +8684,9 @@ static SparkStatus SparkGlm52Pp13BuilderPrefill(
 			(void)idle_pump_function(idle_pump_context);
 		if (debug_enabled != 0)
 			fprintf(stderr,
-				"pp13_builder_prefill_submitted position=%llu token_offset=%u tokens=%u lanes=%u rows=%u busy_retries=%u\n",
+				"pp13_builder_prefill_submitted position=%llu token_offset=%u lanes=%u busy_retries=%u\n",
 				(unsigned long long)work_packet.sequence_position,
-				token_offset,chunk_token_count,work_packet.active_sequence_count,
-				work_packet.execution_row_count,submit_retry);
+				token_offset,work_packet.active_sequence_count,submit_retry);
 	}
 	SparkGlm52Pp13BuilderMaybeProbeMlaSlots(state);
 	return SPARK_STATUS_OK;
