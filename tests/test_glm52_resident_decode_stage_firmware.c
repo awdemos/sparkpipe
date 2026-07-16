@@ -3878,6 +3878,12 @@ int main(void)
     assert(fake_streams[1].submit_count == 0u);
 
     SparkGlm52ResidentDecodeStageFakeStreamComplete(&fake_streams[0]);
+    assert(completion_state.completion_count == 0u);
+    assert(SparkOrchestratorGetDriverProgramSnapshot(
+               orchestrator,
+               driver_handle,
+               "decode",
+               &runtime_snapshot) == SPARK_STATUS_OK);
     assert(completion_state.completion_count == 1u);
     assert(completion_state.completions[0].request_id == 201u);
     assert(completion_state.completions[0].sequence_id == 7001u);
@@ -3912,6 +3918,12 @@ int main(void)
                orchestrator,
                driver_handle) == 1u);
     SparkGlm52ResidentDecodeStageFakeStreamComplete(&fake_streams[0]);
+    assert(completion_state.completion_count == 1u);
+    assert(SparkOrchestratorGetDriverProgramSnapshot(
+               orchestrator,
+               driver_handle,
+               "decode",
+               &runtime_snapshot) == SPARK_STATUS_OK);
     assert(completion_state.completion_count == 2u);
     assert(completion_state.completions[1].request_id == 202u);
     assert(completion_state.completions[1].driver_dispatch_slot == 0u);
