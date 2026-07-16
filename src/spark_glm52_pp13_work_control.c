@@ -1728,7 +1728,7 @@ SparkStatus SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 	view->block_token_count = packet->block_token_count;
 	view->lane_count = packet->active_sequence_count;
 	view->lane_stride = state->lane_stride;
-	view->lane_capacity = state->lane_capacity;
+	view->lane_capacity = state->lane_stride;
 	view->physical_block_indices = state->physical_block_indices;
 	view->lane_physical_block_counts = state->lane_physical_block_counts;
 	view->host_physical_block_indices = state->physical_block_indices;

@@ -275,7 +275,7 @@ static void SparkTestGlm52Pp13WorkControlHostBlockTable(void)
 	assert(view.block_token_count == packet.block_token_count);
 	assert(view.lane_count == 4u);
 	assert(view.lane_stride == 4096u);
-	assert(view.lane_capacity == 4u);
+	assert(view.lane_capacity == view.lane_stride);
 	assert(view.physical_block_indices == storage.physical_blocks);
 	assert(view.host_physical_block_indices == storage.physical_blocks);
 	assert(storage.lane_counts[0] == 129u);
