@@ -240,8 +240,13 @@ static void SparkTestGlm52Pp13WorkControlExecutionChunks(void)
 	assert(SparkGlm52Pp13WorkControlPlanExecutionChunks(
 		1024u,7u,7168u,&maximum_lanes_per_chunk,&chunk_count) ==
 		SPARK_STATUS_OK);
-	assert(maximum_lanes_per_chunk == 1024u);
-	assert(chunk_count == 1u);
+	assert(maximum_lanes_per_chunk == 146u);
+	assert(chunk_count == 8u);
+	assert(SparkGlm52Pp13WorkControlPlanExecutionChunks(
+		1024u,SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT,7168u,
+		&maximum_lanes_per_chunk,&chunk_count) == SPARK_STATUS_OK);
+	assert(maximum_lanes_per_chunk == 170u);
+	assert(chunk_count == 7u);
 	assert(SparkGlm52Pp13WorkControlPlanExecutionChunks(
 		146u,7u,1024u,&maximum_lanes_per_chunk,&chunk_count) ==
 		SPARK_STATUS_OK);
@@ -462,7 +467,8 @@ static void SparkTestGlm52Pp13WorkControlB1024MtpBatch(void)
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(packet.lane_count);
 	packet.execution_row_count = packet.lane_count;
 	packet.flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT;
-	packet.mtp_draft_token_count = SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT;
+	packet.mtp_draft_token_count =
+		SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
 	packet.new_token_count = packet.mtp_draft_token_count + 1u;
 	for (lane_index = 0u; lane_index < packet.lane_count; ++lane_index)
 	{
@@ -471,7 +477,7 @@ static void SparkTestGlm52Pp13WorkControlB1024MtpBatch(void)
 		packet.lanes[lane_index].sequence_position = 4096u;
 		packet.lanes[lane_index].request_slot_index = lane_index;
 		packet.lanes[lane_index].context_token_count =
-			4097u + SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT;
+			4097u + SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
 		packet.lanes[lane_index].input_token_id = 100u + (lane_index % 100u);
 		packet.lanes[lane_index].mtp_draft_token_count =
 			packet.mtp_draft_token_count;
@@ -481,7 +487,7 @@ static void SparkTestGlm52Pp13WorkControlB1024MtpBatch(void)
 	packet.sequence_position = packet.lanes[0u].sequence_position;
 	packet.input_token_id = packet.lanes[0u].input_token_id;
 	packet.kv_block_table_token_count =
-		4097u + SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT;
+		4097u + SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
 	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
 		SPARK_STATUS_OK);
 	packet.execution_row_count -= 1u;
@@ -497,19 +503,22 @@ static void SparkTestGlm52Pp13WorkControlB1024LayerMajorMtpVerify(void)
 
 	SparkTestInitializeWorkPacket(&packet);
 	packet.flags =
-		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY;
-	packet.active_sequence_count =
-		SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT;
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT |
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY |
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_TREE_VERIFY;
+	packet.active_sequence_count = 170u;
 	packet.lane_count = packet.active_sequence_count;
 	packet.execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B1024;
 	packet.descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(packet.lane_count);
 	packet.speculative_token_count =
-		SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT;
-	packet.rows_per_lane = packet.speculative_token_count + 1u;
+		SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+	packet.rows_per_lane = SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
 	packet.execution_row_count = packet.lane_count * packet.rows_per_lane;
 	packet.new_token_count = packet.rows_per_lane;
 	packet.kv_block_table_token_count = 4103u;
+	packet.mtp_draft_token_count =
+		SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
 	for (token_index = 0u;
 		 token_index < packet.speculative_token_count;
 		 ++token_index)
@@ -524,6 +533,7 @@ static void SparkTestGlm52Pp13WorkControlB1024LayerMajorMtpVerify(void)
 		lane->request_slot_index = lane_index;
 		lane->context_token_count = 4103u;
 		lane->input_token_id = 100u + (lane_index % 100u);
+		lane->mtp_draft_token_count = packet.mtp_draft_token_count;
 		lane->speculative_token_count = packet.speculative_token_count;
 		memcpy(lane->speculative_draft_token_ids,
 			packet.speculative_draft_token_ids,
@@ -534,9 +544,9 @@ static void SparkTestGlm52Pp13WorkControlB1024LayerMajorMtpVerify(void)
 	packet.sequence_position = packet.lanes[0u].sequence_position;
 	packet.input_token_id = packet.lanes[0u].input_token_id;
 	assert(SparkGlm52Pp13WorkControlValidatePacket(
-		&packet,7168u,4u) == SPARK_STATUS_OK);
+		&packet,1020u,4u) == SPARK_STATUS_OK);
 	assert(SparkGlm52Pp13WorkControlValidatePacket(
-		&packet,7167u,4u) == SPARK_STATUS_INVALID_ARGUMENT);
+		&packet,1019u,4u) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestGlm52Pp13WorkControlB1024PhysicalDirectory(void)
@@ -855,6 +865,11 @@ static void SparkTestGlm52Pp13WorkControlBuildDecodeBatch(void)
 	{
 		request_dispatch.request_ids[lane_index] = 100u + lane_index;
 		request_dispatch.sequence_ids[lane_index] = 200u + lane_index;
+		decode_view.lanes[lane_index].request_index = lane_index;
+		decode_view.lanes[lane_index].request_id =
+			request_dispatch.request_ids[lane_index];
+		decode_view.lanes[lane_index].sequence_id =
+			request_dispatch.sequence_ids[lane_index];
 		decode_view.lanes[lane_index].sequence_position = 31u;
 		decode_view.lanes[lane_index].context_token_count = 32u;
 		decode_view.lanes[lane_index].request_slot_index = lane_index;
@@ -883,6 +898,15 @@ static void SparkTestGlm52Pp13WorkControlBuildDecodeBatch(void)
 	packet.flags &= ~SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE;
 	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,4u,1u) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkGlm52Pp13WorkControlBuildDecodePacketRange(
+		&decode_dispatch,2u,2u,0u,&packet) == SPARK_STATUS_OK);
+	assert(packet.active_sequence_count == 2u);
+	assert(packet.lanes[0u].request_id == 102u);
+	assert(packet.lanes[1u].request_id == 103u);
+	assert(packet.descriptor_bytes ==
+		SparkGlm52Pp13WorkControlCalculatePacketBytes(2u));
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,4u,1u) ==
+		SPARK_STATUS_OK);
 }
 
 static void SparkTestGlm52Pp13WorkControlBuildPackedMtpVerify(void)
@@ -908,6 +932,9 @@ static void SparkTestGlm52Pp13WorkControlBuildPackedMtpVerify(void)
 	request_dispatch.sequence_ids[0u] = 200u;
 	memset(&decode_view,0,sizeof(decode_view));
 	decode_view.lane_count = 1u;
+	decode_view.lanes[0u].request_index = 0u;
+	decode_view.lanes[0u].request_id = request_dispatch.request_ids[0u];
+	decode_view.lanes[0u].sequence_id = request_dispatch.sequence_ids[0u];
 	decode_view.lanes[0u].sequence_position = 32u;
 	decode_view.lanes[0u].context_token_count = 33u;
 	decode_view.lanes[0u].request_slot_index = 7u;

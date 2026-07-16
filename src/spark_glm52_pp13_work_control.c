@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_glm52_pp13_work_control.h"
+#include "sparkpipe/spark_glm52_mtp_tree.h"
 
 #include <string.h>
 
@@ -20,12 +21,13 @@ uint32_t SparkGlm52Pp13WorkControlCalculatePacketBytes(
 
 SparkStatus SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 	const SparkGlm52RequestApiDispatch *request_dispatch,
-	uint32_t logical_lane_count,
+	uint32_t execution_row_count,
 	uint32_t *batch_bucket_out)
 {
 	uint32_t batch_bucket;
+	uint32_t required_batch_bucket;
 	if (request_dispatch == 0 || batch_bucket_out == 0 ||
-		logical_lane_count == 0u)
+		execution_row_count == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (request_dispatch->kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL)
 		batch_bucket = request_dispatch->prefill_decision.batch_bucket;
@@ -39,10 +41,49 @@ SparkStatus SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 		batch_bucket = request_dispatch->decode_batch_decision.batch_bucket;
 	else
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	required_batch_bucket =
+		SparkGlm52StagePlanSelectBatchBucketValue(execution_row_count);
 	if (SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) == 0u ||
-		batch_bucket < logical_lane_count)
+		required_batch_bucket == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (batch_bucket < required_batch_bucket)
+		batch_bucket = required_batch_bucket;
 	*batch_bucket_out = batch_bucket;
+	return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+	uint32_t dispatch_kind,
+	uint32_t request_flags,
+	uint32_t requested_budget,
+	uint32_t *mtp_budget_out)
+{
+	uint32_t producer;
+	uint32_t tree_verify;
+	if (mtp_budget_out == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	producer =
+		dispatch_kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
+		(request_flags &
+			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u;
+	tree_verify =
+		dispatch_kind ==
+			SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
+		(request_flags &
+			(SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
+			 SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY)) ==
+			(SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
+			 SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY);
+	if (producer == 0u && tree_verify == 0u)
+	{
+		if (requested_budget != 0u)
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		*mtp_budget_out = 0u;
+		return SPARK_STATUS_OK;
+	}
+	if (requested_budget != SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT)
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	*mtp_budget_out = requested_budget;
 	return SPARK_STATUS_OK;
 }
 
@@ -65,6 +106,10 @@ static void SparkGlm52Pp13WorkControlSetDecodeFlags(
 			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
 		packet->flags |=
 			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY;
+	if ((decode_dispatch->request_dispatch->flags &
+			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u)
+		packet->flags |=
+			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_TREE_VERIFY;
 }
 
 static void SparkGlm52Pp13WorkControlSetMtpResolutionFlag(
@@ -83,72 +128,67 @@ static void SparkGlm52Pp13WorkControlSetMtpResolutionFlag(
 	}
 }
 
-static uint32_t SparkGlm52Pp13WorkControlUsesSingleLaneMtpTrain(
-	const SparkGlm52ServingDecodeDispatch *decode_dispatch)
-{
-	(void)decode_dispatch;
-	return 0u;
-}
-
 static SparkStatus SparkGlm52Pp13WorkControlBuildDecodeLanes(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+	uint32_t lane_offset,
+	uint32_t lane_count,
 	uint32_t speculative_verify,
-	uint32_t single_lane_mtp_train,
-	uint32_t speculative_token_index,
 	uint32_t mtp_budget,
 	SparkGlm52Pp13WorkControlPacket *packet)
 {
 	const SparkGlm52RequestApiDecodeDispatchLaneView *source_lane;
 	SparkGlm52Pp13WorkControlLane *lane;
 	uint32_t lane_index;
+	uint32_t mtp_tree_verify;
+	uint32_t source_index;
 	uint32_t token_index;
 
-	for (lane_index = 0u;
-		 lane_index < decode_dispatch->active_sequence_count;
-		 ++lane_index)
+	mtp_tree_verify = (decode_dispatch->request_dispatch->flags &
+		SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u;
+	for (lane_index = 0u; lane_index < lane_count; ++lane_index)
 	{
-		source_lane = &decode_dispatch->decode_view->lanes[lane_index];
+		source_index = lane_offset + lane_index;
+		source_lane = &decode_dispatch->decode_view->lanes[source_index];
 		lane = &packet->lanes[lane_index];
-		if (single_lane_mtp_train != 0u &&
-			source_lane->sequence_position >
-				UINT32_MAX - speculative_token_index)
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		if (source_lane->request_index != source_index ||
+			source_lane->request_id !=
+				decode_dispatch->request_dispatch->request_ids[source_index] ||
+			source_lane->sequence_id !=
+				decode_dispatch->request_dispatch->sequence_ids[source_index])
+			return SPARK_STATUS_INVALID_ARGUMENT;
 		lane->request_id =
-			decode_dispatch->request_dispatch->request_ids[lane_index];
+			decode_dispatch->request_dispatch->request_ids[source_index];
 		lane->sequence_id =
-			decode_dispatch->request_dispatch->sequence_ids[lane_index];
-		lane->sequence_position = source_lane->sequence_position +
-			(single_lane_mtp_train != 0u ? speculative_token_index : 0u);
+			decode_dispatch->request_dispatch->sequence_ids[source_index];
+		lane->sequence_position = source_lane->sequence_position;
 		lane->request_slot_index = source_lane->request_slot_index;
 		lane->context_token_count = source_lane->context_token_count;
-		lane->input_token_id = single_lane_mtp_train == 0u ||
-			speculative_token_index == 0u
-			? decode_dispatch->input_token_ids[lane_index]
-			: decode_dispatch->speculative_draft_token_ids[lane_index][
-				speculative_token_index - 1u];
-		lane->mtp_draft_token_count = speculative_verify != 0u ? 0u : mtp_budget;
-		if (single_lane_mtp_train == 0u || speculative_token_index == 0u)
-		{
-			lane->mtp_resolution_proposed_token_count =
-				(uint8_t)source_lane->mtp_resolution_proposed_token_count;
-			lane->mtp_resolution_accepted_token_count =
-				(uint8_t)source_lane->mtp_resolution_accepted_token_count;
-		}
-		lane->mtp_resolution_reserved0 = 0u;
+		lane->input_token_id = decode_dispatch->input_token_ids[source_index];
+		lane->mtp_draft_token_count = mtp_budget;
+		lane->mtp_resolution_proposed_token_count =
+			(uint8_t)source_lane->mtp_resolution_proposed_token_count;
+		lane->mtp_resolution_accepted_token_count =
+			(uint8_t)source_lane->mtp_resolution_accepted_token_count;
+		lane->mtp_resolution_path_id =
+			(uint16_t)source_lane->mtp_resolution_path_id;
 		if (speculative_verify != 0u)
 		{
+			uint32_t context_extension;
+			context_extension = mtp_tree_verify != 0u
+				? SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION
+				: decode_dispatch->speculative_token_count;
 			if (lane->context_token_count >
-				UINT32_MAX - decode_dispatch->speculative_token_count)
+				UINT32_MAX - context_extension)
 				return SPARK_STATUS_CAPACITY_EXCEEDED;
-			lane->context_token_count +=
-				decode_dispatch->speculative_token_count;
+			lane->context_token_count += context_extension;
 			lane->speculative_token_count =
 				decode_dispatch->speculative_token_count;
 			for (token_index = 0u;
 				 token_index < lane->speculative_token_count;
 				 ++token_index)
 				lane->speculative_draft_token_ids[token_index] =
-					decode_dispatch->speculative_draft_token_ids[lane_index][token_index];
+					decode_dispatch->speculative_draft_token_ids[
+						source_index][token_index];
 		}
 		else if (mtp_budget != 0u)
 		{
@@ -162,13 +202,15 @@ static SparkStatus SparkGlm52Pp13WorkControlBuildDecodeLanes(
 	return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
+SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacketRange(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+	uint32_t lane_offset,
+	uint32_t lane_count,
 	uint32_t speculative_token_index,
 	SparkGlm52Pp13WorkControlPacket *packet)
 {
 	uint32_t speculative_verify;
-	uint32_t single_lane_mtp_train;
+	uint32_t mtp_tree_verify;
 	uint32_t mtp_budget;
 	SparkStatus status;
 
@@ -181,52 +223,61 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
 		decode_dispatch->decode_view->lane_count !=
 			decode_dispatch->active_sequence_count ||
 		decode_dispatch->active_sequence_count >
-			SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT)
+			SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT ||
+		lane_count == 0u ||
+		lane_offset >= decode_dispatch->active_sequence_count ||
+		lane_count > decode_dispatch->active_sequence_count - lane_offset)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	speculative_verify = decode_dispatch->dispatch_kind ==
 		SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
-	single_lane_mtp_train =
-		SparkGlm52Pp13WorkControlUsesSingleLaneMtpTrain(decode_dispatch);
+	mtp_tree_verify = (decode_dispatch->request_dispatch->flags &
+		SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u;
 	if ((speculative_verify != 0u &&
 		 (decode_dispatch->speculative_token_count == 0u ||
 		  decode_dispatch->speculative_token_count >
 			SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT ||
-		  (single_lane_mtp_train != 0u
-			? speculative_token_index > decode_dispatch->speculative_token_count
-			: speculative_token_index != 0u))) ||
+		  speculative_token_index != 0u)) ||
 		(speculative_verify == 0u && speculative_token_index != 0u))
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	mtp_budget = 0u;
-	if (speculative_verify == 0u &&
-		(decode_dispatch->request_dispatch->flags &
-			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u)
-		mtp_budget = decode_dispatch->request_dispatch->mtp_draft_token_budget;
-	if (mtp_budget > SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT)
-		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+		decode_dispatch->dispatch_kind,
+		decode_dispatch->request_dispatch->flags,
+		decode_dispatch->request_dispatch->mtp_draft_token_budget,
+		&mtp_budget);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	memset(packet,0,sizeof(*packet));
 	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
 	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
 	packet->control_generation =
 		SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION;
-	packet->active_sequence_count = decode_dispatch->active_sequence_count;
+	packet->active_sequence_count = lane_count;
 	packet->lane_count = packet->active_sequence_count;
 	packet->descriptor_bytes = SparkGlm52Pp13WorkControlCalculatePacketBytes(
 		packet->active_sequence_count);
-	packet->rows_per_lane = speculative_verify != 0u &&
-		single_lane_mtp_train == 0u
-		? decode_dispatch->speculative_token_count + 1u : 1u;
+	packet->rows_per_lane = speculative_verify != 0u
+		? mtp_tree_verify != 0u
+			? decode_dispatch->request_dispatch->
+				speculative_verifier_token_count
+			: decode_dispatch->speculative_token_count + 1u
+		: 1u;
+	if (mtp_tree_verify != 0u &&
+		(packet->rows_per_lane !=
+				SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT ||
+		 decode_dispatch->speculative_token_count !=
+				SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT))
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
 	if ((uint64_t)packet->lane_count * packet->rows_per_lane > UINT32_MAX)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	packet->execution_row_count =
 		packet->lane_count * packet->rows_per_lane;
 	status = SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 		decode_dispatch->request_dispatch,
-		packet->lane_count,
+		packet->execution_row_count,
 		&packet->execution_batch_bucket);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	packet->new_token_count = speculative_verify != 0u &&
-		single_lane_mtp_train == 0u
+	packet->new_token_count = speculative_verify != 0u
 		? packet->rows_per_lane : mtp_budget + 1u;
 	packet->priority = decode_dispatch->request_dispatch->highest_priority;
 	packet->block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
@@ -235,8 +286,8 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
 	packet->mtp_draft_token_count = mtp_budget;
 	SparkGlm52Pp13WorkControlSetDecodeFlags(decode_dispatch,mtp_budget,packet);
 	status = SparkGlm52Pp13WorkControlBuildDecodeLanes(
-		decode_dispatch,speculative_verify,single_lane_mtp_train,
-		speculative_token_index,mtp_budget,packet);
+		decode_dispatch,lane_offset,lane_count,speculative_verify,
+		mtp_budget,packet);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	SparkGlm52Pp13WorkControlSetMtpResolutionFlag(packet);
@@ -250,10 +301,22 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
 			decode_dispatch->speculative_token_count;
 		packet->speculative_token_index = speculative_token_index;
 		memcpy(packet->speculative_draft_token_ids,
-			decode_dispatch->speculative_draft_token_ids[0u],
+			decode_dispatch->speculative_draft_token_ids[lane_offset],
 			sizeof(packet->speculative_draft_token_ids));
 	}
 	return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
+	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+	uint32_t speculative_token_index,
+	SparkGlm52Pp13WorkControlPacket *packet)
+{
+	if (decode_dispatch == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return SparkGlm52Pp13WorkControlBuildDecodePacketRange(
+		decode_dispatch,0u,decode_dispatch->active_sequence_count,
+		speculative_token_index,packet);
 }
 
 SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
@@ -399,6 +462,8 @@ SparkStatus SparkGlm52Pp13WorkControlPlanExecutionChunks(
 		rows_per_lane == 0u || execution_row_capacity == 0u ||
 		maximum_lanes_per_chunk_out == 0 || chunk_count_out == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (execution_row_capacity > SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
+		execution_row_capacity = SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET;
 	maximum_lanes_per_chunk = execution_row_capacity / rows_per_lane;
 	if (maximum_lanes_per_chunk == 0u)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -420,6 +485,7 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 	uint32_t token_index;
 	uint32_t dspark_verify;
 	uint32_t mtp_verify;
+	uint32_t mtp_tree_verify;
 	uint32_t speculative_verify;
 	uint32_t single_lane_mtp_train;
 	uint32_t lane_index;
@@ -487,7 +553,8 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 				lane->speculative_token_count != 0u ||
 				lane->mtp_resolution_proposed_token_count != 0u ||
 				lane->mtp_resolution_accepted_token_count != 0u ||
-				lane->mtp_resolution_reserved0 != 0u)
+				lane->mtp_resolution_path_id !=
+					SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE)
 				return SPARK_STATUS_INVALID_ARGUMENT;
 			for (token_index = 0u;
 				 token_index < SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT;
@@ -534,6 +601,8 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u;
 	mtp_verify = (packet->flags &
 		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY) != 0u;
+	mtp_tree_verify = (packet->flags &
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_TREE_VERIFY) != 0u;
 	speculative_verify = dspark_verify | mtp_verify;
 	single_lane_mtp_train = mtp_verify != 0u && packet->lane_count == 1u &&
 		packet->rows_per_lane == 1u;
@@ -541,7 +610,10 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u
 		? packet->new_token_count
 		: speculative_verify != 0u && single_lane_mtp_train == 0u
-			? packet->speculative_token_count + 1u : 1u;
+			? mtp_tree_verify != 0u
+				? SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT
+				: packet->speculative_token_count + 1u
+			: 1u;
 	expected_execution_row_count =
 		(uint64_t)packet->lane_count * expected_rows_per_lane;
 	if (packet->rows_per_lane != expected_rows_per_lane ||
@@ -550,13 +622,18 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		packet->execution_row_count != (uint32_t)expected_execution_row_count ||
 		SparkGlm52StagePlanBatchBucketIsSupported(
 			packet->execution_batch_bucket) == 0u ||
-		((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u
-			? packet->execution_row_count : packet->lane_count) >
-			packet->execution_batch_bucket)
+		packet->execution_row_count > packet->execution_batch_bucket)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (packet->input_token_id >= SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (dspark_verify != 0u && mtp_verify != 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (mtp_tree_verify != 0u &&
+		(mtp_verify == 0u ||
+		 packet->speculative_token_count !=
+			SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT ||
+		 packet->rows_per_lane !=
+			SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT))
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((packet->active_sequence_count != 1u &&
 		 (packet->flags &
@@ -571,8 +648,8 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 	mtp_resolution_lane_count = 0u;
 	if (speculative_verify != 0u)
 	{
-		if ((packet->flags & (SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL |
-				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT)) != 0u ||
+		if ((packet->flags &
+				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u ||
 			packet->new_token_count != packet->rows_per_lane ||
 			packet->speculative_token_count == 0u ||
 			packet->speculative_token_count >
@@ -586,6 +663,18 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 			(mtp_verify != 0u &&
 			 (packet->flags &
 				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE) != 0u))
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		if (mtp_tree_verify != 0u)
+		{
+			if ((packet->flags &
+					SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT) == 0u ||
+				packet->mtp_draft_token_count !=
+					SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT)
+				return SPARK_STATUS_MODULE_NOT_VALIDATED;
+		}
+		else if ((packet->flags &
+					SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT) != 0u ||
+			packet->mtp_draft_token_count != 0u)
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		for (token_index = 0u;
 			 token_index < packet->speculative_token_count;
@@ -621,20 +710,25 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 	for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
 	{
 		const SparkGlm52Pp13WorkControlLane *lane;
+		uint32_t lane_position_count;
 		lane = &packet->lanes[lane_index];
+		lane_position_count =
+			(packet->flags &
+				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u
+			? lane->prefill_token_count
+			: mtp_tree_verify != 0u
+				? SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION + 1u
+				: packet->new_token_count;
 		if (lane->request_id == 0u || lane->sequence_id == 0u ||
 			lane->request_slot_index == SPARK_GLM52_PP13_WORK_CONTROL_INVALID_REQUEST_SLOT ||
 			lane->context_token_count == 0u ||
-			lane->sequence_position + (uint64_t)(
-				(packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u
-					? lane->prefill_token_count : packet->new_token_count) >
+			lane->sequence_position + (uint64_t)lane_position_count >
 				lane->context_token_count ||
 			lane->context_token_count > packet->kv_block_table_token_count ||
 			SparkGlm52Pp13WorkControlBlockCount(
 				lane->context_token_count,packet->block_token_count) >
 				packet->max_blocks_per_sequence ||
-			lane->input_token_id >= SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT ||
-			lane->mtp_resolution_reserved0 != 0u)
+			lane->input_token_id >= SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT)
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		if ((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u)
 		{
@@ -657,7 +751,9 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		if (lane->mtp_resolution_proposed_token_count == 0u)
 		{
-			if (lane->mtp_resolution_accepted_token_count != 0u)
+			if (lane->mtp_resolution_accepted_token_count != 0u ||
+				lane->mtp_resolution_path_id !=
+					SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE)
 				return SPARK_STATUS_INVALID_ARGUMENT;
 		}
 		else
@@ -666,8 +762,10 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 					SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE) == 0u ||
 				lane->mtp_resolution_proposed_token_count >
 					SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT ||
-				lane->mtp_resolution_accepted_token_count >
-					lane->mtp_resolution_proposed_token_count ||
+				SparkGlm52MtpTreeResolutionIsValid(
+					lane->mtp_resolution_proposed_token_count,
+					lane->mtp_resolution_accepted_token_count,
+					lane->mtp_resolution_path_id) == 0u ||
 				lane->sequence_position <
 					(uint64_t)lane->mtp_resolution_accepted_token_count + 1u)
 				return SPARK_STATUS_INVALID_ARGUMENT;
@@ -675,7 +773,7 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		}
 		if (speculative_verify != 0u)
 		{
-			if (lane->mtp_draft_token_count != 0u ||
+			if (lane->mtp_draft_token_count != packet->mtp_draft_token_count ||
 				lane->speculative_token_count != packet->speculative_token_count)
 				return SPARK_STATUS_INVALID_ARGUMENT;
 			for (token_index = 0u;
@@ -1251,6 +1349,49 @@ static SparkStatus SparkGlm52Pp13WorkControlKvAcquirePhysicalBlock(
 		return SPARK_STATUS_OK;
 	}
 	return SPARK_STATUS_CAPACITY_EXCEEDED;
+}
+
+SparkStatus SparkGlm52Pp13WorkControlAcquireTransientPhysicalBlock(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint32_t *physical_block_index_out)
+{
+	uint32_t physical_block_index;
+	SparkStatus status;
+	if (state == 0 || physical_block_index_out == 0 ||
+		state->physical_block_pin_counts == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13WorkControlKvAcquirePhysicalBlock(
+		state,&physical_block_index);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	SparkGlm52Pp13WorkControlKvAssignPhysicalBlock(
+		state,physical_block_index,UINT64_MAX,
+		SPARK_GLM52_PP13_KV_INVALID_BLOCK_INDEX,
+		SPARK_GLM52_PP13_KV_ENTRY_TRANSIENT);
+	state->physical_block_pin_counts[physical_block_index] = 1u;
+	*physical_block_index_out = physical_block_index;
+	return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52Pp13WorkControlReleaseTransientPhysicalBlock(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint32_t physical_block_index)
+{
+	if (state == 0 || state->physical_block_pin_counts == 0 ||
+		physical_block_index >= state->physical_block_capacity ||
+		state->physical_block_states[physical_block_index] !=
+			SPARK_GLM52_PP13_KV_ENTRY_TRANSIENT ||
+		state->physical_block_sequence_ids[physical_block_index] != UINT64_MAX ||
+		state->physical_block_logical_indices[physical_block_index] !=
+			SPARK_GLM52_PP13_KV_INVALID_BLOCK_INDEX ||
+		state->physical_block_pin_counts[physical_block_index] != 1u ||
+		state->allocated_physical_block_count == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	state->physical_block_pin_counts[physical_block_index] = 0u;
+	SparkGlm52Pp13WorkControlKvClearPhysicalBlock(
+		state,physical_block_index);
+	state->allocated_physical_block_count -= 1u;
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryAcquire(

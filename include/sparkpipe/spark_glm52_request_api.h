@@ -5,6 +5,7 @@
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_dspark.h"
+#include "sparkpipe/spark_glm52_mtp_tree.h"
 #include "sparkpipe/spark_glm52_scheduler.h"
 #include "sparkpipe/spark_status.h"
 
@@ -12,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_REQUEST_API_ABI_VERSION 6u
+#define SPARK_GLM52_REQUEST_API_ABI_VERSION 7u
 #define SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52RequestApiConfiguration))
 #define SPARK_GLM52_REQUEST_API_DESCRIPTOR_BYTES \
@@ -99,9 +100,11 @@ extern "C" {
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_CONFIDENCE_TRUNCATED 0x00000100u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT 0x00000200u
 #define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY 0x00000400u
+#define SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY 0x00000800u
 #define SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT \
     SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT
-#define SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT 1u
+#define SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT \
+    SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT
 
 #define SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY 8u
 #define SPARK_GLM52_REQUEST_API_SLOT_HASH_SLOTS 4096u
@@ -174,7 +177,7 @@ typedef struct SparkGlm52RequestApiSlot
     uint32_t mtp_resolution_proposed_token_count;
     uint32_t mtp_resolution_accepted_token_count;
     uint32_t mtp_resolution_committed_token_count;
-    uint32_t mtp_resolution_reserved0;
+    uint32_t mtp_resolution_path_id;
     uint32_t mtp_draft_token_ids[SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT];
 } SparkGlm52RequestApiSlot;
 
@@ -248,12 +251,15 @@ typedef struct SparkGlm52RequestApiDispatch
     SparkGlm52SchedulerBatchDecision decode_batch_decision;
     SparkGlm52KvCachePrefetchPlan kv_prefetch_plan;
     uint32_t speculative_token_count;
+    uint32_t speculative_verifier_token_count;
     uint32_t speculative_max_committed_token_count;
     uint32_t speculative_committed_token_counts[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     uint32_t speculative_accepted_token_counts[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     uint32_t speculative_fallback_token_ids[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+    uint32_t speculative_resolution_path_ids[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     uint32_t speculative_draft_token_ids[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT][
@@ -308,7 +314,7 @@ typedef struct SparkGlm52RequestApiDecodeDispatchLaneView
     uint32_t mtp_resolution_proposed_token_count;
     uint32_t mtp_resolution_accepted_token_count;
     uint32_t mtp_resolution_committed_token_count;
-    uint32_t mtp_resolution_reserved0;
+    uint32_t mtp_resolution_path_id;
 } SparkGlm52RequestApiDecodeDispatchLaneView;
 
 typedef struct SparkGlm52RequestApiDecodeDispatchView

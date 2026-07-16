@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_glm52_cuda_resident_ipc.h"
+#include "sparkpipe/spark_glm52_mtp_tree.h"
 
 #include <errno.h>
 #include <string.h>
@@ -64,7 +65,7 @@ SparkStatus SparkGlm52CudaResidentIpcReadHeader(
     {
         cursor = (uint8_t *)&reader->header;
         remaining = (uint32_t)sizeof(reader->header) - reader->header_offset;
-        got = recv(fd,cursor + reader->header_offset,remaining,0);
+        got = recv(fd,cursor + reader->header_offset,remaining,MSG_DONTWAIT);
         if (got < 0)
         {
             if (errno == EINTR)
@@ -104,7 +105,8 @@ SparkStatus SparkGlm52CudaResidentIpcReadPayload(
     while (reader->payload_offset < reader->header.payload_bytes)
     {
         remaining = reader->header.payload_bytes - reader->payload_offset;
-        got = recv(fd,payload + reader->payload_offset,remaining,0);
+        got = recv(
+            fd,payload + reader->payload_offset,remaining,MSG_DONTWAIT);
         if (got < 0)
         {
             if (errno == EINTR)
@@ -179,6 +181,7 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
 {
     uint32_t expected_payload_bytes;
     uint32_t expected_block_offset;
+    uint32_t expected_mtp_budget;
     uint32_t internal_kv_directory;
     uint32_t lane_index;
     SparkStatus status;
@@ -223,6 +226,13 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
             SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
          message->speculative_token_count == 0u))
         return SPARK_STATUS_INVALID_ARGUMENT;
+    status = SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+        message->dispatch_kind,
+        message->request_flags,
+        message->lanes[0u].mtp_draft_token_budget,
+        &expected_mtp_budget);
+    if (status != SPARK_STATUS_OK)
+        return status;
     expected_block_offset = 0u;
     for (lane_index = 0u; lane_index < message->lane_count; ++lane_index)
     {
@@ -231,15 +241,19 @@ SparkStatus SparkGlm52CudaResidentIpcValidateSubmitDecode(
         if (lane->request_id == 0u || lane->sequence_id == 0u ||
             lane->request_slot_index == UINT32_MAX ||
             lane->context_token_count == 0u ||
+            lane->mtp_draft_token_budget != expected_mtp_budget ||
             lane->speculative_token_count !=
                 message->speculative_token_count ||
-            lane->mtp_resolution_reserved0 != 0u ||
             (lane->mtp_resolution_proposed_token_count == 0u &&
-             lane->mtp_resolution_accepted_token_count != 0u) ||
+             (lane->mtp_resolution_accepted_token_count != 0u ||
+              lane->mtp_resolution_path_id !=
+                SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE)) ||
             lane->mtp_resolution_proposed_token_count >
                 SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT ||
-            lane->mtp_resolution_accepted_token_count >
-                lane->mtp_resolution_proposed_token_count ||
+            SparkGlm52MtpTreeResolutionIsValid(
+                lane->mtp_resolution_proposed_token_count,
+                lane->mtp_resolution_accepted_token_count,
+                lane->mtp_resolution_path_id) == 0u ||
             lane->kv_block_offset != expected_block_offset ||
             (internal_kv_directory != 0u && lane->kv_block_count != 0u) ||
             (internal_kv_directory == 0u && lane->kv_block_count == 0u) ||

@@ -101,11 +101,41 @@ def test_rdma_transport_is_multilane_and_event_driven(root: Path) -> None:
     send_start = source.index("static SparkStatus SparkHiddenSparkHostRdmaSend(")
     destroy_start = source.index("static void SparkHiddenSparkHostRdmaDestroyState(", send_start)
     send_body = source[send_start:destroy_start]
+    lane_post_start = source.index(
+        "static SparkStatus SparkHiddenSparkHostRdmaPostLaneWrites(")
+    lane_post_end = source.index(
+        "static SparkStatus SparkHiddenSparkHostRdmaPostPacketWrites(",
+        lane_post_start)
+    lane_post_body = source[lane_post_start:lane_post_end]
+    scalar_prepare_start = source.index(
+        "static SparkStatus SparkHiddenSparkHostRdmaPrepareInflightSend(")
+    scalar_prepare_end = source.index(
+        "static SparkStatus SparkHiddenSparkHostRdmaSend(",
+        scalar_prepare_start)
+    scalar_prepare_body = source[scalar_prepare_start:scalar_prepare_end]
     assert "SparkMemlinkBuildTransferPartition(" in source
     assert "cudaEventRecord(" in send_body
     assert "cudaEventQuery(" in send_body
     assert "cudaLaunchHostFunc(" in send_body
     assert "cudaStreamSynchronize(" not in send_body
+    assert "SparkHiddenSparkHostRdmaWaitForPostedWrites" not in source
+    assert "ibv_poll_cq(" not in lane_post_body
+    assert "IBV_SEND_SIGNALED" in lane_post_body
+    assert "outstanding_send_wr_counts" in lane_post_body
+    assert "SparkHiddenSparkHostRdmaStagePacket(" in scalar_prepare_body
+    assert "SparkHiddenSparkHostRdmaGetCachedMemoryRegion(" not in scalar_prepare_body
+    assert ("return status == SPARK_STATUS_OK ? SPARK_STATUS_OK : "
+            "SPARK_STATUS_BUSY;" in scalar_prepare_body)
+    assert "cudaHostAlloc(" in source
+    assert "ibv_reg_mr(" in source
+    assert "SparkHiddenSparkHostRdmaRetireCompletedSends(state);" in source
+    assert ("SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION" in
+            (root / "include" / "sparkpipe" /
+             "spark_hidden_transport.h").read_text(encoding="utf-8"))
+    assert ("transport_interface.post_receive_batch =\n"
+            "        SparkHiddenSparkHostRdmaPostReceiveBatch;" in source)
+    assert ("transport_interface.send_batch = "
+            "SparkHiddenSparkHostRdmaSendBatch;" in source)
 
 
 def test_prebound_linear_plan_accepts_smaller_active_count(root: Path) -> None:
@@ -176,6 +206,44 @@ def test_bulk_prefill_progresses_runner_after_each_chunk(root: Path) -> None:
     assert "token_offset += chunk_token_count" in prefill_body
     assert "state->prefill_frame_view" in source
     assert "false &&" not in source
+
+
+def test_decode_uses_one_tree_aware_work_packet_path(root: Path) -> None:
+    builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                   encoding="utf-8")
+    service = (root / "src" /
+               "spark_glm52_pp13_service_backend.c").read_text(
+                   encoding="utf-8")
+    decode_start = builder.index(
+        "static SparkStatus SparkGlm52Pp13BuilderDecode(")
+    decode_end = builder.index(
+        "static SparkStatus SparkGlm52Pp13BuilderTakeDsparkDraft(",
+        decode_start)
+    decode_body = builder[decode_start:decode_end]
+    assert "SparkGlm52Pp13WorkControlBuildDecodePacket(" in decode_body
+    assert "SparkGlm52Pp13BuilderSubmitWork(" in decode_body
+    assert "SparkGlm52Pp13BuilderPrepareDeviceKvView(" not in decode_body
+    assert "SparkGlm52ResidentDecodeStageProductionRunnerSubmit(" not in decode_body
+    submit_start = builder.index(
+        "static SparkStatus SparkGlm52Pp13BuilderSubmitWork(")
+    submit_end = builder.index(
+        "static uint64_t SparkGlm52Pp13BuilderProbeFnv64(", submit_start)
+    submit_body = builder[submit_start:submit_end]
+    assert ("work_packet->execution_batch_bucket >\n"
+            "\t\t\tSPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET" in submit_body)
+    assert ("work_packet->execution_batch_bucket >\n"
+            "\t\t\tstate->rank_plan.logical_lane_capacity" not in submit_body)
+
+    packet_start = service.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(")
+    packet_end = service.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendBuildPrefillWorkPacket(",
+        packet_start)
+    packet_body = service[packet_start:packet_end]
+    assert "SparkGlm52Pp13WorkControlBuildDecodePacketRange(" in packet_body
+    assert "packet->flags =" not in packet_body
+    assert "packet->rows_per_lane =" not in packet_body
 
 
 def test_prefill_probe_hashes_the_exact_stage_input(root: Path) -> None:
@@ -291,8 +359,9 @@ def test_target_and_mtp_heads_use_distinct_fail_closed_tensor_core_gemms(
     mtp_head_body = builder_source[start:end]
     assert ("SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationWeightLinearScaledGemmBackend("
             in mtp_head_body)
-    assert ("SparkGlm52Pp13BuilderMtpFullVocabArgmaxKernel<uint16_t><<<" in
+    assert ("SparkGlm52Pp13BuilderMtpFullVocabTop2Kernel<uint16_t><<<" in
             mtp_head_body)
+    assert "SparkGlm52Pp13BuilderMtpFullVocabAlternateKernel" not in builder_source
     assert "SparkGlm52Pp13BuilderLaunchTensorCoreFullVocabGreedy(" not in mtp_head_body
     start = builder_source.index(
         "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(")
@@ -388,7 +457,7 @@ def test_mtp_linear_plans_use_logical_rows(root: Path) -> None:
     assert "state,active_sequence_count);" in draft_body
 
 
-def test_mtp_draft_plan_honors_runtime_token_budget(root: Path) -> None:
+def test_mtp_draft_plan_builds_asymmetric_top2_tree(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
@@ -398,10 +467,14 @@ def test_mtp_draft_plan_honors_runtime_token_budget(root: Path) -> None:
         "static SparkStatus SparkGlm52Pp13BuilderLoadMtpWeights(", start)
     body = source[start:end]
     assert "state->host_mtp_draft_budgets[lane_index]" in body
-    assert "draft_index < draft_token_count" in body
+    assert ("draft_token_count != "
+            "SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT" in body)
     assert ("draft_index < "
-            "SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT" not in
-            body)
+            "SPARK_GLM52_MODEL_MTP_TREE_EXECUTION_STEP_COUNT" in body)
+    assert "alternate_required = draft_index == 0u ? 0u : 1u;" in body
+    assert "SparkGlm52Pp13BuilderLaunchMtpFullVocabGreedy(" in body
+    assert "SPARK_GLM52_MODEL_MTP_TREE_DEPTH2_ALTERNATE_INDEX" in body
+    assert "SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_ALTERNATE_INDEX" in body
 
 
 def test_mtp_runtime_depth_specializes_and_caches_cuda_graphs(root: Path) -> None:
@@ -415,10 +488,12 @@ def test_mtp_runtime_depth_specializes_and_caches_cuda_graphs(root: Path) -> Non
               "sparkpipe" /
               "spark_glm52_resident_decode_stage_firmware.h").read_text(
                   encoding="utf-8")
-    assert ("state->mtp_draft_plan.graph_draft_token_count = "
-            "mtp_draft_token_count;" in builder)
-    assert ("state->mtp_draft_plan.graph_draft_token_count = "
-            "graph_draft_token_count;" in builder)
+    assert ("mtp_draft_token_count == 0u\n"
+            "\t\t\t? 0u : "
+            "SPARK_GLM52_MODEL_MTP_TREE_EXECUTION_STEP_COUNT;" in builder)
+    assert ("graph_draft_token_count == 0u\n"
+            "\t\t\t? 0u : "
+            "SPARK_GLM52_MODEL_MTP_TREE_EXECUTION_STEP_COUNT;" in builder)
     assert ("node_context->mtp_draft_plan->graph_draft_token_count" in
             required)
     assert "SparkGlm52ResidentDecodeStageFindCachedGraph(" in required
@@ -472,11 +547,58 @@ def test_mtp_gpu_profile_is_graph_compatible_and_explicitly_enabled(
             "MTP_GPU_PROFILE_STORE"):
         assert phase in source
     assert 'state,"decode",work_packet->lane_count,maximum_draft_count' in source
-    assert 'state,"verify_followup",work_packet->lane_count,draft_token_count' in source
-    assert ("draft_token_count =\n\t\t"
-            "SPARK_GLM52_REQUEST_API_MTP_INITIAL_DRAFT_TOKEN_COUNT;" in source)
-    assert "draft_token_count = accepted_count + 1u;" not in source
+    assert "state,profile_kind,lane_count,draft_token_count" in source
+    assert ("SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT,"
+            '"verify_followup"' in source)
+    assert ("*draft_token_count_out =\n"
+            "\t\t\tSPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;" in source)
+    assert ("SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT" in source)
     assert "graph_compatible=1" in source
+
+
+def test_mtp_tree_copies_branch_history_before_attention(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                  encoding="utf-8")
+    layer_start = source.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(")
+    layer_end = source.index(
+        "static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(",
+        layer_start)
+    body = source[layer_start:layer_end]
+    clone = "SparkGlm52ResidentDecodeStageMaybeCloneMtpTreeKvBlocks("
+    prepare = "SparkGlm52ResidentDecodeStagePrepareKernel<<<"
+    patch = "SparkGlm52ResidentDecodeStageMaybePatchMtpTreeAncestors("
+    attention = "SparkGlm52ResidentDecodeStageLaunchAbsorbedLatentAttention("
+    assert body.index(clone) < body.index(prepare)
+    assert body.index(prepare) < body.index(patch)
+    assert body.index(patch) < body.index(attention)
+    assert "SparkGlm52ResidentDecodeStageMtpTreeCloneBlocksKernel" in source
+    assert "SparkGlm52ResidentDecodeStageMtpTreePatchAncestorsKernel" in source
+    assert "SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT" in source
+    assert "SPARK_GLM52_MODEL_MTP_TREE_ANCESTOR_COPY_COUNT" in source
+
+
+def test_mtp_tree_rebases_private_draft_cache_before_followup(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    finalize_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(")
+    finalize_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(",
+        finalize_start)
+    finalize = source[finalize_start:finalize_end]
+    assert finalize.index("SparkGlm52Pp13BuilderCompactSpeculativeKvRows(") < \
+        finalize.index("SparkGlm52Pp13BuilderRebaseMtpTreeCache(")
+    assert finalize.index("SparkGlm52Pp13BuilderRebaseMtpTreeCache(") < \
+        finalize.index("SparkGlm52Pp13BuilderLaunchVerifierMtpDraft(")
+    for function_name in (
+            "SparkGlm52Pp13BuilderLaunchMtpKvRollback(",
+            "SparkGlm52Pp13BuilderLaunchMtpKvPromotion("):
+        start = source.index("static SparkStatus " + function_name)
+        end = source.index("\nstatic ", start + 1)
+        assert "state->mtp_layer" not in source[start:end]
 
 
 def test_mtp_retry_cleanup_preserves_resolution_receipt(root: Path) -> None:
@@ -510,8 +632,7 @@ def test_mtp_transaction_uses_expanded_execution_row(root: Path) -> None:
         "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpKvRollback(",
         start)
     body = source[start:end]
-    assert ("execution_row_index =\n\t\t\t"
-            "lane_index * work_packet->rows_per_lane;" in body)
+    assert "execution_row_index = lane_index;" in body
     assert ("state->host_lane_physical_block_counts[execution_row_index]"
             in body)
     assert ("((uint64_t)execution_row_index * state->kv_state.lane_stride)"
@@ -568,7 +689,7 @@ def test_attached_resident_decode_preserves_mtp_resolution(root: Path) -> None:
     assert "SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE" in daemon_body
 
 
-def test_attached_prefill_uses_ordered_socket_backpressure(root: Path) -> None:
+def test_attached_prefill_uses_nonblocking_ordered_forwarding(root: Path) -> None:
     backend = (root / "src" /
                "spark_glm52_pp13_service_backend.c").read_text(
                    encoding="utf-8")
@@ -591,12 +712,26 @@ def test_attached_prefill_uses_ordered_socket_backpressure(root: Path) -> None:
     assert submit_body.index(forward) < submit_body.index(local)
     assert "retry_count" not in submit_body
     assert "nanosleep" not in submit_body
+    forward_start = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillPacket(")
+    forward_end = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendSubmitPrefillPacket(",
+        forward_start)
+    forward_body = backend[forward_start:forward_end]
+    assert "SparkGlm52Pp13ServiceBackendEnqueueWorkPacket(" in forward_body
+    assert "SparkGlm52Pp13ServiceBackendPumpWorkOutput(state);" in forward_body
+    assert "SparkGlm52Pp13ServiceBackendDrainWorkOutput" not in backend
+    assert "poll(&descriptor,1u,-1)" not in backend
     defer_start = daemon.index(
         "static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(")
     defer_end = daemon.index(
         "static uint32_t SparkGlm52CudaResidentdPumpPendingPrefill(",
         defer_start)
     defer_body = daemon[defer_start:defer_end]
+    assert "packet->new_token_count != 1u" not in defer_body
+    assert (
+        "(packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) == 0u"
+        in defer_body)
     assert "runtime->pending_prefill_work.packet = *packet;" in defer_body
     assert "runtime->pending_prefill_work.client_fd = client_fd;" in defer_body
     assert "runtime->pending_prefill_active = 1u;" in defer_body
@@ -619,9 +754,22 @@ def test_attached_prefill_uses_ordered_socket_backpressure(root: Path) -> None:
         "static SparkStatus SparkGlm52CudaResidentdProgressTransport(",
         poll_start)
     poll_body = daemon[poll_start:poll_end]
-    assert ("fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].events = "
-            "POLLIN;" in poll_body)
+    assert "SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_CONTROL_LIMIT" in poll_body
+    assert "POLLOUT" in poll_body
     assert "runtime->work_queue_count <" not in poll_body
+    assert "SparkGlm52CudaResidentdWriteFull" not in daemon
+    assert "SPARK_GLM52_CUDA_RESIDENTD_CONTROL_WRITE_TIMEOUT_MS" not in daemon
+    assert "SparkGlm52CudaResidentdFlushClientOutput(" in daemon
+    completion_start = daemon.index(
+        "static void SparkGlm52CudaResidentdCompletion(")
+    completion_end = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdOpenListenSocket(",
+        completion_start)
+    completion_body = daemon[completion_start:completion_end]
+    assert "SparkGlm52CudaResidentdQueueCompletion(runtime,&message);" in (
+        completion_body)
+    assert "write(" not in completion_body
+    assert "send(" not in completion_body
     connect_start = backend.index(
         "static SparkStatus SparkGlm52Pp13ServiceBackendConnectCudaResident(")
     connect_end = backend.index(
@@ -656,10 +804,8 @@ def test_layer_body_failures_are_never_silent(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_sm121_required_decode_stage.cu").read_text(
                   encoding="utf-8")
-    start = source.index(
-        "static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(",
-        source.index("{", source.index(
-            "static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(")))
+    start = source.rindex(
+        "static SparkStatus SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(")
     end = source.index("\n}\n", start)
     body = source[start:end]
     assert "getenv" not in body
@@ -781,6 +927,18 @@ def main() -> None:
     test_fp8_validator_preserves_quantized_dense_execution(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
     test_target_and_mtp_heads_use_distinct_fail_closed_tensor_core_gemms(root)
+    test_pp13_builder_uses_compressed_absorbed_mla(root)
+    test_pp13_bulk_prefill_has_one_embedding_kernel(root)
+    test_mtp_previous_target_position_contracts_are_explicit(root)
+    test_mtp_linear_plans_use_logical_rows(root)
+    test_mtp_draft_plan_builds_asymmetric_top2_tree(root)
+    test_mtp_runtime_depth_specializes_and_caches_cuda_graphs(root)
+    test_mtp_runtime_failures_name_the_failing_phase(root)
+    test_mtp_gpu_profile_is_graph_compatible_and_explicitly_enabled(root)
+    test_mtp_tree_copies_branch_history_before_attention(root)
+    test_mtp_tree_rebases_private_draft_cache_before_followup(root)
+    test_mtp_transaction_uses_expanded_execution_row(root)
+    test_layer_body_failures_are_never_silent(root)
     test_plain_wide_decode_bypasses_dspark_finalizer(root)
     test_resident_block_stride_is_independent_of_the_physical_pool(root)
     test_service_backend_namespaces_ids_per_live_session(root)
@@ -790,7 +948,7 @@ def main() -> None:
     test_mtp_retry_cleanup_preserves_resolution_receipt(root)
     test_mtp_serial_train_continuation_keeps_transaction_open(root)
     test_attached_resident_decode_preserves_mtp_resolution(root)
-    test_attached_prefill_uses_ordered_socket_backpressure(root)
+    test_attached_prefill_uses_nonblocking_ordered_forwarding(root)
 
 
 if __name__ == "__main__":

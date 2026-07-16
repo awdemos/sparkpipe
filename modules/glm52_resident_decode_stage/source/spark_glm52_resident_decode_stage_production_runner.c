@@ -3,6 +3,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "sparkpipe/spark_glm52_mtp_tree.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 
 static SparkStatus SparkGlm52ProductionRunnerValidateProgram(
@@ -90,6 +91,12 @@ static SparkStatus SparkGlm52ProductionRunnerValidateDispatchShape(
           dispatch->prefill_view->active_sequence_count !=
             dispatch->logical_lane_count)) )
         return SPARK_STATUS_INVALID_ARGUMENT;
+    if ( (dispatch->flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u &&
+        (dispatch->prefill_view != 0 ||
+         dispatch->rows_per_lane !=
+            SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT) )
+        return SPARK_STATUS_INVALID_ARGUMENT;
     if ( dispatch->pipeline_slot >=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT )
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -148,6 +155,12 @@ static void SparkGlm52ProductionRunnerBuildFrameContext(
     {
         frame_context->flags |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY;
+    }
+    if ( (dispatch->flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u )
+    {
+        frame_context->flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_TREE_VERIFY;
     }
     frame_context->kv_block_table = dispatch->kv_block_table;
     frame_context->hidden_input_transport_session =
