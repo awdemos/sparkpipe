@@ -545,6 +545,8 @@ static void SparkWriteGeneratedCreate(FILE *file, const SparkDriverBuildImage *d
     fputs("    instance->completion_context = request->completion_context;\n", file);
     fputs("    instance->host_services.completion_function = request->completion_function;\n", file);
     fputs("    instance->host_services.completion_context = request->completion_context;\n", file);
+    fputs("    instance->host_services.wake_function = request->wake_function;\n", file);
+    fputs("    instance->host_services.wake_context = request->wake_context;\n", file);
     fputs("    instance->host_services.node_id = request->node_id;\n", file);
     fputs("    instance->host_services.node_target = request->node_target;\n", file);
     fputs("    instance->host_services.node_context = request->node_context;\n", file);
