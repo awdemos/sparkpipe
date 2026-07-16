@@ -9879,7 +9879,8 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
     if (model_quantization ==
             SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8 &&
         node_context->attention_execution_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT)
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
+        getenv("GLM52_EXACT_PP13_USE_BF16_MLA_CACHE") == 0)
     {
         SparkValidationConfigureCompressedFp8MlaCache(
             buffers,
