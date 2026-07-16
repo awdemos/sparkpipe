@@ -103,14 +103,14 @@ def test_pp13_rank_enables_read_only_dsa_fragment_prefetch(root: Path) -> None:
     assert "(void *)state->dsa_prefetch_event" not in source
 
 
-def test_pp13_prefill_uses_decode_shaped_embedding_rows(root: Path) -> None:
+def test_pp13_prefill_uploads_exact_row_major_tokens(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
     assert "SparkGlm52Pp13BuilderGatherPrefillEmbeddingKernel" not in source
-    assert "work_packet->prefill_token_ids[" not in source
+    assert "work_packet->prefill_token_ids" in source
     assert "SparkGlm52Pp13BuilderGatherDecodeEmbeddingKernel" in source
-    assert "work_packet->lanes[lane_index].input_token_id" in source
+    assert "SparkGlm52Pp13BuilderExpandExecutionKvRows(" in source
 
 
 def test_rdma_transport_is_multilane_and_event_driven(root: Path) -> None:
@@ -205,25 +205,28 @@ def test_pp13_builder_binds_all_fp8_linear_plans(root: Path) -> None:
     assert "&state->fp8_scaled_gemm_backend" in function_body[fp8_bind:]
 
 
-def test_exact_prefill_progresses_runner_after_each_token(root: Path) -> None:
+def test_exact_prefill_submits_full_parallel_chunks(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
     progress_call = "SparkGlm52ResidentDecodeStageProductionRunnerProgress("
-    runner_start = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderRunPrefillFrame(")
+    submit_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderSubmitPrefillChunk(")
     prefill_start = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderPrefill(", runner_start)
+        "static SparkStatus SparkGlm52Pp13BuilderPrefill(", submit_start)
     decode_start = source.index(
         "static SparkStatus SparkGlm52Pp13BuilderDecode(", prefill_start)
-    runner_body = source[runner_start:prefill_start]
+    submit_body = source[submit_start:prefill_start]
     prefill_body = source[prefill_start:decode_start]
-    assert progress_call in runner_body
-    assert "SparkGlm52Pp13BuilderRunPrefillFrame(" in prefill_body
+    assert progress_call in submit_body
+    assert "SparkGlm52Pp13BuilderSubmitWork(" in submit_body
+    assert "SparkGlm52Pp13BuilderSubmitPrefillChunk(" in prefill_body
+    assert "SparkGlm52Pp13WorkControlSelectPrefillChunk(" in prefill_body
     assert "SPARK_GLM52_PP13_BUILDER_MAX_PREFILL_TOKENS" in prefill_body
-    assert "++token_offset" in prefill_body
-    assert "token_offset += chunk_token_count" not in prefill_body
-    assert "SparkGlm52Pp13BuilderPreparePrefillFrame(" in prefill_body
+    assert "token_offset += token_count" in prefill_body
+    assert "++token_offset" not in prefill_body
+    assert "SparkGlm52Pp13BuilderRunPrefillFrame(" not in source
+    assert "SparkGlm52Pp13BuilderPreparePrefillFrame(" not in source
     assert "state->prefill_frame_view" not in source
 
 
@@ -241,7 +244,8 @@ def test_production_pp13_does_not_route_bulk_prefill(root: Path) -> None:
     assert "state->prefill_frame_view" not in builder
     assert "node->bulk_prefill_plan = 0;" in builder
     assert "SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(" in module
-    assert "SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(" in module
+    assert "SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(" not in module
+    assert "SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(" not in module
     assert (
         "SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u &&\n"
         "        false)" in cuda)
@@ -337,12 +341,12 @@ def test_prefill_probe_hashes_the_exact_stage_input(root: Path) -> None:
                   encoding="utf-8")
     probe_start = source.index(
         "static void SparkGlm52Pp13BuilderMaybeProbePrefillInputHidden(")
-    prepare_start = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderPreparePrefillFrame(",
+    submit_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderSubmitPrefillChunk(",
         probe_start)
-    probe_body = source[probe_start:prepare_start]
+    probe_body = source[probe_start:submit_start]
     prefill_start = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderPrefill(", prepare_start)
+        "static SparkStatus SparkGlm52Pp13BuilderPrefill(", submit_start)
     decode_start = source.index(
         "static SparkStatus SparkGlm52Pp13BuilderDecode(", prefill_start)
     prefill_body = source[prefill_start:decode_start]
@@ -400,7 +404,7 @@ def test_speculative_verify_exposes_the_full_verifier_vector(root: Path) -> None
     start = source.index(
         "static SparkStatus SparkGlm52Pp13BuilderEmitWideDecodeCompletions(")
     end = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(",
+        "static SparkStatus SparkGlm52Pp13BuilderStoreMtpPreviousTarget(",
         start)
     function_body = source[start:end]
     assert "completion.token_count = work_packet->rows_per_lane;" in function_body
@@ -494,19 +498,41 @@ def test_mtp_previous_target_position_contracts_are_explicit(root: Path) -> None
         metadata_start)
     metadata_body = source[metadata_start:metadata_end]
     assert "SPARK_GLM52_MODEL_MTP_EXECUTION_POSITION_OFFSET" in metadata_body
-    load_start = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(")
-    load_end = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderStoreMtpPreviousTarget(",
-        load_start)
-    load_body = source[load_start:load_end]
-    assert "uint32_t previous_position_delta" in load_body
-    assert "SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA" in load_body
-    assert "+\n\t\t\t\tprevious_position_delta !=" in load_body
-    assert "host_mtp_previous_positions[request_slot_index] + 1u" not in load_body
-    assert source.count(
-        "SPARK_GLM52_PP13_BUILDER_MTP_TARGET_PRECEDES_INPUT_POSITION") == 2
-    assert "SPARK_GLM52_PP13_BUILDER_MTP_TARGET_SAME_INPUT_POSITION" not in source
+    assert "SparkGlm52Pp13BuilderLoadMtpPreviousTargets(" not in source
+    build_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderBuildMtpPrefillRows(")
+    build_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderUploadMtpPrefillRows(",
+        build_start)
+    build_body = source[build_start:build_end]
+    assert ("SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA -" in
+            build_body)
+    assert ("host_mtp_previous_positions[lane->request_slot_index] +" in
+            build_body)
+    assert "SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA !=" in build_body
+    assert "row_offset == 0u" in build_body
+    assert "? UINT32_MAX" in build_body
+    assert "work_packet->prefill_token_ids[current_row_index]" in build_body
+    assert "host_decode_result_token_ids[row_count] = lane_index;" in build_body
+    upload_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderUploadMtpPrefillRows(")
+    upload_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderUploadMtpPrefillBasePositions(",
+        upload_start)
+    upload_body = source[upload_start:upload_end]
+    assert "SparkGlm52Pp13BuilderPrepareMtpPrefillHiddenKernel<<<" in upload_body
+    assert "SparkGlm52Pp13BuilderExpandMtpPrefillBlockTableKernel<<<" in upload_body
+    assert "cudaStreamSynchronize" not in upload_body
+    prefill_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderPrefillMtpPreviousTarget(")
+    prefill_end = source.index(
+        "static void SparkGlm52Pp13BuilderEmitPendingWorkFailure(",
+        prefill_start)
+    prefill_body = source[prefill_start:prefill_end]
+    assert "SparkGlm52Pp13BuilderLaunchMtpPrefillRows(state,row_count)" in (
+        prefill_body)
+    assert "SparkGlm52Pp13BuilderStoreMtpPreviousTarget(state,work_packet)" in (
+        prefill_body)
     draft_start = source.index(
         "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(")
     draft_end = source.index(
@@ -519,7 +545,7 @@ def test_mtp_previous_target_position_contracts_are_explicit(root: Path) -> None
             draft_body)
 
 
-def test_mtp_linear_plans_use_logical_rows(root: Path) -> None:
+def test_mtp_linear_plans_support_parallel_prefill_rows(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
@@ -528,8 +554,13 @@ def test_mtp_linear_plans_use_logical_rows(root: Path) -> None:
     mtp_start = source.index(
         "static SparkStatus SparkGlm52Pp13BuilderPrepareMtpLinearPlanRows(",
         stage_start)
+    mtp_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpFusion(", mtp_start)
     stage_body = source[stage_start:mtp_start]
+    mtp_body = source[mtp_start:mtp_end]
     assert "state->mtp_layer.linear_binding" not in stage_body
+    assert "state->rank_plan.execution_row_capacity" in mtp_body
+    assert "state->rank_plan.logical_lane_capacity" not in mtp_body
 
     draft_start = source.index(
         "static SparkStatus SparkGlm52Pp13BuilderLaunchMtpDraftPlan(")
@@ -671,10 +702,10 @@ def test_mtp_tree_rebases_private_draft_cache_before_followup(root: Path) -> Non
     finalize_start = source.index(
         "static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(")
     finalize_end = source.index(
-        "static SparkStatus SparkGlm52Pp13BuilderLoadMtpPreviousTargets(",
+        "static SparkStatus SparkGlm52Pp13BuilderStoreMtpPreviousTarget(",
         finalize_start)
     finalize = source[finalize_start:finalize_end]
-    assert finalize.index("SparkGlm52Pp13BuilderCompactSpeculativeKvRows(") < \
+    assert finalize.index("SparkGlm52Pp13BuilderCompactExecutionKvRows(") < \
         finalize.index("SparkGlm52Pp13BuilderRebaseMtpTreeCache(")
     assert finalize.index("SparkGlm52Pp13BuilderRebaseMtpTreeCache(") < \
         finalize.index("SparkGlm52Pp13BuilderLaunchVerifierMtpDraft(")
@@ -1113,12 +1144,12 @@ def main() -> None:
     test_pp13_rank_capacity_is_not_fixed_batch(root)
     test_pp13_runtime_kv_view_uses_per_lane_block_capacity(root)
     test_pp13_rank_enables_read_only_dsa_fragment_prefetch(root)
-    test_pp13_prefill_uses_decode_shaped_embedding_rows(root)
+    test_pp13_prefill_uploads_exact_row_major_tokens(root)
     test_rdma_transport_is_multilane_and_event_driven(root)
     test_prebound_linear_plan_accepts_smaller_active_count(root)
     test_fp8_linear_plans_require_scaled_gemm_backend(root)
     test_pp13_builder_binds_all_fp8_linear_plans(root)
-    test_exact_prefill_progresses_runner_after_each_token(root)
+    test_exact_prefill_submits_full_parallel_chunks(root)
     test_production_pp13_does_not_route_bulk_prefill(root)
     test_absorbed_bulk_prefill_is_dsa_only(root)
     test_decode_uses_one_tree_aware_work_packet_path(root)
@@ -1129,7 +1160,7 @@ def main() -> None:
     test_target_and_mtp_heads_use_distinct_fail_closed_tensor_core_gemms(root)
     test_pp13_builder_uses_compressed_absorbed_mla(root)
     test_mtp_previous_target_position_contracts_are_explicit(root)
-    test_mtp_linear_plans_use_logical_rows(root)
+    test_mtp_linear_plans_support_parallel_prefill_rows(root)
     test_mtp_draft_plan_builds_asymmetric_top2_tree(root)
     test_mtp_runtime_depth_specializes_and_caches_cuda_graphs(root)
     test_mtp_runtime_failures_name_the_failing_phase(root)

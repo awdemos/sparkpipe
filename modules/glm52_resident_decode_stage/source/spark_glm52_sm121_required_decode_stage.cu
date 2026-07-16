@@ -22388,6 +22388,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateExactPp13StageSlicePlan(
     uint32_t expected_first_layer_index;
     uint32_t layer_offset;
     uint32_t layer_major_speculative_verify;
+    uint32_t prefill_frame;
     uint32_t plan_supports_layer_major_speculative_verify;
     bool requires_builtin_fused_stage_moe;
     SparkStatus status;
@@ -22424,6 +22425,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateExactPp13StageSlicePlan(
     layer_major_speculative_verify = frame_context != 0 &&
         (frame_context->flags &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY) != 0u;
+    prefill_frame = SparkGlm52ResidentDecodeStageFrameIsPrefill(frame_context);
     plan_supports_layer_major_speculative_verify =
         (exact_stage_slice_plan->capability_flags &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_LAYER_MAJOR_SPECULATIVE_VERIFY) != 0u;
@@ -22455,6 +22457,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateExactPp13StageSlicePlan(
           exact_stage_slice_plan->final_token_candidate_row_capacity <
             exact_stage_slice_plan->maximum_active_sequence_count)) ||
         (layer_major_speculative_verify == 0u &&
+         prefill_frame == 0u &&
          plan_supports_layer_major_speculative_verify != 0u &&
          active_sequence_count > exact_stage_slice_plan->logical_lane_capacity) ||
         (layer_major_speculative_verify != 0u &&

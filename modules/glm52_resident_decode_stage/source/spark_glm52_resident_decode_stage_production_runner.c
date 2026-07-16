@@ -60,6 +60,7 @@ static SparkStatus SparkGlm52ProductionRunnerValidateDispatchShape(
 {
     const SparkModelDriverProgramProfile *profile;
     uint64_t execution_row_count;
+    uint32_t prefill;
 
     if ( dispatch == 0 )
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -82,18 +83,21 @@ static SparkStatus SparkGlm52ProductionRunnerValidateDispatchShape(
     execution_row_count =
         (uint64_t)dispatch->logical_lane_count *
         (uint64_t)dispatch->rows_per_lane;
+    prefill = (dispatch->flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_PREFILL) != 0u;
     if ( execution_row_count != dispatch->active_sequence_count ||
-        (dispatch->prefill_view == 0 &&
-         dispatch->rows_per_lane >
-            SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT + 1u) ||
-        (dispatch->prefill_view != 0 &&
+        dispatch->prefill_view != 0 ||
+        (prefill != 0u &&
          (dispatch->rows_per_lane != dispatch->new_token_count ||
-          dispatch->prefill_view->active_sequence_count !=
-            dispatch->logical_lane_count)) )
+          dispatch->new_token_count >
+            SPARK_GLM52_MODEL_MAX_PREFILL_TOKENS_PER_DISPATCH)) ||
+        (prefill == 0u &&
+         dispatch->rows_per_lane >
+            SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT + 1u) )
         return SPARK_STATUS_INVALID_ARGUMENT;
     if ( (dispatch->flags &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u &&
-        (dispatch->prefill_view != 0 ||
+        (prefill != 0u ||
          dispatch->rows_per_lane !=
             SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT) )
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -105,7 +109,7 @@ static SparkStatus SparkGlm52ProductionRunnerValidateDispatchShape(
         dispatch->active_sequence_count > profile->max_active_slots )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     if ( profile != 0 && profile->max_new_tokens != 0u &&
-        dispatch->prefill_view == 0 &&
+        prefill == 0u &&
         dispatch->new_token_count > profile->max_new_tokens )
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     return SPARK_STATUS_OK;
@@ -130,10 +134,6 @@ static SparkStatus SparkGlm52ProductionRunnerValidateDispatch(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT) != 0u &&
         dispatch->hidden_output_transport_session == 0 )
         return SPARK_STATUS_INVALID_ARGUMENT;
-    if ( dispatch->prefill_view != 0 &&
-        (dispatch->flags &
-         SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_PREFILL) == 0u )
-        return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
 }
 
@@ -151,7 +151,13 @@ static void SparkGlm52ProductionRunnerBuildFrameContext(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE;
     frame_context->logical_lane_count = dispatch->logical_lane_count;
     frame_context->rows_per_lane = dispatch->rows_per_lane;
-    if ( dispatch->rows_per_lane > 1u && dispatch->prefill_view == 0 )
+    if ( (dispatch->flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_PREFILL) != 0u )
+    {
+        frame_context->flags |=
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME;
+    }
+    else if ( dispatch->rows_per_lane > 1u )
     {
         frame_context->flags |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY;
@@ -169,12 +175,6 @@ static void SparkGlm52ProductionRunnerBuildFrameContext(
         dispatch->hidden_output_transport_session;
     frame_context->hidden_input_packet = dispatch->hidden_input_packet;
     frame_context->hidden_output_packet = dispatch->hidden_output_packet;
-    if ( dispatch->prefill_view != 0 )
-    {
-        frame_context->flags |=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW;
-        frame_context->prefill_view = dispatch->prefill_view;
-    }
     if ( dispatch->mtp_draft_token_budgets != 0 )
     {
         frame_context->flags |=

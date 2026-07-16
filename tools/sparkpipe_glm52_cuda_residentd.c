@@ -1953,7 +1953,7 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(
     {
         packet = &message->work_packet;
         status = SparkGlm52Pp13WorkControlValidatePacket(
-            packet,configuration->max_active_sequence_count,UINT32_MAX);
+            packet,runtime->rank_plan.execution_row_capacity,UINT32_MAX);
     }
 	if (status == SPARK_STATUS_OK &&
 		(packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) == 0u)
