@@ -255,7 +255,7 @@ static void SparkTestHiddenTransportValidatesSidebandPayload(void)
         SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static void SparkTestHiddenTransportUsesScalarFallbackBatch(void)
+static void SparkTestHiddenTransportRejectsMissingNativeBatch(void)
 {
     SparkHiddenTransportEndpoint endpoint;
     SparkHiddenTransportInterface transport_interface;
@@ -298,12 +298,13 @@ static void SparkTestHiddenTransportUsesScalarFallbackBatch(void)
     assert(SparkHiddenTransportPostReceive(session, &packets[0]) ==
         SPARK_STATUS_OK);
     assert(g_test_hidden_transport_state.receive_count == 1u);
-    assert(SparkHiddenTransportSendBatch(session, packets, 3u) == SPARK_STATUS_OK);
-    assert(g_test_hidden_transport_state.send_count == 4u);
+    assert(SparkHiddenTransportSendBatch(session, packets, 3u) ==
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
+    assert(g_test_hidden_transport_state.send_count == 1u);
     assert(g_test_hidden_transport_state.send_batch_count == 0u);
     assert(SparkHiddenTransportPostReceiveBatch(session, packets, 3u) ==
-        SPARK_STATUS_OK);
-    assert(g_test_hidden_transport_state.receive_count == 4u);
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
+    assert(g_test_hidden_transport_state.receive_count == 1u);
     assert(g_test_hidden_transport_state.receive_batch_count == 0u);
     memset(&completion, 0, sizeof(completion));
     assert(SparkHiddenTransportPoll(session, &completion) == SPARK_STATUS_OK);
@@ -625,7 +626,7 @@ int main(void)
 {
     SparkTestHiddenTransportValidatesEndpointAndPacket();
     SparkTestHiddenTransportValidatesSidebandPayload();
-    SparkTestHiddenTransportUsesScalarFallbackBatch();
+    SparkTestHiddenTransportRejectsMissingNativeBatch();
     SparkTestHiddenTransportUsesNativeBatchSubmission();
     SparkTestHiddenTransportCompletionQueuePreservesOrder();
     SparkTestHiddenTransportPersistentRingBackend();

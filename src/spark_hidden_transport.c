@@ -537,7 +537,6 @@ SparkStatus SparkHiddenTransportPostReceiveBatch(
     uint32_t packet_count)
 {
     SparkStatus status;
-    uint32_t packet_index;
 
     if (session == 0)
     {
@@ -551,24 +550,12 @@ SparkStatus SparkHiddenTransportPostReceiveBatch(
     {
         return status;
     }
-    if (SparkHiddenTransportSessionCanUseBatchSubmission(session))
-    {
-        return session->transport_interface.post_receive_batch(
-            session->transport_state,
-            packets,
-            packet_count);
-    }
-    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
-    {
-        status = session->transport_interface.post_receive(
-            session->transport_state,
-            &packets[packet_index]);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-    }
-    return SPARK_STATUS_OK;
+    if (SparkHiddenTransportSessionCanUseBatchSubmission(session) == 0u)
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+    return session->transport_interface.post_receive_batch(
+        session->transport_state,
+        packets,
+        packet_count);
 }
 
 SparkStatus SparkHiddenTransportSendBatch(
@@ -577,7 +564,6 @@ SparkStatus SparkHiddenTransportSendBatch(
     uint32_t packet_count)
 {
     SparkStatus status;
-    uint32_t packet_index;
 
     if (session == 0)
     {
@@ -591,24 +577,12 @@ SparkStatus SparkHiddenTransportSendBatch(
     {
         return status;
     }
-    if (SparkHiddenTransportSessionCanUseBatchSubmission(session))
-    {
-        return session->transport_interface.send_batch(
-            session->transport_state,
-            packets,
-            packet_count);
-    }
-    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
-    {
-        status = session->transport_interface.send(
-            session->transport_state,
-            &packets[packet_index]);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-    }
-    return SPARK_STATUS_OK;
+    if (SparkHiddenTransportSessionCanUseBatchSubmission(session) == 0u)
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+    return session->transport_interface.send_batch(
+        session->transport_state,
+        packets,
+        packet_count);
 }
 
 SparkStatus SparkHiddenTransportPoll(
