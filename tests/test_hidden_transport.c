@@ -177,6 +177,13 @@ static void SparkTestInitializeTransportInterface(
     transport_interface->post_receive = TestHiddenTransportPostReceive;
     transport_interface->send = TestHiddenTransportSend;
     transport_interface->poll = TestHiddenTransportPoll;
+    if ((capability_flags &
+            SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION) != 0u)
+    {
+        transport_interface->post_receive_batch =
+            TestHiddenTransportPostReceiveBatch;
+        transport_interface->send_batch = TestHiddenTransportSendBatch;
+    }
 }
 
 static void SparkTestHiddenTransportValidatesEndpointAndPacket(void)
@@ -579,7 +586,7 @@ static void SparkTestHiddenTransportValidatesSparkHostRdmaEndpoint(void)
 
     SparkTestInitializeSparkHostRdmaEndpoint(&endpoint);
     assert((endpoint.capability_flags &
-        SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION) == 0u);
+        SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION) != 0u);
     assert(SparkHiddenTransportValidateSparkHostRdmaEndpoint(&endpoint) ==
         SPARK_STATUS_OK);
     endpoint.capability_flags &=

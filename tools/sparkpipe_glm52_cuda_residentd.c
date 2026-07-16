@@ -30,8 +30,13 @@
 #define SPARK_GLM52_CUDA_RESIDENTD_DEFAULT_PROGRAM "glm52.pp13.rank.production"
 #define SPARK_GLM52_CUDA_RESIDENTD_DEFAULT_SOCKET_PREFIX "/tmp/sparkpipe_glm52_cuda_resident_rank"
 #define SPARK_GLM52_CUDA_RESIDENTD_INITIAL_CONTROL_PAYLOAD_BYTES (1024u * 1024u)
-#define SPARK_GLM52_CUDA_RESIDENTD_CONTROL_WRITE_TIMEOUT_MS 5000u
 #define SPARK_GLM52_CUDA_RESIDENTD_WORK_QUEUE_CAPACITY 256u
+#define SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_QUEUE_CAPACITY \
+    ((2u * SPARK_GLM52_CUDA_RESIDENTD_WORK_QUEUE_CAPACITY) + 16u)
+#define SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_CONTROL_LIMIT \
+    (SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_QUEUE_CAPACITY - \
+     SPARK_GLM52_CUDA_RESIDENTD_WORK_QUEUE_CAPACITY)
+#define SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_FLUSH_MESSAGE_LIMIT 64u
 #define SPARK_GLM52_CUDA_RESIDENTD_TRANSPORT_POLL_CAPACITY 4u
 #define SPARK_GLM52_CUDA_RESIDENTD_REQUIRED_TRANSPORT_CAPS \
     (SPARK_HIDDEN_TRANSPORT_REQUIRED_PIPELINE_HOST_STAGED_CAPS | \
@@ -87,11 +92,31 @@ typedef struct SparkGlm52CudaResidentdQueuedWork
     uint32_t reserved0;
 } SparkGlm52CudaResidentdQueuedWork;
 
+typedef union SparkGlm52CudaResidentdOutputPayload
+{
+    SparkGlm52CudaResidentIpcCompletion completion;
+    SparkGlm52CudaResidentIpcSubmitResult submit_result;
+    SparkGlm52CudaResidentIpcStats stats;
+} SparkGlm52CudaResidentdOutputPayload;
+
+typedef struct SparkGlm52CudaResidentdOutputMessage
+{
+    uint8_t bytes[
+        SPARK_GLM52_CUDA_RESIDENT_IPC_HEADER_BYTES +
+        sizeof(SparkGlm52CudaResidentdOutputPayload)];
+    uint32_t byte_count;
+    uint32_t byte_offset;
+} SparkGlm52CudaResidentdOutputMessage;
+
 typedef struct SparkGlm52CudaResidentdClient
 {
     SparkGlm52CudaResidentIpcReader reader;
     uint8_t *payload;
     uint32_t payload_capacity;
+    SparkGlm52CudaResidentdOutputMessage
+        output_queue[SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_QUEUE_CAPACITY];
+    uint32_t output_queue_head;
+    uint32_t output_queue_count;
     int32_t fd;
 } SparkGlm52CudaResidentdClient;
 
@@ -112,7 +137,7 @@ typedef struct SparkGlm52CudaResidentdRuntime
         clients[SPARK_GLM52_CUDA_RESIDENTD_MAX_CLIENTS];
     int32_t wake_pipe_read_fd;
     int32_t wake_pipe_write_fd;
-    pthread_mutex_t completion_write_mutex;
+    pthread_mutex_t output_mutex;
     uint64_t next_ipc_sequence_number;
     uint64_t submitted_count;
     uint64_t submit_failed_count;
@@ -586,80 +611,150 @@ static void SparkGlm52CudaResidentdDrainWakePipe(
     }
 }
 
-static SparkStatus SparkGlm52CudaResidentdWriteFull(
-    int32_t fd,
-    const void *data,
-    uint32_t bytes)
+static SparkGlm52CudaResidentdClient *
+SparkGlm52CudaResidentdFindClientByFd(
+    SparkGlm52CudaResidentdRuntime *runtime,
+    int32_t client_fd)
 {
-    const uint8_t *cursor;
-    struct pollfd wait_fd;
-    uint32_t offset;
-    int32_t poll_status;
-    ssize_t written;
-
-    if (fd < 0 || data == 0)
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    cursor = (const uint8_t *)data;
-    offset = 0u;
-    while (offset < bytes)
-    {
-        written = write(fd, cursor + offset, bytes - offset);
-        if (written < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            if (errno == EAGAIN || errno == EWOULDBLOCK)
-            {
-                memset(&wait_fd,0,sizeof(wait_fd));
-                wait_fd.fd = fd;
-                wait_fd.events = POLLOUT;
-                poll_status = poll(&wait_fd,1,
-                    SPARK_GLM52_CUDA_RESIDENTD_CONTROL_WRITE_TIMEOUT_MS);
-                if (poll_status > 0 &&
-                    (wait_fd.revents & POLLOUT) != 0)
-                    continue;
-                return poll_status == 0 ?
-                    SPARK_STATUS_BUSY : SPARK_STATUS_IO_ERROR;
-            }
-            return SPARK_STATUS_IO_ERROR;
-        }
-        if (written == 0)
-            return SPARK_STATUS_IO_ERROR;
-        offset += (uint32_t)written;
-    }
-    return SPARK_STATUS_OK;
+    uint32_t slot;
+    if (runtime == 0 || client_fd < 0)
+        return 0;
+    for (slot = 0u; slot < SPARK_GLM52_CUDA_RESIDENTD_MAX_CLIENTS; ++slot)
+        if (runtime->clients[slot].fd == client_fd)
+            return &runtime->clients[slot];
+    return 0;
 }
 
-static SparkStatus SparkGlm52CudaResidentdWriteMessage(
+static SparkStatus SparkGlm52CudaResidentdQueueMessageLocked(
     SparkGlm52CudaResidentdRuntime *runtime,
     int32_t client_fd,
     uint32_t kind,
     const void *payload,
     uint32_t payload_bytes)
 {
+    SparkGlm52CudaResidentdClient *client;
+    SparkGlm52CudaResidentdOutputMessage *message;
     SparkGlm52CudaResidentIpcHeader header;
-    SparkStatus status;
+    uint32_t tail;
 
-    if (runtime == 0 || client_fd < 0)
+    if (runtime == 0 || client_fd < 0 ||
+        payload_bytes > sizeof(SparkGlm52CudaResidentdOutputPayload) ||
+        (payload == 0 && payload_bytes != 0u))
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    client = SparkGlm52CudaResidentdFindClientByFd(runtime,client_fd);
+    if (client == 0)
         return SPARK_STATUS_ROUTE_NOT_FOUND;
+    if (client->output_queue_count >=
+        SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_QUEUE_CAPACITY)
+        return SPARK_STATUS_BUSY;
+    tail = (client->output_queue_head + client->output_queue_count) %
+        SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_QUEUE_CAPACITY;
+    message = &client->output_queue[tail];
     SparkGlm52CudaResidentIpcInitializeHeader(
         &header,
         kind,
         runtime->rank_plan.rank_index,
         runtime->next_ipc_sequence_number++,
         payload_bytes);
-    status = SparkGlm52CudaResidentdWriteFull(
-        client_fd,
-        &header,
-        sizeof(header));
-    if (status != SPARK_STATUS_OK)
-        return status;
+    memcpy(message->bytes,&header,sizeof(header));
     if (payload_bytes != 0u)
-        status = SparkGlm52CudaResidentdWriteFull(
-            client_fd,
-            payload,
-            payload_bytes);
+        memcpy(message->bytes + sizeof(header),payload,payload_bytes);
+    message->byte_count = (uint32_t)sizeof(header) + payload_bytes;
+    message->byte_offset = 0u;
+    client->output_queue_count += 1u;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52CudaResidentdQueueMessage(
+    SparkGlm52CudaResidentdRuntime *runtime,
+    int32_t client_fd,
+    uint32_t kind,
+    const void *payload,
+    uint32_t payload_bytes)
+{
+    SparkStatus status;
+    if (runtime == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    pthread_mutex_lock(&runtime->output_mutex);
+    status = SparkGlm52CudaResidentdQueueMessageLocked(
+        runtime,client_fd,kind,payload,payload_bytes);
+    pthread_mutex_unlock(&runtime->output_mutex);
+    if (status == SPARK_STATUS_OK)
+        SparkGlm52CudaResidentdSignalWake(runtime);
     return status;
+}
+
+static SparkStatus SparkGlm52CudaResidentdQueueCompletion(
+    SparkGlm52CudaResidentdRuntime *runtime,
+    const SparkGlm52CudaResidentIpcCompletion *message)
+{
+    SparkStatus status;
+    if (runtime == 0 || message == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    pthread_mutex_lock(&runtime->output_mutex);
+    status = SparkGlm52CudaResidentdQueueMessageLocked(
+        runtime,runtime->completion_client_fd,
+        SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_COMPLETION,
+        message,sizeof(*message));
+    pthread_mutex_unlock(&runtime->output_mutex);
+    if (status == SPARK_STATUS_OK)
+        SparkGlm52CudaResidentdSignalWake(runtime);
+    return status;
+}
+
+static SparkStatus SparkGlm52CudaResidentdFlushClientOutput(
+    SparkGlm52CudaResidentdRuntime *runtime,
+    uint32_t slot)
+{
+    SparkGlm52CudaResidentdClient *client;
+    SparkGlm52CudaResidentdOutputMessage *message;
+    uint32_t flushed_count;
+    ssize_t written;
+    if (runtime == 0 || slot >= SPARK_GLM52_CUDA_RESIDENTD_MAX_CLIENTS)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    pthread_mutex_lock(&runtime->output_mutex);
+    client = &runtime->clients[slot];
+    if (client->fd < 0)
+    {
+        pthread_mutex_unlock(&runtime->output_mutex);
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
+    flushed_count = 0u;
+    while (client->output_queue_count != 0u &&
+        flushed_count < SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_FLUSH_MESSAGE_LIMIT)
+    {
+        message = &client->output_queue[client->output_queue_head];
+        written = send(client->fd,
+            message->bytes + message->byte_offset,
+            message->byte_count - message->byte_offset,
+            0);
+        if (written < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                pthread_mutex_unlock(&runtime->output_mutex);
+                return SPARK_STATUS_BUSY;
+            }
+            pthread_mutex_unlock(&runtime->output_mutex);
+            return SPARK_STATUS_IO_ERROR;
+        }
+        if (written == 0)
+        {
+            pthread_mutex_unlock(&runtime->output_mutex);
+            return SPARK_STATUS_IO_ERROR;
+        }
+        message->byte_offset += (uint32_t)written;
+        if (message->byte_offset != message->byte_count)
+            continue;
+        client->output_queue_head = (client->output_queue_head + 1u) %
+            SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_QUEUE_CAPACITY;
+        client->output_queue_count -= 1u;
+        flushed_count += 1u;
+    }
+    pthread_mutex_unlock(&runtime->output_mutex);
+    return SPARK_STATUS_OK;
 }
 
 static void SparkGlm52CudaResidentdCompletion(
@@ -702,17 +797,9 @@ static void SparkGlm52CudaResidentdCompletion(
             &message.dspark_draft) == SPARK_STATUS_OK)
         message.flags |=
             SPARK_GLM52_CUDA_RESIDENT_IPC_COMPLETION_FLAG_DSPARK_DRAFT;
-    pthread_mutex_lock(&runtime->completion_write_mutex);
-    status = SparkGlm52CudaResidentdWriteMessage(
-        runtime,
-        runtime->completion_client_fd,
-        SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_COMPLETION,
-        &message,
-        sizeof(message));
-    pthread_mutex_unlock(&runtime->completion_write_mutex);
+    status = SparkGlm52CudaResidentdQueueCompletion(runtime,&message);
     if (status != SPARK_STATUS_OK)
         runtime->control_error_count += 1u;
-    SparkGlm52CudaResidentdSignalWake(runtime);
 }
 
 static SparkStatus SparkGlm52CudaResidentdOpenListenSocket(
@@ -870,12 +957,20 @@ static SparkStatus SparkGlm52CudaResidentdBuildPollFds(
     memset(fds,0,fd_capacity * sizeof(fds[0u]));
     fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_LISTEN].fd = runtime->listen_fd;
     fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_LISTEN].events = POLLIN;
+    pthread_mutex_lock(&runtime->output_mutex);
     for (slot = 0u; slot < SPARK_GLM52_CUDA_RESIDENTD_MAX_CLIENTS; ++slot)
     {
         fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].fd =
             runtime->clients[slot].fd;
-        fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].events = POLLIN;
+        if (runtime->clients[slot].output_queue_count <
+            SPARK_GLM52_CUDA_RESIDENTD_OUTPUT_CONTROL_LIMIT)
+            fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].events |=
+                POLLIN;
+        if (runtime->clients[slot].output_queue_count != 0u)
+            fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].events |=
+                POLLOUT;
     }
+    pthread_mutex_unlock(&runtime->output_mutex);
     fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_WAKE].fd = runtime->wake_pipe_read_fd;
     fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_WAKE].events = POLLIN;
     fd_count = SPARK_GLM52_CUDA_RESIDENTD_POLL_BASE_COUNT;
@@ -1065,7 +1160,7 @@ static SparkStatus SparkGlm52CudaResidentdInitialize(
     runtime->pending_prefill_work.client_fd = -1;
     runtime->state = SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_LOADING;
     SparkLoadedModelDriverReset(&runtime->loaded_driver);
-    pthread_mutex_init(&runtime->completion_write_mutex, 0);
+    pthread_mutex_init(&runtime->output_mutex, 0);
     status = SparkGlm52CudaResidentdOpenWakePipe(runtime);
     if (status != SPARK_STATUS_OK)
         return status;
@@ -1127,6 +1222,8 @@ static void SparkGlm52CudaResidentdDestroy(
         free(runtime->clients[slot].payload);
         runtime->clients[slot].payload = 0;
         runtime->clients[slot].payload_capacity = 0u;
+        runtime->clients[slot].output_queue_head = 0u;
+        runtime->clients[slot].output_queue_count = 0u;
     }
     if (runtime->listen_fd >= 0)
         close(runtime->listen_fd);
@@ -1157,7 +1254,7 @@ static void SparkGlm52CudaResidentdDestroy(
     free(runtime->work_queue);
     runtime->work_queue = 0;
     runtime->work_queue_count = 0u;
-    pthread_mutex_destroy(&runtime->completion_write_mutex);
+    pthread_mutex_destroy(&runtime->output_mutex);
 }
 
 static uint32_t SparkGlm52CudaResidentdAcceptClient(
@@ -1181,6 +1278,8 @@ static uint32_t SparkGlm52CudaResidentdAcceptClient(
         return 0u;
     }
     SparkGlm52CudaResidentdResetClientMessage(&runtime->clients[slot]);
+    runtime->clients[slot].output_queue_head = 0u;
+    runtime->clients[slot].output_queue_count = 0u;
     runtime->clients[slot].fd = fd;
 	return 1u;
 }
@@ -1440,11 +1539,9 @@ static SparkStatus SparkGlm52CudaResidentdHandleHello(
     if (status != SPARK_STATUS_OK)
         return status;
     SparkGlm52CudaResidentdFillStats(runtime,configuration,&stats);
-    pthread_mutex_lock(&runtime->completion_write_mutex);
-    status = SparkGlm52CudaResidentdWriteMessage(
+    status = SparkGlm52CudaResidentdQueueMessage(
         runtime,client_fd,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_HELLO_ACK,
         &stats,sizeof(stats));
-    pthread_mutex_unlock(&runtime->completion_write_mutex);
     return status;
 }
 
@@ -1468,14 +1565,14 @@ static void SparkGlm52CudaResidentdWriteSubmitResult(
         fprintf(stderr, "cuda_residentd_submit_result_error rank=%u %s status=%u\n",
             runtime->rank_plan.rank_index, failure_text, (uint32_t)status);
     }
-    pthread_mutex_lock(&runtime->completion_write_mutex);
-    (void)SparkGlm52CudaResidentdWriteMessage(
+    status = SparkGlm52CudaResidentdQueueMessage(
         runtime,
         client_fd,
         SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_RESULT,
         &result,
         sizeof(result));
-    pthread_mutex_unlock(&runtime->completion_write_mutex);
+    if (status != SPARK_STATUS_OK)
+        runtime->control_error_count += 1u;
 }
 
 static SparkStatus SparkGlm52CudaResidentdEnqueueWork(
@@ -1659,7 +1756,11 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitWork(
     const SparkGlm52CudaResidentIpcSubmitWork *message,
     int32_t client_fd)
 {
+    uint32_t release_sequences;
     SparkStatus status;
+    release_sequences = message != 0 &&
+        (message->work_packet.flags &
+            SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u;
     status = SPARK_STATUS_ABI_MISMATCH;
 	if (message != 0 && message->descriptor_bytes ==
 		SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
@@ -1668,8 +1769,10 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitWork(
             runtime,configuration,&message->work_packet,client_fd);
     if (status != SPARK_STATUS_OK)
         runtime->submit_failed_count += 1u;
-    SparkGlm52CudaResidentdWriteSubmitResult(
-        runtime,configuration,client_fd,status,"submit_work_enqueue_failed");
+    if (status != SPARK_STATUS_OK || release_sequences != 0u)
+        SparkGlm52CudaResidentdWriteSubmitResult(
+            runtime,configuration,client_fd,status,
+            "submit_work_enqueue_failed");
     return status;
 }
 
@@ -1680,11 +1783,13 @@ static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(
 {
     uint32_t dspark_verify;
     uint32_t mtp_verify;
+    uint32_t mtp_tree_verify;
     uint32_t speculative_verify;
     uint32_t mtp_budget;
     uint32_t maximum_context_token_count;
     uint32_t lane_index;
     uint64_t execution_row_count;
+    SparkStatus status;
 
     if (message == 0 || packet == 0 ||
         (message->resident_flags &
@@ -1694,6 +1799,8 @@ static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u;
     mtp_verify = (message->request_flags &
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u;
+    mtp_tree_verify = (message->request_flags &
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u;
     speculative_verify = dspark_verify | mtp_verify;
     if ((message->dispatch_kind ==
             SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
@@ -1703,11 +1810,13 @@ static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(
          speculative_verify != 0u) ||
         (dspark_verify != 0u && mtp_verify != 0u))
         return SPARK_STATUS_INVALID_ARGUMENT;
-    mtp_budget = 0u;
-    if (speculative_verify == 0u &&
-        (message->request_flags &
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u)
-        mtp_budget = message->lanes[0u].mtp_draft_token_budget;
+    status = SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+            message->dispatch_kind,
+            message->request_flags,
+            message->lanes[0u].mtp_draft_token_budget,
+            &mtp_budget);
+    if (status != SPARK_STATUS_OK)
+        return status;
     memset(packet, 0, sizeof(*packet));
     packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
     packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
@@ -1728,13 +1837,24 @@ static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(
     if (mtp_verify != 0u)
         packet->flags |=
             SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY;
+    if (mtp_tree_verify != 0u)
+        packet->flags |=
+            SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_TREE_VERIFY;
     packet->request_id = message->lanes[0u].request_id;
     packet->sequence_id = message->lanes[0u].sequence_id;
     packet->sequence_position = message->lanes[0u].sequence_position;
     packet->active_sequence_count = message->lane_count;
     packet->lane_count = message->lane_count;
     packet->rows_per_lane = speculative_verify != 0u
-        ? message->speculative_token_count + 1u : 1u;
+        ? mtp_tree_verify != 0u
+            ? SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT
+            : message->speculative_token_count + 1u
+        : 1u;
+    if (mtp_tree_verify != 0u &&
+        (mtp_verify == 0u ||
+         message->speculative_token_count !=
+            SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT))
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
     execution_row_count =
         (uint64_t)packet->lane_count * packet->rows_per_lane;
     if (execution_row_count == 0u ||
@@ -1766,7 +1886,10 @@ static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(
         {
             uint32_t additional_token_count;
             additional_token_count = speculative_verify != 0u
-                ? message->speculative_token_count : mtp_budget;
+                ? mtp_tree_verify != 0u
+                    ? SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION
+                    : message->speculative_token_count
+                : mtp_budget;
             if (required_context_token_count >
                 UINT32_MAX - additional_token_count)
                 return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -1783,7 +1906,8 @@ static SparkStatus SparkGlm52CudaResidentdBuildDecodeWorkPacket(
             source_lane->mtp_resolution_proposed_token_count;
         target_lane->mtp_resolution_accepted_token_count =
             source_lane->mtp_resolution_accepted_token_count;
-        target_lane->mtp_resolution_reserved0 = 0u;
+        target_lane->mtp_resolution_path_id =
+            source_lane->mtp_resolution_path_id;
         if (target_lane->mtp_resolution_proposed_token_count != 0u)
             packet->flags |= SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE;
         if (speculative_verify != 0u)
@@ -1828,8 +1952,7 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(
             packet,configuration->max_active_sequence_count,UINT32_MAX);
     }
 	if (status == SPARK_STATUS_OK &&
-		((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) == 0u ||
-		 packet->new_token_count != 1u))
+		(packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) == 0u)
 		status = SPARK_STATUS_INVALID_ARGUMENT;
     if (status == SPARK_STATUS_OK &&
         runtime->builder_library.builder_interface.submit_work == 0)
@@ -1857,8 +1980,10 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(
         runtime->ingest_prefill_count += packet->active_sequence_count;
     else
         runtime->submit_failed_count += 1u;
-    SparkGlm52CudaResidentdWriteSubmitResult(
-        runtime,configuration,client_fd,status,"ingest_prefill_work_failed");
+    if (status != SPARK_STATUS_OK)
+        SparkGlm52CudaResidentdWriteSubmitResult(
+            runtime,configuration,client_fd,status,
+            "ingest_prefill_work_failed");
     return status;
 }
 
@@ -1893,9 +2018,10 @@ static uint32_t SparkGlm52CudaResidentdPumpPendingPrefill(
     }
     else
         runtime->submit_failed_count += 1u;
-    SparkGlm52CudaResidentdWriteSubmitResult(
-        runtime,configuration,client_fd,status,
-        "deferred_prefill_work_failed");
+    if (status != SPARK_STATUS_OK)
+        SparkGlm52CudaResidentdWriteSubmitResult(
+            runtime,configuration,client_fd,status,
+            "deferred_prefill_work_failed");
     return 1u;
 }
 
@@ -1943,8 +2069,10 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitDecode(
     {
         runtime->submit_failed_count += 1u;
     }
-    SparkGlm52CudaResidentdWriteSubmitResult(
-        runtime,configuration,client_fd,status,"ingest_decode_work_failed");
+    if (status != SPARK_STATUS_OK)
+        SparkGlm52CudaResidentdWriteSubmitResult(
+            runtime,configuration,client_fd,status,
+            "ingest_decode_work_failed");
     return status;
 }
 
@@ -1958,7 +2086,7 @@ static void SparkGlm52CudaResidentdDropClient(
     fd = runtime->clients[slot].fd;
     if (fd < 0)
         return;
-    pthread_mutex_lock(&runtime->completion_write_mutex);
+    pthread_mutex_lock(&runtime->output_mutex);
     if (runtime->completion_client_fd == fd)
         runtime->completion_client_fd = -1;
     close(fd);
@@ -1966,8 +2094,10 @@ static void SparkGlm52CudaResidentdDropClient(
     free(runtime->clients[slot].payload);
     runtime->clients[slot].payload = 0;
     runtime->clients[slot].payload_capacity = 0u;
+    runtime->clients[slot].output_queue_head = 0u;
+    runtime->clients[slot].output_queue_count = 0u;
     SparkGlm52CudaResidentdResetClientMessage(&runtime->clients[slot]);
-    pthread_mutex_unlock(&runtime->completion_write_mutex);
+    pthread_mutex_unlock(&runtime->output_mutex);
     if (runtime->pending_prefill_active != 0u &&
         runtime->pending_prefill_work.client_fd == fd)
     {
@@ -2018,14 +2148,12 @@ static uint32_t SparkGlm52CudaResidentdPumpClient(
             break;
         case SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_QUERY:
             SparkGlm52CudaResidentdFillStats(runtime, configuration, &stats);
-            pthread_mutex_lock(&runtime->completion_write_mutex);
-            (void)SparkGlm52CudaResidentdWriteMessage(
+            (void)SparkGlm52CudaResidentdQueueMessage(
                 runtime,
                 fd,
                 SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_STATS,
                 &stats,
                 sizeof(stats));
-            pthread_mutex_unlock(&runtime->completion_write_mutex);
             break;
         case SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_WORK:
             (void)SparkGlm52CudaResidentdHandleSubmitWork(
@@ -2235,10 +2363,23 @@ int main(int argc, char **argv)
             if ((fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_LISTEN].revents & POLLIN) != 0)
                 (void)SparkGlm52CudaResidentdAcceptClient(&runtime);
             for (slot = 0u; slot < SPARK_GLM52_CUDA_RESIDENTD_MAX_CLIENTS; ++slot)
+            {
+                short revents;
+                revents =
+                    fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].revents;
                 if (runtime.clients[slot].fd >= 0 &&
-                    (fds[SPARK_GLM52_CUDA_RESIDENTD_POLL_CLIENT_BASE + slot].revents &
-                        (POLLIN | POLLHUP | POLLERR)) != 0)
-                    (void)SparkGlm52CudaResidentdPumpClient(&runtime, &configuration, slot);
+                    (revents & POLLOUT) != 0 &&
+                    SparkGlm52CudaResidentdFlushClientOutput(
+                        &runtime,slot) == SPARK_STATUS_IO_ERROR)
+                    SparkGlm52CudaResidentdDropClient(&runtime,slot);
+                if (runtime.clients[slot].fd >= 0 &&
+                    (revents & POLLIN) != 0)
+                    (void)SparkGlm52CudaResidentdPumpClient(
+                        &runtime,&configuration,slot);
+                if (runtime.clients[slot].fd >= 0 &&
+                    (revents & (POLLHUP | POLLERR)) != 0)
+                    SparkGlm52CudaResidentdDropClient(&runtime,slot);
+            }
         }
     }
     SparkGlm52CudaResidentdDestroy(&runtime, &configuration);

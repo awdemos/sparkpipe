@@ -6,6 +6,7 @@
 #include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_model.h"
+#include "sparkpipe/spark_glm52_mtp_tree.h"
 #include "sparkpipe/spark_glm52_serving_engine.h"
 #include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_status.h"
@@ -14,7 +15,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 10u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 11u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION UINT64_C(1)
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
@@ -40,6 +41,7 @@ extern "C" {
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY 0x00000010u
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES 0x00000020u
 #define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE 0x00000040u
+#define SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_TREE_VERIFY 0x00000080u
 #define SPARK_GLM52_PP13_WORK_CONTROL_KNOWN_FLAGS \
 	(SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT | \
@@ -47,7 +49,8 @@ extern "C" {
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY | \
 	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES | \
-	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE)
+	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_RESOLVE | \
+	 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_TREE_VERIFY)
 #define SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT \
 	((SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT > \
 	  SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT) ? \
@@ -61,6 +64,7 @@ extern "C" {
 #define SPARK_GLM52_PP13_KV_ENTRY_MISSING 0u
 #define SPARK_GLM52_PP13_KV_ENTRY_IN_FLIGHT 1u
 #define SPARK_GLM52_PP13_KV_ENTRY_RESIDENT 2u
+#define SPARK_GLM52_PP13_KV_ENTRY_TRANSIENT 3u
 
 #define SPARK_GLM52_PP13_KV_DIRECTORY_EMPTY 0u
 #define SPARK_GLM52_PP13_KV_DIRECTORY_OCCUPIED 1u
@@ -108,7 +112,7 @@ typedef struct SparkGlm52Pp13WorkControlLane
 	uint32_t speculative_token_count;
 	uint8_t mtp_resolution_proposed_token_count;
 	uint8_t mtp_resolution_accepted_token_count;
-	uint16_t mtp_resolution_reserved0;
+	uint16_t mtp_resolution_path_id;
 	uint32_t speculative_draft_token_ids[
 		SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT];
 } SparkGlm52Pp13WorkControlLane;
@@ -194,10 +198,21 @@ uint32_t SparkGlm52Pp13WorkControlCalculatePacketBytes(
 	uint32_t active_sequence_count);
 SparkStatus SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 	const SparkGlm52RequestApiDispatch *request_dispatch,
-	uint32_t logical_lane_count,
+	uint32_t execution_row_count,
 	uint32_t *batch_bucket_out);
+SparkStatus SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+	uint32_t dispatch_kind,
+	uint32_t request_flags,
+	uint32_t requested_budget,
+	uint32_t *mtp_budget_out);
 SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+	uint32_t speculative_token_index,
+	SparkGlm52Pp13WorkControlPacket *packet);
+SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacketRange(
+	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+	uint32_t lane_offset,
+	uint32_t lane_count,
 	uint32_t speculative_token_index,
 	SparkGlm52Pp13WorkControlPacket *packet);
 SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
@@ -236,6 +251,12 @@ SparkStatus SparkGlm52Pp13WorkControlPinPhysicalBlock(
 	SparkGlm52Pp13WorkControlKvState *state,
 	uint32_t physical_block_index);
 SparkStatus SparkGlm52Pp13WorkControlUnpinPhysicalBlock(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint32_t physical_block_index);
+SparkStatus SparkGlm52Pp13WorkControlAcquireTransientPhysicalBlock(
+	SparkGlm52Pp13WorkControlKvState *state,
+	uint32_t *physical_block_index_out);
+SparkStatus SparkGlm52Pp13WorkControlReleaseTransientPhysicalBlock(
 	SparkGlm52Pp13WorkControlKvState *state,
 	uint32_t physical_block_index);
 uint32_t SparkGlm52Pp13WorkControlBlockCount(

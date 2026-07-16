@@ -329,15 +329,16 @@ def main():
         violations.append("attached KV geometry can silently default")
     service_pump = backend_text.find(
         "service_status = SparkGlm52ServicePump(")
-    release_drain = backend_text.find(
-        "release_status = SparkGlm52Pp13ServiceBackendDrainSequenceReleases(",
+    release_pump = backend_text.find(
+        "release_status = SparkGlm52Pp13ServiceBackendPumpSequenceReleases(",
         service_pump)
     work_flush = backend_text.find(
         "work_status = SparkGlm52Pp13ServiceBackendPumpWorkOutput(",
-        release_drain)
-    if service_pump < 0 or release_drain < 0 or work_flush < 0:
+        release_pump)
+    if (service_pump < 0 or release_pump < 0 or work_flush < 0 or
+            "SparkGlm52Pp13ServiceBackendDrainSequenceReleases" in backend_text):
         violations.append(
-            "service pump does not drain generated sequence releases before idle")
+            "service pump does not progress sequence releases without a global drain")
     model_description_path = ROOT / (
         "examples/model_descriptions/glm52_resident_decode_stage_firmware.json")
     model_description = json.loads(model_description_path.read_text())

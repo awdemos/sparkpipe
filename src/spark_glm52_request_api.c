@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_glm52_request_api.h"
+#include "sparkpipe/spark_glm52_mtp_tree.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -4269,6 +4270,7 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     uint32_t request_index;
     uint32_t token_index;
     uint32_t require_resident_batch_members;
+    uint32_t speculative_context_extension;
     SparkStatus status;
 
     if (first_slot == 0)
@@ -4295,8 +4297,13 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     }
     {
         uint32_t row_limited_batch_target;
+        uint32_t verifier_row_count;
+        verifier_row_count =
+            leader_source == SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP
+            ? SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT
+            : leader_draft.token_count + 1u;
         row_limited_batch_target = api->decode_execution_row_capacity /
-            (leader_draft.token_count + 1u);
+            verifier_row_count;
         if (row_limited_batch_target == 0u)
         {
             return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -4318,11 +4325,15 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
         require_resident_batch_members,
         selected_slots,
         batch_target);
+    speculative_context_extension =
+        leader_source == SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP
+            ? SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION
+            : leader_draft.token_count;
     status = SparkGlm52RequestApiApplyActiveKvBlockBudget(
         api,
         selected_slots,
         &request_count,
-        leader_draft.token_count);
+        speculative_context_extension);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -4342,7 +4353,7 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
         status = SparkGlm52RequestApiEnsureDecodeSlotKvCapacity(
             api,
             selected_slots[request_index],
-            leader_draft.token_count,
+            speculative_context_extension,
             0);
         if (status != SPARK_STATUS_OK)
         {
@@ -4395,19 +4406,34 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
     if (leader_source == SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP)
     {
+        if (leader_draft.token_count !=
+            SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT)
+        {
+            return SPARK_STATUS_MODULE_NOT_VALIDATED;
+        }
         dispatch->flags |=
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY;
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY;
+        dispatch->mtp_draft_token_budget =
+            SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+        dispatch->speculative_verifier_token_count =
+            SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
+        dispatch->speculative_max_committed_token_count =
+            SPARK_GLM52_MODEL_MTP_TREE_MAX_COMMITTED_TOKEN_COUNT;
     }
     else
     {
         dispatch->flags |=
             SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY;
+        dispatch->speculative_verifier_token_count =
+            leader_draft.token_count + 1u;
+        dispatch->speculative_max_committed_token_count =
+            leader_draft.token_count + 1u;
     }
     dispatch->request_count =
         dispatch->decode_batch_decision.packed_request_count;
     dispatch->highest_priority = first_slot->priority;
     dispatch->speculative_token_count = leader_draft.token_count;
-    dispatch->speculative_max_committed_token_count = leader_draft.token_count + 1u;
 
     for (request_index = 0u;
          request_index < dispatch->request_count;
@@ -4497,15 +4523,14 @@ static uint32_t SparkGlm52RequestApiDecodeBatchMtpBudget(
         if (slot == 0 ||
             (slot->flags &
                 SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION) != 0u ||
-            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) < 3u)
+            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) <
+                SPARK_GLM52_MODEL_MTP_TREE_MAX_COMMITTED_TOKEN_COUNT + 1u)
         {
             return 0u;
         }
-        lane_budget = SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) - 2u;
-        if (lane_budget > slot->mtp_next_draft_token_budget)
-        {
-            lane_budget = slot->mtp_next_draft_token_budget;
-        }
+        lane_budget = SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+        if (slot->mtp_next_draft_token_budget != lane_budget)
+            return 0u;
         if (lane_budget < budget)
         {
             budget = lane_budget;
@@ -4708,14 +4733,7 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiChooseReadySlot(
 	SparkGlm52RequestApiSlot *chosen_slot;
 
 	*chosen_is_prefill = 0u;
-	chosen_slot = speculative_verify_slot != 0
-		? speculative_verify_slot
-		: decode_slot;
-	if (decode_slot != 0 && speculative_verify_slot != 0 &&
-		SparkGlm52RequestApiSlotHasHigherSchedulingPriority(
-			decode_slot,
-			speculative_verify_slot))
-		chosen_slot = decode_slot;
+	chosen_slot = decode_slot;
 	if (prefill_slot != 0 &&
 		(chosen_slot == 0 ||
 		 SparkGlm52RequestApiSlotHasHigherSchedulingPriority(
@@ -4727,6 +4745,13 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiChooseReadySlot(
 	{
 		*chosen_is_prefill = 1u;
 		chosen_slot = prefill_slot;
+	}
+	if (speculative_verify_slot != 0 &&
+		(chosen_slot == 0 ||
+		 speculative_verify_slot->priority > chosen_slot->priority))
+	{
+		*chosen_is_prefill = 0u;
+		chosen_slot = speculative_verify_slot;
 	}
 	return chosen_slot;
 }
@@ -5107,7 +5132,7 @@ static void SparkGlm52RequestApiFinishSlotAfterDecode(
     slot->mtp_resolution_proposed_token_count = 0u;
     slot->mtp_resolution_accepted_token_count = 0u;
     slot->mtp_resolution_committed_token_count = 0u;
-    slot->mtp_resolution_reserved0 = 0u;
+    slot->mtp_resolution_path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
     SparkGlm52RequestApiConsumeDecodeBudget(slot, committed_token_count);
     slot->completed_decode_token_count += committed_token_count;
     api->running_request_count -= 1u;
@@ -5133,7 +5158,8 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
     uint32_t proposed_token_count,
     uint32_t accepted_draft_token_count,
     uint32_t committed_token_count,
-    uint32_t fallback_token_id)
+    uint32_t fallback_token_id,
+    uint32_t resolution_path_id)
 {
     SparkGlm52DsparkVerifyResult verify_result;
     uint64_t resolution_base_position;
@@ -5153,7 +5179,17 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
     resolution_base_position = 0u;
     if (mtp_verify != 0u)
     {
-        if (committed_token_count != accepted_draft_token_count + 1u ||
+        if (proposed_token_count !=
+                SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT ||
+            accepted_draft_token_count >
+                SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION ||
+            committed_token_count != accepted_draft_token_count + 1u ||
+            committed_token_count >
+                SPARK_GLM52_MODEL_MTP_TREE_MAX_COMMITTED_TOKEN_COUNT ||
+            resolution_path_id >=
+                SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_COUNT ||
+            SparkGlm52MtpTreeAcceptedTokenCount(
+                resolution_path_id) != accepted_draft_token_count ||
             slot->computed_prompt_token_count == 0u)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -5186,18 +5222,13 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        slot->mtp_next_draft_token_budget = accepted_draft_token_count + 1u;
-        if (slot->mtp_next_draft_token_budget >
-            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
-        {
-            slot->mtp_next_draft_token_budget =
-                SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT;
-        }
+        slot->mtp_next_draft_token_budget =
+            SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
         slot->mtp_resolution_base_position = resolution_base_position;
         slot->mtp_resolution_proposed_token_count = proposed_token_count;
         slot->mtp_resolution_accepted_token_count = accepted_draft_token_count;
         slot->mtp_resolution_committed_token_count = committed_token_count;
-        slot->mtp_resolution_reserved0 = 0u;
+        slot->mtp_resolution_path_id = resolution_path_id;
         memset(slot->mtp_draft_token_ids, 0, sizeof(slot->mtp_draft_token_ids));
         slot->mtp_draft_token_count = 0u;
         api->mtp_accepted_draft_token_count += accepted_draft_token_count;
@@ -5214,7 +5245,13 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
         slot->mtp_resolution_proposed_token_count = 0u;
         slot->mtp_resolution_accepted_token_count = 0u;
         slot->mtp_resolution_committed_token_count = 0u;
-        slot->mtp_resolution_reserved0 = 0u;
+        if (resolution_path_id !=
+            SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        slot->mtp_resolution_path_id =
+            SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
         status = SparkGlm52DsparkCompleteVerify(
             api->dspark_speculator,
             slot->sequence_id,
@@ -5304,7 +5341,19 @@ SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    arm_draft_token_count = draft_token_count;
+    if (draft_token_count != SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT ||
+        (dispatch_is_mtp_producer != 0u &&
+         completed_decode_dispatch->mtp_draft_token_budget !=
+            SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT) ||
+        (dispatch_is_mtp_verify != 0u &&
+         ((completed_decode_dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY) == 0u ||
+          completed_decode_dispatch->mtp_draft_token_budget !=
+            SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT)))
+    {
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }
+    arm_draft_token_count = SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
     for (request_index = 0u;
          request_index < completed_decode_dispatch->request_count;
          ++request_index)
@@ -5319,18 +5368,15 @@ SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         if (slot->state == SPARK_GLM52_REQUEST_API_STATE_COMPLETED ||
-            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) <= 1u)
+            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) <
+                SPARK_GLM52_MODEL_MTP_TREE_MAX_COMMITTED_TOKEN_COUNT)
             return SPARK_STATUS_NOT_FOUND;
         if (slot->state != SPARK_GLM52_REQUEST_API_STATE_READY_DECODE ||
             slot->mtp_draft_token_count != 0u)
             return SPARK_STATUS_INVALID_ARGUMENT;
-        if (arm_draft_token_count >=
-            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot))
-            arm_draft_token_count =
-                SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) - 1u;
-        if (dispatch_is_mtp_verify != 0u &&
-            arm_draft_token_count > slot->mtp_next_draft_token_budget)
-            arm_draft_token_count = slot->mtp_next_draft_token_budget;
+        if (slot->mtp_next_draft_token_budget !=
+            SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT)
+            return SPARK_STATUS_MODULE_NOT_VALIDATED;
     }
     if (arm_draft_token_count == 0u)
         return SPARK_STATUS_NOT_FOUND;
@@ -5360,6 +5406,39 @@ SparkStatus SparkGlm52RequestApiArmMtpVerifyDispatch(
         slot->state = SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY;
         api->mtp_draft_ready_count += 1u;
     }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52RequestApiResolveMtpTreeVerifierTokens(
+    const uint32_t *candidate_token_ids,
+    const uint32_t *verifier_token_ids,
+    SparkGlm52DsparkVerifyResult *verify_result,
+    uint32_t *resolution_path_id_out)
+{
+    SparkGlm52MtpTreeResolution resolution;
+    SparkStatus status;
+    if (candidate_token_ids == 0 || verifier_token_ids == 0 ||
+        verify_result == 0 || resolution_path_id_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52MtpTreeResolve(
+        candidate_token_ids,verifier_token_ids,&resolution);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    memset(verify_result,0,sizeof(*verify_result));
+    verify_result->abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+    verify_result->descriptor_bytes =
+        SPARK_GLM52_DSPARK_VERIFY_RESULT_DESCRIPTOR_BYTES;
+    verify_result->proposed_token_count =
+        SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+    verify_result->accepted_draft_token_count =
+        resolution.accepted_token_count;
+    verify_result->committed_token_count = resolution.committed_token_count;
+    verify_result->flags = SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_REJECTED;
+    verify_result->fallback_token_id =
+        verifier_token_ids[resolution.fallback_row_index];
+    *resolution_path_id_out = resolution.path_id;
     return SPARK_STATUS_OK;
 }
 
@@ -5433,8 +5512,8 @@ SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
         dispatch->speculative_token_count >
             SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT ||
         verifier_token_ids == 0 ||
-        verifier_token_count < dispatch->speculative_token_count ||
-        verifier_token_count > dispatch->speculative_max_committed_token_count ||
+        dispatch->speculative_verifier_token_count == 0u ||
+        verifier_token_count != dispatch->speculative_verifier_token_count ||
         lane_stride < verifier_token_count)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -5445,13 +5524,38 @@ SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
          ++request_index)
     {
         SparkGlm52DsparkVerifyResult verify_result;
+        uint32_t resolution_path_id;
 
-        status = SparkGlm52DsparkResolveVerifierTokens(
-            dispatch->speculative_draft_token_ids[request_index],
-            dispatch->speculative_token_count,
-            &verifier_token_ids[(uint64_t)request_index * lane_stride],
-            verifier_token_count,
-            &verify_result);
+        resolution_path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
+        if ((dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u)
+        {
+            if ((dispatch->flags &
+                    SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u ||
+                dispatch->speculative_token_count !=
+                    SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT ||
+                dispatch->speculative_verifier_token_count !=
+                    SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT ||
+                dispatch->speculative_max_committed_token_count !=
+                    SPARK_GLM52_MODEL_MTP_TREE_MAX_COMMITTED_TOKEN_COUNT)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            status = SparkGlm52RequestApiResolveMtpTreeVerifierTokens(
+                dispatch->speculative_draft_token_ids[request_index],
+                &verifier_token_ids[(uint64_t)request_index * lane_stride],
+                &verify_result,
+                &resolution_path_id);
+        }
+        else
+        {
+            status = SparkGlm52DsparkResolveVerifierTokens(
+                dispatch->speculative_draft_token_ids[request_index],
+                dispatch->speculative_token_count,
+                &verifier_token_ids[(uint64_t)request_index * lane_stride],
+                verifier_token_count,
+                &verify_result);
+        }
         if (status != SPARK_STATUS_OK)
         {
             return status;
@@ -5470,6 +5574,8 @@ SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
             verify_result.committed_token_count;
         dispatch->speculative_fallback_token_ids[request_index] =
             verify_result.fallback_token_id;
+        dispatch->speculative_resolution_path_ids[request_index] =
+            resolution_path_id;
     }
     return SPARK_STATUS_OK;
 }
@@ -5655,7 +5761,8 @@ SparkStatus SparkGlm52RequestApiCompleteDispatch(
                 dispatch->speculative_token_count,
                 accepted_token_count,
                 committed_token_count,
-                dispatch->speculative_fallback_token_ids[request_index]);
+                dispatch->speculative_fallback_token_ids[request_index],
+                dispatch->speculative_resolution_path_ids[request_index]);
             if (status != SPARK_STATUS_OK)
             {
                 return status;
@@ -5971,22 +6078,24 @@ SparkStatus SparkGlm52RequestApiDescribeDecodeDispatch(
             if (slot->mtp_resolution_base_position != 0u ||
                 slot->mtp_resolution_accepted_token_count != 0u ||
                 slot->mtp_resolution_committed_token_count != 0u ||
-                slot->mtp_resolution_reserved0 != 0u)
+                slot->mtp_resolution_path_id !=
+                    SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE)
             {
                 return SPARK_STATUS_INTERNAL_ERROR;
             }
         }
         else if (slot->mtp_resolution_proposed_token_count >
                 SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT ||
-            slot->mtp_resolution_accepted_token_count >
-                slot->mtp_resolution_proposed_token_count ||
             slot->mtp_resolution_committed_token_count !=
                 slot->mtp_resolution_accepted_token_count + 1u ||
             slot->mtp_resolution_base_position >
                 UINT64_MAX - slot->mtp_resolution_committed_token_count ||
             slot->mtp_resolution_base_position +
                 slot->mtp_resolution_committed_token_count != sequence_position ||
-            slot->mtp_resolution_reserved0 != 0u)
+            SparkGlm52MtpTreeResolutionIsValid(
+                slot->mtp_resolution_proposed_token_count,
+                slot->mtp_resolution_accepted_token_count,
+                slot->mtp_resolution_path_id) == 0u)
         {
             return SPARK_STATUS_INTERNAL_ERROR;
         }
@@ -5998,7 +6107,7 @@ SparkStatus SparkGlm52RequestApiDescribeDecodeDispatch(
             slot->mtp_resolution_accepted_token_count;
         lane->mtp_resolution_committed_token_count =
             slot->mtp_resolution_committed_token_count;
-        lane->mtp_resolution_reserved0 = 0u;
+        lane->mtp_resolution_path_id = slot->mtp_resolution_path_id;
     }
 
     return SPARK_STATUS_OK;
@@ -6093,7 +6202,10 @@ SparkStatus SparkGlm52RequestApiBuildDispatchKvBlockTables(
                 slot,
                 dispatch->kind ==
                     SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH
-                        ? dispatch->speculative_token_count
+                        ? (dispatch->flags &
+                            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u
+                            ? SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION
+                            : dispatch->speculative_token_count
                         : (dispatch->flags &
                             SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u
                             ? dispatch->mtp_draft_token_budget : 0u,

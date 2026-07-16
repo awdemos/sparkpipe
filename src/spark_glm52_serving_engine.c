@@ -1380,7 +1380,7 @@ static SparkStatus SparkGlm52ServingValidateDecodeResult(
     if (dispatch->kind ==
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
     {
-        maximum_token_count = dispatch->speculative_max_committed_token_count;
+        maximum_token_count = dispatch->speculative_verifier_token_count;
     }
     else if ((dispatch->flags &
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u)
@@ -1568,15 +1568,21 @@ static SparkStatus SparkGlm52ServingClampSpeculativeVerifyDecodeResult(
          lane_index < decode_result->lane_count;
          ++lane_index)
     {
+        uint32_t accepted_token_count;
         uint32_t committed_token_count;
 
+        accepted_token_count =
+            dispatch->speculative_accepted_token_counts[lane_index];
         committed_token_count =
             dispatch->speculative_committed_token_counts[lane_index];
         if (committed_token_count == 0u ||
+            committed_token_count != accepted_token_count + 1u ||
             committed_token_count > decode_result->token_counts[lane_index])
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
+        decode_result->token_ids[lane_index][accepted_token_count] =
+            dispatch->speculative_fallback_token_ids[lane_index];
         decode_result->token_counts[lane_index] = committed_token_count;
     }
     return SPARK_STATUS_OK;

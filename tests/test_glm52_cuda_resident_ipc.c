@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "sparkpipe/spark_glm52_cuda_resident_ipc.h"
+#include "sparkpipe/spark_glm52_mtp_tree.h"
 
 enum
 {
@@ -175,12 +176,14 @@ static void SparkTestInternalDirectoryDecodeHasNoBlockPayload(void)
         SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     message->lanes[0u].mtp_resolution_accepted_token_count = 1u;
-    message->lanes[0u].mtp_resolution_reserved0 = 1u;
+    message->lanes[0u].mtp_resolution_path_id =
+        SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH1;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
         SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT) ==
         SPARK_STATUS_INVALID_ARGUMENT);
-    message->lanes[0u].mtp_resolution_reserved0 = 0u;
+    message->lanes[0u].mtp_resolution_path_id =
+        SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
     message->lanes[9u].kv_block_count = 1u;
     assert(SparkGlm52CudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
@@ -236,6 +239,52 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
         SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES + 1u;
     assert(SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(packet) == 0u);
     free(packet);
+}
+
+static void SparkTestMtpTreeExecutionContract(void)
+{
+    SparkGlm52RequestApiDispatch dispatch;
+    uint32_t batch_bucket;
+    uint32_t mtp_budget;
+    memset(&dispatch,0,sizeof(dispatch));
+    dispatch.kind =
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
+    dispatch.decode_batch_decision.batch_bucket =
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B128;
+    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+        &dispatch,
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B128 *
+            SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT,
+        &batch_bucket) == SPARK_STATUS_OK);
+    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B1024);
+    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+        &dispatch,
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B1024 + 1u,
+        &batch_bucket) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH,
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT,
+        SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT,
+        &mtp_budget) == SPARK_STATUS_OK);
+    assert(mtp_budget == SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT);
+    assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH,
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY,
+        SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT,
+        &mtp_budget) == SPARK_STATUS_OK);
+    assert(mtp_budget == SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT);
+    assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH,
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY,
+        SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT,
+        &mtp_budget) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH,
+        SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_TREE_VERIFY,
+        0u,
+        &mtp_budget) == SPARK_STATUS_MODULE_NOT_VALIDATED);
 }
 
 static void SparkTestResidentIpcReaderPreservesFragments(void)
@@ -298,6 +347,7 @@ int main(void)
     SparkTestDecodePayloadCapacity();
     SparkTestInternalDirectoryDecodeHasNoBlockPayload();
     SparkTestWideSubmitWorkUsesVariablePayload();
+    SparkTestMtpTreeExecutionContract();
     SparkTestResidentIpcReaderPreservesFragments();
     return 0;
 }
