@@ -27,6 +27,11 @@ earlier would allow the next model invocation to overwrite bytes still being
 read by the NIC. Overlap requires multiple owned boundary slots and belongs in a
 separate change.
 
+The module does not advertise native batch submission. Its former batch
+callbacks only looped over scalar sends, and every scalar send waits for local
+completion. The generic transport API therefore performs the same scalar
+fallback without misreporting a performance capability.
+
 Rank daemons accept `--transport-busy-poll` for latency-critical RDMA service.
 It keeps transport and resident progress on-core instead of entering `ppoll`
 after an idle iteration. The option fails closed for non-RDMA transports and
@@ -76,9 +81,9 @@ the large run registered one MR per direction and reused it for every lap.
 
 ## Deployment boundary
 
-This module is not selected by the production release manifest. Activation must
-be a separate zero-drift deployment after a two-Spark payload-parity and latency
-gate, followed by a complete 13-rank correctness run.
+The generated FP8 production manifest selects this module. A release is still
+not accepted until a zero-drift two-Spark payload-parity and latency gate and a
+complete 13-rank correctness run pass for the exact built artifact.
 
 The existing `sparkpipe_glm52_pp13_ring_check` accepts both `--transport` and
 `--transport-module`. For an isolated hardware test, set a control port base not

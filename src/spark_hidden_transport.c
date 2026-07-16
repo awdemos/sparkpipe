@@ -696,18 +696,96 @@ SparkStatus SparkHiddenTransportGetPollDescriptors(
     return SPARK_STATUS_OK;
 }
 
+void SparkHiddenTransportCompletionQueueInitialize(
+    SparkHiddenTransportCompletionQueue *queue)
+{
+    if (queue != 0)
+        memset(queue,0,sizeof(*queue));
+}
+
+uint32_t SparkHiddenTransportCompletionQueueIsFull(
+    const SparkHiddenTransportCompletionQueue *queue)
+{
+    return queue != 0 &&
+        queue->count >= SPARK_HIDDEN_TRANSPORT_COMPLETION_QUEUE_DEPTH;
+}
+
+SparkStatus SparkHiddenTransportCompletionQueuePush(
+    SparkHiddenTransportCompletionQueue *queue,
+    const SparkHiddenTransportCompletion *completion)
+{
+    uint32_t tail;
+    if (queue == 0 || completion == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (SparkHiddenTransportCompletionQueueIsFull(queue) != 0u)
+    {
+        queue->dropped_count += 1u;
+        return SPARK_STATUS_BUSY;
+    }
+    tail = (queue->head + queue->count) %
+        SPARK_HIDDEN_TRANSPORT_COMPLETION_QUEUE_DEPTH;
+    queue->entries[tail] = *completion;
+    queue->count += 1u;
+    queue->total_count += 1u;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkHiddenTransportCompletionQueuePushPacket(
+    SparkHiddenTransportCompletionQueue *queue,
+    const SparkHiddenTransportPacket *packet,
+    SparkStatus status,
+    uint64_t service_time_ns)
+{
+    SparkHiddenTransportCompletion completion;
+    uint64_t transfer_bytes;
+    if (queue == 0 || packet == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    transfer_bytes = (uint64_t)packet->bytes_per_sequence *
+        (uint64_t)packet->active_sequence_count;
+    if ((packet->flags &
+            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) != 0u)
+        transfer_bytes +=
+            (uint64_t)packet->sideband_bytes_per_sequence *
+            (uint64_t)packet->active_sequence_count;
+    memset(&completion,0,sizeof(completion));
+    completion.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+    completion.descriptor_bytes = SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
+    completion.status = status;
+    completion.active_sequence_count = packet->active_sequence_count;
+    completion.sequence_id = packet->sequence_id;
+    completion.token_index = packet->token_index;
+    completion.transfer_bytes = transfer_bytes;
+    completion.service_time_ns = service_time_ns;
+    return SparkHiddenTransportCompletionQueuePush(queue,&completion);
+}
+
+SparkStatus SparkHiddenTransportCompletionQueuePop(
+    SparkHiddenTransportCompletionQueue *queue,
+    SparkHiddenTransportCompletion *completion)
+{
+    if (queue == 0 || completion == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (queue->count == 0u)
+    {
+        memset(completion,0,sizeof(*completion));
+        completion->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
+        completion->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
+        completion->status = SPARK_STATUS_BUSY;
+        return SPARK_STATUS_OK;
+    }
+    *completion = queue->entries[queue->head];
+    queue->head = (queue->head + 1u) %
+        SPARK_HIDDEN_TRANSPORT_COMPLETION_QUEUE_DEPTH;
+    queue->count -= 1u;
+    return SPARK_STATUS_OK;
+}
+
 typedef struct SparkHiddenTransportPersistentRingState
 {
     SparkHiddenTransportEndpoint endpoint;
-    SparkHiddenTransportCompletion completions[
-        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH];
-    uint32_t completion_head;
-    uint32_t completion_tail;
-    uint32_t completion_count;
+    SparkHiddenTransportCompletionQueue completion_queue;
     uint64_t send_count;
     uint64_t receive_count;
-    uint64_t completion_total_count;
-    uint64_t dropped_completion_count;
 } SparkHiddenTransportPersistentRingState;
 
 static SparkStatus SparkHiddenTransportPersistentRingPushCompletion(
@@ -715,46 +793,15 @@ static SparkStatus SparkHiddenTransportPersistentRingPushCompletion(
     const SparkHiddenTransportPacket *packet,
     SparkStatus packet_status)
 {
-    SparkHiddenTransportCompletion *completion;
-    uint64_t transfer_bytes;
-
     if (state == 0 || packet == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (state->completion_count >=
-        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH)
-    {
-        state->dropped_completion_count += 1u;
-        return SPARK_STATUS_BUSY;
-    }
-
-    transfer_bytes = (uint64_t)packet->bytes_per_sequence *
-        (uint64_t)packet->active_sequence_count;
-    if ((packet->flags &
-            SPARK_HIDDEN_TRANSPORT_PACKET_FLAG_SIDEBAND_PAYLOAD) != 0u)
-    {
-        transfer_bytes +=
-            (uint64_t)packet->sideband_bytes_per_sequence *
-            (uint64_t)packet->active_sequence_count;
-    }
-    completion = &state->completions[state->completion_tail];
-    memset(completion, 0, sizeof(*completion));
-    completion->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-    completion->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
-    completion->status = packet_status;
-    completion->active_sequence_count = packet->active_sequence_count;
-    completion->sequence_id = packet->sequence_id;
-    completion->token_index = packet->token_index;
-    completion->transfer_bytes = transfer_bytes;
-    completion->service_time_ns = state->endpoint.validated_latency_ns;
-
-    state->completion_tail =
-        (state->completion_tail + 1u) %
-        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH;
-    state->completion_count += 1u;
-    state->completion_total_count += 1u;
-    return SPARK_STATUS_OK;
+    return SparkHiddenTransportCompletionQueuePushPacket(
+        &state->completion_queue,
+        packet,
+        packet_status,
+        state->endpoint.validated_latency_ns);
 }
 
 static SparkStatus SparkHiddenTransportPersistentRingInitialize(
@@ -889,20 +936,8 @@ static SparkStatus SparkHiddenTransportPersistentRingPoll(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     state = (SparkHiddenTransportPersistentRingState *)transport_state;
-    if (state->completion_count == 0u)
-    {
-        completion->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-        completion->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
-        completion->status = SPARK_STATUS_BUSY;
-        return SPARK_STATUS_OK;
-    }
-
-    *completion = state->completions[state->completion_head];
-    state->completion_head =
-        (state->completion_head + 1u) %
-        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH;
-    state->completion_count -= 1u;
-    return SPARK_STATUS_OK;
+    return SparkHiddenTransportCompletionQueuePop(
+        &state->completion_queue,completion);
 }
 
 SparkStatus SparkHiddenTransportPersistentRingGetInterface(
@@ -956,9 +991,10 @@ SparkStatus SparkHiddenTransportPersistentRingGetStatistics(
         SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_STATISTICS_BYTES;
     statistics->send_count = state->send_count;
     statistics->receive_count = state->receive_count;
-    statistics->completion_count = state->completion_total_count;
-    statistics->dropped_completion_count = state->dropped_completion_count;
-    statistics->queued_completion_count = state->completion_count;
+    statistics->completion_count = state->completion_queue.total_count;
+    statistics->dropped_completion_count =
+        state->completion_queue.dropped_count;
+    statistics->queued_completion_count = state->completion_queue.count;
     statistics->queue_depth =
         SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH;
     return SPARK_STATUS_OK;

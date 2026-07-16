@@ -176,6 +176,7 @@ static void SparkTestReleaseExampleResidentDeployment(void)
     assert(strcmp(role->name,"pp13_cuda_residentd") == 0);
     assert(SparkReleaseManifestFindRoleForNode(
         &manifest,&identity,"pp13_rank_daemon",&role) == SPARK_STATUS_OK);
+    assert(role->explicit_host_count == 12u);
     assert(SparkReleaseResolveRole(&manifest,&identity,role,&resolved_role) == SPARK_STATUS_OK);
     assert(strstr(resolved_role.command,"/home/spark8/sparkpipe_runtime/bin/sparkpipe_glm52_pp13_rank_daemon") != 0);
     assert(strcmp(resolved_role.arguments[1],"8") == 0);

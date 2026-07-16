@@ -1,9 +1,19 @@
 #include <assert.h>
+#include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_glm52_cuda_resident_ipc.h"
+
+enum
+{
+    SPARK_TEST_RESIDENT_IPC_HEADER_FRAGMENT_BYTES = 5u,
+    SPARK_TEST_RESIDENT_IPC_PAYLOAD_FRAGMENT_BYTES = 7u,
+    SPARK_TEST_RESIDENT_IPC_PAYLOAD_BYTES = 17u
+};
 
 static SparkGlm52CudaResidentIpcSubmitDecode *SparkTestBuildWideDecode(
     uint32_t lane_count,
@@ -228,11 +238,66 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
     free(packet);
 }
 
+static void SparkTestResidentIpcReaderPreservesFragments(void)
+{
+    SparkGlm52CudaResidentIpcHeader header;
+    SparkGlm52CudaResidentIpcReader reader;
+    uint8_t payload[SPARK_TEST_RESIDENT_IPC_PAYLOAD_BYTES];
+    uint8_t received[SPARK_TEST_RESIDENT_IPC_PAYLOAD_BYTES];
+    int32_t sockets[2u];
+    int32_t flags;
+    uint32_t index;
+
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
+    flags = fcntl(sockets[1u],F_GETFL,0);
+    assert(flags >= 0);
+    assert(fcntl(sockets[1u],F_SETFL,flags | O_NONBLOCK) == 0);
+    for (index = 0u; index < sizeof(payload); ++index)
+        payload[index] = (uint8_t)(index + 1u);
+    SparkGlm52CudaResidentIpcInitializeHeader(
+        &header,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_QUERY,3u,91u,
+        (uint32_t)sizeof(payload));
+    SparkGlm52CudaResidentIpcReaderReset(&reader);
+    assert(write(sockets[0u],&header,
+        SPARK_TEST_RESIDENT_IPC_HEADER_FRAGMENT_BYTES) ==
+        SPARK_TEST_RESIDENT_IPC_HEADER_FRAGMENT_BYTES);
+    assert(SparkGlm52CudaResidentIpcReadHeader(
+        &reader,sockets[1u],sizeof(payload)) == SPARK_STATUS_BUSY);
+    assert(reader.header_offset ==
+        SPARK_TEST_RESIDENT_IPC_HEADER_FRAGMENT_BYTES);
+    assert(write(sockets[0u],((uint8_t *)&header) +
+        SPARK_TEST_RESIDENT_IPC_HEADER_FRAGMENT_BYTES,
+        sizeof(header) - SPARK_TEST_RESIDENT_IPC_HEADER_FRAGMENT_BYTES) ==
+        (ssize_t)(sizeof(header) -
+            SPARK_TEST_RESIDENT_IPC_HEADER_FRAGMENT_BYTES));
+    assert(SparkGlm52CudaResidentIpcReadHeader(
+        &reader,sockets[1u],sizeof(payload)) == SPARK_STATUS_OK);
+    assert(reader.header.kind == SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_QUERY);
+    assert(write(sockets[0u],payload,
+        SPARK_TEST_RESIDENT_IPC_PAYLOAD_FRAGMENT_BYTES) ==
+        SPARK_TEST_RESIDENT_IPC_PAYLOAD_FRAGMENT_BYTES);
+    assert(SparkGlm52CudaResidentIpcReadPayload(
+        &reader,sockets[1u],received,sizeof(received)) == SPARK_STATUS_BUSY);
+    assert(reader.payload_offset ==
+        SPARK_TEST_RESIDENT_IPC_PAYLOAD_FRAGMENT_BYTES);
+    assert(write(sockets[0u],
+        payload + SPARK_TEST_RESIDENT_IPC_PAYLOAD_FRAGMENT_BYTES,
+        sizeof(payload) - SPARK_TEST_RESIDENT_IPC_PAYLOAD_FRAGMENT_BYTES) ==
+        (ssize_t)(sizeof(payload) -
+            SPARK_TEST_RESIDENT_IPC_PAYLOAD_FRAGMENT_BYTES));
+    assert(SparkGlm52CudaResidentIpcReadPayload(
+        &reader,sockets[1u],received,sizeof(received)) == SPARK_STATUS_OK);
+    assert(memcmp(payload,received,sizeof(payload)) == 0);
+    close(sockets[0u]);
+    close(sockets[1u]);
+}
+
 int main(void)
 {
     SparkTestWideDecodePayload();
     SparkTestDecodePayloadCapacity();
     SparkTestInternalDirectoryDecodeHasNoBlockPayload();
     SparkTestWideSubmitWorkUsesVariablePayload();
+    SparkTestResidentIpcReaderPreservesFragments();
     return 0;
 }
