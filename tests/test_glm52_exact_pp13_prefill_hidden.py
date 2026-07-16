@@ -258,6 +258,10 @@ def test_bulk_prefill_validates_the_runtime_view_stride(root: Path) -> None:
 
 
 def test_absorbed_bulk_prefill_is_dsa_only(root: Path) -> None:
+    firmware = (root / "modules" / "glm52_resident_decode_stage" / "include" /
+                "sparkpipe" /
+                "spark_glm52_resident_decode_stage_firmware.h").read_text(
+                    encoding="utf-8")
     builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
                "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                    encoding="utf-8")
@@ -270,6 +274,14 @@ def test_absorbed_bulk_prefill_is_dsa_only(root: Path) -> None:
     assert (
         "SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_DSA_SPARSE_PREFILL |"
         in builder)
+    known_flags = firmware[
+        firmware.index(
+            "#define SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_KNOWN_FLAGS"):
+        firmware.index(
+            "#define SPARK_GLM52_RESIDENT_DECODE_STAGE_FULL_STAGE_CAPABILITY_")]
+    assert (
+        "SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_DSA_SPARSE_PREFILL)"
+        in known_flags)
     assert (
         "SparkGlm52ResidentDecodeStageExecutionFlagIsSet(\n"
         "            node_context,\n"
