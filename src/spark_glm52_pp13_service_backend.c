@@ -780,6 +780,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitPrefillToResident(
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
 {
 	static SparkGlm52CudaResidentIpcSubmitPrefill message;
+	uint32_t chunk_token_count;
+	uint32_t maximum_chunk_token_count;
 	uint32_t token_offset;
 	SparkStatus status;
 	if (state == 0 || prefill_dispatch == 0 ||
@@ -794,14 +796,25 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitPrefillToResident(
 		prefill_dispatch->prompt_token_count >
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	maximum_chunk_token_count = state->rank_plan.execution_row_capacity /
+		prefill_dispatch->lane_count;
+	if (maximum_chunk_token_count >
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET)
+		maximum_chunk_token_count =
+			SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET;
+	if (maximum_chunk_token_count == 0u)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	for (token_offset = 0u;
 		 token_offset < prefill_dispatch->prompt_token_count;
-		 ++token_offset)
+		 token_offset += chunk_token_count)
 	{
+		chunk_token_count = prefill_dispatch->prompt_token_count - token_offset;
+		if (chunk_token_count > maximum_chunk_token_count)
+			chunk_token_count = maximum_chunk_token_count;
 		memset(&message,0,sizeof(message));
 		message.request_flags = prefill_dispatch->request_dispatch->flags;
 		status = SparkGlm52Pp13WorkControlBuildPrefillPacket(
-			prefill_dispatch,token_offset,&message.work_packet);
+			prefill_dispatch,token_offset,chunk_token_count,&message.work_packet);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13ServiceBackendStampWorkPacket(
 				state,&message.work_packet);
@@ -1838,10 +1851,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(
 static SparkStatus SparkGlm52Pp13ServiceBackendBuildPrefillWorkPacket(
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
 	uint32_t token_offset,
+	uint32_t token_count,
 	SparkGlm52Pp13WorkControlPacket *packet)
 {
 	return SparkGlm52Pp13WorkControlBuildPrefillPacket(
-		prefill_dispatch,token_offset,packet);
+		prefill_dispatch,token_offset,token_count,packet);
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendEnsureWorkOutputSocket(
@@ -1880,19 +1894,33 @@ static SparkStatus SparkGlm52Pp13ServiceBackendForwardPrefillWork(
 {
 	SparkGlm52Pp13WorkControlPacket packet;
 	SparkStatus status;
+	uint32_t chunk_token_count;
+	uint32_t maximum_chunk_token_count;
 	uint32_t token_offset;
 	if (state == 0 || prefill_dispatch == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((state->rank_plan.flags &
 			SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
 		return SPARK_STATUS_OK;
+	maximum_chunk_token_count = state->rank_plan.execution_row_capacity /
+		prefill_dispatch->lane_count;
+	if (maximum_chunk_token_count >
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET)
+		maximum_chunk_token_count =
+			SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET;
+	if (maximum_chunk_token_count == 0u)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	for (token_offset = 0u;
 		 token_offset < prefill_dispatch->prompt_token_count;
-		 ++token_offset)
+		 token_offset += chunk_token_count)
 	{
+		chunk_token_count = prefill_dispatch->prompt_token_count - token_offset;
+		if (chunk_token_count > maximum_chunk_token_count)
+			chunk_token_count = maximum_chunk_token_count;
 		status = SparkGlm52Pp13ServiceBackendBuildPrefillWorkPacket(
 			prefill_dispatch,
 			token_offset,
+			chunk_token_count,
 			&packet);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13ServiceBackendStampWorkPacket(state,&packet);

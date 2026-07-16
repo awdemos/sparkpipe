@@ -40,7 +40,7 @@
       "resident_reload_boundary": true
     },
     {
-      "path": "lib/libhidden_transport_tcp_cuda.so",
+      "path": "lib/libhidden_transport_spark_host_rdma_verbs.so",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
     },
     {
@@ -82,7 +82,7 @@
         "--stagepack-root",
         "{install_root}/packs/stage",
         "--transport-so",
-        "{install_root}/lib/libhidden_transport_tcp_cuda.so",
+        "{install_root}/lib/libhidden_transport_spark_host_rdma_verbs.so",
         "--driver-so",
         "{install_root}/lib/model_driver.so",
         "--program",
@@ -127,7 +127,7 @@
         "--stagepack-root",
         "{install_root}/packs/stage",
         "--transport-so",
-        "{install_root}/lib/libhidden_transport_tcp_cuda.so",
+        "{install_root}/lib/libhidden_transport_spark_host_rdma_verbs.so",
         "--driver-so",
         "{install_root}/lib/model_driver.so",
         "--program",
@@ -141,11 +141,11 @@
         "--max-active",
         "1024",
         "--kv-nvme-path",
-        "{state_root}/kv_rank{rank}.cache",
+        "{state_root}/kv_rank{rank}.jit",
         "--kv-nvme-blocks",
         "1048576",
         "--kv-nvme-batch-blocks",
-        "32",
+        "128",
         "--mtp",
         "--port-base",
         "52100"

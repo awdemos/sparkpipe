@@ -46,7 +46,7 @@ extern "C" {
     ((uint32_t)sizeof(SparkGlm52KvCacheCapacityRequest))
 #define SPARK_GLM52_KV_CACHE_CAPACITY_ESTIMATE_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52KvCacheCapacityEstimate))
-#define SPARK_GLM52_KV_JIT_STAGE_BUDGET_ABI_VERSION 1u
+#define SPARK_GLM52_KV_JIT_STAGE_BUDGET_ABI_VERSION 2u
 #define SPARK_GLM52_KV_JIT_STAGE_BUDGET_REQUEST_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52KvJitStageBudgetRequest))
 #define SPARK_GLM52_KV_JIT_STAGE_BUDGET_DESCRIPTOR_BYTES \
@@ -106,6 +106,8 @@ typedef struct SparkGlm52KvJitStageBudgetRequest
     uint32_t include_mtp_layer;
     uint32_t block_token_count;
     uint32_t record_alignment_bytes;
+    uint32_t attention_cache_layout;
+    uint32_t fp8_scale_block_size;
 } SparkGlm52KvJitStageBudgetRequest;
 
 typedef struct SparkGlm52KvJitStageBudget

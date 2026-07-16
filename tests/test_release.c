@@ -9,6 +9,26 @@
 
 #define SPARK_TEST_RELEASE_ROOT "build/test_release_runtime"
 
+static const char *SparkTestReleaseArgumentValue(
+    const SparkReleaseResolvedRole *role,
+    const char *name)
+{
+    uint32_t argument_index;
+
+    assert(role != 0);
+    assert(name != 0);
+    for (argument_index = 0u;
+         argument_index + 1u < role->argument_count;
+         ++argument_index)
+    {
+        if (strcmp(role->arguments[argument_index],name) == 0)
+        {
+            return role->arguments[argument_index + 1u];
+        }
+    }
+    return 0;
+}
+
 static void SparkTestReleaseWriteFixtureFile(
     const char *path,
     const char *text,
@@ -161,6 +181,17 @@ static void SparkTestReleaseExampleResidentDeployment(void)
     assert(strcmp(resolved_role.arguments[1],"8") == 0);
     assert(strstr(resolved_role.arguments[3],"/home/spark8/sparkpipe_state/cuda_resident_rank8.sock") != 0);
     assert(strcmp(resolved_role.arguments[5],"512") == 0);
+    assert(SparkReleaseManifestFindRoleForNode(
+        &manifest,&identity,"pp13_cuda_residentd",&role) == SPARK_STATUS_OK);
+    assert(SparkReleaseResolveRole(&manifest,&identity,role,&resolved_role) == SPARK_STATUS_OK);
+    assert(strstr(resolved_role.arguments[11],
+        "libhidden_transport_spark_host_rdma_verbs.so") != 0);
+    assert(strstr(SparkTestReleaseArgumentValue(
+        &resolved_role,"--kv-nvme-path"),"kv_rank8.jit") != 0);
+    assert(strcmp(SparkTestReleaseArgumentValue(
+        &resolved_role,"--kv-nvme-blocks"),"1048576") == 0);
+    assert(strcmp(SparkTestReleaseArgumentValue(
+        &resolved_role,"--kv-nvme-batch-blocks"),"128") == 0);
     SparkReleaseNodeIdentityInitialize(&identity);
     assert(SparkCopyString(identity.host,sizeof(identity.host),"spark0") == SPARK_STATUS_OK);
     identity.rank = 0u;

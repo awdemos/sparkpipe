@@ -65,14 +65,47 @@ def test_pp13_builder_uses_compressed_absorbed_mla(root: Path) -> None:
     assert "ZERO_FIELD(value_cache," not in source
 
 
-def test_pp13_rank_does_not_enable_dsa_fragment_transport(root: Path) -> None:
+def test_pp13_rank_enables_read_only_dsa_fragment_prefetch(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
-    assert ("~SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_DSA_KV_FRAGMENT_TRANSPORT"
-            in source)
-    assert "layer->node.dsa_kv_fragment_prefetch_plan = 0;" in source
-    assert "layer->node.dsa_kv_fragment_save_plan = 0;" in source
+    assert "SparkGlm52Pp13BuilderWireDsaFragmentPrefetch" in source
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_"
+            "READ_ONLY_REQUIRED_CAPABILITIES" in source)
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_"
+            "PAYLOAD_FLAG_L2_PREFETCH_ONLY" in source)
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_"
+            "DSA_KV_FRAGMENT_TRANSPORT" in source)
+    assert "layer->node.dsa_kv_fragment_prefetch_plan = &layer->dsa_prefetch_plan;" in source
+    assert ("state->rank_plan.execution_row_capacity" in source)
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_BLOCK_COUNT" in source)
+    assert "(void *)layer->dsa_selection_event" in source
+    assert "(void *)layer->dsa_prefetch_event" in source
+    assert "(void *)state->dsa_selection_event" not in source
+    assert "(void *)state->dsa_prefetch_event" not in source
+
+
+def test_pp13_bulk_prefill_has_one_embedding_kernel(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    assert source.count(
+        "__global__ static void SparkGlm52Pp13BuilderGatherPrefillEmbeddingKernel(") == 1
+    assert "work_packet->prefill_token_ids[" in source
+    assert "output_bf16_words[word_index] = 0u;" in source
+
+
+def test_rdma_transport_is_multilane_and_event_driven(root: Path) -> None:
+    source = (root / "modules" / "hidden_transport_spark_host_rdma_verbs.cu").read_text(
+        encoding="utf-8")
+    send_start = source.index("static SparkStatus SparkHiddenSparkHostRdmaSend(")
+    destroy_start = source.index("static void SparkHiddenSparkHostRdmaDestroyState(", send_start)
+    send_body = source[send_start:destroy_start]
+    assert "SparkMemlinkBuildTransferPartition(" in source
+    assert "cudaEventRecord(" in send_body
+    assert "cudaEventQuery(" in send_body
+    assert "cudaLaunchHostFunc(" in send_body
+    assert "cudaStreamSynchronize(" not in send_body
 
 
 def test_prebound_linear_plan_accepts_smaller_active_count(root: Path) -> None:
@@ -124,11 +157,10 @@ def test_pp13_builder_binds_all_fp8_linear_plans(root: Path) -> None:
     assert "&state->fp8_scaled_gemm_backend" in function_body[fp8_bind:]
 
 
-def test_serial_prefill_progresses_runner_after_each_token(root: Path) -> None:
+def test_bulk_prefill_progresses_runner_after_each_chunk(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
-    sync_call = "cudaStreamSynchronize(state->stream)"
     progress_call = "SparkGlm52ResidentDecodeStageProductionRunnerProgress("
     runner_start = source.index(
         "static SparkStatus SparkGlm52Pp13BuilderRunPrefillFrame(")
@@ -138,10 +170,12 @@ def test_serial_prefill_progresses_runner_after_each_token(root: Path) -> None:
         "static SparkStatus SparkGlm52Pp13BuilderDecode(", prefill_start)
     runner_body = source[runner_start:prefill_start]
     prefill_body = source[prefill_start:decode_start]
-    assert sync_call in runner_body
     assert progress_call in runner_body
-    assert runner_body.index(progress_call, runner_body.index(sync_call)) > runner_body.index(sync_call)
     assert "SparkGlm52Pp13BuilderRunPrefillFrame(" in prefill_body
+    assert "SPARK_GLM52_PP13_BUILDER_MAX_PREFILL_TOKENS" in prefill_body
+    assert "token_offset += chunk_token_count" in prefill_body
+    assert "state->prefill_frame_view" in source
+    assert "false &&" not in source
 
 
 def test_prefill_probe_hashes_the_exact_stage_input(root: Path) -> None:
@@ -736,11 +770,12 @@ def main() -> None:
     test_final_stage_has_hidden_only_builtin_launcher(root)
     test_exact_pp13_final_stage_can_run_hidden_only(root)
     test_pp13_rank_capacity_is_not_fixed_batch(root)
-    test_pp13_rank_does_not_enable_dsa_fragment_transport(root)
+    test_pp13_rank_enables_read_only_dsa_fragment_prefetch(root)
+    test_rdma_transport_is_multilane_and_event_driven(root)
     test_prebound_linear_plan_accepts_smaller_active_count(root)
     test_fp8_linear_plans_require_scaled_gemm_backend(root)
     test_pp13_builder_binds_all_fp8_linear_plans(root)
-    test_serial_prefill_progresses_runner_after_each_token(root)
+    test_bulk_prefill_progresses_runner_after_each_chunk(root)
     test_prefill_probe_hashes_the_exact_stage_input(root)
     test_fp8_phase_probe_targets_the_first_divergent_layer(root)
     test_fp8_validator_preserves_quantized_dense_execution(root)
