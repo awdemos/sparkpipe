@@ -29,8 +29,8 @@ CQ wait for every packet.
 
 Those transports no longer advertise batching or publish batch callbacks.
 `SparkHiddenTransportSendBatch` and `SparkHiddenTransportPostReceiveBatch`
-remain valid and use the generic scalar path until a backend implements one
-actual batch operation.
+fail closed unless the selected backend advertises and implements one actual
+batch operation.
 
 ### Resident IPC fragmentation and client aliasing
 

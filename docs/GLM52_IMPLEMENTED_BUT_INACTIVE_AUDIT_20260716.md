@@ -43,8 +43,8 @@ Inference does not route hidden states through the standalone memlink daemon.
 
 No compatibility fallback was added. Missing required capabilities, malformed
 bulk token rows, invalid FP8 cache plans, and unavailable RDMA dependencies fail
-closed. Batch API calls use the generic scalar API path unless an interface
-truthfully advertises native batching.
+closed. Batch API calls also fail closed unless an interface truthfully
+advertises and implements native batching.
 
 ## Remaining Inactive Or Unproven Code
 
