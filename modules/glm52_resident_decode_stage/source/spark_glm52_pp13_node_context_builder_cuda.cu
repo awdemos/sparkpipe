@@ -4461,10 +4461,6 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 			state,&state->mtp_previous_target_hidden_store,
 			(uint64_t)state->configuration.maximum_resident_sequence_count *
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_BF16_BYTES);
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaAlloc(
-			state,(void **)&state->device_mtp_request_slot_indices,
-			(uint64_t)state->rank_plan.logical_lane_capacity * sizeof(uint32_t));
 	if (status == SPARK_STATUS_OK && state->mtp_gpu_profile_enabled != 0u)
 		status = SparkGlm52Pp13BuilderCudaAlloc(
 			state,(void **)&state->mtp_gpu_profile_cycles,
@@ -4477,16 +4473,13 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 			SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT * sizeof(uint64_t));
 	if (status == SPARK_STATUS_OK)
 	{
-		state->host_mtp_request_slot_indices = (uint32_t *)malloc(
-			(size_t)state->rank_plan.logical_lane_capacity * sizeof(uint32_t));
 		state->host_mtp_previous_sequence_ids = (uint64_t *)calloc(
 			state->configuration.maximum_resident_sequence_count,sizeof(uint64_t));
 		state->host_mtp_previous_positions = (uint64_t *)calloc(
 			state->configuration.maximum_resident_sequence_count,sizeof(uint64_t));
 		state->host_mtp_previous_valid = (uint8_t *)calloc(
 			state->configuration.maximum_resident_sequence_count,sizeof(uint8_t));
-		if (state->host_mtp_request_slot_indices == 0 ||
-			state->host_mtp_previous_sequence_ids == 0 ||
+		if (state->host_mtp_previous_sequence_ids == 0 ||
 			state->host_mtp_previous_positions == 0 ||
 			state->host_mtp_previous_valid == 0)
 			status = SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -4893,6 +4886,11 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 			state,
 			(void **)&state->device_lane_physical_block_counts,
 			max_active * sizeof(uint32_t));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaAlloc(
+			state,
+			(void **)&state->device_mtp_request_slot_indices,
+			max_active * sizeof(uint32_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
 	state->host_physical_block_indices =
@@ -4923,6 +4921,8 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 	state->host_mtp_draft_budgets =
 		(uint32_t *)malloc((size_t)(state->rank_plan.logical_lane_capacity *
 			sizeof(uint32_t)));
+	state->host_mtp_request_slot_indices =
+		(uint32_t *)malloc((size_t)(max_active * sizeof(uint32_t)));
 	state->pending_work_completions =
 		(SparkModelDriverCompletion *)malloc(
 			(size_t)(state->rank_plan.logical_lane_capacity *
@@ -4943,6 +4943,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_NVME_KV) != 0u) &&
 		 state->host_backing_block_free_next == 0) ||
 		state->host_mtp_draft_budgets == 0 ||
+		state->host_mtp_request_slot_indices == 0 ||
 		state->mtp_kv_transactions == 0 ||
 		state->pending_work_completions == 0)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;

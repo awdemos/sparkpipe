@@ -640,6 +640,33 @@ def test_mtp_transaction_uses_expanded_execution_row(root: Path) -> None:
     assert "state->host_lane_physical_block_counts[lane_index]" not in body
 
 
+def test_mtp_kv_resolution_scratch_is_shared_and_execution_row_sized(
+        root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    shared_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(")
+    shared_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderValidateConfiguration(",
+        shared_start)
+    shared = source[shared_start:shared_end]
+    mtp_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(")
+    mtp_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderBuildLayer(",
+        mtp_start)
+    mtp = source[mtp_start:mtp_end]
+    assert "max_active = state->rank_plan.execution_row_capacity;" in shared
+    assert "(void **)&state->device_mtp_request_slot_indices" in shared
+    assert "max_active * sizeof(uint32_t)" in shared
+    assert "state->host_mtp_request_slot_indices =" in shared
+    assert "(size_t)(max_active * sizeof(uint32_t))" in shared
+    assert "state->host_mtp_request_slot_indices == 0" in shared
+    assert "device_mtp_request_slot_indices" not in mtp
+    assert "host_mtp_request_slot_indices" not in mtp
+
+
 def test_mtp_serial_train_continuation_keeps_transaction_open(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
