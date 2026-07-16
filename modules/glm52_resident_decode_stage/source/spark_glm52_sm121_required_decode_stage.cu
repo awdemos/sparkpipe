@@ -23964,6 +23964,26 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaPrefillIndexerPass(
     return SPARK_STATUS_OK;
 }
 
+static bool SparkGlm52ResidentDecodeStageDsaSparsePrefillIsConfiguredCuda(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    return node_context != 0 &&
+        node_context->attention_execution_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
+        (node_context->reserved_execution_flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_DSA_SPARSE_PREFILL) != 0u &&
+        node_context->dsa_score_tiles_f32 != 0 &&
+        node_context->dsa_prefill_selected_u32 != 0 &&
+        node_context->dsa_prefill_row_context_lengths_u32 != 0 &&
+        node_context->dsa_prefill_row_sequences_u32 != 0 &&
+        node_context->dsa_prefill_row_positions_u32 != 0 &&
+        node_context->dsa_prefill_query_index_heads_bf16 != 0 &&
+        node_context->dsa_prefill_index_weights_bf16 != 0 &&
+        node_context->dsa_prefill_low_scratch_bf16 != 0 &&
+        (node_context->mla_cache_bf16 != 0 ||
+         SparkGlm52ResidentDecodeStageUsesCompressedFp8MlaCuda(node_context));
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaSparsePrefillAttention(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -23999,20 +24019,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchDsaSparsePrefillAttention(
     uint16_t *prompt_query_output_scratch;
     SparkStatus status;
 
-    if (node_context->dsa_score_tiles_f32 == 0 ||
-        node_context->dsa_prefill_selected_u32 == 0 ||
-        node_context->dsa_prefill_row_context_lengths_u32 == 0 ||
-        node_context->dsa_prefill_row_sequences_u32 == 0 ||
-        node_context->dsa_prefill_row_positions_u32 == 0 ||
-        node_context->dsa_prefill_query_index_heads_bf16 == 0 ||
-        node_context->dsa_prefill_index_weights_bf16 == 0 ||
-        node_context->dsa_prefill_low_scratch_bf16 == 0 ||
-prompt_query_latent_bf16 == 0 ||
+    if (!SparkGlm52ResidentDecodeStageDsaSparsePrefillIsConfiguredCuda(
+            node_context) ||
+        prompt_query_latent_bf16 == 0 ||
         prompt_rotated_query_rope_bf16 == 0 ||
         prompt_attention_output_latent_bf16 == 0 ||
         prompt_first_block_token_offsets == 0 || prompt_block_table == 0 ||
-        (node_context->mla_cache_bf16 == 0 &&
-         !SparkGlm52ResidentDecodeStageUsesCompressedFp8MlaCuda(node_context)) ||
         prompt_token_offset + prompt_token_stride >
             SPARK_GLM52_KV_CONTEXT_TOKENS)
     {
@@ -24418,20 +24430,26 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidatePagedChunkPrefillPlan(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        if (SparkGlm52ResidentDecodeStageExecutionRequiresFp8KvCacheCuda(
+        if (!SparkGlm52ResidentDecodeStageDsaSparsePrefillIsConfiguredCuda(
                 node_context))
         {
-            if (!SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsableCuda(
+            if (SparkGlm52ResidentDecodeStageExecutionRequiresFp8KvCacheCuda(
                     node_context))
+            {
+                if (!SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsableCuda(
+                        node_context) ||
+                    SparkGlm52ResidentDecodeStageUsesCompressedFp8MlaCuda(
+                        node_context))
+                {
+                    return SPARK_STATUS_INVALID_ARGUMENT;
+                }
+            }
+            else if (node_context->mla_cache_bf16 == 0 ||
+                     node_context->key_nope_cache_bf16 == 0 ||
+                     node_context->value_cache_bf16 == 0)
             {
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
-        }
-        else if (node_context->mla_cache_bf16 == 0 ||
-                 node_context->key_nope_cache_bf16 == 0 ||
-                 node_context->value_cache_bf16 == 0)
-        {
-            return SPARK_STATUS_INVALID_ARGUMENT;
         }
     }
 
@@ -25320,9 +25338,8 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill
                 return status;
             }
         }
-        if ((node_context->reserved_execution_flags &
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_DSA_SPARSE_PREFILL) != 0u &&
-            node_context->dsa_score_tiles_f32 != 0)
+        if (SparkGlm52ResidentDecodeStageDsaSparsePrefillIsConfiguredCuda(
+                node_context))
         {
             status = SparkGlm52ResidentDecodeStageLaunchDsaSparsePrefillAttention(
                 node_context,

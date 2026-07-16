@@ -1155,6 +1155,14 @@ static bool SparkGlm52ResidentDecodeStageBulkPrefillPlanIsUsable(
     {
         return false;
     }
+    if (node_context->attention_execution_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
+        !SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
+            node_context,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_DSA_SPARSE_PREFILL))
+    {
+        return false;
+    }
     required_capabilities =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_REQUIRED_CAPABILITIES;
     return bulk_prefill_plan->abi_version ==

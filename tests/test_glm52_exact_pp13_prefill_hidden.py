@@ -257,6 +257,32 @@ def test_bulk_prefill_validates_the_runtime_view_stride(root: Path) -> None:
         static_stride)
 
 
+def test_absorbed_bulk_prefill_is_dsa_only(root: Path) -> None:
+    builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                   encoding="utf-8")
+    module = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_resident_decode_stage_module.c").read_text(
+                  encoding="utf-8")
+    cuda = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+            "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                encoding="utf-8")
+    assert (
+        "SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_DSA_SPARSE_PREFILL |"
+        in builder)
+    assert (
+        "SparkGlm52ResidentDecodeStageExecutionFlagIsSet(\n"
+        "            node_context,\n"
+        "            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_DSA_SPARSE_PREFILL)"
+        in module)
+    helper = "SparkGlm52ResidentDecodeStageDsaSparsePrefillIsConfiguredCuda("
+    assert cuda.count(helper) >= 4
+    assert (
+        "SparkGlm52ResidentDecodeStageUsesCompressedFp8MlaCuda(\n"
+        "                    node_context))"
+        in cuda)
+
+
 def test_decode_uses_one_tree_aware_work_packet_path(root: Path) -> None:
     builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
                "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
