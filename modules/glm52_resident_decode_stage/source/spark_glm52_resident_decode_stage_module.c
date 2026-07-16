@@ -1552,6 +1552,17 @@ static bool SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(
     return true;
 }
 
+static bool SparkGlm52ResidentDecodeStageUsesCompressedFp8Mla(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    return SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
+            node_context,
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FP8_KV_CACHE) &&
+        SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(node_context) &&
+        (node_context->fp8_kv_cache_plan->capability_flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_CAPABILITY_COMPRESSED_MLA_ONLY) != 0u;
+}
+
 static bool SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsUsable(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
@@ -2556,9 +2567,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         !SparkGlm52ResidentDecodeStagePointerIsAligned(
             node_context->sin_table,
             4u) ||
-        !SparkGlm52ResidentDecodeStagePointerIsAligned(
-            node_context->mla_cache_bf16,
-            4u) ||
+        (!SparkGlm52ResidentDecodeStagePointerIsAligned(
+             node_context->mla_cache_bf16,
+             4u) &&
+         !SparkGlm52ResidentDecodeStageUsesCompressedFp8Mla(node_context)) ||
         (node_context->attention_execution_mode !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
          (!SparkGlm52ResidentDecodeStagePointerIsAligned(
@@ -2707,9 +2719,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
     if (SparkGlm52ResidentDecodeStageExecutionFlagIsSet(
             node_context,
             SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FP8_KV_CACHE) &&
-        (node_context->attention_execution_mode ==
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT ||
-         !SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(node_context)))
+        (!SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(node_context) ||
+         (node_context->attention_execution_mode ==
+              SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
+          !SparkGlm52ResidentDecodeStageUsesCompressedFp8Mla(node_context))))
     {
         SparkGlm52ResidentDecodeStageReportValidationFailure(
             node_context,
