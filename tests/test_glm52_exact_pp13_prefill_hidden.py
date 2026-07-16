@@ -1065,7 +1065,7 @@ def test_decode_kv_directory_is_resident_and_delta_uploaded(root: Path) -> None:
     assert "layer->block_table = state->device_physical_block_indices;" in source
 
 
-def test_absorbed_mla_dense_math_uses_tensor_cores(root: Path) -> None:
+def test_absorbed_mla_uses_measured_correct_math(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_sm121_required_decode_stage.cu").read_text(
                   encoding="utf-8")
@@ -1085,25 +1085,25 @@ def test_absorbed_mla_dense_math_uses_tensor_cores(root: Path) -> None:
     query_body = source[query_start:query_end]
     attention_body = source[attention_start:attention_end]
     value_body = source[value_start:value_end]
-    assert "nvcuda::wmma::mma_sync(" in query_body
-    assert "nvcuda::wmma::mma_sync(" in attention_body
-    assert "nvcuda::wmma::mma_sync(" in value_body
-    assert "accumulated_value +=" not in query_body
-    assert "accumulated_value +=" not in value_body
-    assert "WarpAllReduceSum(lane_partial)" not in attention_body
+    assert "nvcuda::wmma::mma_sync(" not in query_body
+    assert "nvcuda::wmma::mma_sync(" not in attention_body
+    assert "nvcuda::wmma::mma_sync(" not in value_body
+    assert "accumulated_value +=" in query_body
+    assert "accumulated_value +=" in value_body
+    assert "WarpAllReduceSum(lane_partial)" in attention_body
     assert query_body.index(
         "SparkGlm52ResidentDecodeStageQuantizedLinearWeightToFloat(") < (
             query_body.index("for (sequence_tile_begin = 0u;"))
     assert value_body.index(
         "SparkGlm52ResidentDecodeStageQuantizedLinearWeightToFloat(") < (
             value_body.index("for (sequence_tile_begin = 0u;"))
-    assert "shared_weight_tile + input_tile_begin" in query_body
-    assert "shared_weight_tile + input_tile_begin" in value_body
+    assert "shared_weight_tile + input_tile_begin" not in query_body
+    assert "shared_weight_tile + input_tile_begin" not in value_body
     assert "blockIdx.z" not in query_body
     assert "blockIdx.z" not in value_body
-    assert 'asm("trap;");' in query_body
-    assert 'asm("trap;");' in attention_body
-    assert 'asm("trap;");' in value_body
+    assert 'asm("trap;");' not in query_body
+    assert 'asm("trap;");' not in attention_body
+    assert 'asm("trap;");' not in value_body
 
 
 def main() -> None:
@@ -1146,7 +1146,7 @@ def main() -> None:
     test_rank_queue_does_not_overtake_a_deferred_sequence_position(root)
     test_short_context_bypasses_indexshare_for_exact_prefix_attention(root)
     test_decode_kv_directory_is_resident_and_delta_uploaded(root)
-    test_absorbed_mla_dense_math_uses_tensor_cores(root)
+    test_absorbed_mla_uses_measured_correct_math(root)
     test_mtp_retry_cleanup_preserves_resolution_receipt(root)
     test_mtp_serial_train_continuation_keeps_transaction_open(root)
     test_attached_resident_decode_preserves_mtp_resolution(root)
