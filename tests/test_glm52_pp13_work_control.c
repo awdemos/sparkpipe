@@ -164,10 +164,13 @@ static void SparkTestPrefillPacketLanes(
 		packet.descriptor_bytes =
 			SparkGlm52Pp13WorkControlCalculatePacketBytes(1u);
 		packet.lanes[0u] = source_packet->lanes[lane_index];
+		packet.lanes[0u].sequence_position =
+			packet.lanes[0u].context_token_count - 1u;
 		packet.request_id = packet.lanes[0u].request_id;
 		packet.sequence_id = packet.lanes[0u].sequence_id;
 		packet.sequence_position = packet.lanes[0u].sequence_position;
 		packet.input_token_id = packet.lanes[0u].input_token_id;
+		packet.prefill_token_ids[0u] = packet.input_token_id;
 		packet.kv_block_table_token_count =
 			packet.lanes[0u].context_token_count;
 		assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
@@ -198,6 +201,10 @@ static void SparkTestGlm52Pp13WorkControlPacket(void)
 	packet.execution_row_count = 1u;
 	packet.descriptor_bytes =
 		SparkGlm52Pp13WorkControlCalculatePacketBytes(1u);
+	packet.kv_block_table_token_count = packet.sequence_position + 1u;
+	packet.lanes[0u].context_token_count =
+		packet.kv_block_table_token_count;
+	packet.prefill_token_ids[0u] = packet.lanes[0u].input_token_id;
 	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,1024u,4u) ==
 		SPARK_STATUS_OK);
 	packet.new_token_count =
@@ -972,6 +979,7 @@ static void SparkTestGlm52Pp13WorkControlBuildPrefillBatch(void)
 	uint32_t block_indices[4u];
 	uint32_t block_counts[4u];
 	uint32_t lane_index;
+	uint32_t token_count;
 
 	memset(&request_dispatch,0,sizeof(request_dispatch));
 	request_dispatch.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
@@ -1033,6 +1041,9 @@ static void SparkTestGlm52Pp13WorkControlBuildPrefillBatch(void)
 		block_counts[lane_index] = 1u;
 	}
 	prefill_view.lanes[1u].prompt_token_count = 1u;
+	assert(SparkGlm52Pp13WorkControlSelectPrefillChunk(
+		&prefill_dispatch,0u,8u,&token_count) == SPARK_STATUS_OK);
+	assert(token_count == 1u);
 	assert(SparkGlm52Pp13WorkControlBuildPrefillPacket(
 		&prefill_dispatch,0u,1u,&packet) == SPARK_STATUS_OK);
 	assert(packet.active_sequence_count == 4u);
@@ -1051,6 +1062,31 @@ static void SparkTestGlm52Pp13WorkControlBuildPrefillBatch(void)
 	assert(SparkGlm52Pp13WorkControlBuildPrefillPacket(
 		&prefill_dispatch,0u,2u,&packet) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
+	prefill_view.lanes[1u].prompt_token_count = 2u;
+	assert(SparkGlm52Pp13WorkControlSelectPrefillChunk(
+		&prefill_dispatch,0u,8u,&token_count) == SPARK_STATUS_OK);
+	assert(token_count == 2u);
+	assert(SparkGlm52Pp13WorkControlBuildPrefillPacket(
+		&prefill_dispatch,0u,2u,&packet) == SPARK_STATUS_OK);
+	assert(packet.active_sequence_count == 4u);
+	assert(packet.rows_per_lane == 2u);
+	assert(packet.new_token_count == 2u);
+	assert(packet.execution_row_count == 8u);
+	assert(packet.prefill_token_ids[0u] == 300u);
+	assert(packet.prefill_token_ids[1u] == 400u);
+	assert(packet.prefill_token_ids[2u] == 301u);
+	assert(packet.prefill_token_ids[7u] == 403u);
+	assert(packet.lanes[0u].input_token_id == 400u);
+	assert(packet.lanes[0u].context_token_count == 6u);
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,8u,1u) ==
+		SPARK_STATUS_OK);
+	packet.prefill_token_ids[7u] = SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT;
+	assert(SparkGlm52Pp13WorkControlValidatePacket(&packet,8u,1u) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
+	prefill_view.lanes[1u].prompt_token_count = 1u;
+	assert(SparkGlm52Pp13WorkControlSelectPrefillChunk(
+		&prefill_dispatch,1u,8u,&token_count) == SPARK_STATUS_OK);
+	assert(token_count == 1u);
 	assert(SparkGlm52Pp13WorkControlBuildPrefillPacket(
 		&prefill_dispatch,1u,1u,&packet) == SPARK_STATUS_OK);
 	assert(packet.active_sequence_count == 3u);

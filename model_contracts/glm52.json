@@ -33,6 +33,7 @@
   "latent_dimension": 512,
   "layer_count": 78,
   "maximum_context_tokens": 1048576,
+  "max_prefill_tokens_per_dispatch": 256,
   "moe_expert_count": 256,
   "moe_intermediate_dimension": 2048,
   "moe_routed_scaling_factor": 2.5,

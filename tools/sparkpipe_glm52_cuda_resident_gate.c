@@ -101,8 +101,8 @@ static SparkStatus SparkGlm52CudaResidentGateValidateStats(
 		stats->logical_lane_capacity !=
 			SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET ||
 		stats->execution_row_capacity !=
-			SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET *
-			SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE ||
+			SparkGlm52Pp13RuntimeExecutionRowCapacity(
+				SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET) ||
 		stats->model_quantization_mode != expected_quantization_mode ||
 		stats->moe_backend_kind !=
 			(expected_quantization_mode ==

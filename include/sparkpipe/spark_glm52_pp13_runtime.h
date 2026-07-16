@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_RUNTIME_ABI_VERSION 4u
+#define SPARK_GLM52_PP13_RUNTIME_ABI_VERSION 5u
 #define SPARK_GLM52_PP13_RUNTIME_RANK_PLAN_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkGlm52Pp13RuntimeRankPlan))
 #define SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT \
@@ -92,6 +92,8 @@ typedef struct SparkGlm52Pp13RuntimeRankPlan
 
 uint32_t SparkGlm52Pp13RuntimeDsaCandidateBucket(
     uint32_t context_token_count);
+uint32_t SparkGlm52Pp13RuntimeExecutionRowCapacity(
+    uint32_t logical_lane_capacity);
 
 SparkStatus SparkGlm52Pp13RuntimeParseQuantizationMode(
     const char *name,

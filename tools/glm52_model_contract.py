@@ -36,6 +36,8 @@ INTEGER_MACROS = {
     "SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET": "dsa_index_skip_topk_offset",
     "SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT": "output_vocab_count",
     "SPARK_GLM52_MODEL_RESTRICTED_VOCAB_COUNT": "restricted_vocab_count",
+    "SPARK_GLM52_MODEL_MAX_PREFILL_TOKENS_PER_DISPATCH":
+        "max_prefill_tokens_per_dispatch",
     "SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT": "mtp_draft_token_count",
     "SPARK_GLM52_MODEL_MTP_TARGET_HIDDEN_POSITION_DELTA":
         "mtp_target_hidden_position_delta",

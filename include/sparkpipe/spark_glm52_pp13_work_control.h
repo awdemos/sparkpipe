@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 12u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 13u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION UINT64_C(1)
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
@@ -58,7 +58,7 @@ extern "C" {
 	 SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
 #define SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT 1024u
 #define SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET \
-	SPARK_GLM52_STAGE_PLAN_FULL_STAGE_PREFILL_TOKEN_COUNT
+	SPARK_GLM52_MODEL_MAX_PREFILL_TOKENS_PER_DISPATCH
 #define SPARK_GLM52_PP13_WORK_CONTROL_INVALID_REQUEST_SLOT UINT32_MAX
 
 #define SPARK_GLM52_PP13_KV_ENTRY_MISSING 0u
@@ -144,6 +144,8 @@ typedef struct SparkGlm52Pp13WorkControlPacket
 	uint32_t rows_per_lane;
 	uint32_t execution_row_count;
 	uint32_t execution_batch_bucket;
+	uint32_t prefill_token_ids[
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkGlm52Pp13WorkControlLane
 		lanes[SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT];
 } SparkGlm52Pp13WorkControlPacket;
@@ -217,6 +219,11 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	uint32_t token_offset,
 	uint32_t token_count,
 	SparkGlm52Pp13WorkControlPacket *packet);
+SparkStatus SparkGlm52Pp13WorkControlSelectPrefillChunk(
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
+	uint32_t token_offset,
+	uint32_t maximum_execution_row_count,
+	uint32_t *token_count_out);
 SparkStatus SparkGlm52Pp13WorkControlInitializeKvState(
 	SparkGlm52Pp13WorkControlKvState *state,
 	uint32_t lane_capacity,
