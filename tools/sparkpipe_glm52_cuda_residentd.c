@@ -1754,22 +1754,24 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitWork(
     SparkGlm52CudaResidentdRuntime *runtime,
     const SparkGlm52CudaResidentdConfiguration *configuration,
     const SparkGlm52CudaResidentIpcSubmitWork *message,
+    uint32_t payload_bytes,
     int32_t client_fd)
 {
-    uint32_t release_sequences;
+    uint32_t result_requested;
     SparkStatus status;
-    release_sequences = message != 0 &&
-        (message->work_packet.flags &
-            SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u;
-    status = SPARK_STATUS_ABI_MISMATCH;
-	if (message != 0 && message->descriptor_bytes ==
-		SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
-			&message->work_packet))
+    result_requested = 0u;
+    status = SparkGlm52CudaResidentIpcValidateSubmitWork(
+        message,payload_bytes);
+	if (status == SPARK_STATUS_OK)
+    {
+        result_requested = (message->flags &
+            SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT) != 0u;
         status = SparkGlm52CudaResidentdEnqueueWork(
             runtime,configuration,&message->work_packet,client_fd);
+    }
     if (status != SPARK_STATUS_OK)
         runtime->submit_failed_count += 1u;
-    if (status != SPARK_STATUS_OK || release_sequences != 0u)
+    if (status != SPARK_STATUS_OK || result_requested != 0u)
         SparkGlm52CudaResidentdWriteSubmitResult(
             runtime,configuration,client_fd,status,
             "submit_work_enqueue_failed");
@@ -2160,6 +2162,7 @@ static uint32_t SparkGlm52CudaResidentdPumpClient(
                 runtime,
                 configuration,
                 (const SparkGlm52CudaResidentIpcSubmitWork *)payload,
+                client->reader.header.payload_bytes,
                 fd);
             break;
         case SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_PREFILL:

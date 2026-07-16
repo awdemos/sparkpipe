@@ -148,6 +148,51 @@ uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
 		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_BYTES);
 }
 
+SparkStatus SparkGlm52CudaResidentIpcInitializeSubmitWork(
+    SparkGlm52CudaResidentIpcSubmitWork *message,
+    const SparkGlm52Pp13WorkControlPacket *work_packet,
+    uint32_t flags)
+{
+    uint32_t message_bytes;
+    if (message == 0 || work_packet == 0 ||
+        (flags & ~SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_KNOWN_FLAGS) != 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    memset(message,0,sizeof(*message));
+    message->flags = flags;
+    message->work_packet = *work_packet;
+    message_bytes = SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
+        &message->work_packet);
+    if (message_bytes == 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    message->descriptor_bytes = message_bytes;
+    return SparkGlm52CudaResidentIpcValidateSubmitWork(message,message_bytes);
+}
+
+SparkStatus SparkGlm52CudaResidentIpcValidateSubmitWork(
+    const SparkGlm52CudaResidentIpcSubmitWork *message,
+    uint32_t payload_bytes)
+{
+    uint32_t expected_bytes;
+    if (message == 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    expected_bytes = SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
+        &message->work_packet);
+    if (expected_bytes == 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if (payload_bytes != expected_bytes ||
+        message->descriptor_bytes != expected_bytes)
+        return SPARK_STATUS_ABI_MISMATCH;
+    if ((message->flags &
+            ~SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_KNOWN_FLAGS) != 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    if ((message->work_packet.flags &
+            SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u &&
+        (message->flags &
+            SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT) == 0u)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    return SPARK_STATUS_OK;
+}
+
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitPrefillBytes(
 	const SparkGlm52Pp13WorkControlPacket *work_packet)
 {

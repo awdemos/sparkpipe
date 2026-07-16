@@ -768,23 +768,21 @@ static SparkStatus SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(
 
 static SparkStatus SparkGlm52Pp13ServiceBackendSubmitWorkToResident(
 	SparkGlm52Pp13ServiceBackendState *state,
-	const SparkGlm52Pp13WorkControlPacket *packet)
+	const SparkGlm52Pp13WorkControlPacket *packet,
+	uint32_t submit_flags)
 {
 	SparkGlm52CudaResidentIpcSubmitWork message;
-	uint32_t message_bytes;
+	SparkStatus status;
 	if (state == 0 || packet == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	memset(&message,0,sizeof(message));
-	message.work_packet = *packet;
-	message_bytes = SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
-		&message.work_packet);
-	if (message_bytes == 0u)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	message.descriptor_bytes = message_bytes;
+	status = SparkGlm52CudaResidentIpcInitializeSubmitWork(
+		&message,packet,submit_flags);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	return SparkGlm52Pp13ServiceBackendSubmitResidentMessage(
 		state,
 		SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_WORK,
-		&message,message_bytes);
+		&message,message.descriptor_bytes);
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendSubmitReleaseToResident(
@@ -796,7 +794,9 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitReleaseToResident(
 		state,1u);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52Pp13ServiceBackendSubmitWorkToResident(state,packet);
+	status = SparkGlm52Pp13ServiceBackendSubmitWorkToResident(
+		state,packet,
+		SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	return SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(state,0);
@@ -1193,7 +1193,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitDecodeChunksToResident(
 			status = SparkGlm52Pp13ServiceBackendStampWorkPacket(state,&packet);
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13ServiceBackendSubmitWorkToResident(
-				state,&packet);
+				state,&packet,0u);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		lane_offset += lane_count;
