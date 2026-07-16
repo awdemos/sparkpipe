@@ -194,6 +194,7 @@ static void SparkTestInternalDirectoryDecodeHasNoBlockPayload(void)
 
 static void SparkTestWideSubmitWorkUsesVariablePayload(void)
 {
+    SparkGlm52CudaResidentIpcSubmitWork *message;
     SparkGlm52Pp13WorkControlPacket *packet;
     uint32_t lane_index;
     uint32_t packet_bytes;
@@ -201,6 +202,9 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
 
     packet = (SparkGlm52Pp13WorkControlPacket *)calloc(1u,sizeof(*packet));
     assert(packet != 0);
+    message = (SparkGlm52CudaResidentIpcSubmitWork *)calloc(
+        1u,sizeof(*message));
+    assert(message != 0);
     packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
     packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
     packet->control_generation =
@@ -231,6 +235,22 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
     assert(submit_bytes ==
         SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_PREFIX_BYTES + packet_bytes);
     assert(submit_bytes == SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_BYTES);
+    assert(SparkGlm52CudaResidentIpcInitializeSubmitWork(
+        message,packet,
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT) ==
+        SPARK_STATUS_OK);
+    assert(message->descriptor_bytes == submit_bytes);
+    assert(message->flags ==
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT);
+    assert(SparkGlm52CudaResidentIpcValidateSubmitWork(
+        message,submit_bytes) == SPARK_STATUS_OK);
+    message->flags = 0x80000000u;
+    assert(SparkGlm52CudaResidentIpcValidateSubmitWork(
+        message,submit_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
+    message->flags =
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT;
+    assert(SparkGlm52CudaResidentIpcValidateSubmitWork(
+        message,submit_bytes - 1u) == SPARK_STATUS_ABI_MISMATCH);
 
     packet->descriptor_bytes =
         SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES - 1u;
@@ -238,6 +258,15 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
     packet->descriptor_bytes =
         SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES + 1u;
     assert(SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(packet) == 0u);
+    packet->descriptor_bytes = packet_bytes;
+    packet->flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES;
+    assert(SparkGlm52CudaResidentIpcInitializeSubmitWork(
+        message,packet,0u) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkGlm52CudaResidentIpcInitializeSubmitWork(
+        message,packet,
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT) ==
+        SPARK_STATUS_OK);
+    free(message);
     free(packet);
 }
 

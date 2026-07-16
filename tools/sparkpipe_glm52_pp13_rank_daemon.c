@@ -1909,7 +1909,6 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
 {
     SparkGlm52CudaResidentIpcSubmitWork submit_message;
     SparkStatus status;
-	uint32_t message_bytes;
     uint64_t trace_begin_ns;
 
     if (runtime == 0 || packet == 0)
@@ -1920,18 +1919,16 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
         status = SparkGlm52Pp13DaemonEnsureCudaResident(runtime);
         if (status != SPARK_STATUS_OK)
             return status;
-        memset(&submit_message,0,sizeof(submit_message));
-        submit_message.work_packet = *packet;
-		message_bytes = SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
-			&submit_message.work_packet);
-		if (message_bytes == 0u)
-			return SPARK_STATUS_INVALID_ARGUMENT;
-		submit_message.descriptor_bytes = message_bytes;
+        status = SparkGlm52CudaResidentIpcInitializeSubmitWork(
+            &submit_message,packet,
+            SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT);
+        if (status != SPARK_STATUS_OK)
+            return status;
         status = SparkGlm52Pp13DaemonWriteResidentMessage(
             runtime,
             SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_WORK,
             &submit_message,
-			message_bytes);
+			submit_message.descriptor_bytes);
         if (status != SPARK_STATUS_OK)
         {
             SparkGlm52Pp13DaemonTeardownCudaResident(runtime,"submit_write");
