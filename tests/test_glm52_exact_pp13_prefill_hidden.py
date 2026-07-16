@@ -39,6 +39,8 @@ def test_pp13_rank_capacity_is_not_fixed_batch(root: Path) -> None:
     reserved_block_end = source.index("if ((state->rank_plan.flags &", reserved_block_start)
     reserved_block = source[reserved_block_start:reserved_block_end]
     assert "SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FIXED_ACTIVE_BATCH" not in reserved_block
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_"
+            "RUNTIME_KV_BLOCK_TABLE" in reserved_block)
 
 
 def test_pp13_builder_uses_compressed_absorbed_mla(root: Path) -> None:
