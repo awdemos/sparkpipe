@@ -103,14 +103,14 @@ def test_pp13_rank_enables_read_only_dsa_fragment_prefetch(root: Path) -> None:
     assert "(void *)state->dsa_prefetch_event" not in source
 
 
-def test_pp13_bulk_prefill_has_one_embedding_kernel(root: Path) -> None:
+def test_pp13_prefill_uses_decode_shaped_embedding_rows(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
-    assert source.count(
-        "__global__ static void SparkGlm52Pp13BuilderGatherPrefillEmbeddingKernel(") == 1
-    assert "work_packet->prefill_token_ids[" in source
-    assert "output_bf16_words[word_index] = 0u;" in source
+    assert "SparkGlm52Pp13BuilderGatherPrefillEmbeddingKernel" not in source
+    assert "work_packet->prefill_token_ids[" not in source
+    assert "SparkGlm52Pp13BuilderGatherDecodeEmbeddingKernel" in source
+    assert "work_packet->lanes[lane_index].input_token_id" in source
 
 
 def test_rdma_transport_is_multilane_and_event_driven(root: Path) -> None:
@@ -205,7 +205,7 @@ def test_pp13_builder_binds_all_fp8_linear_plans(root: Path) -> None:
     assert "&state->fp8_scaled_gemm_backend" in function_body[fp8_bind:]
 
 
-def test_bulk_prefill_progresses_runner_after_each_chunk(root: Path) -> None:
+def test_exact_prefill_progresses_runner_after_each_token(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
@@ -221,40 +221,30 @@ def test_bulk_prefill_progresses_runner_after_each_chunk(root: Path) -> None:
     assert progress_call in runner_body
     assert "SparkGlm52Pp13BuilderRunPrefillFrame(" in prefill_body
     assert "SPARK_GLM52_PP13_BUILDER_MAX_PREFILL_TOKENS" in prefill_body
-    assert "token_offset += chunk_token_count" in prefill_body
-    assert "state->prefill_frame_view" in source
-    assert "false &&" not in source
+    assert "++token_offset" in prefill_body
+    assert "token_offset += chunk_token_count" not in prefill_body
+    assert "SparkGlm52Pp13BuilderPreparePrefillFrame(" in prefill_body
+    assert "state->prefill_frame_view" not in source
 
 
-def test_bulk_prefill_validates_the_runtime_view_stride(root: Path) -> None:
+def test_production_pp13_does_not_route_bulk_prefill(root: Path) -> None:
     builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
                "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                    encoding="utf-8")
+    module = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_resident_decode_stage_module.c").read_text(
+                  encoding="utf-8")
     cuda = (root / "modules" / "glm52_resident_decode_stage" / "source" /
             "spark_glm52_sm121_required_decode_stage.cu").read_text(
                 encoding="utf-8")
-    wire_start = builder.index(
-        "static void SparkGlm52Pp13BuilderWireLayerSerialPrefillPlan(")
-    wire_end = builder.index(
-        "static void SparkGlm52Pp13BuilderWireLayer(", wire_start)
-    wire_body = builder[wire_start:wire_end]
-    validate_start = cuda.index(
-        "static SparkStatus SparkGlm52ResidentDecodeStageValidatePagedChunkPrefillPlan(")
-    validate_end = cuda.index(
-        "static __device__ __forceinline__ uint32_t "
-        "SparkGlm52ResidentDecodeStageResolvePagedPrefillCacheSlot(",
-        validate_start)
-    validate_body = cuda[validate_start:validate_end]
+    assert "SparkGlm52Pp13BuilderWireLayerSerialPrefillPlan" not in builder
+    assert "state->prefill_frame_view" not in builder
+    assert "node->bulk_prefill_plan = 0;" in builder
+    assert "SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(" in module
+    assert "SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(" in module
     assert (
-        "SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_RUNTIME_PREFILL_VIEW"
-        in wire_body)
-    runtime_stride = (
-        "prompt_token_stride = prefill_frame_view != 0\n"
-        "        ? prefill_frame_view->prompt_token_stride")
-    static_stride = ": paged_prefill_plan->prompt_token_stride != 0u"
-    assert runtime_stride in validate_body
-    assert validate_body.index(runtime_stride) < validate_body.index(
-        static_stride)
+        "SparkGlm52ResidentDecodeStagePhaseHashEnabled() == 0u &&\n"
+        "        false)" in cuda)
 
 
 def test_absorbed_bulk_prefill_is_dsa_only(root: Path) -> None:
@@ -289,10 +279,15 @@ def test_absorbed_bulk_prefill_is_dsa_only(root: Path) -> None:
         in module)
     helper = "SparkGlm52ResidentDecodeStageDsaSparsePrefillIsConfiguredCuda("
     assert cuda.count(helper) >= 4
-    assert (
-        "SparkGlm52ResidentDecodeStageUsesCompressedFp8MlaCuda(\n"
-        "                    node_context))"
-        in cuda)
+    validate_start = cuda.index(
+        "static SparkStatus "
+        "SparkGlm52ResidentDecodeStageValidatePagedChunkPrefillPlan(")
+    validate_end = cuda.index(
+        "extern \"C\" SparkStatus "
+        "SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPrefill(",
+        validate_start)
+    assert "SparkGlm52ResidentDecodeStageUsesCompressedFp8MlaCuda(" in (
+        cuda[validate_start:validate_end])
 
 
 def test_decode_uses_one_tree_aware_work_packet_path(root: Path) -> None:
@@ -322,8 +317,11 @@ def test_decode_uses_one_tree_aware_work_packet_path(root: Path) -> None:
     assert ("work_packet->execution_batch_bucket >\n"
             "\t\t\tstate->rank_plan.logical_lane_capacity" not in submit_body)
 
-    packet_start = service.index(
+    packet_declaration = service.index(
         "static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(")
+    packet_start = service.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeWorkPacket(",
+        packet_declaration + 1)
     packet_end = service.index(
         "static SparkStatus SparkGlm52Pp13ServiceBackendBuildPrefillWorkPacket(",
         packet_start)
@@ -1025,25 +1023,101 @@ def test_short_context_bypasses_indexshare_for_exact_prefix_attention(
     assert function_body.index(prefix) < function_body.index(shared)
 
 
+def test_decode_kv_directory_is_resident_and_delta_uploaded(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    prepare_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderPrepareDeviceKvView(")
+    prepare_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderApplyMtpTreeKvRows(",
+        prepare_start)
+    prepare_body = source[prepare_start:prepare_end]
+    metadata_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderLaunchDecodeMetadataForAllLayers(")
+    metadata_end = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderUploadWorkDecodePositions(",
+        metadata_start)
+    metadata_body = source[metadata_start:metadata_end]
+    assert "SparkGlm52Pp13BuilderUploadKvDirectoryDelta(" in prepare_body
+    assert "SparkGlm52Pp13BuilderUploadKvLaneDelta(" not in source
+    assert source.count("cudaMemcpy2DAsync(") >= 1
+    assert "host_uploaded_physical_block_indices" in source
+    assert ("source_blocks = source_view->host_physical_block_indices;"
+            in prepare_body)
+    assert ("source_counts = source_view->host_lane_physical_block_counts;"
+            in prepare_body)
+    assert "source_view->physical_block_indices :" not in prepare_body
+    assert "source_view->lane_physical_block_counts :" not in prepare_body
+    assert "cudaMemcpy" not in metadata_body
+    assert "BuildDecodeSparseTokenIndicesKernel" not in source
+    assert "ALLOC_FIELD(block_table" not in source
+    assert "layer->block_table = state->device_physical_block_indices;" in source
+
+
+def test_absorbed_mla_dense_math_uses_tensor_cores(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                  encoding="utf-8")
+    query_start = source.index(
+        "void SparkGlm52ResidentDecodeStageAbsorbedQueryProjectKernel(")
+    query_end = source.index(
+        "void SparkGlm52ResidentDecodeStageAbsorbedQueryCommitKernel(",
+        query_start)
+    attention_start = source.index(
+        "void SparkGlm52ResidentDecodeStageAbsorbedAttentionKernel(")
+    attention_end = source.index(
+        "void SparkGlm52ResidentDecodeStageAbsorbedValueApplyKernel(",
+        attention_start)
+    value_start = attention_end
+    value_end = source.index(
+        "void SparkGlm52ResidentDecodeStageAttentionKernel(", value_start)
+    query_body = source[query_start:query_end]
+    attention_body = source[attention_start:attention_end]
+    value_body = source[value_start:value_end]
+    assert "nvcuda::wmma::mma_sync(" in query_body
+    assert "nvcuda::wmma::mma_sync(" in attention_body
+    assert "nvcuda::wmma::mma_sync(" in value_body
+    assert "accumulated_value +=" not in query_body
+    assert "accumulated_value +=" not in value_body
+    assert "WarpAllReduceSum(lane_partial)" not in attention_body
+    assert query_body.index(
+        "SparkGlm52ResidentDecodeStageQuantizedLinearWeightToFloat(") < (
+            query_body.index("for (sequence_tile_begin = 0u;"))
+    assert value_body.index(
+        "SparkGlm52ResidentDecodeStageQuantizedLinearWeightToFloat(") < (
+            value_body.index("for (sequence_tile_begin = 0u;"))
+    assert "shared_weight_tile + input_tile_begin" in query_body
+    assert "shared_weight_tile + input_tile_begin" in value_body
+    assert "blockIdx.z" not in query_body
+    assert "blockIdx.z" not in value_body
+    assert 'asm("trap;");' in query_body
+    assert 'asm("trap;");' in attention_body
+    assert 'asm("trap;");' in value_body
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_final_stage_has_hidden_only_builtin_launcher(root)
     test_exact_pp13_final_stage_can_run_hidden_only(root)
     test_pp13_rank_capacity_is_not_fixed_batch(root)
+    test_pp13_runtime_kv_view_uses_per_lane_block_capacity(root)
     test_pp13_rank_enables_read_only_dsa_fragment_prefetch(root)
+    test_pp13_prefill_uses_decode_shaped_embedding_rows(root)
     test_rdma_transport_is_multilane_and_event_driven(root)
     test_prebound_linear_plan_accepts_smaller_active_count(root)
     test_fp8_linear_plans_require_scaled_gemm_backend(root)
     test_pp13_builder_binds_all_fp8_linear_plans(root)
-    test_bulk_prefill_progresses_runner_after_each_chunk(root)
-    test_bulk_prefill_validates_the_runtime_view_stride(root)
+    test_exact_prefill_progresses_runner_after_each_token(root)
+    test_production_pp13_does_not_route_bulk_prefill(root)
+    test_absorbed_bulk_prefill_is_dsa_only(root)
+    test_decode_uses_one_tree_aware_work_packet_path(root)
     test_prefill_probe_hashes_the_exact_stage_input(root)
     test_fp8_phase_probe_targets_the_first_divergent_layer(root)
     test_fp8_validator_preserves_quantized_dense_execution(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
     test_target_and_mtp_heads_use_distinct_fail_closed_tensor_core_gemms(root)
     test_pp13_builder_uses_compressed_absorbed_mla(root)
-    test_pp13_bulk_prefill_has_one_embedding_kernel(root)
     test_mtp_previous_target_position_contracts_are_explicit(root)
     test_mtp_linear_plans_use_logical_rows(root)
     test_mtp_draft_plan_builds_asymmetric_top2_tree(root)
@@ -1053,6 +1127,7 @@ def main() -> None:
     test_mtp_tree_copies_branch_history_before_attention(root)
     test_mtp_tree_rebases_private_draft_cache_before_followup(root)
     test_mtp_transaction_uses_expanded_execution_row(root)
+    test_mtp_kv_resolution_scratch_is_shared_and_execution_row_sized(root)
     test_layer_body_failures_are_never_silent(root)
     test_plain_wide_decode_bypasses_dspark_finalizer(root)
     test_resident_block_stride_is_independent_of_the_physical_pool(root)
@@ -1060,6 +1135,8 @@ def main() -> None:
     test_final_event_pump_detects_disconnect_before_send(root)
     test_rank_queue_does_not_overtake_a_deferred_sequence_position(root)
     test_short_context_bypasses_indexshare_for_exact_prefix_attention(root)
+    test_decode_kv_directory_is_resident_and_delta_uploaded(root)
+    test_absorbed_mla_dense_math_uses_tensor_cores(root)
     test_mtp_retry_cleanup_preserves_resolution_receipt(root)
     test_mtp_serial_train_continuation_keeps_transaction_open(root)
     test_attached_resident_decode_preserves_mtp_resolution(root)

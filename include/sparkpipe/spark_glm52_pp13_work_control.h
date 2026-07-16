@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 11u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 12u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION UINT64_C(1)
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
@@ -58,7 +58,7 @@ extern "C" {
 	 SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
 #define SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT 1024u
 #define SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET \
-	256u
+	SPARK_GLM52_STAGE_PLAN_FULL_STAGE_PREFILL_TOKEN_COUNT
 #define SPARK_GLM52_PP13_WORK_CONTROL_INVALID_REQUEST_SLOT UINT32_MAX
 
 #define SPARK_GLM52_PP13_KV_ENTRY_MISSING 0u
@@ -106,7 +106,6 @@ typedef struct SparkGlm52Pp13WorkControlLane
 	uint64_t sequence_position;
 	uint32_t request_slot_index;
 	uint32_t context_token_count;
-	uint32_t prefill_token_count;
 	uint32_t input_token_id;
 	uint32_t mtp_draft_token_count;
 	uint32_t speculative_token_count;
@@ -145,8 +144,6 @@ typedef struct SparkGlm52Pp13WorkControlPacket
 	uint32_t rows_per_lane;
 	uint32_t execution_row_count;
 	uint32_t execution_batch_bucket;
-	uint32_t prefill_token_ids[
-		SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkGlm52Pp13WorkControlLane
 		lanes[SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT];
 } SparkGlm52Pp13WorkControlPacket;
