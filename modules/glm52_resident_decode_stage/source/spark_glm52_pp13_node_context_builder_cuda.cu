@@ -3052,7 +3052,8 @@ static void SparkGlm52Pp13BuilderWireLayerSerialPrefillPlan(
 	layer->serial_prefill_bulk_plan.maximum_prompt_token_count =
 		SPARK_GLM52_PP13_BUILDER_MAX_PREFILL_TOKENS;
 	layer->serial_prefill_bulk_plan.capability_flags =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_PAGED_ATTENTION_CAPABILITIES;
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_PAGED_ATTENTION_CAPABILITIES |
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_RUNTIME_PREFILL_VIEW;
 	layer->serial_prefill_bulk_plan.opaque_state =
 		&layer->serial_prefill_paged_plan;
 	layer->serial_prefill_bulk_plan.validated_maximum_latency_ns =

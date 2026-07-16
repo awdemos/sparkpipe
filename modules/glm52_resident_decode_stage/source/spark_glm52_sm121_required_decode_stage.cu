@@ -24367,7 +24367,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidatePagedChunkPrefillPlan(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    prompt_token_stride = paged_prefill_plan->prompt_token_stride != 0u
+    prompt_token_stride = prefill_frame_view != 0
+        ? prefill_frame_view->prompt_token_stride
+        : paged_prefill_plan->prompt_token_stride != 0u
         ? paged_prefill_plan->prompt_token_stride
         : prompt_token_count;
     if (prompt_token_stride < prompt_token_count)
