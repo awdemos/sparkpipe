@@ -902,8 +902,17 @@ def test_attached_prefill_uses_nonblocking_ordered_forwarding(root: Path) -> Non
     assert "runtime->work_queue_error_count += dropped_work;" in generation_body
     assert "SparkGlm52CudaResidentdResetControlRuntime(" in generation_body
     assert "reset_control_generation(" in daemon
-    assert "SparkHiddenTransportClose(runtime->input_transport_session);" in daemon
     assert "SparkGlm52CudaResidentdCreateDriverInstance(" in daemon
+    reset_start = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdResetControlRuntime(")
+    reset_end = daemon.index(
+        "static SparkStatus SparkGlm52CudaResidentdAdvanceControlGeneration(",
+        reset_start)
+    reset_body = daemon[reset_start:reset_end]
+    assert "SparkHiddenTransportClose(" not in reset_body
+    assert "SparkGlm52CudaResidentdOpenHiddenTransport(" not in reset_body
+    assert "runtime->input_transport_session = 0;" not in reset_body
+    assert "runtime->output_transport_session = 0;" not in reset_body
     enqueue_start = daemon.index(
         "static SparkStatus SparkGlm52CudaResidentdEnqueueWork(")
     enqueue_end = daemon.index(

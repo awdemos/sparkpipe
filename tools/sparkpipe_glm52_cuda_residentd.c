@@ -1319,14 +1319,8 @@ static SparkStatus SparkGlm52CudaResidentdResetControlRuntime(
 		runtime->driver_instance != 0)
 		runtime->loaded_driver.interface->destroy(runtime->driver_instance);
 	runtime->driver_instance = 0;
-	SparkHiddenTransportClose(runtime->input_transport_session);
-	SparkHiddenTransportClose(runtime->output_transport_session);
-	runtime->input_transport_session = 0;
-	runtime->output_transport_session = 0;
-	status = SparkGlm52CudaResidentdOpenHiddenTransport(runtime);
-	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52CudaResidentdCreateDriverInstance(
-			runtime,configuration);
+	status = SparkGlm52CudaResidentdCreateDriverInstance(
+		runtime,configuration);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52CudaResidentdAttachBuilderDriver(runtime);
 	if (status != SPARK_STATUS_OK)
