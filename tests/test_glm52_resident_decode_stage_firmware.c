@@ -3563,6 +3563,11 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
     fp8_kv_cache_plan.key_nope_cache_scale_f32 = 0;
     fp8_kv_cache_plan.value_cache_fp8_e4m3 = 0;
     fp8_kv_cache_plan.value_cache_scale_f32 = 0;
+    node_context.mla_cache_bf16 = 0;
+    node_context.key_nope_cache_bf16 = 0;
+    node_context.value_cache_bf16 = 0;
+    node_context.attention_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
     module_state = 0;
     assert(SparkGlm52ResidentDecodeStageInitialize(
         &configuration,
