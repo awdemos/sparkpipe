@@ -10425,6 +10425,43 @@ static bool SparkValidationWriteBytesToPath(
     return succeeded;
 }
 
+static bool SparkValidationDumpExactPp13Bf16Vector(
+    const char *dump_directory,
+    uint16_t *host_hidden,
+    const uint16_t *device_values,
+    uint32_t element_count,
+    uint32_t token_index,
+    uint32_t layer_index,
+    const char *phase_name)
+{
+    char dump_path[PATH_MAX];
+    int32_t path_bytes;
+    if (dump_directory == 0 || host_hidden == 0 || device_values == 0 ||
+        element_count == 0u ||
+        element_count > SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION ||
+        phase_name == 0)
+        return false;
+    path_bytes = snprintf(
+        dump_path,
+        sizeof(dump_path),
+        "%s/token_%04u_layer_%04u_%s.bf16",
+        dump_directory,
+        token_index,
+        layer_index,
+        phase_name);
+    if (path_bytes < 0 || (uint32_t)path_bytes >= sizeof(dump_path) ||
+        !SparkValidationCopyDeviceBf16Vector(
+            host_hidden,
+            device_values,
+            element_count,
+            dump_path))
+        return false;
+    return SparkValidationWriteBytesToPath(
+        dump_path,
+        host_hidden,
+        (size_t)element_count * sizeof(uint16_t));
+}
+
 static bool SparkValidationDumpExactPp13Route(
     const char *dump_directory,
     SparkValidationDeviceBuffers *buffers,
@@ -10500,7 +10537,14 @@ static bool SparkValidationDumpExactPp13PhaseOutputs(
         if (!SparkValidationDumpExactPp13Hidden(dump_directory, host_hidden, buffers->attention_projected_hidden_bf16, token_index, layer_index, "attention_projected") ||
             !SparkValidationDumpExactPp13Hidden(dump_directory, host_hidden, buffers->post_attention_hidden_bf16, token_index, layer_index, "post_attention") ||
             !SparkValidationDumpExactPp13Hidden(dump_directory, host_hidden, buffers->post_attention_normalized_hidden_bf16, token_index, layer_index, "post_attention_normalized") ||
-            !SparkValidationDumpExactPp13Hidden(dump_directory, host_hidden, buffers->moe_route_output_bf16, token_index, layer_index, "moe_output"))
+            !SparkValidationDumpExactPp13Hidden(dump_directory, host_hidden, buffers->moe_route_output_bf16, token_index, layer_index, "moe_output") ||
+            !SparkValidationDumpExactPp13Bf16Vector(dump_directory, host_hidden, buffers->current_kv_latent_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION, token_index, layer_index, "current_kv_latent") ||
+            !SparkValidationDumpExactPp13Bf16Vector(dump_directory, host_hidden, buffers->attention_output_latent_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION, token_index, layer_index, "attention_output_head0") ||
+            !SparkValidationDumpExactPp13Bf16Vector(dump_directory, host_hidden, buffers->query_latent_bf16, SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION, token_index, layer_index, "attention_reduced_latent_head0"))
+            return false;
+        if (runtime->node_contexts[layer_offset].attention_execution_mode !=
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
+            !SparkValidationDumpExactPp13Bf16Vector(dump_directory, host_hidden, buffers->raw_kv_b_bf16 + SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION, SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION, token_index, layer_index, "raw_value_head0"))
             return false;
         if (runtime->node_contexts[layer_offset].layer_progression_mode ==
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK &&
