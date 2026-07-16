@@ -3203,9 +3203,7 @@ static void SparkGlm52ResidentDecodeStageComplete(void *completion_context)
         &pending_completion->backend_completion_ready,
         1u,
         memory_order_release);
-    if (pending_completion->hidden_output_transport_active == 0u)
-        SparkGlm52ResidentDecodeStageTryComplete(pending_completion);
-    else if (pending_completion->owner->wake_function != 0)
+    if (pending_completion->owner->wake_function != 0)
         pending_completion->owner->wake_function(
             pending_completion->owner->wake_context);
 }
