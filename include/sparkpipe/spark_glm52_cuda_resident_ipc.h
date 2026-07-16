@@ -90,6 +90,14 @@ typedef struct SparkGlm52CudaResidentIpcHeader
     uint64_t sequence_number;
 } SparkGlm52CudaResidentIpcHeader;
 
+typedef struct SparkGlm52CudaResidentIpcReader
+{
+    SparkGlm52CudaResidentIpcHeader header;
+    uint32_t header_offset;
+    uint32_t payload_offset;
+    uint32_t header_ready;
+} SparkGlm52CudaResidentIpcReader;
+
 typedef struct SparkGlm52CudaResidentIpcHello
 {
     uint32_t descriptor_bytes;
@@ -272,6 +280,17 @@ SparkStatus SparkGlm52CudaResidentIpcValidateHeader(
     const SparkGlm52CudaResidentIpcHeader *header,
     uint32_t expected_kind,
     uint32_t maximum_payload_bytes);
+void SparkGlm52CudaResidentIpcReaderReset(
+    SparkGlm52CudaResidentIpcReader *reader);
+SparkStatus SparkGlm52CudaResidentIpcReadHeader(
+    SparkGlm52CudaResidentIpcReader *reader,
+    int32_t fd,
+    uint32_t maximum_payload_bytes);
+SparkStatus SparkGlm52CudaResidentIpcReadPayload(
+    SparkGlm52CudaResidentIpcReader *reader,
+    int32_t fd,
+    uint8_t *payload,
+    uint32_t payload_capacity);
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
 	const SparkGlm52Pp13WorkControlPacket *work_packet);
 uint32_t SparkGlm52CudaResidentIpcCalculateSubmitPrefillBytes(

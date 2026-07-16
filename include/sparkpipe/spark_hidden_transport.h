@@ -19,7 +19,9 @@ extern "C" {
     ((uint32_t)sizeof(SparkHiddenTransportCompletion))
 #define SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT \
     ((uint32_t)sizeof(uint16_t))
-#define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH 1024u
+#define SPARK_HIDDEN_TRANSPORT_COMPLETION_QUEUE_DEPTH 1024u
+#define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_DEFAULT_QUEUE_DEPTH \
+    SPARK_HIDDEN_TRANSPORT_COMPLETION_QUEUE_DEPTH
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_MODULE_ID \
     "spark.hidden_transport.persistent_ring.device.v1"
 #define SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID \
@@ -76,7 +78,6 @@ extern "C" {
 
 #define SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS \
     (SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS | \
-     SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION | \
      SPARK_HIDDEN_TRANSPORT_CAP_POLL_DESCRIPTORS | \
      SPARK_HIDDEN_TRANSPORT_CAP_MULTI_LANE | \
      SPARK_HIDDEN_TRANSPORT_CAP_REMOTE_COMPLETION_DOORBELL)
@@ -156,6 +157,16 @@ typedef struct SparkHiddenTransportCompletion
     uint64_t transfer_bytes;
     uint64_t service_time_ns;
 } SparkHiddenTransportCompletion;
+
+typedef struct SparkHiddenTransportCompletionQueue
+{
+    SparkHiddenTransportCompletion
+        entries[SPARK_HIDDEN_TRANSPORT_COMPLETION_QUEUE_DEPTH];
+    uint32_t head;
+    uint32_t count;
+    uint64_t total_count;
+    uint64_t dropped_count;
+} SparkHiddenTransportCompletionQueue;
 
 typedef struct SparkHiddenTransportPersistentRingStatistics
 {
@@ -278,6 +289,21 @@ SparkStatus SparkHiddenTransportGetPollDescriptors(
     SparkHiddenTransportPollDescriptor *descriptors,
     uint32_t descriptor_capacity,
     uint32_t *descriptor_count_out);
+void SparkHiddenTransportCompletionQueueInitialize(
+    SparkHiddenTransportCompletionQueue *queue);
+uint32_t SparkHiddenTransportCompletionQueueIsFull(
+    const SparkHiddenTransportCompletionQueue *queue);
+SparkStatus SparkHiddenTransportCompletionQueuePush(
+    SparkHiddenTransportCompletionQueue *queue,
+    const SparkHiddenTransportCompletion *completion);
+SparkStatus SparkHiddenTransportCompletionQueuePushPacket(
+    SparkHiddenTransportCompletionQueue *queue,
+    const SparkHiddenTransportPacket *packet,
+    SparkStatus status,
+    uint64_t service_time_ns);
+SparkStatus SparkHiddenTransportCompletionQueuePop(
+    SparkHiddenTransportCompletionQueue *queue,
+    SparkHiddenTransportCompletion *completion);
 SparkStatus SparkHiddenTransportPersistentRingGetInterface(
     SparkHiddenTransportInterface *transport_interface);
 SparkStatus SparkHiddenTransportPersistentRingGetStatistics(

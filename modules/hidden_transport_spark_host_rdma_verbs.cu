@@ -154,8 +154,7 @@ typedef struct SparkHiddenSparkHostRdmaState
     SparkHiddenSparkHostRdmaRemoteReceive remote_receives[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
     cudaEvent_t send_ready_events[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
     uint32_t send_ready_recorded[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
-    SparkHiddenTransportCompletion completion;
-    uint32_t completion_ready;
+    SparkHiddenTransportCompletionQueue completion_queue;
     uint32_t doorbell_max_bytes;
     uint64_t doorbell_send_count;
     uint64_t striped_send_count;
@@ -1399,24 +1398,17 @@ static SparkStatus SparkHiddenSparkHostRdmaPumpControl(SparkHiddenSparkHostRdmaS
     }
 }
 
-static void SparkHiddenSparkHostRdmaBuildCompletion(
+static SparkStatus SparkHiddenSparkHostRdmaBuildCompletion(
     SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportPacket *packet,
     SparkStatus status)
 {
-    memset(&state->completion, 0, sizeof(state->completion));
-    state->completion.abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-    state->completion.descriptor_bytes =
-        SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
-    state->completion.status = status;
-    state->completion.active_sequence_count = packet->active_sequence_count;
-    state->completion.sequence_id = packet->sequence_id;
-    state->completion.token_index = packet->token_index;
-    state->completion.transfer_bytes = SparkHiddenSparkHostRdmaPacketHiddenBytes(packet) +
-        SparkHiddenSparkHostRdmaPacketSidebandBytes(packet);
-    state->completion.service_time_ns = 0u;
-    state->completion_ready = 1u;
-    SparkHiddenSparkHostRdmaSignalEvent(state);
+    SparkStatus queue_status;
+    queue_status = SparkHiddenTransportCompletionQueuePushPacket(
+        &state->completion_queue,packet,status,0u);
+    if (queue_status == SPARK_STATUS_OK)
+        SparkHiddenSparkHostRdmaSignalEvent(state);
+    return queue_status;
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaAdvertiseReceive(
@@ -1549,7 +1541,13 @@ static SparkStatus SparkHiddenSparkHostRdmaPostReceive(
     {
         return SPARK_STATUS_BUSY;
     }
-    SparkHiddenSparkHostRdmaBuildCompletion(state, packet, SPARK_STATUS_OK);
+    if (SparkHiddenTransportCompletionQueueIsFull(
+            &state->completion_queue) != 0u)
+        return SPARK_STATUS_BUSY;
+    status = SparkHiddenSparkHostRdmaBuildCompletion(
+        state,packet,SPARK_STATUS_OK);
+    if (status != SPARK_STATUS_OK)
+        return status;
     SparkHiddenSparkHostRdmaReleasePendingReceive(receive);
     return SPARK_STATUS_OK;
 }
@@ -1745,8 +1743,8 @@ static SparkStatus SparkHiddenSparkHostRdmaSendDoorbellPacket(
     }
     remote_receive->used = 1u;
     state->doorbell_send_count += 1u;
-    SparkHiddenSparkHostRdmaBuildCompletion(state, packet, SPARK_STATUS_OK);
-    return SPARK_STATUS_OK;
+    return SparkHiddenSparkHostRdmaBuildCompletion(
+        state,packet,SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaSendCompletionMessage(
@@ -1806,6 +1804,9 @@ static SparkStatus SparkHiddenSparkHostRdmaSend(
     {
         return status;
     }
+    if (SparkHiddenTransportCompletionQueueIsFull(
+            &state->completion_queue) != 0u)
+        return SPARK_STATUS_BUSY;
     remote_receive = SparkHiddenSparkHostRdmaFindRemoteReceive(state, packet);
     if (remote_receive == 0)
     {
@@ -1911,8 +1912,8 @@ static SparkStatus SparkHiddenSparkHostRdmaSend(
     {
         return status;
     }
-    SparkHiddenSparkHostRdmaBuildCompletion(state, packet, SPARK_STATUS_OK);
-    return SPARK_STATUS_OK;
+    return SparkHiddenSparkHostRdmaBuildCompletion(
+        state,packet,SPARK_STATUS_OK);
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaPoll(
@@ -1938,17 +1939,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPoll(
     {
         return status;
     }
-    if (state->completion_ready == 0u)
-    {
-        memset(completion, 0, sizeof(*completion));
-        completion->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
-        completion->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_COMPLETION_BYTES;
-        completion->status = SPARK_STATUS_BUSY;
-        return SPARK_STATUS_OK;
-    }
-    *completion = state->completion;
-    state->completion_ready = 0u;
-    return SPARK_STATUS_OK;
+    return SparkHiddenTransportCompletionQueuePop(
+        &state->completion_queue,completion);
 }
 
 static SparkStatus SparkHiddenSparkHostRdmaAppendPollDescriptor(
@@ -2022,57 +2014,6 @@ static SparkStatus SparkHiddenSparkHostRdmaGetPollDescriptors(
         return status;
     }
     *descriptor_count_out = descriptor_count;
-    return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkHiddenSparkHostRdmaSendBatch(
-    void *transport_state,
-    const SparkHiddenTransportPacket *packets,
-    uint32_t packet_count)
-{
-    uint32_t packet_index;
-    SparkStatus status;
-
-    if (packets == 0 || packet_count == 0u)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
-    {
-        status = SparkHiddenSparkHostRdmaSend(transport_state, &packets[packet_index]);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-    }
-    return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkHiddenSparkHostRdmaPostReceiveBatch(
-    void *transport_state,
-    SparkHiddenTransportPacket *packets,
-    uint32_t packet_count)
-{
-    uint32_t packet_index;
-    SparkStatus status;
-
-    if (packets == 0 || packet_count == 0u)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
-    {
-        status = SparkHiddenSparkHostRdmaPostReceive(transport_state,
-            &packets[packet_index]);
-        if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
-        {
-            return status;
-        }
-        if (status == SPARK_STATUS_BUSY)
-        {
-            return status;
-        }
-    }
     return SPARK_STATUS_OK;
 }
 
@@ -2309,8 +2250,6 @@ extern "C" const SparkHiddenTransportInterface *SparkHiddenTransportGetInterface
     transport_interface.post_receive = SparkHiddenSparkHostRdmaPostReceive;
     transport_interface.send = SparkHiddenSparkHostRdmaSend;
     transport_interface.poll = SparkHiddenSparkHostRdmaPoll;
-    transport_interface.post_receive_batch = SparkHiddenSparkHostRdmaPostReceiveBatch;
-    transport_interface.send_batch = SparkHiddenSparkHostRdmaSendBatch;
     transport_interface.get_poll_descriptors = SparkHiddenSparkHostRdmaGetPollDescriptors;
     return &transport_interface;
 }

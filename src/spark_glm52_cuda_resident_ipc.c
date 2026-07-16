@@ -1,6 +1,8 @@
 #include "sparkpipe/spark_glm52_cuda_resident_ipc.h"
 
+#include <errno.h>
 #include <string.h>
+#include <sys/socket.h>
 
 void SparkGlm52CudaResidentIpcInitializeHeader(
     SparkGlm52CudaResidentIpcHeader *header,
@@ -37,6 +39,84 @@ SparkStatus SparkGlm52CudaResidentIpcValidateHeader(
         return SPARK_STATUS_SCHEMA_ERROR;
     if (header->payload_bytes > maximum_payload_bytes)
         return SPARK_STATUS_CAPACITY_EXCEEDED;
+    return SPARK_STATUS_OK;
+}
+
+void SparkGlm52CudaResidentIpcReaderReset(
+    SparkGlm52CudaResidentIpcReader *reader)
+{
+    if (reader == 0)
+        return;
+    memset(reader,0,sizeof(*reader));
+}
+
+SparkStatus SparkGlm52CudaResidentIpcReadHeader(
+    SparkGlm52CudaResidentIpcReader *reader,
+    int32_t fd,
+    uint32_t maximum_payload_bytes)
+{
+    uint8_t *cursor;
+    uint32_t remaining;
+    ssize_t got;
+    if (reader == 0 || fd < 0)
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    while (reader->header_offset < sizeof(reader->header))
+    {
+        cursor = (uint8_t *)&reader->header;
+        remaining = (uint32_t)sizeof(reader->header) - reader->header_offset;
+        got = recv(fd,cursor + reader->header_offset,remaining,0);
+        if (got < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return SPARK_STATUS_BUSY;
+            return SPARK_STATUS_IO_ERROR;
+        }
+        if (got == 0)
+            return SPARK_STATUS_IO_ERROR;
+        reader->header_offset += (uint32_t)got;
+    }
+    if (reader->header_ready == 0u)
+    {
+        SparkStatus status;
+        status = SparkGlm52CudaResidentIpcValidateHeader(
+            &reader->header,0u,maximum_payload_bytes);
+        if (status != SPARK_STATUS_OK)
+            return status;
+        reader->header_ready = 1u;
+    }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52CudaResidentIpcReadPayload(
+    SparkGlm52CudaResidentIpcReader *reader,
+    int32_t fd,
+    uint8_t *payload,
+    uint32_t payload_capacity)
+{
+    uint32_t remaining;
+    ssize_t got;
+    if (reader == 0 || fd < 0 || reader->header_ready == 0u ||
+        reader->header.payload_bytes > payload_capacity ||
+        (payload == 0 && reader->header.payload_bytes != 0u))
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    while (reader->payload_offset < reader->header.payload_bytes)
+    {
+        remaining = reader->header.payload_bytes - reader->payload_offset;
+        got = recv(fd,payload + reader->payload_offset,remaining,0);
+        if (got < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                return SPARK_STATUS_BUSY;
+            return SPARK_STATUS_IO_ERROR;
+        }
+        if (got == 0)
+            return SPARK_STATUS_IO_ERROR;
+        reader->payload_offset += (uint32_t)got;
+    }
     return SPARK_STATUS_OK;
 }
 

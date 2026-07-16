@@ -359,6 +359,45 @@ static void SparkTestHiddenTransportUsesNativeBatchSubmission(void)
             SPARK_STATUS_INVALID_ARGUMENT);
 }
 
+static void SparkTestHiddenTransportCompletionQueuePreservesOrder(void)
+{
+    SparkHiddenTransportCompletionQueue queue;
+    SparkHiddenTransportCompletion completion;
+    SparkHiddenTransportEndpoint endpoint;
+    SparkHiddenTransportPacket packet;
+    uint16_t hidden_payload[
+        SPARK_GLM52_MODEL_HIDDEN_DIMENSION *
+        SPARK_TEST_HIDDEN_TRANSPORT_ACTIVE_SEQUENCE_COUNT];
+    uint32_t packet_index;
+
+    SparkHiddenTransportCompletionQueueInitialize(&queue);
+    SparkTestInitializeEndpoint(&endpoint);
+    for (packet_index = 0u; packet_index < 3u; ++packet_index)
+    {
+        SparkTestInitializePacket(
+            &packet,&endpoint,hidden_payload,(uint64_t)packet_index + 31u);
+        packet.token_index = packet_index + 7u;
+        assert(SparkHiddenTransportCompletionQueuePushPacket(
+            &queue,&packet,SPARK_STATUS_OK,packet_index + 1u) ==
+            SPARK_STATUS_OK);
+    }
+    assert(queue.count == 3u);
+    assert(queue.total_count == 3u);
+    assert(queue.dropped_count == 0u);
+    for (packet_index = 0u; packet_index < 3u; ++packet_index)
+    {
+        assert(SparkHiddenTransportCompletionQueuePop(
+            &queue,&completion) == SPARK_STATUS_OK);
+        assert(completion.status == SPARK_STATUS_OK);
+        assert(completion.sequence_id == (uint64_t)packet_index + 31u);
+        assert(completion.token_index == packet_index + 7u);
+        assert(completion.service_time_ns == packet_index + 1u);
+    }
+    assert(SparkHiddenTransportCompletionQueuePop(
+        &queue,&completion) == SPARK_STATUS_OK);
+    assert(completion.status == SPARK_STATUS_BUSY);
+}
+
 static void SparkTestHiddenTransportPersistentRingBackend(void)
 {
     SparkHiddenTransportEndpoint endpoint;
@@ -522,8 +561,6 @@ static void SparkTestHiddenTransportOpensZeroCopyInterfaceFromHostPlan(void)
     SparkTestInitializeTransportInterface(
         &transport_interface,
         SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS);
-    transport_interface.post_receive_batch = TestHiddenTransportPostReceiveBatch;
-    transport_interface.send_batch = TestHiddenTransportSendBatch;
     transport_interface.get_poll_descriptors = 0;
     session = 0;
     assert(SparkHiddenTransportOpen(
@@ -540,6 +577,8 @@ static void SparkTestHiddenTransportValidatesSparkHostRdmaEndpoint(void)
     SparkHiddenTransportEndpoint endpoint;
 
     SparkTestInitializeSparkHostRdmaEndpoint(&endpoint);
+    assert((endpoint.capability_flags &
+        SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION) == 0u);
     assert(SparkHiddenTransportValidateSparkHostRdmaEndpoint(&endpoint) ==
         SPARK_STATUS_OK);
     endpoint.capability_flags &=
@@ -588,6 +627,7 @@ int main(void)
     SparkTestHiddenTransportValidatesSidebandPayload();
     SparkTestHiddenTransportUsesScalarFallbackBatch();
     SparkTestHiddenTransportUsesNativeBatchSubmission();
+    SparkTestHiddenTransportCompletionQueuePreservesOrder();
     SparkTestHiddenTransportPersistentRingBackend();
     SparkTestHiddenTransportPersistentRingAccountsSidebandBytes();
     SparkTestHiddenTransportRejectsInvalidInterface();
