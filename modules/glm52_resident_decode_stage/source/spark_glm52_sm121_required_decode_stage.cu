@@ -8530,7 +8530,7 @@ static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageFp8ScaledRo
 }
 
 static __global__ __launch_bounds__(256, 1)
-void SparkGlm52ResidentDecodeStageFp8E4m3MappedQuantizeRowsKernel(
+void SparkGlm52ResidentDecodeStageFp8E4m3MappedQuantizeActiveRowsKernel(
     const uint16_t *__restrict__ input_bf16,
     const uint32_t *__restrict__ slot_mapping,
     uint8_t *__restrict__ output_fp8_e4m3,
@@ -8583,7 +8583,7 @@ void SparkGlm52ResidentDecodeStageFp8E4m3MappedQuantizeRowsKernel(
         float value;
 
         value = fabsf(SparkGlm52ResidentDecodeStageBf16ToFloat(
-            input_bf16[((uint64_t)cache_slot_index * (uint64_t)element_count) +
+            input_bf16[((uint64_t)sequence_index * (uint64_t)element_count) +
                 (uint64_t)element_index]));
         local_absmax = fmaxf(local_absmax, value);
     }
@@ -8610,7 +8610,7 @@ void SparkGlm52ResidentDecodeStageFp8E4m3MappedQuantizeRowsKernel(
         float input_value;
 
         input_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-            input_bf16[((uint64_t)cache_slot_index * (uint64_t)element_count) +
+            input_bf16[((uint64_t)sequence_index * (uint64_t)element_count) +
                 (uint64_t)element_index]) / scale_value;
         output_fp8_e4m3[
             ((uint64_t)cache_slot_index * (uint64_t)element_count) +
@@ -9504,8 +9504,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateFp8MappedRowQuantArgumen
     return SPARK_STATUS_OK;
 }
 
-extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedKvCacheStore(
-    const void *input_bf16_cache,
+extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedActiveRowsKvCacheStore(
+    const void *input_bf16_active_rows,
     const uint32_t *slot_mapping,
     uint8_t *output_fp8_e4m3,
     float *output_scale_f32,
@@ -9520,7 +9520,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedKvCa
     cudaError_t cuda_status;
 
     status = SparkGlm52ResidentDecodeStageValidateFp8MappedRowQuantArguments(
-        input_bf16_cache,
+        input_bf16_active_rows,
         slot_mapping,
         output_fp8_e4m3,
         output_scale_f32,
@@ -9538,12 +9538,12 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedKvCa
         active_sequence_count,
         (element_count + scale_block_size - 1u) / scale_block_size,
         1u);
-    SparkGlm52ResidentDecodeStageFp8E4m3MappedQuantizeRowsKernel<<<
+    SparkGlm52ResidentDecodeStageFp8E4m3MappedQuantizeActiveRowsKernel<<<
         grid,
         256u,
         0u,
         (cudaStream_t)cuda_stream>>>(
-        (const uint16_t *)input_bf16_cache,
+        (const uint16_t *)input_bf16_active_rows,
         slot_mapping,
         output_fp8_e4m3,
         output_scale_f32,
@@ -19278,7 +19278,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFp8KvCacheShadowStore(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        return SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedKvCacheStore(
+        return SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedActiveRowsKvCacheStore(
             pipeline_slot->raw_kv_a_bf16,
             pipeline_slot->slot_mapping,
             fp8_kv_cache_plan->mla_cache_fp8_e4m3,

@@ -83,6 +83,31 @@ def test_pp13_builder_uses_compressed_absorbed_mla(root: Path) -> None:
     assert "ZERO_FIELD(value_cache," not in source
 
 
+def test_compressed_fp8_mla_maps_active_rows_to_physical_slots(
+        root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                  encoding="utf-8")
+    kernel_start = source.index(
+        "void SparkGlm52ResidentDecodeStageFp8E4m3"
+        "MappedQuantizeActiveRowsKernel(")
+    kernel_end = source.index(
+        "static __device__ __forceinline__ void "
+        "SparkGlm52ResidentDecodeStageSelectTripleMappedFp8Payload(",
+        kernel_start)
+    kernel_body = source[kernel_start:kernel_end]
+    active_row_index = (
+        "input_bf16[((uint64_t)sequence_index * "
+        "(uint64_t)element_count)")
+    physical_row_index = (
+        "input_bf16[((uint64_t)cache_slot_index * "
+        "(uint64_t)element_count)")
+    assert kernel_body.count(active_row_index) == 2
+    assert physical_row_index not in kernel_body
+    assert (
+        "LaunchFp8E4m3MappedActiveRowsKvCacheStore(" in source)
+
+
 def test_pp13_rank_enables_read_only_dsa_fragment_prefetch(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -1159,6 +1184,7 @@ def main() -> None:
     test_speculative_verify_exposes_the_full_verifier_vector(root)
     test_target_and_mtp_heads_use_distinct_fail_closed_tensor_core_gemms(root)
     test_pp13_builder_uses_compressed_absorbed_mla(root)
+    test_compressed_fp8_mla_maps_active_rows_to_physical_slots(root)
     test_mtp_previous_target_position_contracts_are_explicit(root)
     test_mtp_linear_plans_support_parallel_prefill_rows(root)
     test_mtp_draft_plan_builds_asymmetric_top2_tree(root)
