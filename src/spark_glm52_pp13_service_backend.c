@@ -942,9 +942,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendSubmitPrefillToResident(
 		if (status == SPARK_STATUS_OK)
 			status = SparkGlm52Pp13ServiceBackendSubmitPrefillPacket(
 				state,&message);
-		if (status == SPARK_STATUS_OK)
-			status = SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(
-				state,0);
 		if (status != SPARK_STATUS_OK)
 			return status;
 	}

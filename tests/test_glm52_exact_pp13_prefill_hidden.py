@@ -822,6 +822,7 @@ def test_attached_prefill_uses_nonblocking_ordered_forwarding(root: Path) -> Non
     forward = "SparkGlm52Pp13ServiceBackendForwardPrefillPacket("
     local = "SparkGlm52Pp13ServiceBackendSubmitPrefillPacket("
     assert submit_body.index(forward) < submit_body.index(local)
+    assert "SparkGlm52Pp13ServiceBackendResidentAwaitSubmitResult(" not in submit_body
     assert "retry_count" not in submit_body
     assert "nanosleep" not in submit_body
     forward_start = backend.index(
