@@ -5464,7 +5464,53 @@ static SparkStatus SparkGlm52RequestApiResolveMtpTreeVerifierTokens(
     return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52RequestApiTraceMtpVerify(
+static const char *SparkGlm52RequestApiSpeculativeTraceSource(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    uint32_t *trace_confidence)
+{
+    if (dispatch == 0 || trace_confidence == 0)
+    {
+        return 0;
+    }
+    if ((dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u)
+    {
+        if (getenv("SPARKPIPE_DSPARK_TRACE") == 0)
+        {
+            return 0;
+        }
+        *trace_confidence = 1u;
+        return "dspark";
+    }
+    if ((dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
+    {
+        if (getenv("SPARKPIPE_PP13_TRACE") == 0)
+        {
+            return 0;
+        }
+        *trace_confidence = 0u;
+        return "mtp";
+    }
+    return 0;
+}
+
+static void SparkGlm52RequestApiTraceTokenIds(
+    const char *label,
+    const uint32_t *token_ids,
+    uint32_t token_count)
+{
+    uint32_t token_index;
+
+    fprintf(stderr," %s=",label);
+    for (token_index = 0u; token_index < token_count; ++token_index)
+    {
+        fprintf(stderr,"%s%u",token_index == 0u ? "" : ",",
+            token_ids[token_index]);
+    }
+}
+
+static void SparkGlm52RequestApiTraceSpeculativeVerify(
     const SparkGlm52RequestApiDispatch *dispatch,
     const uint32_t *verifier_token_ids,
     uint32_t lane_stride,
@@ -5472,36 +5518,41 @@ static void SparkGlm52RequestApiTraceMtpVerify(
     uint32_t request_index,
     const SparkGlm52DsparkVerifyResult *verify_result)
 {
-    uint32_t token_index;
+    const char *source;
+    uint32_t trace_confidence;
 
-    if (getenv("SPARKPIPE_PP13_TRACE") == 0 || dispatch == 0 ||
-        verifier_token_ids == 0 || verify_result == 0 ||
-        (dispatch->flags &
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u)
+    if (verifier_token_ids == 0 || verify_result == 0)
+    {
+        return;
+    }
+    source = SparkGlm52RequestApiSpeculativeTraceSource(
+        dispatch,&trace_confidence);
+    if (source == 0)
     {
         return;
     }
     fprintf(stderr,
-        "mtp_trace verify request=%llu sequence=%llu proposed=%u accepted=%u committed=%u fallback=%u draft_ids=",
+        "%s_trace verify request=%llu sequence=%llu proposed=%u accepted=%u committed=%u fallback=%u",
+        source,
         (unsigned long long)dispatch->request_ids[request_index],
         (unsigned long long)dispatch->sequence_ids[request_index],
         dispatch->speculative_token_count,
         verify_result->accepted_draft_token_count,
         verify_result->committed_token_count,
         verify_result->fallback_token_id);
-    for (token_index = 0u;
-         token_index < dispatch->speculative_token_count;
-         ++token_index)
-    {
-        fprintf(stderr,"%s%u",token_index == 0u ? "" : ",",
-            dispatch->speculative_draft_token_ids[request_index][token_index]);
-    }
-    fprintf(stderr," verifier_ids=");
-    for (token_index = 0u; token_index < verifier_token_count; ++token_index)
-    {
-        fprintf(stderr,"%s%u",token_index == 0u ? "" : ",",
-            verifier_token_ids[((uint64_t)request_index * lane_stride) + token_index]);
-    }
+    SparkGlm52RequestApiTraceTokenIds(
+        "draft_ids",
+        dispatch->speculative_draft_token_ids[request_index],
+        dispatch->speculative_token_count);
+    if (trace_confidence != 0u)
+        SparkGlm52RequestApiTraceTokenIds(
+            "confidence_milli",
+            dispatch->speculative_confidence_milli[request_index],
+            dispatch->speculative_token_count);
+    SparkGlm52RequestApiTraceTokenIds(
+        "verifier_ids",
+        &verifier_token_ids[(uint64_t)request_index * lane_stride],
+        verifier_token_count);
     fprintf(stderr,"\n");
 }
 
@@ -5582,7 +5633,7 @@ SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
         {
             return status;
         }
-        SparkGlm52RequestApiTraceMtpVerify(
+        SparkGlm52RequestApiTraceSpeculativeVerify(
             dispatch,
             verifier_token_ids,
             lane_stride,

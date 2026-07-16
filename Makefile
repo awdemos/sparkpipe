@@ -192,6 +192,7 @@ PYTHON_TESTS := \
 	tests/test_b12x_scale_layout.py \
 	tests/test_glm52_dspark_manifest.py \
 	tests/test_glm52_dspark_artifact_preflight.py \
+	tests/test_glm52_dspark_trace_quality.py \
 	tests/test_glm52_b12x_pack_worker.py \
 	tests/test_glm52_b12x_resident_manifest.py \
 	tests/test_glm52_fp8_pack_layout.py \
