@@ -100,8 +100,11 @@ require_sm121a:
 		{ echo "GLM52 required CUDA module contract requires CUDA_ARCH=sm_121a" >&2; exit 2; }
 
 require_latency_limit:
-	@test "$(MAX_STAGE_MICROSECONDS)" != "0" || \
-		{ echo "set MAX_STAGE_MICROSECONDS to the qualified stage limit" >&2; exit 2; }
+	@case "$(MAX_STAGE_MICROSECONDS)" in \
+		''|0|*[!0-9]*) \
+			echo "set MAX_STAGE_MICROSECONDS to a positive integer qualified stage limit" >&2; \
+			exit 2 ;; \
+	esac
 
 require_model_dir:
 	@test -n "$(GLM52_MODEL_DIR)" || \

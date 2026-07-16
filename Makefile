@@ -202,6 +202,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_b12x_deterministic_finalize.py \
 	tests/test_glm52_final_from_hidden_mode.py \
 	tests/test_glm52_exact_pp13_prefill_hidden.py \
+	tests/test_glm52_firmware_package.py \
 	tests/test_measured_status.py \
 	tests/test_release_assemble.py \
 	tests/test_glm52_stage_pack.py \
