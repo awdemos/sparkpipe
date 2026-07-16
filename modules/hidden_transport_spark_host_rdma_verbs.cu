@@ -1,4 +1,5 @@
 #include "sparkpipe/spark_hidden_transport.h"
+#include "sparkpipe/spark_memlink.h"
 
 #include <cuda_runtime_api.h>
 #include <infiniband/verbs.h>
@@ -151,6 +152,8 @@ typedef struct SparkHiddenSparkHostRdmaState
     uint64_t memory_region_epoch;
     SparkHiddenSparkHostRdmaPendingReceive pending_receives[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT];
     SparkHiddenSparkHostRdmaRemoteReceive remote_receives[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
+    cudaEvent_t send_ready_events[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
+    uint32_t send_ready_recorded[SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT];
     SparkHiddenTransportCompletion completion;
     uint32_t completion_ready;
     uint32_t doorbell_max_bytes;
@@ -229,6 +232,12 @@ static void SparkHiddenSparkHostRdmaSignalEvent(SparkHiddenSparkHostRdmaState *s
     {
         return;
     }
+}
+
+static void CUDART_CB SparkHiddenSparkHostRdmaSignalCudaReady(void *context)
+{
+    SparkHiddenSparkHostRdmaSignalEvent(
+        (SparkHiddenSparkHostRdmaState *)context);
 }
 
 static void SparkHiddenSparkHostRdmaDrainEvent(SparkHiddenSparkHostRdmaState *state)
@@ -1099,6 +1108,7 @@ static SparkStatus SparkHiddenSparkHostRdmaInsertRemoteReceive(
         {
             receive = &state->remote_receives[index];
             memset(receive, 0, sizeof(*receive));
+            state->send_ready_recorded[index] = 0u;
             receive->active = 1u;
             receive->receive_index = message->reserved == 0u ?
                 SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX : message->reserved - 1u;
@@ -1544,27 +1554,6 @@ static SparkStatus SparkHiddenSparkHostRdmaPostReceive(
     return SPARK_STATUS_OK;
 }
 
-static void SparkHiddenSparkHostRdmaPartitionRegion(
-    uint64_t total_bytes,
-    uint32_t lane_count,
-    uint32_t lane_index,
-    uint64_t *offset_out,
-    uint64_t *bytes_out)
-{
-    uint64_t base;
-    uint64_t extra;
-    uint64_t offset;
-    uint64_t bytes;
-
-    base = total_bytes / (uint64_t)lane_count;
-    extra = total_bytes % (uint64_t)lane_count;
-    bytes = base + (lane_index < extra ? 1u : 0u);
-    offset = base * (uint64_t)lane_index +
-        (lane_index < extra ? (uint64_t)lane_index : extra);
-    *offset_out = offset;
-    *bytes_out = bytes;
-}
-
 static SparkStatus SparkHiddenSparkHostRdmaPostWriteForRegion(
     SparkHiddenSparkHostRdmaState *state,
     const void *local_pointer,
@@ -1587,23 +1576,24 @@ static SparkStatus SparkHiddenSparkHostRdmaPostWriteForRegion(
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
     posted_write_count = 0u;
-    for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
-    {
-        struct ibv_sge scatter_gather;
-        struct ibv_send_wr work_request;
-        struct ibv_send_wr *bad_work_request;
-        uint64_t offset;
-        uint64_t bytes;
+	for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
+	{
+		SparkMemlinkTransferPartition partition;
+		struct ibv_sge scatter_gather;
+		struct ibv_send_wr work_request;
+		struct ibv_send_wr *bad_work_request;
 
-        SparkHiddenSparkHostRdmaPartitionRegion(local_bytes, state->lane_count,
-            lane_index, &offset, &bytes);
-        if (bytes == 0u)
-        {
-            continue;
-        }
-        memset(&scatter_gather, 0, sizeof(scatter_gather));
-        scatter_gather.addr = (uint64_t)(uintptr_t)local_pointer + offset;
-        scatter_gather.length = (uint32_t)bytes;
+		if (SparkMemlinkBuildTransferPartition(
+				local_bytes,state->lane_count,lane_index,&partition) !=
+			SPARK_STATUS_OK)
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		if (partition.byte_count == 0u)
+		{
+			continue;
+		}
+		memset(&scatter_gather, 0, sizeof(scatter_gather));
+		scatter_gather.addr = (uint64_t)(uintptr_t)local_pointer + partition.offset;
+		scatter_gather.length = (uint32_t)partition.byte_count;
         scatter_gather.lkey = local_memory_region->lkey;
         memset(&work_request, 0, sizeof(work_request));
         work_request.wr_id = ((uint64_t)lane_index << 32) | region_tag;
@@ -1611,7 +1601,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPostWriteForRegion(
         work_request.num_sge = 1;
         work_request.opcode = IBV_WR_RDMA_WRITE;
         work_request.send_flags = IBV_SEND_SIGNALED;
-        work_request.wr.rdma.remote_addr = remote_descriptor->address + offset;
+		work_request.wr.rdma.remote_addr =
+			remote_descriptor->address + partition.offset;
         work_request.wr.rdma.rkey = remote_descriptor->rkey;
         bad_work_request = 0;
         if (ibv_post_send(state->lanes[lane_index].queue_pair,
@@ -1788,6 +1779,7 @@ static SparkStatus SparkHiddenSparkHostRdmaSend(
     void *sideband_host_pointer;
     SparkStatus status;
     uint32_t posted_write_count;
+    uint32_t remote_receive_index;
     uint64_t hidden_capacity_bytes;
     uint64_t hidden_bytes;
     uint64_t sideband_capacity_bytes;
@@ -1819,9 +1811,37 @@ static SparkStatus SparkHiddenSparkHostRdmaSend(
     {
         return SPARK_STATUS_BUSY;
     }
-    if (cudaStreamSynchronize((cudaStream_t)packet->cuda_stream) != cudaSuccess)
+    remote_receive_index = (uint32_t)(remote_receive - state->remote_receives);
+    if (remote_receive_index >=
+        SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT)
     {
-        return SPARK_STATUS_IO_ERROR;
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (state->send_ready_recorded[remote_receive_index] == 0u)
+    {
+        if (cudaEventRecord(
+                state->send_ready_events[remote_receive_index],
+                (cudaStream_t)packet->cuda_stream) != cudaSuccess ||
+            cudaLaunchHostFunc(
+                (cudaStream_t)packet->cuda_stream,
+                SparkHiddenSparkHostRdmaSignalCudaReady,
+                state) != cudaSuccess)
+        {
+            return SPARK_STATUS_IO_ERROR;
+        }
+        state->send_ready_recorded[remote_receive_index] = 1u;
+        return SPARK_STATUS_BUSY;
+    }
+    switch (cudaEventQuery(state->send_ready_events[remote_receive_index]))
+    {
+        case cudaErrorNotReady:
+            return SPARK_STATUS_BUSY;
+        case cudaSuccess:
+            state->send_ready_recorded[remote_receive_index] = 0u;
+            break;
+        default:
+            state->send_ready_recorded[remote_receive_index] = 0u;
+            return SPARK_STATUS_IO_ERROR;
     }
 
     hidden_bytes = SparkHiddenSparkHostRdmaPacketHiddenBytes(packet);
@@ -2080,6 +2100,15 @@ static void SparkHiddenSparkHostRdmaDestroyState(SparkHiddenSparkHostRdmaState *
     {
         SparkHiddenSparkHostRdmaReleasePendingReceive(&state->pending_receives[receive_index]);
     }
+    for (receive_index = 0u;
+         receive_index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT;
+         ++receive_index)
+    {
+        if (state->send_ready_events[receive_index] != 0)
+        {
+            cudaEventDestroy(state->send_ready_events[receive_index]);
+        }
+    }
     for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
     {
         if (state->lanes[lane_index].queue_pair != 0)
@@ -2117,6 +2146,7 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
     SparkHiddenSparkHostRdmaState *state;
     SparkStatus status;
     uint32_t lane_count;
+    uint32_t receive_index;
     const char *rank_text;
 
     if (endpoint == 0 || transport_state == 0)
@@ -2193,6 +2223,21 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
     {
         SparkHiddenSparkHostRdmaDestroyState(state);
         return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (state->is_sender != 0u)
+    {
+        for (receive_index = 0u;
+             receive_index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT;
+             ++receive_index)
+        {
+            if (cudaEventCreateWithFlags(
+                    &state->send_ready_events[receive_index],
+                    cudaEventDisableTiming) != cudaSuccess)
+            {
+                SparkHiddenSparkHostRdmaDestroyState(state);
+                return SPARK_STATUS_DRIVER_LOAD_ERROR;
+            }
+        }
     }
     status = SparkHiddenSparkHostRdmaOpenVerbsDevice(state);
     if (status != SPARK_STATUS_OK)

@@ -33,6 +33,17 @@ static void SparkTestGlm52ResidentDecodeStageLinearPlanPreparedRowContract(void)
         &linear_plan, 8u) == 0u);
 }
 
+static void SparkTestGlm52ResidentDecodeStageDsaSelectedBlockContract(void)
+{
+    assert(SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT == 2048u);
+    assert(SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS == 64u);
+    assert(SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_BLOCK_COUNT == 32u);
+    assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_READ_ONLY_REQUIRED_CAPABILITIES &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_READ_ONLY_PREFETCH) != 0u);
+    assert((SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_READ_ONLY_REQUIRED_CAPABILITIES &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_CAPABILITY_DEDUP_BY_EPOCH) == 0u);
+}
+
 typedef struct SparkGlm52ResidentDecodeStageTestCompletionState
 {
     uint32_t completion_count;
@@ -546,6 +557,8 @@ static void SparkTestInitializePrefillFrameContext(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES;
     frame_context->flags =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW;
+    frame_context->logical_lane_count = active_sequence_count;
+    frame_context->rows_per_lane = prompt_token_count;
     prefill_view->abi_version =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION;
     prefill_view->descriptor_bytes =
@@ -2329,6 +2342,8 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     frame_context.flags =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE |
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW;
+    frame_context.logical_lane_count = 1u;
+    frame_context.rows_per_lane = 8u;
     frame_context.kv_block_table = &block_table_view;
     for (token_index = 0u; token_index < 8u; ++token_index)
     {
@@ -2363,7 +2378,7 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     frame.sequence_id = dispatch.sequence_ids[0];
     frame.sequence_position =
         dispatch.prefill_decision.scheduled_prompt_token_offset;
-    frame.active_slot_count = dispatch.prefill_decision.active_sequence_count;
+    frame.active_slot_count = 8u;
     frame.new_token_count =
         dispatch.prefill_decision.scheduled_prompt_token_count;
     frame.program_id = 1u;
@@ -3538,6 +3553,31 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
         &configuration,
         &host_services,
         &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    SparkTestInitializeFp8KvCachePlan(&fp8_kv_cache_plan);
+    fp8_kv_cache_plan.capability_flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_CAPABILITY_COMPRESSED_MLA_ONLY;
+    fp8_kv_cache_plan.key_nope_elements = 0u;
+    fp8_kv_cache_plan.value_elements = 0u;
+    fp8_kv_cache_plan.key_nope_cache_fp8_e4m3 = 0;
+    fp8_kv_cache_plan.key_nope_cache_scale_f32 = 0;
+    fp8_kv_cache_plan.value_cache_fp8_e4m3 = 0;
+    fp8_kv_cache_plan.value_cache_scale_f32 = 0;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_OK);
+    assert(module_state != 0);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
+
+    fp8_kv_cache_plan.value_cache_fp8_e4m3 =
+        fp8_kv_cache_plan.mla_cache_fp8_e4m3;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestGlm52ResidentDecodeStageAbsorbedLatentCacheValidation(void)
@@ -3653,6 +3693,7 @@ int main(void)
         (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u) <=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_EXECUTION_ROW_COUNT);
     SparkTestGlm52ResidentDecodeStageLinearPlanPreparedRowContract();
+    SparkTestGlm52ResidentDecodeStageDsaSelectedBlockContract();
     SparkTestGlm52ResidentDecodeStageB12xRouterLogitsAbi();
     SparkTestGlm52ResidentDecodeStageSliceSubmit();
     SparkTestGlm52ResidentDecodeStageDensePrefixSliceRules();

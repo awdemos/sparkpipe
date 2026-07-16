@@ -795,6 +795,8 @@ static void SparkTestKvJitStageBudgetsMatchPp13Storage(void)
     request.block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
     request.record_alignment_bytes =
         SPARK_GLM52_KV_JIT_DEFAULT_RECORD_ALIGNMENT;
+    request.attention_cache_layout =
+        SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED;
 
     request.first_layer_index = 0u;
     assert(SparkGlm52KvCacheCalculateJitStageBudget(
@@ -812,6 +814,20 @@ static void SparkTestKvJitStageBudgetsMatchPp13Storage(void)
         UINT64_C(14495514624));
     assert(budget.maximum_average_active_context_tokens == 4096u);
     assert(budget.maximum_average_backing_context_tokens == 5041u);
+
+    request.attention_cache_layout =
+        SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3;
+    request.fp8_scale_block_size = SPARK_GLM52_MODEL_FP8_SCALE_BLOCK;
+    request.first_layer_index = 0u;
+    assert(SparkGlm52KvCacheCalculateJitStageBudget(
+        &request, &budget) == SPARK_STATUS_OK);
+    assert(budget.mla_bytes_per_token == 3576u);
+    assert(budget.dsa_index_bytes_per_token == 768u);
+    assert(budget.resident_bytes_per_token == 4344u);
+
+    request.attention_cache_layout =
+        SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED;
+    request.fp8_scale_block_size = 0u;
 
     request.first_layer_index = 6u;
     assert(SparkGlm52KvCacheCalculateJitStageBudget(

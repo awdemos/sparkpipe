@@ -259,6 +259,7 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
 SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
 	uint32_t token_offset,
+	uint32_t token_count,
 	SparkGlm52Pp13WorkControlPacket *packet)
 {
 	const SparkGlm52RequestApiPrefillDispatchLaneView *source_lane;
@@ -266,6 +267,10 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	uint32_t active_lane_count;
 	uint32_t source_lane_index;
 	uint32_t position;
+	uint32_t lane_token_count;
+	uint32_t execution_row_index;
+	uint32_t row_offset;
+	uint64_t execution_row_count;
 
 	if (prefill_dispatch == 0 || packet == 0 ||
 		prefill_dispatch->request_dispatch == 0 ||
@@ -282,7 +287,10 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 			SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT ||
 		prefill_dispatch->host_token_ids == 0 ||
 		prefill_dispatch->host_token_stride == 0u ||
-		token_offset >= prefill_dispatch->prompt_token_count)
+		token_offset >= prefill_dispatch->prompt_token_count ||
+		token_count == 0u ||
+		token_count > SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET ||
+		token_count > prefill_dispatch->prompt_token_count - token_offset)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	memset(packet,0,sizeof(*packet));
 	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
@@ -294,12 +302,13 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u)
 		packet->flags |=
 			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_TAP_CAPTURE;
-	packet->new_token_count = 1u;
+	packet->new_token_count = token_count;
 	packet->priority = prefill_dispatch->request_dispatch->highest_priority;
 	packet->block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
 	packet->max_blocks_per_sequence =
 		SPARK_GLM52_PP13_WORK_CONTROL_KV_BLOCK_CAPACITY;
 	active_lane_count = 0u;
+	execution_row_index = 0u;
 	for (source_lane_index = 0u;
 		 source_lane_index < prefill_dispatch->lane_count;
 		 ++source_lane_index)
@@ -310,6 +319,9 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 		if (source_lane->prompt_token_count >
 			prefill_dispatch->host_token_stride)
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		lane_token_count = source_lane->prompt_token_count - token_offset;
+		if (lane_token_count > token_count)
+			lane_token_count = token_count;
 		position = source_lane->prompt_token_offset + token_offset;
 		destination_lane = &packet->lanes[active_lane_count];
 		destination_lane->request_id = source_lane->request_id;
@@ -317,10 +329,21 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 		destination_lane->sequence_position = position;
 		destination_lane->request_slot_index =
 			source_lane->request_slot_index;
-		destination_lane->context_token_count = position + 1u;
+		destination_lane->context_token_count = position + lane_token_count;
+		destination_lane->prefill_token_count = lane_token_count;
 		destination_lane->input_token_id = prefill_dispatch->host_token_ids[
 			((uint64_t)source_lane_index * prefill_dispatch->host_token_stride) +
-			token_offset];
+			token_offset + lane_token_count - 1u];
+		for (row_offset = 0u; row_offset < token_count; ++row_offset)
+		{
+			packet->prefill_token_ids[execution_row_index++] =
+				row_offset < lane_token_count
+					? prefill_dispatch->host_token_ids[
+						((uint64_t)source_lane_index *
+						 prefill_dispatch->host_token_stride) +
+						token_offset + row_offset]
+					: 0u;
+		}
 		if (destination_lane->context_token_count >
 			packet->kv_block_table_token_count)
 			packet->kv_block_table_token_count =
@@ -331,11 +354,16 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	packet->active_sequence_count = active_lane_count;
 	packet->lane_count = active_lane_count;
-	packet->rows_per_lane = 1u;
-	packet->execution_row_count = active_lane_count;
+	packet->rows_per_lane = token_count;
+	execution_row_count = (uint64_t)active_lane_count * token_count;
+	if (execution_row_count > UINT32_MAX ||
+		execution_row_count > SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT ||
+		execution_row_index != (uint32_t)execution_row_count)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	packet->execution_row_count = (uint32_t)execution_row_count;
 	if (SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 			prefill_dispatch->request_dispatch,
-			active_lane_count,
+			packet->execution_row_count,
 			&packet->execution_batch_bucket) != SPARK_STATUS_OK)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	packet->descriptor_bytes =
@@ -395,6 +423,8 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 	uint32_t speculative_verify;
 	uint32_t single_lane_mtp_train;
 	uint32_t lane_index;
+	uint32_t row_offset;
+	uint32_t token_id;
 	uint32_t expected_rows_per_lane;
 	uint64_t expected_execution_row_count;
 	uint32_t release_sequences;
@@ -496,6 +526,10 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		packet->new_token_count >
 			SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT + 1u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u &&
+		packet->new_token_count >
+			SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	dspark_verify = (packet->flags &
 		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u;
 	mtp_verify = (packet->flags &
@@ -503,9 +537,11 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 	speculative_verify = dspark_verify | mtp_verify;
 	single_lane_mtp_train = mtp_verify != 0u && packet->lane_count == 1u &&
 		packet->rows_per_lane == 1u;
-	expected_rows_per_lane = speculative_verify != 0u &&
-		single_lane_mtp_train == 0u
-		? packet->speculative_token_count + 1u : 1u;
+	expected_rows_per_lane = (packet->flags &
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u
+		? packet->new_token_count
+		: speculative_verify != 0u && single_lane_mtp_train == 0u
+			? packet->speculative_token_count + 1u : 1u;
 	expected_execution_row_count =
 		(uint64_t)packet->lane_count * expected_rows_per_lane;
 	if (packet->rows_per_lane != expected_rows_per_lane ||
@@ -514,7 +550,9 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		packet->execution_row_count != (uint32_t)expected_execution_row_count ||
 		SparkGlm52StagePlanBatchBucketIsSupported(
 			packet->execution_batch_bucket) == 0u ||
-		packet->lane_count > packet->execution_batch_bucket)
+		((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u
+			? packet->execution_row_count : packet->lane_count) >
+			packet->execution_batch_bucket)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (packet->input_token_id >= SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -587,7 +625,9 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		if (lane->request_id == 0u || lane->sequence_id == 0u ||
 			lane->request_slot_index == SPARK_GLM52_PP13_WORK_CONTROL_INVALID_REQUEST_SLOT ||
 			lane->context_token_count == 0u ||
-			lane->sequence_position + (uint64_t)packet->new_token_count >
+			lane->sequence_position + (uint64_t)(
+				(packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u
+					? lane->prefill_token_count : packet->new_token_count) >
 				lane->context_token_count ||
 			lane->context_token_count > packet->kv_block_table_token_count ||
 			SparkGlm52Pp13WorkControlBlockCount(
@@ -595,6 +635,25 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 				packet->max_blocks_per_sequence ||
 			lane->input_token_id >= SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT ||
 			lane->mtp_resolution_reserved0 != 0u)
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		if ((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u)
+		{
+			if (lane->prefill_token_count == 0u ||
+				lane->prefill_token_count > packet->new_token_count ||
+				lane->mtp_draft_token_count != 0u ||
+				lane->speculative_token_count != 0u)
+				return SPARK_STATUS_INVALID_ARGUMENT;
+			for (row_offset = 0u; row_offset < packet->rows_per_lane; ++row_offset)
+			{
+				token_id = packet->prefill_token_ids[
+					(lane_index * packet->rows_per_lane) + row_offset];
+				if ((row_offset < lane->prefill_token_count &&
+					 token_id >= SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT) ||
+					(row_offset >= lane->prefill_token_count && token_id != 0u))
+					return SPARK_STATUS_INVALID_ARGUMENT;
+			}
+		}
+		else if (lane->prefill_token_count != 0u)
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		if (lane->mtp_resolution_proposed_token_count == 0u)
 		{

@@ -269,6 +269,8 @@ static void SparkTestProductionRunnerCarriesPrefillView(void)
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION;
     prefill_view.descriptor_bytes =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_DESCRIPTOR_BYTES;
+    prefill_view.active_sequence_count = 1u;
+    prefill_view.prompt_token_count = 64u;
     SparkTestProductionRunnerInitializeKvTable();
     SparkTestProductionRunnerInitializeRunner(
         &runner,
@@ -276,6 +278,9 @@ static void SparkTestProductionRunnerCarriesPrefillView(void)
     SparkTestProductionRunnerInitializeDispatch(&dispatch);
     dispatch.flags =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_PREFILL;
+    dispatch.active_sequence_count = 64u;
+    dispatch.logical_lane_count = 1u;
+    dispatch.rows_per_lane = 64u;
     dispatch.new_token_count = 64u;
     dispatch.prefill_view = &prefill_view;
     assert(SparkGlm52ResidentDecodeStageProductionRunnerSubmit(

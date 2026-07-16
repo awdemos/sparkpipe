@@ -69,7 +69,7 @@ transport from the clean worktree:
 make -C /tmp/sparkpipe-release-<sha8> -j \
     test tools \
     glm52_pp13_service_backend \
-    hidden_transport_tcp_cuda \
+    hidden_transport_spark_host_rdma_verbs \
     glm52_pp13_node_context_builder
 ```
 
@@ -120,7 +120,7 @@ python3 tools/sparkpipe_release_assemble.py \
     --replace bin/sparkpipe_glm52_http_gateway=build/sparkpipe_glm52_http_gateway \
     --replace lib/libglm52_pp13_node_context_builder.so=build/libglm52_pp13_node_context_builder.so \
     --replace lib/libglm52_pp13_service_backend.so=build/libglm52_pp13_service_backend.so \
-    --replace lib/libhidden_transport_tcp_cuda.so=build/libhidden_transport_tcp_cuda.so \
+    --replace lib/libhidden_transport_spark_host_rdma_verbs.so=build/libhidden_transport_spark_host_rdma_verbs.so \
     --replace lib/model_driver.so=build/packages/glm52_resident_decode_stage/stages/stage_000/model_driver.so
 ```
 

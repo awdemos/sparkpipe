@@ -123,6 +123,14 @@ SparkStatus SparkGlm52KvCacheCalculateJitStageBudget(
         request->backing_request_count == 0u ||
         request->selected_token_count == 0u ||
         request->block_token_count == 0u ||
+        (request->attention_cache_layout !=
+            SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED &&
+         request->attention_cache_layout !=
+            SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3) ||
+        (request->attention_cache_layout ==
+            SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3 &&
+         (request->fp8_scale_block_size == 0u ||
+          (request->fp8_scale_block_size & 15u) != 0u)) ||
         request->physical_pool_token_capacity % request->block_token_count != 0u ||
         request->backing_block_capacity <
             request->physical_pool_token_capacity / request->block_token_count ||
@@ -148,8 +156,20 @@ SparkStatus SparkGlm52KvCacheCalculateJitStageBudget(
             local_dsa_index_layer_count += 1u;
         }
     }
-    attention_bytes_per_token_per_layer =
-        (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t);
+    if (request->attention_cache_layout ==
+        SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3)
+    {
+        attention_bytes_per_token_per_layer =
+            (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+            ((SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+              request->fp8_scale_block_size - 1u) /
+             request->fp8_scale_block_size) * sizeof(float);
+    }
+    else
+    {
+        attention_bytes_per_token_per_layer =
+            (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t);
+    }
     dsa_bytes_per_token_per_layer =
         (uint64_t)SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t);
     summary_bytes_per_index_layer_block =

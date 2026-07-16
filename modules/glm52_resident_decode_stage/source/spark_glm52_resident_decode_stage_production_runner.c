@@ -82,9 +82,13 @@ static SparkStatus SparkGlm52ProductionRunnerValidateDispatchShape(
         (uint64_t)dispatch->logical_lane_count *
         (uint64_t)dispatch->rows_per_lane;
     if ( execution_row_count != dispatch->active_sequence_count ||
-        dispatch->rows_per_lane >
-            SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT + 1u ||
-        (dispatch->rows_per_lane > 1u && dispatch->prefill_view != 0) )
+        (dispatch->prefill_view == 0 &&
+         dispatch->rows_per_lane >
+            SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT + 1u) ||
+        (dispatch->prefill_view != 0 &&
+         (dispatch->rows_per_lane != dispatch->new_token_count ||
+          dispatch->prefill_view->active_sequence_count !=
+            dispatch->logical_lane_count)) )
         return SPARK_STATUS_INVALID_ARGUMENT;
     if ( dispatch->pipeline_slot >=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT )
@@ -140,7 +144,7 @@ static void SparkGlm52ProductionRunnerBuildFrameContext(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE;
     frame_context->logical_lane_count = dispatch->logical_lane_count;
     frame_context->rows_per_lane = dispatch->rows_per_lane;
-    if ( dispatch->rows_per_lane > 1u )
+    if ( dispatch->rows_per_lane > 1u && dispatch->prefill_view == 0 )
     {
         frame_context->flags |=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY;
