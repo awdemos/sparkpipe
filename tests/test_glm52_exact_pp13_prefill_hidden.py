@@ -208,6 +208,37 @@ def test_bulk_prefill_progresses_runner_after_each_chunk(root: Path) -> None:
     assert "false &&" not in source
 
 
+def test_bulk_prefill_validates_the_runtime_view_stride(root: Path) -> None:
+    builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                   encoding="utf-8")
+    cuda = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+            "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                encoding="utf-8")
+    wire_start = builder.index(
+        "static void SparkGlm52Pp13BuilderWireLayerSerialPrefillPlan(")
+    wire_end = builder.index(
+        "static void SparkGlm52Pp13BuilderWireLayer(", wire_start)
+    wire_body = builder[wire_start:wire_end]
+    validate_start = cuda.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageValidatePagedChunkPrefillPlan(")
+    validate_end = cuda.index(
+        "static __device__ __forceinline__ uint32_t "
+        "SparkGlm52ResidentDecodeStageResolvePagedPrefillCacheSlot(",
+        validate_start)
+    validate_body = cuda[validate_start:validate_end]
+    assert (
+        "SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_RUNTIME_PREFILL_VIEW"
+        in wire_body)
+    runtime_stride = (
+        "prompt_token_stride = prefill_frame_view != 0\n"
+        "        ? prefill_frame_view->prompt_token_stride")
+    static_stride = ": paged_prefill_plan->prompt_token_stride != 0u"
+    assert runtime_stride in validate_body
+    assert validate_body.index(runtime_stride) < validate_body.index(
+        static_stride)
+
+
 def test_decode_uses_one_tree_aware_work_packet_path(root: Path) -> None:
     builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
                "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -949,6 +980,7 @@ def main() -> None:
     test_fp8_linear_plans_require_scaled_gemm_backend(root)
     test_pp13_builder_binds_all_fp8_linear_plans(root)
     test_bulk_prefill_progresses_runner_after_each_chunk(root)
+    test_bulk_prefill_validates_the_runtime_view_stride(root)
     test_prefill_probe_hashes_the_exact_stage_input(root)
     test_fp8_phase_probe_targets_the_first_divergent_layer(root)
     test_fp8_validator_preserves_quantized_dense_execution(root)
