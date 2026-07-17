@@ -10,6 +10,16 @@
     SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT
 #define SPARK_GLM52_REQUEST_API_MTP_UTILITY_PRIOR_COMMITTED_TOKEN_COUNT \
     (SPARK_GLM52_MODEL_MTP_TREE_MAX_COMMITTED_TOKEN_COUNT / 2u)
+/* An MTP cycle pays for the draft-chain dispatches in addition to the
+ * verify dispatch. The measured-plan cost model only sees batched
+ * weight streaming, so it undercounts the serialized draft work on the
+ * final rank. Calibrated against the 2026-07-17 B1 A/B (plain 3.89
+ * tok/s vs MTP 3.47 tok/s): re-measure per release and adjust. */
+#define SPARK_GLM52_REQUEST_API_MTP_DRAFT_CHAIN_WORK_MULTIPLIER 2u
+/* MTP must beat plain decode by this margin before new drafts are
+ * budgeted; without hysteresis the scheduler oscillates between
+ * drafting and plain decode around the break-even point. */
+#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_MARGIN_SCALE 1250ull
 
 static uint32_t SparkGlm52RequestApiNormalizeConfigurationFlags(
     uint32_t configuration_flags)
@@ -4543,11 +4553,9 @@ static uint64_t SparkGlm52RequestApiMtpResolvedRequestCount(
         api->mtp_accepted_draft_token_count +
         api->mtp_rejected_token_count;
     *committed_token_count_out = api->mtp_committed_token_count;
-    if (proposed_token_count %
-            SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT != 0u)
-    {
-        return 0u;
-    }
+    /* A partially-resolved in-flight cycle leaves a non-zero remainder;
+     * floor the completed cycle count instead of discarding every
+     * sample, which previously zeroed the utility estimate. */
     return proposed_token_count /
         SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
 }
@@ -4590,6 +4598,11 @@ static uint32_t SparkGlm52RequestApiMtpOutranksPlainDecode(
     {
         return 0u;
     }
+    if ((api->configuration_flags &
+            SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE) != 0u)
+    {
+        return 1u;
+    }
     status = SparkGlm52SchedulerEstimateDecodeWorkNs(
         api->scheduler,
         plain_request_count,
@@ -4610,11 +4623,33 @@ static uint32_t SparkGlm52RequestApiMtpOutranksPlainDecode(
     {
         return 0u;
     }
-    mtp_expected_tokens_scaled =
-        SparkGlm52RequestApiMtpExpectedCommittedTokensScaled(api);
-    return mtp_expected_tokens_scaled * mtp_request_count * plain_work_ns >
-        SPARK_GLM52_REQUEST_API_MTP_UTILITY_SCALE *
-        plain_request_count * mtp_work_ns;
+    /* Compare plain decode against the full MTP cycle: the verify batch
+     * plus the draft-chain dispatches that produced the candidates.
+     * The measured-plan model cannot see the serialized draft work, so
+     * scale the plain estimate by the calibrated chain multiplier. */
+    if (plain_work_ns > UINT64_MAX /
+            SPARK_GLM52_REQUEST_API_MTP_DRAFT_CHAIN_WORK_MULTIPLIER)
+    {
+        return 0u;
+    }
+    {
+        uint64_t draft_chain_work_ns;
+        uint64_t mtp_cycle_work_ns;
+
+        draft_chain_work_ns =
+            plain_work_ns *
+            SPARK_GLM52_REQUEST_API_MTP_DRAFT_CHAIN_WORK_MULTIPLIER;
+        if (mtp_work_ns > UINT64_MAX - draft_chain_work_ns)
+        {
+            return 0u;
+        }
+        mtp_cycle_work_ns = mtp_work_ns + draft_chain_work_ns;
+        mtp_expected_tokens_scaled =
+            SparkGlm52RequestApiMtpExpectedCommittedTokensScaled(api);
+        return mtp_expected_tokens_scaled * mtp_request_count * plain_work_ns >
+            SPARK_GLM52_REQUEST_API_MTP_UTILITY_MARGIN_SCALE *
+            plain_request_count * mtp_cycle_work_ns;
+    }
 }
 
 static uint32_t SparkGlm52RequestApiDecodeBatchMtpBudget(
@@ -4826,107 +4861,23 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
     return SPARK_STATUS_OK;
 }
 
-static uint32_t SparkGlm52RequestApiUtilityBatchTarget(
-    const SparkGlm52RequestApi *api,
-    uint32_t rows_per_request)
-{
-    uint32_t batch_target;
-    uint32_t row_limited_batch_target;
-
-    if (api == 0 || rows_per_request == 0u)
-    {
-        return 0u;
-    }
-    batch_target = SparkGlm52RequestApiCurrentPipelineBatchWidth(api);
-    row_limited_batch_target =
-        api->decode_execution_row_capacity / rows_per_request;
-    if (batch_target > row_limited_batch_target)
-    {
-        batch_target = row_limited_batch_target;
-    }
-    if (batch_target > SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT)
-    {
-        batch_target = SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT;
-    }
-    return batch_target;
-}
-
-static uint32_t SparkGlm52RequestApiDecodeUtilityBatchCount(
-    SparkGlm52RequestApi *api,
-    SparkGlm52RequestApiSlot *leader_slot)
-{
-    SparkGlm52RequestApiSlot *selected_slots[
-        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
-    uint32_t batch_target;
-
-    batch_target = SparkGlm52RequestApiUtilityBatchTarget(api,1u);
-    if (leader_slot == 0 || batch_target == 0u)
-    {
-        return 0u;
-    }
-    return SparkGlm52RequestApiCollectDecodeBatchMembers(
-        api,
-        leader_slot,
-        0u,
-        selected_slots,
-        batch_target);
-}
-
-static uint32_t SparkGlm52RequestApiMtpUtilityBatchCount(
-    SparkGlm52RequestApi *api,
-    SparkGlm52RequestApiSlot *leader_slot)
-{
-    SparkGlm52RequestApiSlot *selected_slots[
-        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
-    SparkGlm52DsparkDraftResult draft_result;
-    uint32_t batch_target;
-    uint32_t draft_source;
-
-    if (SparkGlm52RequestApiGetSlotSpeculativeDraft(
-            api,
-            leader_slot,
-            SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP,
-            &draft_result,
-            &draft_source) != SPARK_STATUS_OK ||
-        draft_source != SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP)
-    {
-        return 0u;
-    }
-    batch_target = SparkGlm52RequestApiUtilityBatchTarget(
-        api,
-        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT);
-    if (batch_target == 0u)
-    {
-        return 0u;
-    }
-    return SparkGlm52RequestApiCollectSpeculativeVerifyBatchMembers(
-        api,
-        leader_slot,
-        draft_result.token_count,
-        draft_source,
-        0u,
-        selected_slots,
-        batch_target);
-}
-
 static uint32_t SparkGlm52RequestApiMtpVerifyOutranksDecode(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiSlot *decode_slot,
     SparkGlm52RequestApiSlot *speculative_verify_slot)
 {
-    uint32_t decode_request_count;
-    uint32_t mtp_request_count;
-
-    decode_request_count = SparkGlm52RequestApiDecodeUtilityBatchCount(
-        api,
-        decode_slot);
-    mtp_request_count = SparkGlm52RequestApiMtpUtilityBatchCount(
-        api,
-        speculative_verify_slot);
-    return SparkGlm52RequestApiMtpOutranksPlainDecode(
-        api,
-        decode_request_count,
-        mtp_request_count);
+    (void)api;
+    (void)decode_slot;
+    /* A pending draft is sunk cost: the draft-chain dispatches are
+     * already paid, so verifying commits ~E tokens for the price of one
+     * verify batch while discarding the draft to run plain decode pays
+     * the same batch price for one token and throws the draft work
+     * away. Draft utility is therefore gated only where new drafts are
+     * budgeted (SparkGlm52RequestApiDecodeBatchMtpBudget), never here —
+     * gating here oscillated between drafting and discarding. */
+    return speculative_verify_slot != 0 &&
+        speculative_verify_slot->state ==
+            SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY;
 }
 
 static uint32_t SparkGlm52RequestApiShouldFillDecodeBatch(

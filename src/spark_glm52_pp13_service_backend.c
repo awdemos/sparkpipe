@@ -1982,12 +1982,13 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 		return status;
 	if (chunk_count != 1u)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
-	fprintf(
-		stderr,
-		"pp13_decode kind=%u requests=%u active=%u\n",
-		decode_dispatch->dispatch_kind,
-		decode_dispatch->request_count,
-		decode_dispatch->active_sequence_count);
+	if (state->trace_enabled != 0u)
+		fprintf(
+			stderr,
+			"pp13_decode kind=%u requests=%u active=%u\n",
+			decode_dispatch->dispatch_kind,
+			decode_dispatch->request_count,
+			decode_dispatch->active_sequence_count);
 	status = state->builder_library.builder_interface.decode(
 		state->builder_state,
 		decode_dispatch,
@@ -2021,7 +2022,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 		fprintf(stderr,"pp13_decode_forward status=%u\n",status);
 		return status;
 	}
-	fprintf(stderr,"pp13_decode_pending_final begin\n");
+	if (state->trace_enabled != 0u)
+		fprintf(stderr,"pp13_decode_pending_final begin\n");
 	return SPARK_STATUS_PENDING;
 }
 

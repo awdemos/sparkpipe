@@ -358,7 +358,7 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterInitialize(
         status = SparkGlm52ServingAdapterHostAlloc(
             &adapter->host_mtp_committed_token_ids,
             adapter->maximum_active_sequence_count *
-                (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u));
+                SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52ServingAdapterDeviceAlloc(
             (void **)&adapter->device_prefill_token_ids,
@@ -860,7 +860,7 @@ static SparkStatus SparkGlm52ServingAdapterDecodeMtpVerify(
     if (adapter == 0 || decode_dispatch == 0 || decode_result == 0 ||
         pipeline_slot == 0 || decode_dispatch->speculative_token_count == 0u ||
         decode_dispatch->speculative_token_count >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT)
+            SPARK_GLM52_MODEL_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

@@ -3275,7 +3275,8 @@ static void SparkTestRequestApiMtpDraftRequiresSpeculativeVerify(void)
     SparkTestFillTokenIds(prompt, 16u, 153000u);
     SparkTestInitializeFixture(&fixture);
     fixture.api.configuration_flags |=
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
     SparkTestInitializeSubmitRequest(
         &request,
         1530u,
@@ -3404,7 +3405,8 @@ static void SparkTestRequestApiMtpVerifyCapturesDsparkBatchTap(void)
     SparkTestInitializeFixture(&fixture);
     SparkTestEnableDsparkSpeculation(&fixture);
     fixture.api.configuration_flags |=
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
     fixture.dspark_speculator.policy_flags = 0u;
     SparkTestInitializeSubmitRequest(
         &request,
@@ -3496,7 +3498,8 @@ static void SparkTestRequestApiUsesHigherYieldMtpBeforeEqualPriorityDecode(void)
     SparkTestFillTokenIds(second_prompt,16u,155000u);
     SparkTestInitializeFixture(&fixture);
     fixture.api.configuration_flags |=
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
     fixture.api.decode_batch_target = 1u;
     SparkTestInitializeSubmitRequest(
         &request,1540u,11540u,10u,first_prompt,16u,10u);
@@ -3565,7 +3568,8 @@ static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
     SparkTestFillTokenIds(prompt,16u,153500u);
     SparkTestInitializeFixture(&fixture);
     fixture.api.configuration_flags |=
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
     SparkTestInitializeSubmitRequest(
         &request,1535u,11535u,SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
         prompt,16u,20u);
@@ -3652,7 +3656,8 @@ static void SparkTestRequestApiMtpRejectedDraftStaysOutsideNextContext(void)
     SparkTestFillTokenIds(prompt,16u,155000u);
     SparkTestInitializeFixture(&fixture);
     fixture.api.configuration_flags |=
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
     SparkTestInitializeSubmitRequest(
         &request,1550u,11550u,SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
         prompt,16u,20u);
@@ -3719,7 +3724,8 @@ static void SparkTestRequestApiMtpBudgetLeavesVerifierFallbackHeadroom(void)
     SparkTestFillTokenIds(prompt,16u,154000u);
     SparkTestInitializeFixture(&fixture);
     fixture.api.configuration_flags |=
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
     SparkTestInitializeSubmitRequest(
         &request,
         1540u,
@@ -3770,7 +3776,8 @@ static void SparkTestRequestApiMtpVerifyCapsPackedExecutionRows(void)
 
     SparkTestInitializeFixture(&fixture);
     fixture.api.configuration_flags |=
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
     fixture.api.decode_batch_target = decode_batch_target;
     fixture.api.decode_execution_row_capacity = execution_row_budget;
     fixture.api.mtp_accepted_draft_token_count =
@@ -4291,7 +4298,8 @@ static void SparkTestRequestApiReservesMtpDraftKvBlocks(void)
 
     SparkTestInitializeFixture(&fixture);
     fixture.api.configuration_flags |=
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
     for (request_index = 0u; request_index < 4u; ++request_index)
     {
         SparkTestFillTokenIds(

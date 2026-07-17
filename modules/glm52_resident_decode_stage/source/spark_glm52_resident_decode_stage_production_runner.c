@@ -93,7 +93,7 @@ static SparkStatus SparkGlm52ProductionRunnerValidateDispatchShape(
             SPARK_GLM52_MODEL_MAX_PREFILL_TOKENS_PER_DISPATCH)) ||
         (prefill == 0u &&
          dispatch->rows_per_lane >
-            SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT + 1u) )
+            SPARK_GLM52_MODEL_MAX_SPECULATIVE_ROWS_PER_LANE) )
         return SPARK_STATUS_INVALID_ARGUMENT;
     if ( (dispatch->flags &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u &&

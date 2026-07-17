@@ -941,7 +941,7 @@ static bool SparkGlm52ResidentDecodeStageExactPp13StageSlicePlanIsUsable(
          (exact_stage_slice_plan->logical_lane_capacity == 0u ||
           exact_stage_slice_plan->maximum_speculative_rows_per_lane < 2u ||
           exact_stage_slice_plan->maximum_speculative_rows_per_lane >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u ||
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE ||
           (uint64_t)exact_stage_slice_plan->logical_lane_capacity *
                 exact_stage_slice_plan->maximum_speculative_rows_per_lane !=
             exact_stage_slice_plan->maximum_active_sequence_count ||
@@ -3372,7 +3372,7 @@ static bool SparkGlm52ResidentDecodeStageFrameShapeIsSupported(
     }
 
     if (frame->new_token_count >
-        (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
     {
         return false;
     }
@@ -4351,7 +4351,7 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
         }
     }
     else if (request->new_token_count >
-        (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
     {
         decision->rejection_reason =
             SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE;

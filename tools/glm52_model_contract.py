@@ -180,6 +180,8 @@ def render_c_header(contract: Dict[str, Any]) -> str:
     for name, key in DSPARK_INTEGER_MACROS.items():
         lines.append(f"#define {name} {dspark[key]}u")
     lines.extend([
+        "#define SPARK_GLM52_MODEL_MAX_SPECULATIVE_ROWS_PER_LANE \\",
+        "\t(SPARK_GLM52_MODEL_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u)",
         "#define SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_INDEX(aux_layer_id) \\",
         "\t((aux_layer_id) - SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_OFFSET)",
         "#define SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES ((uint32_t)sizeof(uint16_t))",
