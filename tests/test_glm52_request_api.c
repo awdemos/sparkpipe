@@ -4382,6 +4382,33 @@ static void SparkTestRequestApiUsesAdaptivePipelineBatchWidth(void)
     assert(SparkGlm52RequestApiCurrentPipelineBatchWidth(&fixture.api) == 1u);
 }
 
+static void SparkTestRequestApiAcceptsMtpForceEnableConfiguration(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiConfiguration configuration;
+    SparkGlm52RequestApi api;
+
+    SparkTestInitializeFixture(&fixture);
+    memset(&configuration,0,sizeof(configuration));
+    configuration.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
+    configuration.descriptor_bytes =
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES;
+    configuration.configuration_flags =
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_DEFAULT_FLAGS |
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
+    configuration.request_capacity = SPARK_TEST_REQUEST_SLOT_COUNT;
+    configuration.prefetch_lane_count = SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT;
+    configuration.decode_batch_target =
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT;
+    configuration.scheduler = &fixture.scheduler;
+    configuration.request_slots = fixture.request_slots;
+    configuration.kv_prefetch_function = SparkTestCaptureKvPrefetch;
+    configuration.kv_prefetch_context = &fixture.prefetch_capture;
+    assert(SparkGlm52RequestApiInitialize(&api,&configuration) == SPARK_STATUS_OK);
+    assert((api.configuration_flags &
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE) != 0u);
+}
+
 int main(void)
 {
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
@@ -4429,5 +4456,6 @@ int main(void)
     SparkTestRequestApiSubmitsCTextPromptToPrefillSchedule();
     SparkTestRequestApiAdmitsThirteenThousandWithFreeList();
     SparkTestRequestApiUsesAdaptivePipelineBatchWidth();
+    SparkTestRequestApiAcceptsMtpForceEnableConfiguration();
     return 0;
 }
