@@ -690,6 +690,42 @@ static SparkStatus SparkGlm52ServingPushSimpleEvent(
     return SparkGlm52ServingPushEvent(engine, &event);
 }
 
+static void SparkGlm52ServingFailDispatchRequests(
+    SparkGlm52ServingEngine *engine,
+    const SparkGlm52RequestApiDispatch *dispatch,
+    SparkStatus failure_status)
+{
+    uint32_t lane_index;
+
+    if (engine == 0 || dispatch == 0)
+    {
+        return;
+    }
+    for (lane_index = 0u;
+         lane_index < dispatch->request_count &&
+             lane_index < SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT;
+         ++lane_index)
+    {
+        SparkGlm52ServingRequestRecord *record;
+
+        record = SparkGlm52ServingFindRecordByHandle(
+            engine,
+            dispatch->request_handles[lane_index]);
+        if (record == 0 ||
+            record->state == SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_COMPLETED ||
+            record->state == SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_CANCELLED)
+        {
+            continue;
+        }
+        record->state = SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_CANCELLED;
+        (void)SparkGlm52ServingPushSimpleEvent(
+            engine,
+            SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_CANCELLED,
+            (uint32_t)failure_status,
+            record);
+    }
+}
+
 static SparkStatus SparkGlm52ServingApplyContextBudget(
     SparkGlm52ServingEngine *engine,
     uint32_t prompt_token_count,
@@ -2182,6 +2218,10 @@ SparkStatus SparkGlm52ServingEnginePump(
                 (void)SparkGlm52RequestApiCancelDispatch(
                     engine->request_api,
                     &dispatch);
+                SparkGlm52ServingFailDispatchRequests(
+                    engine,
+                    &dispatch,
+                    status);
             }
             engine->stats.last_status = status;
             SparkGlm52ServingRefreshStats(engine);

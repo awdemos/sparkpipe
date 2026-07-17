@@ -663,6 +663,65 @@ static void SparkTestServingFireAndForgetPumpRunsFullPromptToDecode(void)
         SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT + 2u);
 }
 
+static SparkStatus SparkTestServingFailPrefill(
+    void *context,
+    const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+{
+    (void)context;
+    (void)prefill_dispatch;
+    return SPARK_STATUS_INVALID_ARGUMENT;
+}
+
+/* Regression: when a dispatch invoke fails, the engine must emit a
+ * terminal event and mark the record CANCELLED; otherwise the request
+ * leaks (client waits forever, mapping stays LIVE) until restart. */
+static void SparkTestServingPrefillFailureEmitsTerminalEvent(void)
+{
+    SparkGlm52ServingSubmitTokenIdsRequest submit_request;
+    SparkGlm52ServingSubmitResult submit_result;
+    SparkGlm52ServingStats stats;
+    SparkGlm52ServingEvent event;
+    uint32_t cancelled_event_count;
+    SparkStatus status;
+
+    SparkTestServingInitializeFixture(&Fixture, &CallbackContext);
+    Fixture.serving_engine.prefill_function = SparkTestServingFailPrefill;
+    SparkGlm52ServingInitializeSubmitTokenIdsRequest(&submit_request);
+    submit_request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
+    submit_request.token_ids = Fixture.prompt_tokens;
+    submit_request.request_id = 9101u;
+    submit_request.sequence_id = 19101u;
+    assert(SparkGlm52ServingEngineSubmitTokenIds(
+        &Fixture.serving_engine,
+        &submit_request,
+        &submit_result) == SPARK_STATUS_OK);
+
+    status = SparkGlm52ServingEnginePump(
+        &Fixture.serving_engine,
+        0u,
+        16u,
+        &stats);
+    assert(status == SPARK_STATUS_INVALID_ARGUMENT);
+
+    cancelled_event_count = 0u;
+    while (SparkGlm52ServingEnginePopEvent(
+            &Fixture.serving_engine,
+            &event) == SPARK_STATUS_OK)
+    {
+        if (event.kind == SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_CANCELLED)
+        {
+            cancelled_event_count += 1u;
+            assert(event.request_handle == submit_result.request_handle);
+            assert(event.status == SPARK_STATUS_INVALID_ARGUMENT);
+        }
+    }
+    assert(cancelled_event_count == 1u);
+    /* the cancelled request can be released instead of leaking */
+    assert(SparkGlm52ServingEngineReleaseCompletedRequest(
+        &Fixture.serving_engine,
+        submit_result.request_handle) == SPARK_STATUS_OK);
+}
+
 static void SparkTestServingRetriesUnacceptedBusyDecode(void)
 {
     SparkGlm52ServingSubmitTokenIdsRequest request;
@@ -963,6 +1022,7 @@ int main(void)
     SparkTestServingRejectsTailWindowRuntimeContract();
     SparkTestServingMtpCommitStreamsMultiTokenLanes();
     SparkTestServingFireAndForgetPumpRunsFullPromptToDecode();
+    SparkTestServingPrefillFailureEmitsTerminalEvent();
     SparkTestServingRetriesUnacceptedBusyDecode();
     SparkTestServingPreservesAcceptedPendingDecode();
     SparkTestServingPumpsMultipleAcceptedPendingDecodes();
