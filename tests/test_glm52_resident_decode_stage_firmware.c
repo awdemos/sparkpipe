@@ -1572,9 +1572,10 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     SparkModelDriverRuntimeSnapshot runtime_snapshot;
     SparkGlm52KvBlockTableView kv_block_table_view;
     SparkGlm52ResidentDecodeStageFrameContext frame_context;
-    uint32_t physical_block_indices[8];
-    uint32_t lane_block_counts[2];
+    uint32_t physical_block_indices[24];
+    uint32_t lane_block_counts[6];
     uint32_t mtp_draft_token_budgets[1];
+    uint32_t lane_index;
     void *module_state;
 
     SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
@@ -1633,10 +1634,11 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     frame.scalar[SPARK_GLM52_RESIDENT_DECODE_STAGE_PIPELINE_SLOT_SCALAR_INDEX] =
         0u;
     memset(physical_block_indices, 0, sizeof(physical_block_indices));
-    physical_block_indices[0] = 0u;
-    physical_block_indices[4] = 1u;
-    lane_block_counts[0] = 1u;
-    lane_block_counts[1] = 1u;
+    for (lane_index = 0u; lane_index < 6u; ++lane_index)
+    {
+        physical_block_indices[lane_index * 4u] = lane_index;
+        lane_block_counts[lane_index] = 1u;
+    }
     memset(&kv_block_table_view, 0, sizeof(kv_block_table_view));
     kv_block_table_view.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
     kv_block_table_view.descriptor_bytes =
@@ -1671,7 +1673,8 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
 
     mtp_draft_token_budgets[0] =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
-    kv_block_table_view.lane_count = 1u;
+    kv_block_table_view.lane_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
     frame.request_id = 302u;
     frame.sequence_position = 4u;
     frame.active_slot_count =
@@ -1690,7 +1693,8 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     assert(fake_streams[0].submit_count == 2u);
     assert(fake_streams[0].last_active_sequence_count ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT);
-    assert(fake_streams[0].last_runtime_kv_lane_count == 1u);
+    assert(fake_streams[0].last_runtime_kv_lane_count ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT);
     assert(frame_completion_state.completion_count == 2u);
 
     assert(SparkGlm52ResidentDecodeStageSnapshot(
