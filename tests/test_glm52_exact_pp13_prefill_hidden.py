@@ -1128,6 +1128,21 @@ def test_service_backend_namespaces_ids_per_live_session(root: Path) -> None:
     assert "state->cuda_resident_next_sequence_number = state->session_id_base" in source
 
 
+def test_pending_decode_slots_apply_backpressure(root: Path) -> None:
+    source = (root / "src" /
+              "spark_glm52_pp13_service_backend.c").read_text(
+                  encoding="utf-8")
+    start = source.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendRegisterPendingDecode(")
+    end = source.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingDecode(",
+        start)
+    function_body = source[start:end]
+    assert "if (pending == 0)\n\t\treturn SPARK_STATUS_BUSY;" in function_body
+    assert ("if (pending == 0)\n"
+            "\t\treturn SPARK_STATUS_CAPACITY_EXCEEDED;") not in function_body
+
+
 def test_final_event_pump_detects_disconnect_before_send(root: Path) -> None:
     source = (root / "tools" /
               "sparkpipe_glm52_pp13_rank_daemon.c").read_text(

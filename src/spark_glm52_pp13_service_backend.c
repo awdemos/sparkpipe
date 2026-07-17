@@ -3316,7 +3316,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendRegisterPendingDecode(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	pending = SparkGlm52Pp13ServiceBackendFindFreePendingDecode(state);
 	if (pending == 0)
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
+		return SPARK_STATUS_BUSY;
 	memset(pending,0,sizeof(*pending));
 	pending->state =
 		SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE;
