@@ -2345,7 +2345,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRequestApi(
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ADAPTIVE_PIPELINE_BATCHING;
 	if (state->mtp_enabled != 0u)
 		request_api_configuration.configuration_flags |=
-			SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+			SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+			SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
 	if (state->dspark_enabled != 0u)
 	{
 		request_api_configuration.configuration_flags |=
