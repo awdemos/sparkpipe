@@ -1143,6 +1143,27 @@ def test_pending_decode_slots_apply_backpressure(root: Path) -> None:
             "\t\treturn SPARK_STATUS_CAPACITY_EXCEEDED;") not in function_body
 
 
+def test_async_decode_has_distinct_pending_and_retry_contract(root: Path) -> None:
+    backend = (root / "src" /
+               "spark_glm52_pp13_service_backend.c").read_text(
+                   encoding="utf-8")
+    engine = (root / "src" / "spark_glm52_serving_engine.c").read_text(
+        encoding="utf-8")
+    request_api = (root / "src" / "spark_glm52_request_api.c").read_text(
+        encoding="utf-8")
+    assert "return SPARK_STATUS_PENDING;" in backend
+    assert "SparkGlm52RequestApiRetryDecodeDispatch(" in engine
+    assert "SparkGlm52RequestApiRetryDecodeDispatch(" in request_api
+
+
+def test_service_backend_drains_ready_final_events(root: Path) -> None:
+    source = (root / "src" /
+              "spark_glm52_pp13_service_backend.c").read_text(
+                  encoding="utf-8")
+    assert "SparkGlm52Pp13ServiceBackendPumpFinalEvents(" in source
+    assert "SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_PUMP_BUDGET" in source
+
+
 def test_final_event_pump_detects_disconnect_before_send(root: Path) -> None:
     source = (root / "tools" /
               "sparkpipe_glm52_pp13_rank_daemon.c").read_text(
@@ -1307,6 +1328,9 @@ def main() -> None:
     test_plain_wide_decode_bypasses_dspark_finalizer(root)
     test_resident_block_stride_is_independent_of_the_physical_pool(root)
     test_service_backend_namespaces_ids_per_live_session(root)
+    test_pending_decode_slots_apply_backpressure(root)
+    test_async_decode_has_distinct_pending_and_retry_contract(root)
+    test_service_backend_drains_ready_final_events(root)
     test_final_event_pump_detects_disconnect_before_send(root)
     test_rank_queue_does_not_overtake_a_deferred_sequence_position(root)
     test_short_context_bypasses_indexshare_for_exact_prefix_attention(root)

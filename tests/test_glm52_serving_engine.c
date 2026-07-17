@@ -64,6 +64,9 @@ typedef struct SparkTestServingCallbackContext
     uint32_t released_token_count;
     uint64_t released_request_id;
     uint64_t released_sequence_id;
+    uint32_t transient_decode_busy_count;
+    uint32_t pending_dispatch_valid;
+    SparkGlm52RequestApiDispatch pending_dispatch;
 } SparkTestServingCallbackContext;
 
 static SparkTestServingFixture Fixture;
@@ -228,6 +231,40 @@ static SparkStatus SparkTestServingDecode(
     callback_context->decode_callback_count += 1u;
     callback_context->saw_decode_kv_table = 1u;
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkTestServingDecodeBusyOnce(
+    void *context,
+    const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+    SparkGlm52ServingDecodeResult *decode_result)
+{
+    SparkTestServingCallbackContext *callback_context;
+
+    callback_context = (SparkTestServingCallbackContext *)context;
+    assert(callback_context != 0);
+    if (callback_context->transient_decode_busy_count == 0u)
+    {
+        callback_context->transient_decode_busy_count += 1u;
+        return SPARK_STATUS_BUSY;
+    }
+    return SparkTestServingDecode(context,decode_dispatch,decode_result);
+}
+
+static SparkStatus SparkTestServingDecodePending(
+    void *context,
+    const SparkGlm52ServingDecodeDispatch *decode_dispatch,
+    SparkGlm52ServingDecodeResult *decode_result)
+{
+    SparkTestServingCallbackContext *callback_context;
+
+    callback_context = (SparkTestServingCallbackContext *)context;
+    assert(callback_context != 0);
+    assert(decode_dispatch != 0);
+    assert(decode_dispatch->request_dispatch != 0);
+    assert(decode_result != 0);
+    callback_context->pending_dispatch = *decode_dispatch->request_dispatch;
+    callback_context->pending_dispatch_valid = 1u;
+    return SPARK_STATUS_PENDING;
 }
 
 static SparkStatus SparkTestServingMtpDecode(
@@ -624,6 +661,74 @@ static void SparkTestServingFireAndForgetPumpRunsFullPromptToDecode(void)
         SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT + 2u);
 }
 
+static void SparkTestServingRetriesUnacceptedBusyDecode(void)
+{
+    SparkGlm52ServingSubmitTokenIdsRequest request;
+    SparkGlm52ServingSubmitResult result;
+    SparkGlm52ServingStats stats;
+    SparkStatus status;
+
+    SparkTestServingInitializeFixture(&Fixture,&CallbackContext);
+    Fixture.serving_engine.decode_function = SparkTestServingDecodeBusyOnce;
+    SparkGlm52ServingInitializeSubmitTokenIdsRequest(&request);
+    request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
+    request.token_ids = Fixture.prompt_tokens;
+    request.output_token_budget = 1u;
+    request.request_id = 9002u;
+    request.sequence_id = 19002u;
+    assert(SparkGlm52ServingEngineSubmitTokenIds(
+        &Fixture.serving_engine,&request,&result) == SPARK_STATUS_OK);
+    status = SparkGlm52ServingEnginePump(
+        &Fixture.serving_engine,0u,16u,&stats);
+    assert(status == SPARK_STATUS_BUSY);
+    assert(CallbackContext.transient_decode_busy_count == 1u);
+    assert(CallbackContext.decode_callback_count == 0u);
+    assert(Fixture.request_api.request_slots[0u].state ==
+        SPARK_GLM52_REQUEST_API_STATE_READY_DECODE);
+    assert(Fixture.request_api.running_request_count == 0u);
+    status = SparkGlm52ServingEnginePump(
+        &Fixture.serving_engine,0u,16u,&stats);
+    assert(status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_OK);
+    assert(CallbackContext.decode_callback_count == 1u);
+    assert(stats.completed_stream_count == 1u);
+}
+
+static void SparkTestServingPreservesAcceptedPendingDecode(void)
+{
+    SparkGlm52ServingSubmitTokenIdsRequest request;
+    SparkGlm52ServingSubmitResult result;
+    SparkGlm52ServingDecodeResult decode_result;
+    SparkGlm52ServingStats stats;
+
+    SparkTestServingInitializeFixture(&Fixture,&CallbackContext);
+    Fixture.serving_engine.decode_function = SparkTestServingDecodePending;
+    SparkGlm52ServingInitializeSubmitTokenIdsRequest(&request);
+    request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
+    request.token_ids = Fixture.prompt_tokens;
+    request.output_token_budget = 1u;
+    request.request_id = 9003u;
+    request.sequence_id = 19003u;
+    assert(SparkGlm52ServingEngineSubmitTokenIds(
+        &Fixture.serving_engine,&request,&result) == SPARK_STATUS_OK);
+    assert(SparkGlm52ServingEnginePump(
+        &Fixture.serving_engine,0u,16u,&stats) == SPARK_STATUS_PENDING);
+    assert(CallbackContext.pending_dispatch_valid == 1u);
+    assert(Fixture.request_api.request_slots[0u].state ==
+        SPARK_GLM52_REQUEST_API_STATE_RUNNING_DECODE);
+    assert(Fixture.request_api.running_request_count == 1u);
+    SparkGlm52ServingInitializeDecodeResult(
+        &decode_result,1u,SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE);
+    decode_result.token_counts[0u] = 1u;
+    decode_result.token_ids[0u][0u] = 90000u;
+    assert(SparkGlm52ServingEngineCompleteDecodeDispatch(
+        &Fixture.serving_engine,
+        &CallbackContext.pending_dispatch,
+        &decode_result) == SPARK_STATUS_OK);
+    assert(SparkGlm52ServingEngineGetStats(
+        &Fixture.serving_engine,&stats) == SPARK_STATUS_OK);
+    assert(stats.completed_stream_count == 1u);
+}
+
 static void SparkTestServingPrefillBatchingIsInternal(void)
 {
     SparkGlm52ServingSubmitTokenIdsRequest submit_request;
@@ -824,6 +929,8 @@ int main(void)
     SparkTestServingRejectsTailWindowRuntimeContract();
     SparkTestServingMtpCommitStreamsMultiTokenLanes();
     SparkTestServingFireAndForgetPumpRunsFullPromptToDecode();
+    SparkTestServingRetriesUnacceptedBusyDecode();
+    SparkTestServingPreservesAcceptedPendingDecode();
     SparkTestServingPrefillBatchingIsInternal();
     SparkTestServingDynamicTokenStorageGrowsAndRecycles();
     return 0;

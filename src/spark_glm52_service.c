@@ -1431,7 +1431,8 @@ SparkStatus SparkGlm52ServicePump(
     {
         status = drain_status;
     }
-    if (status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_BUSY)
+    if (status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_BUSY ||
+        status == SPARK_STATUS_PENDING)
     {
         status = SPARK_STATUS_OK;
     }

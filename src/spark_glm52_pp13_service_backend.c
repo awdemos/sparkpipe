@@ -64,6 +64,9 @@
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_METADATA_VALUE_BASE 0x200000000ull
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY \
 	SPARK_GLM52_PP13_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY
+#define SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_PUMP_BUDGET \
+	(SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY * \
+	 SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT)
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_STATIC_STATE_CAPACITY_BYTES \
 	(64ull * 1024ull * 1024ull)
 #define SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE 0u
@@ -1965,7 +1968,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 				memset(pending,0,sizeof(*pending));
 			return status;
 		}
-		return SPARK_STATUS_BUSY;
+		return SPARK_STATUS_PENDING;
 	}
 	if (state->builder_library.builder_interface.decode == 0 ||
 		state->builder_state == 0)
@@ -2017,7 +2020,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 		return status;
 	}
 	fprintf(stderr,"pp13_decode_pending_final begin\n");
-	return SPARK_STATUS_BUSY;
+	return SPARK_STATUS_PENDING;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendDecode(
@@ -3447,18 +3450,46 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 	return SparkGlm52Pp13ServiceBackendCompletePendingDecode(state,pending);
 }
 
+static SparkStatus SparkGlm52Pp13ServiceBackendPumpFinalEvents(
+	SparkGlm52Pp13ServiceBackendState *state)
+{
+	SparkGlm52Pp13RuntimeFinalEvent event;
+	SparkStatus status;
+	uint32_t event_count;
+
+	if (state == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	for (event_count = 0u;
+		 event_count < SPARK_GLM52_PP13_SERVICE_BACKEND_FINAL_EVENT_PUMP_BUDGET;
+		 ++event_count)
+	{
+		status = SparkGlm52Pp13ServiceBackendReadFinalEvent(state,&event);
+		if (status == SPARK_STATUS_BUSY)
+			return SPARK_STATUS_OK;
+		if (status != SPARK_STATUS_OK)
+			return status;
+		status = SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
+			state,
+			&event);
+		if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY &&
+			status != SPARK_STATUS_NOT_FOUND)
+			return status;
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 	void *backend_state,
 	uint32_t max_dispatch_steps,
 	SparkGlm52ServiceStats *stats_out)
 {
 	SparkGlm52Pp13ServiceBackendState *state;
-	SparkGlm52Pp13RuntimeFinalEvent event;
 	SparkStatus event_status;
 	SparkStatus release_status;
 	SparkStatus resident_status;
 	SparkStatus service_status;
 	SparkStatus work_status;
+	uint32_t service_can_dispatch;
 
 	state = (SparkGlm52Pp13ServiceBackendState *)backend_state;
 	if (state == 0)
@@ -3477,23 +3508,15 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 	if (state->rank0_runtime_ready != 0u)
 		(void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
 			&state->runner);
-	event_status = SparkGlm52Pp13ServiceBackendReadFinalEvent(state,&event);
-	if (event_status == SPARK_STATUS_OK)
-	{
-		event_status = SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
-			state,
-			&event);
-		if (event_status != SPARK_STATUS_OK &&
-			event_status != SPARK_STATUS_BUSY &&
-			event_status != SPARK_STATUS_NOT_FOUND)
-			state->final_event_receive_error_count += 1u;
-	}
-	else if (event_status != SPARK_STATUS_BUSY)
+	event_status = SparkGlm52Pp13ServiceBackendPumpFinalEvents(state);
+	if (event_status != SPARK_STATUS_OK)
 		state->final_event_receive_error_count += 1u;
 	service_status = SPARK_STATUS_OK;
-	if (state->service_runtime_ready != 0u &&
+	service_can_dispatch = state->service_runtime_ready != 0u &&
 		state->rank0_runtime_ready != 0u &&
-		state->first_blocker[0] == '\0')
+		state->first_blocker[0] == '\0' &&
+		SparkGlm52Pp13ServiceBackendFindFreePendingDecode(state) != 0;
+	if (service_can_dispatch != 0u)
 		service_status = SparkGlm52ServicePump(
 			&state->service,max_dispatch_steps,stats_out);
 	else if (stats_out != 0)
@@ -3503,6 +3526,11 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPump(
 		else
 			memset(stats_out,0,sizeof(*stats_out));
 	}
+	if (service_can_dispatch == 0u &&
+		state->service_runtime_ready != 0u &&
+		state->rank0_runtime_ready != 0u &&
+		state->first_blocker[0] == '\0')
+		service_status = SPARK_STATUS_BUSY;
 	resident_status =
 		SparkGlm52Pp13ServiceBackendPumpCudaResidentResponses(state);
 	release_status = SparkGlm52Pp13ServiceBackendPumpSequenceReleases(state);

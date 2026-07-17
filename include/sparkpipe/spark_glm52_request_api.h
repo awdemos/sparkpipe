@@ -475,6 +475,10 @@ SparkStatus SparkGlm52RequestApiCancelDispatch(
     SparkGlm52RequestApi *api,
     const SparkGlm52RequestApiDispatch *dispatch);
 
+SparkStatus SparkGlm52RequestApiRetryDecodeDispatch(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiDispatch *dispatch);
+
 SparkStatus SparkGlm52RequestApiGetRequestCacheState(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiHandle handle,
