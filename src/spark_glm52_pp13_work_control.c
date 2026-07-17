@@ -87,6 +87,16 @@ SparkStatus SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
 	return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkGlm52Pp13WorkControlWrittenPositionCount(
+	const SparkGlm52Pp13WorkControlPacket *packet)
+{
+	if (packet != 0 &&
+		(packet->flags &
+			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_TREE_VERIFY) != 0u)
+		return SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION + 1u;
+	return packet == 0 ? 0u : packet->new_token_count;
+}
+
 static void SparkGlm52Pp13WorkControlSetDecodeFlags(
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
 	uint32_t mtp_budget,
@@ -794,9 +804,7 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		uint32_t lane_position_count;
 		lane = &packet->lanes[lane_index];
 		lane_position_count =
-			mtp_tree_verify != 0u
-				? SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION + 1u
-				: packet->new_token_count;
+			SparkGlm52Pp13WorkControlWrittenPositionCount(packet);
 		if (lane->request_id == 0u || lane->sequence_id == 0u ||
 			lane->request_slot_index == SPARK_GLM52_PP13_WORK_CONTROL_INVALID_REQUEST_SLOT ||
 			lane->context_token_count == 0u ||
@@ -1817,6 +1825,7 @@ SparkStatus SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
 	uint32_t found;
 	uint32_t lane_index;
 	uint32_t block_index;
+	uint32_t written_position_count;
 	SparkStatus status;
 
 	status = SparkGlm52Pp13WorkControlMarkTable(
@@ -1825,10 +1834,14 @@ SparkStatus SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
 		SPARK_GLM52_PP13_KV_ENTRY_RESIDENT);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	written_position_count =
+		SparkGlm52Pp13WorkControlWrittenPositionCount(packet);
+	if (written_position_count == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	for (lane_index = 0u; lane_index < packet->active_sequence_count; ++lane_index)
 	{
 		write_end_token = packet->lanes[lane_index].sequence_position +
-			(uint64_t)packet->new_token_count - 1u;
+			(uint64_t)written_position_count - 1u;
 		if (write_end_token >= packet->lanes[lane_index].context_token_count)
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		first_written_block =

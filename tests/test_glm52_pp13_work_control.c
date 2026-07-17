@@ -5,7 +5,7 @@
 #include "sparkpipe/spark_glm52_cuda_resident_ipc.h"
 #include "sparkpipe/spark_glm52_pp13_work_control.h"
 
-#define SPARK_TEST_KV_LANE_CAPACITY 4u
+#define SPARK_TEST_KV_LANE_CAPACITY 16u
 #define SPARK_TEST_KV_LANE_STRIDE 4096u
 #define SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY 1024u
 #define SPARK_TEST_KV_DIRECTORY_CAPACITY 2048u
@@ -549,6 +549,63 @@ static void SparkTestGlm52Pp13WorkControlB1024LayerMajorMtpVerify(void)
 		&packet,1020u,4u) == SPARK_STATUS_OK);
 	assert(SparkGlm52Pp13WorkControlValidatePacket(
 		&packet,1019u,4u) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static void SparkTestGlm52Pp13WorkControlCommitsTreePositions(void)
+{
+	static SparkTestWorkControlKvStorage storage;
+	SparkGlm52Pp13WorkControlKvState state;
+	SparkGlm52Pp13WorkControlPacket packet;
+	SparkGlm52KvBlockTableView view;
+	uint32_t token_index;
+	assert(SparkTestInitializeKvState(
+		&state,&storage,SPARK_TEST_KV_LANE_CAPACITY) == SPARK_STATUS_OK);
+	SparkTestInitializeWorkPacket(&packet);
+	packet.flags =
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_DRAFT |
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY |
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_TREE_VERIFY;
+	packet.active_sequence_count = 1u;
+	packet.lane_count = 1u;
+	packet.descriptor_bytes =
+		SparkGlm52Pp13WorkControlCalculatePacketBytes(1u);
+	packet.execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
+	packet.speculative_token_count =
+		SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+	packet.rows_per_lane = SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
+	packet.execution_row_count = packet.rows_per_lane;
+	packet.new_token_count = packet.rows_per_lane;
+	packet.mtp_draft_token_count =
+		SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+	packet.kv_block_table_token_count =
+		SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION + 1u;
+	packet.sequence_position = 0u;
+	packet.lanes[0u].request_id = packet.request_id;
+	packet.lanes[0u].sequence_id = packet.sequence_id;
+	packet.lanes[0u].sequence_position = packet.sequence_position;
+	packet.lanes[0u].request_slot_index = 0u;
+	packet.lanes[0u].context_token_count = packet.kv_block_table_token_count;
+	packet.lanes[0u].input_token_id = 101u;
+	packet.lanes[0u].mtp_draft_token_count = packet.mtp_draft_token_count;
+	packet.lanes[0u].speculative_token_count =
+		packet.speculative_token_count;
+	packet.input_token_id = packet.lanes[0u].input_token_id;
+	for (token_index = 0u;
+		 token_index < packet.speculative_token_count;
+		 ++token_index)
+	{
+		packet.speculative_draft_token_ids[token_index] = 300u + token_index;
+		packet.lanes[0u].speculative_draft_token_ids[token_index] =
+			packet.speculative_draft_token_ids[token_index];
+	}
+	assert(SparkGlm52Pp13WorkControlValidatePacket(
+		&packet,SPARK_GLM52_STAGE_PLAN_BUCKET_B16,1u) == SPARK_STATUS_OK);
+	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
+		&packet,&state,&view) == SPARK_STATUS_OK);
+	assert(SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
+		&packet,&state) == SPARK_STATUS_OK);
+	assert(storage.block_states[view.host_physical_block_indices[0u]] ==
+		SPARK_GLM52_PP13_KV_ENTRY_RESIDENT);
 }
 
 static void SparkTestGlm52Pp13WorkControlB1024PhysicalDirectory(void)
@@ -1216,6 +1273,7 @@ int main(void)
 	SparkTestGlm52Pp13WorkControlBuildPrefillBatch();
 	SparkTestGlm52Pp13WorkControlB1024MtpBatch();
 	SparkTestGlm52Pp13WorkControlB1024LayerMajorMtpVerify();
+	SparkTestGlm52Pp13WorkControlCommitsTreePositions();
 	SparkTestGlm52Pp13WorkControlB1024PhysicalDirectory();
 	SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease();
 	SparkTestGlm52Pp13WorkControlResetsOlderGeneration();
