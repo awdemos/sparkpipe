@@ -16,6 +16,7 @@ import queue
 import ssl
 import statistics
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -387,8 +388,14 @@ def main() -> int:
         print("url must include a hostname", file=sys.stderr)
         return 2
     timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    output_jsonl = Path(args.output_jsonl or f"/private/tmp/sparkpipe_api_stress_{timestamp}.jsonl")
-    summary_json = Path(args.summary_json or f"/private/tmp/sparkpipe_api_stress_{timestamp}.summary.json")
+    temporary_root = Path(tempfile.gettempdir())
+    output_jsonl = Path(
+        args.output_jsonl or temporary_root / f"sparkpipe_api_stress_{timestamp}.jsonl"
+    )
+    summary_json = Path(
+        args.summary_json
+        or temporary_root / f"sparkpipe_api_stress_{timestamp}.summary.json"
+    )
     prompts = load_prompts(args)
     headers = build_headers(args)
     success_statuses = parse_statuses(args.success_statuses)

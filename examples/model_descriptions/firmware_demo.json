@@ -18,6 +18,9 @@
           "id": 1,
           "max_inflight": 4,
           "completion": "submit_return",
+          "scheduling": {
+            "max_new_tokens": 7
+          },
           "operations": [
             {
               "name": "add_one",
