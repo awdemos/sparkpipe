@@ -2033,6 +2033,7 @@ SparkStatus SparkGlm52ServingEnginePump(
     {
         SparkGlm52RequestApiDispatch dispatch;
         uint32_t dispatch_was_completed_by_decode_path;
+        uint32_t dispatch_was_retried;
 
         if (SparkGlm52ServingEventRingFreeCount(engine) <
             SparkGlm52ServingEventRingSafetyMargin())
@@ -2083,6 +2084,7 @@ SparkStatus SparkGlm52ServingEnginePump(
         }
 
         dispatch_was_completed_by_decode_path = 0u;
+        dispatch_was_retried = 0u;
         if (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
             dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH)
         {
@@ -2114,7 +2116,18 @@ SparkStatus SparkGlm52ServingEnginePump(
             {
                 dispatch_was_completed_by_decode_path = 1u;
             }
-            else if (status != SPARK_STATUS_BUSY)
+            else if (status == SPARK_STATUS_BUSY)
+            {
+                status = SparkGlm52RequestApiRetryDecodeDispatch(
+                    engine->request_api,
+                    &dispatch);
+                if (status == SPARK_STATUS_OK)
+                {
+                    dispatch_was_retried = 1u;
+                    status = SPARK_STATUS_BUSY;
+                }
+            }
+            else if (status != SPARK_STATUS_PENDING)
             {
                 fprintf(stderr,"serving_decode_invoke_failed status=%u request=%llu\n",(uint32_t)status,(unsigned long long)dispatch.request_ids[0u]);
             }
@@ -2126,10 +2139,9 @@ SparkStatus SparkGlm52ServingEnginePump(
 
         if (status != SPARK_STATUS_OK)
         {
-            if (status == SPARK_STATUS_BUSY &&
-                (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
-                 dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH ||
-                 dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
+            if (status == SPARK_STATUS_PENDING &&
+                (dispatch.kind ==
+                    SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
                  dispatch.kind ==
                     SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH))
             {
@@ -2141,7 +2153,21 @@ SparkStatus SparkGlm52ServingEnginePump(
                 }
                 return status;
             }
-            if (dispatch_was_completed_by_decode_path == 0u)
+            if (status == SPARK_STATUS_BUSY &&
+                (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
+                 dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH ||
+                 dispatch_was_retried != 0u))
+            {
+                engine->stats.last_status = status;
+                SparkGlm52ServingRefreshStats(engine);
+                if (stats != 0)
+                {
+                    *stats = engine->stats;
+                }
+                return status;
+            }
+            if (dispatch_was_completed_by_decode_path == 0u &&
+                dispatch_was_retried == 0u)
             {
                 (void)SparkGlm52RequestApiCancelDispatch(
                     engine->request_api,

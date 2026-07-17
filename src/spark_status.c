@@ -76,6 +76,10 @@ const char *SparkStatusToString(SparkStatus status)
         {
             return "internal_error";
         }
+        case SPARK_STATUS_PENDING:
+        {
+            return "pending";
+        }
         default:
         {
             return "unknown_status";

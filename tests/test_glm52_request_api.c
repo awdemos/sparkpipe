@@ -3501,6 +3501,16 @@ static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
     assert(dispatch.mtp_draft_token_budget ==
         SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT);
+    assert(SparkGlm52RequestApiRetryDecodeDispatch(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(fixture.api.request_slots[0u].state ==
+        SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY);
+    assert(fixture.api.request_slots[0u].mtp_draft_token_count ==
+        SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&dispatch) == SPARK_STATUS_OK);
+    assert(dispatch.kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
     SparkTestFillMtpTreeVerifier(
         draft_token_ids,
         SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE,

@@ -6335,6 +6335,182 @@ static SparkStatus SparkGlm52RequestApiReleaseSlotSequence(
     return status;
 }
 
+static uint32_t SparkGlm52RequestApiRetryDecodeTokenCount(
+    const SparkGlm52RequestApiDispatch *dispatch)
+{
+    if (dispatch != 0 &&
+        dispatch->kind ==
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+    {
+        return dispatch->speculative_token_count;
+    }
+    return 1u;
+}
+
+static SparkStatus SparkGlm52RequestApiValidateRetryDecodeCounters(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiDispatch *dispatch)
+{
+    uint32_t retry_token_count;
+
+    if (api == 0 || dispatch == 0 || dispatch->accepted == 0u ||
+        (dispatch->kind !=
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
+         dispatch->kind !=
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH) ||
+        dispatch->request_count == 0u ||
+        api->running_request_count < dispatch->request_count ||
+        api->scheduled_decode_dispatch_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    retry_token_count = SparkGlm52RequestApiRetryDecodeTokenCount(dispatch);
+    if (retry_token_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (dispatch->kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+    {
+        if ((dispatch->flags &
+                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
+        {
+            if (api->mtp_verify_dispatch_count == 0u)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+        }
+        else if (api->dspark_verify_dispatch_count == 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52RequestApiValidateRetryDecodeSlots(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiDispatch *dispatch)
+{
+    uint32_t request_index;
+    uint32_t retry_token_count;
+
+    retry_token_count = SparkGlm52RequestApiRetryDecodeTokenCount(dispatch);
+    for (request_index = 0u;
+         request_index < dispatch->request_count;
+         ++request_index)
+    {
+        SparkGlm52RequestApiSlot *slot;
+        uint32_t expected_state;
+
+        slot = SparkGlm52RequestApiFindSlotByHandle(
+            api,
+            dispatch->request_handles[request_index]);
+        expected_state =
+            dispatch->kind ==
+                SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH
+            ? SPARK_GLM52_REQUEST_API_STATE_RUNNING_DECODE
+            : SPARK_GLM52_REQUEST_API_STATE_RUNNING_SPECULATIVE_VERIFY;
+        if (slot == 0 || slot->state != expected_state ||
+            slot->scheduled_decode_token_count < retry_token_count)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52RequestApiValidateRetryDecodeDispatch(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiDispatch *dispatch)
+{
+    SparkStatus status;
+
+    status = SparkGlm52RequestApiValidateRetryDecodeCounters(api,dispatch);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52RequestApiValidateRetryDecodeSlots(api,dispatch);
+}
+
+static void SparkGlm52RequestApiRestoreRetriedDecodeSlots(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiDispatch *dispatch)
+{
+    uint32_t request_index;
+    uint32_t retry_token_count;
+
+    retry_token_count = SparkGlm52RequestApiRetryDecodeTokenCount(dispatch);
+    for (request_index = 0u;
+         request_index < dispatch->request_count;
+         ++request_index)
+    {
+        SparkGlm52RequestApiSlot *slot;
+
+        slot = SparkGlm52RequestApiFindSlotByHandle(
+            api,
+            dispatch->request_handles[request_index]);
+        slot->scheduled_decode_token_count -= retry_token_count;
+        slot->state =
+            dispatch->kind ==
+                SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH
+            ? SPARK_GLM52_REQUEST_API_STATE_READY_DECODE
+            : SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY;
+    }
+}
+
+static void SparkGlm52RequestApiRestoreRetriedDecodeCounters(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiDispatch *dispatch)
+{
+    api->running_request_count -= dispatch->request_count;
+    api->scheduled_decode_dispatch_count -= 1u;
+    if (dispatch->kind !=
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+    {
+        return;
+    }
+    if ((dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
+    {
+        api->mtp_verify_dispatch_count -= 1u;
+    }
+    else
+    {
+        api->dspark_verify_dispatch_count -= 1u;
+    }
+}
+
+SparkStatus SparkGlm52RequestApiRetryDecodeDispatch(
+    SparkGlm52RequestApi *api,
+    const SparkGlm52RequestApiDispatch *dispatch)
+{
+    SparkStatus status;
+
+    status = SparkGlm52RequestApiValidate(api);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkGlm52RequestApiValidateRetryDecodeDispatch(
+            api,
+            dispatch);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52SchedulerCancelDecodeBatch(
+        api->scheduler,
+        &dispatch->decode_batch_decision);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    SparkGlm52RequestApiRestoreRetriedDecodeSlots(api,dispatch);
+    SparkGlm52RequestApiRestoreRetriedDecodeCounters(api,dispatch);
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkGlm52RequestApiCancelDispatch(
     SparkGlm52RequestApi *api,
     const SparkGlm52RequestApiDispatch *dispatch)
