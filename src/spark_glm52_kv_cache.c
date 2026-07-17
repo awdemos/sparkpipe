@@ -105,6 +105,8 @@ SparkStatus SparkGlm52KvCacheCalculateJitStageBudget(
     uint64_t active_token_capacity;
     uint64_t backing_token_capacity;
     uint64_t compact_selected_token_count;
+    uint64_t key_nope_elements;
+    uint64_t value_elements;
     uint32_t layer_offset;
     uint32_t local_dsa_index_layer_count;
     SparkStatus status;
@@ -124,11 +126,17 @@ SparkStatus SparkGlm52KvCacheCalculateJitStageBudget(
         request->selected_token_count == 0u ||
         request->block_token_count == 0u ||
         (request->attention_cache_layout !=
+            SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE &&
+         request->attention_cache_layout !=
             SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED &&
          request->attention_cache_layout !=
-            SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3) ||
-        (request->attention_cache_layout ==
             SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3 &&
+         request->attention_cache_layout !=
+            SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3) ||
+        ((request->attention_cache_layout ==
+            SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3 ||
+          request->attention_cache_layout ==
+            SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3) &&
          (request->fp8_scale_block_size == 0u ||
           (request->fp8_scale_block_size & 15u) != 0u)) ||
         request->physical_pool_token_capacity % request->block_token_count != 0u ||
@@ -162,8 +170,38 @@ SparkStatus SparkGlm52KvCacheCalculateJitStageBudget(
         attention_bytes_per_token_per_layer =
             (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
             ((SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
-              request->fp8_scale_block_size - 1u) /
+             request->fp8_scale_block_size - 1u) /
              request->fp8_scale_block_size) * sizeof(float);
+    }
+    else if (request->attention_cache_layout ==
+        SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3)
+    {
+        key_nope_elements =
+            (uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+            SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION;
+        value_elements =
+            (uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+            SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION;
+        attention_bytes_per_token_per_layer =
+            SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+            key_nope_elements + value_elements +
+            (((SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+                request->fp8_scale_block_size - 1u) /
+               request->fp8_scale_block_size) +
+             ((key_nope_elements + request->fp8_scale_block_size - 1u) /
+               request->fp8_scale_block_size) +
+             ((value_elements + request->fp8_scale_block_size - 1u) /
+               request->fp8_scale_block_size)) * sizeof(float);
+    }
+    else if (request->attention_cache_layout ==
+        SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE)
+    {
+        attention_bytes_per_token_per_layer =
+            ((uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+             ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+              SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION) +
+             ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+              SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION)) * sizeof(uint16_t);
     }
     else
     {
@@ -345,6 +383,37 @@ static SparkStatus SparkGlm52KvCacheCalculateAttentionBytesPerTokenLayer(
                 element_count,
                 (uint64_t)request->fp8_scale_block_size);
             *bytes_per_token_per_layer_out =
+                element_count + (scale_count * sizeof(float));
+            return SPARK_STATUS_OK;
+
+        case SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3:
+            if (request->fp8_scale_block_size == 0u)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            element_count =
+                (uint64_t)request->latent_dimension +
+                (uint64_t)request->rope_dimension;
+            scale_count = SparkGlm52KvCacheCeilDivU64(
+                element_count,
+                (uint64_t)request->fp8_scale_block_size);
+            *bytes_per_token_per_layer_out =
+                element_count + (scale_count * sizeof(float));
+            element_count =
+                (uint64_t)request->head_count *
+                (uint64_t)request->qk_nope_head_dimension;
+            scale_count = SparkGlm52KvCacheCeilDivU64(
+                element_count,
+                (uint64_t)request->fp8_scale_block_size);
+            *bytes_per_token_per_layer_out +=
+                element_count + (scale_count * sizeof(float));
+            element_count =
+                (uint64_t)request->head_count *
+                (uint64_t)request->value_head_dimension;
+            scale_count = SparkGlm52KvCacheCeilDivU64(
+                element_count,
+                (uint64_t)request->fp8_scale_block_size);
+            *bytes_per_token_per_layer_out +=
                 element_count + (scale_count * sizeof(float));
             return SPARK_STATUS_OK;
 

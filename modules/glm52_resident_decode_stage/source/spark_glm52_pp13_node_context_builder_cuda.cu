@@ -40,7 +40,7 @@
 #define SPARK_GLM52_PP13_BUILDER_COPY_CHUNK_BYTES (64ull * 1024ull * 1024ull)
 #define SPARK_GLM52_PP13_BUILDER_EXECUTION_LAYER_COUNT \
 	(SPARK_GLM52_PP13_BUILDER_LAYER_CAPACITY + 1u)
-#define SPARK_GLM52_PP13_BUILDER_LAYER_BUFFER_ALLOCATION_COUNT 55u
+#define SPARK_GLM52_PP13_BUILDER_LAYER_BUFFER_ALLOCATION_COUNT 61u
 #define SPARK_GLM52_PP13_BUILDER_LAYER_WEIGHT_ALLOCATION_COUNT 29u
 #define SPARK_GLM52_PP13_BUILDER_SHARED_BUFFER_ALLOCATION_COUNT 10u
 #define SPARK_GLM52_PP13_BUILDER_TABLE_ALLOCATION_COUNT 15u
@@ -77,13 +77,21 @@
 #define SPARK_GLM52_PP13_BUILDER_MTP_EMBEDDING_TENSOR \
 	"sparkpipe.mtp.embed_tokens.weight"
 #define SPARK_GLM52_PP13_BUILDER_NVME_RECORD_MAGIC 0x564b4e53u
-#define SPARK_GLM52_PP13_BUILDER_NVME_RECORD_ABI_VERSION 3u
+#define SPARK_GLM52_PP13_BUILDER_NVME_RECORD_ABI_VERSION 4u
 #define SPARK_GLM52_PP13_BUILDER_NVME_ALIGNMENT 4096u
 #define SPARK_GLM52_PP13_BUILDER_MTP_GPU_PROFILE_PHASE_COUNT 7u
 #define SPARK_GLM52_PP13_BUILDER_MTP_DRAFT_HEAD_SCALE_BLOCK 128u
 #define SPARK_GLM52_PP13_BUILDER_FP8_E4M3_MAX 448.0f
 #define SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT \
 	((SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS + \
+	  SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK - 1u) / \
+	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK)
+#define SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT \
+	((SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS + \
+	  SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK - 1u) / \
+	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK)
+#define SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT \
+	((SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS + \
 	  SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK - 1u) / \
 	 SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK)
 
@@ -225,8 +233,14 @@ typedef struct SparkGlm52Pp13BuilderLayer
 	void *context_lengths;
 	void *first_block_token_offsets;
 	void *mla_cache;
+	void *key_nope_cache;
+	void *value_cache;
 	void *mla_cache_fp8;
 	void *mla_cache_scale;
+	void *key_nope_cache_fp8;
+	void *key_nope_cache_scale;
+	void *value_cache_fp8;
+	void *value_cache_scale;
 	void *key_index_cache;
 	void *key_index_block_min;
 	void *key_index_block_max;
@@ -1730,11 +1744,20 @@ static SparkStatus SparkGlm52Pp13BuilderNvmeReadExact(
 		? SPARK_STATUS_OK : SPARK_STATUS_IO_ERROR;
 }
 
+static uint32_t SparkGlm52Pp13BuilderAttentionCacheLayout(
+	const SparkGlm52Pp13BuilderState *state)
+{
+	return state->rank_plan.quantization_mode ==
+		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
+		? SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE
+		: SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderInitializeKvNvme(
 	SparkGlm52Pp13BuilderState *state)
 {
 	SparkGlm52KvJitStageBudgetRequest budget_request;
-	uint64_t mla_block_bytes;
+	uint64_t attention_block_bytes;
 	uint64_t index_block_bytes;
 	uint64_t summary_block_bytes;
 	uint64_t payload_bytes;
@@ -1786,24 +1809,20 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeKvNvme(
 	budget_request.record_alignment_bytes =
 		SPARK_GLM52_PP13_BUILDER_NVME_ALIGNMENT;
 	budget_request.attention_cache_layout =
-		state->rank_plan.quantization_mode ==
-			SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
-		? SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED
-		: SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3;
+		SparkGlm52Pp13BuilderAttentionCacheLayout(state);
 	budget_request.fp8_scale_block_size =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK;
 	status = SparkGlm52KvCacheCalculateJitStageBudget(
 		&budget_request,&state->kv_jit_budget);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	mla_block_bytes =
-		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
-		(state->rank_plan.quantization_mode ==
-			SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
-		? SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS *
-			sizeof(uint16_t)
-		: SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS +
-			SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT * sizeof(float));
+	if (state->kv_jit_budget.mla_bytes_per_token %
+			state->rank_plan.layer_count != 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	attention_block_bytes =
+		(state->kv_jit_budget.mla_bytes_per_token /
+		 state->rank_plan.layer_count) *
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
 	index_block_bytes =
 		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION *
@@ -1818,9 +1837,9 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeKvNvme(
 		 ++layer_offset)
 	{
 		layer_index = state->rank_plan.first_layer_index + layer_offset;
-		if (payload_bytes > UINT64_MAX - mla_block_bytes)
+		if (payload_bytes > UINT64_MAX - attention_block_bytes)
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
-		payload_bytes += mla_block_bytes;
+		payload_bytes += attention_block_bytes;
 		if (SparkGlm52Pp13BuilderDsaSourceLayer(layer_index) == layer_index)
 		{
 			uint64_t index_payload_bytes;
@@ -1836,9 +1855,9 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeKvNvme(
 	if (SparkGlm52Pp13BuilderMtpEnabled(state) &&
 		SparkGlm52Pp13BuilderIsFinalRank(state))
 	{
-		if (payload_bytes > UINT64_MAX - mla_block_bytes)
+		if (payload_bytes > UINT64_MAX - attention_block_bytes)
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
-		payload_bytes += mla_block_bytes;
+		payload_bytes += attention_block_bytes;
 	}
 	state->kv_nvme_payload_bytes = payload_bytes;
 	state->kv_nvme_record_bytes = SparkGlm52Pp13BuilderAlignUpU64(
@@ -1928,6 +1947,10 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeCopyBlock(
 {
 	uint64_t mla_data_block_bytes;
 	uint64_t mla_scale_block_bytes;
+	uint64_t key_nope_data_block_bytes;
+	uint64_t key_nope_scale_block_bytes;
+	uint64_t value_data_block_bytes;
+	uint64_t value_scale_block_bytes;
 	uint64_t index_block_bytes;
 	uint64_t summary_block_bytes;
 	uint64_t payload_offset;
@@ -1947,6 +1970,18 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeCopyBlock(
 		mla_scale_block_bytes =
 			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
 			SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT * sizeof(float);
+		key_nope_data_block_bytes =
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
+			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS;
+		key_nope_scale_block_bytes =
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
+			SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT * sizeof(float);
+		value_data_block_bytes =
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
+			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS;
+		value_scale_block_bytes =
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
+			SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT * sizeof(float);
 	}
 	else
 	{
@@ -1955,6 +1990,16 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeCopyBlock(
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS *
 			sizeof(uint16_t);
 		mla_scale_block_bytes = 0u;
+		key_nope_data_block_bytes =
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
+			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS *
+			sizeof(uint16_t);
+		key_nope_scale_block_bytes = 0u;
+		value_data_block_bytes =
+			(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
+			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS *
+			sizeof(uint16_t);
+		value_scale_block_bytes = 0u;
 	}
 	index_block_bytes =
 		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
@@ -1971,6 +2016,10 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeCopyBlock(
 		SparkGlm52Pp13BuilderLayer *layer;
 		uint8_t *mla_block;
 		uint8_t *mla_scale_block;
+		uint8_t *key_nope_block;
+		uint8_t *key_nope_scale_block;
+		uint8_t *value_block;
+		uint8_t *value_scale_block;
 		uint8_t *index_block;
 		uint8_t *summary_min_block;
 		uint8_t *summary_max_block;
@@ -1980,20 +2029,39 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeCopyBlock(
 		layer = &state->layers[layer_offset];
 		if (mla_scale_block_bytes != 0u)
 		{
-			if (layer->mla_cache_fp8 == 0 || layer->mla_cache_scale == 0)
+			if (layer->mla_cache_fp8 == 0 || layer->mla_cache_scale == 0 ||
+				layer->key_nope_cache_fp8 == 0 ||
+				layer->key_nope_cache_scale == 0 ||
+				layer->value_cache_fp8 == 0 ||
+				layer->value_cache_scale == 0)
 				return SPARK_STATUS_INVALID_ARGUMENT;
 			mla_block = (uint8_t *)layer->mla_cache_fp8 +
 				((uint64_t)physical_block_index * mla_data_block_bytes);
 			mla_scale_block = (uint8_t *)layer->mla_cache_scale +
 				((uint64_t)physical_block_index * mla_scale_block_bytes);
+			key_nope_block = (uint8_t *)layer->key_nope_cache_fp8 +
+				((uint64_t)physical_block_index * key_nope_data_block_bytes);
+			key_nope_scale_block = (uint8_t *)layer->key_nope_cache_scale +
+				((uint64_t)physical_block_index * key_nope_scale_block_bytes);
+			value_block = (uint8_t *)layer->value_cache_fp8 +
+				((uint64_t)physical_block_index * value_data_block_bytes);
+			value_scale_block = (uint8_t *)layer->value_cache_scale +
+				((uint64_t)physical_block_index * value_scale_block_bytes);
 		}
 		else
 		{
-			if (layer->mla_cache == 0)
+			if (layer->mla_cache == 0 || layer->key_nope_cache == 0 ||
+				layer->value_cache == 0)
 				return SPARK_STATUS_INVALID_ARGUMENT;
 			mla_block = (uint8_t *)layer->mla_cache +
 				((uint64_t)physical_block_index * mla_data_block_bytes);
 			mla_scale_block = 0;
+			key_nope_block = (uint8_t *)layer->key_nope_cache +
+				((uint64_t)physical_block_index * key_nope_data_block_bytes);
+			key_nope_scale_block = 0;
+			value_block = (uint8_t *)layer->value_cache +
+				((uint64_t)physical_block_index * value_data_block_bytes);
+			value_scale_block = 0;
 		}
 #define SPARK_GLM52_PP13_NVME_COPY(device_pointer, byte_count) \
 		do { \
@@ -2009,6 +2077,14 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeCopyBlock(
 		SPARK_GLM52_PP13_NVME_COPY(mla_block,mla_data_block_bytes);
 		if (mla_scale_block_bytes != 0u)
 			SPARK_GLM52_PP13_NVME_COPY(mla_scale_block,mla_scale_block_bytes);
+		SPARK_GLM52_PP13_NVME_COPY(key_nope_block,key_nope_data_block_bytes);
+		if (key_nope_scale_block_bytes != 0u)
+			SPARK_GLM52_PP13_NVME_COPY(
+				key_nope_scale_block,key_nope_scale_block_bytes);
+		SPARK_GLM52_PP13_NVME_COPY(value_block,value_data_block_bytes);
+		if (value_scale_block_bytes != 0u)
+			SPARK_GLM52_PP13_NVME_COPY(
+				value_scale_block,value_scale_block_bytes);
 		if ((state->kv_nvme_dsa_index_layer_mask &
 				(1ull << layer_offset)) != 0u)
 		{
@@ -2037,24 +2113,49 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeCopyBlock(
 	{
 		uint8_t *mtp_mla_block;
 		uint8_t *mtp_mla_scale_block;
+		uint8_t *mtp_key_nope_block;
+		uint8_t *mtp_key_nope_scale_block;
+		uint8_t *mtp_value_block;
+		uint8_t *mtp_value_scale_block;
 		cudaError_t cuda_status;
 		if (mla_scale_block_bytes != 0u)
 		{
 			if (state->mtp_layer.mla_cache_fp8 == 0 ||
-				state->mtp_layer.mla_cache_scale == 0)
+				state->mtp_layer.mla_cache_scale == 0 ||
+				state->mtp_layer.key_nope_cache_fp8 == 0 ||
+				state->mtp_layer.key_nope_cache_scale == 0 ||
+				state->mtp_layer.value_cache_fp8 == 0 ||
+				state->mtp_layer.value_cache_scale == 0)
 				return SPARK_STATUS_INVALID_ARGUMENT;
 			mtp_mla_block = (uint8_t *)state->mtp_layer.mla_cache_fp8 +
 				((uint64_t)physical_block_index * mla_data_block_bytes);
 			mtp_mla_scale_block = (uint8_t *)state->mtp_layer.mla_cache_scale +
 				((uint64_t)physical_block_index * mla_scale_block_bytes);
+			mtp_key_nope_block = (uint8_t *)state->mtp_layer.key_nope_cache_fp8 +
+				((uint64_t)physical_block_index * key_nope_data_block_bytes);
+			mtp_key_nope_scale_block =
+				(uint8_t *)state->mtp_layer.key_nope_cache_scale +
+				((uint64_t)physical_block_index * key_nope_scale_block_bytes);
+			mtp_value_block = (uint8_t *)state->mtp_layer.value_cache_fp8 +
+				((uint64_t)physical_block_index * value_data_block_bytes);
+			mtp_value_scale_block = (uint8_t *)state->mtp_layer.value_cache_scale +
+				((uint64_t)physical_block_index * value_scale_block_bytes);
 		}
 		else
 		{
-			if (state->mtp_layer.mla_cache == 0)
+			if (state->mtp_layer.mla_cache == 0 ||
+				state->mtp_layer.key_nope_cache == 0 ||
+				state->mtp_layer.value_cache == 0)
 				return SPARK_STATUS_INVALID_ARGUMENT;
 			mtp_mla_block = (uint8_t *)state->mtp_layer.mla_cache +
 				((uint64_t)physical_block_index * mla_data_block_bytes);
 			mtp_mla_scale_block = 0;
+			mtp_key_nope_block = (uint8_t *)state->mtp_layer.key_nope_cache +
+				((uint64_t)physical_block_index * key_nope_data_block_bytes);
+			mtp_key_nope_scale_block = 0;
+			mtp_value_block = (uint8_t *)state->mtp_layer.value_cache +
+				((uint64_t)physical_block_index * value_data_block_bytes);
+			mtp_value_scale_block = 0;
 		}
 #define SPARK_GLM52_PP13_NVME_COPY_MTP(device_pointer, byte_count) \
 		do { \
@@ -2071,6 +2172,16 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeCopyBlock(
 		if (mla_scale_block_bytes != 0u)
 			SPARK_GLM52_PP13_NVME_COPY_MTP(
 				mtp_mla_scale_block,mla_scale_block_bytes);
+		SPARK_GLM52_PP13_NVME_COPY_MTP(
+			mtp_key_nope_block,key_nope_data_block_bytes);
+		if (key_nope_scale_block_bytes != 0u)
+			SPARK_GLM52_PP13_NVME_COPY_MTP(
+				mtp_key_nope_scale_block,key_nope_scale_block_bytes);
+		SPARK_GLM52_PP13_NVME_COPY_MTP(
+			mtp_value_block,value_data_block_bytes);
+		if (value_scale_block_bytes != 0u)
+			SPARK_GLM52_PP13_NVME_COPY_MTP(
+				mtp_value_scale_block,value_scale_block_bytes);
 #undef SPARK_GLM52_PP13_NVME_COPY_MTP
 	}
 	if (payload_offset != SPARK_GLM52_PP13_BUILDER_NVME_ALIGNMENT +
@@ -2132,10 +2243,7 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeValidateRecord(
 			(SparkGlm52Pp13BuilderMtpEnabled(state) &&
 			 SparkGlm52Pp13BuilderIsFinalRank(state) ? 1u : 0u) ||
 		header->attention_cache_layout !=
-			(state->rank_plan.quantization_mode ==
-				SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
-			? SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED
-			: SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3) ||
+			SparkGlm52Pp13BuilderAttentionCacheLayout(state) ||
 		header->dsa_index_layer_mask !=
 			state->kv_nvme_dsa_index_layer_mask ||
 		header->sequence_id != sequence_id ||
@@ -2245,10 +2353,7 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeStore(
 		SparkGlm52Pp13BuilderMtpEnabled(state) &&
 		SparkGlm52Pp13BuilderIsFinalRank(state) ? 1u : 0u;
 	header->attention_cache_layout =
-		state->rank_plan.quantization_mode ==
-			SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
-		? SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED
-		: SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3;
+		SparkGlm52Pp13BuilderAttentionCacheLayout(state);
 	header->dsa_index_layer_mask = state->kv_nvme_dsa_index_layer_mask;
 	header->sequence_id = sequence_id;
 	header->logical_block_index = logical_block_index;
@@ -2767,11 +2872,31 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 			ALLOC_FIELD(mla_cache_scale,
 				cache_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT,float);
+			ALLOC_FIELD(key_nope_cache_fp8,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint8_t);
+			ALLOC_FIELD(key_nope_cache_scale,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT,float);
+			ALLOC_FIELD(value_cache_fp8,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint8_t);
+			ALLOC_FIELD(value_cache_scale,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT,float);
 		}
 		else
+		{
 			ALLOC_FIELD(mla_cache,
 				cache_token_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
+			ALLOC_FIELD(key_nope_cache,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
+			ALLOC_FIELD(value_cache,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
+		}
 		if (requires_dsa_index_cache != 0u)
 		{
 			ALLOC_FIELD(key_index_cache,
@@ -2793,11 +2918,31 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 			ZERO_FIELD(mla_cache_scale,
 				cache_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT,float);
+			ZERO_FIELD(key_nope_cache_fp8,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint8_t);
+			ZERO_FIELD(key_nope_cache_scale,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT,float);
+			ZERO_FIELD(value_cache_fp8,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint8_t);
+			ZERO_FIELD(value_cache_scale,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT,float);
 		}
 		else
+		{
 			ZERO_FIELD(mla_cache,
 				cache_token_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
+			ZERO_FIELD(key_nope_cache,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
+			ZERO_FIELD(value_cache,
+				cache_token_capacity *
+					SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
+		}
 		if (requires_dsa_index_cache != 0u)
 		{
 			ZERO_FIELD(key_index_cache,
@@ -2873,10 +3018,24 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint8_t);
 		ALLOC_FIELD(mla_cache_scale,cache_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT,float);
+		ALLOC_FIELD(key_nope_cache_fp8,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint8_t);
+		ALLOC_FIELD(key_nope_cache_scale,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT,float);
+		ALLOC_FIELD(value_cache_fp8,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint8_t);
+		ALLOC_FIELD(value_cache_scale,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT,float);
 	}
 	else
+	{
 		ALLOC_FIELD(mla_cache,cache_token_capacity *
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
+		ALLOC_FIELD(key_nope_cache,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
+		ALLOC_FIELD(value_cache,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
+	}
 	if (requires_dsa_index_cache != 0u)
 	{
 		ALLOC_FIELD(key_index_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
@@ -2891,10 +3050,24 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint8_t);
 		ZERO_FIELD(mla_cache_scale,cache_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT,float);
+		ZERO_FIELD(key_nope_cache_fp8,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint8_t);
+		ZERO_FIELD(key_nope_cache_scale,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT,float);
+		ZERO_FIELD(value_cache_fp8,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint8_t);
+		ZERO_FIELD(value_cache_scale,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT,float);
 	}
 	else
+	{
 		ZERO_FIELD(mla_cache,cache_token_capacity *
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
+		ZERO_FIELD(key_nope_cache,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
+		ZERO_FIELD(value_cache,cache_token_capacity *
+			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
+	}
 	if (requires_dsa_index_cache != 0u)
 	{
 		ZERO_FIELD(key_index_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
@@ -3054,28 +3227,39 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	node->cos_table = (const float *)state->cos_table;
 	node->sin_table = (const float *)state->sin_table;
 	node->mla_cache_bf16 = w8lut != 0u ? layer->mla_cache : 0;
-	node->key_nope_cache_bf16 = 0;
-	node->value_cache_bf16 = 0;
+	node->key_nope_cache_bf16 = w8lut != 0u ? layer->key_nope_cache : 0;
+	node->value_cache_bf16 = w8lut != 0u ? layer->value_cache : 0;
 	memset(&layer->fp8_kv_cache_plan,0,sizeof(layer->fp8_kv_cache_plan));
 	if (w8lut == 0u)
 	{
 		layer->fp8_kv_cache_plan.abi_version =
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_PLAN_ABI_VERSION;
 		layer->fp8_kv_cache_plan.capability_flags =
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_REQUIRED_CAPABILITIES |
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_CAPABILITY_COMPRESSED_MLA_ONLY;
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_REQUIRED_CAPABILITIES;
 		layer->fp8_kv_cache_plan.maximum_active_sequence_count =
 			SparkGlm52Pp13BuilderLayerActiveRowCapacity(state,layer);
 		layer->fp8_kv_cache_plan.cache_token_capacity =
 			state->configuration.kv_pool_token_capacity;
 		layer->fp8_kv_cache_plan.cache_token_elements =
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
+		layer->fp8_kv_cache_plan.key_nope_elements =
+			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS;
+		layer->fp8_kv_cache_plan.value_elements =
+			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS;
 		layer->fp8_kv_cache_plan.scale_block_size =
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK;
 		layer->fp8_kv_cache_plan.mla_cache_fp8_e4m3 =
 			(uint8_t *)layer->mla_cache_fp8;
 		layer->fp8_kv_cache_plan.mla_cache_scale_f32 =
 			(float *)layer->mla_cache_scale;
+		layer->fp8_kv_cache_plan.key_nope_cache_fp8_e4m3 =
+			(uint8_t *)layer->key_nope_cache_fp8;
+		layer->fp8_kv_cache_plan.key_nope_cache_scale_f32 =
+			(float *)layer->key_nope_cache_scale;
+		layer->fp8_kv_cache_plan.value_cache_fp8_e4m3 =
+			(uint8_t *)layer->value_cache_fp8;
+		layer->fp8_kv_cache_plan.value_cache_scale_f32 =
+			(float *)layer->value_cache_scale;
 		node->fp8_kv_cache_plan = &layer->fp8_kv_cache_plan;
 	}
 	node->attention_norm_weight_bf16 = layer->attention_norm_weight;
@@ -3118,7 +3302,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 		? SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT
 		: SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
 	node->attention_execution_mode =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
 	node->dsa_score_tiles_f32 = state->dsa_score_tiles;
 	node->dsa_prefill_selected_u32 = state->dsa_prefill_selected;
 	node->dsa_prefill_row_context_lengths_u32 = state->dsa_prefill_row_context_lengths;
@@ -3146,6 +3330,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_PREBOUND_PROJECTIONS |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_GRAPH_REPLAY |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FAST_MLP |
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_TILED_ONLINE_ATTENTION |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_FORBID_DEBUG_SYNCHRONIZATION |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_STAGE_SLICE_PLAN |
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION |
@@ -3256,23 +3441,37 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	}
 }
 
+static void SparkGlm52Pp13BuilderWireDsaFragmentPayload(
+	SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *plan,
+	uint32_t payload_index,
+	void *source_base,
+	uint32_t token_bytes,
+	uint32_t flags)
+{
+	SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload *payload;
+	uint64_t block_bytes;
+	block_bytes =
+		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
+		token_bytes;
+	payload = &plan->payloads[payload_index];
+	payload->abi_version =
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_ABI_VERSION;
+	payload->descriptor_bytes =
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_DESCRIPTOR_BYTES;
+	payload->flags = flags |
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_ENABLED |
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_L2_PREFETCH_ONLY;
+	payload->source_block_stride_bytes = block_bytes;
+	payload->transfer_bytes = block_bytes;
+	payload->source_base = source_base;
+}
+
 static void SparkGlm52Pp13BuilderWireDsaFragmentPrefetch(
 	SparkGlm52Pp13BuilderState *state,
 	SparkGlm52Pp13BuilderLayer *layer)
 {
-	SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload *payload;
-	uint64_t data_block_bytes;
-	uint64_t scale_block_bytes;
 	uint32_t fp8;
 	fp8 = SparkGlm52Pp13BuilderUsesW8lut(state) == 0u ? 1u : 0u;
-	data_block_bytes =
-		(uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS *
-		(fp8 != 0u ? sizeof(uint8_t) : sizeof(uint16_t));
-	scale_block_bytes = fp8 != 0u
-		? (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS *
-			SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT * sizeof(float)
-		: 0u;
 	memset(&layer->dsa_prefetch_plan,0,sizeof(layer->dsa_prefetch_plan));
 	layer->dsa_prefetch_plan.abi_version =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_ABI_VERSION;
@@ -3280,7 +3479,7 @@ static void SparkGlm52Pp13BuilderWireDsaFragmentPrefetch(
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_DESCRIPTOR_BYTES;
 	layer->dsa_prefetch_plan.capability_flags =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_READ_ONLY_REQUIRED_CAPABILITIES;
-	layer->dsa_prefetch_plan.payload_count = fp8 != 0u ? 2u : 1u;
+	layer->dsa_prefetch_plan.payload_count = fp8 != 0u ? 6u : 3u;
 	layer->dsa_prefetch_plan.physical_block_count = layer->node.kv_block_count;
 	layer->dsa_prefetch_plan.maximum_active_sequence_count =
 		state->rank_plan.execution_row_capacity;
@@ -3294,32 +3493,50 @@ static void SparkGlm52Pp13BuilderWireDsaFragmentPrefetch(
 	layer->dsa_prefetch_plan.transport_ready_event =
 		(void *)layer->dsa_prefetch_event;
 	layer->dsa_prefetch_plan.transport_stream = (void *)state->kv_stream;
-	payload = &layer->dsa_prefetch_plan.payloads[0];
-	payload->abi_version =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_ABI_VERSION;
-	payload->descriptor_bytes =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_DESCRIPTOR_BYTES;
-	payload->flags =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_ENABLED |
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_MLA_LATENT |
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_L2_PREFETCH_ONLY;
-	payload->source_block_stride_bytes = data_block_bytes;
-	payload->transfer_bytes = data_block_bytes;
-	payload->source_base = fp8 != 0u ? layer->mla_cache_fp8 : layer->mla_cache;
 	if (fp8 != 0u)
 	{
-		payload = &layer->dsa_prefetch_plan.payloads[1];
-		payload->abi_version =
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_ABI_VERSION;
-		payload->descriptor_bytes =
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_DESCRIPTOR_BYTES;
-		payload->flags =
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_ENABLED |
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_FP8_SCALE |
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_L2_PREFETCH_ONLY;
-		payload->source_block_stride_bytes = scale_block_bytes;
-		payload->transfer_bytes = scale_block_bytes;
-		payload->source_base = layer->mla_cache_scale;
+		SparkGlm52Pp13BuilderWireDsaFragmentPayload(&layer->dsa_prefetch_plan,
+			0u,layer->mla_cache_fp8,
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_MLA_LATENT);
+		SparkGlm52Pp13BuilderWireDsaFragmentPayload(&layer->dsa_prefetch_plan,
+			1u,layer->mla_cache_scale,
+			SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT * sizeof(float),
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_MLA_LATENT |
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_FP8_SCALE);
+		SparkGlm52Pp13BuilderWireDsaFragmentPayload(&layer->dsa_prefetch_plan,
+			2u,layer->key_nope_cache_fp8,
+			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_KEY_NOPE);
+		SparkGlm52Pp13BuilderWireDsaFragmentPayload(&layer->dsa_prefetch_plan,
+			3u,layer->key_nope_cache_scale,
+			SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT * sizeof(float),
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_KEY_NOPE |
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_FP8_SCALE);
+		SparkGlm52Pp13BuilderWireDsaFragmentPayload(&layer->dsa_prefetch_plan,
+			4u,layer->value_cache_fp8,
+			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_VALUE);
+		SparkGlm52Pp13BuilderWireDsaFragmentPayload(&layer->dsa_prefetch_plan,
+			5u,layer->value_cache_scale,
+			SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT * sizeof(float),
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_VALUE |
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_FP8_SCALE);
+	}
+	else
+	{
+		SparkGlm52Pp13BuilderWireDsaFragmentPayload(&layer->dsa_prefetch_plan,
+			0u,layer->mla_cache,
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t),
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_MLA_LATENT);
+		SparkGlm52Pp13BuilderWireDsaFragmentPayload(&layer->dsa_prefetch_plan,
+			1u,layer->key_nope_cache,
+			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t),
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_KEY_NOPE);
+		SparkGlm52Pp13BuilderWireDsaFragmentPayload(&layer->dsa_prefetch_plan,
+			2u,layer->value_cache,
+			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t),
+			SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_FLAG_VALUE);
 	}
 	layer->node.reserved_execution_flags |=
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_DSA_KV_FRAGMENT_TRANSPORT;

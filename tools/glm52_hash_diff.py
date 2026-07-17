@@ -164,11 +164,23 @@ def layer_numeric_report(reference_dir, candidate_dir):
             candidate_path = os.path.join(
                 candidate_dir,
                 f"token_{token:04d}_after_layer_{layer:04d}.bf16")
-            if not os.path.exists(candidate_path):
-                print(f"layer_numeric\ttoken={token}\tlayer={layer}\tcandidate_missing")
+            if os.path.exists(candidate_path):
+                candidate = open(candidate_path, "rb").read()
+            else:
+                combined_paths = sorted(glob.glob(os.path.join(
+                    candidate_dir, f"*after_layer_{layer}.bf16")))
+                if len(combined_paths) != 1:
+                    print(f"layer_numeric\ttoken={token}\tlayer={layer}\tcandidate_missing")
+                    missing += 1
+                    continue
+                candidate_path = combined_paths[0]
+                combined = open(candidate_path, "rb").read()
+                candidate = combined[
+                    token * HIDDEN_BYTES:(token + 1) * HIDDEN_BYTES]
+            if len(candidate) != HIDDEN_BYTES:
+                print(f"layer_numeric\ttoken={token}\tlayer={layer}\tcandidate_size_invalid={len(candidate)}")
                 missing += 1
                 continue
-            candidate = open(candidate_path, "rb").read()
             expected = reference[token * HIDDEN_BYTES:(token + 1) * HIDDEN_BYTES]
             max_abs, rel_l2, cos = numeric_stats(
                 bf16_to_f32_list(candidate),
@@ -237,6 +249,9 @@ def selftest():
     os.mkdir(candidate_dir)
     open(f"{reference_dir}/after_layer_0.bf16", "wb").write(hidden_ones)
     open(f"{candidate_dir}/token_0000_after_layer_0000.bf16", "wb").write(hidden_ones)
+    assert layer_numeric_report(reference_dir, candidate_dir) == 0
+    os.remove(f"{candidate_dir}/token_0000_after_layer_0000.bf16")
+    open(f"{candidate_dir}/after_layer_0.bf16", "wb").write(hidden_ones)
     assert layer_numeric_report(reference_dir, candidate_dir) == 0
     phase_name = "token_0000_layer_0000_moe_output.bf16"
     open(f"{reference_dir}/{phase_name}", "wb").write(hidden_ones)

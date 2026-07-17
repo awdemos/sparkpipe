@@ -3499,6 +3499,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
     SparkFirmwareModuleConfiguration configuration;
     SparkFirmwareModuleHostServices host_services;
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
+    void *bf16_cache;
     void *module_state;
 
     SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
@@ -3509,6 +3510,10 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
     node_context.fp8_kv_cache_plan = &fp8_kv_cache_plan;
     node_context.reserved_execution_flags |=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FP8_KV_CACHE;
+    bf16_cache = node_context.mla_cache_bf16;
+    node_context.mla_cache_bf16 = 0;
+    node_context.key_nope_cache_bf16 = 0;
+    node_context.value_cache_bf16 = 0;
 
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
@@ -3526,6 +3531,14 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
         &module_state) == SPARK_STATUS_OK);
     assert(module_state != 0);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
+
+    node_context.mla_cache_bf16 = bf16_cache;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+    node_context.mla_cache_bf16 = 0;
 
     fp8_kv_cache_plan.value_cache_scale_f32 = 0;
     module_state = 0;

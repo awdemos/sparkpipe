@@ -203,6 +203,25 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedActiveRowsKvCac
     uint32_t scale_block_size,
     void *cuda_stream);
 
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedActiveRowsKvCacheStoreTriple(
+    const void *mla_bf16_active_rows,
+    const void *raw_kv_b_bf16_active_rows,
+    const uint32_t *slot_mapping,
+    uint8_t *mla_cache_fp8_e4m3,
+    float *mla_cache_scale_f32,
+    uint8_t *key_nope_cache_fp8_e4m3,
+    float *key_nope_cache_scale_f32,
+    uint8_t *value_cache_fp8_e4m3,
+    float *value_cache_scale_f32,
+    uint32_t active_sequence_count,
+    uint32_t cache_token_capacity,
+    uint32_t mla_element_count,
+    uint32_t key_nope_element_count,
+    uint32_t value_element_count,
+    uint32_t raw_kv_b_element_count,
+    uint32_t scale_block_size,
+    void *cuda_stream);
+
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedKvCacheStoreTriple(
     const void *mla_cache_bf16,
     const void *key_nope_cache_bf16,
