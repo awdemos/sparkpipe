@@ -750,6 +750,66 @@ def test_mtp_tree_copies_branch_history_before_attention(root: Path) -> None:
     assert "SPARK_GLM52_MODEL_MTP_TREE_ANCESTOR_COPY_COUNT" in source
 
 
+def test_mtp_tree_keeps_primary_kv_rows_canonical(root: Path) -> None:
+    builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                   encoding="utf-8")
+    required = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+                "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                    encoding="utf-8")
+    apply_start = builder.index(
+        "static SparkStatus SparkGlm52Pp13BuilderApplyMtpTreeKvRows(")
+    apply_end = builder.index(
+        "static SparkStatus SparkGlm52Pp13BuilderExpandExecutionKvRows(",
+        apply_start)
+    apply_body = builder[apply_start:apply_end]
+    clone_start = required.index(
+        "static __global__ void "
+        "SparkGlm52ResidentDecodeStageMtpTreeCloneBlocksKernel(")
+    clone_end = required.index(
+        "static __global__ void "
+        "SparkGlm52ResidentDecodeStageMtpTreeCaptureShadowKernel(",
+        clone_start)
+    clone_body = required[clone_start:clone_end]
+    for row in ("VERIFIER_DEPTH2_ALTERNATE_ROW",
+                "VERIFIER_DEPTH3_ALTERNATE_ROW"):
+        assert row in apply_body
+        assert row in clone_body
+    for row in ("VERIFIER_DEPTH2_PRIMARY_ROW",
+                "VERIFIER_DEPTH3_PRIMARY_ROW"):
+        assert row not in apply_body
+        assert row not in clone_body
+    for obsolete_index in ("TRANSIENT_DEPTH2_PRIMARY_INDEX",
+                           "TRANSIENT_DEPTH3_PRIMARY_INDEX"):
+        assert obsolete_index not in builder
+        assert obsolete_index not in required
+
+
+def test_mtp_shadow_tokens_use_distinct_storage_capacity(root: Path) -> None:
+    builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                   encoding="utf-8")
+    required = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+                "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                    encoding="utf-8")
+    capture_start = required.index(
+        "static __global__ void "
+        "SparkGlm52ResidentDecodeStageMtpTreeCaptureShadowKernel(")
+    capture_end = required.index(
+        "static __global__ void "
+        "SparkGlm52ResidentDecodeStageMtpTreePatchAncestorsKernel(",
+        capture_start)
+    capture_body = required[capture_start:capture_end]
+    assert "SPARK_GLM52_MODEL_MTP_TREE_SHADOW_TOKEN_COUNT" in builder
+    assert "state->cache_storage_token_capacity" in builder
+    assert "node->kv_storage_token_capacity" in builder
+    assert "node->cache_token_capacity" in builder
+    assert "destination_slot < cache_token_capacity" in capture_body
+    assert "destination_slot >= storage_token_capacity" in capture_body
+    assert "node_context->kv_storage_token_capacity" in required
+    assert "node_context->cache_token_capacity" in required
+
+
 def test_mtp_tree_rebases_private_draft_cache_before_followup(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -1223,6 +1283,8 @@ def main() -> None:
     test_mtp_runtime_failures_name_the_failing_phase(root)
     test_mtp_gpu_profile_is_graph_compatible_and_explicitly_enabled(root)
     test_mtp_tree_copies_branch_history_before_attention(root)
+    test_mtp_tree_keeps_primary_kv_rows_canonical(root)
+    test_mtp_shadow_tokens_use_distinct_storage_capacity(root)
     test_mtp_tree_rebases_private_draft_cache_before_followup(root)
     test_mtp_transaction_uses_expanded_execution_row(root)
     test_mtp_kv_resolution_scratch_is_shared_and_execution_row_sized(root)

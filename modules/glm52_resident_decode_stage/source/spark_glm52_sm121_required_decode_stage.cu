@@ -18401,6 +18401,8 @@ static uint64_t SparkGlm52ResidentDecodeStageComputeGraphSignature(
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, pipeline_slot->dsa_candidate_count);
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(pipeline_slot->restricted_logits));
     signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(pipeline_slot->mtp_draft_token_budgets));
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, node_context->kv_storage_token_capacity);
+    signature = SparkGlm52ResidentDecodeStageMixGraphSignature(signature, SparkGlm52ResidentDecodeStagePointerGraphSignature(pipeline_slot->mtp_tree_shadow_slot_mapping));
     return signature;
 }
 
@@ -18511,8 +18513,10 @@ static __global__ void SparkGlm52ResidentDecodeStageMtpTreeCloneBlocksKernel(
     {
         return;
     }
-    branch_row =
-        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW + branch_index;
+    branch_row = branch_index ==
+            SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH2_ALTERNATE_INDEX
+        ? SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_ALTERNATE_ROW
+        : SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_ALTERNATE_ROW;
     row_base = lane_index * SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
     logical_block_index = positions[row_base + branch_row] / block_token_count;
     if (logical_block_index >= max_blocks_per_sequence)
@@ -18542,6 +18546,46 @@ static __global__ void SparkGlm52ResidentDecodeStageMtpTreeCloneBlocksKernel(
     if (threadIdx.x == 0u && dsa_summary_dirty_flags != 0)
     {
         dsa_summary_dirty_flags[destination_physical_block] = 1u;
+    }
+}
+
+static __global__ void SparkGlm52ResidentDecodeStageMtpTreeCaptureShadowKernel(
+    const uint32_t *__restrict__ slot_mapping,
+    const uint32_t *__restrict__ shadow_slot_mapping,
+    SparkGlm52ResidentDecodeStageMtpTreeKvPayloads payloads,
+    uint32_t active_sequence_count,
+    uint32_t cache_token_capacity,
+    uint32_t storage_token_capacity)
+{
+    uint32_t destination_slot;
+    uint32_t payload_index;
+    uint32_t row_index;
+    uint32_t source_slot;
+
+    row_index = blockIdx.x;
+    if (row_index >= active_sequence_count)
+    {
+        return;
+    }
+    destination_slot = shadow_slot_mapping[row_index];
+    if (destination_slot == UINT32_MAX)
+    {
+        return;
+    }
+    source_slot = slot_mapping[row_index];
+    if (source_slot >= cache_token_capacity ||
+        destination_slot < cache_token_capacity ||
+        destination_slot >= storage_token_capacity ||
+        source_slot == destination_slot)
+    {
+        return;
+    }
+    for (payload_index = 0u; payload_index < payloads.count; ++payload_index)
+    {
+        SparkGlm52ResidentDecodeStageCopyMtpTreeKvRow(
+            payloads.payloads[payload_index],
+            source_slot,
+            destination_slot);
     }
 }
 
@@ -18577,16 +18621,16 @@ static __global__ void SparkGlm52ResidentDecodeStageMtpTreePatchAncestorsKernel(
     }
     row_base = lane_index * SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
     source_row = relation_index <
-        SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT
+        SPARK_GLM52_MODEL_MTP_TREE_BRANCH_ROW_COUNT
         ? SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW
         : SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW;
     destination_row = relation_index <
-        SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT
+        SPARK_GLM52_MODEL_MTP_TREE_BRANCH_ROW_COUNT
         ? SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW +
             relation_index
         : SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_PRIMARY_ROW +
             (relation_index -
-                SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT);
+                SPARK_GLM52_MODEL_MTP_TREE_BRANCH_ROW_COUNT);
     position = positions[row_base + source_row];
     logical_block_index = position / block_token_count;
     if (logical_block_index >= max_blocks_per_sequence)
@@ -19660,6 +19704,49 @@ static SparkStatus SparkGlm52ResidentDecodeStageMaybePatchMtpTreeAncestors(
         ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
+static SparkStatus SparkGlm52ResidentDecodeStageMaybeCaptureMtpTreeShadows(
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    cudaStream_t cuda_stream,
+    uint32_t active_sequence_count)
+{
+    SparkGlm52ResidentDecodeStageMtpTreeKvPayloads payloads;
+    SparkStatus status;
+
+    if (!SparkGlm52ResidentDecodeStageFrameIsMtpTreeVerify(frame_context))
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (node_context == 0 || pipeline_slot == 0 ||
+        pipeline_slot->slot_mapping == 0 ||
+        pipeline_slot->mtp_tree_shadow_slot_mapping == 0 ||
+        node_context->kv_storage_token_capacity <=
+            node_context->cache_token_capacity)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52ResidentDecodeStageBuildMtpTreeKvPayloads(
+        node_context,&payloads);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    SparkGlm52ResidentDecodeStageMtpTreeCaptureShadowKernel<<<
+        active_sequence_count,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        pipeline_slot->slot_mapping,
+        pipeline_slot->mtp_tree_shadow_slot_mapping,
+        payloads,
+        active_sequence_count,
+        node_context->cache_token_capacity,
+        node_context->kv_storage_token_capacity);
+    return cudaGetLastError() == cudaSuccess
+        ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchAbsorbedLatentAttention(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -20135,6 +20222,18 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
     {
         return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
             "mtp_tree_patch_ancestors",
+            status);
+    }
+    status = SparkGlm52ResidentDecodeStageMaybeCaptureMtpTreeShadows(
+        node_context,
+        pipeline_slot,
+        frame_context,
+        cuda_stream,
+        active_sequence_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return SparkGlm52ResidentDecodeStageTraceLayerBodyStatus(
+            "mtp_tree_capture_shadow",
             status);
     }
     SparkGlm52ResidentDecodeStageMappedFp8ValueHashProbe(

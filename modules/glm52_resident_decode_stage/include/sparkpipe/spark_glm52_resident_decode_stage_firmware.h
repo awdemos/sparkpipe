@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 28u
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 29u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION SPARK_GLM52_MODEL_HIDDEN_DIMENSION
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT SPARK_GLM52_MODEL_HEAD_COUNT
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION SPARK_GLM52_MODEL_LATENT_DIMENSION
@@ -1055,6 +1055,7 @@ typedef struct SparkGlm52ResidentDecodeStagePipelineSlot
     uint32_t *mtp_committed_token_ids;
     uint32_t *mtp_event_counters;
     uint64_t *phase_clock_cycles;
+    const uint32_t *mtp_tree_shadow_slot_mapping;
 } SparkGlm52ResidentDecodeStagePipelineSlot;
 
 typedef struct SparkGlm52ResidentDecodeStageNodeContext
@@ -1195,6 +1196,7 @@ typedef struct SparkGlm52ResidentDecodeStageNodeContext
     uint32_t dsa_cache_first_layer_index;
     const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *dsa_kv_fragment_prefetch_plan;
     const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *dsa_kv_fragment_save_plan;
+    uint32_t kv_storage_token_capacity;
 
 } SparkGlm52ResidentDecodeStageNodeContext;
 

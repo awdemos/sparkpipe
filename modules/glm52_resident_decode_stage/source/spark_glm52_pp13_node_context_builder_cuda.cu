@@ -268,6 +268,8 @@ typedef struct SparkGlm52Pp13BuilderMtpKvTransaction
 	uint32_t last_accepted_token_count;
 	uint32_t last_resolution_path_id;
 	uint32_t last_valid;
+	uint32_t shadow_slot_index;
+	uint32_t shadow_valid;
 	uint32_t physical_slots[SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT];
 	uint32_t transient_physical_blocks[
 		SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT];
@@ -356,6 +358,10 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint32_t *host_physical_block_pin_counts;
 	SparkGlm52Pp13WorkControlKvDirectoryEntry *host_kv_directory_entries;
 	SparkGlm52Pp13BuilderMtpKvTransaction *mtp_kv_transactions;
+	uint32_t *mtp_shadow_free_indices;
+	uint32_t mtp_shadow_slot_capacity;
+	uint32_t mtp_shadow_free_count;
+	uint32_t cache_storage_token_capacity;
 	uint32_t *host_backing_block_free_next;
 	uint32_t *device_physical_block_indices;
 	uint32_t *device_lane_physical_block_counts;
@@ -384,6 +390,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint64_t *mtp_gpu_profile_cycles;
 	uint32_t *mtp_base_positions;
 	uint32_t *device_mtp_request_slot_indices;
+	uint32_t *device_mtp_tree_shadow_slot_mapping;
 	float *mtp_norm_inv;
 	void *cos_table;
 	void *device_probe_hash_slots;
@@ -411,6 +418,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint32_t *host_mtp_draft_budgets;
 	uint32_t *host_mtp_committed_token_ids;
 	uint32_t *host_mtp_request_slot_indices;
+	uint32_t *host_mtp_tree_shadow_slot_mapping;
 	uint64_t *host_mtp_previous_sequence_ids;
 	uint64_t *host_mtp_previous_positions;
 	uint8_t *host_mtp_previous_valid;
@@ -1364,52 +1372,48 @@ __global__ static void SparkGlm52Pp13BuilderMtpGpuProfileKernel(
 		global_time;
 }
 
+typedef struct SparkGlm52Pp13BuilderKvPayload
+{
+	uint8_t *base;
+	uint32_t token_bytes;
+} SparkGlm52Pp13BuilderKvPayload;
+
+#define SPARK_GLM52_PP13_BUILDER_KV_PAYLOAD_COUNT 7u
+
+typedef struct SparkGlm52Pp13BuilderKvPayloads
+{
+	SparkGlm52Pp13BuilderKvPayload
+		payloads[SPARK_GLM52_PP13_BUILDER_KV_PAYLOAD_COUNT];
+	uint32_t count;
+} SparkGlm52Pp13BuilderKvPayloads;
+
 __global__ static void SparkGlm52Pp13BuilderClearSpeculativeKvRowsKernel(
 	const uint32_t *__restrict__ physical_slots,
 	uint32_t physical_slot_count,
 	uint32_t block_token_count,
-	uint16_t *__restrict__ mla_cache,
-	uint8_t *__restrict__ mla_cache_fp8,
-	float *__restrict__ mla_cache_scale,
-	uint16_t *__restrict__ key_index_cache,
+	SparkGlm52Pp13BuilderKvPayloads payloads,
 	uint8_t *__restrict__ dsa_summary_dirty_flags)
 {
-	uint32_t element_index;
+	uint32_t byte_index;
+	uint32_t payload_index;
 	uint32_t physical_slot;
 	uint32_t slot_index;
 	slot_index = blockIdx.x;
 	if (slot_index >= physical_slot_count)
 		return;
 	physical_slot = physical_slots[slot_index];
-	for (element_index = threadIdx.x;
-		 element_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
-		 element_index += blockDim.x)
+	for (payload_index = 0u; payload_index < payloads.count; ++payload_index)
 	{
-		if (mla_cache != 0)
-			mla_cache[((uint64_t)physical_slot *
-				SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + element_index] = 0u;
-		else if (mla_cache_fp8 != 0)
-			mla_cache_fp8[((uint64_t)physical_slot *
-				SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) + element_index] = 0u;
+		for (byte_index = threadIdx.x;
+			 byte_index < payloads.payloads[payload_index].token_bytes;
+			 byte_index += blockDim.x)
+			payloads.payloads[payload_index].base[
+				((uint64_t)physical_slot *
+					payloads.payloads[payload_index].token_bytes) +
+				byte_index] = 0u;
 	}
-	if (mla_cache_scale != 0)
-	{
-		for (element_index = threadIdx.x;
-			 element_index < SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT;
-			 element_index += blockDim.x)
-			mla_cache_scale[((uint64_t)physical_slot *
-				SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT) + element_index] = 0.0f;
-	}
-	if (key_index_cache != 0)
-	{
-		for (element_index = threadIdx.x;
-			 element_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION;
-			 element_index += blockDim.x)
-			key_index_cache[((uint64_t)physical_slot *
-				SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION) + element_index] = 0u;
-		if (threadIdx.x == 0u)
-			dsa_summary_dirty_flags[physical_slot / block_token_count] = 1u;
-	}
+	if (threadIdx.x == 0u && dsa_summary_dirty_flags != 0)
+		dsa_summary_dirty_flags[physical_slot / block_token_count] = 1u;
 }
 
 __global__ static void SparkGlm52Pp13BuilderCopySpeculativeKvRowsKernel(
@@ -1417,68 +1421,36 @@ __global__ static void SparkGlm52Pp13BuilderCopySpeculativeKvRowsKernel(
 	const uint32_t *__restrict__ destination_physical_slots,
 	uint32_t physical_slot_count,
 	uint32_t block_token_count,
-	uint16_t *__restrict__ mla_cache,
-	uint8_t *__restrict__ mla_cache_fp8,
-	float *__restrict__ mla_cache_scale,
-	uint16_t *__restrict__ key_index_cache,
+	SparkGlm52Pp13BuilderKvPayloads payloads,
 	uint8_t *__restrict__ dsa_summary_dirty_flags)
 {
-	uint32_t element_index;
+	uint32_t byte_index;
 	uint32_t source_physical_slot;
 	uint32_t destination_physical_slot;
+	uint32_t payload_index;
 	uint32_t slot_index;
 	slot_index = blockIdx.x;
 	if (slot_index >= physical_slot_count)
 		return;
 	source_physical_slot = source_physical_slots[slot_index];
 	destination_physical_slot = destination_physical_slots[slot_index];
-	for (element_index = threadIdx.x;
-		 element_index < SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
-		 element_index += blockDim.x)
+	for (payload_index = 0u; payload_index < payloads.count; ++payload_index)
 	{
-		if (mla_cache != 0)
-			mla_cache[((uint64_t)destination_physical_slot *
-				SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) +
-				element_index] =
-				mla_cache[((uint64_t)source_physical_slot *
-					SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) +
-					element_index];
-		else if (mla_cache_fp8 != 0)
-			mla_cache_fp8[((uint64_t)destination_physical_slot *
-				SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) +
-				element_index] =
-				mla_cache_fp8[((uint64_t)source_physical_slot *
-					SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS) +
-					element_index];
+		for (byte_index = threadIdx.x;
+			 byte_index < payloads.payloads[payload_index].token_bytes;
+			 byte_index += blockDim.x)
+			payloads.payloads[payload_index].base[
+				((uint64_t)destination_physical_slot *
+					payloads.payloads[payload_index].token_bytes) +
+				byte_index] =
+				payloads.payloads[payload_index].base[
+					((uint64_t)source_physical_slot *
+						payloads.payloads[payload_index].token_bytes) +
+					byte_index];
 	}
-	if (mla_cache_scale != 0)
-	{
-		for (element_index = threadIdx.x;
-			 element_index < SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT;
-			 element_index += blockDim.x)
-			mla_cache_scale[((uint64_t)destination_physical_slot *
-				SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT) +
-				element_index] =
-				mla_cache_scale[((uint64_t)source_physical_slot *
-					SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT) +
-					element_index];
-	}
-	if (key_index_cache != 0)
-	{
-		for (element_index = threadIdx.x;
-			 element_index <
-				SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION;
-			 element_index += blockDim.x)
-			key_index_cache[((uint64_t)destination_physical_slot *
-				SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION) +
-				element_index] =
-				key_index_cache[((uint64_t)source_physical_slot *
-					SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION) +
-					element_index];
-		if (threadIdx.x == 0u)
-			dsa_summary_dirty_flags[
-				destination_physical_slot / block_token_count] = 1u;
-	}
+	if (threadIdx.x == 0u && dsa_summary_dirty_flags != 0)
+		dsa_summary_dirty_flags[
+			destination_physical_slot / block_token_count] = 1u;
 }
 
 static SparkStatus SparkGlm52Pp13BuilderReportStatus(
@@ -2815,6 +2787,7 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	uint32_t active_row_capacity,
 	uint32_t mtp_row_capacity,
 	uint64_t cache_token_capacity,
+	uint64_t storage_token_capacity,
 	uint32_t requires_dsa_index_cache)
 {
 	uint64_t b;
@@ -2827,7 +2800,8 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	SparkStatus status;
 	b = active_row_capacity;
 	mtp_b = mtp_row_capacity;
-	if (b == 0u || mtp_b == 0u || mtp_b > b)
+	if (b == 0u || mtp_b == 0u || mtp_b > b ||
+		storage_token_capacity < cache_token_capacity)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	kv_block_count = cache_token_capacity /
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
@@ -2867,40 +2841,40 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 		if (fp8 != 0u)
 		{
 			ALLOC_FIELD(mla_cache_fp8,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint8_t);
 			ALLOC_FIELD(mla_cache_scale,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT,float);
 			ALLOC_FIELD(key_nope_cache_fp8,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint8_t);
 			ALLOC_FIELD(key_nope_cache_scale,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT,float);
 			ALLOC_FIELD(value_cache_fp8,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint8_t);
 			ALLOC_FIELD(value_cache_scale,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT,float);
 		}
 		else
 		{
 			ALLOC_FIELD(mla_cache,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
 			ALLOC_FIELD(key_nope_cache,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
 			ALLOC_FIELD(value_cache,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 		}
 		if (requires_dsa_index_cache != 0u)
 		{
 			ALLOC_FIELD(key_index_cache,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 			ALLOC_FIELD(key_index_block_min,
 				kv_block_count *
@@ -2913,40 +2887,40 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 		if (fp8 != 0u)
 		{
 			ZERO_FIELD(mla_cache_fp8,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint8_t);
 			ZERO_FIELD(mla_cache_scale,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT,float);
 			ZERO_FIELD(key_nope_cache_fp8,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint8_t);
 			ZERO_FIELD(key_nope_cache_scale,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT,float);
 			ZERO_FIELD(value_cache_fp8,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint8_t);
 			ZERO_FIELD(value_cache_scale,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT,float);
 		}
 		else
 		{
 			ZERO_FIELD(mla_cache,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
 			ZERO_FIELD(key_nope_cache,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
 			ZERO_FIELD(value_cache,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 		}
 		if (requires_dsa_index_cache != 0u)
 		{
 			ZERO_FIELD(key_index_cache,
-				cache_token_capacity *
+				storage_token_capacity *
 					SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 			ZERO_FIELD(key_index_block_min,
 				kv_block_count *
@@ -3014,31 +2988,31 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ALLOC_FIELD(first_block_token_offsets,b,uint32_t);
 	if (fp8 != 0u)
 	{
-		ALLOC_FIELD(mla_cache_fp8,cache_token_capacity *
+		ALLOC_FIELD(mla_cache_fp8,storage_token_capacity *
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint8_t);
-		ALLOC_FIELD(mla_cache_scale,cache_token_capacity *
+		ALLOC_FIELD(mla_cache_scale,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT,float);
-		ALLOC_FIELD(key_nope_cache_fp8,cache_token_capacity *
+		ALLOC_FIELD(key_nope_cache_fp8,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint8_t);
-		ALLOC_FIELD(key_nope_cache_scale,cache_token_capacity *
+		ALLOC_FIELD(key_nope_cache_scale,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT,float);
-		ALLOC_FIELD(value_cache_fp8,cache_token_capacity *
+		ALLOC_FIELD(value_cache_fp8,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint8_t);
-		ALLOC_FIELD(value_cache_scale,cache_token_capacity *
+		ALLOC_FIELD(value_cache_scale,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT,float);
 	}
 	else
 	{
-		ALLOC_FIELD(mla_cache,cache_token_capacity *
+		ALLOC_FIELD(mla_cache,storage_token_capacity *
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
-		ALLOC_FIELD(key_nope_cache,cache_token_capacity *
+		ALLOC_FIELD(key_nope_cache,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
-		ALLOC_FIELD(value_cache,cache_token_capacity *
+		ALLOC_FIELD(value_cache,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 	}
 	if (requires_dsa_index_cache != 0u)
 	{
-		ALLOC_FIELD(key_index_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
+		ALLOC_FIELD(key_index_cache,storage_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 		ALLOC_FIELD(key_index_block_min,kv_block_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 		ALLOC_FIELD(key_index_block_max,kv_block_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 		ALLOC_FIELD(dsa_summary_dirty_flags,kv_block_count,uint8_t);
@@ -3046,31 +3020,31 @@ static SparkStatus SparkGlm52Pp13BuilderAllocateLayerBuffers(
 	ZERO_FIELD(input_hidden,b * SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION,uint16_t);
 	if (fp8 != 0u)
 	{
-		ZERO_FIELD(mla_cache_fp8,cache_token_capacity *
+		ZERO_FIELD(mla_cache_fp8,storage_token_capacity *
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint8_t);
-		ZERO_FIELD(mla_cache_scale,cache_token_capacity *
+		ZERO_FIELD(mla_cache_scale,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT,float);
-		ZERO_FIELD(key_nope_cache_fp8,cache_token_capacity *
+		ZERO_FIELD(key_nope_cache_fp8,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint8_t);
-		ZERO_FIELD(key_nope_cache_scale,cache_token_capacity *
+		ZERO_FIELD(key_nope_cache_scale,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT,float);
-		ZERO_FIELD(value_cache_fp8,cache_token_capacity *
+		ZERO_FIELD(value_cache_fp8,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint8_t);
-		ZERO_FIELD(value_cache_scale,cache_token_capacity *
+		ZERO_FIELD(value_cache_scale,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT,float);
 	}
 	else
 	{
-		ZERO_FIELD(mla_cache,cache_token_capacity *
+		ZERO_FIELD(mla_cache,storage_token_capacity *
 			SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS,uint16_t);
-		ZERO_FIELD(key_nope_cache,cache_token_capacity *
+		ZERO_FIELD(key_nope_cache,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS,uint16_t);
-		ZERO_FIELD(value_cache,cache_token_capacity *
+		ZERO_FIELD(value_cache,storage_token_capacity *
 			SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS,uint16_t);
 	}
 	if (requires_dsa_index_cache != 0u)
 	{
-		ZERO_FIELD(key_index_cache,cache_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
+		ZERO_FIELD(key_index_cache,storage_token_capacity * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 		ZERO_FIELD(key_index_block_min,kv_block_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 		ZERO_FIELD(key_index_block_max,kv_block_count * SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION,uint16_t);
 		ZERO_FIELD(dsa_summary_dirty_flags,kv_block_count,uint8_t);
@@ -3206,6 +3180,8 @@ static void SparkGlm52Pp13BuilderWireLayer(
 	slot->mtp_committed_token_ids = (uint32_t *)layer->mtp_committed_token_ids;
 	slot->mtp_event_counters = (uint32_t *)layer->mtp_event_counters;
 	slot->phase_clock_cycles = (uint64_t *)layer->phase_clock_cycles;
+	slot->mtp_tree_shadow_slot_mapping =
+		state->device_mtp_tree_shadow_slot_mapping;
 	memset(&layer->cuda_slot,0,sizeof(layer->cuda_slot));
 	layer->cuda_slot.abi_version =
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_SLOT_STATE_ABI_VERSION;
@@ -3216,6 +3192,7 @@ static void SparkGlm52Pp13BuilderWireLayer(
 		SparkGlm52Pp13BuilderLayerActiveRowCapacity(state,layer);
 	node->logical_lane_capacity = state->rank_plan.logical_lane_capacity;
 	node->cache_token_capacity = state->configuration.kv_pool_token_capacity;
+	node->kv_storage_token_capacity = state->cache_storage_token_capacity;
 	node->kv_block_count = state->configuration.kv_pool_token_capacity /
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
 	node->max_blocks_per_sequence =
@@ -4526,6 +4503,8 @@ static void SparkGlm52Pp13BuilderConfigureMtpLayer(
 	uint32_t clear_flags;
 	node = &state->mtp_layer.node;
 	node->cache_token_capacity = state->configuration.kv_pool_token_capacity;
+	node->kv_storage_token_capacity =
+		state->configuration.kv_pool_token_capacity;
 	node->kv_block_count = state->configuration.kv_pool_token_capacity /
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
 	node->max_blocks_per_sequence =
@@ -4564,6 +4543,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 		state,&state->mtp_layer,UINT32_MAX,
 		state->rank_plan.execution_row_capacity,
 		state->rank_plan.logical_lane_capacity,
+		state->configuration.kv_pool_token_capacity,
 		state->configuration.kv_pool_token_capacity,
 		0u);
 	if (status == SPARK_STATUS_OK)
@@ -4668,6 +4648,7 @@ static SparkStatus SparkGlm52Pp13BuilderBuildLayer(
 		state->rank_plan.execution_row_capacity,
 		state->rank_plan.logical_lane_capacity,
 		state->configuration.kv_pool_token_capacity,
+		state->cache_storage_token_capacity,
 		SparkGlm52Pp13BuilderDsaSourceLayer(layer_index) == layer_index ? 1u : 0u);
 	if (status != SPARK_STATUS_OK)
 		return SparkGlm52Pp13BuilderReportStatus("allocate_layer_buffers",layer_index,status);
@@ -4896,8 +4877,54 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 	uint64_t physical_block_count;
 	uint64_t logical_block_capacity;
 	uint32_t directory_capacity;
+	uint32_t shadow_index;
+	uint64_t shadow_slot_capacity;
+	uint64_t shadow_token_capacity;
+	uint64_t storage_token_capacity;
 	SparkStatus status;
 	max_active = state->rank_plan.execution_row_capacity;
+	state->cache_storage_token_capacity =
+		state->configuration.kv_pool_token_capacity;
+	if (SparkGlm52Pp13BuilderMtpEnabled(state) != 0u)
+	{
+		shadow_slot_capacity =
+			(uint64_t)SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT *
+			state->rank_plan.logical_lane_capacity;
+		shadow_token_capacity =
+			shadow_slot_capacity *
+			SPARK_GLM52_MODEL_MTP_TREE_SHADOW_TOKEN_COUNT;
+		storage_token_capacity =
+			(uint64_t)state->configuration.kv_pool_token_capacity +
+			shadow_token_capacity;
+		if (shadow_slot_capacity == 0u ||
+			shadow_slot_capacity > UINT32_MAX ||
+			storage_token_capacity > UINT32_MAX)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		state->mtp_shadow_slot_capacity = (uint32_t)shadow_slot_capacity;
+		state->cache_storage_token_capacity =
+			(uint32_t)storage_token_capacity;
+		state->mtp_shadow_free_indices =
+			(uint32_t *)malloc(
+				(size_t)shadow_slot_capacity * sizeof(uint32_t));
+		if (state->mtp_shadow_free_indices == 0)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		for (shadow_index = 0u;
+			 shadow_index < state->mtp_shadow_slot_capacity;
+			 ++shadow_index)
+			state->mtp_shadow_free_indices[shadow_index] = shadow_index;
+		state->mtp_shadow_free_count = state->mtp_shadow_slot_capacity;
+		status = SparkGlm52Pp13BuilderCudaHostPinnedAlloc(
+			state,
+			(void **)&state->host_mtp_tree_shadow_slot_mapping,
+			max_active * sizeof(uint32_t));
+		if (status == SPARK_STATUS_OK)
+			status = SparkGlm52Pp13BuilderCudaAlloc(
+				state,
+				(void **)&state->device_mtp_tree_shadow_slot_mapping,
+				max_active * sizeof(uint32_t));
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
 	selected_indices_bytes =
 		(uint64_t)state->dsa_cache_layer_count *
 		max_active *
@@ -5045,6 +5072,10 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		state->host_mtp_draft_budgets == 0 ||
 		state->host_mtp_request_slot_indices == 0 ||
 		state->mtp_kv_transactions == 0 ||
+		(SparkGlm52Pp13BuilderMtpEnabled(state) != 0u &&
+		 (state->mtp_shadow_free_indices == 0 ||
+		  state->host_mtp_tree_shadow_slot_mapping == 0 ||
+		  state->device_mtp_tree_shadow_slot_mapping == 0)) ||
 		state->pending_work_completions == 0)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	status = SparkGlm52Pp13WorkControlInitializeKvState(
@@ -5489,6 +5520,7 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 	free(state->host_physical_block_pin_counts);
 	free(state->host_kv_directory_entries);
 	free(state->mtp_kv_transactions);
+	free(state->mtp_shadow_free_indices);
 	free(state->host_backing_block_free_next);
 	free(state->host_decode_positions);
 	free(state->host_decode_token_ids);
@@ -5561,6 +5593,7 @@ static SparkStatus SparkGlm52Pp13BuilderQuiesceStreams(
 static void SparkGlm52Pp13BuilderClearGenerationState(
 	SparkGlm52Pp13BuilderState *state)
 {
+	uint32_t shadow_index;
 	if (state->host_uploaded_lane_valid != 0)
 		memset(
 			state->host_uploaded_lane_valid,
@@ -5569,6 +5602,11 @@ static void SparkGlm52Pp13BuilderClearGenerationState(
 	memset(state->mtp_kv_transactions,0,
 		(size_t)state->configuration.maximum_resident_sequence_count *
 			sizeof(state->mtp_kv_transactions[0u]));
+	for (shadow_index = 0u;
+		 shadow_index < state->mtp_shadow_slot_capacity;
+		 ++shadow_index)
+		state->mtp_shadow_free_indices[shadow_index] = shadow_index;
+	state->mtp_shadow_free_count = state->mtp_shadow_slot_capacity;
 	if (state->host_mtp_previous_valid != 0)
 		memset(state->host_mtp_previous_valid,0,
 			state->configuration.maximum_resident_sequence_count);
@@ -5898,13 +5936,6 @@ static SparkStatus SparkGlm52Pp13BuilderApplyMtpTreeKvRows(
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		row_base = lane_index * work_packet->rows_per_lane;
 		table_base = (uint64_t)(
-			row_base + SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW) *
-			state->kv_state.lane_stride;
-		state->host_physical_block_indices[
-			table_base + depth2_block_index] =
-			transaction->transient_physical_blocks[
-				SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH2_PRIMARY_INDEX];
-		table_base = (uint64_t)(
 			row_base + SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_ALTERNATE_ROW) *
 			state->kv_state.lane_stride;
 		state->host_physical_block_indices[
@@ -5912,25 +5943,8 @@ static SparkStatus SparkGlm52Pp13BuilderApplyMtpTreeKvRows(
 			transaction->transient_physical_blocks[
 				SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH2_ALTERNATE_INDEX];
 		table_base = (uint64_t)(
-			row_base + SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_PRIMARY_ROW) *
-			state->kv_state.lane_stride;
-		if (depth2_block_index != depth3_block_index)
-			state->host_physical_block_indices[
-				table_base + depth2_block_index] =
-				transaction->transient_physical_blocks[
-					SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH2_PRIMARY_INDEX];
-		state->host_physical_block_indices[
-			table_base + depth3_block_index] =
-			transaction->transient_physical_blocks[
-				SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH3_PRIMARY_INDEX];
-		table_base = (uint64_t)(
 			row_base + SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_ALTERNATE_ROW) *
 			state->kv_state.lane_stride;
-		if (depth2_block_index != depth3_block_index)
-			state->host_physical_block_indices[
-				table_base + depth2_block_index] =
-				transaction->transient_physical_blocks[
-					SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH2_PRIMARY_INDEX];
 		state->host_physical_block_indices[
 			table_base + depth3_block_index] =
 			transaction->transient_physical_blocks[
@@ -7718,6 +7732,43 @@ static SparkStatus SparkGlm52Pp13BuilderDiscardMtpKvTransactions(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52Pp13WorkControlPacket *work_packet);
 
+static SparkGlm52Pp13BuilderMtpKvTransaction *
+SparkGlm52Pp13BuilderMtpKvTransactionForLane(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlLane *lane);
+
+static SparkStatus SparkGlm52Pp13BuilderSealMtpTreeShadows(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlPacket *work_packet)
+{
+	SparkGlm52Pp13BuilderMtpKvTransaction *transaction;
+	uint32_t lane_index;
+	SparkStatus status;
+	if (state == 0 || work_packet == 0 ||
+		SparkGlm52Pp13BuilderWorkIsMtpTreeVerify(work_packet) == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
+	{
+		transaction = SparkGlm52Pp13BuilderMtpKvTransactionForLane(
+			state,&work_packet->lanes[lane_index]);
+		if (transaction == 0 || transaction->active == 0u ||
+			transaction->tree_verify == 0u ||
+			transaction->shadow_valid == 0u)
+			return SPARK_STATUS_INTERNAL_ERROR;
+		while (transaction->transient_block_count != 0u)
+		{
+			status = SparkGlm52Pp13WorkControlReleaseTransientPhysicalBlock(
+				&state->kv_state,
+				transaction->transient_physical_blocks[
+					transaction->transient_block_count - 1u]);
+			if (status != SPARK_STATUS_OK)
+				return status;
+			transaction->transient_block_count -= 1u;
+		}
+	}
+	return SPARK_STATUS_OK;
+}
+
 static void SparkGlm52Pp13BuilderCompletePendingWork(
 	void *completion_context,
 	const SparkModelDriverCompletion *driver_completion)
@@ -7740,6 +7791,10 @@ static void SparkGlm52Pp13BuilderCompletePendingWork(
 	SparkGlm52Pp13BuilderCaptureCompletion(state,driver_completion);
 	status = driver_completion->status;
 	buffered_completion_required = 0u;
+	if (status == SPARK_STATUS_OK &&
+		SparkGlm52Pp13BuilderWorkIsMtpTreeVerify(work_packet) != 0u)
+		status = SparkGlm52Pp13BuilderSealMtpTreeShadows(
+			state,work_packet);
 	if (status == SPARK_STATUS_OK &&
 		(work_packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u &&
 		work_packet->rows_per_lane > 1u)
@@ -7857,12 +7912,44 @@ SparkGlm52Pp13BuilderMtpKvTransactionForLane(
 	return &state->mtp_kv_transactions[lane->request_slot_index];
 }
 
+static SparkStatus SparkGlm52Pp13BuilderAcquireMtpShadowSlot(
+	SparkGlm52Pp13BuilderState *state,
+	SparkGlm52Pp13BuilderMtpKvTransaction *transaction)
+{
+	if (state == 0 || transaction == 0 ||
+		state->mtp_shadow_free_indices == 0 ||
+		state->mtp_shadow_free_count == 0u)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	state->mtp_shadow_free_count -= 1u;
+	transaction->shadow_slot_index =
+		state->mtp_shadow_free_indices[state->mtp_shadow_free_count];
+	transaction->shadow_valid = 1u;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderReleaseMtpShadowSlot(
+	SparkGlm52Pp13BuilderState *state,
+	SparkGlm52Pp13BuilderMtpKvTransaction *transaction)
+{
+	if (state == 0 || transaction == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (transaction->shadow_valid == 0u)
+		return SPARK_STATUS_OK;
+	if (transaction->shadow_slot_index >= state->mtp_shadow_slot_capacity ||
+		state->mtp_shadow_free_count >= state->mtp_shadow_slot_capacity)
+		return SPARK_STATUS_INTERNAL_ERROR;
+	state->mtp_shadow_free_indices[state->mtp_shadow_free_count++] =
+		transaction->shadow_slot_index;
+	transaction->shadow_slot_index = 0u;
+	transaction->shadow_valid = 0u;
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderClearActiveMtpKvTransaction(
 	SparkGlm52Pp13BuilderState *state,
 	SparkGlm52Pp13BuilderMtpKvTransaction *transaction)
 {
 	uint32_t draft_index;
-	uint32_t transient_index;
 	SparkStatus status;
 	if (state == 0 || transaction == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -7877,16 +7964,19 @@ static SparkStatus SparkGlm52Pp13BuilderClearActiveMtpKvTransaction(
 		if (status != SPARK_STATUS_OK)
 			return status;
 	}
-	for (transient_index = 0u;
-		 transient_index < transaction->transient_block_count;
-		 ++transient_index)
+	while (transaction->transient_block_count != 0u)
 	{
 		status = SparkGlm52Pp13WorkControlReleaseTransientPhysicalBlock(
 			&state->kv_state,
-			transaction->transient_physical_blocks[transient_index]);
+			transaction->transient_physical_blocks[
+				transaction->transient_block_count - 1u]);
 		if (status != SPARK_STATUS_OK)
 			return status;
+		transaction->transient_block_count -= 1u;
 	}
+	status = SparkGlm52Pp13BuilderReleaseMtpShadowSlot(state,transaction);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	transaction->request_id = 0u;
 	transaction->sequence_id = 0u;
 	transaction->base_position = 0u;
@@ -7894,7 +7984,6 @@ static SparkStatus SparkGlm52Pp13BuilderClearActiveMtpKvTransaction(
 	transaction->pinned_token_count = 0u;
 	transaction->active = 0u;
 	transaction->tree_verify = 0u;
-	transaction->transient_block_count = 0u;
 	memset(transaction->physical_slots,0,sizeof(transaction->physical_slots));
 	memset(
 		transaction->transient_physical_blocks,
@@ -8079,6 +8168,10 @@ static SparkStatus SparkGlm52Pp13BuilderRecordMtpKvTransactions(
 		}
 		if (tree_verify != 0u)
 		{
+			status = SparkGlm52Pp13BuilderAcquireMtpShadowSlot(
+				state,transaction);
+			if (status != SPARK_STATUS_OK)
+				goto fail;
 			for (transient_index = 0u;
 				 transient_index <
 					SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT;
@@ -8112,12 +8205,121 @@ fail:
 	return status;
 }
 
+static SparkStatus SparkGlm52Pp13BuilderUploadMtpTreeShadowRows(
+	SparkGlm52Pp13BuilderState *state,
+	const SparkGlm52Pp13WorkControlPacket *work_packet)
+{
+	SparkGlm52Pp13BuilderMtpKvTransaction *transaction;
+	uint32_t lane_index;
+	uint32_t row_base;
+	uint32_t shadow_base;
+	if (state == 0 || work_packet == 0 ||
+		SparkGlm52Pp13BuilderWorkIsMtpTreeVerify(work_packet) == 0u ||
+		work_packet->execution_row_count >
+			state->rank_plan.execution_row_capacity ||
+		state->host_mtp_tree_shadow_slot_mapping == 0 ||
+		state->device_mtp_tree_shadow_slot_mapping == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	memset(
+		state->host_mtp_tree_shadow_slot_mapping,
+		0xff,
+		(size_t)work_packet->execution_row_count * sizeof(uint32_t));
+	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
+	{
+		transaction = SparkGlm52Pp13BuilderMtpKvTransactionForLane(
+			state,&work_packet->lanes[lane_index]);
+		if (transaction == 0 || transaction->active == 0u ||
+			transaction->shadow_valid == 0u ||
+			transaction->shadow_slot_index >=
+				state->mtp_shadow_slot_capacity)
+			return SPARK_STATUS_INTERNAL_ERROR;
+		shadow_base = state->configuration.kv_pool_token_capacity +
+			(transaction->shadow_slot_index *
+				SPARK_GLM52_MODEL_MTP_TREE_SHADOW_TOKEN_COUNT);
+		if ((uint64_t)shadow_base +
+				SPARK_GLM52_MODEL_MTP_TREE_SHADOW_TOKEN_COUNT >
+			state->cache_storage_token_capacity)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		row_base = lane_index * work_packet->rows_per_lane;
+		state->host_mtp_tree_shadow_slot_mapping[
+			row_base +
+			SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_ALTERNATE_ROW] =
+				shadow_base +
+				SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH2_ALTERNATE_INDEX;
+		state->host_mtp_tree_shadow_slot_mapping[
+			row_base +
+			SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_ALTERNATE_ROW] =
+				shadow_base +
+				SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH3_ALTERNATE_INDEX;
+	}
+	return SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
+		state->device_mtp_tree_shadow_slot_mapping,
+		state->host_mtp_tree_shadow_slot_mapping,
+		(size_t)work_packet->execution_row_count * sizeof(uint32_t),
+		cudaMemcpyHostToDevice,
+		state->stream));
+}
+
+static SparkStatus SparkGlm52Pp13BuilderAddKvPayload(
+	SparkGlm52Pp13BuilderKvPayloads *payloads,
+	void *base,
+	uint32_t token_bytes)
+{
+	if (payloads == 0 || base == 0 || token_bytes == 0u ||
+		payloads->count >= SPARK_GLM52_PP13_BUILDER_KV_PAYLOAD_COUNT)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	payloads->payloads[payloads->count].base = (uint8_t *)base;
+	payloads->payloads[payloads->count].token_bytes = token_bytes;
+	payloads->count += 1u;
+	return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderBuildLayerKvPayloads(
+	SparkGlm52Pp13BuilderLayer *layer,
+	SparkGlm52Pp13BuilderKvPayloads *payloads)
+{
+	SparkStatus status;
+	if (layer == 0 || payloads == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	memset(payloads,0,sizeof(*payloads));
+#define ADD_PAYLOAD(field, bytes) \
+	do { if (layer->field != 0) { status = SparkGlm52Pp13BuilderAddKvPayload(payloads,layer->field,(bytes)); if (status != SPARK_STATUS_OK) return status; } } while (0)
+	ADD_PAYLOAD(mla_cache,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS *
+			sizeof(uint16_t));
+	ADD_PAYLOAD(mla_cache_fp8,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS);
+	ADD_PAYLOAD(mla_cache_scale,
+		SPARK_GLM52_PP13_BUILDER_FP8_MLA_SCALE_COUNT * sizeof(float));
+	ADD_PAYLOAD(key_nope_cache,
+		SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS *
+			sizeof(uint16_t));
+	ADD_PAYLOAD(key_nope_cache_fp8,
+		SPARK_GLM52_PP13_BUILDER_KEY_NOPE_CACHE_TOKEN_ELEMENTS);
+	ADD_PAYLOAD(key_nope_cache_scale,
+		SPARK_GLM52_PP13_BUILDER_FP8_KEY_NOPE_SCALE_COUNT * sizeof(float));
+	ADD_PAYLOAD(value_cache,
+		SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS *
+			sizeof(uint16_t));
+	ADD_PAYLOAD(value_cache_fp8,
+		SPARK_GLM52_PP13_BUILDER_VALUE_CACHE_TOKEN_ELEMENTS);
+	ADD_PAYLOAD(value_cache_scale,
+		SPARK_GLM52_PP13_BUILDER_FP8_VALUE_SCALE_COUNT * sizeof(float));
+	ADD_PAYLOAD(key_index_cache,
+		SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_INDEX_KEY_DIMENSION *
+			sizeof(uint16_t));
+#undef ADD_PAYLOAD
+	return payloads->count == 0u
+		? SPARK_STATUS_MODULE_NOT_VALIDATED : SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderLaunchMtpKvRollback(
 	SparkGlm52Pp13BuilderState *state,
 	const uint32_t *host_physical_slots,
 	uint32_t physical_slot_count)
 {
 	SparkGlm52Pp13BuilderLayer *layer;
+	SparkGlm52Pp13BuilderKvPayloads payloads;
 	uint32_t layer_offset;
 	SparkStatus status;
 	if (state == 0 || host_physical_slots == 0 || physical_slot_count == 0u ||
@@ -8134,12 +8336,14 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpKvRollback(
 		 ++layer_offset)
 	{
 		layer = &state->layers[layer_offset];
+		status = SparkGlm52Pp13BuilderBuildLayerKvPayloads(
+			layer,&payloads);
+		if (status != SPARK_STATUS_OK)
+			return status;
 		SparkGlm52Pp13BuilderClearSpeculativeKvRowsKernel<<<
 			physical_slot_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
 			(const uint32_t *)state->device_decode_positions,physical_slot_count,
-			state->kv_state.block_token_count,(uint16_t *)layer->mla_cache,
-			(uint8_t *)layer->mla_cache_fp8,(float *)layer->mla_cache_scale,
-			(uint16_t *)layer->key_index_cache,
+			state->kv_state.block_token_count,payloads,
 			(uint8_t *)layer->dsa_summary_dirty_flags);
 		status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
 		if (status != SPARK_STATUS_OK)
@@ -8158,6 +8362,7 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpKvPromotion(
 	uint32_t physical_slot_count)
 {
 	SparkGlm52Pp13BuilderLayer *layer;
+	SparkGlm52Pp13BuilderKvPayloads payloads;
 	uint32_t layer_offset;
 	SparkStatus status;
 	if (state == 0 || physical_slot_count == 0u ||
@@ -8179,13 +8384,16 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchMtpKvPromotion(
 		 ++layer_offset)
 	{
 		layer = &state->layers[layer_offset];
+		status = SparkGlm52Pp13BuilderBuildLayerKvPayloads(
+			layer,&payloads);
+		if (status != SPARK_STATUS_OK)
+			return status;
 		SparkGlm52Pp13BuilderCopySpeculativeKvRowsKernel<<<
 			physical_slot_count,SPARK_GLM52_PP13_BUILDER_THREADS,0u,state->stream>>>(
 			(const uint32_t *)state->device_decode_positions,
 			(const uint32_t *)state->device_decode_token_ids,
 			physical_slot_count,state->kv_state.block_token_count,
-			(uint16_t *)layer->mla_cache,(uint8_t *)layer->mla_cache_fp8,
-			(float *)layer->mla_cache_scale,(uint16_t *)layer->key_index_cache,
+			payloads,
 			(uint8_t *)layer->dsa_summary_dirty_flags);
 		status = SparkGlm52Pp13BuilderCudaStatus(cudaGetLastError());
 		if (status != SPARK_STATUS_OK)
@@ -8239,51 +8447,33 @@ static SparkStatus SparkGlm52Pp13BuilderAppendMtpTreePromotions(
 	uint32_t *promotion_count)
 {
 	uint32_t path_id;
-	uint32_t source_block;
-	uint32_t token_offset;
+	uint32_t shadow_index;
 	if (state == 0 || lane == 0 || transaction == 0 ||
 		promotion_count == 0 || transaction->tree_verify == 0u ||
-		transaction->transient_block_count !=
-			SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT)
+		transaction->transient_block_count != 0u ||
+		transaction->shadow_valid == 0u ||
+		transaction->shadow_slot_index >= state->mtp_shadow_slot_capacity)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	path_id = lane->mtp_resolution_path_id;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE ||
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH1)
-		return SPARK_STATUS_OK;
-	if (*promotion_count >= state->rank_plan.execution_row_capacity)
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	source_block =
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE
-			? transaction->transient_physical_blocks[
-				SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH2_ALTERNATE_INDEX]
-			: transaction->transient_physical_blocks[
-				SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH2_PRIMARY_INDEX];
-	token_offset = (uint32_t)((transaction->base_position + 2u) %
-		state->kv_state.block_token_count);
-	state->host_decode_positions[*promotion_count] =
-		(source_block * state->kv_state.block_token_count) + token_offset;
-	state->host_decode_token_ids[*promotion_count] =
-		transaction->physical_slots[
-			SPARK_GLM52_MODEL_MTP_TREE_CANONICAL_DEPTH2_INDEX];
-	*promotion_count += 1u;
-	if (path_id != SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY &&
+	if (path_id != SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE &&
 		path_id != SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
 		return SPARK_STATUS_OK;
 	if (*promotion_count >= state->rank_plan.execution_row_capacity)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	source_block =
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY
-			? transaction->transient_physical_blocks[
-				SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH3_PRIMARY_INDEX]
-			: transaction->transient_physical_blocks[
-				SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH3_ALTERNATE_INDEX];
-	token_offset = (uint32_t)((transaction->base_position + 3u) %
-		state->kv_state.block_token_count);
+	shadow_index =
+		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE
+			? SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH2_ALTERNATE_INDEX
+			: SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH3_ALTERNATE_INDEX;
 	state->host_decode_positions[*promotion_count] =
-		(source_block * state->kv_state.block_token_count) + token_offset;
+		state->configuration.kv_pool_token_capacity +
+		(transaction->shadow_slot_index *
+			SPARK_GLM52_MODEL_MTP_TREE_SHADOW_TOKEN_COUNT) +
+		shadow_index;
 	state->host_decode_token_ids[*promotion_count] =
 		transaction->physical_slots[
-			SPARK_GLM52_MODEL_MTP_TREE_CANONICAL_DEPTH3_INDEX];
+			path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE
+				? SPARK_GLM52_MODEL_MTP_TREE_CANONICAL_DEPTH2_INDEX
+				: SPARK_GLM52_MODEL_MTP_TREE_CANONICAL_DEPTH3_INDEX];
 	*promotion_count += 1u;
 	return SPARK_STATUS_OK;
 }
@@ -8367,8 +8557,11 @@ static SparkStatus SparkGlm52Pp13BuilderApplyMtpKvResolutions(
 				return SparkGlm52Pp13BuilderMtpResolutionFailure(
 					state,lane,transaction,"tree_resolution",
 					SPARK_STATUS_INVALID_ARGUMENT);
-			if (lane->mtp_resolution_path_id ==
-				SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE)
+			for (draft_index =
+					lane->mtp_resolution_accepted_token_count;
+				 draft_index <
+					SPARK_GLM52_MODEL_MTP_TREE_CANONICAL_POSITION_COUNT;
+				 ++draft_index)
 			{
 				if (rejected_slot_count >=
 					state->rank_plan.execution_row_capacity)
@@ -8376,8 +8569,7 @@ static SparkStatus SparkGlm52Pp13BuilderApplyMtpKvResolutions(
 						state,lane,transaction,"rollback_capacity",
 						SPARK_STATUS_CAPACITY_EXCEEDED);
 				state->host_mtp_request_slot_indices[rejected_slot_count++] =
-					transaction->physical_slots[
-						SPARK_GLM52_MODEL_MTP_TREE_CANONICAL_DEPTH1_INDEX];
+					transaction->physical_slots[draft_index];
 			}
 			status = SparkGlm52Pp13BuilderAppendMtpTreePromotions(
 				state,lane,transaction,&promotion_count);
@@ -8566,6 +8758,14 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 		failure_step = "mtp_transaction_record";
 		status = SparkGlm52Pp13BuilderRecordMtpKvTransactions(
 			state,work_packet,&mtp_transaction_created);
+		if (status != SPARK_STATUS_OK)
+			goto cancel_work;
+	}
+	if (SparkGlm52Pp13BuilderWorkIsMtpTreeVerify(work_packet) != 0u)
+	{
+		failure_step = "mtp_shadow_rows";
+		status = SparkGlm52Pp13BuilderUploadMtpTreeShadowRows(
+			state,work_packet);
 		if (status != SPARK_STATUS_OK)
 			goto cancel_work;
 	}
