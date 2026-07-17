@@ -2378,6 +2378,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
     uint64_t represented_token_capacity;
+    uint32_t storage_token_capacity;
     uint32_t pipeline_slot_index;
     uint32_t hidden_output_only;
 
@@ -2394,6 +2395,9 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
     hidden_output_only =
         (node_context->reserved_execution_flags &
          SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY) != 0u;
+    storage_token_capacity = node_context->kv_storage_token_capacity != 0u
+        ? node_context->kv_storage_token_capacity
+        : node_context->cache_token_capacity;
     if (node_context->pipeline_slot_count == 0u ||
         node_context->pipeline_slot_count >
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT ||
@@ -2512,6 +2516,14 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         SparkGlm52ResidentDecodeStageReportValidationFailure(
             node_context,
             "base",
+            SPARK_STATUS_INVALID_ARGUMENT);
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (storage_token_capacity < node_context->cache_token_capacity)
+    {
+        SparkGlm52ResidentDecodeStageReportValidationFailure(
+            node_context,
+            "kv_storage_capacity",
             SPARK_STATUS_INVALID_ARGUMENT);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -2647,7 +2659,10 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         (!SparkGlm52ResidentDecodeStageFp8KvCachePlanIsUsable(node_context) ||
          (node_context->attention_execution_mode ==
               SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
-          !SparkGlm52ResidentDecodeStageUsesCompressedFp8Mla(node_context))))
+          !SparkGlm52ResidentDecodeStageUsesCompressedFp8Mla(node_context)) ||
+         (node_context->attention_execution_mode ==
+              SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX &&
+          SparkGlm52ResidentDecodeStageUsesCompressedFp8Mla(node_context))))
     {
         SparkGlm52ResidentDecodeStageReportValidationFailure(
             node_context,

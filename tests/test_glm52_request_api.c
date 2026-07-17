@@ -3240,6 +3240,23 @@ static void SparkTestMtpTreeResolvesEveryPath(void)
     }
 }
 
+static void SparkTestMtpTreeUsesCompactAlternateStorage(void)
+{
+    assert(SPARK_GLM52_MODEL_MTP_TREE_BRANCH_ROW_COUNT == 4u);
+    assert(SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT == 2u);
+    assert(SPARK_GLM52_MODEL_MTP_TREE_SHADOW_TOKEN_COUNT == 2u);
+    assert(SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH2_ALTERNATE_INDEX == 0u);
+    assert(SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_DEPTH3_ALTERNATE_INDEX == 1u);
+    assert(SparkGlm52MtpTreeVerifierPositionOffset(
+        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW) == 2u);
+    assert(SparkGlm52MtpTreeVerifierPositionOffset(
+        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_ALTERNATE_ROW) == 2u);
+    assert(SparkGlm52MtpTreeVerifierPositionOffset(
+        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_PRIMARY_ROW) == 3u);
+    assert(SparkGlm52MtpTreeVerifierPositionOffset(
+        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_ALTERNATE_ROW) == 3u);
+}
+
 static void SparkTestRequestApiMtpDraftRequiresSpeculativeVerify(void)
 {
     SparkTestRequestApiFixture fixture;
@@ -4193,6 +4210,7 @@ int main(void)
 {
     SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest();
     SparkTestMtpTreeResolvesEveryPath();
+    SparkTestMtpTreeUsesCompactAlternateStorage();
     SparkTestRequestApiMtpDraftRequiresSpeculativeVerify();
     SparkTestRequestApiUsesSpeculationOnlyAfterEqualPriorityRealWork();
     SparkTestRequestApiMtpDraftBudgetRemainsTransactional();
