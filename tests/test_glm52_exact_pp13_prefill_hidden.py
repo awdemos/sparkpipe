@@ -59,7 +59,7 @@ def test_pp13_runtime_kv_view_uses_per_lane_block_capacity(root: Path) -> None:
             "\t\tstate->rank_plan.execution_row_capacity;" not in prepare_body)
 
 
-def test_pp13_builder_uses_compressed_absorbed_mla(root: Path) -> None:
+def test_pp13_builder_uses_direct_full_fp8_tiled_attention(root: Path) -> None:
     source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
                   encoding="utf-8")
@@ -67,20 +67,18 @@ def test_pp13_builder_uses_compressed_absorbed_mla(root: Path) -> None:
     wire_end = source.index(
         "static void SparkGlm52Pp13BuilderConfigureMtpLayer(", wire_start)
     wire_body = source[wire_start:wire_end]
-    assert "node->key_nope_cache_bf16 = 0;" in wire_body
-    assert "node->value_cache_bf16 = 0;" in wire_body
+    assert "node->key_nope_cache_bf16 = w8lut != 0u" in wire_body
+    assert "node->value_cache_bf16 = w8lut != 0u" in wire_body
     assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_"
-            "ABSORBED_LATENT" in wire_body)
-    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_"
-            "TILED_ONLINE_SOFTMAX" not in wire_body)
+            "TILED_ONLINE_SOFTMAX" in wire_body)
     assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_"
-            "TILED_ONLINE_ATTENTION" not in wire_body)
-    assert "void *key_nope_cache;" not in source
-    assert "void *value_cache;" not in source
-    assert "ALLOC_FIELD(key_nope_cache," not in source
-    assert "ALLOC_FIELD(value_cache," not in source
-    assert "ZERO_FIELD(key_nope_cache," not in source
-    assert "ZERO_FIELD(value_cache," not in source
+            "TILED_ONLINE_ATTENTION" in wire_body)
+    assert "layer->fp8_kv_cache_plan.key_nope_elements =" in wire_body
+    assert "layer->fp8_kv_cache_plan.value_elements =" in wire_body
+    assert "layer->fp8_kv_cache_plan.key_nope_cache_fp8_e4m3 =" in wire_body
+    assert "layer->fp8_kv_cache_plan.value_cache_fp8_e4m3 =" in wire_body
+    assert ("SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_CAPABILITY_"
+            "COMPRESSED_MLA_ONLY" not in wire_body)
 
 
 def test_compressed_fp8_mla_maps_active_rows_to_physical_slots(
@@ -1183,7 +1181,7 @@ def main() -> None:
     test_fp8_validator_preserves_quantized_dense_execution(root)
     test_speculative_verify_exposes_the_full_verifier_vector(root)
     test_target_and_mtp_heads_use_distinct_fail_closed_tensor_core_gemms(root)
-    test_pp13_builder_uses_compressed_absorbed_mla(root)
+    test_pp13_builder_uses_direct_full_fp8_tiled_attention(root)
     test_compressed_fp8_mla_maps_active_rows_to_physical_slots(root)
     test_mtp_previous_target_position_contracts_are_explicit(root)
     test_mtp_linear_plans_support_parallel_prefill_rows(root)

@@ -262,6 +262,10 @@ typedef struct SparkValidationDeviceBuffers
     uint16_t *value_cache_bf16;
     uint8_t *mla_cache_fp8_e4m3;
     float *mla_cache_scale_f32;
+    uint8_t *key_nope_cache_fp8_e4m3;
+    float *key_nope_cache_scale_f32;
+    uint8_t *value_cache_fp8_e4m3;
+    float *value_cache_scale_f32;
     uint16_t *dense_layer_mla_cache_bf16[SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT];
     uint16_t *dense_layer_key_nope_cache_bf16[SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT];
     uint16_t *dense_layer_value_cache_bf16[SPARK_VALIDATION_FIRST_DENSE_LAYER_COUNT];
@@ -3145,6 +3149,8 @@ static bool SparkValidationAllocateDeviceBuffers(
     uint64_t raw_kv_b_count;
     uint64_t cache_count;
     uint64_t fp8_mla_scale_count;
+    uint64_t fp8_key_nope_scale_count;
+    uint64_t fp8_value_scale_count;
     uint64_t key_nope_cache_count;
     uint64_t value_cache_count;
     uint64_t attention_output_count;
@@ -3224,6 +3230,18 @@ static bool SparkValidationAllocateDeviceBuffers(
         SPARK_VALIDATION_CACHE_TOKEN_CAPACITY *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
         (uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+    fp8_key_nope_scale_count =
+        SPARK_VALIDATION_CACHE_TOKEN_CAPACITY *
+        (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION +
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK - 1u) /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK);
+    fp8_value_scale_count =
+        SPARK_VALIDATION_CACHE_TOKEN_CAPACITY *
+        (((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION +
+          SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK - 1u) /
+         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK);
     query_latent_weight_count =
         query_latent_vector_count *
         hidden_vector_count;
@@ -3364,6 +3382,10 @@ static bool SparkValidationAllocateDeviceBuffers(
         SparkValidationAllocateZeroed((void **)&buffers->value_cache_bf16, value_cache_count * sizeof(uint16_t), "cudaMalloc value_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->mla_cache_fp8_e4m3, cache_count, "cudaMalloc mla_cache_fp8") &&
         SparkValidationAllocateZeroed((void **)&buffers->mla_cache_scale_f32, fp8_mla_scale_count * sizeof(float), "cudaMalloc mla_cache_scale") &&
+        SparkValidationAllocateZeroed((void **)&buffers->key_nope_cache_fp8_e4m3, key_nope_cache_count, "cudaMalloc key_nope_cache_fp8") &&
+        SparkValidationAllocateZeroed((void **)&buffers->key_nope_cache_scale_f32, fp8_key_nope_scale_count * sizeof(float), "cudaMalloc key_nope_cache_scale") &&
+        SparkValidationAllocateZeroed((void **)&buffers->value_cache_fp8_e4m3, value_cache_count, "cudaMalloc value_cache_fp8") &&
+        SparkValidationAllocateZeroed((void **)&buffers->value_cache_scale_f32, fp8_value_scale_count * sizeof(float), "cudaMalloc value_cache_scale") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_layer_mla_cache_bf16[1], cache_count * sizeof(uint16_t), "cudaMalloc dense_layer1_mla_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_layer_key_nope_cache_bf16[1], key_nope_cache_count * sizeof(uint16_t), "cudaMalloc dense_layer1_key_nope_cache") &&
         SparkValidationAllocateZeroed((void **)&buffers->dense_layer_value_cache_bf16[1], value_cache_count * sizeof(uint16_t), "cudaMalloc dense_layer1_value_cache") &&
@@ -4129,6 +4151,47 @@ static void SparkValidationConfigureCompressedFp8MlaCache(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK;
     plan->mla_cache_fp8_e4m3 = buffers->mla_cache_fp8_e4m3;
     plan->mla_cache_scale_f32 = buffers->mla_cache_scale_f32;
+    node_context->mla_cache_bf16 = 0;
+    node_context->key_nope_cache_bf16 = 0;
+    node_context->value_cache_bf16 = 0;
+    node_context->fp8_kv_cache_plan = plan;
+    node_context->reserved_execution_flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FP8_KV_CACHE;
+}
+
+static void SparkValidationConfigureFullFp8KvCache(
+    SparkValidationDeviceBuffers *buffers,
+    SparkGlm52ResidentDecodeStageNodeContext *node_context)
+{
+    SparkGlm52ResidentDecodeStageFp8KvCachePlan *plan;
+
+    plan = &buffers->fp8_kv_cache_plan;
+    memset(plan, 0, sizeof(*plan));
+    plan->abi_version =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_PLAN_ABI_VERSION;
+    plan->capability_flags =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_REQUIRED_CAPABILITIES;
+    plan->maximum_active_sequence_count =
+        node_context->max_active_sequence_count;
+    plan->cache_token_capacity = node_context->cache_token_capacity;
+    plan->cache_token_elements =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
+    plan->key_nope_elements =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION;
+    plan->value_elements =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_VALUE_HEAD_DIMENSION;
+    plan->scale_block_size =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_KV_CACHE_SCALE_BLOCK;
+    plan->mla_cache_fp8_e4m3 = buffers->mla_cache_fp8_e4m3;
+    plan->mla_cache_scale_f32 = buffers->mla_cache_scale_f32;
+    plan->key_nope_cache_fp8_e4m3 =
+        buffers->key_nope_cache_fp8_e4m3;
+    plan->key_nope_cache_scale_f32 =
+        buffers->key_nope_cache_scale_f32;
+    plan->value_cache_fp8_e4m3 = buffers->value_cache_fp8_e4m3;
+    plan->value_cache_scale_f32 = buffers->value_cache_scale_f32;
     node_context->mla_cache_bf16 = 0;
     node_context->key_nope_cache_bf16 = 0;
     node_context->value_cache_bf16 = 0;
@@ -9883,6 +9946,16 @@ static bool SparkValidationPrepareExactPp13StageSliceLayer(
         getenv("GLM52_EXACT_PP13_USE_BF16_MLA_CACHE") == 0)
     {
         SparkValidationConfigureCompressedFp8MlaCache(
+            buffers,
+            node_context);
+    }
+    if (model_quantization ==
+            SPARK_VALIDATION_EXACT_PP13_MODEL_QUANTIZATION_FP8 &&
+        node_context->attention_execution_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX &&
+        getenv("GLM52_EXACT_PP13_USE_FULL_FP8_KV_CACHE") != 0)
+    {
+        SparkValidationConfigureFullFp8KvCache(
             buffers,
             node_context);
     }
