@@ -3661,9 +3661,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageExtractFrameContext(
         (frame_context->logical_lane_count == 0u ||
          frame_context->rows_per_lane < 2u ||
          (uint64_t)frame_context->logical_lane_count *
-                frame_context->rows_per_lane != frame->active_slot_count ||
-         (frame_context->flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS) != 0u))
+                frame_context->rows_per_lane != frame->active_slot_count))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -3741,7 +3739,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageExtractRuntimeKvBlockTable(
         state,
         runtime_kv_block_table,
         (frame_context->flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW) != 0u
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW |
+             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY)) != 0u
             ? frame_context->logical_lane_count : frame->active_slot_count);
     if (status != SPARK_STATUS_OK)
     {
