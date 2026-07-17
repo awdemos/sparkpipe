@@ -7792,7 +7792,9 @@ static void SparkGlm52Pp13BuilderCompletePendingWork(
 		discard_status = SparkGlm52Pp13BuilderDiscardMtpKvTransactions(
 			state,work_packet);
 		if (discard_status != SPARK_STATUS_OK)
-			status = discard_status;
+			fprintf(stderr,
+				"pp13_mtp_discard_failed original_status=%u discard_status=%u\n",
+				(uint32_t)status,(uint32_t)discard_status);
 	}
 	if (status == SPARK_STATUS_OK)
 	{
