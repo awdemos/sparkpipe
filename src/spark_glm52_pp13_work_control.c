@@ -40,9 +40,18 @@ SparkStatus SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 		batch_bucket = request_dispatch->decode_batch_decision.batch_bucket;
 	else
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) == 0u ||
-		batch_bucket < batch_lane_or_row_count)
+	if (SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (batch_bucket < batch_lane_or_row_count)
+	{
+		SparkStatus status;
+
+		status = SparkGlm52StagePlanSelectBatchBucket(
+			batch_lane_or_row_count,
+			&batch_bucket);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
 	*batch_bucket_out = batch_bucket;
 	return SPARK_STATUS_OK;
 }
@@ -282,7 +291,7 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacketRange(
 		packet->lane_count * packet->rows_per_lane;
 	status = SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 		decode_dispatch->request_dispatch,
-		packet->lane_count,
+		packet->execution_row_count,
 		&packet->execution_batch_bucket);
 	if (status != SPARK_STATUS_OK)
 		return status;

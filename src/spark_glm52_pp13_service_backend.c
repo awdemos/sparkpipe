@@ -1052,7 +1052,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendBuildDecodeResidentPayload(
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	status = SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 		decode_dispatch->request_dispatch,
-		lane_count,
+		(uint32_t)execution_row_count,
 		&message->execution_batch_bucket);
 	if (status != SPARK_STATUS_OK)
 		return status;

@@ -285,10 +285,17 @@ static void SparkTestMtpTreeExecutionContract(void)
         SPARK_GLM52_STAGE_PLAN_BUCKET_B128,
         &batch_bucket) == SPARK_STATUS_OK);
     assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128);
+    /* Rows beyond the dispatch bucket widen to the next compiled
+     * bucket instead of rejecting the dispatch. */
     assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
         &dispatch,
         SPARK_GLM52_STAGE_PLAN_BUCKET_B128 + 1u,
-        &batch_bucket) == SPARK_STATUS_INVALID_ARGUMENT);
+        &batch_bucket) == SPARK_STATUS_OK);
+    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B256);
+    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+        &dispatch,
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET + 1u,
+        &batch_bucket) == SPARK_STATUS_CAPACITY_EXCEEDED);
     assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH,
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT,
@@ -369,6 +376,41 @@ static void SparkTestResidentIpcReaderPreservesFragments(void)
     close(sockets[1u]);
 }
 
+/* Regression: a prompt longer than one bucket of tokens must not be
+ * rejected. The scheduler buckets a prefill dispatch by sequence count
+ * (1 sequence -> B16) while the packet carries lanes x tokens rows
+ * (17 rows); the bucket must widen to cover the rows. */
+static void SparkTestPrefillRowsWidenExecutionBucket(void)
+{
+    SparkGlm52RequestApiDispatch dispatch;
+    uint32_t batch_bucket;
+
+    memset(&dispatch,0,sizeof(dispatch));
+    dispatch.kind = SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL;
+    dispatch.prefill_decision.batch_bucket =
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
+    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+        &dispatch,
+        17u,
+        &batch_bucket) == SPARK_STATUS_OK);
+    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B32);
+    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+        &dispatch,
+        16u,
+        &batch_bucket) == SPARK_STATUS_OK);
+    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B16);
+    /* 16 lanes x 6 verifier rows widen B16 to B128. */
+    dispatch.kind =
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
+    dispatch.decode_batch_decision.batch_bucket =
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
+    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+        &dispatch,
+        96u,
+        &batch_bucket) == SPARK_STATUS_OK);
+    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128);
+}
+
 int main(void)
 {
     SparkTestWideDecodePayload();
@@ -376,6 +418,7 @@ int main(void)
     SparkTestInternalDirectoryDecodeHasNoBlockPayload();
     SparkTestWideSubmitWorkUsesVariablePayload();
     SparkTestMtpTreeExecutionContract();
+    SparkTestPrefillRowsWidenExecutionBucket();
     SparkTestResidentIpcReaderPreservesFragments();
     return 0;
 }
