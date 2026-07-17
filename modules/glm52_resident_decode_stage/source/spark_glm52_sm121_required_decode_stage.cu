@@ -19814,6 +19814,14 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchAbsorbedLatentAttention(
 static bool SparkGlm52ResidentDecodeStageFrameContextHasMtpDraftBudgets(
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context);
 
+static bool SparkGlm52ResidentDecodeStageFrameShouldLaunchMtpDraft(
+    const SparkGlm52ResidentDecodeStageFrameContext *frame_context)
+{
+    return SparkGlm52ResidentDecodeStageFrameContextHasMtpDraftBudgets(
+            frame_context) &&
+        !SparkGlm52ResidentDecodeStageFrameIsMtpTreeVerify(frame_context);
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
@@ -20406,7 +20414,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
         return status;
     }
     mtp_requested =
-        SparkGlm52ResidentDecodeStageFrameContextHasMtpDraftBudgets(
+        SparkGlm52ResidentDecodeStageFrameShouldLaunchMtpDraft(
             frame_context);
     if (mtp_requested)
     {

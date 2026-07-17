@@ -616,6 +616,38 @@ def test_mtp_draft_plan_builds_asymmetric_top2_tree(root: Path) -> None:
     assert "SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_ALTERNATE_INDEX" in body
 
 
+def test_mtp_tree_verify_drafts_after_resolution(root: Path) -> None:
+    required = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+                "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                    encoding="utf-8")
+    helper_start = required.index(
+        "static bool SparkGlm52ResidentDecodeStageFrameShouldLaunchMtpDraft(")
+    helper_end = required.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(",
+        helper_start)
+    helper = required[helper_start:helper_end]
+    assert "FrameContextHasMtpDraftBudgets(" in helper
+    assert "!SparkGlm52ResidentDecodeStageFrameIsMtpTreeVerify(" in helper
+    layer_start = helper_end
+    layer_end = required.index(
+        "static SparkStatus SparkGlm52Sm121RequiredDecodeStageSubmit(",
+        layer_start)
+    layer = required[layer_start:layer_end]
+    assert ("SparkGlm52ResidentDecodeStageFrameShouldLaunchMtpDraft(" in
+            layer)
+    builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+               "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                   encoding="utf-8")
+    finalize_start = builder.index(
+        "static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(")
+    finalize_end = builder.index(
+        "static SparkStatus SparkGlm52Pp13BuilderStoreMtpPreviousTarget(",
+        finalize_start)
+    finalize = builder[finalize_start:finalize_end]
+    assert (finalize.index("SparkGlm52Pp13BuilderResolveMtpLane(") <
+            finalize.index("SparkGlm52Pp13BuilderLaunchVerifierMtpDraft("))
+
+
 def test_mtp_runtime_depth_specializes_and_caches_cuda_graphs(root: Path) -> None:
     builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
                "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -1186,6 +1218,7 @@ def main() -> None:
     test_mtp_previous_target_position_contracts_are_explicit(root)
     test_mtp_linear_plans_support_parallel_prefill_rows(root)
     test_mtp_draft_plan_builds_asymmetric_top2_tree(root)
+    test_mtp_tree_verify_drafts_after_resolution(root)
     test_mtp_runtime_depth_specializes_and_caches_cuda_graphs(root)
     test_mtp_runtime_failures_name_the_failing_phase(root)
     test_mtp_gpu_profile_is_graph_compatible_and_explicitly_enabled(root)
