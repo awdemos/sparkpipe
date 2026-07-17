@@ -1168,6 +1168,47 @@ static void SparkTestGlm52SchedulerSelectsPipelineBatchWidth(void)
         &scheduler, 13312u, 256u) == 256u);
 }
 
+static void SparkTestGlm52SchedulerEstimatesExpandedDecodeWork(void)
+{
+    SparkGlm52PrefixCache cache;
+    SparkGlm52PrefixCacheEntry entries[128u];
+    SparkGlm52PrefixCacheSequenceBinding bindings[512u];
+    SparkGlm52SchedulerConfiguration configuration;
+    SparkGlm52Scheduler scheduler;
+    uint64_t mtp_b1_work_ns;
+    uint64_t mtp_b16_work_ns;
+    uint64_t mtp_b1024_work_ns;
+    uint64_t plain_b1_work_ns;
+    uint64_t plain_b16_work_ns;
+    uint64_t plain_b1024_work_ns;
+
+    SparkTestInitializePrefixCache(&cache,entries,bindings,128u,512u);
+    SparkTestInitializeSchedulerConfiguration(
+        &configuration,
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        &cache);
+    assert(SparkGlm52SchedulerInitialize(
+        &scheduler,&configuration) == SPARK_STATUS_OK);
+    assert(SparkGlm52SchedulerEstimateDecodeWorkNs(
+        &scheduler,1u,1u,112u,&plain_b1_work_ns) == SPARK_STATUS_OK);
+    assert(SparkGlm52SchedulerEstimateDecodeWorkNs(
+        &scheduler,1u,6u,112u,&mtp_b1_work_ns) == SPARK_STATUS_OK);
+    assert(plain_b1_work_ns == mtp_b1_work_ns);
+    assert(SparkGlm52SchedulerEstimateDecodeWorkNs(
+        &scheduler,16u,1u,112u,&plain_b16_work_ns) == SPARK_STATUS_OK);
+    assert(SparkGlm52SchedulerEstimateDecodeWorkNs(
+        &scheduler,16u,6u,112u,&mtp_b16_work_ns) == SPARK_STATUS_OK);
+    assert(mtp_b16_work_ns > plain_b16_work_ns);
+    assert(SparkGlm52SchedulerEstimateDecodeWorkNs(
+        &scheduler,1024u,1u,7168u,&plain_b1024_work_ns) == SPARK_STATUS_OK);
+    assert(SparkGlm52SchedulerEstimateDecodeWorkNs(
+        &scheduler,1024u,6u,7168u,&mtp_b1024_work_ns) == SPARK_STATUS_OK);
+    assert(mtp_b1024_work_ns > plain_b1024_work_ns);
+    assert(SparkGlm52SchedulerEstimateDecodeWorkNs(
+        &scheduler,1u,0u,112u,&mtp_b1_work_ns) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 int main(void)
 {
     SparkTestGlm52SchedulerAdmitsCurrentSparkPp13Decode();
@@ -1184,5 +1225,6 @@ int main(void)
     SparkTestGlm52SchedulerBuildsBatchedPrefillKvTables();
     SparkTestGlm52SchedulerRejectsInvalidInputs();
     SparkTestGlm52SchedulerSelectsPipelineBatchWidth();
+    SparkTestGlm52SchedulerEstimatesExpandedDecodeWork();
     return 0;
 }

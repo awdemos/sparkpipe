@@ -5,6 +5,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_SCALE 1000ull
+#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_PRIOR_SAMPLE_COUNT \
+    SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT
+#define SPARK_GLM52_REQUEST_API_MTP_UTILITY_PRIOR_COMMITTED_TOKEN_COUNT \
+    (SPARK_GLM52_MODEL_MTP_TREE_MAX_COMMITTED_TOKEN_COUNT / 2u)
+
 static uint32_t SparkGlm52RequestApiNormalizeConfigurationFlags(
     uint32_t configuration_flags)
 {
@@ -728,7 +734,10 @@ static uint32_t SparkGlm52RequestApiSlotIsSchedulablePrefill(
 static uint32_t SparkGlm52RequestApiSlotIsSchedulableDecode(
     const SparkGlm52RequestApiSlot *slot)
 {
-    return slot->state == SPARK_GLM52_REQUEST_API_STATE_READY_DECODE &&
+    return (slot->state == SPARK_GLM52_REQUEST_API_STATE_READY_DECODE ||
+            (slot->state ==
+                SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY &&
+             slot->mtp_draft_token_count != 0u)) &&
         (slot->remaining_thinking_token_budget != 0u ||
          slot->remaining_output_token_budget != 0u);
 }
@@ -4500,6 +4509,90 @@ static uint32_t SparkGlm52RequestApiSlotRemainingDecodeBudget(
         slot->remaining_output_token_budget;
 }
 
+static uint64_t SparkGlm52RequestApiMtpResolvedRequestCount(
+    const SparkGlm52RequestApi *api,
+    uint64_t *committed_token_count_out)
+{
+    uint64_t proposed_token_count;
+
+    proposed_token_count =
+        api->mtp_accepted_draft_token_count +
+        api->mtp_rejected_token_count;
+    *committed_token_count_out = api->mtp_committed_token_count;
+    if (proposed_token_count %
+            SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT != 0u)
+    {
+        return 0u;
+    }
+    return proposed_token_count /
+        SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+}
+
+static uint64_t SparkGlm52RequestApiMtpExpectedCommittedTokensScaled(
+    const SparkGlm52RequestApi *api)
+{
+    uint64_t committed_token_count;
+    uint64_t resolved_request_count;
+    uint64_t weighted_committed_token_count;
+    uint64_t weighted_request_count;
+
+    resolved_request_count = SparkGlm52RequestApiMtpResolvedRequestCount(
+        api,
+        &committed_token_count);
+    weighted_committed_token_count =
+        committed_token_count +
+        ((uint64_t)SPARK_GLM52_REQUEST_API_MTP_UTILITY_PRIOR_SAMPLE_COUNT *
+         SPARK_GLM52_REQUEST_API_MTP_UTILITY_PRIOR_COMMITTED_TOKEN_COUNT);
+    weighted_request_count =
+        resolved_request_count +
+        SPARK_GLM52_REQUEST_API_MTP_UTILITY_PRIOR_SAMPLE_COUNT;
+    return weighted_committed_token_count *
+        SPARK_GLM52_REQUEST_API_MTP_UTILITY_SCALE /
+        weighted_request_count;
+}
+
+static uint32_t SparkGlm52RequestApiMtpOutranksPlainDecode(
+    const SparkGlm52RequestApi *api,
+    uint32_t plain_request_count,
+    uint32_t mtp_request_count)
+{
+    uint64_t mtp_expected_tokens_scaled;
+    uint64_t mtp_work_ns;
+    uint64_t plain_work_ns;
+    SparkStatus status;
+
+    if (api == 0 || api->scheduler == 0 ||
+        plain_request_count == 0u || mtp_request_count == 0u)
+    {
+        return 0u;
+    }
+    status = SparkGlm52SchedulerEstimateDecodeWorkNs(
+        api->scheduler,
+        plain_request_count,
+        1u,
+        api->decode_execution_row_capacity,
+        &plain_work_ns);
+    if (status != SPARK_STATUS_OK)
+    {
+        return 0u;
+    }
+    status = SparkGlm52SchedulerEstimateDecodeWorkNs(
+        api->scheduler,
+        mtp_request_count,
+        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT,
+        api->decode_execution_row_capacity,
+        &mtp_work_ns);
+    if (status != SPARK_STATUS_OK)
+    {
+        return 0u;
+    }
+    mtp_expected_tokens_scaled =
+        SparkGlm52RequestApiMtpExpectedCommittedTokensScaled(api);
+    return mtp_expected_tokens_scaled * mtp_request_count * plain_work_ns >
+        SPARK_GLM52_REQUEST_API_MTP_UTILITY_SCALE *
+        plain_request_count * mtp_work_ns;
+}
+
 static uint32_t SparkGlm52RequestApiDecodeBatchMtpBudget(
     const SparkGlm52RequestApi *api,
     SparkGlm52RequestApiSlot *const *selected_slots,
@@ -4509,7 +4602,11 @@ static uint32_t SparkGlm52RequestApiDecodeBatchMtpBudget(
     uint32_t request_index;
 
     if (!SparkGlm52RequestApiMtpCommitIsEnabled(api) ||
-        selected_slots == 0 || request_count == 0u)
+        selected_slots == 0 || request_count == 0u ||
+        !SparkGlm52RequestApiMtpOutranksPlainDecode(
+            api,
+            request_count,
+            request_count))
     {
         return 0u;
     }
@@ -4537,6 +4634,20 @@ static uint32_t SparkGlm52RequestApiDecodeBatchMtpBudget(
         }
     }
     return budget;
+}
+
+static void SparkGlm52RequestApiDiscardMtpDraft(
+    SparkGlm52RequestApiSlot *slot)
+{
+    if (slot->state !=
+            SPARK_GLM52_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY ||
+        slot->mtp_draft_token_count == 0u)
+    {
+        return;
+    }
+    memset(slot->mtp_draft_token_ids,0,sizeof(slot->mtp_draft_token_ids));
+    slot->mtp_draft_token_count = 0u;
+    slot->state = SPARK_GLM52_REQUEST_API_STATE_READY_DECODE;
 }
 
 static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
@@ -4657,6 +4768,7 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
         SparkGlm52RequestApiSlot *selected_slot;
 
         selected_slot = selected_slots[request_index];
+        SparkGlm52RequestApiDiscardMtpDraft(selected_slot);
         selected_slot->state = SPARK_GLM52_REQUEST_API_STATE_RUNNING_DECODE;
         selected_slot->scheduled_decode_token_count += 1u;
         api->running_request_count += 1u;
@@ -4690,6 +4802,109 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
     }
     api->scheduled_decode_dispatch_count += 1u;
     return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkGlm52RequestApiUtilityBatchTarget(
+    const SparkGlm52RequestApi *api,
+    uint32_t rows_per_request)
+{
+    uint32_t batch_target;
+    uint32_t row_limited_batch_target;
+
+    if (api == 0 || rows_per_request == 0u)
+    {
+        return 0u;
+    }
+    batch_target = SparkGlm52RequestApiCurrentPipelineBatchWidth(api);
+    row_limited_batch_target =
+        api->decode_execution_row_capacity / rows_per_request;
+    if (batch_target > row_limited_batch_target)
+    {
+        batch_target = row_limited_batch_target;
+    }
+    if (batch_target > SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT)
+    {
+        batch_target = SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT;
+    }
+    return batch_target;
+}
+
+static uint32_t SparkGlm52RequestApiDecodeUtilityBatchCount(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot *leader_slot)
+{
+    SparkGlm52RequestApiSlot *selected_slots[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+    uint32_t batch_target;
+
+    batch_target = SparkGlm52RequestApiUtilityBatchTarget(api,1u);
+    if (leader_slot == 0 || batch_target == 0u)
+    {
+        return 0u;
+    }
+    return SparkGlm52RequestApiCollectDecodeBatchMembers(
+        api,
+        leader_slot,
+        0u,
+        selected_slots,
+        batch_target);
+}
+
+static uint32_t SparkGlm52RequestApiMtpUtilityBatchCount(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot *leader_slot)
+{
+    SparkGlm52RequestApiSlot *selected_slots[
+        SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+    SparkGlm52DsparkDraftResult draft_result;
+    uint32_t batch_target;
+    uint32_t draft_source;
+
+    if (SparkGlm52RequestApiGetSlotSpeculativeDraft(
+            api,
+            leader_slot,
+            SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP,
+            &draft_result,
+            &draft_source) != SPARK_STATUS_OK ||
+        draft_source != SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP)
+    {
+        return 0u;
+    }
+    batch_target = SparkGlm52RequestApiUtilityBatchTarget(
+        api,
+        SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT);
+    if (batch_target == 0u)
+    {
+        return 0u;
+    }
+    return SparkGlm52RequestApiCollectSpeculativeVerifyBatchMembers(
+        api,
+        leader_slot,
+        draft_result.token_count,
+        draft_source,
+        0u,
+        selected_slots,
+        batch_target);
+}
+
+static uint32_t SparkGlm52RequestApiMtpVerifyOutranksDecode(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot *decode_slot,
+    SparkGlm52RequestApiSlot *speculative_verify_slot)
+{
+    uint32_t decode_request_count;
+    uint32_t mtp_request_count;
+
+    decode_request_count = SparkGlm52RequestApiDecodeUtilityBatchCount(
+        api,
+        decode_slot);
+    mtp_request_count = SparkGlm52RequestApiMtpUtilityBatchCount(
+        api,
+        speculative_verify_slot);
+    return SparkGlm52RequestApiMtpOutranksPlainDecode(
+        api,
+        decode_request_count,
+        mtp_request_count);
 }
 
 static uint32_t SparkGlm52RequestApiShouldFillDecodeBatch(
@@ -4748,7 +4963,12 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiChooseReadySlot(
 	}
 	if (speculative_verify_slot != 0 &&
 		(chosen_slot == 0 ||
-		 speculative_verify_slot->priority > chosen_slot->priority))
+		 speculative_verify_slot->priority > chosen_slot->priority ||
+		 (chosen_slot == decode_slot &&
+		  SparkGlm52RequestApiSlotsHaveSameSchedulingPriority(
+			speculative_verify_slot,decode_slot) &&
+		  SparkGlm52RequestApiMtpVerifyOutranksDecode(
+			api,decode_slot,speculative_verify_slot))))
 	{
 		*chosen_is_prefill = 0u;
 		chosen_slot = speculative_verify_slot;

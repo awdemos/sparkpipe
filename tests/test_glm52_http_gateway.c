@@ -63,7 +63,8 @@ static void SparkTestHttpGatewayPollsBetweenDispatches(void)
 	static SparkGlm52GatewayRuntime runtime;
 
 	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
-	assert(runtime.configuration.pump_steps == 1u);
+	assert(runtime.configuration.pump_steps ==
+		SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT);
 	assert(SparkGlm52GatewayPollTimeout(&runtime) == -1);
 	runtime.pump_log_valid = 1u;
 	runtime.last_pump_status = SPARK_STATUS_OK;

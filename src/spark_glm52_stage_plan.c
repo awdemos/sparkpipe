@@ -941,3 +941,42 @@ SparkStatus SparkGlm52StagePlanSelectBatchBucket(
     }
     return SPARK_STATUS_OK;
 }
+
+SparkStatus SparkGlm52StagePlanExecutionChunkShape(
+    uint32_t logical_sequence_count,
+    uint32_t rows_per_sequence,
+    uint32_t execution_row_capacity,
+    uint32_t *maximum_sequences_per_chunk_out,
+    uint32_t *chunk_count_out)
+{
+    uint32_t maximum_sequences_per_chunk;
+    uint32_t chunk_count;
+
+    if (logical_sequence_count == 0u || rows_per_sequence == 0u ||
+        execution_row_capacity == 0u ||
+        maximum_sequences_per_chunk_out == 0 || chunk_count_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (execution_row_capacity > SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
+    {
+        execution_row_capacity = SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET;
+    }
+    maximum_sequences_per_chunk = execution_row_capacity / rows_per_sequence;
+    if (maximum_sequences_per_chunk == 0u)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    if (maximum_sequences_per_chunk > logical_sequence_count)
+    {
+        maximum_sequences_per_chunk = logical_sequence_count;
+    }
+    chunk_count = logical_sequence_count / maximum_sequences_per_chunk;
+    if (logical_sequence_count % maximum_sequences_per_chunk != 0u)
+    {
+        chunk_count += 1u;
+    }
+    *maximum_sequences_per_chunk_out = maximum_sequences_per_chunk;
+    *chunk_count_out = chunk_count;
+    return SPARK_STATUS_OK;
+}

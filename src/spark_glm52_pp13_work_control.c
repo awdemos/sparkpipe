@@ -534,27 +534,17 @@ SparkStatus SparkGlm52Pp13WorkControlPlanExecutionChunks(
 	uint32_t *maximum_lanes_per_chunk_out,
 	uint32_t *chunk_count_out)
 {
-	uint32_t maximum_lanes_per_chunk;
-	uint32_t chunk_count;
-
 	if (logical_lane_count == 0u ||
 		logical_lane_count > SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT ||
 		rows_per_lane == 0u || execution_row_capacity == 0u ||
 		maximum_lanes_per_chunk_out == 0 || chunk_count_out == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (execution_row_capacity > SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
-		execution_row_capacity = SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET;
-	maximum_lanes_per_chunk = execution_row_capacity / rows_per_lane;
-	if (maximum_lanes_per_chunk == 0u)
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	if (maximum_lanes_per_chunk > logical_lane_count)
-		maximum_lanes_per_chunk = logical_lane_count;
-	chunk_count = logical_lane_count / maximum_lanes_per_chunk;
-	if (logical_lane_count % maximum_lanes_per_chunk != 0u)
-		chunk_count += 1u;
-	*maximum_lanes_per_chunk_out = maximum_lanes_per_chunk;
-	*chunk_count_out = chunk_count;
-	return SPARK_STATUS_OK;
+	return SparkGlm52StagePlanExecutionChunkShape(
+		logical_lane_count,
+		rows_per_lane,
+		execution_row_capacity,
+		maximum_lanes_per_chunk_out,
+		chunk_count_out);
 }
 
 SparkStatus SparkGlm52Pp13WorkControlValidatePacket(

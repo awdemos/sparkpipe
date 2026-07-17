@@ -66,6 +66,7 @@ typedef struct SparkTestServingCallbackContext
     uint64_t released_sequence_id;
     uint32_t transient_decode_busy_count;
     uint32_t pending_dispatch_valid;
+    uint32_t pending_decode_callback_count;
     SparkGlm52RequestApiDispatch pending_dispatch;
 } SparkTestServingCallbackContext;
 
@@ -264,6 +265,7 @@ static SparkStatus SparkTestServingDecodePending(
     assert(decode_result != 0);
     callback_context->pending_dispatch = *decode_dispatch->request_dispatch;
     callback_context->pending_dispatch_valid = 1u;
+    callback_context->pending_decode_callback_count += 1u;
     return SPARK_STATUS_PENDING;
 }
 
@@ -729,6 +731,37 @@ static void SparkTestServingPreservesAcceptedPendingDecode(void)
     assert(stats.completed_stream_count == 1u);
 }
 
+static void SparkTestServingPumpsMultipleAcceptedPendingDecodes(void)
+{
+    SparkGlm52ServingSubmitTokenIdsRequest request;
+    SparkGlm52ServingSubmitResult result;
+    SparkGlm52ServingStats stats;
+    SparkStatus status;
+    uint32_t request_index;
+
+    SparkTestServingInitializeFixture(&Fixture,&CallbackContext);
+    Fixture.serving_engine.decode_function = SparkTestServingDecodePending;
+    Fixture.request_api.decode_batch_target = 1u;
+    Fixture.scheduler.queue_depth_per_spark =
+        SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT;
+    for (request_index = 0u; request_index < 2u; ++request_index)
+    {
+        SparkGlm52ServingInitializeSubmitTokenIdsRequest(&request);
+        request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
+        request.token_ids = Fixture.prompt_tokens;
+        request.output_token_budget = 1u;
+        request.request_id = 9100u + request_index;
+        request.sequence_id = 19100u + request_index;
+        assert(SparkGlm52ServingEngineSubmitTokenIds(
+            &Fixture.serving_engine,&request,&result) == SPARK_STATUS_OK);
+    }
+    status = SparkGlm52ServingEnginePump(
+        &Fixture.serving_engine,0u,16u,&stats);
+    assert(status == SPARK_STATUS_PENDING);
+    assert(CallbackContext.pending_decode_callback_count == 2u);
+    assert(Fixture.request_api.running_request_count == 2u);
+}
+
 static void SparkTestServingPrefillBatchingIsInternal(void)
 {
     SparkGlm52ServingSubmitTokenIdsRequest submit_request;
@@ -931,6 +964,7 @@ int main(void)
     SparkTestServingFireAndForgetPumpRunsFullPromptToDecode();
     SparkTestServingRetriesUnacceptedBusyDecode();
     SparkTestServingPreservesAcceptedPendingDecode();
+    SparkTestServingPumpsMultipleAcceptedPendingDecodes();
     SparkTestServingPrefillBatchingIsInternal();
     SparkTestServingDynamicTokenStorageGrowsAndRecycles();
     return 0;
