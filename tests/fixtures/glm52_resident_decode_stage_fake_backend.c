@@ -149,6 +149,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream;
     uint32_t layer_index;
+    uint32_t runtime_kv_active_sequence_count;
 
     if (layer_node_contexts == 0 ||
         layer_count == 0u ||
@@ -161,13 +162,20 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     first_node_context = layer_node_contexts[0];
+    runtime_kv_active_sequence_count = active_sequence_count;
+    if (frame_context != 0 &&
+        (frame_context->flags &
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY) != 0u)
+    {
+        runtime_kv_active_sequence_count = frame_context->logical_lane_count;
+    }
     if (first_node_context == 0 ||
         pipeline_slot_index >= first_node_context->pipeline_slot_count ||
         active_sequence_count == 0u ||
         active_sequence_count > first_node_context->max_active_sequence_count ||
         SparkGlm52ResidentDecodeStageFakeValidateRuntimeKvBlockTable(
             first_node_context,
-            active_sequence_count,
+            runtime_kv_active_sequence_count,
             runtime_kv_block_table) != SPARK_STATUS_OK)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
