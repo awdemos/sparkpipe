@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 14u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 16u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT \
 	16384u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS \
@@ -33,9 +33,14 @@ extern "C" {
 	((uint32_t)sizeof(SparkGlm52Pp13NodeContextBuilderInterface))
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_KV_STATS_BYTES \
 	((uint32_t)sizeof(SparkGlm52Pp13NodeContextBuilderKvStats))
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_NONE 0u
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED 1u
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA 2u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_NONE \
+	SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_NONE
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED \
+	SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_FP8_FLASHINFER_GROUPED
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA \
+	SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_W8LUT_BF16_WMMA
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_NVFP4_B12X \
+	SPARK_GLM52_PP13_RUNTIME_MOE_BACKEND_NVFP4_B12X
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_DISABLED 0u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_SYNCHRONOUS_FULL_HISTORY 1u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_NVME_MODE_BATCHED_COHORT_JIT 2u
@@ -88,6 +93,8 @@ typedef struct SparkGlm52Pp13NodeContextBuilderConfiguration
 	const char *stagepack_root;
 	const char *embedding_pack_path;
 	const char *node_target;
+	const char *dspark_manifest_path;
+	const char *dspark_config_path;
 	const char *dspark_safetensors_path;
 	const char *kv_nvme_path;
 	uint32_t dspark_maximum_lane_count;
@@ -201,6 +208,8 @@ typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction)(
 	SparkHiddenTransportSession *output_transport_session,
 	SparkModelDriverCompletionFunction completion_function,
 	void *completion_context);
+typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderProgressFunction)(
+	void *builder_state);
 typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderTakeDsparkDraftFunction)(
 	void *builder_state,
 	SparkGlm52DsparkDraftResult *draft_result);
@@ -225,6 +234,7 @@ typedef struct SparkGlm52Pp13NodeContextBuilderInterface
 	SparkGlm52Pp13NodeContextBuilderPrefillFunction prefill;
 	SparkGlm52Pp13NodeContextBuilderDecodeFunction decode;
 	SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction submit_work;
+	SparkGlm52Pp13NodeContextBuilderProgressFunction progress;
 	SparkGlm52Pp13NodeContextBuilderTakeDsparkDraftFunction take_dspark_draft;
 	SparkGlm52Pp13NodeContextBuilderGetKvStatsFunction get_kv_stats;
 	SparkGlm52Pp13NodeContextBuilderResetControlGenerationFunction

@@ -1510,12 +1510,14 @@ static uint32_t SparkGlm52RequestApiCollectDecodeBatchMembers(
     {
         SparkGlm52RequestApiSlot *slot;
 
-        slot = &api->request_slots[slot_index];
-        if (slot == leader_slot ||
-            !SparkGlm52RequestApiSlotIsSchedulableDecode(slot))
-        {
-            continue;
-        }
+		slot = &api->request_slots[slot_index];
+		if (slot == leader_slot ||
+			!SparkGlm52RequestApiSlotIsSchedulableDecode(slot) ||
+			SparkGlm52RequestApiSlotCanUseDspark(api,slot) !=
+				SparkGlm52RequestApiSlotCanUseDspark(api,leader_slot))
+		{
+			continue;
+		}
         if ((require_resident_kv != 0u ||
              slot->priority < leader_slot->priority) &&
             !SparkGlm52RequestApiDecodeBlocksAreResident(api, slot))
@@ -3694,11 +3696,13 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefill(
     {
         SparkGlm52RequestApiSlot *candidate;
 
-        candidate = &api->request_slots[slot_index];
-        if (candidate == slot ||
-            candidate->state != SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL ||
-            SparkGlm52RequestApiSharedCachePrefixTokenCount(
-                api,
+		candidate = &api->request_slots[slot_index];
+		if (candidate == slot ||
+			candidate->state != SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL ||
+			SparkGlm52RequestApiSlotCanUseDspark(api,candidate) !=
+				SparkGlm52RequestApiSlotCanUseDspark(api,slot) ||
+			SparkGlm52RequestApiSharedCachePrefixTokenCount(
+				api,
                 slot,
                 candidate) < dispatch->shared_prefix_token_count)
         {
@@ -3749,8 +3753,10 @@ static uint32_t SparkGlm52RequestApiSlotIsCompatiblePrefillBatchMember(
     {
         *candidate_scheduled_prompt_token_count_out = 0u;
     }
-    if (candidate_slot == leader_slot ||
-        !SparkGlm52RequestApiSlotIsSchedulablePrefill(candidate_slot))
+	if (candidate_slot == leader_slot ||
+		!SparkGlm52RequestApiSlotIsSchedulablePrefill(candidate_slot) ||
+		SparkGlm52RequestApiSlotCanUseDspark(api,candidate_slot) !=
+			SparkGlm52RequestApiSlotCanUseDspark(api,leader_slot))
     {
         return 0u;
     }
@@ -4029,9 +4035,9 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
     dispatch->request_count =
         dispatch->prefill_batch_decision.packed_request_count;
     dispatch->highest_priority = first_slot->priority;
-    for (request_index = 0u;
-         request_index < dispatch->request_count;
-         ++request_index)
+	for (request_index = 0u;
+		 request_index < dispatch->request_count;
+		 ++request_index)
     {
         SparkGlm52RequestApiSlot *selected_slot;
 
@@ -4044,10 +4050,16 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
         dispatch->request_slot_indices[request_index] =
             SparkGlm52RequestApiSlotIndex(api, selected_slot);
         dispatch->request_ids[request_index] = selected_slot->request_id;
-        dispatch->sequence_ids[request_index] = selected_slot->sequence_id;
-    }
-    api->scheduled_prefill_dispatch_count += 1u;
-    return SPARK_STATUS_OK;
+		dispatch->sequence_ids[request_index] = selected_slot->sequence_id;
+	}
+	if (SparkGlm52RequestApiSlotCanUseDspark(api,first_slot))
+	{
+		dispatch->flags |=
+			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
+		api->dspark_tap_capture_dispatch_count += 1u;
+	}
+	api->scheduled_prefill_dispatch_count += 1u;
+	return SPARK_STATUS_OK;
 }
 
 static void SparkGlm52RequestApiFillDecodeSchedulerRequest(
@@ -4222,10 +4234,12 @@ static uint32_t SparkGlm52RequestApiCollectSpeculativeVerifyBatchMembers(
         SparkGlm52DsparkDraftResult draft_result;
         uint32_t draft_source;
 
-        slot = &api->request_slots[slot_index];
-        if (slot == leader_slot ||
-            !SparkGlm52RequestApiSlotIsSchedulableSpeculativeVerify(slot) ||
-            ((require_resident_kv != 0u ||
+		slot = &api->request_slots[slot_index];
+		if (slot == leader_slot ||
+			!SparkGlm52RequestApiSlotIsSchedulableSpeculativeVerify(slot) ||
+			SparkGlm52RequestApiSlotCanUseDspark(api,slot) !=
+				SparkGlm52RequestApiSlotCanUseDspark(api,leader_slot) ||
+			((require_resident_kv != 0u ||
               slot->priority < leader_slot->priority) &&
              !SparkGlm52RequestApiDecodeBlocksAreResident(api, slot)))
         {
@@ -4433,12 +4447,22 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     else
     {
         dispatch->flags |=
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY;
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY |
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
         dispatch->speculative_verifier_token_count =
             leader_draft.token_count + 1u;
         dispatch->speculative_max_committed_token_count =
             leader_draft.token_count + 1u;
     }
+    if (leader_source == SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP &&
+        SparkGlm52RequestApiSlotCanUseDspark(api,first_slot))
+    {
+        dispatch->flags |=
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
+    }
+    if ((dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE) != 0u)
+        api->dspark_tap_capture_dispatch_count += 1u;
     dispatch->request_count =
         dispatch->decode_batch_decision.packed_request_count;
     dispatch->highest_priority = first_slot->priority;
@@ -4778,17 +4802,15 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
         dispatch->request_ids[request_index] = selected_slot->request_id;
         dispatch->sequence_ids[request_index] = selected_slot->sequence_id;
         dispatch->decode_committed_token_counts[request_index] = 1u;
-        if ((selected_slot->flags &
-                SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION) != 0u)
-        {
-            batch_disables_speculation = 1u;
-        }
-        if (SparkGlm52RequestApiSlotCanUseDspark(api, selected_slot))
-        {
-            dispatch->flags |=
-                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
-        }
-    }
+		if ((selected_slot->flags &
+				SPARK_GLM52_REQUEST_API_REQUEST_FLAG_DISABLE_SPECULATION) != 0u)
+		{
+			batch_disables_speculation = 1u;
+		}
+	}
+	if (SparkGlm52RequestApiSlotCanUseDspark(api,first_slot))
+		dispatch->flags |=
+			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE;
     if (mtp_draft_token_budget != 0u &&
         batch_disables_speculation == 0u)
     {
@@ -5662,7 +5684,53 @@ static SparkStatus SparkGlm52RequestApiResolveMtpTreeVerifierTokens(
     return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52RequestApiTraceMtpVerify(
+static const char *SparkGlm52RequestApiSpeculativeTraceSource(
+    const SparkGlm52RequestApiDispatch *dispatch,
+    uint32_t *trace_confidence)
+{
+    if (dispatch == 0 || trace_confidence == 0)
+    {
+        return 0;
+    }
+    if ((dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u)
+    {
+        if (getenv("SPARKPIPE_DSPARK_TRACE") == 0)
+        {
+            return 0;
+        }
+        *trace_confidence = 1u;
+        return "dspark";
+    }
+    if ((dispatch->flags &
+            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
+    {
+        if (getenv("SPARKPIPE_PP13_TRACE") == 0)
+        {
+            return 0;
+        }
+        *trace_confidence = 0u;
+        return "mtp";
+    }
+    return 0;
+}
+
+static void SparkGlm52RequestApiTraceTokenIds(
+    const char *label,
+    const uint32_t *token_ids,
+    uint32_t token_count)
+{
+    uint32_t token_index;
+
+    fprintf(stderr," %s=",label);
+    for (token_index = 0u; token_index < token_count; ++token_index)
+    {
+        fprintf(stderr,"%s%u",token_index == 0u ? "" : ",",
+            token_ids[token_index]);
+    }
+}
+
+static void SparkGlm52RequestApiTraceSpeculativeVerify(
     const SparkGlm52RequestApiDispatch *dispatch,
     const uint32_t *verifier_token_ids,
     uint32_t lane_stride,
@@ -5670,36 +5738,41 @@ static void SparkGlm52RequestApiTraceMtpVerify(
     uint32_t request_index,
     const SparkGlm52DsparkVerifyResult *verify_result)
 {
-    uint32_t token_index;
+    const char *source;
+    uint32_t trace_confidence;
 
-    if (getenv("SPARKPIPE_PP13_TRACE") == 0 || dispatch == 0 ||
-        verifier_token_ids == 0 || verify_result == 0 ||
-        (dispatch->flags &
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u)
+    if (verifier_token_ids == 0 || verify_result == 0)
+    {
+        return;
+    }
+    source = SparkGlm52RequestApiSpeculativeTraceSource(
+        dispatch,&trace_confidence);
+    if (source == 0)
     {
         return;
     }
     fprintf(stderr,
-        "mtp_trace verify request=%llu sequence=%llu proposed=%u accepted=%u committed=%u fallback=%u draft_ids=",
+        "%s_trace verify request=%llu sequence=%llu proposed=%u accepted=%u committed=%u fallback=%u",
+        source,
         (unsigned long long)dispatch->request_ids[request_index],
         (unsigned long long)dispatch->sequence_ids[request_index],
         dispatch->speculative_token_count,
         verify_result->accepted_draft_token_count,
         verify_result->committed_token_count,
         verify_result->fallback_token_id);
-    for (token_index = 0u;
-         token_index < dispatch->speculative_token_count;
-         ++token_index)
-    {
-        fprintf(stderr,"%s%u",token_index == 0u ? "" : ",",
-            dispatch->speculative_draft_token_ids[request_index][token_index]);
-    }
-    fprintf(stderr," verifier_ids=");
-    for (token_index = 0u; token_index < verifier_token_count; ++token_index)
-    {
-        fprintf(stderr,"%s%u",token_index == 0u ? "" : ",",
-            verifier_token_ids[((uint64_t)request_index * lane_stride) + token_index]);
-    }
+    SparkGlm52RequestApiTraceTokenIds(
+        "draft_ids",
+        dispatch->speculative_draft_token_ids[request_index],
+        dispatch->speculative_token_count);
+    if (trace_confidence != 0u)
+        SparkGlm52RequestApiTraceTokenIds(
+            "confidence_milli",
+            dispatch->speculative_confidence_milli[request_index],
+            dispatch->speculative_token_count);
+    SparkGlm52RequestApiTraceTokenIds(
+        "verifier_ids",
+        &verifier_token_ids[(uint64_t)request_index * lane_stride],
+        verifier_token_count);
     fprintf(stderr,"\n");
 }
 
@@ -5780,7 +5853,7 @@ SparkStatus SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
         {
             return status;
         }
-        SparkGlm52RequestApiTraceMtpVerify(
+        SparkGlm52RequestApiTraceSpeculativeVerify(
             dispatch,
             verifier_token_ids,
             lane_stride,
