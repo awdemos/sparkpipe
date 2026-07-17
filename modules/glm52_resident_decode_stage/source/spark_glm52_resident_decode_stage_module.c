@@ -3739,8 +3739,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageExtractRuntimeKvBlockTable(
         state,
         runtime_kv_block_table,
         (frame_context->flags &
-            (SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW |
-             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY)) != 0u
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW) != 0u
             ? frame_context->logical_lane_count : frame->active_slot_count);
     if (status != SPARK_STATUS_OK)
     {
