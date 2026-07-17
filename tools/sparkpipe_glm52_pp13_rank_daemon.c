@@ -1081,10 +1081,16 @@ static SparkStatus SparkGlm52Pp13DaemonConnectCudaResident(
     SparkGlm52CudaResidentIpcHeader header;
     SparkGlm52CudaResidentIpcStats stats;
     SparkStatus status;
+    uint32_t expected_moe_backend_kind;
     int32_t fd;
 
     if (runtime == 0 || socket_path == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
+    status = SparkGlm52Pp13RuntimeExpectedMoeBackendKind(
+        runtime->rank_plan.quantization_mode,
+        &expected_moe_backend_kind);
+    if (status != SPARK_STATUS_OK)
+        return status;
     fd = socket(AF_UNIX,SOCK_STREAM,0);
     if (fd < 0)
         return SPARK_STATUS_IO_ERROR;
@@ -1132,11 +1138,7 @@ static SparkStatus SparkGlm52Pp13DaemonConnectCudaResident(
          stats.kv_physical_block_capacity == 0u ||
          stats.kv_logical_block_capacity < stats.kv_physical_block_capacity ||
          stats.model_quantization_mode != runtime->rank_plan.quantization_mode ||
-         stats.moe_backend_kind !=
-            (runtime->rank_plan.quantization_mode ==
-                SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT
-                ? SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA
-                : SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED) ||
+         stats.moe_backend_kind != expected_moe_backend_kind ||
          stats.moe_bound_layer_count == 0u ||
          stats.moe_bound_layer_count != stats.moe_expected_layer_count ||
          (stats.kv_nvme_enabled != 0u &&
@@ -1950,6 +1952,20 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
         runtime->output_transport_session,
         SparkGlm52Pp13DaemonCompletion,
         runtime);
+}
+
+static SparkStatus SparkGlm52Pp13DaemonProgressBuilder(
+	SparkGlm52Pp13DaemonRuntime *runtime)
+{
+	if (runtime == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (runtime->cuda_resident_fd >= 0)
+		return SPARK_STATUS_OK;
+	if (runtime->builder_state == 0 ||
+		runtime->builder_library.builder_interface.progress == 0)
+		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	return runtime->builder_library.builder_interface.progress(
+		runtime->builder_state);
 }
 
 static uint32_t SparkGlm52Pp13DaemonWorkPacketHash(
@@ -3051,12 +3067,13 @@ int main(int argc,char **argv)
     uint64_t timeout_ns;
     uint64_t next_timer_ns;
     uint64_t now_ns;
+	SparkStatus builder_status;
 
     SparkGlm52Pp13DaemonInitializeConfig(&configuration);
     if (SparkGlm52Pp13DaemonParseArguments(&configuration,argc,argv) < 0)
     {
         fprintf(stderr,
-            "usage: %s --rank n [--cuda-resident-socket path | --model-quantization fp8|w8lut --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path] [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--transport-busy-poll]\n",
+            "usage: %s --rank n [--cuda-resident-socket path | --model-quantization fp8|nvfp4|w8lut --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path] [--program name] [--node-target target] [--max-active n] [--port-base n] [--final-event-bind ip] [--final-event-return-host host] [--transport-busy-poll]\n",
             argv[0]);
         return 2;
     }
@@ -3101,19 +3118,31 @@ int main(int argc,char **argv)
         if (runtime.cuda_resident_fd < 0)
             (void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
                 &runtime.runner);
+		builder_status = SparkGlm52Pp13DaemonProgressBuilder(&runtime);
+		if (builder_status != SPARK_STATUS_OK &&
+			builder_status != SPARK_STATUS_BUSY)
+		{
+			fprintf(stderr,
+				"rank daemon builder progress failed status=%u\n",
+				(uint32_t)builder_status);
+			break;
+		}
         progress |= SparkGlm52Pp13DaemonPumpQueuedWork(&runtime);
         progress |= SparkGlm52Pp13DaemonPumpFinalEvents(&runtime);
         if (progress == 0u)
         {
             if (configuration.transport_busy_poll != 0u)
                 continue;
-            timeout_ns = 0u;
+            timeout_ns = builder_status == SPARK_STATUS_BUSY ?
+				UINT64_C(1000000) : 0u;
             next_timer_ns = SparkGlm52Pp13DaemonNextTimerNs(&runtime);
             if (next_timer_ns != 0u)
             {
                 now_ns = SparkGlm52Pp13DaemonMonotonicNs();
-                timeout_ns = next_timer_ns > now_ns ?
-                    next_timer_ns - now_ns : 1u;
+				next_timer_ns = next_timer_ns > now_ns ?
+					next_timer_ns - now_ns : 1u;
+				if (timeout_ns == 0u || next_timer_ns < timeout_ns)
+					timeout_ns = next_timer_ns;
             }
             event_mask = SparkGlm52Pp13DaemonWaitForEvents(
                 &runtime,
