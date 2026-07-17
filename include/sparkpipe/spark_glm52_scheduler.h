@@ -333,6 +333,13 @@ uint32_t SparkGlm52SchedulerSelectPipelineBatchWidth(
     uint32_t active_request_count,
     uint32_t batch_capacity);
 
+SparkStatus SparkGlm52SchedulerEstimateDecodeWorkNs(
+    const SparkGlm52Scheduler *scheduler,
+    uint32_t logical_sequence_count,
+    uint32_t rows_per_sequence,
+    uint32_t execution_row_capacity,
+    uint64_t *estimated_work_ns_out);
+
 SparkStatus SparkGlm52SchedulerAdmit(
     SparkGlm52Scheduler *scheduler,
     const SparkGlm52SchedulerRequest *request,

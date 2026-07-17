@@ -2012,6 +2012,7 @@ SparkStatus SparkGlm52ServingEnginePump(
     uint32_t max_dispatch_steps,
     SparkGlm52ServingStats *stats)
 {
+    uint32_t accepted_pending_dispatch_count;
     uint32_t step_index;
     uint32_t step_limit;
     SparkStatus status;
@@ -2029,6 +2030,7 @@ SparkStatus SparkGlm52ServingEnginePump(
     step_limit = max_dispatch_steps != 0u
         ? max_dispatch_steps
         : SPARK_GLM52_SERVING_DEFAULT_MAX_PUMP_STEPS;
+    accepted_pending_dispatch_count = 0u;
     for (step_index = 0u; step_index < step_limit; ++step_index)
     {
         SparkGlm52RequestApiDispatch dispatch;
@@ -2053,6 +2055,8 @@ SparkStatus SparkGlm52ServingEnginePump(
             &dispatch);
         if (status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_BUSY)
         {
+            if (accepted_pending_dispatch_count != 0u)
+                status = SPARK_STATUS_PENDING;
             engine->stats.last_status = status;
             SparkGlm52ServingRefreshStats(engine);
             if (stats != 0)
@@ -2145,15 +2149,21 @@ SparkStatus SparkGlm52ServingEnginePump(
                  dispatch.kind ==
                     SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH))
             {
-                engine->stats.last_status = status;
-                SparkGlm52ServingRefreshStats(engine);
-                if (stats != 0)
+                accepted_pending_dispatch_count += 1u;
+                if ((pump_flags &
+                        SPARK_GLM52_SERVING_PUMP_FLAG_STOP_AFTER_ONE_DISPATCH) != 0u)
                 {
-                    *stats = engine->stats;
+                    engine->stats.last_status = SPARK_STATUS_PENDING;
+                    SparkGlm52ServingRefreshStats(engine);
+                    if (stats != 0)
+                    {
+                        *stats = engine->stats;
+                    }
+                    return SPARK_STATUS_PENDING;
                 }
-                return status;
+                continue;
             }
-            if (status == SPARK_STATUS_BUSY &&
+            else if (status == SPARK_STATUS_BUSY &&
                 (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
                  dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH ||
                  dispatch_was_retried != 0u))
@@ -2194,13 +2204,16 @@ SparkStatus SparkGlm52ServingEnginePump(
         }
     }
 
-    engine->stats.last_status = SPARK_STATUS_OK;
+    status = accepted_pending_dispatch_count != 0u
+        ? SPARK_STATUS_PENDING
+        : SPARK_STATUS_OK;
+    engine->stats.last_status = status;
     SparkGlm52ServingRefreshStats(engine);
     if (stats != 0)
     {
         *stats = engine->stats;
     }
-    return SPARK_STATUS_OK;
+    return status;
 }
 
 SparkStatus SparkGlm52ServingEnginePopEvent(
