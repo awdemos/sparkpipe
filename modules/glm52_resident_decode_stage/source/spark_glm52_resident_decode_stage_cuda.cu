@@ -51,10 +51,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
         token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
     }
     if (token_count >
-        (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
     {
         token_count =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u;
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE;
     }
     cuda_status = cudaMemcpyAsync(
         &completion->token_ids[0u],

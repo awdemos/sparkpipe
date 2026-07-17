@@ -817,7 +817,8 @@ static void SparkTestServingMtpCommitStreamsMultiTokenLanes(void)
 
     SparkTestServingInitializeFixture(&Fixture, &CallbackContext);
     Fixture.request_api.configuration_flags |=
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT;
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
     Fixture.serving_engine.decode_function = SparkTestServingMtpDecode;
     Fixture.serving_engine.stop_token_ids[0u] =
         SPARK_TEST_SERVING_MTP_STOP_TOKEN_ID;
