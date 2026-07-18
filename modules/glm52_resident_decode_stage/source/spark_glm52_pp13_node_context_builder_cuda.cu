@@ -6694,6 +6694,22 @@ static SparkStatus SparkGlm52Pp13BuilderSetDsaCandidateCount(
 	return SPARK_STATUS_OK;
 }
 
+static uint32_t SparkGlm52Pp13BuilderDsaCandidateContextTokenCount(
+	const SparkGlm52Pp13WorkControlPacket *work_packet)
+{
+	uint64_t wave_end;
+	if (work_packet == 0 || work_packet->kv_block_table_token_count == 0u)
+		return 0u;
+	if ((work_packet->flags &
+		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) == 0u)
+		return work_packet->kv_block_table_token_count;
+	wave_end = work_packet->sequence_position +
+		(uint64_t)work_packet->execution_row_count;
+	if (wave_end < work_packet->kv_block_table_token_count)
+		return (uint32_t)wave_end;
+	return work_packet->kv_block_table_token_count;
+}
+
 static void SparkGlm52Pp13BuilderCaptureCompletion(
 	void *completion_context,
 	const SparkModelDriverCompletion *completion)
@@ -9233,7 +9249,7 @@ static SparkStatus SparkGlm52Pp13BuilderSubmitWork(
 	failure_step = "dsa_candidate_count";
 	status = SparkGlm52Pp13BuilderSetDsaCandidateCount(
 		state,
-		work_packet->kv_block_table_token_count);
+		SparkGlm52Pp13BuilderDsaCandidateContextTokenCount(work_packet));
 	if (status != SPARK_STATUS_OK)
 		goto cancel_work;
 	failure_step = "mtp_budget_upload";

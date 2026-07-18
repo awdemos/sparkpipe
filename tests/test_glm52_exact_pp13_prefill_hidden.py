@@ -253,6 +253,49 @@ def test_exact_prefill_submits_full_parallel_chunks(root: Path) -> None:
     assert "state->prefill_frame_view" not in source
 
 
+def test_prefill_dsa_bucket_tracks_completed_wave_context(root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
+                  encoding="utf-8")
+    helper_start = source.index(
+        "static uint32_t SparkGlm52Pp13BuilderDsaCandidateContextTokenCount(")
+    helper_end = source.index(
+        "static void SparkGlm52Pp13BuilderCaptureCompletion(", helper_start)
+    helper_body = source[helper_start:helper_end]
+    submit_start = source.index(
+        "static SparkStatus SparkGlm52Pp13BuilderSubmitWork(")
+    submit_end = source.index(
+        "static uint64_t SparkGlm52Pp13BuilderProbeFnv64(", submit_start)
+    submit_body = source[submit_start:submit_end]
+    assert "work_packet->sequence_position" in helper_body
+    assert "work_packet->execution_row_count" in helper_body
+    assert "work_packet->kv_block_table_token_count" in helper_body
+    assert "SparkGlm52Pp13BuilderDsaCandidateContextTokenCount(work_packet)" in submit_body
+
+
+def test_dsa_prefetch_graph_does_not_capture_reusable_eager_events(
+        root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                  encoding="utf-8")
+    stream_start = source.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageDsaStreamIsCapturing(")
+    stream_end = source.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageRecordDsaTransportDependency(",
+        stream_start)
+    stream_body = source[stream_start:stream_end]
+    wait_start = source.index(
+        "extern \"C\" SparkStatus SparkGlm52Sm121RequiredDecodeStageWaitForDsaSelectedKvFragmentPrefetch(")
+    wait_end = source.index(
+        "extern \"C\" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaKeyIndexBlockSummaryBuild(",
+        wait_start)
+    wait_body = source[wait_start:wait_end]
+    assert "cudaStreamIsCapturing(" in stream_body
+    assert "*transport_stream_out = producer_cuda_stream;" in stream_body
+    assert "capture_active != 0u" in wait_body
+    assert "dsa_prefetch_wait_failed" in wait_body
+
+
 def test_production_pp13_does_not_route_bulk_prefill(root: Path) -> None:
     builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
                "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -1354,6 +1397,8 @@ def main() -> None:
     test_fp8_linear_plans_require_scaled_gemm_backend(root)
     test_pp13_builder_binds_all_fp8_linear_plans(root)
     test_exact_prefill_submits_full_parallel_chunks(root)
+    test_prefill_dsa_bucket_tracks_completed_wave_context(root)
+    test_dsa_prefetch_graph_does_not_capture_reusable_eager_events(root)
     test_production_pp13_does_not_route_bulk_prefill(root)
     test_absorbed_bulk_prefill_is_dsa_only(root)
     test_decode_uses_one_tree_aware_work_packet_path(root)
