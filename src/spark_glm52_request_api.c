@@ -188,6 +188,14 @@ static uint32_t SparkGlm52RequestApiPrefixCohortingIsEnabled(
         SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING) != 0u;
 }
 
+static uint32_t SparkGlm52RequestApiCrossSequencePrefixReuseIsEnabled(
+    const SparkGlm52RequestApi *api)
+{
+    return api != 0 && api->scheduler != 0 &&
+        (api->scheduler->configuration_flags &
+            SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE) != 0u;
+}
+
 static uint32_t SparkGlm52RequestApiPrefillBatchingIsEnabled(
     const SparkGlm52RequestApi *api)
 {
@@ -1604,7 +1612,7 @@ static uint32_t SparkGlm52RequestApiSharedCachePrefixTokenCount(
     uint32_t block_token_count;
     uint32_t common_prefix_token_count;
 
-    if (api == 0 || api->scheduler == 0 ||
+    if (SparkGlm52RequestApiCrossSequencePrefixReuseIsEnabled(api) == 0u ||
         api->scheduler->prefix_cache == 0)
     {
         return 0u;
@@ -2545,8 +2553,7 @@ static uint32_t SparkGlm52RequestApiPrefetchBlockIsResident(
     const SparkGlm52KvCacheArena *arena;
     const SparkGlm52KvCacheBlock *block;
 
-    if (api == 0 ||
-        api->scheduler == 0 ||
+    if (SparkGlm52RequestApiCrossSequencePrefixReuseIsEnabled(api) == 0u ||
         api->scheduler->prefix_cache == 0 ||
         api->scheduler->prefix_cache->kv_cache_arena == 0 ||
         prefetch_block == 0)
@@ -3416,6 +3423,7 @@ static uint32_t SparkGlm52RequestApiNextPrefillStepTokenCount(
 }
 
 static void SparkGlm52RequestApiFillPrefillSchedulerRequest(
+    const SparkGlm52RequestApi *api,
     const SparkGlm52RequestApiSlot *slot,
     uint32_t prompt_token_count,
     uint32_t max_scheduled_prompt_token_count,
@@ -3427,6 +3435,9 @@ static void SparkGlm52RequestApiFillPrefillSchedulerRequest(
         SPARK_GLM52_SCHEDULER_REQUEST_DESCRIPTOR_BYTES;
     scheduler_request->active_sequence_count = 1u;
     scheduler_request->prompt_token_count = prompt_token_count;
+    scheduler_request->computed_prompt_token_count =
+        SparkGlm52RequestApiCrossSequencePrefixReuseIsEnabled(api) != 0u
+            ? 0u : slot->computed_prompt_token_count;
     scheduler_request->flags = SPARK_GLM52_SCHEDULER_REQUEST_FLAG_PREFILL;
     scheduler_request->max_scheduled_prompt_token_count =
         max_scheduled_prompt_token_count != 0u
@@ -3635,6 +3646,7 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefill(
     }
 
     SparkGlm52RequestApiFillPrefillSchedulerRequest(
+        api,
         slot,
         scheduler_prompt_token_count,
         scheduler_step_token_limit,
@@ -3977,6 +3989,7 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
         selected_slots[request_count] = slot;
         selected_handles[request_count] = slot->handle;
         SparkGlm52RequestApiFillPrefillSchedulerRequest(
+            api,
             slot,
             slot->prompt_token_count,
             selected_scheduled_prompt_token_counts[request_count],
@@ -7061,6 +7074,10 @@ SparkStatus SparkGlm52RequestApiCancelRequest(
     if (slot == 0)
     {
         return SPARK_STATUS_NOT_FOUND;
+    }
+    if (slot->state == SPARK_GLM52_REQUEST_API_STATE_CANCELLED)
+    {
+        return SPARK_STATUS_OK;
     }
     if (slot->state == SPARK_GLM52_REQUEST_API_STATE_RUNNING_PREFILL ||
         slot->state == SPARK_GLM52_REQUEST_API_STATE_RUNNING_DECODE)

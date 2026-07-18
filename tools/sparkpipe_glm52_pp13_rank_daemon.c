@@ -1475,9 +1475,10 @@ static void SparkGlm52Pp13DaemonCompletion(
     if ((runtime->rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u)
         return;
-    if ((completion->completion_flags &
+    if (completion->status == SPARK_STATUS_OK &&
+        ((completion->completion_flags &
             SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u ||
-        completion->token_count == 0u)
+         completion->token_count == 0u))
     {
         if (runtime->trace_enabled != 0u)
             fprintf(stderr,"pp13_trace rank=%u final_event_skipped request=%llu position=%llu flags=0x%x tokens=%u\n",runtime->rank_plan.rank_index,(unsigned long long)completion->request_id,(unsigned long long)completion->sequence_position,completion->completion_flags,completion->token_count);
@@ -1959,8 +1960,8 @@ static SparkStatus SparkGlm52Pp13DaemonProgressBuilder(
 {
 	if (runtime == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (runtime->cuda_resident_fd >= 0)
-		return SPARK_STATUS_OK;
+	if (runtime->cuda_resident_socket_path != 0)
+		return SparkGlm52Pp13DaemonEnsureCudaResident(runtime);
 	if (runtime->builder_state == 0 ||
 		runtime->builder_library.builder_interface.progress == 0)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;

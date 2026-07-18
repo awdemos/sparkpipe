@@ -795,6 +795,16 @@ static uint64_t SparkGlm52CudaResidentdMonotonicTimeNs(void)
 		(uint64_t)timestamp.tv_nsec;
 }
 
+static uint32_t SparkGlm52CudaResidentdWorkFailureIsNonfatal(
+    SparkStatus status)
+{
+    return status == SPARK_STATUS_INVALID_ARGUMENT ||
+        status == SPARK_STATUS_CAPACITY_EXCEEDED ||
+        status == SPARK_STATUS_NOT_FOUND ||
+        status == SPARK_STATUS_VALIDATION_FAILED ||
+        status == SPARK_STATUS_ABI_MISMATCH;
+}
+
 static void SparkGlm52CudaResidentdCompletion(
     void *completion_context,
     const SparkModelDriverCompletion *completion)
@@ -833,7 +843,8 @@ static void SparkGlm52CudaResidentdCompletion(
 		if (runtime->synthetic_failure_completion_active == 0u)
 			runtime->work_queue_error_count += 1u;
 		if (runtime->synthetic_failure_completion_active == 0u &&
-			completion->status != SPARK_STATUS_CAPACITY_EXCEEDED)
+			SparkGlm52CudaResidentdWorkFailureIsNonfatal(
+				completion->status) == 0u)
 		{
 			runtime->state = SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_FAILED;
 			runtime->deferred_failure_status = completion->status;
@@ -1721,16 +1732,6 @@ static void SparkGlm52CudaResidentdEmitWorkFailure(
 	runtime->synthetic_failure_completion_active = 0u;
 }
 
-static uint32_t SparkGlm52CudaResidentdWorkFailureIsNonfatal(
-    SparkStatus status)
-{
-    return status == SPARK_STATUS_INVALID_ARGUMENT ||
-        status == SPARK_STATUS_CAPACITY_EXCEEDED ||
-        status == SPARK_STATUS_NOT_FOUND ||
-        status == SPARK_STATUS_VALIDATION_FAILED ||
-        status == SPARK_STATUS_ABI_MISMATCH;
-}
-
 static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
     SparkGlm52CudaResidentdRuntime *runtime)
 {
@@ -2454,11 +2455,19 @@ int main(int argc, char **argv)
 		if (builder_status != SPARK_STATUS_OK &&
 			builder_status != SPARK_STATUS_BUSY)
 		{
-			fprintf(stderr,
-				"cuda_residentd_builder_progress_failed status=%u\n",
-				(uint32_t)builder_status);
-			exit_code = 1;
-			break;
+			if (SparkGlm52CudaResidentdWorkFailureIsNonfatal(
+					builder_status) != 0u)
+				fprintf(stderr,
+					"cuda_residentd_builder_work_failed status=%u\n",
+					(uint32_t)builder_status);
+			else
+			{
+				fprintf(stderr,
+					"cuda_residentd_builder_progress_failed status=%u\n",
+					(uint32_t)builder_status);
+				exit_code = 1;
+				break;
+			}
 		}
 	    while (SparkGlm52CudaResidentdPumpQueuedWork(&runtime) != 0u &&
             runtime.driver_inflight_count == 0u)

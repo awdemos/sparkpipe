@@ -485,6 +485,54 @@ static void SparkTestPrefixCacheExtendsLiveSequenceCapacityIdempotently(void)
         first_block_count * sizeof(first_table[0u])) == 0);
 }
 
+static void SparkTestPrefixCacheSequenceReservationDoesNotReuseContent(void)
+{
+    SparkGlm52PrefixCache cache;
+    SparkGlm52PrefixCacheEntry entries[8u];
+    SparkGlm52PrefixCacheSequenceBinding bindings[16u];
+    SparkGlm52PrefixCacheReservation reservation;
+    SparkGlm52PrefixCacheLookup lookup;
+    uint32_t tokens[12u];
+    uint32_t first_blocks[3u];
+    uint32_t second_blocks[3u];
+    uint32_t token_index;
+
+    for (token_index = 0u; token_index < 12u; ++token_index)
+        tokens[token_index] = 9000u + token_index;
+    SparkTestInitializePrefixCache(&cache,entries,bindings,8u,16u,4u);
+    memset(&reservation,0,sizeof(reservation));
+    reservation.abi_version = SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
+    reservation.descriptor_bytes =
+        SPARK_GLM52_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES;
+    reservation.physical_block_indices = first_blocks;
+    reservation.physical_block_capacity = 3u;
+    assert(SparkGlm52PrefixCacheReserveSequencePrompt(
+        &cache,801u,tokens,8u,&reservation) == SPARK_STATUS_OK);
+    assert(reservation.cached_physical_block_count == 0u);
+    assert(SparkGlm52PrefixCacheCommitReservation(
+        &cache,801u,reservation.reservation_epoch) == SPARK_STATUS_OK);
+    memset(&reservation,0,sizeof(reservation));
+    reservation.abi_version = SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
+    reservation.descriptor_bytes =
+        SPARK_GLM52_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES;
+    reservation.physical_block_indices = second_blocks;
+    reservation.physical_block_capacity = 3u;
+    assert(SparkGlm52PrefixCacheReserveSequencePrompt(
+        &cache,802u,tokens,8u,&reservation) == SPARK_STATUS_OK);
+    assert(reservation.cached_physical_block_count == 0u);
+    assert(reservation.reusable_token_count == 0u);
+    assert(first_blocks[0u] != second_blocks[0u]);
+    assert(first_blocks[1u] != second_blocks[1u]);
+    assert(SparkGlm52PrefixCacheCommitReservation(
+        &cache,802u,reservation.reservation_epoch) == SPARK_STATUS_OK);
+    assert(SparkGlm52PrefixCacheProbePrompt(
+        &cache,803u,tokens,8u,&lookup) == SPARK_STATUS_OK);
+    assert(lookup.matched_token_count == 0u);
+    for (token_index = 0u; token_index < 2u; ++token_index)
+        assert((entries[first_blocks[token_index]].flags &
+            SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY) != 0u);
+}
+
 int main(void)
 {
     SparkTestPrefixCacheMatchesCommittedBlocks();
@@ -496,5 +544,6 @@ int main(void)
     SparkTestPrefixCacheLookaheadProtectionSkipsProtectedVictim();
     SparkTestPrefixCacheChainedBlockHashMatchesFullHash();
     SparkTestPrefixCacheExtendsLiveSequenceCapacityIdempotently();
+    SparkTestPrefixCacheSequenceReservationDoesNotReuseContent();
     return 0;
 }

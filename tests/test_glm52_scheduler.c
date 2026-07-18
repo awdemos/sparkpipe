@@ -465,6 +465,59 @@ static void SparkTestGlm52SchedulerUsesIntegratedPrefixCacheAdmission(void)
     assert(SparkGlm52SchedulerReleaseSequence(&scheduler, 89u) == SPARK_STATUS_OK);
 }
 
+static void SparkTestGlm52SchedulerDisablesCrossSequencePrefixReuse(void)
+{
+    SparkGlm52PrefixCache cache;
+    SparkGlm52PrefixCacheEntry entries[128u];
+    SparkGlm52PrefixCacheSequenceBinding bindings[512u];
+    SparkGlm52SchedulerConfiguration configuration;
+    SparkGlm52Scheduler scheduler;
+    SparkGlm52SchedulerRequest request;
+    SparkGlm52SchedulerDecision decision;
+    uint32_t tokens[64u];
+    uint32_t first_blocks[2u];
+
+    SparkTestFillTokenIds(tokens,64u,7500u);
+    SparkTestInitializePrefixCache(&cache,entries,bindings,128u,512u);
+    SparkTestInitializeSchedulerConfiguration(
+        &configuration,
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        &cache);
+    configuration.max_prefill_tokens_per_step = 32u;
+    configuration.configuration_flags &=
+        ~SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE;
+    assert(SparkGlm52SchedulerInitialize(
+        &scheduler,&configuration) == SPARK_STATUS_OK);
+    SparkTestInitializePrefillRequest(&request,1u,64u,601u,tokens);
+    assert(SparkGlm52SchedulerAdmit(
+        &scheduler,&request,&decision) == SPARK_STATUS_OK);
+    assert(decision.scheduled_prompt_token_offset == 0u);
+    first_blocks[0u] = decision.kv_physical_block_indices[0u];
+    first_blocks[1u] = decision.kv_physical_block_indices[1u];
+    assert(SparkGlm52SchedulerComplete(
+        &scheduler,&decision) == SPARK_STATUS_OK);
+    SparkTestInitializePrefillRequest(&request,1u,64u,601u,tokens);
+    request.computed_prompt_token_count = 32u;
+    assert(SparkGlm52SchedulerAdmit(
+        &scheduler,&request,&decision) == SPARK_STATUS_OK);
+    assert(decision.cached_prefix_token_count == 0u);
+    assert(decision.scheduled_prompt_token_offset == 32u);
+    assert(decision.kv_physical_block_indices[0u] == first_blocks[0u]);
+    assert(decision.kv_physical_block_indices[1u] == first_blocks[1u]);
+    assert(SparkGlm52SchedulerComplete(
+        &scheduler,&decision) == SPARK_STATUS_OK);
+    SparkTestInitializePrefillRequest(&request,1u,64u,602u,tokens);
+    assert(SparkGlm52SchedulerAdmit(
+        &scheduler,&request,&decision) == SPARK_STATUS_OK);
+    assert(decision.cached_prefix_token_count == 0u);
+    assert(decision.scheduled_prompt_token_offset == 0u);
+    assert(decision.kv_physical_block_indices[0u] != first_blocks[0u]);
+    assert(SparkGlm52SchedulerCancel(
+        &scheduler,&decision) == SPARK_STATUS_OK);
+    assert(SparkGlm52SchedulerReleaseSequence(
+        &scheduler,601u) == SPARK_STATUS_OK);
+}
+
 static void SparkTestGlm52SchedulerInterleavesPrefillAndDecode(void)
 {
     SparkGlm52PrefixCache cache;
@@ -1247,6 +1300,7 @@ int main(void)
     SparkTestGlm52SchedulerSupportsW8lut();
     SparkTestGlm52SchedulerUsesVllmStyleChunkedPrefill();
     SparkTestGlm52SchedulerUsesIntegratedPrefixCacheAdmission();
+    SparkTestGlm52SchedulerDisablesCrossSequencePrefixReuse();
     SparkTestGlm52SchedulerInterleavesPrefillAndDecode();
     SparkTestGlm52SchedulerFillsCurrentSparkPipeline();
     SparkTestGlm52SchedulerPacksDecodeRequestsIntoSingleGraphDecision();
