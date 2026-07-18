@@ -70,12 +70,73 @@ latency ledger: the slowdown is resident verify execution across all stages,
 with an additional final-rank verifier/head tail. It is not hidden gateway
 polling or unexplained network delay.
 
+## Corrected attribution
+
 The measured result falsifies the prior estimate that a six-row verify should
-cost only 1.2x to 1.5x a one-row pass. The next optimization target is the
-multirow verify execution path itself. Candidate mechanisms requiring hardware
-A/B are missing graph/full-stage replay for verify signatures and the prepared
-F32 linear-plan one-row constraint causing repeated M=1 router/head launches.
-This receipt does not choose between them.
+cost only 1.2x to 1.5x a one-row pass. The receipt originally left graph replay
+and the prepared F32 linear-plan row count as competing explanations. A source
+audit now resolves that ambiguity.
+
+`SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows` returns one
+prepared row for every F32-output linear plan, regardless of the active row
+count. `SparkGlm52Sm121RequiredDecodeStageLaunchPreboundLinearPlan` then handles
+the mismatch by setting `launch_count` to the active row count and issuing one
+`cublasLtMatmul` for each row. A six-row verify therefore executes six separate
+M=1 matmuls for every affected BF16-weight/F32-output plan instead of one
+multirow matmul.
+
+This is the source-proven cause of the multirow launch amplification. It
+directly explains the measured 56-63 ms middle-rank verify times versus the
+16-17 ms one-row stage range and the aggregate 3.579x ratio. Missing graph or
+full-stage replay is no longer required to explain this receipt. The growing
+queue-wait values remain cumulative ring arrival offsets, not hidden host or
+network overhead.
+
+The same mechanism is present at wider plain-decode batches: an active count of
+64 can issue 64 M=1 launches for each affected plan. This is a source-confirmed
+amplification path and a strong explanation for the retained B64 result, but its
+causal share and the post-fix B64 throughput remain unmeasured until the hardware
+A/B below is complete.
+
+## Prepared correction
+
+The prepared correction selects the required stage-plan batch bucket for every
+BF16-row-major F32-output plan. The launch path requires the prepared row count
+to equal that bucket, issues exactly one multirow `cublasLtMatmul`, and fails
+closed on a mismatch. It does not restore a scalar or per-row fallback.
+
+Rows between the active count and the prepared bucket are computed but ignored.
+That is valid for this plan contract because buffers are sized to the maximum,
+the matmul beta is zero, rows are independent, and downstream consumers use only
+active rows. Stable bucket selection also avoids descriptor preparation and
+autotuning on small cohort-width changes. FP8-E4M3 cublasLt plans are unchanged.
+The graph signature already includes the descriptor pointer, so a bucket change
+recaptures while steady-state launches replay the matching graph.
+
+A companion control-path change posts the hidden-input receive before builder
+preparation and marks the input as pre-received for the driver. This removes
+repeated KV, upload, metadata, and linear-plan preparation on each BUSY retry.
+It is a separate optimization, not the cause of the measured 3.579x execution
+ratio. Builder and driver artifacts carrying this contract must be deployed
+together.
+
+The handoff reports passing host tests. SM121 compilation and live GB10
+execution have not yet measured the correction, so no speedup is claimed here.
+
+## Hardware acceptance gate
+
+The corrected build must rerun the retained MTP verify and B64 benchmarks with
+unchanged inputs and measurement settings. Acceptance requires:
+
+- output token SHA-256 remains
+  `9a75ab164284854a2f35d4e24b9ad117727d7755fcbe26b6bb709d480a559990`;
+- middle-rank six-row verify execution is below 25 ms per rank; and
+- B64 throughput exceeds 150 tokens/second.
+
+The prepared-change projections are approximately 17-20 ms per middle-rank
+verify, an MTP cycle near 300 ms, about 10 tokens/second for the retained B1 MTP
+workload, and B64 toward the 260-330 tokens/second pipeline-model range. These
+are acceptance hypotheses, not measured results.
 
 `SPARKPIPE_MTP_CYCLE_PROFILE=1` was present in the resident process environment
 but emitted no new epilogue lines in this run. The per-rank and gateway timing
