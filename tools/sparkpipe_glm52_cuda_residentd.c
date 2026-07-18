@@ -92,6 +92,7 @@ typedef struct SparkGlm52CudaResidentdQueuedWork
     SparkGlm52Pp13WorkControlPacket packet;
     int32_t client_fd;
     uint32_t reserved0;
+    uint64_t enqueue_time_ns;
 } SparkGlm52CudaResidentdQueuedWork;
 
 typedef union SparkGlm52CudaResidentdOutputPayload
@@ -154,6 +155,8 @@ typedef struct SparkGlm52CudaResidentdRuntime
     SparkGlm52CudaResidentdQueuedWork pending_prefill_work;
     uint32_t pending_prefill_active;
     uint32_t driver_inflight_count;
+    uint64_t inflight_submit_time_ns;
+    uint32_t packet_timing_enabled;
     int32_t completion_client_fd;
     uint64_t work_queue_accepted_count;
     uint64_t work_queue_submit_count;
@@ -783,6 +786,15 @@ static SparkStatus SparkGlm52CudaResidentdFlushClientOutput(
     return SPARK_STATUS_OK;
 }
 
+static uint64_t SparkGlm52CudaResidentdMonotonicTimeNs(void)
+{
+	struct timespec timestamp;
+	if (clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0)
+		return 0u;
+	return (uint64_t)timestamp.tv_sec * 1000000000ull +
+		(uint64_t)timestamp.tv_nsec;
+}
+
 static void SparkGlm52CudaResidentdCompletion(
     void *completion_context,
     const SparkModelDriverCompletion *completion)
@@ -794,6 +806,25 @@ static void SparkGlm52CudaResidentdCompletion(
     runtime = (SparkGlm52CudaResidentdRuntime *)completion_context;
     if (runtime == 0 || completion == 0)
         return;
+    if (runtime->packet_timing_enabled != 0u &&
+        runtime->inflight_submit_time_ns != 0u)
+    {
+        uint64_t completion_time_ns;
+
+        completion_time_ns = SparkGlm52CudaResidentdMonotonicTimeNs();
+        if (completion_time_ns != 0u)
+            fprintf(stderr,
+                "cuda_residentd_packet_timing rank=%u phase=execute "
+                "request=%llu sequence=%llu position=%llu status=%u ns=%llu\n",
+                runtime->rank_plan.rank_index,
+                (unsigned long long)completion->request_id,
+                (unsigned long long)completion->sequence_id,
+                (unsigned long long)completion->sequence_position,
+                (uint32_t)completion->status,
+                (unsigned long long)(
+                    completion_time_ns - runtime->inflight_submit_time_ns));
+        runtime->inflight_submit_time_ns = 0u;
+    }
     if (runtime->driver_inflight_count != 0u)
         runtime->driver_inflight_count -= 1u;
     runtime->completion_count += 1u;
@@ -1354,6 +1385,8 @@ static SparkStatus SparkGlm52CudaResidentdResetControlRuntime(
 	runtime->driver_inflight_count = 0u;
 	runtime->deferred_failure_status = SPARK_STATUS_OK;
 	runtime->blocker[0] = '\0';
+	runtime->packet_timing_enabled =
+		getenv("SPARKPIPE_PP13_PACKET_TIMING") != 0 ? 1u : 0u;
 	runtime->state = SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_READY;
 	return SPARK_STATUS_OK;
 }
@@ -1640,6 +1673,8 @@ static SparkStatus SparkGlm52CudaResidentdEnqueueWork(
     queued_work->packet = *packet;
     queued_work->client_fd = client_fd;
     queued_work->reserved0 = 0u;
+    queued_work->enqueue_time_ns = runtime->packet_timing_enabled != 0u
+        ? SparkGlm52CudaResidentdMonotonicTimeNs() : 0u;
     runtime->work_queue_count += 1u;
     runtime->work_queue_accepted_count += 1u;
     return SPARK_STATUS_OK;
@@ -1719,6 +1754,26 @@ static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
     }
     runtime->completion_client_fd = queued_work.client_fd;
     runtime->driver_inflight_count += 1u;
+    if (runtime->packet_timing_enabled != 0u)
+    {
+        uint64_t submit_time_ns;
+
+        submit_time_ns = SparkGlm52CudaResidentdMonotonicTimeNs();
+        runtime->inflight_submit_time_ns = submit_time_ns;
+        if (submit_time_ns != 0u && queued_work.enqueue_time_ns != 0u)
+            fprintf(stderr,
+                "cuda_residentd_packet_timing rank=%u phase=queue_wait "
+                "request=%llu sequence=%llu position=%llu rows=%u "
+                "flags=0x%x ns=%llu\n",
+                runtime->rank_plan.rank_index,
+                (unsigned long long)queued_work.packet.request_id,
+                (unsigned long long)queued_work.packet.sequence_id,
+                (unsigned long long)queued_work.packet.sequence_position,
+                queued_work.packet.execution_row_count,
+                queued_work.packet.flags,
+                (unsigned long long)(
+                    submit_time_ns - queued_work.enqueue_time_ns));
+    }
     status = runtime->builder_library.builder_interface.submit_work(
         runtime->builder_state,&queued_work.packet,
         runtime->input_transport_session,runtime->output_transport_session,
@@ -1727,6 +1782,7 @@ static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
     {
         if (runtime->driver_inflight_count != 0u)
             runtime->driver_inflight_count -= 1u;
+        runtime->inflight_submit_time_ns = 0u;
         return 0u;
     }
     SparkGlm52CudaResidentdPopQueuedWork(runtime);
@@ -1741,7 +1797,10 @@ static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
         if ((queued_work.packet.flags &
                 SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u &&
             runtime->driver_inflight_count != 0u)
+		{
             runtime->driver_inflight_count -= 1u;
+			runtime->inflight_submit_time_ns = 0u;
+		}
     }
     else
     {
@@ -1749,6 +1808,9 @@ static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
             runtime->driver_inflight_count -= 1u;
         runtime->submit_failed_count += 1u;
         runtime->work_queue_error_count += 1u;
+		if ((queued_work.packet.flags &
+				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u)
+			runtime->inflight_submit_time_ns = 0u;
         if (SparkGlm52CudaResidentdWorkFailureIsNonfatal(status) == 0u)
 		{
 			runtime->state = SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_FAILED;
