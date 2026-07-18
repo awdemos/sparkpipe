@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -469,6 +470,7 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint64_t mtp_previous_position;
 	uint32_t mtp_previous_valid;
 	uint32_t mtp_gpu_profile_enabled;
+	uint32_t mtp_cycle_profile_enabled;
 	uint32_t full_vocab_head_row_capacity;
 	uint32_t mtp_draft_head_ready;
 	uint32_t mtp_ready;
@@ -4720,7 +4722,8 @@ static void SparkGlm52Pp13BuilderConfigureMtpLayer(
 	node->dsa_indexshare_group_end_layer_exclusive = 0u;
 	node->dsa_indexshare_selected_token_count = 0u;
 	node->dsa_indexshare_layer_count = 0u;
-	node->enable_cuda_graph_replay = 0u;
+	node->enable_cuda_graph_replay =
+		getenv("SPARKPIPE_MTP_LAYER_DISABLE_GRAPH") != 0 ? 0u : 1u;
 	node->bulk_prefill_plan = 0;
 	state->mtp_layer.slot.block_table = state->device_physical_block_indices;
 	clear_flags =
@@ -4742,6 +4745,8 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 		return SPARK_STATUS_OK;
 	state->mtp_gpu_profile_enabled =
 		getenv("SPARKPIPE_MTP_GPU_PROFILE") != 0 ? 1u : 0u;
+	state->mtp_cycle_profile_enabled =
+		getenv("SPARKPIPE_MTP_CYCLE_PROFILE") != 0 ? 1u : 0u;
 	status = SparkGlm52Pp13BuilderAllocateLayerBuffers(
 		state,&state->mtp_layer,UINT32_MAX,
 		state->rank_plan.execution_row_capacity,
@@ -7067,6 +7072,15 @@ static SparkStatus SparkGlm52Pp13BuilderRebaseMtpTreeCache(
 		work_packet->lane_count,state->stream);
 }
 
+static uint64_t SparkGlm52Pp13BuilderMonotonicTimeNs(void)
+{
+	struct timespec timestamp;
+	if (clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0)
+		return 0u;
+	return (uint64_t)timestamp.tv_sec * 1000000000ull +
+		(uint64_t)timestamp.tv_nsec;
+}
+
 static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 	SparkGlm52Pp13BuilderState *state,
 	const SparkGlm52Pp13WorkControlPacket *work_packet,
@@ -7076,6 +7090,11 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 	SparkGlm52Pp13BuilderLayer *final_layer;
 	SparkModelDriverCompletion completion;
 	uint64_t element_count;
+	uint64_t profile_entry_ns;
+	uint64_t profile_readback_ns;
+	uint64_t profile_rebase_ns;
+	uint64_t profile_draft_ns;
+	uint64_t profile_emit_ns;
 	uint32_t accepted_draft_count;
 	uint32_t block_count;
 	uint32_t execution_row_base;
@@ -7104,17 +7123,23 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 		final_layer->final_norm_weight == 0 ||
 		state->host_decode_result_token_ids == 0)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
+	profile_entry_ns = state->mtp_cycle_profile_enabled != 0u
+		? SparkGlm52Pp13BuilderMonotonicTimeNs() : 0u;
 	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy(
 		state->host_decode_result_token_ids,
 		final_layer->restricted_selected_token_ids,
 		(size_t)work_packet->execution_row_count * sizeof(uint32_t),
 		cudaMemcpyDeviceToHost));
+	profile_readback_ns = state->mtp_cycle_profile_enabled != 0u
+		? SparkGlm52Pp13BuilderMonotonicTimeNs() : 0u;
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderCompactExecutionKvRows(
 			state,work_packet->lane_count,work_packet->rows_per_lane);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderRebaseMtpTreeCache(
 			state,work_packet);
+	profile_rebase_ns = state->mtp_cycle_profile_enabled != 0u
+		? SparkGlm52Pp13BuilderMonotonicTimeNs() : 0u;
 	if (status != SPARK_STATUS_OK)
 		return status;
 	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
@@ -7205,6 +7230,8 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 	next_draft_token_count = 0u;
 	status = SparkGlm52Pp13BuilderLaunchVerifierMtpDraft(
 		state,work_packet,&next_draft_token_count);
+	profile_draft_ns = state->mtp_cycle_profile_enabled != 0u
+		? SparkGlm52Pp13BuilderMonotonicTimeNs() : 0u;
 	if (status != SPARK_STATUS_OK)
 		return status;
 	for (lane_index = 0u; lane_index < work_packet->lane_count; ++lane_index)
@@ -7254,6 +7281,24 @@ static SparkStatus SparkGlm52Pp13BuilderFinalizePackedMtpVerify(
 			completion.draft_token_ids[token_index] = 0u;
 		if (completion_function != 0)
 			completion_function(completion_context,&completion);
+	}
+	if (status == SPARK_STATUS_OK &&
+		state->mtp_cycle_profile_enabled != 0u &&
+		profile_entry_ns != 0u && profile_readback_ns != 0u &&
+		profile_rebase_ns != 0u && profile_draft_ns != 0u)
+	{
+		profile_emit_ns = SparkGlm52Pp13BuilderMonotonicTimeNs();
+		fprintf(stderr,
+			"mtp_cycle_profile lanes=%u rows=%u "
+			"verify_wait_ns=%llu rebase_submit_ns=%llu "
+			"draft_chain_ns=%llu completion_emit_ns=%llu "
+			"epilogue_total_ns=%llu\n",
+			work_packet->lane_count,work_packet->rows_per_lane,
+			(unsigned long long)(profile_readback_ns - profile_entry_ns),
+			(unsigned long long)(profile_rebase_ns - profile_readback_ns),
+			(unsigned long long)(profile_draft_ns - profile_rebase_ns),
+			(unsigned long long)(profile_emit_ns - profile_draft_ns),
+			(unsigned long long)(profile_emit_ns - profile_entry_ns));
 	}
 	return status;
 }
