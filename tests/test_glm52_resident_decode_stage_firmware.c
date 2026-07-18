@@ -23,14 +23,27 @@ static void SparkTestGlm52ResidentDecodeStageLinearPlanPreparedRowContract(void)
     memset(&linear_plan, 0, sizeof(linear_plan));
     linear_plan.maximum_active_sequence_count = 7u;
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
-        &linear_plan, 2u) == 2u);
+        &linear_plan, 2u) == 7u);
     linear_plan.output_is_f32 = 1u;
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
-        &linear_plan, 2u) == 1u);
+        &linear_plan, 2u) == 7u);
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
         &linear_plan, 0u) == 0u);
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
         &linear_plan, 8u) == 0u);
+    linear_plan.maximum_active_sequence_count = 1024u;
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 1u) == 16u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 6u) == 16u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 16u) == 16u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 17u) == 32u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 64u) == 64u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 1024u) == 1024u);
 }
 
 static void SparkTestGlm52ResidentDecodeStageDsaSelectedBlockContract(void)
@@ -1922,6 +1935,25 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
                output_session,
                &output_statistics) == SPARK_STATUS_OK);
     assert(output_statistics.send_count == 1u);
+
+    SparkGlm52ResidentDecodeStageFakeStreamSetDeferred(
+        &fake_streams[0],
+        false);
+    frame_context.flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_PRERECEIVED;
+    frame.request_id = 310u;
+    frame.sequence_position = 34u;
+    assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
+        SPARK_STATUS_OK);
+    assert(completion_state.completion_count == 2u);
+    assert(SparkHiddenTransportPersistentRingGetStatistics(
+               input_session,
+               &input_statistics) == SPARK_STATUS_OK);
+    assert(SparkHiddenTransportPersistentRingGetStatistics(
+               output_session,
+               &output_statistics) == SPARK_STATUS_OK);
+    assert(input_statistics.receive_count == 1u);
+    assert(output_statistics.send_count == 2u);
 
     SparkGlm52ResidentDecodeStageDestroy(module_state);
     SparkHiddenTransportClose(input_session);

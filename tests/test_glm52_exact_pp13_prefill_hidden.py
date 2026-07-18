@@ -1384,6 +1384,17 @@ def test_pp13_prefill_keeps_distributed_kv_sequence_local(root: Path) -> None:
     assert "allow_cross_sequence_reuse == 0u" in prefix_cache
 
 
+def test_pp13_service_uses_full_dispatch_prefill_waves(root: Path) -> None:
+    backend = (root / "src" / "spark_glm52_pp13_service_backend.c").read_text(
+        encoding="utf-8")
+    definition = (
+        "#define SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_WAVE_TOKENS \\\n"
+        "\tSPARK_GLM52_MODEL_MAX_PREFILL_TOKENS_PER_DISPATCH")
+    assert definition in backend
+    assert backend.count(
+        "SPARK_GLM52_PP13_SERVICE_BACKEND_PREFILL_WAVE_TOKENS") >= 4
+
+
 def test_pp13_request_failures_do_not_kill_resident_roles(root: Path) -> None:
     resident = (root / "tools" / "sparkpipe_glm52_cuda_residentd.c").read_text(
         encoding="utf-8")
@@ -1456,6 +1467,7 @@ def main() -> None:
     test_decode_kv_directory_is_resident_and_delta_uploaded(root)
     test_absorbed_mla_uses_measured_correct_math(root)
     test_pp13_prefill_keeps_distributed_kv_sequence_local(root)
+    test_pp13_service_uses_full_dispatch_prefill_waves(root)
     test_pp13_request_failures_do_not_kill_resident_roles(root)
     test_mtp_retry_cleanup_preserves_resolution_receipt(root)
     test_mtp_serial_train_continuation_keeps_transaction_open(root)
