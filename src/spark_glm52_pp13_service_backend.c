@@ -85,6 +85,7 @@ typedef struct SparkGlm52Pp13ServiceBackendPendingDecode
 {
 	uint32_t state;
 	uint32_t done_count;
+	uint64_t trace_submit_time_ns;
 	uint8_t lane_done[SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
 	uint8_t dspark_draft_valid[
 		SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
@@ -154,6 +155,7 @@ typedef struct SparkGlm52Pp13ServiceBackendState
 	int32_t cuda_resident_fd;
 	uint32_t cuda_resident_attached;
 	uint32_t trace_enabled;
+	uint64_t trace_last_decode_completion_ns;
 	uint64_t cuda_resident_retry_after_ns;
 	char cuda_resident_socket_path[108];
 	uint64_t session_id_base;
@@ -1940,6 +1942,31 @@ static SparkStatus SparkGlm52Pp13ServiceBackendPrefill(
 	return status;
 }
 
+static uint64_t SparkGlm52Pp13ServiceBackendTraceDecodeSubmit(
+	SparkGlm52Pp13ServiceBackendState *state,
+	const SparkGlm52ServingDecodeDispatch *decode_dispatch)
+{
+	uint64_t request_id;
+	uint64_t submit_ns;
+	if (state == 0 || decode_dispatch == 0 || state->trace_enabled == 0u)
+		return 0u;
+	request_id = decode_dispatch->request_dispatch != 0 &&
+		decode_dispatch->request_dispatch->request_count != 0u ?
+		decode_dispatch->request_dispatch->request_ids[0u] : 0u;
+	submit_ns = SparkGlm52Pp13ServiceBackendMonotonicNs();
+	fprintf(stderr,
+		"pp13_decode kind=%u requests=%u active=%u request=%llu\n",
+		decode_dispatch->dispatch_kind,decode_dispatch->request_count,
+		decode_dispatch->active_sequence_count,
+		(unsigned long long)request_id);
+	if (submit_ns != 0u && state->trace_last_decode_completion_ns != 0u)
+		fprintf(stderr,"pp13_decode_gap_ns=%llu request=%llu kind=%u\n",
+			(unsigned long long)(submit_ns -
+				state->trace_last_decode_completion_ns),
+			(unsigned long long)request_id,decode_dispatch->dispatch_kind);
+	return submit_ns;
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 	void *context,
 	const SparkGlm52ServingDecodeDispatch *decode_dispatch,
@@ -1951,6 +1978,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 	uint32_t maximum_lanes_per_chunk;
 	uint32_t resident_submit_count;
 	SparkStatus status;
+	uint64_t trace_submit_ns;
 
 	state = (SparkGlm52Pp13ServiceBackendState *)context;
 	if (state == 0 || decode_dispatch == 0 || decode_result == 0)
@@ -1961,6 +1989,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 		decode_dispatch->request_count !=
 			decode_dispatch->active_sequence_count)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	trace_submit_ns = 0u;
 	if (state->cuda_resident_attached != 0u)
 	{
 		resident_submit_count = 1u;
@@ -1996,6 +2025,10 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 		if (pending != 0 && pending->state ==
 			SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE)
 			return SPARK_STATUS_OK;
+		trace_submit_ns = SparkGlm52Pp13ServiceBackendTraceDecodeSubmit(
+			state,decode_dispatch);
+		if (pending != 0)
+			pending->trace_submit_time_ns = trace_submit_ns;
 		status = SparkGlm52Pp13ServiceBackendForwardDecodeWork(state,decode_dispatch);
 		if (status != SPARK_STATUS_OK)
 		{
@@ -2027,13 +2060,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 		return status;
 	if (chunk_count != 1u)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
-	if (state->trace_enabled != 0u)
-		fprintf(
-			stderr,
-			"pp13_decode kind=%u requests=%u active=%u\n",
-			decode_dispatch->dispatch_kind,
-			decode_dispatch->request_count,
-			decode_dispatch->active_sequence_count);
 	status = state->builder_library.builder_interface.decode(
 		state->builder_state,
 		decode_dispatch,
@@ -2057,6 +2083,10 @@ static SparkStatus SparkGlm52Pp13ServiceBackendDecodeInner(
 	if (pending != 0 && pending->state ==
 		SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE)
 		return SPARK_STATUS_OK;
+	trace_submit_ns = SparkGlm52Pp13ServiceBackendTraceDecodeSubmit(
+		state,decode_dispatch);
+	if (pending != 0)
+		pending->trace_submit_time_ns = trace_submit_ns;
 	status = SparkGlm52Pp13ServiceBackendForwardDecodeWork(
 		state,
 		decode_dispatch);
@@ -3418,6 +3448,23 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingDecode(
 
 	if (state == 0 || pending == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (state->trace_enabled != 0u)
+	{
+		uint64_t completion_ns;
+		uint64_t request_id;
+
+		completion_ns = SparkGlm52Pp13ServiceBackendMonotonicNs();
+		request_id = pending->dispatch.request_count != 0u ?
+			pending->dispatch.request_ids[0u] : 0u;
+		if (completion_ns != 0u &&
+			pending->trace_submit_time_ns != 0u)
+			fprintf(stderr,
+				"pp13_decode_flight_ns=%llu kind=%u request=%llu\n",
+				(unsigned long long)(
+					completion_ns - pending->trace_submit_time_ns),
+				pending->dispatch.kind,(unsigned long long)request_id);
+		state->trace_last_decode_completion_ns = completion_ns;
+	}
 	status = SparkGlm52ServingEngineCompleteDecodeDispatch(
 		&state->serving_engine,
 		&pending->dispatch,
