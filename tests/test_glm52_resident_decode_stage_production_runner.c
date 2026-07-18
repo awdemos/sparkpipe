@@ -186,6 +186,8 @@ static void SparkTestProductionRunnerSubmitsFrame(void)
         &runner,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DEFAULT_FLAGS);
     SparkTestProductionRunnerInitializeDispatch(&dispatch);
+    dispatch.flags =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_HIDDEN_INPUT_PRERECEIVED;
     assert(SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
         &runner,
         &dispatch) == SPARK_STATUS_OK);
@@ -203,6 +205,8 @@ static void SparkTestProductionRunnerSubmitsFrame(void)
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u);
     assert((TestState.last_frame_context.flags &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u);
+    assert((TestState.last_frame_context.flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_PRERECEIVED) != 0u);
     assert(TestState.last_frame_context.hidden_input_post_receive_function ==
         SparkHiddenTransportPostReceive);
     assert(TestState.last_frame_context.hidden_output_send_function ==

@@ -137,6 +137,7 @@ TOOL_NAMES := \
     sparkpipe_hidden_transport_preflight \
     sparkpipe_glm52_pp13_rank_gate \
     sparkpipe_glm52_pp13_loopback_probe \
+    sparkpipe_glm52_pipesim \
     sparkpipe_glm52_pp13_rank_daemon \
     sparkpipe_glm52_cuda_residentd \
     sparkpipe_glm52_cuda_resident_gate \
@@ -160,6 +161,7 @@ TEST_NAMES := \
     test_glm52_kv_cache \
     test_glm52_dspark \
     test_glm52_stage_plan \
+    test_glm52_mtp_tree \
     test_glm52_stagepack \
     test_glm52_production_topology \
     test_glm52_pp13_runtime \
@@ -305,6 +307,9 @@ build/sparkpipe_glm52_pp13_rank_gate: tools/sparkpipe_glm52_pp13_rank_gate.c $(C
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_pp13_loopback_probe: tools/sparkpipe_glm52_pp13_loopback_probe.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/sparkpipe_glm52_pipesim: tools/sparkpipe_glm52_pipesim.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(COMMON_LIBRARY)
@@ -459,6 +464,9 @@ build/test_glm52_kv_cache: tests/test_glm52_kv_cache.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_stage_plan: tests/test_glm52_stage_plan.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_stagepack: tests/test_glm52_stagepack.c $(COMMON_LIBRARY)
