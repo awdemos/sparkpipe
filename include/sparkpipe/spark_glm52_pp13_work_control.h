@@ -99,6 +99,13 @@ typedef struct SparkGlm52Pp13WorkControlKvDirectoryEntry
 	uint32_t backing_valid;
 } SparkGlm52Pp13WorkControlKvDirectoryEntry;
 
+typedef struct SparkGlm52Pp13WorkControlKvPrefetchEntry
+{
+	uint64_t sequence_id;
+	uint32_t logical_block_index;
+	uint32_t backing_block_index;
+} SparkGlm52Pp13WorkControlKvPrefetchEntry;
+
 typedef struct SparkGlm52Pp13WorkControlLane
 {
 	uint64_t request_id;
@@ -266,6 +273,13 @@ SparkStatus SparkGlm52Pp13WorkControlReleaseTransientPhysicalBlock(
 uint32_t SparkGlm52Pp13WorkControlBlockCount(
 	uint32_t token_count,
 	uint32_t block_token_count);
+SparkStatus SparkGlm52Pp13WorkControlCollectKvPrefetchEntries(
+	const SparkGlm52Pp13WorkControlPacket *packets,
+	uint32_t packet_count,
+	const SparkGlm52Pp13WorkControlKvState *state,
+	SparkGlm52Pp13WorkControlKvPrefetchEntry *entries,
+	uint32_t entry_capacity,
+	uint32_t *entry_count_out);
 SparkStatus SparkGlm52Pp13WorkControlPlanExecutionChunks(
 	uint32_t logical_lane_count,
 	uint32_t rows_per_lane,

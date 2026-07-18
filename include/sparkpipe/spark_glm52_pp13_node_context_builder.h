@@ -12,7 +12,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 16u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION 17u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT \
 	16384u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS \
@@ -56,6 +56,8 @@ extern "C" {
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_ASYNC_WORK 0x00000080u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_LAYER_MAJOR_MTP_VERIFY 0x00000100u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_CONTROL_GENERATION_RESET 0x00000200u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_KV_LOOKAHEAD_PREFETCH 0x00000400u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_MOONCAKE_KV 0x00000800u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_REQUIRED_PRODUCTION_CAPS \
 	(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_RESIDENT_MOE_PACKS | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_STAGE_SLICE | \
@@ -66,7 +68,9 @@ extern "C" {
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_NVME_KV | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_ASYNC_WORK | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_LAYER_MAJOR_MTP_VERIFY | \
-	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_CONTROL_GENERATION_RESET)
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_CONTROL_GENERATION_RESET | \
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_KV_LOOKAHEAD_PREFETCH | \
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_MOONCAKE_KV)
 
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK \
 	0x00000001u
@@ -74,10 +78,13 @@ extern "C" {
 	0x00000002u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_NVME_KV \
 	0x00000004u
+#define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_MOONCAKE_KV \
+	0x00000008u
 #define SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_KNOWN_FLAGS \
 	(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK | \
 	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_MTP | \
-	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_NVME_KV)
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_NVME_KV | \
+	 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_MOONCAKE_KV)
 
 typedef struct SparkGlm52Pp13NodeContextBuilderConfiguration
 {
@@ -97,10 +104,21 @@ typedef struct SparkGlm52Pp13NodeContextBuilderConfiguration
 	const char *dspark_config_path;
 	const char *dspark_safetensors_path;
 	const char *kv_nvme_path;
+	const char *kv_store_module_path;
+	const char *kv_store_service_address;
+	const char *kv_store_ipc_socket_path;
 	uint32_t dspark_maximum_lane_count;
 	uint32_t dspark_maximum_context_token_count;
 	uint32_t kv_nvme_block_capacity;
 	uint32_t kv_nvme_batch_block_count;
+	uint32_t kv_store_block_capacity;
+	uint32_t kv_store_batch_block_count;
+	uint32_t kv_store_worker_count;
+	uint32_t kv_store_lookahead_packet_count;
+	uint64_t kv_store_model_fingerprint;
+	uint64_t kv_store_layout_fingerprint;
+	uint64_t kv_store_client_memory_pool_bytes;
+	uint64_t kv_store_local_buffer_bytes;
 	const SparkGlm52Pp13RuntimeRankPlan *rank_plan;
 } SparkGlm52Pp13NodeContextBuilderConfiguration;
 
@@ -208,6 +226,10 @@ typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction)(
 	SparkHiddenTransportSession *output_transport_session,
 	SparkModelDriverCompletionFunction completion_function,
 	void *completion_context);
+typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderPrefetchWorkFunction)(
+	void *builder_state,
+	const SparkGlm52Pp13WorkControlPacket *work_packets,
+	uint32_t work_packet_count);
 typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderProgressFunction)(
 	void *builder_state);
 typedef SparkStatus (*SparkGlm52Pp13NodeContextBuilderTakeDsparkDraftFunction)(
@@ -234,6 +256,7 @@ typedef struct SparkGlm52Pp13NodeContextBuilderInterface
 	SparkGlm52Pp13NodeContextBuilderPrefillFunction prefill;
 	SparkGlm52Pp13NodeContextBuilderDecodeFunction decode;
 	SparkGlm52Pp13NodeContextBuilderSubmitWorkFunction submit_work;
+	SparkGlm52Pp13NodeContextBuilderPrefetchWorkFunction prefetch_work;
 	SparkGlm52Pp13NodeContextBuilderProgressFunction progress;
 	SparkGlm52Pp13NodeContextBuilderTakeDsparkDraftFunction take_dspark_draft;
 	SparkGlm52Pp13NodeContextBuilderGetKvStatsFunction get_kv_stats;

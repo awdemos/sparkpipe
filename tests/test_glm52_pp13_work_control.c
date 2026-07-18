@@ -753,7 +753,9 @@ static void SparkTestGlm52Pp13WorkControlB1024PhysicalDirectory(void)
 static void SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease(void)
 {
 	SparkGlm52Pp13WorkControlPacket packet;
+	SparkGlm52Pp13WorkControlPacket prefetch_packets[2u];
 	SparkGlm52Pp13WorkControlKvState state;
+	SparkGlm52Pp13WorkControlKvPrefetchEntry prefetch_entries[2u];
 	SparkGlm52KvBlockTableView view;
 	SparkGlm52Pp13WorkControlKvDirectoryEntry directory_entries[16u];
 	SparkTestWorkControlSwapStorage swap_storage;
@@ -766,6 +768,7 @@ static void SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease(void)
 	uint32_t backing_free_next[8u];
 	uint32_t sequence_index;
 	uint32_t physical_block_index;
+	uint32_t prefetch_entry_count;
 
 	memset(&swap_storage,0,sizeof(swap_storage));
 	assert(SparkGlm52Pp13WorkControlInitializeKvState(
@@ -855,6 +858,15 @@ static void SparkTestGlm52Pp13WorkControlNvmeSwapAndRelease(void)
 	packet.lanes[0u].sequence_position = 0u;
 	packet.lanes[0u].request_slot_index = 0u;
 	packet.lanes[0u].context_token_count = 1u;
+	prefetch_packets[0u] = packet;
+	prefetch_packets[1u] = packet;
+	assert(SparkGlm52Pp13WorkControlCollectKvPrefetchEntries(
+		prefetch_packets,2u,&state,prefetch_entries,2u,
+		&prefetch_entry_count) == SPARK_STATUS_OK);
+	assert(prefetch_entry_count == 1u);
+	assert(prefetch_entries[0u].sequence_id == 200u);
+	assert(prefetch_entries[0u].logical_block_index == 0u);
+	assert(prefetch_entries[0u].backing_block_index < 8u);
 	assert(SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 		&packet,&state,&view) == SPARK_STATUS_OK);
 	physical_block_index = physical_blocks[0u];
