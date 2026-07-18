@@ -4723,7 +4723,7 @@ static void SparkGlm52Pp13BuilderConfigureMtpLayer(
 	node->dsa_indexshare_selected_token_count = 0u;
 	node->dsa_indexshare_layer_count = 0u;
 	node->enable_cuda_graph_replay =
-		getenv("SPARKPIPE_MTP_LAYER_DISABLE_GRAPH") != 0 ? 0u : 1u;
+		getenv("SPARKPIPE_MTP_LAYER_ENABLE_GRAPH") != 0 ? 1u : 0u;
 	node->bulk_prefill_plan = 0;
 	state->mtp_layer.slot.block_table = state->device_physical_block_indices;
 	clear_flags =
