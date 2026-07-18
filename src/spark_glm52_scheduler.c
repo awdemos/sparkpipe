@@ -140,6 +140,13 @@ static uint32_t SparkGlm52SchedulerPromptCacheIsEnabled(
         SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_PREFIX_CACHE) != 0u;
 }
 
+static uint32_t SparkGlm52SchedulerCrossSequencePrefixReuseIsEnabled(
+    const SparkGlm52Scheduler *scheduler)
+{
+    return (scheduler->configuration_flags &
+        SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE) != 0u;
+}
+
 static uint32_t SparkGlm52SchedulerChunkedPrefillIsEnabled(
     const SparkGlm52Scheduler *scheduler)
 {
@@ -420,8 +427,9 @@ static SparkStatus SparkGlm52SchedulerLookupCachedPrefixTokenCount(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     *cached_prefix_token_count_out = 0u;
-    if (!SparkGlm52SchedulerRequestIsPrefill(request) ||
-        !SparkGlm52SchedulerPromptCacheIsEnabled(scheduler))
+    if (SparkGlm52SchedulerRequestIsPrefill(request) == 0u ||
+        SparkGlm52SchedulerPromptCacheIsEnabled(scheduler) == 0u ||
+        SparkGlm52SchedulerCrossSequencePrefixReuseIsEnabled(scheduler) == 0u)
     {
         return SPARK_STATUS_OK;
     }
@@ -437,6 +445,21 @@ static SparkStatus SparkGlm52SchedulerLookupCachedPrefixTokenCount(
     }
     *cached_prefix_token_count_out = lookup.matched_token_count;
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52SchedulerReservePrompt(
+    SparkGlm52Scheduler *scheduler,
+    const SparkGlm52SchedulerRequest *request,
+    uint32_t token_count,
+    SparkGlm52PrefixCacheReservation *reservation)
+{
+    if (SparkGlm52SchedulerCrossSequencePrefixReuseIsEnabled(scheduler) != 0u)
+        return SparkGlm52PrefixCacheReservePrompt(
+            scheduler->prefix_cache,request->sequence_id,
+            request->prompt_token_ids,token_count,reservation);
+    return SparkGlm52PrefixCacheReserveSequencePrompt(
+        scheduler->prefix_cache,request->sequence_id,
+        request->prompt_token_ids,token_count,reservation);
 }
 
 static uint32_t SparkGlm52SchedulerEffectiveComputedPromptTokenCount(
@@ -698,6 +721,7 @@ static SparkStatus SparkGlm52SchedulerValidateRequest(
          (request->sequence_id == 0u || request->prompt_token_ids == 0)) ||
         (is_prefill &&
          SparkGlm52SchedulerPromptCacheIsEnabled(scheduler) &&
+         SparkGlm52SchedulerCrossSequencePrefixReuseIsEnabled(scheduler) &&
          request->computed_prompt_token_count != 0u) ||
         (is_prefill &&
          request->computed_prompt_token_count >= request->prompt_token_count))
@@ -1031,10 +1055,9 @@ SparkStatus SparkGlm52SchedulerAdmit(
                 decision->kv_physical_block_indices;
             prefix_cache_reservation.physical_block_capacity =
                 SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
-            status = SparkGlm52PrefixCacheReservePrompt(
-                scheduler->prefix_cache,
-                request->sequence_id,
-                request->prompt_token_ids,
+            status = SparkGlm52SchedulerReservePrompt(
+                scheduler,
+                request,
                 computed_prompt_token_count + scheduled_prompt_token_count,
                 &prefix_cache_reservation);
             if (status != SPARK_STATUS_OK)
@@ -1721,10 +1744,9 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
             SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
         prefix_cache_reservation.descriptor_bytes =
             SPARK_GLM52_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES;
-        status = SparkGlm52PrefixCacheReservePrompt(
-            scheduler->prefix_cache,
-            request->sequence_id,
-            request->prompt_token_ids,
+        status = SparkGlm52SchedulerReservePrompt(
+            scheduler,
+            request,
             computed_prompt_token_count + scheduled_prompt_token_count,
             &prefix_cache_reservation);
         if (status != SPARK_STATUS_OK)

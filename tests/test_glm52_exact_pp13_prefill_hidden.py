@@ -1291,6 +1291,56 @@ def test_absorbed_mla_uses_measured_correct_math(root: Path) -> None:
     assert 'asm("trap;");' not in value_body
 
 
+def test_pp13_prefill_keeps_distributed_kv_sequence_local(root: Path) -> None:
+    backend = (root / "src" / "spark_glm52_pp13_service_backend.c").read_text(
+        encoding="utf-8")
+    request_api = (root / "src" / "spark_glm52_request_api.c").read_text(
+        encoding="utf-8")
+    scheduler = (root / "src" / "spark_glm52_scheduler.c").read_text(
+        encoding="utf-8")
+    prefix_cache = (root / "src" / "spark_glm52_prefix_cache.c").read_text(
+        encoding="utf-8")
+    scheduler_start = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendInitializeScheduler(")
+    scheduler_end = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendDsparkDraft(",
+        scheduler_start)
+    scheduler_body = backend[scheduler_start:scheduler_end]
+    request_start = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRequestApi(")
+    request_end = backend.index(
+        "static SparkStatus SparkGlm52Pp13ServiceBackendInitializeServingEngine(",
+        request_start)
+    request_body = backend[request_start:request_end]
+    assert "~SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE" in scheduler_body
+    assert "SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING" not in request_body
+    assert "QUEUE_AWARE_PREFIX_CACHE_EVICTION" not in request_body
+    assert "scheduler_request->computed_prompt_token_count =" in request_api
+    assert "? 0u : slot->computed_prompt_token_count;" in request_api
+    assert "SparkGlm52PrefixCacheReserveSequencePrompt(" in scheduler
+    assert "allow_cross_sequence_reuse == 0u" in prefix_cache
+
+
+def test_pp13_request_failures_do_not_kill_resident_roles(root: Path) -> None:
+    resident = (root / "tools" / "sparkpipe_glm52_cuda_residentd.c").read_text(
+        encoding="utf-8")
+    daemon = (root / "tools" / "sparkpipe_glm52_pp13_rank_daemon.c").read_text(
+        encoding="utf-8")
+    backend = (root / "src" / "spark_glm52_pp13_service_backend.c").read_text(
+        encoding="utf-8")
+    progress_start = daemon.index(
+        "static SparkStatus SparkGlm52Pp13DaemonProgressBuilder(")
+    progress_end = daemon.index(
+        "static uint32_t SparkGlm52Pp13DaemonWorkPacketHash(",progress_start)
+    progress_body = daemon[progress_start:progress_end]
+    assert "SparkGlm52CudaResidentdWorkFailureIsNonfatal(" in resident
+    assert "cuda_residentd_builder_work_failed" in resident
+    assert "return SparkGlm52Pp13DaemonEnsureCudaResident(runtime);" in progress_body
+    assert "completion->status == SPARK_STATUS_OK" in daemon
+    assert "SparkGlm52Pp13ServiceBackendFailPendingDecode(" in backend
+    assert "event->status != (uint32_t)SPARK_STATUS_OK" in backend
+
+
 def main() -> None:
     root = Path(__file__).resolve().parents[1]
     test_final_stage_has_hidden_only_builtin_launcher(root)
@@ -1339,6 +1389,8 @@ def main() -> None:
     test_short_context_bypasses_indexshare_for_exact_prefix_attention(root)
     test_decode_kv_directory_is_resident_and_delta_uploaded(root)
     test_absorbed_mla_uses_measured_correct_math(root)
+    test_pp13_prefill_keeps_distributed_kv_sequence_local(root)
+    test_pp13_request_failures_do_not_kill_resident_roles(root)
     test_mtp_retry_cleanup_preserves_resolution_receipt(root)
     test_mtp_serial_train_continuation_keeps_transaction_open(root)
     test_attached_resident_decode_preserves_mtp_resolution(root)

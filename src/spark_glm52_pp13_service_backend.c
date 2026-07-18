@@ -600,24 +600,65 @@ static SparkStatus SparkGlm52Pp13ServiceBackendResidentReadMessage(
 	}
 }
 
-static void SparkGlm52Pp13ServiceBackendDropFailedPendingDecode(
+static SparkGlm52Pp13ServiceBackendPendingDecode *SparkGlm52Pp13ServiceBackendFindPendingDecodeForRequest(
 	SparkGlm52Pp13ServiceBackendState *state,
 	uint64_t request_id)
 {
 	SparkGlm52Pp13ServiceBackendPendingDecode *pending;
+	uint32_t lane_index;
 	uint32_t pending_index;
+	if (state == 0 || request_id == 0u)
+		return 0;
 	for (pending_index = 0u;
 		 pending_index <
 			 SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY;
 		 ++pending_index)
 	{
 		pending = &state->pending_decodes[pending_index];
-		if (pending->state ==
-				SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE &&
-			pending->dispatch.request_count == 1u &&
-			pending->dispatch.request_ids[0u] == request_id)
-			memset(pending,0,sizeof(*pending));
+		if (pending->state !=
+			SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE)
+			continue;
+		for (lane_index = 0u;
+			 lane_index < pending->dispatch.request_count;
+			 ++lane_index)
+		{
+			if (pending->dispatch.request_ids[lane_index] == request_id)
+				return pending;
+		}
 	}
+	return 0;
+}
+
+static SparkStatus SparkGlm52Pp13ServiceBackendFailPendingDecode(
+	SparkGlm52Pp13ServiceBackendState *state,
+	SparkGlm52Pp13ServiceBackendPendingDecode *pending,
+	SparkStatus failure_status)
+{
+	SparkStatus route_status;
+	SparkStatus status;
+	uint32_t lane_index;
+	if (state == 0 || pending == 0 || pending->dispatch.request_count == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52RequestApiCancelDispatch(
+		&state->request_api,
+		&pending->dispatch);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	for (lane_index = 0u;
+		 lane_index < pending->dispatch.request_count;
+		 ++lane_index)
+	{
+		route_status = SparkGlm52ServingEngineFailRequestByRequestId(
+			&state->serving_engine,
+			pending->dispatch.request_ids[lane_index],
+			failure_status);
+		if (route_status != SPARK_STATUS_OK &&
+			route_status != SPARK_STATUS_NOT_FOUND &&
+			status == SPARK_STATUS_OK)
+			status = route_status;
+	}
+	memset(pending,0,sizeof(*pending));
+	return status;
 }
 
 static SparkStatus SparkGlm52Pp13ServiceBackendHandleResidentCompletion(
@@ -639,6 +680,7 @@ static SparkStatus SparkGlm52Pp13ServiceBackendHandleResidentCompletion(
 	SparkGlm52Pp13ServiceBackendReleaseResidentSubmitCredit(state);
 	if (completion->completion.status != SPARK_STATUS_OK)
 	{
+		SparkGlm52Pp13ServiceBackendPendingDecode *pending;
 		SparkStatus failure_status;
 		SparkStatus route_status;
 
@@ -650,16 +692,20 @@ static SparkStatus SparkGlm52Pp13ServiceBackendHandleResidentCompletion(
 			(unsigned long long)completion->completion.sequence_id);
 		if (completion->completion.request_id == 0u)
 			return failure_status;
+		pending = SparkGlm52Pp13ServiceBackendFindPendingDecodeForRequest(
+			state,
+			completion->completion.request_id);
+		if (pending != 0)
+			return SparkGlm52Pp13ServiceBackendFailPendingDecode(
+				state,
+				pending,
+				failure_status);
 		route_status = SparkGlm52ServingEngineFailRequestByRequestId(
 				&state->serving_engine,
 				completion->completion.request_id,
 				failure_status);
 		if (route_status == SPARK_STATUS_OK)
-		{
-			SparkGlm52Pp13ServiceBackendDropFailedPendingDecode(
-				state,completion->completion.request_id);
 			return SPARK_STATUS_OK;
-		}
 		if (route_status != SPARK_STATUS_NOT_FOUND)
 			return route_status;
 		return failure_status;
@@ -2303,7 +2349,8 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeScheduler(
 	scheduler_configuration.prefix_cache_block_tokens =
 		SPARK_GLM52_PP13_SERVICE_BACKEND_KV_BLOCK_TOKENS;
 	scheduler_configuration.configuration_flags =
-		SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
+		SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS &
+		~SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE;
 	scheduler_configuration.prefix_cache = &state->prefix_cache;
 	return SparkGlm52SchedulerInitialize(
 		&state->scheduler,
@@ -2415,8 +2462,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendInitializeRequestApi(
 	request_api_configuration.configuration_flags =
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING |
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING |
-		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING |
-		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION |
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ADAPTIVE_PIPELINE_BATCHING;
 	if (state->mtp_enabled != 0u)
 		request_api_configuration.configuration_flags |=
@@ -3512,14 +3557,6 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 	if (event->magic != SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_MAGIC ||
 		event->descriptor_bytes !=
 			SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_DESCRIPTOR_BYTES ||
-		event->status != (uint32_t)SPARK_STATUS_OK ||
-		(event->completion_flags &
-			SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u ||
-		(((event->completion_flags &
-			SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS) != 0u) !=
-		 (event->draft_token_count != 0u)) ||
-		event->draft_token_count >
-			SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT ||
 		(event->extension_flags &
 			~SPARK_GLM52_PP13_RUNTIME_FINAL_EVENT_KNOWN_FLAGS) != 0u)
 		return SPARK_STATUS_VALIDATION_FAILED;
@@ -3529,6 +3566,22 @@ static SparkStatus SparkGlm52Pp13ServiceBackendCompletePendingFinalEvent(
 		&lane_index);
 	if (pending == 0)
 		return SparkGlm52Pp13ServiceBackendStashEarlyFinalEvent(state,event);
+	if (event->status != (uint32_t)SPARK_STATUS_OK)
+	{
+		SparkGlm52Pp13ServiceBackendTraceFinalEvent(state,event,pending);
+		return SparkGlm52Pp13ServiceBackendFailPendingDecode(
+			state,
+			pending,
+			(SparkStatus)event->status);
+	}
+	if ((event->completion_flags &
+			SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u ||
+		(((event->completion_flags &
+			SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS) != 0u) !=
+			 (event->draft_token_count != 0u)) ||
+		event->draft_token_count >
+			SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
+		return SPARK_STATUS_VALIDATION_FAILED;
 	dspark_expected =
 		(pending->dispatch.flags &
 			(SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE |

@@ -3000,6 +3000,8 @@ static void SparkTestRequestApiDescribesAndCopiesFullPrefillTokenWindows(void)
 
     SparkTestFillTokenIds(prompt, 97u, 160000u);
     SparkTestInitializeFixture(&fixture);
+    fixture.scheduler.configuration_flags &=
+        ~SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE;
     SparkTestInitializeSubmitRequest(
         &request,
         1600u,
@@ -3026,6 +3028,7 @@ static void SparkTestRequestApiDescribesAndCopiesFullPrefillTokenWindows(void)
     assert(prefill_view.active_sequence_count == 1u);
     assert(prefill_view.prompt_token_offset == 0u);
     assert(prefill_view.prompt_token_count == 64u);
+    assert(dispatch.prefill_decision.cached_prefix_token_count == 0u);
     assert(prefill_view.prompt_token_stride == 64u);
     assert(prefill_view.lanes[0u].prompt_token_ids == prompt);
     memset(copied_tokens, 0xa5, sizeof(copied_tokens));
@@ -3052,6 +3055,7 @@ static void SparkTestRequestApiDescribesAndCopiesFullPrefillTokenWindows(void)
     assert(prefill_view.lane_count == 1u);
     assert(prefill_view.prompt_token_offset == 64u);
     assert(prefill_view.prompt_token_count == 33u);
+    assert(dispatch.prefill_decision.cached_prefix_token_count == 0u);
     assert(prefill_view.prompt_token_stride == 33u);
     memset(copied_tokens, 0xa5, sizeof(copied_tokens));
     assert(SparkGlm52RequestApiCopyPrefillDispatchTokenIds(
