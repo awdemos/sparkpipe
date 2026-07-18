@@ -15934,6 +15934,20 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
     {
         return SPARK_STATUS_OK;
     }
+    if (node_context->sparse_index_mode ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL)
+    {
+        status = SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(
+            node_context,
+            pipeline_slot,
+            cuda_slot_state,
+            cuda_stream,
+            active_sequence_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
     if (pipeline_slot->dsa_candidate_count != 0u &&
         pipeline_slot->dsa_candidate_count <=
             SparkGlm52ResidentDecodeStageDsaIndexShareSelectedTokenCount(
@@ -15994,16 +16008,6 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(
     if (node_context->sparse_index_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL)
     {
-        status = SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(
-            node_context,
-            pipeline_slot,
-            cuda_slot_state,
-            cuda_stream,
-            active_sequence_count);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
         status = SparkGlm52ResidentDecodeStageLaunchDsaIndexShareSelect(
             node_context,
             pipeline_slot,

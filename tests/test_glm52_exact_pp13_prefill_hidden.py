@@ -296,6 +296,26 @@ def test_dsa_prefetch_graph_does_not_capture_reusable_eager_events(
     assert "dsa_prefetch_wait_failed" in wait_body
 
 
+def test_dsa_full_mode_populates_history_before_prefix_shortcut(
+        root: Path) -> None:
+    source = (root / "modules" / "glm52_resident_decode_stage" / "source" /
+              "spark_glm52_sm121_required_decode_stage.cu").read_text(
+                  encoding="utf-8")
+    selection_start = source.index(
+        "static SparkStatus SparkGlm52ResidentDecodeStageLaunchSparseIndexSelection(")
+    selection_end = source.index(
+        "static bool SparkGlm52ResidentDecodeStageLinearPlanUsesFp8E4m3QuantizedView(",
+        selection_start)
+    selection_body = source[selection_start:selection_end]
+    indexer_call = selection_body.index(
+        "status = SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(")
+    prefix_shortcut = selection_body.index(
+        "if (pipeline_slot->dsa_candidate_count != 0u")
+    assert indexer_call < prefix_shortcut
+    assert selection_body.count(
+        "SparkGlm52ResidentDecodeStageLaunchDsaIndexerDecode(") == 1
+
+
 def test_production_pp13_does_not_route_bulk_prefill(root: Path) -> None:
     builder = (root / "modules" / "glm52_resident_decode_stage" / "source" /
                "spark_glm52_pp13_node_context_builder_cuda.cu").read_text(
@@ -1399,6 +1419,7 @@ def main() -> None:
     test_exact_prefill_submits_full_parallel_chunks(root)
     test_prefill_dsa_bucket_tracks_completed_wave_context(root)
     test_dsa_prefetch_graph_does_not_capture_reusable_eager_events(root)
+    test_dsa_full_mode_populates_history_before_prefix_shortcut(root)
     test_production_pp13_does_not_route_bulk_prefill(root)
     test_absorbed_bulk_prefill_is_dsa_only(root)
     test_decode_uses_one_tree_aware_work_packet_path(root)
