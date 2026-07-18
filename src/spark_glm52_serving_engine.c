@@ -624,6 +624,27 @@ static SparkGlm52ServingRequestRecord *SparkGlm52ServingFindRecordByHandle(
     return 0;
 }
 
+static SparkGlm52ServingRequestRecord *SparkGlm52ServingFindRecordByRequestId(
+    SparkGlm52ServingEngine *engine,
+    uint64_t request_id)
+{
+    SparkGlm52ServingRequestRecord *record;
+    uint32_t record_index;
+
+    for (record_index = 0u;
+         record_index < engine->request_record_capacity;
+         ++record_index)
+    {
+        record = &engine->request_records[record_index];
+        if (record->state != SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_FREE &&
+            record->request_id == request_id)
+        {
+            return record;
+        }
+    }
+    return 0;
+}
+
 static uint32_t SparkGlm52ServingTokenIsStopToken(
     const SparkGlm52ServingEngine *engine,
     uint32_t token_id)
@@ -2327,6 +2348,46 @@ SparkStatus SparkGlm52ServingEngineCancelRequest(
         engine,
         SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_CANCELLED,
         SPARK_STATUS_OK,
+        record);
+    SparkGlm52ServingRefreshStats(engine);
+    return status;
+}
+
+SparkStatus SparkGlm52ServingEngineFailRequestByRequestId(
+    SparkGlm52ServingEngine *engine,
+    uint64_t request_id,
+    SparkStatus failure_status)
+{
+    SparkGlm52ServingRequestRecord *record;
+    SparkStatus status;
+
+    status = SparkGlm52ServingValidateEngine(engine);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (request_id == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    record = SparkGlm52ServingFindRecordByRequestId(engine,request_id);
+    if (record == 0)
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    if (record->state == SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_COMPLETED ||
+        record->state == SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_CANCELLED)
+    {
+        return SPARK_STATUS_OK;
+    }
+    (void)SparkGlm52RequestApiCancelRequest(
+        engine->request_api,
+        record->request_handle);
+    record->state = SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_CANCELLED;
+    status = SparkGlm52ServingPushSimpleEvent(
+        engine,
+        SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_CANCELLED,
+        (uint32_t)failure_status,
         record);
     SparkGlm52ServingRefreshStats(engine);
     return status;

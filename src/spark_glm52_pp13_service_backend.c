@@ -598,6 +598,26 @@ static SparkStatus SparkGlm52Pp13ServiceBackendResidentReadMessage(
 	}
 }
 
+static void SparkGlm52Pp13ServiceBackendDropFailedPendingDecode(
+	SparkGlm52Pp13ServiceBackendState *state,
+	uint64_t request_id)
+{
+	SparkGlm52Pp13ServiceBackendPendingDecode *pending;
+	uint32_t pending_index;
+	for (pending_index = 0u;
+		 pending_index <
+			 SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_CAPACITY;
+		 ++pending_index)
+	{
+		pending = &state->pending_decodes[pending_index];
+		if (pending->state ==
+				SPARK_GLM52_PP13_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE &&
+			pending->dispatch.request_count == 1u &&
+			pending->dispatch.request_ids[0u] == request_id)
+			memset(pending,0,sizeof(*pending));
+	}
+}
+
 static SparkStatus SparkGlm52Pp13ServiceBackendHandleResidentCompletion(
 	SparkGlm52Pp13ServiceBackendState *state,
 	const SparkGlm52CudaResidentIpcHeader *header)
@@ -616,7 +636,32 @@ static SparkStatus SparkGlm52Pp13ServiceBackendHandleResidentCompletion(
 	state->cuda_resident_completion_count += 1u;
 	SparkGlm52Pp13ServiceBackendReleaseResidentSubmitCredit(state);
 	if (completion->completion.status != SPARK_STATUS_OK)
-		return completion->completion.status;
+	{
+		SparkStatus failure_status;
+		SparkStatus route_status;
+
+		failure_status = (SparkStatus)completion->completion.status;
+		fprintf(stderr,
+			"pp13_resident_work_failed status=%u request=%llu sequence=%llu\n",
+			(uint32_t)failure_status,
+			(unsigned long long)completion->completion.request_id,
+			(unsigned long long)completion->completion.sequence_id);
+		if (completion->completion.request_id == 0u)
+			return failure_status;
+		route_status = SparkGlm52ServingEngineFailRequestByRequestId(
+				&state->serving_engine,
+				completion->completion.request_id,
+				failure_status);
+		if (route_status == SPARK_STATUS_OK)
+		{
+			SparkGlm52Pp13ServiceBackendDropFailedPendingDecode(
+				state,completion->completion.request_id);
+			return SPARK_STATUS_OK;
+		}
+		if (route_status != SPARK_STATUS_NOT_FOUND)
+			return route_status;
+		return failure_status;
+	}
 	return SPARK_STATUS_OK;
 }
 

@@ -436,6 +436,11 @@ SparkStatus SparkGlm52ServingEngineCancelRequest(
     SparkGlm52ServingEngine *engine,
     SparkGlm52ServingRequestHandle request_handle);
 
+SparkStatus SparkGlm52ServingEngineFailRequestByRequestId(
+    SparkGlm52ServingEngine *engine,
+    uint64_t request_id,
+    SparkStatus failure_status);
+
 SparkStatus SparkGlm52ServingEngineReleaseCompletedRequest(
     SparkGlm52ServingEngine *engine,
     SparkGlm52ServingRequestHandle request_handle);
