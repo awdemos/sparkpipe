@@ -15151,15 +15151,62 @@ static SparkGlm52ResidentDecodeStageDsaKvFragmentTransportKernelPayloads SparkGl
     return payloads;
 }
 
-static cudaStream_t SparkGlm52ResidentDecodeStageDsaTransportStream(
-    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan,
-    cudaStream_t producer_cuda_stream)
+static SparkStatus SparkGlm52ResidentDecodeStageDsaStreamIsCapturing(
+    cudaStream_t cuda_stream,
+    uint32_t *capture_active_out)
 {
+    cudaStreamCaptureStatus capture_status;
+    cudaError_t cuda_status;
+
+    if (cuda_stream == 0 || capture_active_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    capture_status = cudaStreamCaptureStatusNone;
+    cuda_status = cudaStreamIsCapturing(cuda_stream, &capture_status);
+    if (cuda_status != cudaSuccess)
+    {
+        fprintf(stderr,
+            "dsa_stream_capture_query_failed code=%d name=%s\n",
+            (int)cuda_status,
+            cudaGetErrorString(cuda_status));
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    *capture_active_out = capture_status != cudaStreamCaptureStatusNone ? 1u : 0u;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageDsaTransportStream(
+    const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan,
+    cudaStream_t producer_cuda_stream,
+    cudaStream_t *transport_stream_out)
+{
+    uint32_t capture_active;
+    SparkStatus status;
+
+    if (producer_cuda_stream == 0 || transport_stream_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52ResidentDecodeStageDsaStreamIsCapturing(
+        producer_cuda_stream,
+        &capture_active);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (capture_active != 0u)
+    {
+        *transport_stream_out = producer_cuda_stream;
+        return SPARK_STATUS_OK;
+    }
     if (transport_plan != 0 && transport_plan->transport_stream != 0)
     {
-        return (cudaStream_t)transport_plan->transport_stream;
+        *transport_stream_out = (cudaStream_t)transport_plan->transport_stream;
+        return SPARK_STATUS_OK;
     }
-    return producer_cuda_stream;
+    *transport_stream_out = producer_cuda_stream;
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageRecordDsaTransportDependency(
@@ -22007,9 +22054,14 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedKvFrag
     }
 
     producer_stream = (cudaStream_t)producer_cuda_stream;
-    transport_stream = SparkGlm52ResidentDecodeStageDsaTransportStream(
+    status = SparkGlm52ResidentDecodeStageDsaTransportStream(
         prefetch_plan,
-        producer_stream);
+        producer_stream,
+        &transport_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     status = SparkGlm52ResidentDecodeStageRecordDsaTransportDependency(
         prefetch_plan,
         producer_stream,
@@ -22092,9 +22144,14 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedKvFrag
     }
 
     producer_stream = (cudaStream_t)producer_cuda_stream;
-    transport_stream = SparkGlm52ResidentDecodeStageDsaTransportStream(
+    status = SparkGlm52ResidentDecodeStageDsaTransportStream(
         save_plan,
-        producer_stream);
+        producer_stream,
+        &transport_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
     status = SparkGlm52ResidentDecodeStageRecordDsaTransportDependency(
         save_plan,
         producer_stream,
@@ -22232,9 +22289,24 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageWaitForDsaSelectedKvFra
     const SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *prefetch_plan,
     void *consumer_cuda_stream)
 {
+    cudaError_t cuda_status;
+    uint32_t capture_active;
+    SparkStatus status;
+
     if (prefetch_plan == 0 || consumer_cuda_stream == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52ResidentDecodeStageDsaStreamIsCapturing(
+        (cudaStream_t)consumer_cuda_stream,
+        &capture_active);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (capture_active != 0u)
+    {
+        return SPARK_STATUS_OK;
     }
     if (prefetch_plan->transport_ready_event == 0 ||
         prefetch_plan->transport_stream == 0 ||
@@ -22242,12 +22314,19 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageWaitForDsaSelectedKvFra
     {
         return SPARK_STATUS_OK;
     }
-    return cudaStreamWaitEvent(
+    cuda_status = cudaStreamWaitEvent(
         (cudaStream_t)consumer_cuda_stream,
         (cudaEvent_t)prefetch_plan->transport_ready_event,
-        0u) == cudaSuccess
-        ? SPARK_STATUS_OK
-        : SPARK_STATUS_INTERNAL_ERROR;
+        0u);
+    if (cuda_status != cudaSuccess)
+    {
+        fprintf(stderr,
+            "dsa_prefetch_wait_failed code=%d name=%s\n",
+            (int)cuda_status,
+            cudaGetErrorString(cuda_status));
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
 }
 
 
