@@ -722,6 +722,75 @@ static void SparkTestServingPrefillFailureEmitsTerminalEvent(void)
         submit_result.request_handle) == SPARK_STATUS_OK);
 }
 
+static void SparkTestServingFailRequestByRequestIdEmitsTerminalEvent(void)
+{
+    SparkGlm52ServingSubmitTokenIdsRequest submit_request;
+    SparkGlm52ServingSubmitResult submit_result;
+    SparkGlm52ServingStats stats;
+    SparkGlm52ServingEvent event;
+    uint32_t cancelled_event_count;
+    SparkStatus status;
+
+    SparkTestServingInitializeFixture(&Fixture, &CallbackContext);
+    SparkGlm52ServingInitializeSubmitTokenIdsRequest(&submit_request);
+    submit_request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
+    submit_request.token_ids = Fixture.prompt_tokens;
+    submit_request.request_id = 9201u;
+    submit_request.sequence_id = 19201u;
+    assert(SparkGlm52ServingEngineSubmitTokenIds(
+        &Fixture.serving_engine,
+        &submit_request,
+        &submit_result) == SPARK_STATUS_OK);
+
+    assert(SparkGlm52ServingEngineFailRequestByRequestId(
+        &Fixture.serving_engine,
+        9201u,
+        SPARK_STATUS_INTERNAL_ERROR) == SPARK_STATUS_OK);
+    assert(SparkGlm52ServingEngineFailRequestByRequestId(
+        &Fixture.serving_engine,
+        9201u,
+        SPARK_STATUS_INTERNAL_ERROR) == SPARK_STATUS_OK);
+    assert(SparkGlm52ServingEngineFailRequestByRequestId(
+        &Fixture.serving_engine,
+        424242u,
+        SPARK_STATUS_INTERNAL_ERROR) == SPARK_STATUS_NOT_FOUND);
+
+    cancelled_event_count = 0u;
+    while (SparkGlm52ServingEnginePopEvent(
+            &Fixture.serving_engine,
+            &event) == SPARK_STATUS_OK)
+    {
+        if (event.kind == SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_CANCELLED)
+        {
+            cancelled_event_count += 1u;
+            assert(event.request_id == 9201u);
+            assert(event.request_handle == submit_result.request_handle);
+            assert(event.status == SPARK_STATUS_INTERNAL_ERROR);
+        }
+    }
+    assert(cancelled_event_count == 1u);
+    assert(SparkGlm52ServingEngineReleaseCompletedRequest(
+        &Fixture.serving_engine,
+        submit_result.request_handle) == SPARK_STATUS_OK);
+
+    SparkGlm52ServingInitializeSubmitTokenIdsRequest(&submit_request);
+    submit_request.token_count = SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT;
+    submit_request.token_ids = Fixture.prompt_tokens;
+    submit_request.request_id = 9202u;
+    submit_request.sequence_id = 19202u;
+    assert(SparkGlm52ServingEngineSubmitTokenIds(
+        &Fixture.serving_engine,
+        &submit_request,
+        &submit_result) == SPARK_STATUS_OK);
+    status = SparkGlm52ServingEnginePump(
+        &Fixture.serving_engine,
+        0u,
+        16u,
+        &stats);
+    assert(status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_OK);
+    assert(stats.prefill_token_count == SPARK_TEST_SERVING_PROMPT_TOKEN_COUNT);
+}
+
 static void SparkTestServingRetriesUnacceptedBusyDecode(void)
 {
     SparkGlm52ServingSubmitTokenIdsRequest request;
@@ -1023,6 +1092,7 @@ int main(void)
     SparkTestServingMtpCommitStreamsMultiTokenLanes();
     SparkTestServingFireAndForgetPumpRunsFullPromptToDecode();
     SparkTestServingPrefillFailureEmitsTerminalEvent();
+    SparkTestServingFailRequestByRequestIdEmitsTerminalEvent();
     SparkTestServingRetriesUnacceptedBusyDecode();
     SparkTestServingPreservesAcceptedPendingDecode();
     SparkTestServingPumpsMultipleAcceptedPendingDecodes();

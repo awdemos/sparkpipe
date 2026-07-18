@@ -797,11 +797,12 @@ static void SparkGlm52CudaResidentdCompletion(
     if (runtime->driver_inflight_count != 0u)
         runtime->driver_inflight_count -= 1u;
     runtime->completion_count += 1u;
-    if (completion->status != SPARK_STATUS_OK)
-    {
+	if (completion->status != SPARK_STATUS_OK)
+	{
 		if (runtime->synthetic_failure_completion_active == 0u)
 			runtime->work_queue_error_count += 1u;
-		if (completion->status != SPARK_STATUS_CAPACITY_EXCEEDED)
+		if (runtime->synthetic_failure_completion_active == 0u &&
+			completion->status != SPARK_STATUS_CAPACITY_EXCEEDED)
 		{
 			runtime->state = SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_FAILED;
 			runtime->deferred_failure_status = completion->status;
@@ -1764,12 +1765,16 @@ static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
 		{
 			fprintf(stderr,
 				"cuda_residentd_work_rejected status=%u rank=%u request=%llu "
-				"sequence=%llu lanes=%u\n",
+				"sequence=%llu position=%llu lanes=%u rows=%u bucket=%u flags=0x%x\n",
 				(uint32_t)status,
 				runtime->rank_plan.rank_index,
 				(unsigned long long)queued_work.packet.request_id,
 				(unsigned long long)queued_work.packet.sequence_id,
-				queued_work.packet.lane_count);
+				(unsigned long long)queued_work.packet.sequence_position,
+				queued_work.packet.lane_count,
+				queued_work.packet.execution_row_count,
+				queued_work.packet.execution_batch_bucket,
+				queued_work.packet.flags);
 		}
         SparkGlm52CudaResidentdEmitWorkFailure(
             runtime,&queued_work,status);
@@ -2010,9 +2015,19 @@ static SparkStatus SparkGlm52CudaResidentdHandleSubmitPrefill(
     else
         runtime->submit_failed_count += 1u;
     if (status != SPARK_STATUS_OK)
+    {
+        fprintf(stderr,
+            "cuda_residentd_prefill_rejected status=%u rank=%u request=%llu "
+            "position=%llu lanes=%u rows=%u bucket=%u flags=0x%x\n",
+            (uint32_t)status,runtime->rank_plan.rank_index,
+            (unsigned long long)packet->request_id,
+            (unsigned long long)packet->sequence_position,
+            packet->lane_count,packet->execution_row_count,
+            packet->execution_batch_bucket,packet->flags);
         SparkGlm52CudaResidentdWriteSubmitResult(
             runtime,configuration,client_fd,status,
             "ingest_prefill_work_failed");
+    }
     return status;
 }
 
