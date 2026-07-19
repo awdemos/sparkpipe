@@ -76,6 +76,11 @@ typedef struct PipesimFixture
 	uint64_t prefill_dispatch_count;
 	uint64_t verify_dispatch_count;
 	uint64_t peak_resident_kv_blocks;
+	SparkGlm52DsparkSpeculator dspark_speculator;
+	SparkGlm52DsparkSequenceState dspark_sequence_states[PIPESIM_REQUEST_SLOTS];
+	SparkGlm52DsparkModelContract dspark_model_contract;
+	uint32_t dspark_enabled;
+	uint32_t speculation_mode;
 	uint64_t producer_dispatch_count;
 	uint64_t committed_token_estimate;
 	uint64_t accept_accum_milli;
@@ -115,6 +120,25 @@ static uint64_t PipesimRingTraverse(PipesimRing *ring, uint64_t enter_ns, uint64
 		ready_ns += ring->hop_ns;
 	}
 	return ready_ns;
+}
+
+static SparkStatus PipesimDsparkDraft(void *context, const SparkGlm52DsparkDraftRequest *request, SparkGlm52DsparkDraftResult *result)
+{
+	uint32_t token_index;
+
+	(void)context;
+	result->abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+	result->descriptor_bytes = SPARK_GLM52_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES;
+	result->flags = 0u;
+	result->token_count = request->requested_token_count;
+	if (result->token_count > SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
+		result->token_count = SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+	for (token_index = 0u; token_index < result->token_count; ++token_index)
+	{
+		result->token_ids[token_index] = 8001u + token_index;
+		result->confidence_milli[token_index] = 900u;
+	}
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus PipesimPrefill(void *context, const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
@@ -164,7 +188,8 @@ static SparkStatus PipesimDecode(void *context, const SparkGlm52ServingDecodeDis
 	pending->dispatch = *decode_dispatch->request_dispatch;
 	pending->is_prefill = 0u;
 	if ((decode_dispatch->request_dispatch->flags &
-			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
+			(SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
+			 SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY)) != 0u)
 	{
 		fixture->verify_dispatch_count += 1u;
 		pending->completion_ns = PipesimRingTraverse(&fixture->ring, fixture->now_ns, fixture->ring.verify_stage_ns);
@@ -213,6 +238,30 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 	}
 	SparkGlm52ServingInitializeDecodeResult(&decode_result, pending->dispatch.request_count, PIPESIM_TOKEN_STRIDE);
 	if ((pending->dispatch.flags &
+			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u)
+	{
+		uint32_t accepted, row_index, dspark_draft_count, verifier_row_count;
+		verifier_row_count = pending->dispatch.speculative_verifier_token_count;
+		if (verifier_row_count == 0u || verifier_row_count > SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE)
+			verifier_row_count = 1u;
+		dspark_draft_count = verifier_row_count - 1u;
+		fixture->accept_accum_milli += (uint64_t)fixture->accept_milli * dspark_draft_count;
+		accepted = (uint32_t)(fixture->accept_accum_milli / 1000u);
+		fixture->accept_accum_milli %= 1000u;
+		if (accepted > dspark_draft_count)
+			accepted = dspark_draft_count;
+		for (lane_index = 0u; lane_index < pending->dispatch.request_count; ++lane_index)
+		{
+			decode_result.token_counts[lane_index] = verifier_row_count;
+			for (row_index = 0u; row_index < verifier_row_count; ++row_index)
+				decode_result.token_ids[lane_index][row_index] =
+					row_index < accepted
+						? pending->dispatch.speculative_draft_token_ids[lane_index][row_index]
+						: 9000u + row_index;
+			fixture->committed_token_estimate += accepted + 1u;
+		}
+	}
+	else if ((pending->dispatch.flags &
 			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
 	{
 		uint32_t depth, row_index;
@@ -301,7 +350,7 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 	status = SparkGlm52ServingEngineCompleteDecodeDispatch(&fixture->serving_engine, &pending->dispatch, &decode_result);
 	if (status != SPARK_STATUS_OK)
 	{
-		fprintf(stderr, "pipesim complete_decode status=%u kind=%u flags=0x%x budget=%u\n", (uint32_t)status, pending->dispatch.kind, pending->dispatch.flags, pending->dispatch.mtp_draft_token_budget);
+		fprintf(stderr, "pipesim complete_decode status=%u kind=%u flags=0x%x budget=%u vtc=%u stc=%u acc=%u draft0=%u\n", (uint32_t)status, pending->dispatch.kind, pending->dispatch.flags, pending->dispatch.mtp_draft_token_budget, pending->dispatch.speculative_verifier_token_count, pending->dispatch.speculative_token_count, pending->dispatch.accepted, pending->dispatch.speculative_draft_token_ids[0][0]);
 		exit(3);
 	}
 	fixture->decoded_token_count += pending->dispatch.request_count;
@@ -371,11 +420,37 @@ static void PipesimInitializeServing(PipesimFixture *fixture)
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING |
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION |
 		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ADAPTIVE_PIPELINE_BATCHING |
-		(fixture->accept_milli != 0u
+		(fixture->accept_milli != 0u && fixture->speculation_mode != 1u
 			? SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
-			  SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE : 0u);
+			  SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE : 0u) |
+		(fixture->dspark_enabled != 0u
+			? SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE : 0u);
 	request_api_configuration.request_capacity = PIPESIM_REQUEST_SLOTS;
 	request_api_configuration.prefetch_lane_count = SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
+	if (fixture->dspark_enabled != 0u)
+	{
+		SparkGlm52DsparkSpeculatorConfiguration dspark_configuration;
+
+		memset(&dspark_configuration, 0, sizeof(dspark_configuration));
+		dspark_configuration.abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
+		dspark_configuration.descriptor_bytes = SPARK_GLM52_DSPARK_CONFIGURATION_DESCRIPTOR_BYTES;
+		dspark_configuration.policy_flags = SPARK_GLM52_DSPARK_POLICY_FLAG_ENABLE_REALTIME | SPARK_GLM52_DSPARK_POLICY_FLAG_ENABLE_UNDERFILLED_DECODE;
+		dspark_configuration.sequence_state_count = PIPESIM_REQUEST_SLOTS;
+		dspark_configuration.default_speculative_token_count = SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
+		dspark_configuration.minimum_confidence_milli = 500u;
+		dspark_configuration.realtime_minimum_confidence_milli = 500u;
+		dspark_configuration.sequence_states = fixture->dspark_sequence_states;
+		dspark_configuration.draft_function = PipesimDsparkDraft;
+		dspark_configuration.draft_context = fixture;
+		SparkGlm52DsparkBuildDefaultModelContract(&fixture->dspark_model_contract);
+		dspark_configuration.model_contract = &fixture->dspark_model_contract;
+		if (SparkGlm52DsparkInitialize(&fixture->dspark_speculator, &dspark_configuration) != SPARK_STATUS_OK)
+		{
+			fprintf(stderr, "pipesim dspark init failed\n");
+			exit(4);
+		}
+		request_api_configuration.dspark_speculator = &fixture->dspark_speculator;
+	}
 	request_api_configuration.decode_batch_target = PIPESIM_LANE_CAPACITY;
 	request_api_configuration.decode_execution_row_capacity = SparkGlm52Pp13RuntimeExecutionRowCapacity(PIPESIM_LANE_CAPACITY);
 	request_api_configuration.scheduler = &fixture->scheduler;
@@ -455,7 +530,7 @@ int main(int argc, char **argv)
 	PipesimFixture *fixture;
 	PipesimPending *pending;
 	uint64_t stage_us, hop_us, prefill_stage_us, verify_stage_us, steady_tokens, steady_ns, iteration;
-	uint32_t request_count, output_tokens, prompt_tokens, queue_depth, accept_milli, width_index;
+	uint32_t request_count, output_tokens, prompt_tokens, queue_depth, accept_milli, speculation_mode, width_index;
 	SparkStatus status;
 	fixture = &Pipesim;
 	stage_us = argc > 1 ? strtoull(argv[1], 0, 10) : 16000u;
@@ -467,6 +542,7 @@ int main(int argc, char **argv)
 	queue_depth = argc > 7 ? (uint32_t)strtoul(argv[7], 0, 10) : PIPESIM_QUEUE_DEPTH_PER_SPARK;
 	accept_milli = argc > 8 ? (uint32_t)strtoul(argv[8], 0, 10) : 0u;
 	verify_stage_us = argc > 9 ? strtoull(argv[9], 0, 10) : stage_us;
+	speculation_mode = argc > 10 ? (uint32_t)strtoul(argv[10], 0, 10) : 0u;
 	if (request_count == 0u || request_count > PIPESIM_REQUEST_SLOTS ||
 		output_tokens == 0u || prompt_tokens == 0u || prompt_tokens > 8192u ||
 		output_tokens + prompt_tokens > PIPESIM_REQUEST_TOKEN_STRIDE ||
@@ -483,6 +559,8 @@ int main(int argc, char **argv)
 	fixture->ring.hop_ns = hop_us * 1000u;
 	fixture->queue_depth = queue_depth;
 	fixture->accept_milli = accept_milli > 1000u ? 1000u : accept_milli;
+	fixture->speculation_mode = speculation_mode;
+	fixture->dspark_enabled = (speculation_mode >= 1u && fixture->accept_milli != 0u) ? 1u : 0u;
 	PipesimInitializeCore(fixture);
 	PipesimInitializeServing(fixture);
 	PipesimSubmitRequests(fixture, request_count, output_tokens, prompt_tokens);

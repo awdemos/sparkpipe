@@ -5396,9 +5396,10 @@ static SparkStatus SparkGlm52RequestApiPrepareDsparkDraftForSlot(
     }
 
     requested_token_count = api->dspark_speculator->default_speculative_token_count;
-    if (requested_token_count > SparkGlm52RequestApiSlotRemainingDecodeBudget(slot))
+    if (requested_token_count + 1u > SparkGlm52RequestApiSlotRemainingDecodeBudget(slot))
     {
-        requested_token_count = SparkGlm52RequestApiSlotRemainingDecodeBudget(slot);
+        requested_token_count =
+            SparkGlm52RequestApiSlotRemainingDecodeBudget(slot) - 1u;
     }
     if (requested_token_count == 0u)
     {
