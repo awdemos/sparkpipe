@@ -213,6 +213,179 @@ static void SparkQwen36RefAttention(const float *q_fused, const float *k_cache, 
 	}
 }
 
+/*
+ * Chunked gated delta rule for one head, chunk 64, matching
+ * torch_chunk_gated_delta_rule exactly: intra-chunk cumulative decay, the
+ * forward-substitution UT transform T = (I - A)^-1 applied to beta-scaled
+ * values and decayed keys, then per chunk out = (q o e^G) S + (q k^T o D) v_new
+ * with v_new = T v_beta - (T (k_beta o e^G)) S and the state carried as
+ * S <- S e^G_last + (k o e^(G_last - G))^T v_new. tokens must be a multiple
+ * of the chunk; state is read and written, the same carry contract as the
+ * recurrence. This is the CPU mirror the wmma prefill kernel is checked
+ * against.
+ */
+#define SPARK_QWEN36_REF_CHUNK 64u
+
+static void SparkQwen36RefChunkPrepare(const float *q, const float *k, const float *beta, const float *g, float *qn, float *kn, float *cum_g, float *decay, float *attn, uint32_t dk)
+{
+	uint32_t row,column,element;
+	float scale = 1.0f / sqrtf((float)dk),running = 0.0f,product;
+	for (row = 0; row < SPARK_QWEN36_REF_CHUNK; row++)
+	{
+		SparkQwen36RefL2Norm(q + ((uint64_t)row * dk),qn + ((uint64_t)row * dk),dk);
+		SparkQwen36RefL2Norm(k + ((uint64_t)row * dk),kn + ((uint64_t)row * dk),dk);
+		for (element = 0; element < dk; element++)
+			qn[(row * dk) + element] *= scale;
+		running += g[row];
+		cum_g[row] = running;
+	}
+	for (row = 0; row < SPARK_QWEN36_REF_CHUNK; row++)
+		for (column = 0; column < SPARK_QWEN36_REF_CHUNK; column++)
+			decay[(row * SPARK_QWEN36_REF_CHUNK) + column] = column <= row ? expf(cum_g[row] - cum_g[column]) : 0.0f;
+	for (row = 0; row < SPARK_QWEN36_REF_CHUNK; row++)
+		for (column = 0; column < SPARK_QWEN36_REF_CHUNK; column++)
+		{
+			product = 0.0f;
+			for (element = 0; element < dk && column < row; element++)
+				product += (kn[(row * dk) + element] * beta[row] * kn[(column * dk) + element]);
+			attn[(row * SPARK_QWEN36_REF_CHUNK) + column] = column < row ? -(product * decay[(row * SPARK_QWEN36_REF_CHUNK) + column]) : 0.0f;
+		}
+}
+
+static void SparkQwen36RefChunkForwardSubstitute(float *attn)
+{
+	uint32_t row,column,element;
+	float accumulator;
+	for (row = 1; row < SPARK_QWEN36_REF_CHUNK; row++)
+		for (column = 0; column < row; column++)
+		{
+			accumulator = attn[(row * SPARK_QWEN36_REF_CHUNK) + column];
+			for (element = 0; element < row; element++)
+				accumulator += (attn[(row * SPARK_QWEN36_REF_CHUNK) + element] * attn[(element * SPARK_QWEN36_REF_CHUNK) + column]);
+			attn[(row * SPARK_QWEN36_REF_CHUNK) + column] = accumulator;
+		}
+	for (row = 0; row < SPARK_QWEN36_REF_CHUNK; row++)
+		attn[(row * SPARK_QWEN36_REF_CHUNK) + row] += 1.0f;
+}
+
+// w = T (v o beta); kg = T (k o beta o e^G): the two transformed operands.
+static void SparkQwen36RefChunkTransform(const float *attn, const float *kn, const float *v, const float *beta, const float *cum_g, float *w, float *kg, uint32_t dk, uint32_t dv)
+{
+	uint32_t row,column,element;
+	float accumulator;
+	for (row = 0; row < SPARK_QWEN36_REF_CHUNK; row++)
+	{
+		for (column = 0; column < dv; column++)
+		{
+			accumulator = 0.0f;
+			for (element = 0; element < SPARK_QWEN36_REF_CHUNK; element++)
+				accumulator += (attn[(row * SPARK_QWEN36_REF_CHUNK) + element] * v[(element * dv) + column] * beta[element]);
+			w[(row * dv) + column] = accumulator;
+		}
+		for (column = 0; column < dk; column++)
+		{
+			accumulator = 0.0f;
+			for (element = 0; element < SPARK_QWEN36_REF_CHUNK; element++)
+				accumulator += (attn[(row * SPARK_QWEN36_REF_CHUNK) + element] * kn[(element * dk) + column] * beta[element] * expf(cum_g[element]));
+			kg[(row * dk) + column] = accumulator;
+		}
+	}
+}
+
+static void SparkQwen36RefChunkStep(const float *qn, const float *kn, const float *w, const float *kg, const float *cum_g, const float *decay, float *state, float *output, uint32_t dk, uint32_t dv)
+{
+	float v_new[SPARK_QWEN36_REF_CHUNK * 256u],score;
+	uint32_t row,column,element;
+	float g_last = cum_g[SPARK_QWEN36_REF_CHUNK - 1u],carry;
+	for (row = 0; row < SPARK_QWEN36_REF_CHUNK; row++)
+		for (column = 0; column < dv; column++)
+		{
+			score = 0.0f;
+			for (element = 0; element < dk; element++)
+				score += (kg[(row * dk) + element] * state[(element * dv) + column]);
+			v_new[(row * dv) + column] = w[(row * dv) + column] - score;
+		}
+	for (row = 0; row < SPARK_QWEN36_REF_CHUNK; row++)
+		for (column = 0; column < dv; column++)
+		{
+			score = 0.0f;
+			for (element = 0; element < dk; element++)
+				score += (qn[(row * dk) + element] * expf(cum_g[row]) * state[(element * dv) + column]);
+			for (element = 0; element <= row; element++)
+			{
+				float dot = 0.0f;
+				uint32_t inner;
+				for (inner = 0; inner < dk; inner++)
+					dot += (qn[(row * dk) + inner] * kn[(element * dk) + inner]);
+				score += (dot * decay[(row * SPARK_QWEN36_REF_CHUNK) + element] * v_new[(element * dv) + column]);
+			}
+			output[(row * dv) + column] = score;
+		}
+	for (element = 0; element < dk; element++)
+		for (column = 0; column < dv; column++)
+		{
+			carry = state[(element * dv) + column] * expf(g_last);
+			for (row = 0; row < SPARK_QWEN36_REF_CHUNK; row++)
+				carry += (kn[(row * dk) + element] * expf(g_last - cum_g[row]) * v_new[(row * dv) + column]);
+			state[(element * dv) + column] = carry;
+		}
+}
+
+static void SparkQwen36RefGdnChunk(const float *q, const float *k, const float *v, const float *g, const float *beta, float *state, float *output, uint32_t tokens, uint32_t dk, uint32_t dv)
+{
+	float qn[SPARK_QWEN36_REF_CHUNK * 256u],kn[SPARK_QWEN36_REF_CHUNK * 256u];
+	float cum_g[SPARK_QWEN36_REF_CHUNK],decay[SPARK_QWEN36_REF_CHUNK * SPARK_QWEN36_REF_CHUNK],attn[SPARK_QWEN36_REF_CHUNK * SPARK_QWEN36_REF_CHUNK];
+	float w[SPARK_QWEN36_REF_CHUNK * 256u],kg[SPARK_QWEN36_REF_CHUNK * 256u];
+	uint32_t chunk,base;
+	for (chunk = 0; chunk < tokens / SPARK_QWEN36_REF_CHUNK; chunk++)
+	{
+		base = chunk * SPARK_QWEN36_REF_CHUNK;
+		SparkQwen36RefChunkPrepare(q + ((uint64_t)base * dk),k + ((uint64_t)base * dk),beta + base,g + base,qn,kn,cum_g,decay,attn,dk);
+		SparkQwen36RefChunkForwardSubstitute(attn);
+		SparkQwen36RefChunkTransform(attn,kn,v + ((uint64_t)base * dv),beta + base,cum_g,w,kg,dk,dv);
+		SparkQwen36RefChunkStep(qn,kn,w,kg,cum_g,decay,state,output + ((uint64_t)base * dv),dk,dv);
+	}
+}
+
+static int32_t SparkQwen36RefTestChunkAgainstRecurrence(void)
+{
+	float q[192u * 32u],k[192u * 32u],v[192u * 32u],g[192u],beta[192u];
+	float state_rec[32u * 32u],state_chunk[32u * 32u],out_rec[192u * 32u],out_chunk[192u * 32u];
+	uint64_t noise = 0xc4a1c4a1u;
+	float difference = 0.0f,state_difference = 0.0f,delta;
+	uint32_t index;
+	SparkQwen36RefFill(q,192u * 32u,&noise);
+	SparkQwen36RefFill(k,192u * 32u,&noise);
+	SparkQwen36RefFill(v,192u * 32u,&noise);
+	for (index = 0; index < 192u; index++)
+	{
+		g[index] = -0.05f - (0.4f * fabsf(SparkQwen36RefUniform(&noise)));
+		beta[index] = 0.2f + (0.6f * fabsf(SparkQwen36RefUniform(&noise)));
+	}
+	// Warm a nonzero state with 64 recurrent tokens, then run the NEXT 128
+	// tokens both ways from that shared state: the initial-state path is
+	// exactly what mid-sequence chunked prefill needs.
+	memset(state_rec,0,sizeof(state_rec));
+	SparkQwen36RefGdnRecurrence(q,k,v,g,beta,state_rec,out_rec,64u,32u,32u);
+	memcpy(state_chunk,state_rec,sizeof(state_rec));
+	SparkQwen36RefGdnRecurrence(q + (64u * 32u),k + (64u * 32u),v + (64u * 32u),g + 64u,beta + 64u,state_rec,out_rec + (64u * 32u),128u,32u,32u);
+	SparkQwen36RefGdnChunk(q + (64u * 32u),k + (64u * 32u),v + (64u * 32u),g + 64u,beta + 64u,state_chunk,out_chunk + (64u * 32u),128u,32u,32u);
+	for (index = 64u * 32u; index < 192u * 32u; index++)
+	{
+		delta = fabsf(out_rec[index] - out_chunk[index]);
+		if ( delta > difference )
+			difference = delta;
+	}
+	for (index = 0; index < 32u * 32u; index++)
+	{
+		delta = fabsf(state_rec[index] - state_chunk[index]);
+		if ( delta > state_difference )
+			state_difference = delta;
+	}
+	printf("chunk_vs_recurrence out_max_abs_diff=%.3e state_max_abs_diff=%.3e\n",(double)difference,(double)state_difference);
+	return((difference < 1e-4f && state_difference < 1e-4f) ? 0 : -1);
+}
+
 static int32_t SparkQwen36RefTestCarry(void)
 {
 	float q[128u * 32u],k[128u * 32u],v[128u * 32u],g[128u],beta[128u];
@@ -379,6 +552,8 @@ int main(void)
 {
 	if ( SparkQwen36RefTestCarry() != 0 )
 		return(1);
+	if ( SparkQwen36RefTestChunkAgainstRecurrence() != 0 )
+		return(6);
 	if ( SparkQwen36RefTestSaturatedDecay() != 0 )
 		return(2);
 	if ( SparkQwen36RefTestConv() != 0 )
