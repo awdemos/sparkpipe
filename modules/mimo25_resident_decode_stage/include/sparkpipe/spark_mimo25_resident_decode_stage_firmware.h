@@ -25,7 +25,7 @@ extern "C" {
  */
 
 #define SPARK_MIMO25_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 1u
-#define SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
+#define SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
 #define SPARK_MIMO25_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_MIMO25_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION 1u
 #define SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT 16u
@@ -101,12 +101,24 @@ typedef struct SparkMimo25DecodeBatchView
 typedef SparkStatus (*SparkMimo25HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
 typedef SparkStatus (*SparkMimo25HiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
 
+/*
+ * Frame context v2 adds MTP draft delivery: when the stage is armed with
+ * SPARK_MIMO25_STAGE_MTP = D (1..3), the head stage runs the D
+ * sequential draft layers after the main argmax - each step's token from
+ * the previous step's, each draft layer on its own SWA ring at positions
+ * p+1+d, hidden chained pre-final-norm per the DeepSeek-V3 convention the
+ * checkpoint shapes follow - and writes row-major [row][D] draft tokens
+ * into mtp_draft_tokens. Acceptance and tree control belong to the
+ * serving layer; rejected drafts are harmless, the position-keyed rings
+ * self-heal on the next real write.
+ */
 typedef struct SparkMimo25ResidentDecodeStageFrameContext
 {
 	uint32_t abi_version;
 	uint32_t descriptor_bytes;
 	uint32_t flags;
-	uint32_t reserved0;
+	uint32_t mtp_draft_depth;
+	uint32_t *mtp_draft_tokens;
 	const SparkMimo25DecodeBatchView *decode_batch;
 	SparkHiddenTransportSession *hidden_input_transport_session;
 	SparkHiddenTransportSession *hidden_output_transport_session;
