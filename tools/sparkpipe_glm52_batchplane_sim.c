@@ -111,6 +111,14 @@ int main(int argc,char **argv)
 	queue_configuration.abi_version = SPARK_GLM52_EXPERT_QUEUE_ABI_VERSION;
 	queue_configuration.layer_count = BSIM_LAYERS;
 	queue_configuration.expert_count = BSIM_EXPERTS;
+	if ( fire_rows == 0u )
+	{
+		fire_rows = ((sequence_count * BSIM_LANES * BSIM_TOPK) / BSIM_EXPERTS);
+		if ( fire_rows == 0u )
+			fire_rows = 1u;
+		if ( fire_rows > SPARK_GLM52_EXPERT_QUEUE_MAX_FIRING_ROWS )
+			fire_rows = SPARK_GLM52_EXPERT_QUEUE_MAX_FIRING_ROWS;
+	}
 	queue_configuration.firing_threshold_rows = fire_rows;
 	queue_configuration.firing_deadline_ns = 50000000u;
 	if ( SparkGlm52ExpertQueueInitialize(&bsim_queue,&queue_configuration) != SPARK_STATUS_OK )

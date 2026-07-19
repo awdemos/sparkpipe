@@ -1,3 +1,4 @@
+#include "sparkpipe/spark_glm52_batch_sequence_table.h"
 #include "sparkpipe/spark_glm52_expert_queue.h"
 #include "sparkpipe/spark_glm52_jit_kv_pool.h"
 
@@ -7,6 +8,7 @@
 
 static SparkGlm52ExpertQueue test_queue;
 static SparkGlm52JitKvPool test_pool;
+static SparkGlm52BatchSequenceTable test_table;
 
 static void SparkTestExpertQueueThresholdDeadlineAndOrder(void)
 {
@@ -76,10 +78,43 @@ static void SparkTestJitKvPoolPrefetchEvictionAndLateness(void)
 	assert(SparkGlm52JitKvPoolRequireByEta(&test_pool,10000000u,require_ids,1u,10500000u) == SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 
+static void SparkTestBatchSequenceTableLifecycleAndThreshold(void)
+{
+	SparkGlm52BatchSequenceTableConfiguration configuration;
+	uint32_t first_index,second_index;
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_GLM52_BATCH_SEQUENCE_ABI_VERSION;
+	configuration.sequence_capacity = 4u;
+	configuration.lane_count = 8u;
+	assert(SparkGlm52BatchSequenceTableInitialize(&test_table,&configuration) == SPARK_STATUS_OK);
+	assert(SparkGlm52BatchSequenceTableAdmit(&test_table,900u,8192u,0u,128u,&first_index) == SPARK_STATUS_OK);
+	assert(SparkGlm52BatchSequenceTableAdmit(&test_table,901u,8192u,128u,128u,&second_index) == SPARK_STATUS_OK);
+	assert(test_table.active_count == 2u);
+	assert(SparkGlm52BatchSequenceTableFiringThreshold(&test_table,8u,256u,1024u) == 1u);
+	{
+		uint32_t fill_index,scratch;
+		for (fill_index=2u; fill_index<4u; fill_index++)
+			assert(SparkGlm52BatchSequenceTableAdmit(&test_table,900u + fill_index,8192u,fill_index * 128u,128u,&scratch) == SPARK_STATUS_OK);
+		assert(SparkGlm52BatchSequenceTableAdmit(&test_table,999u,8192u,512u,128u,&scratch) == SPARK_STATUS_CAPACITY_EXCEEDED);
+	}
+	assert(SparkGlm52BatchSequenceTableFiringThreshold(&test_table,8u,256u,1024u) == 1u);
+	assert(SparkGlm52BatchSequenceTablePauseForTool(&test_table,first_index) == SPARK_STATUS_OK);
+	assert(test_table.active_count == 3u && test_table.awaiting_tool_count == 1u);
+	assert(SparkGlm52BatchSequenceTablePauseForTool(&test_table,first_index) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkGlm52BatchSequenceTableBeginExchange(&test_table,first_index,192u) == SPARK_STATUS_OK);
+	assert(test_table.sequences[first_index].exchange_number == 1u);
+	assert(test_table.sequences[first_index].context_tokens == 8384u);
+	assert(test_table.active_count == 4u && test_table.exchange_count == 5u);
+	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_index) == SPARK_STATUS_OK);
+	assert(test_table.active_count == 3u && test_table.complete_count == 1u);
+	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_index) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
 int main(void)
 {
 	SparkTestExpertQueueThresholdDeadlineAndOrder();
 	SparkTestJitKvPoolPrefetchEvictionAndLateness();
+	SparkTestBatchSequenceTableLifecycleAndThreshold();
 	printf("test_glm52_batch_plane PASS\n");
 	return(0);
 }

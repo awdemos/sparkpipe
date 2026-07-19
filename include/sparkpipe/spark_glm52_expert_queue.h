@@ -50,6 +50,7 @@ typedef struct SparkGlm52ExpertQueue
 	uint64_t firing_deadline_ns;
 	uint32_t free_head;
 	uint32_t enqueued_row_count;
+	uint32_t layer_enqueued_row_count[SPARK_GLM52_EXPERT_QUEUE_MAX_LAYERS];
 	uint64_t firing_count;
 	uint64_t fired_row_count;
 	SparkGlm52ExpertQueueSlot slots[SPARK_GLM52_EXPERT_QUEUE_MAX_LAYERS][SPARK_GLM52_EXPERT_QUEUE_MAX_EXPERTS];
@@ -65,5 +66,6 @@ typedef struct SparkGlm52ExpertQueueFiring
 } SparkGlm52ExpertQueueFiring;
 
 SparkStatus SparkGlm52ExpertQueueInitialize(SparkGlm52ExpertQueue *queue,const SparkGlm52ExpertQueueConfiguration *configuration);
+SparkStatus SparkGlm52ExpertQueueSetFiringThreshold(SparkGlm52ExpertQueue *queue,uint32_t firing_threshold_rows);
 SparkStatus SparkGlm52ExpertQueueEnqueueRow(SparkGlm52ExpertQueue *queue,uint32_t layer_index,uint32_t expert_index,uint64_t row_id,uint64_t arrival_ns);
 SparkStatus SparkGlm52ExpertQueueNextFiring(SparkGlm52ExpertQueue *queue,uint64_t now_ns,SparkGlm52ExpertQueueFiring *firing_out);

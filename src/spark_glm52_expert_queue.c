@@ -58,6 +58,16 @@ SparkStatus SparkGlm52ExpertQueueEnqueueRow(SparkGlm52ExpertQueue *queue,uint32_
 	slot->tail = row_index;
 	slot->count += 1u;
 	queue->enqueued_row_count += 1u;
+	queue->layer_enqueued_row_count[layer_index] += 1u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkGlm52ExpertQueueSetFiringThreshold(SparkGlm52ExpertQueue *queue,uint32_t firing_threshold_rows)
+{
+	if ( queue == 0 || firing_threshold_rows == 0u ||
+		firing_threshold_rows > SPARK_GLM52_EXPERT_QUEUE_MAX_FIRING_ROWS )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	queue->firing_threshold_rows = firing_threshold_rows;
 	return(SPARK_STATUS_OK);
 }
 
@@ -105,6 +115,7 @@ SparkStatus SparkGlm52ExpertQueueNextFiring(SparkGlm52ExpertQueue *queue,uint64_
 			if ( slot->count != 0u )
 				slot->oldest_arrival_ns = queue->rows[slot->head].arrival_ns;
 			queue->enqueued_row_count -= emit_count;
+			queue->layer_enqueued_row_count[layer_index] -= emit_count;
 			queue->firing_count += 1u;
 			queue->fired_row_count += emit_count;
 			return(SPARK_STATUS_OK);
