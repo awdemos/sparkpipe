@@ -321,6 +321,9 @@ build/sparkpipe_glm52_pp13_loopback_probe: tools/sparkpipe_glm52_pp13_loopback_p
 build/sparkpipe_glm52_pipesim: tools/sparkpipe_glm52_pipesim.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_glm52_batch_plane: tests/test_glm52_batch_plane.c src/spark_glm52_expert_queue.c src/spark_glm52_jit_kv_pool.c
+	$(CC) $(CFLAGS) -Iinclude -o $@ tests/test_glm52_batch_plane.c src/spark_glm52_expert_queue.c src/spark_glm52_jit_kv_pool.c
+
 build/sparkpipe_glm52_batchplane_model: tools/sparkpipe_glm52_batchplane_model.c 
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 

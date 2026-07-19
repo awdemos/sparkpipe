@@ -115,6 +115,15 @@ static void bp_table(const char *quant_name,double expert_mb,double flops,double
 	printf("  detail N=32768 ctx=8192: expert BW %.0f GB/s, attn BW %.0f GB/s, NVMe %.1f GB/s\n",bwe / 1.0e9,bwa / 1.0e9,nvme / 1.0e9);
 }
 
+static void bp_longmem_scenario(double sequences,double lanes_per_exchange,double context,double selected,double expert_mb,double flops,double realtime_frac)
+{
+	double requests = (sequences * lanes_per_exchange),commit,transit,bwe,bwa,nvme;
+	double kv_tokens_per_seq = context,pool_sequences = (BP_KV_POOL_TOKENS / kv_tokens_per_seq);
+	double dram_frac = (sequences <= pool_sequences ? 1.0 : pool_sequences / sequences);
+	bp_solve(requests,context,selected,expert_mb,flops,realtime_frac,&commit,&transit,&bwe,&bwa,&nvme);
+	printf("%8.0f seqs x B%.0f = %6.0f req | commit %5.0f/s  %5.2f/req | transit %4.0fs | seq-shared KV: %.0f%% DRAM-resident, %.1f GB/s NVMe JIT\n",sequences,lanes_per_exchange,requests,commit,commit / requests,transit,dram_frac * 100.0,nvme / 1.0e9);
+}
+
 int main(int argc,char **argv)
 {
 	double realtime_frac = (argc > 1 ? strtoul(argv[1],0,10) / 1000.0 : 0.25);
@@ -127,6 +136,15 @@ int main(int argc,char **argv)
 	rt_commit = (realtime_frac * rt_width / (stage_rt_ms / 1000.0)) * (BP_SPEC_COMMIT / 1.33);
 	printf("\n== realtime plane (frame mode, %.0f%% slice, B~64, dspark) ==\n",realtime_frac * 100.0);
 	printf("aggregate ~%.0f tok/s, ~%.1f tok/s per realtime request at B64\n",rt_commit,rt_commit / 64.0);
+	printf("\n== longmem structure: sequences x B8 exchanges, per-sequence shared-prefix KV ==\n");
+	printf("   (one KV copy per sequence serves all 8 lanes and persists across exchanges;\n");
+	printf("    mooncake JIT pages DSA fragment deltas with wave-transit prefetch lead)\n");
+	printf("-- NVFP4, ctx 8192, DSA select 2048 --\n");
+	bp_longmem_scenario(500.0,8.0,8192.0,2048.0,BP_EXPERT_MB_FP4,2.0 * BP_FLOPS_FP8,realtime_frac);
+	bp_longmem_scenario(2000.0,8.0,8192.0,2048.0,BP_EXPERT_MB_FP4,2.0 * BP_FLOPS_FP8,realtime_frac);
+	bp_longmem_scenario(4000.0,8.0,8192.0,2048.0,BP_EXPERT_MB_FP4,2.0 * BP_FLOPS_FP8,realtime_frac);
+	bp_longmem_scenario(8000.0,8.0,8192.0,2048.0,BP_EXPERT_MB_FP4,2.0 * BP_FLOPS_FP8,realtime_frac);
+	bp_longmem_scenario(16000.0,8.0,8192.0,2048.0,BP_EXPERT_MB_FP4,2.0 * BP_FLOPS_FP8,realtime_frac);
 	printf("\nlongmem batch completion (4096 requests x 500 tokens = 2.05M tokens):\n");
 	printf("  N=4096 alone: 8-bit ~%.0f min, NVFP4 ~%.0f min\n",2.05e6 / 893.0 / 60.0,2.05e6 / 1721.0 / 60.0);
 	printf("  stacked to N=32768: 8-bit ~%.0f min, NVFP4 ~%.0f min (all stacks finish together)\n",8.0 * 2.05e6 / 7148.0 / 60.0,8.0 * 2.05e6 / 13767.0 / 60.0);
