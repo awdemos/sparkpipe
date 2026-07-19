@@ -1,4 +1,4 @@
-#include "sparkpipe/spark_glm52_kv_store.h"
+#include "sparkpipe/spark_kv_store.h"
 
 #include <cassert>
 #include <chrono>
@@ -6,13 +6,13 @@
 #include <cstring>
 #include <thread>
 
-extern "C" const SparkGlm52KvStoreInterface *SparkGlm52KvStoreGetInterface(void);
+extern "C" const SparkKvStoreInterface *SparkKvStoreGetInterface(void);
 
 static SparkStatus SparkTestMooncakeWait(
-	const SparkGlm52KvStoreInterface *store_interface,
+	const SparkKvStoreInterface *store_interface,
 	void *store_state,
 	uint64_t batch_id,
-	SparkGlm52KvStoreCompletion *completion)
+	SparkKvStoreCompletion *completion)
 {
 	uint32_t poll_count;
 	SparkStatus status;
@@ -27,7 +27,7 @@ static SparkStatus SparkTestMooncakeWait(
 }
 
 static void SparkTestMooncakeBlock(
-	SparkGlm52KvStoreBlock *block,
+	SparkKvStoreBlock *block,
 	uint32_t operation,
 	const char *key,
 	void *payload,
@@ -42,21 +42,21 @@ static void SparkTestMooncakeBlock(
 
 int main()
 {
-	const SparkGlm52KvStoreInterface *store_interface;
-	SparkGlm52KvStoreConfiguration configuration;
-	SparkGlm52KvStoreCompletion completion;
-	SparkGlm52KvStoreBatch batch;
+	const SparkKvStoreInterface *store_interface;
+	SparkKvStoreConfiguration configuration;
+	SparkKvStoreCompletion completion;
+	SparkKvStoreBatch batch;
 	uint8_t expected[128u];
 	uint8_t *staging;
 	void *store_state;
 	uint32_t index;
 
-	store_interface = SparkGlm52KvStoreGetInterface();
-	assert(SparkGlm52KvStoreValidateInterface(
-		store_interface,SPARK_GLM52_KV_STORE_REQUIRED_CAPS) == SPARK_STATUS_OK);
+	store_interface = SparkKvStoreGetInterface();
+	assert(SparkKvStoreValidateInterface(
+		store_interface,SPARK_KV_STORE_REQUIRED_CAPS) == SPARK_STATUS_OK);
 	std::memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_GLM52_KV_STORE_ABI_VERSION;
-	configuration.descriptor_bytes = SPARK_GLM52_KV_STORE_CONFIGURATION_BYTES;
+	configuration.abi_version = SPARK_KV_STORE_ABI_VERSION;
+	configuration.descriptor_bytes = SPARK_KV_STORE_CONFIGURATION_BYTES;
 	configuration.layer_count = 4u;
 	configuration.worker_count = 2u;
 	configuration.maximum_inflight_batch_count = 2u;
@@ -77,30 +77,59 @@ int main()
 	for (index = 0u; index < sizeof(expected); ++index)
 		staging[index] = expected[index] = (uint8_t)(index ^ 0x5au);
 	std::memset(&batch,0,sizeof(batch));
-	batch.abi_version = SPARK_GLM52_KV_STORE_ABI_VERSION;
-	batch.descriptor_bytes = SPARK_GLM52_KV_STORE_BATCH_BYTES;
+	batch.abi_version = SPARK_KV_STORE_ABI_VERSION;
+	batch.descriptor_bytes = SPARK_KV_STORE_BATCH_BYTES;
 	batch.block_count = 2u;
 	batch.batch_id = 11u;
 	SparkTestMooncakeBlock(
-		&batch.blocks[0u],SPARK_GLM52_KV_STORE_OPERATION_PUT,
+		&batch.blocks[0u],SPARK_KV_STORE_OPERATION_PUT,
 		"glm52/test/a",staging,64u);
 	SparkTestMooncakeBlock(
-		&batch.blocks[1u],SPARK_GLM52_KV_STORE_OPERATION_PUT,
+		&batch.blocks[1u],SPARK_KV_STORE_OPERATION_PUT,
 		"glm52/test/b",staging + 64u,64u);
 	assert(store_interface->submit(store_state,&batch) == SPARK_STATUS_OK);
 	assert(store_interface->submit(store_state,&batch) == SPARK_STATUS_DUPLICATE);
 	assert(SparkTestMooncakeWait(
 		store_interface,store_state,11u,&completion) == SPARK_STATUS_OK);
+	assert(completion.status == SPARK_STATUS_OK);
 	assert(completion.completed_block_count == 2u);
+	// A batch over the CONFIGURED cap (but under the ABI cap) must be
+	// rejected, never silently accepted without queueing.
+	batch.batch_id = 21u;
+	batch.block_count = 3u;
+	SparkTestMooncakeBlock(
+		&batch.blocks[2u],SPARK_KV_STORE_OPERATION_PUT,
+		"glm52/test/c",staging,64u);
+	assert(store_interface->submit(store_state,&batch) ==
+		SPARK_STATUS_INVALID_ARGUMENT);
+	assert(store_interface->poll(store_state,21u,&completion) ==
+		SPARK_STATUS_NOT_FOUND);
+	batch.block_count = 2u;
 	std::memset(staging,0,sizeof(expected));
 	batch.batch_id = 12u;
-	batch.blocks[0u].operation = SPARK_GLM52_KV_STORE_OPERATION_GET;
-	batch.blocks[1u].operation = SPARK_GLM52_KV_STORE_OPERATION_GET;
+	batch.blocks[0u].operation = SPARK_KV_STORE_OPERATION_GET;
+	batch.blocks[1u].operation = SPARK_KV_STORE_OPERATION_GET;
 	assert(store_interface->submit(store_state,&batch) == SPARK_STATUS_OK);
 	assert(SparkTestMooncakeWait(
 		store_interface,store_state,12u,&completion) == SPARK_STATUS_OK);
+	assert(completion.status == SPARK_STATUS_OK);
 	assert(completion.completed_block_count == 2u);
 	assert(std::memcmp(staging,expected,sizeof(expected)) == 0);
+	// A GET miss is a delivered completion carrying NOT_FOUND, not a poll
+	// mechanics error: poll itself returns OK.
+	batch.batch_id = 13u;
+	SparkTestMooncakeBlock(
+		&batch.blocks[0u],SPARK_KV_STORE_OPERATION_GET,
+		"glm52/test/missing",staging,64u);
+	SparkTestMooncakeBlock(
+		&batch.blocks[1u],SPARK_KV_STORE_OPERATION_GET,
+		"glm52/test/b",staging + 64u,64u);
+	assert(store_interface->submit(store_state,&batch) == SPARK_STATUS_OK);
+	assert(SparkTestMooncakeWait(
+		store_interface,store_state,13u,&completion) == SPARK_STATUS_OK);
+	assert(completion.status == SPARK_STATUS_NOT_FOUND);
+	assert(store_interface->poll(store_state,13u,&completion) ==
+		SPARK_STATUS_NOT_FOUND);
 	assert(store_interface->release_buffer(store_state,staging) ==
 		SPARK_STATUS_OK);
 	store_interface->destroy(store_state);

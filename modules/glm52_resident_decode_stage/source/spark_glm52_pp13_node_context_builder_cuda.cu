@@ -28,7 +28,7 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_required_cuda.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_w8lut_moe_plan.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
-#include "sparkpipe/spark_glm52_kv_store.h"
+#include "sparkpipe/spark_kv_store.h"
 #include "sparkpipe/spark_glm52_mtp_tree.h"
 #include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_glm52_stagepack.h"
@@ -471,7 +471,7 @@ typedef struct SparkGlm52Pp13BuilderState
 		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_NVME_BATCH_BLOCK_COUNT];
 	SparkGlm52Pp13BuilderNvmePendingOperation kv_nvme_pending_loads[
 		SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_MAX_NVME_BATCH_BLOCK_COUNT];
-	SparkGlm52KvStoreDynamicLibrary kv_store_library;
+	SparkKvStoreDynamicLibrary kv_store_library;
 	void *kv_store_state;
 	uint64_t kv_store_next_batch_id;
 	uint64_t kv_store_load_batch_id;
@@ -1862,7 +1862,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeKvNvme(
 	SparkGlm52Pp13BuilderState *state)
 {
 	SparkGlm52KvJitStageBudgetRequest budget_request;
-	SparkGlm52KvStoreConfiguration store_configuration;
+	SparkKvStoreConfiguration store_configuration;
 	uint64_t attention_block_bytes;
 	uint64_t index_block_bytes;
 	uint64_t summary_block_bytes;
@@ -2041,15 +2041,15 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeKvNvme(
 	}
 	else
 	{
-		status = SparkGlm52KvStoreLoadInterfaceFromSharedObject(
+		status = SparkKvStoreLoadInterfaceFromSharedObject(
 			state->configuration.kv_store_module_path,
-			SPARK_GLM52_KV_STORE_REQUIRED_CAPS,&state->kv_store_library);
+			SPARK_KV_STORE_REQUIRED_CAPS,&state->kv_store_library);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		memset(&store_configuration,0,sizeof(store_configuration));
-		store_configuration.abi_version = SPARK_GLM52_KV_STORE_ABI_VERSION;
+		store_configuration.abi_version = SPARK_KV_STORE_ABI_VERSION;
 		store_configuration.descriptor_bytes =
-			SPARK_GLM52_KV_STORE_CONFIGURATION_BYTES;
+			SPARK_KV_STORE_CONFIGURATION_BYTES;
 		store_configuration.rank_index = state->rank_plan.rank_index;
 		store_configuration.first_layer_index =
 			state->rank_plan.first_layer_index;
@@ -2086,7 +2086,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeKvNvme(
 			state->kv_store_library.store_interface.destroy(
 				state->kv_store_state);
 			state->kv_store_state = 0;
-			SparkGlm52KvStoreUnloadInterface(&state->kv_store_library);
+			SparkKvStoreUnloadInterface(&state->kv_store_library);
 			state->kv_store_staging_owned = 0u;
 			return SPARK_STATUS_IO_ERROR;
 		}
@@ -2117,7 +2117,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeKvNvme(
 			state->kv_store_library.store_interface.destroy(
 				state->kv_store_state);
 			state->kv_store_state = 0;
-			SparkGlm52KvStoreUnloadInterface(&state->kv_store_library);
+			SparkKvStoreUnloadInterface(&state->kv_store_library);
 			state->kv_store_staging_owned = 0u;
 		}
 		else
@@ -2490,35 +2490,35 @@ static SparkStatus SparkGlm52Pp13BuilderKvStoreBuildBatch(
 	uint32_t operation_count,
 	uint32_t operation,
 	uint64_t batch_id,
-	SparkGlm52KvStoreBatch *batch)
+	SparkKvStoreBatch *batch)
 {
 	uint32_t operation_index;
 	if (state == 0 || operations == 0 || operation_count == 0u ||
-		operation_count > SPARK_GLM52_KV_STORE_MAX_BATCH_BLOCKS ||
+		operation_count > SPARK_KV_STORE_MAX_BATCH_BLOCKS ||
 		batch_id == 0u || batch == 0 ||
-		(operation != SPARK_GLM52_KV_STORE_OPERATION_GET &&
-		 operation != SPARK_GLM52_KV_STORE_OPERATION_PUT))
+		(operation != SPARK_KV_STORE_OPERATION_GET &&
+		 operation != SPARK_KV_STORE_OPERATION_PUT))
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	memset(batch,0,sizeof(*batch));
-	batch->abi_version = SPARK_GLM52_KV_STORE_ABI_VERSION;
-	batch->descriptor_bytes = SPARK_GLM52_KV_STORE_BATCH_BYTES;
+	batch->abi_version = SPARK_KV_STORE_ABI_VERSION;
+	batch->descriptor_bytes = SPARK_KV_STORE_BATCH_BYTES;
 	batch->block_count = operation_count;
 	batch->batch_id = batch_id;
 	for (operation_index = 0u; operation_index < operation_count;
 		 ++operation_index)
 	{
-		SparkGlm52KvStoreBlock *block;
+		SparkKvStoreBlock *block;
 		SparkStatus status;
 		block = &batch->blocks[operation_index];
 		block->operation = operation;
 		block->payload_bytes = (uint32_t)state->kv_nvme_record_bytes;
-		block->payload = operation == SPARK_GLM52_KV_STORE_OPERATION_GET
+		block->payload = operation == SPARK_KV_STORE_OPERATION_GET
 			? (void *)SparkGlm52Pp13BuilderKvNvmeLoadRecord(state,operation_index)
 			: (void *)SparkGlm52Pp13BuilderKvNvmeStoreRecord(state,operation_index);
 		status = SparkGlm52Pp13BuilderKvStoreKey(
 			state,operations[operation_index].sequence_id,
 			operations[operation_index].logical_block_index,block->key,
-			SPARK_GLM52_KV_STORE_MAX_KEY_BYTES,&block->key_bytes);
+			SPARK_KV_STORE_MAX_KEY_BYTES,&block->key_bytes);
 		if (status != SPARK_STATUS_OK)
 			return status;
 	}
@@ -2528,7 +2528,7 @@ static SparkStatus SparkGlm52Pp13BuilderKvStoreBuildBatch(
 static SparkStatus SparkGlm52Pp13BuilderKvStoreSubmitLoads(
 	SparkGlm52Pp13BuilderState *state)
 {
-	SparkGlm52KvStoreBatch batch;
+	SparkKvStoreBatch batch;
 	SparkStatus status;
 	if (state == 0 || state->kv_store_state == 0 ||
 		state->kv_store_load_batch_state !=
@@ -2538,7 +2538,7 @@ static SparkStatus SparkGlm52Pp13BuilderKvStoreSubmitLoads(
 	state->kv_store_load_batch_id = state->kv_store_next_batch_id++;
 	status = SparkGlm52Pp13BuilderKvStoreBuildBatch(
 		state,state->kv_nvme_pending_loads,state->kv_nvme_pending_load_count,
-		SPARK_GLM52_KV_STORE_OPERATION_GET,state->kv_store_load_batch_id,&batch);
+		SPARK_KV_STORE_OPERATION_GET,state->kv_store_load_batch_id,&batch);
 	if (status == SPARK_STATUS_OK)
 		status = state->kv_store_library.store_interface.submit(
 			state->kv_store_state,&batch);
@@ -2576,7 +2576,7 @@ static SparkStatus SparkGlm52Pp13BuilderKvStorePollBatch(
 	uint32_t *batch_state,
 	SparkStatus *batch_status)
 {
-	SparkGlm52KvStoreCompletion completion;
+	SparkKvStoreCompletion completion;
 	SparkStatus status;
 	if (*batch_state != SPARK_GLM52_PP13_BUILDER_KV_STORE_BATCH_WAIT_PROVIDER)
 		return SPARK_STATUS_OK;
@@ -2584,7 +2584,9 @@ static SparkStatus SparkGlm52Pp13BuilderKvStorePollBatch(
 		state->kv_store_state,batch_id,&completion);
 	if (status == SPARK_STATUS_BUSY)
 		return SPARK_STATUS_OK;
-	*batch_status = status;
+	if (status != SPARK_STATUS_OK)
+		return status;
+	*batch_status = completion.status;
 	*batch_state = SPARK_GLM52_PP13_BUILDER_KV_STORE_BATCH_READY;
 	return SPARK_STATUS_OK;
 }
@@ -2592,7 +2594,7 @@ static SparkStatus SparkGlm52Pp13BuilderKvStorePollBatch(
 static SparkStatus SparkGlm52Pp13BuilderKvStoreProgress(
 	SparkGlm52Pp13BuilderState *state)
 {
-	SparkGlm52KvStoreBatch batch;
+	SparkKvStoreBatch batch;
 	SparkStatus status;
 	if (state == 0 || state->kv_store_state == 0)
 		return SPARK_STATUS_OK;
@@ -2609,7 +2611,7 @@ static SparkStatus SparkGlm52Pp13BuilderKvStoreProgress(
 			status = SparkGlm52Pp13BuilderKvStoreBuildBatch(
 				state,state->kv_nvme_pending_stores,
 				state->kv_nvme_pending_store_count,
-				SPARK_GLM52_KV_STORE_OPERATION_PUT,
+				SPARK_KV_STORE_OPERATION_PUT,
 				state->kv_store_store_batch_id,&batch);
 			if (status == SPARK_STATUS_OK)
 				status = state->kv_store_library.store_interface.submit(
@@ -5883,11 +5885,11 @@ static SparkStatus SparkGlm52Pp13BuilderValidateConfiguration(
 			configuration->kv_store_block_capacity > UINT32_MAX / 2u ||
 			configuration->kv_store_batch_block_count == 0u ||
 			configuration->kv_store_batch_block_count >
-				SPARK_GLM52_KV_STORE_MAX_BATCH_BLOCKS ||
+				SPARK_KV_STORE_MAX_BATCH_BLOCKS ||
 			configuration->kv_store_worker_count == 0u ||
 			configuration->kv_store_lookahead_packet_count == 0u ||
 			configuration->kv_store_lookahead_packet_count >
-				SPARK_GLM52_KV_STORE_MAX_LOOKAHEAD_PACKETS ||
+				SPARK_KV_STORE_MAX_LOOKAHEAD_PACKETS ||
 			configuration->kv_store_model_fingerprint == 0u ||
 			configuration->kv_store_layout_fingerprint == 0u ||
 			configuration->kv_store_client_memory_pool_bytes == 0u ||
@@ -6256,7 +6258,7 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 		state->kv_store_library.store_interface.destroy(state->kv_store_state);
 		state->kv_store_state = 0;
 	}
-	SparkGlm52KvStoreUnloadInterface(&state->kv_store_library);
+	SparkKvStoreUnloadInterface(&state->kv_store_library);
 	if (state->kv_nvme_staging != 0)
 	{
 		cudaHostUnregister(state->kv_nvme_staging);
@@ -8886,10 +8888,10 @@ static SparkStatus SparkGlm52Pp13BuilderPrefetchWork(
 {
 	SparkGlm52Pp13BuilderState *state;
 	SparkGlm52Pp13WorkControlKvPrefetchEntry entries[
-		SPARK_GLM52_KV_STORE_MAX_BATCH_BLOCKS];
+		SPARK_KV_STORE_MAX_BATCH_BLOCKS];
 	SparkGlm52Pp13BuilderNvmePendingOperation *operation;
 	uint32_t cumulative_entry_counts[
-		SPARK_GLM52_KV_STORE_MAX_LOOKAHEAD_PACKETS];
+		SPARK_KV_STORE_MAX_LOOKAHEAD_PACKETS];
 	uint32_t entry_count;
 	uint32_t entry_index;
 	uint32_t packet_index;
@@ -8897,7 +8899,7 @@ static SparkStatus SparkGlm52Pp13BuilderPrefetchWork(
 	SparkStatus status;
 	state = (SparkGlm52Pp13BuilderState *)builder_state;
 	if (state == 0 || work_packets == 0 || work_packet_count == 0u ||
-		work_packet_count > SPARK_GLM52_KV_STORE_MAX_LOOKAHEAD_PACKETS)
+		work_packet_count > SPARK_KV_STORE_MAX_LOOKAHEAD_PACKETS)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	for (packet_index = 0u; packet_index < work_packet_count; ++packet_index)
 	{
@@ -8935,7 +8937,7 @@ static SparkStatus SparkGlm52Pp13BuilderPrefetchWork(
 			: state->configuration.kv_store_batch_block_count + 1u;
 	}
 	selected_packet_count =
-		SparkGlm52KvStoreSelectPressureLimitedLookaheadPacketCount(
+		SparkKvStoreSelectPressureLimitedLookaheadPacketCount(
 			work_packet_count,work_packet_count,
 			state->kv_state.physical_block_capacity,
 			state->kv_state.allocated_physical_block_count,

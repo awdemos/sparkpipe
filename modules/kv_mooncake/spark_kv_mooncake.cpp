@@ -1,4 +1,4 @@
-#include "sparkpipe/spark_glm52_kv_store.h"
+#include "sparkpipe/spark_kv_store.h"
 
 #include "dummy_client.h"
 
@@ -27,7 +27,7 @@ enum SparkMooncakeRequestState : uint32_t
 
 struct SparkMooncakeRequest
 {
-	SparkGlm52KvStoreBatch batch;
+	SparkKvStoreBatch batch;
 	SparkStatus status;
 	uint32_t completed_block_count;
 	uint32_t state;
@@ -41,14 +41,14 @@ struct SparkMooncakeBuffer
 
 struct SparkMooncakeState
 {
-	SparkGlm52KvStoreConfiguration configuration;
+	SparkKvStoreConfiguration configuration;
 	std::unique_ptr<mooncake::DummyClient> client;
 	std::mutex mutex;
 	std::condition_variable condition;
 	std::vector<std::thread> workers;
 	std::vector<SparkMooncakeBuffer> buffers;
 	uint64_t allocated_buffer_bytes;
-	SparkMooncakeRequest requests[SPARK_GLM52_KV_STORE_MAX_INFLIGHT_BATCHES];
+	SparkMooncakeRequest requests[SPARK_KV_STORE_MAX_INFLIGHT_BATCHES];
 	bool stopping;
 };
 
@@ -105,7 +105,7 @@ static SparkStatus SparkMooncakeRunBatch(
 	operation = request->batch.blocks[0u].operation;
 	for (block_index = 0u; block_index < request->batch.block_count; ++block_index)
 	{
-		const SparkGlm52KvStoreBlock *block;
+		const SparkKvStoreBlock *block;
 		block = &request->batch.blocks[block_index];
 		if (block->operation != operation)
 			return SPARK_STATUS_INVALID_ARGUMENT;
@@ -113,7 +113,7 @@ static SparkStatus SparkMooncakeRunBatch(
 		buffers.push_back(block->payload);
 		sizes.push_back(block->payload_bytes);
 	}
-	if (operation == SPARK_GLM52_KV_STORE_OPERATION_GET)
+	if (operation == SPARK_KV_STORE_OPERATION_GET)
 	{
 		std::vector<int64_t> results;
 		results = state->client->batch_get_into(keys,buffers,sizes);
@@ -199,13 +199,13 @@ static void SparkMooncakeWorker(SparkMooncakeState *state)
 }
 
 static SparkStatus SparkMooncakeInitialize(
-	const SparkGlm52KvStoreConfiguration *configuration,
+	const SparkKvStoreConfiguration *configuration,
 	void **store_state_out)
 {
 	std::unique_ptr<SparkMooncakeState> state;
 	uint32_t worker_index;
 	int status;
-	if (SparkGlm52KvStoreValidateConfiguration(configuration) != SPARK_STATUS_OK ||
+	if (SparkKvStoreValidateConfiguration(configuration) != SPARK_STATUS_OK ||
 		configuration->ipc_socket_path == nullptr ||
 		configuration->ipc_socket_path[0] == '\0' || store_state_out == nullptr)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -271,16 +271,19 @@ static void SparkMooncakeDestroy(void *store_state)
 
 static SparkStatus SparkMooncakeSubmit(
 	void *store_state,
-	const SparkGlm52KvStoreBatch *batch)
+	const SparkKvStoreBatch *batch)
 {
 	SparkMooncakeState *state;
 	uint32_t request_index;
 	SparkStatus status;
 	state = static_cast<SparkMooncakeState *>(store_state);
-	status = SparkGlm52KvStoreValidateBatch(batch);
-	if (state == nullptr || status != SPARK_STATUS_OK ||
-		batch->block_count > state->configuration.maximum_batch_block_count)
-		return state == nullptr ? SPARK_STATUS_INVALID_ARGUMENT : status;
+	if (state == nullptr)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkKvStoreValidateBatch(batch);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	if (batch->block_count > state->configuration.maximum_batch_block_count)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	{
 		std::lock_guard<std::mutex> lock(state->mutex);
 		if (SparkMooncakeFindRequest(state,batch->batch_id) != nullptr)
@@ -307,7 +310,7 @@ static SparkStatus SparkMooncakeSubmit(
 static SparkStatus SparkMooncakePoll(
 	void *store_state,
 	uint64_t batch_id,
-	SparkGlm52KvStoreCompletion *completion)
+	SparkKvStoreCompletion *completion)
 {
 	SparkMooncakeState *state;
 	SparkMooncakeRequest *request;
@@ -321,13 +324,13 @@ static SparkStatus SparkMooncakePoll(
 	if (request->state != SPARK_MOONCAKE_REQUEST_COMPLETE)
 		return SPARK_STATUS_BUSY;
 	std::memset(completion,0,sizeof(*completion));
-	completion->abi_version = SPARK_GLM52_KV_STORE_ABI_VERSION;
-	completion->descriptor_bytes = SPARK_GLM52_KV_STORE_COMPLETION_BYTES;
+	completion->abi_version = SPARK_KV_STORE_ABI_VERSION;
+	completion->descriptor_bytes = SPARK_KV_STORE_COMPLETION_BYTES;
 	completion->status = request->status;
 	completion->completed_block_count = request->completed_block_count;
 	completion->batch_id = batch_id;
 	std::memset(request,0,sizeof(*request));
-	return completion->status;
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkMooncakeAllocateBuffer(
@@ -388,23 +391,25 @@ static SparkStatus SparkMooncakeReleaseBuffer(
 	std::lock_guard<std::mutex> lock(state->mutex);
 	for (buffer_index = 0u; buffer_index < state->buffers.size(); ++buffer_index)
 	{
+		int unregister_status;
+		int free_status;
 		if (state->buffers[buffer_index].pointer != buffer)
 			continue;
-		if (state->client->unregister_buffer(buffer) != 0 ||
-			mooncake::ShmHelper::getInstance()->free(buffer) != 0)
-			return SPARK_STATUS_IO_ERROR;
+		unregister_status = state->client->unregister_buffer(buffer);
+		free_status = mooncake::ShmHelper::getInstance()->free(buffer);
 		state->allocated_buffer_bytes -= state->buffers[buffer_index].bytes;
 		state->buffers.erase(state->buffers.begin() + buffer_index);
-		return SPARK_STATUS_OK;
+		return (unregister_status != 0 || free_status != 0)
+			? SPARK_STATUS_IO_ERROR : SPARK_STATUS_OK;
 	}
 	return SPARK_STATUS_NOT_FOUND;
 }
 
-static const SparkGlm52KvStoreInterface SparkMooncakeInterface =
+static const SparkKvStoreInterface SparkMooncakeInterface =
 {
-	SPARK_GLM52_KV_STORE_ABI_VERSION,
-	SPARK_GLM52_KV_STORE_INTERFACE_BYTES,
-	SPARK_GLM52_KV_STORE_REQUIRED_CAPS,
+	SPARK_KV_STORE_ABI_VERSION,
+	SPARK_KV_STORE_INTERFACE_BYTES,
+	SPARK_KV_STORE_REQUIRED_CAPS,
 	0u,
 	SparkMooncakeInitialize,
 	SparkMooncakeDestroy,
@@ -416,7 +421,7 @@ static const SparkGlm52KvStoreInterface SparkMooncakeInterface =
 
 }
 
-extern "C" const SparkGlm52KvStoreInterface *SparkGlm52KvStoreGetInterface(void)
+extern "C" const SparkKvStoreInterface *SparkKvStoreGetInterface(void)
 {
 	return &SparkMooncakeInterface;
 }

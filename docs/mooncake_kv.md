@@ -9,7 +9,7 @@ the direct-file backend.
 - One `mooncake_client` process owns memory and local NVMe on every Spark.
 - One `mooncake_master` may run on spark0 for placement metadata. KV payloads
   remain on the Spark that owns the PP stage.
-- The CUDA resident loads `libglm52_kv_mooncake.so` as a DummyClient adapter.
+- The CUDA resident loads `libkv_mooncake.so` as a DummyClient adapter.
   The adapter connects only to the same-node real client.
 - The real client survives SparkPipe resident/module releases. A SparkPipe
   restart therefore does not discard Mooncake state.
@@ -38,6 +38,13 @@ Stores copy D2H into separately owned pinned slots. WorkControl may evict the
 GPU block, but the slots remain owned until Mooncake confirms the PUT. A later
 GET cannot reuse those slots or pass the pending store.
 
+`poll()` returns `BUSY` while the batch is in flight, `NOT_FOUND` only for a
+batch id the provider does not know, and `OK` when a completion is delivered;
+the batch's own outcome (including a GET miss as `NOT_FOUND`) travels in
+`completion.status`, never in the poll return. `destroy()` joins workers and
+can therefore block behind an in-flight PUT retry tail (bounded at twelve
+seconds of `NO_AVAILABLE_HANDLE` backoff).
+
 The lookahead is explicit and bounded to `1..8`; production defaults to `3`.
 That value is a ceiling, not a fixed read-ahead depth. Packet zero always has
 priority. Later packets are admitted in queue order only while their cumulative
@@ -53,7 +60,7 @@ Build Mooncake first, then build the adapter. The target fails if Mooncake is
 not provided.
 
 ```bash
-make glm52_kv_mooncake \
+make kv_mooncake \
   MOONCAKE_ROOT=/opt/mooncake \
   MOONCAKE_DEP_INCLUDE=/opt/mooncake/local/include
 ```
@@ -96,7 +103,7 @@ The resident must provide every Mooncake argument. The fingerprints are
 release-generated nonzero 64-bit integers, expressed in decimal.
 
 ```text
---kv-store-module /opt/sparkpipe/lib/libglm52_kv_mooncake.so
+--kv-store-module /opt/sparkpipe/lib/libkv_mooncake.so
 --kv-store-service 127.0.0.1:50052
 --kv-store-ipc-socket @mooncake_client_50052.sock
 --kv-store-blocks 1048576

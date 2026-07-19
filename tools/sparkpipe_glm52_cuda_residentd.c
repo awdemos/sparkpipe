@@ -19,7 +19,7 @@
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_glm52_cuda_resident_ipc.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
-#include "sparkpipe/spark_glm52_kv_store.h"
+#include "sparkpipe/spark_kv_store.h"
 #include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
 #include "sparkpipe/spark_glm52_prompt_pipeline.h"
@@ -270,10 +270,10 @@ static void SparkGlm52CudaResidentdInitializeConfiguration(
     configuration->kv_store_block_capacity =
         SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_NVME_BLOCK_CAPACITY;
     configuration->kv_store_batch_block_count =
-        SPARK_GLM52_KV_STORE_MAX_BATCH_BLOCKS;
+        SPARK_KV_STORE_MAX_BATCH_BLOCKS;
     configuration->kv_store_worker_count = 2u;
     configuration->kv_store_lookahead_packet_count =
-        SPARK_GLM52_KV_STORE_DEFAULT_LOOKAHEAD_PACKETS;
+        SPARK_KV_STORE_DEFAULT_LOOKAHEAD_PACKETS;
     configuration->port_base = SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE;
     configuration->model_quantization_mode =
         SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE;
@@ -638,11 +638,11 @@ static SparkStatus SparkGlm52CudaResidentdValidateConfiguration(
          configuration->kv_store_block_capacity > UINT32_MAX / 2u ||
          configuration->kv_store_batch_block_count == 0u ||
          configuration->kv_store_batch_block_count >
-            SPARK_GLM52_KV_STORE_MAX_BATCH_BLOCKS ||
+            SPARK_KV_STORE_MAX_BATCH_BLOCKS ||
          configuration->kv_store_worker_count == 0u ||
          configuration->kv_store_lookahead_packet_count == 0u ||
          configuration->kv_store_lookahead_packet_count >
-            SPARK_GLM52_KV_STORE_MAX_LOOKAHEAD_PACKETS ||
+            SPARK_KV_STORE_MAX_LOOKAHEAD_PACKETS ||
          configuration->kv_store_model_fingerprint == 0u ||
          configuration->kv_store_layout_fingerprint == 0u ||
          configuration->kv_store_client_memory_pool_bytes == 0u ||
@@ -1189,7 +1189,7 @@ static SparkStatus SparkGlm52CudaResidentdBuildNodeContext(
     runtime->kv_prefetch_lookahead_packet_count =
         configuration->kv_store_module_path != 0
             ? configuration->kv_store_lookahead_packet_count
-            : SPARK_GLM52_KV_STORE_DEFAULT_LOOKAHEAD_PACKETS;
+            : SPARK_KV_STORE_DEFAULT_LOOKAHEAD_PACKETS;
     builder_configuration.abi_version =
         SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_ABI_VERSION;
     builder_configuration.descriptor_bytes =
@@ -1862,7 +1862,7 @@ static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
 {
     SparkGlm52CudaResidentdQueuedWork queued_work;
     SparkGlm52Pp13WorkControlPacket prefetch_packets[
-        SPARK_GLM52_KV_STORE_MAX_LOOKAHEAD_PACKETS];
+        SPARK_KV_STORE_MAX_LOOKAHEAD_PACKETS];
     SparkStatus status;
     uint32_t prefetch_packet_count;
     uint32_t prefetch_packet_index;
@@ -1882,7 +1882,7 @@ static uint32_t SparkGlm52CudaResidentdPumpQueuedWork(
                 : SPARK_STATUS_MODULE_NOT_VALIDATED);
         return 1u;
     }
-    prefetch_packet_count = SparkGlm52KvStoreNormalizeLookaheadPacketCount(
+    prefetch_packet_count = SparkKvStoreNormalizeLookaheadPacketCount(
         runtime->kv_prefetch_lookahead_packet_count,
         runtime->work_queue_count);
     for (prefetch_packet_index = 0u;
