@@ -274,8 +274,20 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 	fixture->pending_count -= 1u;
 	if (pending->is_prefill != 0u)
 	{
-		fixture->prefill_completed_token_count +=
-			pending->dispatch.prefill_decision.scheduled_prompt_token_count;
+		if (pending->dispatch.kind ==
+			SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH)
+		{
+			uint32_t batch_lane_index;
+			for (batch_lane_index = 0u;
+				 batch_lane_index < pending->dispatch.request_count;
+				 ++batch_lane_index)
+				fixture->prefill_completed_token_count +=
+					pending->dispatch.prefill_batch_decision.lanes[
+						batch_lane_index].scheduled_prompt_token_count;
+		}
+		else
+			fixture->prefill_completed_token_count +=
+				pending->dispatch.prefill_decision.scheduled_prompt_token_count;
 		fixture->prefill_last_completion_ns = fixture->now_ns;
 		status = SparkGlm52ServingEngineCompletePrefillDispatch(&fixture->serving_engine, &pending->dispatch);
 		if (status != SPARK_STATUS_OK)
