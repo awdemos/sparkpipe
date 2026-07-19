@@ -4247,8 +4247,7 @@ static SparkStatus SparkGlm52RequestApiGetSlotSpeculativeDraft(
     }
     *source_out = 0u;
 
-    if (preferred_source == SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP ||
-        preferred_source == 0u)
+    if (preferred_source != SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_DSPARK)
     {
         status = SparkGlm52RequestApiGetSlotMtpDraft(slot, draft_result);
         if (status == SPARK_STATUS_OK)
@@ -4260,11 +4259,6 @@ static SparkStatus SparkGlm52RequestApiGetSlotSpeculativeDraft(
         {
             return status;
         }
-    }
-
-    if (preferred_source == SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_DSPARK ||
-        preferred_source == 0u)
-    {
         status = SparkGlm52RequestApiGetSlotDsparkDraft(api, slot, draft_result);
         if (status == SPARK_STATUS_OK)
         {
@@ -4274,7 +4268,19 @@ static SparkStatus SparkGlm52RequestApiGetSlotSpeculativeDraft(
         return status;
     }
 
-    return SPARK_STATUS_NOT_FOUND;
+    status = SparkGlm52RequestApiGetSlotDsparkDraft(api, slot, draft_result);
+    if (status == SPARK_STATUS_OK)
+    {
+        *source_out = SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_DSPARK;
+        return SPARK_STATUS_OK;
+    }
+    status = SparkGlm52RequestApiGetSlotMtpDraft(slot, draft_result);
+    if (status == SPARK_STATUS_OK)
+    {
+        *source_out = SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP;
+        return SPARK_STATUS_OK;
+    }
+    return status;
 }
 
 static uint32_t SparkGlm52RequestApiCollectSpeculativeVerifyBatchMembers(
@@ -4366,7 +4372,11 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     status = SparkGlm52RequestApiGetSlotSpeculativeDraft(
         api,
         first_slot,
-        0u,
+        (api->configuration_flags &
+            SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFER_DSPARK_SPECULATION) != 0u &&
+            SparkGlm52RequestApiDsparkSpeculationIsEnabled(api)
+            ? SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_DSPARK
+            : 0u,
         &leader_draft,
         &leader_source);
     if (status != SPARK_STATUS_OK || leader_draft.token_count == 0u)
@@ -5482,11 +5492,11 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
     uint32_t accepted_draft_token_count,
     uint32_t committed_token_count,
     uint32_t fallback_token_id,
-    uint32_t resolution_path_id)
+    uint32_t resolution_path_id,
+    uint32_t mtp_verify)
 {
     SparkGlm52DsparkVerifyResult verify_result;
     uint64_t resolution_base_position;
-    uint32_t mtp_verify;
     SparkStatus status;
 
     if (proposed_token_count == 0u ||
@@ -5498,7 +5508,6 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    mtp_verify = slot->mtp_draft_token_count != 0u;
     resolution_base_position = 0u;
     if (mtp_verify != 0u)
     {
@@ -5592,6 +5601,13 @@ static SparkStatus SparkGlm52RequestApiFinishSlotAfterSpeculativeVerify(
         }
         slot->mtp_resolution_path_id =
             SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
+        if (slot->mtp_draft_token_count != 0u)
+        {
+            memset(slot->mtp_draft_token_ids,0,sizeof(slot->mtp_draft_token_ids));
+            slot->mtp_draft_token_count = 0u;
+            if (api->mtp_draft_ready_count != 0u)
+                api->mtp_draft_ready_count -= 1u;
+        }
         status = SparkGlm52DsparkCompleteVerify(
             api->dspark_speculator,
             slot->sequence_id,
@@ -6167,7 +6183,10 @@ SparkStatus SparkGlm52RequestApiCompleteDispatch(
                 accepted_token_count,
                 committed_token_count,
                 dispatch->speculative_fallback_token_ids[request_index],
-                dispatch->speculative_resolution_path_ids[request_index]);
+                dispatch->speculative_resolution_path_ids[request_index],
+                (dispatch->flags &
+                    SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY)
+                        != 0u ? 1u : 0u);
             if (status != SPARK_STATUS_OK)
             {
                 return status;

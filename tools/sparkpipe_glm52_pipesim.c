@@ -9,7 +9,7 @@
 
 #define PIPESIM_SPARK_COUNT SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT
 #define PIPESIM_LANE_CAPACITY 128u
-#define PIPESIM_REQUEST_SLOTS 1024u
+#define PIPESIM_REQUEST_SLOTS 4096u
 #define PIPESIM_KV_BLOCKS 32768u
 #define PIPESIM_PREFIX_BINDINGS (PIPESIM_KV_BLOCKS + 64u)
 #define PIPESIM_EVENT_CAPACITY 16384u
@@ -75,6 +75,7 @@ typedef struct PipesimFixture
 	uint64_t prefill_last_completion_ns;
 	uint64_t prefill_dispatch_count;
 	uint64_t verify_dispatch_count;
+	uint64_t dspark_verify_dispatch_count;
 	uint64_t peak_resident_kv_blocks;
 	SparkGlm52DsparkSpeculator dspark_speculator;
 	SparkGlm52DsparkSequenceState dspark_sequence_states[PIPESIM_REQUEST_SLOTS];
@@ -84,6 +85,7 @@ typedef struct PipesimFixture
 	uint64_t producer_dispatch_count;
 	uint64_t committed_token_estimate;
 	uint64_t accept_accum_milli;
+	uint64_t dspark_cold_accum_milli;
 	uint32_t accept_milli;
 	uint32_t pending_count;
 	uint32_t queue_depth;
@@ -133,10 +135,28 @@ static SparkStatus PipesimDsparkDraft(void *context, const SparkGlm52DsparkDraft
 	result->token_count = request->requested_token_count;
 	if (result->token_count > SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
 		result->token_count = SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT;
-	for (token_index = 0u; token_index < result->token_count; ++token_index)
 	{
-		result->token_ids[token_index] = 8001u + token_index;
-		result->confidence_milli[token_index] = 900u;
+		PipesimFixture *fixture;
+		uint32_t confidence_milli;
+		const char *cold_env;
+
+		fixture = (PipesimFixture *)context;
+		confidence_milli = 900u;
+		cold_env = getenv("SPARKPIPE_SIM_DSPARK_COLD_MILLI");
+		if (cold_env != 0)
+		{
+			fixture->dspark_cold_accum_milli += (uint64_t)strtoul(cold_env, 0, 10);
+			if (fixture->dspark_cold_accum_milli >= 1000u)
+			{
+				fixture->dspark_cold_accum_milli -= 1000u;
+				confidence_milli = 100u;
+			}
+		}
+		for (token_index = 0u; token_index < result->token_count; ++token_index)
+		{
+			result->token_ids[token_index] = 8001u + token_index;
+			result->confidence_milli[token_index] = confidence_milli;
+		}
 	}
 	return SPARK_STATUS_OK;
 }
@@ -192,6 +212,9 @@ static SparkStatus PipesimDecode(void *context, const SparkGlm52ServingDecodeDis
 			 SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY)) != 0u)
 	{
 		fixture->verify_dispatch_count += 1u;
+		if ((decode_dispatch->request_dispatch->flags &
+				SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u)
+			fixture->dspark_verify_dispatch_count += 1u;
 		pending->completion_ns = PipesimRingTraverse(&fixture->ring, fixture->now_ns, fixture->ring.verify_stage_ns);
 	}
 	else
@@ -424,7 +447,9 @@ static void PipesimInitializeServing(PipesimFixture *fixture)
 			? SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
 			  SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE : 0u) |
 		(fixture->dspark_enabled != 0u
-			? SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE : 0u);
+			? SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE : 0u) |
+		(fixture->dspark_enabled != 0u && fixture->speculation_mode == 2u
+			? SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFER_DSPARK_SPECULATION : 0u);
 	request_api_configuration.request_capacity = PIPESIM_REQUEST_SLOTS;
 	request_api_configuration.prefetch_lane_count = SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
 	if (fixture->dspark_enabled != 0u)
@@ -452,7 +477,7 @@ static void PipesimInitializeServing(PipesimFixture *fixture)
 		request_api_configuration.dspark_speculator = &fixture->dspark_speculator;
 	}
 	request_api_configuration.decode_batch_target = PIPESIM_LANE_CAPACITY;
-	request_api_configuration.decode_execution_row_capacity = SparkGlm52Pp13RuntimeExecutionRowCapacity(PIPESIM_LANE_CAPACITY);
+	request_api_configuration.decode_execution_row_capacity = 1024u;
 	request_api_configuration.scheduler = &fixture->scheduler;
 	request_api_configuration.request_slots = fixture->request_slots;
 	request_api_configuration.kv_prefetch_function = PipesimKvPrefetch;
@@ -610,7 +635,7 @@ int main(int argc, char **argv)
 	steady_ns = fixture->now_ns - fixture->stats.steady_begin_ns;
 	printf("stage_us=%" PRIu64 " hop_us=%" PRIu64 " requests=%u output=%u prompt=%u prefill_stage_us=%" PRIu64 " depth=%u accept_milli=%u verify_stage_us=%" PRIu64 "\n", stage_us, hop_us, request_count, output_tokens, prompt_tokens, prefill_stage_us, queue_depth, accept_milli, verify_stage_us);
 	if (fixture->verify_dispatch_count != 0u)
-		printf("mtp producer_dispatches=%" PRIu64 " verify_dispatches=%" PRIu64 " committed_tokens=%" PRIu64 " committed_tok_per_s=%.1f traversals_per_commit_cycle=%.2f\n", fixture->producer_dispatch_count, fixture->verify_dispatch_count, fixture->committed_token_estimate, fixture->now_ns != 0u ? fixture->committed_token_estimate * 1e9 / (double)fixture->now_ns : 0.0, (double)(fixture->producer_dispatch_count + fixture->verify_dispatch_count) / (double)fixture->verify_dispatch_count);
+		printf("mtp producer_dispatches=%" PRIu64 " verify_dispatches=%" PRIu64 " committed_tokens=%" PRIu64 " committed_tok_per_s=%.1f traversals_per_commit_cycle=%.2f dspark_verifies=%" PRIu64 "\n", fixture->producer_dispatch_count, fixture->verify_dispatch_count, fixture->committed_token_estimate, fixture->now_ns != 0u ? fixture->committed_token_estimate * 1e9 / (double)fixture->now_ns : 0.0, (double)(fixture->producer_dispatch_count + fixture->verify_dispatch_count) / (double)fixture->verify_dispatch_count, fixture->dspark_verify_dispatch_count);
 	if (fixture->prefill_completed_token_count != 0u)
 		printf("prefill_tokens=%" PRIu64 " prefill_dispatches=%" PRIu64 " prefill_done_ms=%" PRIu64 " prefill_tok_per_s=%.1f\n", fixture->prefill_completed_token_count, fixture->prefill_dispatch_count, fixture->prefill_last_completion_ns / 1000000u, fixture->prefill_last_completion_ns != 0u ? fixture->prefill_completed_token_count * 1e9 / (double)fixture->prefill_last_completion_ns : 0.0);
 	printf("tokens=%" PRIu64 " virtual_ms=%" PRIu64 " tok_per_s=%.1f\n", fixture->decoded_token_count, fixture->now_ns / 1000000u, fixture->decoded_token_count * 1e9 / (double)fixture->now_ns);
