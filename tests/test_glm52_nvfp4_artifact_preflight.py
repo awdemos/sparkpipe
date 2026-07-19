@@ -443,9 +443,9 @@ def main() -> int:
         )
         resident["scale2_baked_into_block_scales"] = True
         resident_path.write_text(json.dumps(resident), encoding="utf-8")
-        fields, regions = tool.parse_pack_header(
-            pack_path.read_bytes()[:tool.b12x.HEADER_BYTES]
-        )
+        with open(pack_path, "rb") as pack_file:
+            header_bytes = pack_file.read(tool.b12x.HEADER_BYTES)
+        fields, regions = tool.parse_pack_header(header_bytes)
         wrong_kernel_hash = fields[19] + 1
         file_descriptor = os.open(pack_path, os.O_WRONLY)
         try:
