@@ -4091,6 +4091,22 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
         selected_slot = selected_slots[request_index];
         selected_slot->state = SPARK_GLM52_REQUEST_API_STATE_RUNNING_PREFILL;
         selected_slot->scheduled_prefill_step_count += 1u;
+        if (selected_slot->inflight_prefill_dispatch_count == 0u &&
+            selected_slot->dispatched_prompt_token_count <
+                selected_slot->computed_prompt_token_count)
+            selected_slot->dispatched_prompt_token_count =
+                selected_slot->computed_prompt_token_count;
+        {
+            uint32_t lane_committed;
+
+            lane_committed = dispatch->prefill_batch_decision.lanes[
+                request_index].cache_commit_token_count_after_step;
+            if (lane_committed > selected_slot->prompt_token_count)
+                lane_committed = selected_slot->prompt_token_count;
+            if (lane_committed > selected_slot->dispatched_prompt_token_count)
+                selected_slot->dispatched_prompt_token_count = lane_committed;
+        }
+        selected_slot->inflight_prefill_dispatch_count += 1u;
         api->queued_request_count -= 1u;
         api->running_request_count += 1u;
         dispatch->request_handles[request_index] = selected_slot->handle;
@@ -5247,6 +5263,8 @@ static void SparkGlm52RequestApiFinishSlotAfterPrefillBatchLane(
 {
     uint32_t committed_prompt_token_count;
 
+    if (slot->inflight_prefill_dispatch_count != 0u)
+        slot->inflight_prefill_dispatch_count -= 1u;
     committed_prompt_token_count = lane->cache_commit_token_count_after_step;
     if (committed_prompt_token_count > slot->prompt_token_count)
     {
@@ -5263,6 +5281,10 @@ static void SparkGlm52RequestApiFinishSlotAfterPrefillBatchLane(
     api->running_request_count -= 1u;
     if (slot->computed_prompt_token_count < slot->prompt_token_count)
     {
+        if (slot->dispatched_prompt_token_count >
+            slot->computed_prompt_token_count)
+            slot->dispatched_prompt_token_count =
+                slot->computed_prompt_token_count;
         slot->state = SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL;
         api->queued_request_count += 1u;
         return;
