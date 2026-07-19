@@ -160,6 +160,9 @@ static int32_t SparkQwen36SynthesizeBuildDirectory(SparkQwen36SynthesizeContext 
 			SPARK_QWEN36_STAGEPACK_TENSOR_MTP_HIDDEN_NORM,SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FINAL_NORM
 		};
 		uint32_t mtp_index;
+		if ( context->first_layer_index != 0u )
+			if ( SparkQwen36SynthesizeAppend(context,SPARK_QWEN36_STAGEPACK_TENSOR_EMBEDDING,0u,1u,quantize) < 0 )
+				return(-9);
 		if ( SparkQwen36SynthesizeAppend(context,SPARK_QWEN36_STAGEPACK_TENSOR_FINAL_NORM,0u,1u,quantize) < 0 )
 			return(-3);
 		if ( SparkQwen36SynthesizeAppend(context,SPARK_QWEN36_STAGEPACK_TENSOR_LM_HEAD,0u,1u,quantize) < 0 )

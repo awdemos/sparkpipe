@@ -29,7 +29,7 @@
  */
 
 #define SPARK_QWEN36_STAGEPACK_MAGIC 0x50533651u /* 'Q6SP' little endian */
-#define SPARK_QWEN36_STAGEPACK_FORMAT_VERSION 1u
+#define SPARK_QWEN36_STAGEPACK_FORMAT_VERSION 2u
 #define SPARK_QWEN36_STAGEPACK_GLOBAL_LAYER UINT32_MAX
 #define SPARK_QWEN36_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
 #define SPARK_QWEN36_STAGEPACK_PAYLOAD_ALIGNMENT 256u
@@ -157,6 +157,12 @@ static inline uint32_t SparkQwen36StagePackFullAttentionLayersBelow(uint32_t lay
  * six more on a full-attention layer, the embedding on stage zero and the
  * final norm plus LM head on the last stage.
  */
+/*
+ * The head stage's MTP draft chain embeds its own draft tokens, and the
+ * vocabulary is untied, so on a multi-stage split the head pack carries a
+ * second copy of the embedding table. A whole-stack pack already holds it
+ * as the stage-zero global, so the whole-stack tensor count is unchanged.
+ */
 static inline uint32_t SparkQwen36StagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
 {
 	uint32_t full = SparkQwen36StagePackFullAttentionLayersBelow(first_layer_index + layer_count) - SparkQwen36StagePackFullAttentionLayersBelow(first_layer_index);
@@ -165,7 +171,7 @@ static inline uint32_t SparkQwen36StagePackExpectedTensorCount(uint32_t first_la
 	if ( first_layer_index == 0u )
 		tensors += 1u;
 	if ( first_layer_index + layer_count == SPARK_QWEN36_MODEL_LAYER_COUNT )
-		tensors += 2u + 4u + 11u;
+		tensors += 2u + 4u + 11u + (first_layer_index != 0u ? 1u : 0u);
 	return(tensors);
 }
 

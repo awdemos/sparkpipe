@@ -48,8 +48,12 @@ extern "C" {
  */
 
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 1u
-#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 3u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION 1u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MTP_DRAFT_VIEW_ABI_VERSION 1u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_SNAPSHOT_VIEW_ABI_VERSION 1u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_MTP_DRAFT_TOKENS 8u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_GDN_SNAPSHOT_SLOTS 8u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION 1u
@@ -244,6 +248,7 @@ typedef struct SparkQwen36PipelineSlot
 	float *chunk_attn_f32;
 	float *chunk_w_f32;
 	float *chunk_kg_f32;
+	uint32_t *mtp_draft_token_ids;
 } SparkQwen36PipelineSlot;
 
 /*
@@ -327,11 +332,84 @@ typedef struct SparkQwen36PrefillFrameView
 	uint64_t sequence_id;
 } SparkQwen36PrefillFrameView;
 
+/*
+ * MTP speculation, in three frame modifiers. All three are contracts with
+ * the sparkring tree engine; the module executes, the engine decides.
+ *
+ * MTP_DRAFT_AFTER (head stage only, SPARK_QWEN36_STAGE_MTP=1): after the
+ * frame's own head emission, the MTP decoder drafts draft_token_count
+ * tokens for lane_index, the first predicting base_position. The MTP row
+ * that predicts position p+1 sits AT position p and consumes the token
+ * committed at p plus the backbone hidden of p, so drafting is two phases,
+ * entirely on device. The SEED pass batches the MTP decoder over the
+ * frame's own rows (all rows of a prefill frame, the lane's one row for
+ * decode), embedding row_token_ids against the rows' backbone hiddens;
+ * this REGENERATES the lane's MTP K/V at the frame positions from
+ * committed inputs - on a verify or replay frame it is exactly the
+ * draft-model prefill over the tokens being verified - and its final
+ * row's argmax is draft one. Each CHAIN step then extends one position,
+ * embedding the previous draft against the previous MTP hidden. The MTP
+ * decoder is one full-attention layer with its OWN cache layer at ordinal
+ * attn_layer_count; chain K/V land at [base_position,
+ * base_position + draft_token_count - 1), which the block table must
+ * cover. base_position must be exactly one past the seed row's position.
+ * row_token_ids holds the frame rows' INPUT token ids (the lane's one id
+ * for decode) for stages that do not own the embedding table; a stage
+ * that owns it reads its own uploaded ids and ignores row_token_ids. MTP
+ * cache completeness over committed history requires DRAFT_AFTER on every
+ * committed row of a speculating lane; a hole only dulls later drafts,
+ * verification still gates every commit. The output buffer receives
+ * head_rows + draft_token_count ids, drafts last.
+ *
+ * SPECULATIVE_VERIFY (prefill frames, base_position > 0): the frame's
+ * token_count rows are the drafted tokens; the main model runs them as an
+ * ordinary warm prefill EXCEPT the head emits ALL token_count argmaxes and
+ * the lane's GDN state and conv tails are snapshotted to
+ * gdn_snapshot->snapshot_index before the walk. The engine compares row
+ * i's emitted id against draft i+1 host-side; the first mismatch row's
+ * emitted id is the correction token. Rejected positions need no cache
+ * rollback: attention K/V and MTP K/V are overwritten when the position
+ * re-executes; only the GDN recurrence is destructive, hence the snapshot.
+ *
+ * GDN_RESTORE_FIRST (prefill frames): restore gdn_snapshot->snapshot_index
+ * into the lane before executing - the replay frame after a partial
+ * accept, carrying the accepted drafts plus the correction token. Its
+ * final-position head emission is the next committed token for free, and
+ * MTP_DRAFT_AFTER may ride the same frame to regrow the draft chain.
+ *
+ * Tree-shaped verification (multiple candidate tokens at one position) is
+ * NOT expressible in these frames: it needs per-row ancestor masks and
+ * shadow cache slots for same-position siblings. Chains are the degenerate
+ * tree the existing kernels prove; the tree engine's chain schedule maps
+ * onto exactly these three modifiers.
+ */
+typedef struct SparkQwen36MtpDraftView
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t lane_index;
+	uint32_t draft_token_count;
+	uint64_t base_position;
+	uint64_t sequence_id;
+	const uint32_t *row_token_ids;
+} SparkQwen36MtpDraftView;
+
+typedef struct SparkQwen36GdnSnapshotView
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t snapshot_index;
+	uint32_t reserved0;
+} SparkQwen36GdnSnapshotView;
+
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE 0x00000001u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW 0x00000002u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT 0x00000004u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT 0x00000008u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW 0x00000010u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER 0x00000020u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_SPECULATIVE_VERIFY 0x00000040u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_GDN_RESTORE_FIRST 0x00000080u
 
 typedef SparkStatus (*SparkQwen36HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
 typedef SparkStatus (*SparkQwen36HiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
@@ -356,6 +434,8 @@ typedef struct SparkQwen36ResidentDecodeStageFrameContext
 	const SparkQwen36KvBlockTableView *kv_block_table;
 	const SparkQwen36DecodeBatchView *decode_batch;
 	const SparkQwen36PrefillFrameView *prefill_frame;
+	const SparkQwen36MtpDraftView *mtp_draft;
+	const SparkQwen36GdnSnapshotView *gdn_snapshot;
 	SparkHiddenTransportSession *hidden_input_transport_session;
 	SparkHiddenTransportSession *hidden_output_transport_session;
 	SparkQwen36HiddenTransportPostReceiveFunction hidden_input_post_receive_function;
