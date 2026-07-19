@@ -1035,7 +1035,7 @@ SparkStatus SparkGlm52Pp13WorkControlUnpinPhysicalBlock(
 
 static SparkStatus SparkGlm52Pp13WorkControlValidateKvState(
 	const SparkGlm52Pp13WorkControlPacket *packet,
-	SparkGlm52Pp13WorkControlKvState *state)
+	const SparkGlm52Pp13WorkControlKvState *state)
 {
 	if (packet == 0 || state == 0 ||
 		state->abi_version != SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION ||
@@ -1203,7 +1203,7 @@ static uint64_t SparkGlm52Pp13WorkControlKvDirectoryHash(
 }
 
 static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryFind(
-	SparkGlm52Pp13WorkControlKvState *state,
+	const SparkGlm52Pp13WorkControlKvState *state,
 	uint64_t sequence_id,
 	uint32_t logical_block_index,
 	uint32_t *directory_index_out,
@@ -1222,7 +1222,7 @@ static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryFind(
 		 probe_index < state->directory_capacity;
 		 ++probe_index)
 	{
-		SparkGlm52Pp13WorkControlKvDirectoryEntry *entry;
+		const SparkGlm52Pp13WorkControlKvDirectoryEntry *entry;
 		entry = &state->directory_entries[directory_index];
 		if (entry->state == SPARK_GLM52_PP13_KV_DIRECTORY_EMPTY)
 		{
@@ -1262,6 +1262,93 @@ static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryFind(
 		return SPARK_STATUS_OK;
 	}
 	return SPARK_STATUS_CAPACITY_EXCEEDED;
+}
+
+static uint32_t SparkGlm52Pp13WorkControlPrefetchEntryExists(
+	const SparkGlm52Pp13WorkControlKvPrefetchEntry *entries,
+	uint32_t entry_count,
+	uint64_t sequence_id,
+	uint32_t logical_block_index)
+{
+	uint32_t entry_index;
+	for (entry_index = 0u; entry_index < entry_count; ++entry_index)
+	{
+		if (entries[entry_index].sequence_id == sequence_id &&
+			entries[entry_index].logical_block_index == logical_block_index)
+			return 1u;
+	}
+	return 0u;
+}
+
+SparkStatus SparkGlm52Pp13WorkControlCollectKvPrefetchEntries(
+	const SparkGlm52Pp13WorkControlPacket *packets,
+	uint32_t packet_count,
+	const SparkGlm52Pp13WorkControlKvState *state,
+	SparkGlm52Pp13WorkControlKvPrefetchEntry *entries,
+	uint32_t entry_capacity,
+	uint32_t *entry_count_out)
+{
+	uint32_t packet_index,lane_index,block_index,entry_count;
+	if (packets == 0 || packet_count == 0u || state == 0 || entries == 0 ||
+		entry_capacity == 0u || entry_count_out == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	entry_count = 0u;
+	for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+	{
+		const SparkGlm52Pp13WorkControlPacket *packet;
+		SparkStatus status;
+		packet = &packets[packet_index];
+		status = SparkGlm52Pp13WorkControlValidateKvState(packet,state);
+		if (status != SPARK_STATUS_OK)
+			return status;
+		if (packet->control_generation != state->control_generation)
+			continue;
+		if ((packet->flags &
+			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u)
+			continue;
+		for (lane_index = 0u; lane_index < packet->active_sequence_count;
+			 ++lane_index)
+		{
+			uint32_t block_count;
+			block_count = SparkGlm52Pp13WorkControlBlockCount(
+				packet->lanes[lane_index].context_token_count,
+				packet->block_token_count);
+			for (block_index = 0u; block_index < block_count; ++block_index)
+			{
+				const SparkGlm52Pp13WorkControlKvDirectoryEntry *directory_entry;
+				uint32_t directory_index,found;
+				status = SparkGlm52Pp13WorkControlKvDirectoryFind(
+					state,
+					packet->lanes[lane_index].sequence_id,block_index,
+					&directory_index,&found);
+				if (status != SPARK_STATUS_OK)
+					return status;
+				if (found == 0u)
+					continue;
+				directory_entry = &state->directory_entries[directory_index];
+				if (directory_entry->residency_state !=
+						SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NVME ||
+					directory_entry->backing_valid == 0u ||
+					SparkGlm52Pp13WorkControlPrefetchEntryExists(
+						entries,entry_count,directory_entry->sequence_id,
+						directory_entry->logical_block_index))
+					continue;
+				if (entry_count >= entry_capacity)
+				{
+					*entry_count_out = entry_count;
+					return SPARK_STATUS_CAPACITY_EXCEEDED;
+				}
+				entries[entry_count].sequence_id = directory_entry->sequence_id;
+				entries[entry_count].logical_block_index =
+					directory_entry->logical_block_index;
+				entries[entry_count].backing_block_index =
+					directory_entry->backing_block_index;
+				entry_count += 1u;
+			}
+		}
+	}
+	*entry_count_out = entry_count;
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52Pp13WorkControlKvBackingAcquire(

@@ -1,8 +1,10 @@
 CC ?= cc
+CXX ?= c++
 AR ?= ar
 NVCC ?= nvcc
 CUDA_HOME ?= /usr/local/cuda
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3 -g -pthread
+CXXFLAGS ?= -std=c++20 -Wall -Wextra -Werror -O3 -g -pthread
 CPPFLAGS ?= -Iinclude -Isrc
 LDFLAGS ?=
 LDLIBS ?= -ldl -pthread
@@ -26,6 +28,9 @@ B12X_AOT_WARMUP ?= 5
 B12X_AOT_ITERATIONS ?= 20
 B12X_AOT_OUTPUT_DIR ?= build/glm52_b12x_aot_prompt
 GLM52_MOE_BACKEND ?= fp8
+MOONCAKE_ROOT ?=
+MOONCAKE_LIB ?= $(MOONCAKE_ROOT)/build/mooncake-store/src
+MOONCAKE_DEP_INCLUDE ?= $(MOONCAKE_ROOT)/local/include
 GLM52_EXACT_PP13_MODEL_QUANTIZATION ?= $(GLM52_MOE_BACKEND)
 GLM52_MODEL_DIR ?= $(HOME)/models/hf/zai-org/GLM-5.2-FP8
 GLM52_STAGE_PACK_DIR ?= $(HOME)/models/sparkpipe/glm52_fp8_pp13_stage_payload_v1
@@ -89,6 +94,7 @@ COMMON_SOURCES := \
     src/spark_hidden_transport.c \
     src/spark_memlink.c \
     src/spark_glm52_kv_cache.c \
+    src/spark_kv_store.c \
     src/spark_glm52_dspark.c \
     src/spark_glm52_stage_plan.c \
     src/spark_glm52_stagepack.c \
@@ -159,6 +165,8 @@ TEST_NAMES := \
     test_memlink \
     test_release \
     test_glm52_kv_cache \
+    test_kv_store \
+    test_kv_mooncake \
     test_glm52_dspark \
     test_glm52_stage_plan \
     test_glm52_mtp_tree \
@@ -260,6 +268,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_pp13_service_backend \
     hidden_transport_spark_host_rdma_verbs \
     glm52_pp13_node_context_builder \
+    kv_mooncake \
     glm52_resident_decode_stage_firmware_package \
     tree_summary
 
@@ -407,6 +416,9 @@ $(GLM52_PP13_NODE_CONTEXT_BUILDER): modules/glm52_resident_decode_stage/source/s
 
 glm52_pp13_node_context_builder: $(GLM52_PP13_NODE_CONTEXT_BUILDER)
 
+kv_mooncake:
+	$(MAKE) -C modules/kv_mooncake MOONCAKE_ROOT="$(MOONCAKE_ROOT)" MOONCAKE_LIB="$(MOONCAKE_LIB)" MOONCAKE_DEP_INCLUDE="$(MOONCAKE_DEP_INCLUDE)"
+
 $(TEST_SUPPORT_OBJECT): tests/test_support.c tests/test_support.h $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) -MMD -MP -c tests/test_support.c -o $@
 
@@ -462,6 +474,12 @@ build/test_release: tests/test_release.c $(COMMON_LIBRARY)
 
 build/test_glm52_kv_cache: tests/test_glm52_kv_cache.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_kv_store: tests/test_kv_store.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_kv_mooncake: tests/test_kv_mooncake.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
+	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_stage_plan: tests/test_glm52_stage_plan.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
