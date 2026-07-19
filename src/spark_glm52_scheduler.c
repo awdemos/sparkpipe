@@ -355,12 +355,21 @@ static uint32_t SparkGlm52SchedulerPrefillDecodeInterleaveIsEnabled(
         SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_PREFILL_DECODE_INTERLEAVE) != 0u;
 }
 
+void SparkGlm52SchedulerSetPrefillDemand(
+    SparkGlm52Scheduler *scheduler,
+    uint32_t prefill_demand)
+{
+    if (scheduler == 0)
+        return;
+    scheduler->prefill_demand = prefill_demand != 0u ? 1u : 0u;
+}
+
 static uint32_t SparkGlm52SchedulerStageHasCapacity(
     const SparkGlm52Scheduler *scheduler,
     uint32_t spark_index,
     uint32_t request_is_prefill)
 {
-    uint32_t reserved_decode_slots;
+    uint32_t reserved_slot;
 
     if (spark_index >= scheduler->spark_count ||
         scheduler->spark_inflight_counts[spark_index] >=
@@ -369,14 +378,16 @@ static uint32_t SparkGlm52SchedulerStageHasCapacity(
         return 0u;
     }
 
-    reserved_decode_slots = SparkGlm52SchedulerPrefillDecodeInterleaveIsEnabled(
-        scheduler) && request_is_prefill != 0u &&
-        scheduler->queue_depth_per_spark > 1u
+    reserved_slot = SparkGlm52SchedulerPrefillDecodeInterleaveIsEnabled(
+        scheduler) &&
+        scheduler->queue_depth_per_spark > 1u &&
+        (request_is_prefill != 0u ||
+         scheduler->prefill_demand != 0u)
         ? 1u
         : 0u;
-    if (reserved_decode_slots != 0u &&
+    if (reserved_slot != 0u &&
         scheduler->spark_inflight_counts[spark_index] >=
-            scheduler->queue_depth_per_spark - reserved_decode_slots)
+            scheduler->queue_depth_per_spark - reserved_slot)
     {
         return 0u;
     }

@@ -496,6 +496,13 @@ int main(int argc, char **argv)
 			continue;
 		}
 		PipesimDeliverCompletion(fixture, pending);
+		if (getenv("SPARKPIPE_SIM_TRACE"))
+			fprintf(stderr, "T %llu kind=%u lanes=%u queued=%u running=%u pending=%u\n",
+				(unsigned long long)(fixture->now_ns / 1000000u),
+				pending->dispatch.kind, pending->dispatch.request_count,
+				fixture->request_api.queued_request_count,
+				fixture->request_api.running_request_count,
+				fixture->pending_count);
 	}
 	steady_tokens = fixture->decoded_token_count - fixture->stats.steady_begin_tokens;
 	steady_ns = fixture->now_ns - fixture->stats.steady_begin_ns;

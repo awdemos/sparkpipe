@@ -4973,6 +4973,9 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiChooseReadySlot(
 {
 	SparkGlm52RequestApiSlot *chosen_slot;
 
+	SparkGlm52SchedulerSetPrefillDemand(
+		api->scheduler,
+		prefill_slot != 0 ? 1u : 0u);
 	*chosen_is_prefill = 0u;
 	chosen_slot = decode_slot;
 	if (prefill_slot != 0 &&
@@ -5158,16 +5161,43 @@ SparkStatus SparkGlm52RequestApiScheduleNext(
                 api,
                 prefill_slot,
                 dispatch);
-            if (status != SPARK_STATUS_NOT_FOUND)
+            if (status == SPARK_STATUS_OK && dispatch->accepted != 0u)
+            {
+                return SPARK_STATUS_OK;
+            }
+            if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY &&
+                status != SPARK_STATUS_NOT_FOUND)
             {
                 return status;
             }
         }
-        return SparkGlm52RequestApiSchedulePrefill(
+        status = SparkGlm52RequestApiSchedulePrefill(
             api,
             prefill_slot,
             selected_shared_prefix_token_count,
             dispatch);
+        if (status == SPARK_STATUS_OK && dispatch->accepted != 0u)
+        {
+            return SPARK_STATUS_OK;
+        }
+        if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+        {
+            return status;
+        }
+        if (decode_slot == 0 && speculative_verify_slot == 0)
+        {
+            return status;
+        }
+        chosen_slot = decode_slot != 0 ? decode_slot : speculative_verify_slot;
+        chosen_is_prefill = 0u;
+        {
+            uint32_t saved_dispatch_flags;
+
+            saved_dispatch_flags = dispatch->flags &
+                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_JIT_PREFETCH_PENDING;
+            SparkGlm52RequestApiInitializeDispatch(dispatch);
+            dispatch->flags = saved_dispatch_flags;
+        }
     }
 
     if (chosen_slot == speculative_verify_slot && speculative_verify_slot != 0)
