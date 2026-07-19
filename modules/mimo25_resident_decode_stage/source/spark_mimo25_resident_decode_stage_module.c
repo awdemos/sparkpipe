@@ -64,7 +64,15 @@ typedef struct SparkMimo25ModuleSlot
 	void *ffn_up_bf16;
 	void *ffn_delta_bf16;
 	void *ffn_accum_bf16;
+	uint32_t *grouped_rows_u32;
+	uint32_t *grouped_weight_slots_u32;
+	void *moe_slot_gate_bf16;
+	void *moe_slot_up_bf16;
+	void *moe_slot_out_bf16;
 	uint32_t host_moe_indices[SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN];
+	uint32_t host_grouped_rows[SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN];
+	uint32_t host_grouped_weight_slots[SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN];
+	uint32_t host_expert_offsets[SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT + 1u];
 } SparkMimo25ModuleSlot;
 
 typedef struct SparkMimo25ModuleState
@@ -119,6 +127,9 @@ extern cudaError_t SparkMimo25LaunchGateScores(cudaStream_t stream, const SparkM
 extern cudaError_t SparkMimo25LaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, uint32_t row_count, uint32_t expert_count, uint32_t topk, float epsilon, float route_scale, uint32_t *indices_u32, float *weights_f32);
 extern cudaError_t SparkMimo25LaunchSiluMul(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t width);
 extern cudaError_t SparkMimo25LaunchAccumScaledAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, const float *weight_f32, uint32_t row_count, uint32_t width);
+extern cudaError_t SparkMimo25LaunchGatherLinear(cudaStream_t stream, const SparkMimo25LinearView *view, const void *payload, const void *scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count);
+extern cudaError_t SparkMimo25LaunchExpertTile(cudaStream_t stream, const SparkMimo25LinearView *view, const void *payload, const void *scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count);
+extern cudaError_t SparkMimo25LaunchScatterScaledAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, const uint32_t *row_map, const float *weights_f32, const uint32_t *weight_map, uint32_t slot_count, uint32_t width);
 extern cudaError_t SparkMimo25LaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t width);
 
 static SparkStatus SparkMimo25ModuleConfigure(SparkMimo25ModuleState *state)
@@ -482,6 +493,16 @@ static SparkStatus SparkMimo25ModuleAllocateSlot(SparkMimo25ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * dim * bf16,&slot->ffn_accum_bf16);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->grouped_rows_u32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->grouped_weight_slots_u32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * SPARK_MIMO25_MODEL_EXPERT_INTERMEDIATE_DIMENSION * bf16,&slot->moe_slot_gate_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * SPARK_MIMO25_MODEL_EXPERT_INTERMEDIATE_DIMENSION * bf16,&slot->moe_slot_up_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * dim * bf16,&slot->moe_slot_out_bf16);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaStreamCreateWithFlags((cudaStream_t *)&slot->cuda_stream,cudaStreamNonBlocking),"stream_create");
 	return(status);
 }
@@ -633,40 +654,100 @@ static void SparkMimo25ModuleExpertView(SparkMimo25LinearView *view, const Spark
 	*scale = (const float *)stacked->scale + expert * (rows_per_expert / SPARK_MIMO25_MODEL_FP8_SCALE_BLOCK) * (columns / SPARK_MIMO25_MODEL_FP8_SCALE_BLOCK);
 }
 
-static SparkStatus SparkMimo25ModuleRunMoeRouted(SparkMimo25ModuleSlot *slot, const SparkMimo25MoeWeights *moe, uint32_t rows)
+// Counting sort of the batch's (row, rank) pairs by expert: dense slot
+// lists per expert, weight slots naming the device-resident routing
+// weight each slot applies at the OUTPUT scatter.
+static SparkStatus SparkMimo25ModuleGroupByExpert(SparkMimo25ModuleSlot *slot, uint32_t rows, uint32_t *active_out)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint32_t counts[SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT];
+	uint32_t pair_count = rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN,pair,expert,cursor = 0u,active = 0u;
+	cudaError_t error;
+	memset(counts,0,sizeof(counts));
+	for (pair = 0; pair < pair_count; pair++)
+	{
+		expert = slot->host_moe_indices[pair];
+		if ( expert >= SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+		counts[expert]++;
+	}
+	for (expert = 0; expert < SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT; expert++)
+	{
+		slot->host_expert_offsets[expert] = cursor;
+		cursor += counts[expert];
+		active += counts[expert] != 0u ? 1u : 0u;
+		counts[expert] = slot->host_expert_offsets[expert];
+	}
+	slot->host_expert_offsets[SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT] = cursor;
+	for (pair = 0; pair < pair_count; pair++)
+	{
+		expert = slot->host_moe_indices[pair];
+		slot->host_grouped_rows[counts[expert]] = pair / SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN;
+		slot->host_grouped_weight_slots[counts[expert]] = pair;
+		counts[expert]++;
+	}
+	error = cudaMemcpyAsync(slot->grouped_rows_u32,slot->host_grouped_rows,(uint64_t)pair_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->grouped_weight_slots_u32,slot->host_grouped_weight_slots,(uint64_t)pair_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	*active_out = active;
+	return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"moe_group"));
+}
+
+// One expert's group: gathered w1/w3 into dense slots (the tensor-core
+// tile once the group is a full tile wide), silu-mul across the group,
+// down projection, then the weighted OUTPUT scatter into the true rows.
+static cudaError_t SparkMimo25ModuleRunExpertGroup(SparkMimo25ModuleSlot *slot, const SparkMimo25MoeWeights *moe, uint32_t expert, uint32_t offset, uint32_t count)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	SparkMimo25LinearView expert_view;
 	const void *payload,*scale;
 	uint64_t inter = SPARK_MIMO25_MODEL_EXPERT_INTERMEDIATE_DIMENSION,dim = SPARK_MIMO25_MODEL_HIDDEN_DIMENSION,bf16 = SPARK_MIMO25_MODEL_BF16_ELEMENT_BYTES;
-	uint32_t row,rank,expert;
+	const uint32_t *row_map = slot->grouped_rows_u32 + offset;
+	uint8_t *slot_gate = (uint8_t *)slot->moe_slot_gate_bf16 + (uint64_t)offset * inter * bf16;
+	uint8_t *slot_up = (uint8_t *)slot->moe_slot_up_bf16 + (uint64_t)offset * inter * bf16;
+	uint8_t *slot_out = (uint8_t *)slot->moe_slot_out_bf16 + (uint64_t)offset * dim * bf16;
+	cudaError_t error;
+	SparkMimo25ModuleExpertView(&expert_view,&moe->experts_w1,expert,inter,dim,&payload,&scale);
+	error = count >= 16u ? SparkMimo25LaunchExpertTile(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_gate,count) : SparkMimo25LaunchGatherLinear(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_gate,count);
+	if ( error == cudaSuccess )
+	{
+		SparkMimo25ModuleExpertView(&expert_view,&moe->experts_w3,expert,inter,dim,&payload,&scale);
+		error = count >= 16u ? SparkMimo25LaunchExpertTile(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_up,count) : SparkMimo25LaunchGatherLinear(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_up,count);
+	}
+	if ( error == cudaSuccess )
+		error = SparkMimo25LaunchSiluMul(stream,slot_gate,slot_up,count,(uint32_t)inter);
+	if ( error == cudaSuccess )
+	{
+		SparkMimo25ModuleExpertView(&expert_view,&moe->experts_w2,expert,dim,inter,&payload,&scale);
+		error = count >= 16u ? SparkMimo25LaunchExpertTile(stream,&expert_view,payload,scale,slot_up,0,slot_out,count) : SparkMimo25LaunchGatherLinear(stream,&expert_view,payload,scale,slot_up,0,slot_out,count);
+	}
+	if ( error == cudaSuccess )
+		error = SparkMimo25LaunchScatterScaledAdd(stream,slot->ffn_accum_bf16,slot_out,row_map,slot->moe_weights_f32,slot->grouped_weight_slots_u32 + offset,count,(uint32_t)dim);
+	return(error);
+}
+
+static SparkStatus SparkMimo25ModuleRunMoeRouted(SparkMimo25ModuleSlot *slot, const SparkMimo25MoeWeights *moe, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint32_t expert,offset,count,active = 0u;
+	SparkStatus status;
 	cudaError_t error;
 	error = cudaMemcpyAsync(slot->host_moe_indices,slot->moe_indices_u32,(uint64_t)rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 	if ( error == cudaSuccess )
 		error = cudaStreamSynchronize(stream);
-	for (row = 0; error == cudaSuccess && row < rows; row++)
-		for (rank = 0; error == cudaSuccess && rank < SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN; rank++)
-		{
-			expert = slot->host_moe_indices[row * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN + rank];
-			if ( expert >= SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT )
-				return(SPARK_STATUS_VALIDATION_FAILED);
-			SparkMimo25ModuleExpertView(&expert_view,&moe->experts_w1,expert,inter,dim,&payload,&scale);
-			error = SparkMimo25LaunchLinear(stream,&expert_view,payload,scale,(const uint8_t *)slot->normalized_bf16 + (uint64_t)row * dim * bf16,slot->ffn_gate_bf16,1u);
-			if ( error == cudaSuccess )
-			{
-				SparkMimo25ModuleExpertView(&expert_view,&moe->experts_w3,expert,inter,dim,&payload,&scale);
-				error = SparkMimo25LaunchLinear(stream,&expert_view,payload,scale,(const uint8_t *)slot->normalized_bf16 + (uint64_t)row * dim * bf16,slot->ffn_up_bf16,1u);
-			}
-			if ( error == cudaSuccess )
-				error = SparkMimo25LaunchSiluMul(stream,slot->ffn_gate_bf16,slot->ffn_up_bf16,1u,(uint32_t)inter);
-			if ( error == cudaSuccess )
-			{
-				SparkMimo25ModuleExpertView(&expert_view,&moe->experts_w2,expert,dim,inter,&payload,&scale);
-				error = SparkMimo25LaunchLinear(stream,&expert_view,payload,scale,slot->ffn_up_bf16,slot->ffn_delta_bf16,1u);
-			}
-			if ( error == cudaSuccess )
-				error = SparkMimo25LaunchAccumScaledAdd(stream,(uint8_t *)slot->ffn_accum_bf16 + (uint64_t)row * dim * bf16,slot->ffn_delta_bf16,slot->moe_weights_f32 + (uint64_t)row * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN + rank,1u,(uint32_t)dim);
-		}
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"moe_readback"));
+	status = SparkMimo25ModuleGroupByExpert(slot,rows,&active);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	for (expert = 0; error == cudaSuccess && expert < SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT; expert++)
+	{
+		offset = slot->host_expert_offsets[expert];
+		count = slot->host_expert_offsets[expert + 1u] - offset;
+		if ( count == 0u )
+			continue;
+		error = SparkMimo25ModuleRunExpertGroup(slot,moe,expert,offset,count);
+	}
 	return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"moe_routed"));
 }
 

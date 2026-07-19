@@ -95,7 +95,15 @@ typedef struct SparkDsv4ModuleSlot
 	void *ffn_up_bf16;
 	void *ffn_delta_bf16;
 	void *ffn_accum_bf16;
+	uint32_t *grouped_rows_u32;
+	uint32_t *grouped_weight_slots_u32;
+	void *moe_slot_gate_bf16;
+	void *moe_slot_up_bf16;
+	void *moe_slot_out_bf16;
 	uint32_t host_moe_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN];
+	uint32_t host_grouped_rows[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN];
+	uint32_t host_grouped_weight_slots[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN];
+	uint32_t host_expert_offsets[SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT + 1u];
 } SparkDsv4ModuleSlot;
 
 typedef struct SparkDsv4ModuleState
@@ -167,7 +175,10 @@ extern cudaError_t SparkDsv4LaunchApeAdd(cudaStream_t stream, float *score_f32, 
 extern cudaError_t SparkDsv4LaunchCompressStep(cudaStream_t stream, const float *kv_f32, const float *score_f32, float *kv_state_f32, float *score_state_f32, uint64_t state_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t row_count, uint32_t ratio, uint32_t overlap, uint32_t width, void *emit_bf16, uint32_t *emitted);
 extern cudaError_t SparkDsv4LaunchGateScores(cudaStream_t stream, const SparkDsv4LinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, const uint32_t *tid2eid_u32, const uint32_t *token_ids, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32);
-extern cudaError_t SparkDsv4LaunchSwigluClamp(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t width, float limit, const float *row_weights_f32);
+extern cudaError_t SparkDsv4LaunchSwigluClamp(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t width, float limit, const float *row_weights_f32, const uint32_t *weight_map);
+extern cudaError_t SparkDsv4LaunchGatherLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count);
+extern cudaError_t SparkDsv4LaunchExpertTile(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count);
+extern cudaError_t SparkDsv4LaunchScatterAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, const uint32_t *row_map, uint32_t slot_count, uint32_t width);
 extern cudaError_t SparkDsv4LaunchAccumAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width);
 extern cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim);
 extern cudaError_t SparkDsv4LaunchTopK(cudaStream_t stream, float *scores_f32, const uint32_t *slot_counts, uint32_t max_slots, uint32_t topk, int32_t offset, int32_t *indices_out, uint64_t out_row_stride, uint32_t row_count);
@@ -680,6 +691,16 @@ static SparkStatus SparkDsv4ModuleAllocateSlotTail(SparkDsv4ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * dim * bf16,&slot->ffn_accum_bf16);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->grouped_rows_u32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->grouped_weight_slots_u32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION * bf16,&slot->moe_slot_gate_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION * bf16,&slot->moe_slot_up_bf16);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * dim * bf16,&slot->moe_slot_out_bf16);
+	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaStreamCreateWithFlags((cudaStream_t *)&slot->cuda_stream,cudaStreamNonBlocking),"stream_create");
 	return(status);
 }
@@ -987,39 +1008,96 @@ static void SparkDsv4ModuleExpertView(SparkDsv4LinearView *view, const SparkDsv4
 	view->scale_e8m0 = stacked->scale_e8m0 + expert * rows_per_expert * (columns / SPARK_DSV4_STAGEPACK_FP4_SCALE_BLOCK);
 }
 
-static SparkStatus SparkDsv4ModuleRunMoeRouted(SparkDsv4ModuleSlot *slot, const SparkDsv4MoeWeights *moe, uint32_t rows)
+// Counting sort of the batch's (row, rank) pairs by expert, dense slot
+// lists per expert; the routing weight applies at the swiglu intermediate
+// through the weight-slot indirection, per the dsv4 reference.
+static SparkStatus SparkDsv4ModuleGroupByExpert(SparkDsv4ModuleSlot *slot, uint32_t rows, uint32_t *active_out)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint32_t counts[SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT];
+	uint32_t pair_count = rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,pair,expert,cursor = 0u,active = 0u;
+	cudaError_t error;
+	memset(counts,0,sizeof(counts));
+	for (pair = 0; pair < pair_count; pair++)
+	{
+		expert = slot->host_moe_indices[pair];
+		if ( expert >= SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+		counts[expert]++;
+	}
+	for (expert = 0; expert < SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT; expert++)
+	{
+		slot->host_expert_offsets[expert] = cursor;
+		cursor += counts[expert];
+		active += counts[expert] != 0u ? 1u : 0u;
+		counts[expert] = slot->host_expert_offsets[expert];
+	}
+	slot->host_expert_offsets[SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT] = cursor;
+	for (pair = 0; pair < pair_count; pair++)
+	{
+		expert = slot->host_moe_indices[pair];
+		slot->host_grouped_rows[counts[expert]] = pair / SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN;
+		slot->host_grouped_weight_slots[counts[expert]] = pair;
+		counts[expert]++;
+	}
+	error = cudaMemcpyAsync(slot->grouped_rows_u32,slot->host_grouped_rows,(uint64_t)pair_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	if ( error == cudaSuccess )
+		error = cudaMemcpyAsync(slot->grouped_weight_slots_u32,slot->host_grouped_weight_slots,(uint64_t)pair_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	*active_out = active;
+	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"moe_group"));
+}
+
+static cudaError_t SparkDsv4ModuleRunExpertGroup(SparkDsv4ModuleSlot *slot, const SparkDsv4MoeWeights *moe, uint32_t expert, uint32_t offset, uint32_t count)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	SparkDsv4LinearView expert_view;
-	uint64_t w1_rows = SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
-	uint32_t row,rank,expert;
+	uint64_t inter = SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION,bf16 = SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
+	const uint32_t *row_map = slot->grouped_rows_u32 + offset;
+	uint8_t *slot_gate = (uint8_t *)slot->moe_slot_gate_bf16 + (uint64_t)offset * inter * bf16;
+	uint8_t *slot_up = (uint8_t *)slot->moe_slot_up_bf16 + (uint64_t)offset * inter * bf16;
+	uint8_t *slot_out = (uint8_t *)slot->moe_slot_out_bf16 + (uint64_t)offset * dim * bf16;
+	cudaError_t error;
+	SparkDsv4ModuleExpertView(&expert_view,&moe->experts_w1,expert,inter,dim);
+	error = count >= 16u ? SparkDsv4LaunchExpertTile(stream,&expert_view,slot->normalized_bf16,row_map,slot_gate,count) : SparkDsv4LaunchGatherLinear(stream,&expert_view,slot->normalized_bf16,row_map,slot_gate,count);
+	if ( error == cudaSuccess )
+	{
+		SparkDsv4ModuleExpertView(&expert_view,&moe->experts_w3,expert,inter,dim);
+		error = count >= 16u ? SparkDsv4LaunchExpertTile(stream,&expert_view,slot->normalized_bf16,row_map,slot_up,count) : SparkDsv4LaunchGatherLinear(stream,&expert_view,slot->normalized_bf16,row_map,slot_up,count);
+	}
+	if ( error == cudaSuccess )
+		error = SparkDsv4LaunchSwigluClamp(stream,slot_gate,slot_up,count,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_SWIGLU_LIMIT,slot->moe_weights_f32,slot->grouped_weight_slots_u32 + offset);
+	if ( error == cudaSuccess )
+	{
+		SparkDsv4ModuleExpertView(&expert_view,&moe->experts_w2,expert,dim,inter);
+		error = count >= 16u ? SparkDsv4LaunchExpertTile(stream,&expert_view,slot_up,0,slot_out,count) : SparkDsv4LaunchGatherLinear(stream,&expert_view,slot_up,0,slot_out,count);
+	}
+	if ( error == cudaSuccess )
+		error = SparkDsv4LaunchScatterAdd(stream,slot->ffn_accum_bf16,slot_out,row_map,count,(uint32_t)dim);
+	return(error);
+}
+
+static SparkStatus SparkDsv4ModuleRunMoeRouted(SparkDsv4ModuleSlot *slot, const SparkDsv4MoeWeights *moe, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint32_t expert,offset,count,active = 0u;
+	SparkStatus status;
 	cudaError_t error;
 	error = cudaMemcpyAsync(slot->host_moe_indices,slot->moe_indices_u32,(uint64_t)rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 	if ( error == cudaSuccess )
 		error = cudaStreamSynchronize(stream);
-	for (row = 0; error == cudaSuccess && row < rows; row++)
-		for (rank = 0; error == cudaSuccess && rank < SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN; rank++)
-		{
-			expert = slot->host_moe_indices[row * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN + rank];
-			if ( expert >= SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT )
-				return(SPARK_STATUS_VALIDATION_FAILED);
-			SparkDsv4ModuleExpertView(&expert_view,&moe->experts_w1,expert,w1_rows,dim);
-			error = SparkDsv4LaunchLinear(stream,&expert_view,(const uint8_t *)slot->normalized_bf16 + (uint64_t)row * dim * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,slot->ffn_gate_bf16,1u);
-			if ( error == cudaSuccess )
-			{
-				SparkDsv4ModuleExpertView(&expert_view,&moe->experts_w3,expert,w1_rows,dim);
-				error = SparkDsv4LaunchLinear(stream,&expert_view,(const uint8_t *)slot->normalized_bf16 + (uint64_t)row * dim * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,slot->ffn_up_bf16,1u);
-			}
-			if ( error == cudaSuccess )
-				error = SparkDsv4LaunchSwigluClamp(stream,slot->ffn_gate_bf16,slot->ffn_up_bf16,1u,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_SWIGLU_LIMIT,slot->moe_weights_f32 + (uint64_t)row * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN + rank);
-			if ( error == cudaSuccess )
-			{
-				SparkDsv4ModuleExpertView(&expert_view,&moe->experts_w2,expert,dim,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION);
-				error = SparkDsv4LaunchLinear(stream,&expert_view,slot->ffn_up_bf16,slot->ffn_delta_bf16,1u);
-			}
-			if ( error == cudaSuccess )
-				error = SparkDsv4LaunchAccumAdd(stream,(uint8_t *)slot->ffn_accum_bf16 + (uint64_t)row * dim * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES,slot->ffn_delta_bf16,1u,(uint32_t)dim);
-		}
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"moe_readback"));
+	status = SparkDsv4ModuleGroupByExpert(slot,rows,&active);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	for (expert = 0; error == cudaSuccess && expert < SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT; expert++)
+	{
+		offset = slot->host_expert_offsets[expert];
+		count = slot->host_expert_offsets[expert + 1u] - offset;
+		if ( count == 0u )
+			continue;
+		error = SparkDsv4ModuleRunExpertGroup(slot,moe,expert,offset,count);
+	}
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"moe_routed"));
 }
 
@@ -1037,7 +1115,7 @@ static SparkStatus SparkDsv4ModuleRunMoe(SparkDsv4ModuleSlot *slot, const SparkD
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchLinear(stream,&moe->shared_w3,slot->normalized_bf16,slot->ffn_up_bf16,rows);
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchSwigluClamp(stream,slot->ffn_gate_bf16,slot->ffn_up_bf16,rows,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_SWIGLU_LIMIT,0);
+		error = SparkDsv4LaunchSwigluClamp(stream,slot->ffn_gate_bf16,slot->ffn_up_bf16,rows,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_SWIGLU_LIMIT,0,0);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchLinear(stream,&moe->shared_w2,slot->ffn_up_bf16,slot->ffn_accum_bf16,rows);
 	if ( error != cudaSuccess )

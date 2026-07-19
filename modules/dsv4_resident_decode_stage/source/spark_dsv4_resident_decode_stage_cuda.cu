@@ -403,14 +403,14 @@ static __global__ void SparkDsv4GateSelectKernel(const float *scores_f32, const 
 
 // The swiglu clamp on gathered gate/up rows, routing weight folded in:
 // up two-sided, gate max-only, silu(gate)*up in fp32.
-static __global__ void SparkDsv4SwigluClampKernel(const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t width, float limit, const float *row_weights_f32)
+static __global__ void SparkDsv4SwigluClampKernel(const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t width, float limit, const float *row_weights_f32, const uint32_t *weight_map)
 {
 	uint32_t row = blockIdx.x,element;
 	uint64_t offset = (uint64_t)row * width;
 	float gate,up,weight;
 	if ( row >= row_count )
 		return;
-	weight = row_weights_f32 != 0 ? row_weights_f32[row] : 1.0f;
+	weight = row_weights_f32 != 0 ? row_weights_f32[weight_map != 0 ? weight_map[row] : row] : 1.0f;
 	for (element = threadIdx.x; element < width; element += blockDim.x)
 	{
 		gate = SparkLmBf16ToFloat(gate_bf16,offset + element);
@@ -822,9 +822,36 @@ extern "C" cudaError_t SparkDsv4LaunchGateSelect(cudaStream_t stream, const floa
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkDsv4LaunchSwigluClamp(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t width, float limit, const float *row_weights_f32)
+extern "C" cudaError_t SparkDsv4LaunchSwigluClamp(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t width, float limit, const float *row_weights_f32, const uint32_t *weight_map)
 {
-	SparkDsv4SwigluClampKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(gate_bf16,up_bf16,row_count,width,limit,row_weights_f32);
+	SparkDsv4SwigluClampKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(gate_bf16,up_bf16,row_count,width,limit,row_weights_f32,weight_map);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchGatherLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count)
+{
+	dim3 grid(slot_count,(view->rows + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
+	uint32_t shared_bytes = view->columns * (uint32_t)sizeof(float);
+	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
+		SparkLmGatherLinearKernel<128u><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,view->payload,view->scale_e8m0,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
+	else
+		SparkLmGatherLinearKernel<32u><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,view->payload,view->scale_e8m0,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchExpertTile(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count)
+{
+	dim3 grid((slot_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(view->rows + SPARK_LM_TILE - 1u) / SPARK_LM_TILE);
+	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
+		SparkLmExpertTileKernel<128u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(view->weight_format,view->payload,view->scale_e8m0,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
+	else
+		SparkLmExpertTileKernel<32u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(view->weight_format,view->payload,view->scale_e8m0,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchScatterAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, const uint32_t *row_map, uint32_t slot_count, uint32_t width)
+{
+	SparkLmScatterScaledAddKernel<<<slot_count,SPARK_LM_CTA_THREADS,0,stream>>>(destination_bf16,source_bf16,row_map,0,0,slot_count,width);
 	return(cudaGetLastError());
 }
 
