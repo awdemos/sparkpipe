@@ -475,7 +475,7 @@ static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const voi
  * the valid count, +offset on emission. Correct and simple; the fast
  * selection is scheduled with the wmma pass.
  */
-static __global__ void SparkDsv4TopKKernel(float *scores_f32, const uint32_t *slot_counts, uint32_t max_slots, uint32_t topk, int32_t offset, int32_t *indices_out, uint32_t row_count)
+static __global__ void SparkDsv4TopKKernel(float *scores_f32, const uint32_t *slot_counts, uint32_t max_slots, uint32_t topk, int32_t offset, int32_t *indices_out, uint64_t out_row_stride, uint32_t row_count)
 {
 	__shared__ float best_score[SPARK_LM_CTA_WARPS];
 	__shared__ int32_t best_index[SPARK_LM_CTA_WARPS];
@@ -516,7 +516,7 @@ static __global__ void SparkDsv4TopKKernel(float *scores_f32, const uint32_t *sl
 			for (candidate = 1; candidate < SPARK_LM_CTA_WARPS; candidate++)
 				if ( best_score[candidate] > best_score[winner] || (best_score[candidate] == best_score[winner] && best_index[candidate] >= 0 && (best_index[winner] < 0 || best_index[candidate] < best_index[winner])) )
 					winner = (int32_t)candidate;
-			indices_out[((uint64_t)row * topk) + rank] = best_index[winner] < 0 ? -1 : best_index[winner] + offset;
+			indices_out[((uint64_t)row * out_row_stride) + rank] = best_index[winner] < 0 ? -1 : best_index[winner] + offset;
 			if ( best_index[winner] >= 0 )
 				scores[best_index[winner]] = -3.0e38f;
 		}
@@ -708,14 +708,15 @@ static __global__ void SparkDsv4ApeAddKernel(float *score_f32, const float *ape_
 		score_f32[((uint64_t)row * channels) + channel] += ape_f32[((uint64_t)(row_positions[row] % ratio) * channels) + channel];
 }
 
-// bf16 rows widened to f32 for the compressor's fp32 pooling arithmetic.
-static __global__ void SparkDsv4WidenKernel(const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width)
+// bf16 rows widened to f32 (times a scalar) for the compressor's fp32
+// pooling and the indexer's pre-scaled head weights.
+static __global__ void SparkDsv4WidenKernel(const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width, float scale)
 {
 	uint32_t row = blockIdx.x,element;
 	if ( row >= row_count )
 		return;
 	for (element = threadIdx.x; element < width; element += blockDim.x)
-		output_f32[((uint64_t)row * width) + element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * width) + element);
+		output_f32[((uint64_t)row * width) + element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * width) + element) * scale;
 }
 
 extern "C" cudaError_t SparkDsv4LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
@@ -790,9 +791,9 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(cudaStream_t stream, const void
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width)
+extern "C" cudaError_t SparkDsv4LaunchWiden(cudaStream_t stream, const void *input_bf16, float *output_f32, uint32_t row_count, uint32_t width, float scale)
 {
-	SparkDsv4WidenKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(input_bf16,output_f32,row_count,width);
+	SparkDsv4WidenKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(input_bf16,output_f32,row_count,width,scale);
 	return(cudaGetLastError());
 }
 
@@ -840,9 +841,9 @@ extern "C" cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const vo
 	return(cudaGetLastError());
 }
 
-extern "C" cudaError_t SparkDsv4LaunchTopK(cudaStream_t stream, float *scores_f32, const uint32_t *slot_counts, uint32_t max_slots, uint32_t topk, int32_t offset, int32_t *indices_out, uint32_t row_count)
+extern "C" cudaError_t SparkDsv4LaunchTopK(cudaStream_t stream, float *scores_f32, const uint32_t *slot_counts, uint32_t max_slots, uint32_t topk, int32_t offset, int32_t *indices_out, uint64_t out_row_stride, uint32_t row_count)
 {
-	SparkDsv4TopKKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(scores_f32,slot_counts,max_slots,topk,offset,indices_out,row_count);
+	SparkDsv4TopKKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(scores_f32,slot_counts,max_slots,topk,offset,indices_out,out_row_stride,row_count);
 	return(cudaGetLastError());
 }
 
