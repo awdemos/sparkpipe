@@ -24,8 +24,11 @@
  * Everything else matches Flash: dual rope thetas yarn-scaled x16 to 1M,
  * hash-routed first three layers, one shared expert, swiglu clamp 10,
  * hc_mult 4 (boundary stream 4 x 7168 = 28672 elements), one MTP layer,
- * vocab 129280, eps 1e-6. The REFERENCE-PIN set from the Flash header
- * applies verbatim, plus the SWA-branch question above.
+ * vocab 129280, eps 1e-6. The REFERENCE-PIN set is RESOLVED in the Flash
+ * header (one shared model.py serves both repos) and applies verbatim;
+ * the Pro-specific answer: the main map has ZERO sliding-window layers,
+ * but the SWA branch still exists in Pro because compress_ratios carries
+ * n_layers+1 entries and the final 0 makes the MTP layer window-only.
  */
 
 #define SPARK_DSV4_MODEL_HIDDEN_DIMENSION 7168u                 /* CONFIG hidden_size */
@@ -59,7 +62,21 @@
 #define SPARK_DSV4_MODEL_SWIGLU_LIMIT 10.0f                     /* CONFIG swiglu_limit */
 #define SPARK_DSV4_MODEL_HC_STREAM_COUNT 4u                     /* CONFIG hc_mult */
 #define SPARK_DSV4_MODEL_MTP_LAYER_COUNT 1u                     /* CONFIG num_nextn_predict_layers */
+#define SPARK_DSV4_MODEL_ROPE_BETA_FAST 32u                     /* CONFIG beta_fast */
+#define SPARK_DSV4_MODEL_ROPE_BETA_SLOW 1u                      /* CONFIG beta_slow */
+#define SPARK_DSV4_MODEL_HC_SINKHORN_ITERATIONS 20u             /* CONFIG hc_sinkhorn_iters, RUNS AT INFERENCE */
+#define SPARK_DSV4_MODEL_HC_EPSILON 1e-6f                       /* CONFIG hc_eps */
+#define SPARK_DSV4_MODEL_MTP_LAYER_KIND SPARK_DSV4_MODEL_LAYER_KIND_SWA /* compress_ratios[n_layers] == 0 */
+#define SPARK_DSV4_MODEL_KV_QUANT_BLOCK 64u                     /* act_quant(kv nope dims, 64) */
+#define SPARK_DSV4_MODEL_ACT_QUANT_BLOCK 128u                   /* linear activation quant group */
+#define SPARK_DSV4_MODEL_FP4_QUANT_BLOCK 32u                    /* fp4_block_size */
+#define SPARK_DSV4_MODEL_FP8_MAX 448.0f
+#define SPARK_DSV4_MODEL_FP4_MAX 6.0f
+#define SPARK_DSV4_MODEL_QUANT_AMAX_FLOOR 1e-4f
+#define SPARK_DSV4_MODEL_CSA_OVERLAP_FACTOR 2u                  /* ratio-4 compressor doubles channels */
 #define SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES 2u
+
+#define SPARK_DSV4_MODEL_HC_MIX_ROWS ((2u + SPARK_DSV4_MODEL_HC_STREAM_COUNT) * SPARK_DSV4_MODEL_HC_STREAM_COUNT)
 
 #define SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION (SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT * SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION)
 #define SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION (SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION / SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT)

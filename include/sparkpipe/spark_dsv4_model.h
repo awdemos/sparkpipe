@@ -29,13 +29,40 @@
  * layer. Vocabulary 129280, untied. FP8 e4m3 with ue8m0 scales outside the
  * experts.
  *
- * REFERENCE-PIN (settled against the repo's inference reference model.py
- * before any CUDA, one line each in the coming shape table): the MTP
- * layer's attention kind (the map's 44th entry is 0), the dense-vs-MoE
- * status of the SWA layers and any dense intermediate width (the config
- * carries neither intermediate_size nor first_k_dense_replace), the CSA
- * compressed-cache token layout, the hash router's exact form for layers
- * 0..2, and the o_groups output composition.
+ * REFERENCE-PIN RESOLVED (against inference/model.py + kernel.py +
+ * convert.py, fetched 2026-07-19, identical across both repos):
+ * - compress_ratios carries n_layers+1 entries; the extra final 0 is the
+ *   MTP layer: window-only attention at base theta, YaRN off.
+ * - Every layer is MoE - no dense layers exist, no first_k_dense_replace;
+ *   layers 0..2 route by the checkpoint's tid2eid[vocab, topk] int32 table
+ *   (no balancer bias tensor there); all others score-route.
+ * - Per-layer cache = window ring of 128 head_dim entries (slot pos%128)
+ *   plus, on compress layers, an append-only compressed stream at
+ *   pos/ratio; entries are kv_norm'd, rope'd on the last 64 dims, non-rope
+ *   dims fp8-sim quantized in blocks of 64 with power-of-two scales. The
+ *   ratio-4 compressor OVERLAPS: doubled channels pool the previous group
+ *   through the first channel half. A compress-bearing layer runs theta
+ *   160000 YaRN-scaled for BOTH its streams; a ratio-0 layer runs theta
+ *   10000 unscaled - the split is per LAYER, not per stream.
+ * - o composition: heads*512 viewed as o_groups groups of 4096, per-group
+ *   einsum against wo_a[group][1024, 4096] (bf16 after convert), groups*1024
+ *   concatenated into wo_b. Queries take an unweighted per-head rms before
+ *   rope; the sink joins the softmax denominator only; the output is
+ *   INVERSE-rotated on its last 64 dims.
+ * - sqrtsoftplus router: scores = sqrt(softplus(z)); top-k selects on
+ *   scores + bias but weights gather ORIGINAL scores, sum-normalize, and
+ *   scale by routed_scaling_factor (noaux_tc).
+ * - mHC runs Sinkhorn AT INFERENCE: 20 iterations on the 4x4 comb after a
+ *   row softmax, with +eps after the softmax and inside every
+ *   normalization; pre = sigmoid(m*s0+b)+eps, post = 2*sigmoid(m*s1+b);
+ *   the head reduction is the sigmoid pre-form only. hc_post writes stream
+ *   k as post[k]*out + sum_j comb[j][k]*residual[j] (comb transposed).
+ * - swiglu clamp: up to [-limit, limit], gate to max limit only; the
+ *   routing weight multiplies the fp32 intermediate before w2.
+ * - Indexer: q = wq_b(shared q_lora), rope, Hadamard (scale d^-0.5),
+ *   fp4-sim block 32; per-head weights = weights_proj(x) * d^-0.5 *
+ *   heads^-0.5; score = sum_h relu(q_h . kv_c) * w_h over its OWN
+ *   128-dim rotated compressed cache; top-k indices, +window offset.
  */
 
 #define SPARK_DSV4_MODEL_HIDDEN_DIMENSION 4096u                 /* CONFIG hidden_size */
@@ -69,7 +96,21 @@
 #define SPARK_DSV4_MODEL_SWIGLU_LIMIT 10.0f                     /* CONFIG swiglu_limit */
 #define SPARK_DSV4_MODEL_HC_STREAM_COUNT 4u                     /* CONFIG hc_mult */
 #define SPARK_DSV4_MODEL_MTP_LAYER_COUNT 1u                     /* CONFIG num_nextn_predict_layers */
+#define SPARK_DSV4_MODEL_ROPE_BETA_FAST 32u                     /* CONFIG beta_fast */
+#define SPARK_DSV4_MODEL_ROPE_BETA_SLOW 1u                      /* CONFIG beta_slow */
+#define SPARK_DSV4_MODEL_HC_SINKHORN_ITERATIONS 20u             /* CONFIG hc_sinkhorn_iters, RUNS AT INFERENCE */
+#define SPARK_DSV4_MODEL_HC_EPSILON 1e-6f                       /* CONFIG hc_eps */
+#define SPARK_DSV4_MODEL_MTP_LAYER_KIND SPARK_DSV4_MODEL_LAYER_KIND_SWA /* compress_ratios[n_layers] == 0 */
+#define SPARK_DSV4_MODEL_KV_QUANT_BLOCK 64u                     /* act_quant(kv nope dims, 64) */
+#define SPARK_DSV4_MODEL_ACT_QUANT_BLOCK 128u                   /* linear activation quant group */
+#define SPARK_DSV4_MODEL_FP4_QUANT_BLOCK 32u                    /* fp4_block_size */
+#define SPARK_DSV4_MODEL_FP8_MAX 448.0f
+#define SPARK_DSV4_MODEL_FP4_MAX 6.0f
+#define SPARK_DSV4_MODEL_QUANT_AMAX_FLOOR 1e-4f
+#define SPARK_DSV4_MODEL_CSA_OVERLAP_FACTOR 2u                  /* ratio-4 compressor doubles channels */
 #define SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES 2u
+
+#define SPARK_DSV4_MODEL_HC_MIX_ROWS ((2u + SPARK_DSV4_MODEL_HC_STREAM_COUNT) * SPARK_DSV4_MODEL_HC_STREAM_COUNT)
 
 #define SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION (SPARK_DSV4_MODEL_ATTN_QUERY_HEAD_COUNT * SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION)
 #define SPARK_DSV4_MODEL_OUTPUT_GROUP_DIMENSION (SPARK_DSV4_MODEL_ATTN_QUERY_DIMENSION / SPARK_DSV4_MODEL_OUTPUT_GROUP_COUNT)
