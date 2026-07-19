@@ -4964,6 +4964,17 @@ static uint32_t SparkGlm52RequestApiShouldFillDecodeBatch(
 	return ready_decode_count < batch_target;
 }
 
+static uint32_t SparkGlm52RequestApiPrefillHasResidentKvHeadroom(
+	const SparkGlm52RequestApi *api,
+	const SparkGlm52RequestApiSlot *prefill_slot)
+{
+	uint64_t reserved_block_count;
+
+	reserved_block_count = SparkGlm52RequestApiResidentKvBlockCount(api);
+	return SparkGlm52RequestApiReservePrefillResidentKvBlocks(
+		api,prefill_slot,&reserved_block_count);
+}
+
 static SparkGlm52RequestApiSlot *SparkGlm52RequestApiChooseReadySlot(
 	SparkGlm52RequestApi *api,
 	SparkGlm52RequestApiSlot *prefill_slot,
@@ -4984,8 +4995,12 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiChooseReadySlot(
 			prefill_slot,
 			chosen_slot) ||
 		 (chosen_slot == decode_slot &&
-		  SparkGlm52RequestApiShouldFillDecodeBatch(
-			api,prefill_slot,decode_slot) != 0u)))
+		  ((SparkGlm52RequestApiSlotsHaveSameSchedulingPriority(
+			prefill_slot,decode_slot) &&
+			SparkGlm52RequestApiPrefillHasResidentKvHeadroom(
+				api,prefill_slot) != 0u) ||
+		   SparkGlm52RequestApiShouldFillDecodeBatch(
+			api,prefill_slot,decode_slot) != 0u))))
 	{
 		*chosen_is_prefill = 1u;
 		chosen_slot = prefill_slot;
@@ -4993,6 +5008,9 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiChooseReadySlot(
 	if (speculative_verify_slot != 0 &&
 		(chosen_slot == 0 ||
 		 speculative_verify_slot->priority > chosen_slot->priority ||
+		 (*chosen_is_prefill != 0u &&
+		  SparkGlm52RequestApiSlotsHaveSameSchedulingPriority(
+			speculative_verify_slot,chosen_slot)) ||
 		 (chosen_slot == decode_slot &&
 		  SparkGlm52RequestApiSlotsHaveSameSchedulingPriority(
 			speculative_verify_slot,decode_slot) &&

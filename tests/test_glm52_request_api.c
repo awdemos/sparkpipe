@@ -3511,7 +3511,7 @@ static void SparkTestRequestApiUsesHigherYieldMtpBeforeEqualPriorityDecode(void)
     assert(SparkGlm52RequestApiSubmit(
         &fixture.api,&request,&first_handle) == SPARK_STATUS_OK);
     SparkTestInitializeSubmitRequest(
-        &request,1550u,11550u,10u,second_prompt,16u,2u);
+        &request,1550u,11550u,9u,second_prompt,16u,2u);
     request.thinking_token_budget = 0u;
     assert(SparkGlm52RequestApiSubmit(
         &fixture.api,&request,&second_handle) == SPARK_STATUS_OK);
@@ -4525,6 +4525,9 @@ static void SparkTestRequestApiHoldsPrefillAtGlobalResidentKvLimit(void)
         assert(prefill_dispatch.request_count == 2u);
         assert(SparkGlm52RequestApiCompleteDispatch(
             &fixture.api,&prefill_dispatch) == SPARK_STATUS_OK);
+    }
+    for (request_index = 0u; request_index < 2u; ++request_index)
+    {
         assert(SparkGlm52RequestApiScheduleNext(
             &fixture.api,&decode_dispatches[request_index]) == SPARK_STATUS_OK);
         assert(decode_dispatches[request_index].kind ==
