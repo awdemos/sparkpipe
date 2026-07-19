@@ -263,6 +263,17 @@ static __global__ void SparkQwen36AttnDecodeKernel(const void *q_fused_bf16, con
 	SparkLmFloatToBf16(head_out_bf16,((uint64_t)row * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION) + ((uint64_t)head * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION) + column,(accumulator / running_denominator) * gate);
 }
 
+// Embedding gather: one thread per (row, element); token ids are validated
+// against the vocabulary on the host before upload, so the kernel trusts.
+static __global__ void SparkQwen36EmbeddingGatherKernel(const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count)
+{
+	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
+	uint32_t row = (uint32_t)(index / SPARK_QWEN36_MODEL_HIDDEN_DIMENSION),element = (uint32_t)(index % SPARK_QWEN36_MODEL_HIDDEN_DIMENSION);
+	if ( row >= row_count )
+		return;
+	SparkLmFloatToBf16(hidden_bf16,index,SparkLmBf16ToFloat(embedding_bf16,((uint64_t)token_ids[row] * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION) + element));
+}
+
 // Residual add and SwiGLU combine, both row-shaped elementwise.
 static __global__ void SparkQwen36ResidualAddKernel(void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
 {
@@ -332,6 +343,13 @@ extern "C" cudaError_t SparkQwen36LaunchAttnDecode(cudaStream_t stream, const vo
 {
 	dim3 grid(SPARK_QWEN36_MODEL_ATTN_QUERY_HEAD_COUNT,row_count,1u);
 	SparkQwen36AttnDecodeKernel<<<grid,SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION,0,stream>>>(q_fused_bf16,kv_cache_bf16,table->physical_block_indices,table->lane_physical_block_counts,row_lane_indices,context_lengths,head_out_bf16,row_count,table->lane_stride,attn_layer_ordinal,cache_layer_stride,cache_block_stride);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count)
+{
+	uint64_t elements = (uint64_t)row_count * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
+	SparkQwen36EmbeddingGatherKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(token_ids,embedding_bf16,hidden_bf16,row_count);
 	return(cudaGetLastError());
 }
 
