@@ -13965,7 +13965,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchPreboundLinearPlan(
         {
             if (prepared_active_sequence_count == 0u ||
                 SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(
-                    linear_plan) != prepared_active_sequence_count)
+                    linear_plan) < prepared_active_sequence_count)
             {
                 fprintf(
                     stderr,
