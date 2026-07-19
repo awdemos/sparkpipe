@@ -133,6 +133,25 @@ typedef struct SparkQwen36FfnLayerWeights
 } SparkQwen36FfnLayerWeights;
 
 /*
+ * MTP head, one draft layer, pinned from the checkpoint safetensors index:
+ * next_hidden = decoder(fc([enorm(embed(token)) | hnorm(hidden)])), decoder
+ * geometry identical to a main full-attention layer (fused query|gate, the
+ * same norms, the same SwiGLU), then mtp final norm into the SHARED lm head.
+ * Lives on the stage that owns the final head.
+ */
+typedef struct SparkQwen36MtpWeights
+{
+	SparkQwen36LinearView fc;
+	const void *embed_norm_weight_bf16;
+	const void *hidden_norm_weight_bf16;
+	const void *final_norm_weight_bf16;
+	const void *attention_norm_weight_bf16;
+	const void *mlp_norm_weight_bf16;
+	SparkQwen36AttnLayerWeights attention;
+	SparkQwen36FfnLayerWeights ffn;
+} SparkQwen36MtpWeights;
+
+/*
  * GDN recurrent state for the stage's own GDN layers only. Two carried
  * pieces per lane per GDN layer: the dk x dv fp32 delta state per value head,
  * and the conv tail (the last kernel-1 columns of the concatenated q|k|v conv

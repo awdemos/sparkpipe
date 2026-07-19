@@ -75,7 +75,7 @@ static int32_t SparkQwen36SynthesizeAppend(SparkQwen36SynthesizeContext *context
 	format = (quantize != 0u && shape.quantizable != 0u) ? SPARK_QWEN36_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_MXFP4_E2M1 : shape.natural_format;
 	entry = &context->entries[context->entry_count];
 	entry->tensor_kind = tensor_kind;
-	entry->layer_index = is_global != 0u ? SPARK_QWEN36_STAGEPACK_GLOBAL_LAYER : layer_index;
+	entry->layer_index = (is_global != 0u && layer_index != SPARK_QWEN36_STAGEPACK_MTP_LAYER) ? SPARK_QWEN36_STAGEPACK_GLOBAL_LAYER : layer_index;
 	entry->weight_format = format;
 	entry->rows = shape.rows;
 	entry->columns = shape.columns;
@@ -154,10 +154,23 @@ static int32_t SparkQwen36SynthesizeBuildDirectory(SparkQwen36SynthesizeContext 
 	}
 	if ( last == SPARK_QWEN36_MODEL_LAYER_COUNT )
 	{
+		static const uint32_t mtp_globals[4] =
+		{
+			SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FC,SPARK_QWEN36_STAGEPACK_TENSOR_MTP_EMBED_NORM,
+			SPARK_QWEN36_STAGEPACK_TENSOR_MTP_HIDDEN_NORM,SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FINAL_NORM
+		};
+		uint32_t mtp_index;
 		if ( SparkQwen36SynthesizeAppend(context,SPARK_QWEN36_STAGEPACK_TENSOR_FINAL_NORM,0u,1u,quantize) < 0 )
 			return(-3);
 		if ( SparkQwen36SynthesizeAppend(context,SPARK_QWEN36_STAGEPACK_TENSOR_LM_HEAD,0u,1u,quantize) < 0 )
 			return(-4);
+		for (mtp_index = 0; mtp_index < 4u; mtp_index++)
+			if ( SparkQwen36SynthesizeAppend(context,mtp_globals[mtp_index],0u,1u,quantize) < 0 )
+				return(-6);
+		if ( SparkQwen36SynthesizeAppendEveryLayer(context,SPARK_QWEN36_STAGEPACK_MTP_LAYER,quantize) < 0 )
+			return(-7);
+		if ( SparkQwen36SynthesizeAppendAttnLayer(context,SPARK_QWEN36_STAGEPACK_MTP_LAYER,quantize) < 0 )
+			return(-8);
 	}
 	if ( context->entry_count != SparkQwen36StagePackExpectedTensorCount(context->first_layer_index,context->layer_count) )
 		return(-5);

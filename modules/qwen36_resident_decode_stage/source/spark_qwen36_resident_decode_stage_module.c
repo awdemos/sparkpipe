@@ -11,6 +11,7 @@
 #include <cuda_runtime.h>
 
 #include "sparkpipe/spark_qwen36_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_stage_kv_client.h"
 #include "sparkpipe/spark_stage_module_common.h"
 #include "spark_qwen36_stagepack_format.h"
 
@@ -81,6 +82,8 @@ typedef struct SparkQwen36ModuleState
 	uint32_t attn_ordinal_by_layer[SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	uint32_t layer_seen_bits[SPARK_QWEN36_RESIDENT_DECODE_STAGE_LAYER_COUNT];
 	uint32_t global_seen_bits;
+	uint32_t mtp_seen_bits;
+	SparkQwen36MtpWeights mtp;
 	const void *token_embedding_bf16;
 	const void *final_norm_weight_bf16;
 	const void *lm_head_weight_bf16;
@@ -99,6 +102,7 @@ typedef struct SparkQwen36ModuleState
 	uint32_t host_context_lengths[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
 	SparkQwen36ModuleSlot slots[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
 	atomic_uint slot_states[SPARK_QWEN36_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT];
+	SparkStageKvClient kv_client;
 	atomic_ullong frames_executed;
 	atomic_ullong tokens_emitted;
 } SparkQwen36ModuleState;
@@ -199,10 +203,36 @@ static SparkStatus SparkQwen36ModuleValidateEntry(SparkQwen36ModuleState *state,
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	if ( entry->scale_bytes != 0u && (entry->scale_offset > file_bytes || entry->scale_bytes > file_bytes - entry->scale_offset) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
-	if ( global == 0u && (entry->layer_index < state->first_layer_index || entry->layer_index >= state->first_layer_index + state->layer_count) )
+	if ( entry->layer_index == SPARK_QWEN36_STAGEPACK_MTP_LAYER || (global != 0u && (entry->tensor_kind >= SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FC && entry->tensor_kind <= SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FINAL_NORM)) )
+	{
+		if ( state->owns_final_head == 0u )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	else if ( global == 0u && (entry->layer_index < state->first_layer_index || entry->layer_index >= state->first_layer_index + state->layer_count) )
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	*is_global = global;
 	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkQwen36ModuleBindMtp(SparkQwen36ModuleState *state, const SparkQwen36StagePackEntry *entry, void *payload, void *scale)
+{
+	switch ( entry->tensor_kind )
+	{
+	case SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FC: SparkQwen36ModuleFillLinearView(&state->mtp.fc,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTENTION_NORM: state->mtp.attention_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_MLP_NORM: state->mtp.mlp_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_FFN_GATE: SparkQwen36ModuleFillLinearView(&state->mtp.ffn.gate,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_FFN_UP: SparkQwen36ModuleFillLinearView(&state->mtp.ffn.up,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_FFN_DOWN: SparkQwen36ModuleFillLinearView(&state->mtp.ffn.down,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY: SparkQwen36ModuleFillLinearView(&state->mtp.attention.query,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY: SparkQwen36ModuleFillLinearView(&state->mtp.attention.key,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_VALUE: SparkQwen36ModuleFillLinearView(&state->mtp.attention.value,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT: SparkQwen36ModuleFillLinearView(&state->mtp.attention.output,entry,payload,scale); return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY_NORM: state->mtp.attention.query_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY_NORM: state->mtp.attention.key_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	default:
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	}
 }
 
 static SparkStatus SparkQwen36ModuleBindGlobal(SparkQwen36ModuleState *state, const SparkQwen36StagePackEntry *entry, void *payload)
@@ -224,6 +254,9 @@ static SparkStatus SparkQwen36ModuleBindGlobal(SparkQwen36ModuleState *state, co
 			return(SPARK_STATUS_VALIDATION_FAILED);
 		state->lm_head_weight_bf16 = payload;
 		return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_MTP_EMBED_NORM: state->mtp.embed_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_MTP_HIDDEN_NORM: state->mtp.hidden_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FINAL_NORM: state->mtp.final_norm_weight_bf16 = payload; return(SPARK_STATUS_OK);
 	default:
 		return(SPARK_STATUS_VALIDATION_FAILED);
 	}
@@ -271,7 +304,10 @@ static SparkStatus SparkQwen36ModuleLoadEntry(SparkQwen36ModuleState *state, FIL
 		fprintf(stderr,"%s pack_entry_invalid kind=%u layer=%u\n",SPARK_QWEN36_MODULE_TAG,entry->tensor_kind,entry->layer_index);
 		return(status);
 	}
-	seen = is_global != 0u ? &state->global_seen_bits : &state->layer_seen_bits[entry->layer_index];
+	if ( entry->layer_index == SPARK_QWEN36_STAGEPACK_MTP_LAYER || (is_global != 0u && entry->tensor_kind >= SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FC && entry->tensor_kind <= SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FINAL_NORM) )
+		seen = &state->mtp_seen_bits;
+	else
+		seen = is_global != 0u ? &state->global_seen_bits : &state->layer_seen_bits[entry->layer_index];
 	if ( (*seen & bit) != 0u )
 	{
 		fprintf(stderr,"%s pack_entry_duplicate kind=%u layer=%u\n",SPARK_QWEN36_MODULE_TAG,entry->tensor_kind,entry->layer_index);
@@ -283,6 +319,8 @@ static SparkStatus SparkQwen36ModuleLoadEntry(SparkQwen36ModuleState *state, FIL
 		status = SparkStageModuleLoadDeviceRegion(&state->ledger,file,entry->scale_offset,entry->scale_bytes,&scale);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	if ( entry->layer_index == SPARK_QWEN36_STAGEPACK_MTP_LAYER || entry->tensor_kind == SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FC )
+		return(SparkQwen36ModuleBindMtp(state,entry,payload,scale));
 	return(is_global != 0u ? SparkQwen36ModuleBindGlobal(state,entry,payload) : SparkQwen36ModuleBindLayer(state,entry,payload,scale));
 }
 
@@ -293,6 +331,15 @@ static SparkStatus SparkQwen36ModuleVerifyCoverage(SparkQwen36ModuleState *state
 		expected_global |= 1u << SPARK_QWEN36_STAGEPACK_TENSOR_EMBEDDING;
 	if ( state->owns_final_head != 0u )
 		expected_global |= (1u << SPARK_QWEN36_STAGEPACK_TENSOR_FINAL_NORM) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_LM_HEAD);
+	if ( state->owns_final_head != 0u )
+	{
+		uint32_t expected_mtp = (1u << SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FC) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_MTP_EMBED_NORM) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_MTP_HIDDEN_NORM) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FINAL_NORM) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_ATTENTION_NORM) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_MLP_NORM) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_FFN_GATE) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_FFN_UP) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_FFN_DOWN) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_VALUE) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY_NORM) | (1u << SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY_NORM);
+		if ( state->mtp_seen_bits != expected_mtp )
+		{
+			fprintf(stderr,"%s pack_mtp_incomplete seen=%08x expected=%08x\n",SPARK_QWEN36_MODULE_TAG,state->mtp_seen_bits,expected_mtp);
+			return(SPARK_STATUS_VALIDATION_FAILED);
+		}
+	}
 	if ( state->global_seen_bits != expected_global )
 	{
 		fprintf(stderr,"%s pack_globals_incomplete seen=%08x expected=%08x\n",SPARK_QWEN36_MODULE_TAG,state->global_seen_bits,expected_global);
@@ -663,6 +710,44 @@ static SparkStatus SparkQwen36ModuleFinish(SparkQwen36ModuleState *state, SparkQ
 	return(status);
 }
 
+static uint64_t SparkQwen36ModuleFingerprint(const void *bytes, uint64_t count, uint64_t basis)
+{
+	const uint8_t *data = (const uint8_t *)bytes;
+	uint64_t hash = basis,index;
+	for (index = 0; index < count; index++)
+		hash = (hash ^ data[index]) * 1099511628211ull;
+	return(hash);
+}
+
+static SparkStatus SparkQwen36ModuleOpenKvTier(SparkQwen36ModuleState *state)
+{
+	SparkQwen36StagePackHeader geometry;
+	const char *provider = 0,*service = 0,*socket_path = 0;
+	uint64_t pool_bytes = 0u,model_fp,layout_fp,layout_bits[3];
+	uint32_t workers = 0u;
+	SparkStatus status = SparkStageModuleEnvironmentText(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_STAGE_KV_STORE",&provider);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( strcmp(provider,"none") == 0 )
+		return(SparkStageKvClientOpen(&state->kv_client,SPARK_QWEN36_MODULE_TAG,provider,0u,0u,0u,0u,0u,0,0,0u,0u));
+	status = SparkStageModuleEnvironmentText(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_STAGE_KV_SERVICE",&service);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentText(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_STAGE_KV_SOCKET",&socket_path);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsigned64(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_STAGE_KV_POOL_BYTES",1u,1ull << 40u,&pool_bytes);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleEnvironmentUnsigned(SPARK_QWEN36_MODULE_TAG,"SPARK_QWEN36_STAGE_KV_WORKERS",1u,64u,&workers);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	SparkQwen36StagePackExpectedGeometry(&geometry,state->first_layer_index,state->layer_count);
+	model_fp = SparkQwen36ModuleFingerprint(&geometry,sizeof(geometry),14695981039346656037ull);
+	layout_bits[0] = state->cache_layer_stride;
+	layout_bits[1] = state->cache_block_stride;
+	layout_bits[2] = SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+	layout_fp = SparkQwen36ModuleFingerprint(layout_bits,sizeof(layout_bits),model_fp);
+	return(SparkStageKvClientOpen(&state->kv_client,SPARK_QWEN36_MODULE_TAG,provider,state->stage_index,state->first_layer_index,state->layer_count,model_fp,layout_fp,service,socket_path,pool_bytes,workers));
+}
+
 SparkStatus SparkQwen36ResidentDecodeStageExecute(void *module_state, SparkModelDriverFrame *frame)
 {
 	SparkQwen36ModuleState *state = (SparkQwen36ModuleState *)module_state;
@@ -739,6 +824,7 @@ void SparkQwen36ResidentDecodeStageDestroy(void *module_state)
 	for (slot_index = 0; slot_index < state->pipeline_slot_count; slot_index++)
 		if ( state->slots[slot_index].cuda_stream != 0 )
 			cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
+	SparkStageKvClientClose(&state->kv_client);
 	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state);
 }
@@ -766,6 +852,8 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(const SparkFirmwareModuleCo
 	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkQwen36ModuleAllocatePools(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkQwen36ModuleOpenKvTier(state);
 	for (slot_index = 0; status == SPARK_STATUS_OK && slot_index < state->pipeline_slot_count; slot_index++)
 		status = SparkQwen36ModuleAllocateSlot(state,&state->slots[slot_index]);
 	if ( status != SPARK_STATUS_OK )

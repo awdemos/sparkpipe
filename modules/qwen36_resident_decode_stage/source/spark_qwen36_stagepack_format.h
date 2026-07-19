@@ -31,6 +31,7 @@
 #define SPARK_QWEN36_STAGEPACK_MAGIC 0x50533651u /* 'Q6SP' little endian */
 #define SPARK_QWEN36_STAGEPACK_FORMAT_VERSION 1u
 #define SPARK_QWEN36_STAGEPACK_GLOBAL_LAYER UINT32_MAX
+#define SPARK_QWEN36_STAGEPACK_MTP_LAYER (UINT32_MAX - 1u)
 #define SPARK_QWEN36_STAGEPACK_PAYLOAD_ALIGNMENT 256u
 
 typedef enum SparkQwen36StagePackTensorKind
@@ -58,7 +59,11 @@ typedef enum SparkQwen36StagePackTensorKind
 	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT = 20,
 	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY_NORM = 21,
 	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY_NORM = 22,
-	SPARK_QWEN36_STAGEPACK_TENSOR_KIND_COUNT = 23
+	SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FC = 23,
+	SPARK_QWEN36_STAGEPACK_TENSOR_MTP_EMBED_NORM = 24,
+	SPARK_QWEN36_STAGEPACK_TENSOR_MTP_HIDDEN_NORM = 25,
+	SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FINAL_NORM = 26,
+	SPARK_QWEN36_STAGEPACK_TENSOR_KIND_COUNT = 27
 } SparkQwen36StagePackTensorKind;
 
 // A kind belongs to a layer class; the resolver enforces class against the
@@ -160,7 +165,7 @@ static inline uint32_t SparkQwen36StagePackExpectedTensorCount(uint32_t first_la
 	if ( first_layer_index == 0u )
 		tensors += 1u;
 	if ( first_layer_index + layer_count == SPARK_QWEN36_MODEL_LAYER_COUNT )
-		tensors += 2u;
+		tensors += 2u + 4u + 11u;
 	return(tensors);
 }
 
@@ -294,6 +299,17 @@ static inline int32_t SparkQwen36StagePackShapeGlobal(uint32_t tensor_kind, Spar
 		shape->rows = SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT;
 		shape->columns = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
 		return(0);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FC:
+		shape->rows = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
+		shape->columns = 2u * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
+		shape->quantizable = 1u;
+		return(0);
+	case SPARK_QWEN36_STAGEPACK_TENSOR_MTP_EMBED_NORM:
+	case SPARK_QWEN36_STAGEPACK_TENSOR_MTP_HIDDEN_NORM:
+	case SPARK_QWEN36_STAGEPACK_TENSOR_MTP_FINAL_NORM:
+		shape->rows = 1u;
+		shape->columns = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
+		return(0);
 	default:
 		return(-1);
 	}
@@ -420,10 +436,18 @@ static inline int32_t SparkQwen36StagePackTensorShapeOf(uint32_t tensor_kind, Sp
  * layer marker, a per-layer kind must sit inside the total layer space, and
  * the GDN/attention classes must agree with the hybrid layer map.
  */
+/*
+ * The MTP decoder is geometry-identical to a full-attention layer, so its
+ * eleven layer-shaped tensors REUSE the per-layer kinds at the reserved MTP
+ * layer marker; only the four MTP globals (fc, the two pre-fc norms, the
+ * final norm) are new kinds. Pinned from the checkpoint safetensors index.
+ */
 static inline int32_t SparkQwen36StagePackResolvedShape(uint32_t tensor_kind, uint32_t layer_index, uint32_t is_global, SparkQwen36StagePackTensorShape *shape)
 {
 	if ( SparkQwen36StagePackTensorShapeOf(tensor_kind,shape) < 0 )
 		return(-1);
+	if ( layer_index == SPARK_QWEN36_STAGEPACK_MTP_LAYER )
+		return((is_global == 0u && (shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_EVERY_LAYER || shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_ATTN_LAYER)) ? 0 : -6);
 	if ( (shape->layer_class == SPARK_QWEN36_STAGEPACK_CLASS_GLOBAL) != (is_global != 0u) )
 		return(-2);
 	if ( is_global != 0u )
