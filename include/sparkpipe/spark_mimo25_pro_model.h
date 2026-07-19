@@ -4,7 +4,7 @@
 #include <stdint.h>
 
 /*
- * MiMo-V2.5 (Base, multimodal checkpoint; text stack only) model constants, derived 2026-07-19 from the released
+ * MiMo-V2.5-Pro model constants, derived 2026-07-19 from the released
  * config.json, modeling_mimo_v2.py and the safetensors headers (ranged
  * fetch of shard JSON - exact dtypes and shapes, not inference).
  *
@@ -51,31 +51,31 @@
  *   shard headers are the ground truth for the structure.
  */
 
-#define SPARK_MIMO25_MODEL_HIDDEN_DIMENSION 4096u             /* CONFIG hidden_size */
-#define SPARK_MIMO25_MODEL_LAYER_COUNT 48u                    /* CONFIG num_hidden_layers */
+#define SPARK_MIMO25_MODEL_HIDDEN_DIMENSION 6144u             /* CONFIG hidden_size */
+#define SPARK_MIMO25_MODEL_LAYER_COUNT 70u                    /* CONFIG num_hidden_layers */
 #define SPARK_MIMO25_MODEL_VOCAB_COUNT 152576u             /* CONFIG vocab_size */
 #define SPARK_MIMO25_MODEL_MAX_POSITIONS 1048576u          /* CONFIG max_position_embeddings */
 #define SPARK_MIMO25_MODEL_RMS_NORM_EPSILON 1e-5f               /* CONFIG layernorm_epsilon */
 #define SPARK_MIMO25_MODEL_BF16_ELEMENT_BYTES 2u
 
-#define SPARK_MIMO25_MODEL_ATTN_HEAD_COUNT 64u
+#define SPARK_MIMO25_MODEL_ATTN_HEAD_COUNT 128u
 #define SPARK_MIMO25_MODEL_ATTN_HEAD_DIMENSION 192u             /* CONFIG head_dim (q and k) */
 #define SPARK_MIMO25_MODEL_ATTN_VALUE_DIMENSION 128u            /* CONFIG v_head_dim */
 #define SPARK_MIMO25_MODEL_ATTN_ROPE_DIMENSION 64u              /* int(head_dim * partial_rotary_factor) */
-#define SPARK_MIMO25_MODEL_FULL_KV_HEAD_COUNT 4u
+#define SPARK_MIMO25_MODEL_FULL_KV_HEAD_COUNT 8u
 #define SPARK_MIMO25_MODEL_SWA_KV_HEAD_COUNT 8u
-#define SPARK_MIMO25_MODEL_FULL_QKV_DIMENSION 13568u          /* checkpoint qkv rows, full branch */
-#define SPARK_MIMO25_MODEL_SWA_QKV_DIMENSION 14848u           /* checkpoint qkv rows, SWA branch */
-#define SPARK_MIMO25_MODEL_Q_DIMENSION 12288u
-#define SPARK_MIMO25_MODEL_O_INPUT_DIMENSION 8192u           /* heads * v_head_dim */
+#define SPARK_MIMO25_MODEL_FULL_QKV_DIMENSION 27136u          /* checkpoint qkv rows, full branch */
+#define SPARK_MIMO25_MODEL_SWA_QKV_DIMENSION 27136u           /* checkpoint qkv rows, SWA branch */
+#define SPARK_MIMO25_MODEL_Q_DIMENSION 24576u
+#define SPARK_MIMO25_MODEL_O_INPUT_DIMENSION 16384u           /* heads * v_head_dim */
 #define SPARK_MIMO25_MODEL_SLIDING_WINDOW_TOKENS 128u
-#define SPARK_MIMO25_MODEL_ATTN_VALUE_SCALE 0.707f
+#define SPARK_MIMO25_MODEL_ATTN_VALUE_SCALE 0.612f
 #define SPARK_MIMO25_MODEL_FULL_ROPE_THETA 10000000.0f
 #define SPARK_MIMO25_MODEL_SWA_ROPE_THETA 10000.0f
 
 #define SPARK_MIMO25_MODEL_DENSE_INTERMEDIATE_DIMENSION 16384u
 #define SPARK_MIMO25_MODEL_EXPERT_INTERMEDIATE_DIMENSION 2048u
-#define SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT 256u
+#define SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT 384u
 #define SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN 8u
 #define SPARK_MIMO25_MODEL_ROUTED_SCALING_FACTOR 1.0f           /* CONFIG routed_scaling_factor null */
 #define SPARK_MIMO25_MODEL_ROUTER_NORM_EPSILON 1e-20f           /* topk weight sum guard */
@@ -89,9 +89,11 @@
 /* CONFIG hybrid_layer_pattern: 1 = SWA, 0 = full attention. */
 static const uint8_t SPARK_MIMO25_MODEL_LAYER_KIND[SPARK_MIMO25_MODEL_LAYER_COUNT] =
 {
-	0,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,
-	1,0,1,1,1,1,1,0,1,1,1,1,1,0,1,1,
-	1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0
+	0,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,
+	1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,
+	1,1,1,1,1,1,1,0,1,1,1,1,1,1,1,0,
+	1,1,1,1,1,1,1,0,1,1,1,1,1,1,0,1,
+	1,1,1,1,1,0
 };
 
 /* CONFIG moe_layer_freq: 1 = MoE, 0 = dense MLP. */
@@ -99,7 +101,9 @@ static const uint8_t SPARK_MIMO25_MODEL_LAYER_IS_MOE[SPARK_MIMO25_MODEL_LAYER_CO
 {
 	0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
 	1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
-	1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1
+	1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+	1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,
+	1,1,1,1,1,1
 };
 
 static inline uint32_t SparkMimo25ModelLayerKind(uint32_t layer_index)
