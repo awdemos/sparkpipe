@@ -24,7 +24,8 @@ typedef enum SparkStatus
     SPARK_STATUS_ROUTE_NOT_FOUND,
     SPARK_STATUS_BUSY,
     SPARK_STATUS_DUPLICATE,
-    SPARK_STATUS_INTERNAL_ERROR
+    SPARK_STATUS_INTERNAL_ERROR,
+    SPARK_STATUS_PENDING
 } SparkStatus;
 
 const char *SparkStatusToString(SparkStatus status);

@@ -38,6 +38,11 @@ SparkStatus SparkGlm52Pp13NodeContextBuilderValidateInterface(
 		builder_interface->submit_work == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((required_capability_flags &
+			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_KV_LOOKAHEAD_PREFETCH) !=
+			0u &&
+		builder_interface->prefetch_work == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((required_capability_flags &
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_ASYNC_WORK) != 0u &&
 		builder_interface->progress == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -48,6 +53,11 @@ SparkStatus SparkGlm52Pp13NodeContextBuilderValidateInterface(
 	if ((required_capability_flags &
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_NVME_KV) != 0u &&
 		builder_interface->get_kv_stats == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((required_capability_flags &
+			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_MOONCAKE_KV) != 0u &&
+		(builder_interface->get_kv_stats == 0 ||
+		 builder_interface->prefetch_work == 0))
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((required_capability_flags &
 			SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CAP_CONTROL_GENERATION_RESET) != 0u &&

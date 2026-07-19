@@ -194,6 +194,7 @@ static void SparkTestInternalDirectoryDecodeHasNoBlockPayload(void)
 
 static void SparkTestWideSubmitWorkUsesVariablePayload(void)
 {
+    SparkGlm52CudaResidentIpcSubmitWork *message;
     SparkGlm52Pp13WorkControlPacket *packet;
     uint32_t lane_index;
     uint32_t packet_bytes;
@@ -201,6 +202,9 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
 
     packet = (SparkGlm52Pp13WorkControlPacket *)calloc(1u,sizeof(*packet));
     assert(packet != 0);
+    message = (SparkGlm52CudaResidentIpcSubmitWork *)calloc(
+        1u,sizeof(*message));
+    assert(message != 0);
     packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
     packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
     packet->control_generation =
@@ -231,6 +235,22 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
     assert(submit_bytes ==
         SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_PREFIX_BYTES + packet_bytes);
     assert(submit_bytes == SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_BYTES);
+    assert(SparkGlm52CudaResidentIpcInitializeSubmitWork(
+        message,packet,
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT) ==
+        SPARK_STATUS_OK);
+    assert(message->descriptor_bytes == submit_bytes);
+    assert(message->flags ==
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT);
+    assert(SparkGlm52CudaResidentIpcValidateSubmitWork(
+        message,submit_bytes) == SPARK_STATUS_OK);
+    message->flags = 0x80000000u;
+    assert(SparkGlm52CudaResidentIpcValidateSubmitWork(
+        message,submit_bytes) == SPARK_STATUS_INVALID_ARGUMENT);
+    message->flags =
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT;
+    assert(SparkGlm52CudaResidentIpcValidateSubmitWork(
+        message,submit_bytes - 1u) == SPARK_STATUS_ABI_MISMATCH);
 
     packet->descriptor_bytes =
         SPARK_GLM52_PP13_WORK_CONTROL_PACKET_PREFIX_BYTES - 1u;
@@ -238,6 +258,15 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
     packet->descriptor_bytes =
         SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES + 1u;
     assert(SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(packet) == 0u);
+    packet->descriptor_bytes = packet_bytes;
+    packet->flags = SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES;
+    assert(SparkGlm52CudaResidentIpcInitializeSubmitWork(
+        message,packet,0u) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkGlm52CudaResidentIpcInitializeSubmitWork(
+        message,packet,
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT) ==
+        SPARK_STATUS_OK);
+    free(message);
     free(packet);
 }
 
@@ -256,10 +285,17 @@ static void SparkTestMtpTreeExecutionContract(void)
         SPARK_GLM52_STAGE_PLAN_BUCKET_B128,
         &batch_bucket) == SPARK_STATUS_OK);
     assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128);
+    /* Rows beyond the dispatch bucket widen to the next compiled
+     * bucket instead of rejecting the dispatch. */
     assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
         &dispatch,
         SPARK_GLM52_STAGE_PLAN_BUCKET_B128 + 1u,
-        &batch_bucket) == SPARK_STATUS_INVALID_ARGUMENT);
+        &batch_bucket) == SPARK_STATUS_OK);
+    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B256);
+    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+        &dispatch,
+        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET + 1u,
+        &batch_bucket) == SPARK_STATUS_CAPACITY_EXCEEDED);
     assert(SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH,
         SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT,
@@ -340,6 +376,41 @@ static void SparkTestResidentIpcReaderPreservesFragments(void)
     close(sockets[1u]);
 }
 
+/* Regression: a prompt longer than one bucket of tokens must not be
+ * rejected. The scheduler buckets a prefill dispatch by sequence count
+ * (1 sequence -> B16) while the packet carries lanes x tokens rows
+ * (17 rows); the bucket must widen to cover the rows. */
+static void SparkTestPrefillRowsWidenExecutionBucket(void)
+{
+    SparkGlm52RequestApiDispatch dispatch;
+    uint32_t batch_bucket;
+
+    memset(&dispatch,0,sizeof(dispatch));
+    dispatch.kind = SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL;
+    dispatch.prefill_decision.batch_bucket =
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
+    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+        &dispatch,
+        17u,
+        &batch_bucket) == SPARK_STATUS_OK);
+    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B32);
+    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+        &dispatch,
+        16u,
+        &batch_bucket) == SPARK_STATUS_OK);
+    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B16);
+    /* 16 lanes x 6 verifier rows widen B16 to B128. */
+    dispatch.kind =
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH;
+    dispatch.decode_batch_decision.batch_bucket =
+        SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
+    assert(SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
+        &dispatch,
+        96u,
+        &batch_bucket) == SPARK_STATUS_OK);
+    assert(batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128);
+}
+
 int main(void)
 {
     SparkTestWideDecodePayload();
@@ -347,6 +418,7 @@ int main(void)
     SparkTestInternalDirectoryDecodeHasNoBlockPayload();
     SparkTestWideSubmitWorkUsesVariablePayload();
     SparkTestMtpTreeExecutionContract();
+    SparkTestPrefillRowsWidenExecutionBucket();
     SparkTestResidentIpcReaderPreservesFragments();
     return 0;
 }

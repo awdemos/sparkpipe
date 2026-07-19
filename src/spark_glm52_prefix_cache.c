@@ -1793,12 +1793,13 @@ SparkStatus SparkGlm52PrefixCacheLookupPrompt(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52PrefixCacheReservePrompt(
+static SparkStatus SparkGlm52PrefixCacheReservePromptInternal(
     SparkGlm52PrefixCache *cache,
     uint64_t sequence_id,
     const uint32_t *token_ids,
     uint32_t token_count,
-    SparkGlm52PrefixCacheReservation *reservation)
+    SparkGlm52PrefixCacheReservation *reservation,
+    uint32_t allow_cross_sequence_reuse)
 {
     uint64_t parent_hash;
     uint64_t block_hash;
@@ -1875,7 +1876,8 @@ SparkStatus SparkGlm52PrefixCacheReservePrompt(
         {
             entry = &cache->entries[existing_binding->entry_index];
         }
-        if (entry == 0 && is_full_block != 0u && token_offset < reusable_token_count)
+        if (entry == 0 && allow_cross_sequence_reuse != 0u &&
+            is_full_block != 0u && token_offset < reusable_token_count)
         {
             entry = SparkGlm52PrefixCacheFindEntry(
                 cache,
@@ -1898,7 +1900,7 @@ SparkStatus SparkGlm52PrefixCacheReservePrompt(
                 return SPARK_STATUS_CAPACITY_EXCEEDED;
             }
             entry_flags = SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_PENDING;
-            if (is_full_block == 0u)
+            if (is_full_block == 0u || allow_cross_sequence_reuse == 0u)
             {
                 entry_flags |= SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY;
             }
@@ -1964,6 +1966,28 @@ SparkStatus SparkGlm52PrefixCacheReservePrompt(
     reservation->physical_block_count = block_count;
     reservation->last_block_hash = parent_hash;
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52PrefixCacheReservePrompt(
+    SparkGlm52PrefixCache *cache,
+    uint64_t sequence_id,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    SparkGlm52PrefixCacheReservation *reservation)
+{
+    return SparkGlm52PrefixCacheReservePromptInternal(
+        cache,sequence_id,token_ids,token_count,reservation,1u);
+}
+
+SparkStatus SparkGlm52PrefixCacheReserveSequencePrompt(
+    SparkGlm52PrefixCache *cache,
+    uint64_t sequence_id,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    SparkGlm52PrefixCacheReservation *reservation)
+{
+    return SparkGlm52PrefixCacheReservePromptInternal(
+        cache,sequence_id,token_ids,token_count,reservation,0u);
 }
 
 SparkStatus SparkGlm52PrefixCacheCommitReservation(

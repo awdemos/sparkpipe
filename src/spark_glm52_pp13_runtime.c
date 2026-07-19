@@ -48,6 +48,21 @@ uint32_t SparkGlm52Pp13RuntimeDsaCandidateBucket(
     return candidate_count;
 }
 
+uint32_t SparkGlm52Pp13RuntimeExecutionRowCapacity(
+    uint32_t logical_lane_capacity)
+{
+    uint64_t execution_row_capacity;
+    if (logical_lane_capacity == 0u ||
+        logical_lane_capacity > SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
+        return 0u;
+    execution_row_capacity =
+        (uint64_t)logical_lane_capacity *
+        (uint64_t)SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE;
+    if (execution_row_capacity > SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
+        execution_row_capacity = SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET;
+    return (uint32_t)execution_row_capacity;
+}
+
 SparkStatus SparkGlm52Pp13RuntimeParseQuantizationMode(
     const char *name,
     uint32_t *quantization_mode_out)
@@ -236,7 +251,6 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     uint32_t error_buffer_bytes)
 {
     SparkGlm52StagePlan stage_plan;
-    uint64_t maximum_execution_row_count;
     SparkStatus status;
 
     if (rank_plan == 0 || logical_lane_capacity == 0u ||
@@ -276,22 +290,11 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     rank_plan->next_rank_index = UINT32_MAX;
     rank_plan->listen_port = port_base + rank_index;
     rank_plan->next_port = 0u;
-    maximum_execution_row_count =
-        (uint64_t)logical_lane_capacity *
-        (uint64_t)SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE;
-    if (maximum_execution_row_count > UINT32_MAX)
-    {
-        return SparkGlm52Pp13RuntimeReport(
-            error_buffer,
-            error_buffer_bytes,
-            SPARK_STATUS_CAPACITY_EXCEEDED,
-            "PP13 execution-row capacity overflows u32");
-    }
     rank_plan->logical_lane_capacity = logical_lane_capacity;
     rank_plan->maximum_speculative_rows_per_lane =
         SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE;
     rank_plan->execution_row_capacity =
-        (uint32_t)maximum_execution_row_count;
+        SparkGlm52Pp13RuntimeExecutionRowCapacity(logical_lane_capacity);
     rank_plan->hidden_dimension = SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION;
     rank_plan->bytes_per_sequence =
         SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE;
@@ -410,8 +413,8 @@ SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
         rank_plan->maximum_speculative_rows_per_lane !=
             SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE ||
         rank_plan->execution_row_capacity !=
-            rank_plan->logical_lane_capacity *
-                rank_plan->maximum_speculative_rows_per_lane ||
+            SparkGlm52Pp13RuntimeExecutionRowCapacity(
+                rank_plan->logical_lane_capacity) ||
         rank_plan->hidden_dimension != SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION ||
         rank_plan->bytes_per_sequence !=
             SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE ||

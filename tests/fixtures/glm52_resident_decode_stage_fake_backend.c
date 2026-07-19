@@ -161,6 +161,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     first_node_context = layer_node_contexts[0];
+    (void)frame_context;
     if (first_node_context == 0 ||
         pipeline_slot_index >= first_node_context->pipeline_slot_count ||
         active_sequence_count == 0u ||

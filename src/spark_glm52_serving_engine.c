@@ -624,6 +624,27 @@ static SparkGlm52ServingRequestRecord *SparkGlm52ServingFindRecordByHandle(
     return 0;
 }
 
+static SparkGlm52ServingRequestRecord *SparkGlm52ServingFindRecordByRequestId(
+    SparkGlm52ServingEngine *engine,
+    uint64_t request_id)
+{
+    SparkGlm52ServingRequestRecord *record;
+    uint32_t record_index;
+
+    for (record_index = 0u;
+         record_index < engine->request_record_capacity;
+         ++record_index)
+    {
+        record = &engine->request_records[record_index];
+        if (record->state != SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_FREE &&
+            record->request_id == request_id)
+        {
+            return record;
+        }
+    }
+    return 0;
+}
+
 static uint32_t SparkGlm52ServingTokenIsStopToken(
     const SparkGlm52ServingEngine *engine,
     uint32_t token_id)
@@ -688,6 +709,42 @@ static SparkStatus SparkGlm52ServingPushSimpleEvent(
         event.prompt_token_count = record->prompt_token_count;
     }
     return SparkGlm52ServingPushEvent(engine, &event);
+}
+
+static void SparkGlm52ServingFailDispatchRequests(
+    SparkGlm52ServingEngine *engine,
+    const SparkGlm52RequestApiDispatch *dispatch,
+    SparkStatus failure_status)
+{
+    uint32_t lane_index;
+
+    if (engine == 0 || dispatch == 0)
+    {
+        return;
+    }
+    for (lane_index = 0u;
+         lane_index < dispatch->request_count &&
+             lane_index < SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT;
+         ++lane_index)
+    {
+        SparkGlm52ServingRequestRecord *record;
+
+        record = SparkGlm52ServingFindRecordByHandle(
+            engine,
+            dispatch->request_handles[lane_index]);
+        if (record == 0 ||
+            record->state == SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_COMPLETED ||
+            record->state == SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_CANCELLED)
+        {
+            continue;
+        }
+        record->state = SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_CANCELLED;
+        (void)SparkGlm52ServingPushSimpleEvent(
+            engine,
+            SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_CANCELLED,
+            (uint32_t)failure_status,
+            record);
+    }
 }
 
 static SparkStatus SparkGlm52ServingApplyContextBudget(
@@ -2012,6 +2069,7 @@ SparkStatus SparkGlm52ServingEnginePump(
     uint32_t max_dispatch_steps,
     SparkGlm52ServingStats *stats)
 {
+    uint32_t accepted_pending_dispatch_count;
     uint32_t step_index;
     uint32_t step_limit;
     SparkStatus status;
@@ -2029,10 +2087,12 @@ SparkStatus SparkGlm52ServingEnginePump(
     step_limit = max_dispatch_steps != 0u
         ? max_dispatch_steps
         : SPARK_GLM52_SERVING_DEFAULT_MAX_PUMP_STEPS;
+    accepted_pending_dispatch_count = 0u;
     for (step_index = 0u; step_index < step_limit; ++step_index)
     {
         SparkGlm52RequestApiDispatch dispatch;
         uint32_t dispatch_was_completed_by_decode_path;
+        uint32_t dispatch_was_retried;
 
         if (SparkGlm52ServingEventRingFreeCount(engine) <
             SparkGlm52ServingEventRingSafetyMargin())
@@ -2052,6 +2112,8 @@ SparkStatus SparkGlm52ServingEnginePump(
             &dispatch);
         if (status == SPARK_STATUS_NOT_FOUND || status == SPARK_STATUS_BUSY)
         {
+            if (accepted_pending_dispatch_count != 0u)
+                status = SPARK_STATUS_PENDING;
             engine->stats.last_status = status;
             SparkGlm52ServingRefreshStats(engine);
             if (stats != 0)
@@ -2083,6 +2145,7 @@ SparkStatus SparkGlm52ServingEnginePump(
         }
 
         dispatch_was_completed_by_decode_path = 0u;
+        dispatch_was_retried = 0u;
         if (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
             dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH)
         {
@@ -2114,7 +2177,18 @@ SparkStatus SparkGlm52ServingEnginePump(
             {
                 dispatch_was_completed_by_decode_path = 1u;
             }
-            else if (status != SPARK_STATUS_BUSY)
+            else if (status == SPARK_STATUS_BUSY)
+            {
+                status = SparkGlm52RequestApiRetryDecodeDispatch(
+                    engine->request_api,
+                    &dispatch);
+                if (status == SPARK_STATUS_OK)
+                {
+                    dispatch_was_retried = 1u;
+                    status = SPARK_STATUS_BUSY;
+                }
+            }
+            else if (status != SPARK_STATUS_PENDING)
             {
                 fprintf(stderr,"serving_decode_invoke_failed status=%u request=%llu\n",(uint32_t)status,(unsigned long long)dispatch.request_ids[0u]);
             }
@@ -2126,12 +2200,30 @@ SparkStatus SparkGlm52ServingEnginePump(
 
         if (status != SPARK_STATUS_OK)
         {
-            if (status == SPARK_STATUS_BUSY &&
-                (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
-                 dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH ||
-                 dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
+            if (status == SPARK_STATUS_PENDING &&
+                (dispatch.kind ==
+                    SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
                  dispatch.kind ==
                     SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH))
+            {
+                accepted_pending_dispatch_count += 1u;
+                if ((pump_flags &
+                        SPARK_GLM52_SERVING_PUMP_FLAG_STOP_AFTER_ONE_DISPATCH) != 0u)
+                {
+                    engine->stats.last_status = SPARK_STATUS_PENDING;
+                    SparkGlm52ServingRefreshStats(engine);
+                    if (stats != 0)
+                    {
+                        *stats = engine->stats;
+                    }
+                    return SPARK_STATUS_PENDING;
+                }
+                continue;
+            }
+            else if (status == SPARK_STATUS_BUSY &&
+                (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
+                 dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH ||
+                 dispatch_was_retried != 0u))
             {
                 engine->stats.last_status = status;
                 SparkGlm52ServingRefreshStats(engine);
@@ -2141,11 +2233,16 @@ SparkStatus SparkGlm52ServingEnginePump(
                 }
                 return status;
             }
-            if (dispatch_was_completed_by_decode_path == 0u)
+            if (dispatch_was_completed_by_decode_path == 0u &&
+                dispatch_was_retried == 0u)
             {
                 (void)SparkGlm52RequestApiCancelDispatch(
                     engine->request_api,
                     &dispatch);
+                SparkGlm52ServingFailDispatchRequests(
+                    engine,
+                    &dispatch,
+                    status);
             }
             engine->stats.last_status = status;
             SparkGlm52ServingRefreshStats(engine);
@@ -2168,13 +2265,16 @@ SparkStatus SparkGlm52ServingEnginePump(
         }
     }
 
-    engine->stats.last_status = SPARK_STATUS_OK;
+    status = accepted_pending_dispatch_count != 0u
+        ? SPARK_STATUS_PENDING
+        : SPARK_STATUS_OK;
+    engine->stats.last_status = status;
     SparkGlm52ServingRefreshStats(engine);
     if (stats != 0)
     {
         *stats = engine->stats;
     }
-    return SPARK_STATUS_OK;
+    return status;
 }
 
 SparkStatus SparkGlm52ServingEnginePopEvent(
@@ -2248,6 +2348,46 @@ SparkStatus SparkGlm52ServingEngineCancelRequest(
         engine,
         SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_CANCELLED,
         SPARK_STATUS_OK,
+        record);
+    SparkGlm52ServingRefreshStats(engine);
+    return status;
+}
+
+SparkStatus SparkGlm52ServingEngineFailRequestByRequestId(
+    SparkGlm52ServingEngine *engine,
+    uint64_t request_id,
+    SparkStatus failure_status)
+{
+    SparkGlm52ServingRequestRecord *record;
+    SparkStatus status;
+
+    status = SparkGlm52ServingValidateEngine(engine);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (request_id == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    record = SparkGlm52ServingFindRecordByRequestId(engine,request_id);
+    if (record == 0)
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    if (record->state == SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_COMPLETED ||
+        record->state == SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_CANCELLED)
+    {
+        return SPARK_STATUS_OK;
+    }
+    (void)SparkGlm52RequestApiCancelRequest(
+        engine->request_api,
+        record->request_handle);
+    record->state = SPARK_GLM52_SERVING_REQUEST_RECORD_STATE_CANCELLED;
+    status = SparkGlm52ServingPushSimpleEvent(
+        engine,
+        SPARK_GLM52_SERVING_EVENT_KIND_REQUEST_CANCELLED,
+        (uint32_t)failure_status,
         record);
     SparkGlm52ServingRefreshStats(engine);
     return status;

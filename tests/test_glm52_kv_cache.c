@@ -730,7 +730,9 @@ static void SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression(void)
 {
     SparkGlm52KvCacheCapacityRequest request;
     SparkGlm52KvCacheCapacityEstimate full_estimate;
+    SparkGlm52KvCacheCapacityEstimate full_fp8_estimate;
     SparkGlm52KvCacheCapacityEstimate mla_estimate;
+    uint64_t full_fp8_bytes_per_token_per_layer;
 
     memset(&request, 0, sizeof(request));
     request.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
@@ -755,18 +757,48 @@ static void SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression(void)
         &request,
         &full_estimate) == SPARK_STATUS_OK);
 
+    request.layout = SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3;
+    request.fp8_scale_block_size = SPARK_GLM52_MODEL_FP8_SCALE_BLOCK;
+    assert(SparkGlm52KvCacheEstimateCapacity(
+        &request,
+        &full_fp8_estimate) == SPARK_STATUS_OK);
+
     request.layout = SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED;
+    request.fp8_scale_block_size = 0u;
     assert(SparkGlm52KvCacheEstimateCapacity(
         &request,
         &mla_estimate) == SPARK_STATUS_OK);
 
     assert(full_estimate.contexts_per_rank < mla_estimate.contexts_per_rank);
+    assert(full_estimate.contexts_per_rank <
+        full_fp8_estimate.contexts_per_rank);
+    assert(full_fp8_estimate.contexts_per_rank <
+        mla_estimate.contexts_per_rank);
     assert(full_estimate.attention_bytes_per_token_per_layer ==
         ((uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
          ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
           SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION) +
          ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
           SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION)) * sizeof(uint16_t));
+    full_fp8_bytes_per_token_per_layer =
+        (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+        ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+         SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION) +
+        ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+         SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION) +
+        (((SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+           SPARK_GLM52_MODEL_FP8_SCALE_BLOCK - 1u) /
+          SPARK_GLM52_MODEL_FP8_SCALE_BLOCK) +
+         ((((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+            SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION) +
+           SPARK_GLM52_MODEL_FP8_SCALE_BLOCK - 1u) /
+          SPARK_GLM52_MODEL_FP8_SCALE_BLOCK) +
+         ((((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+            SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION) +
+           SPARK_GLM52_MODEL_FP8_SCALE_BLOCK - 1u) /
+          SPARK_GLM52_MODEL_FP8_SCALE_BLOCK)) * sizeof(float);
+    assert(full_fp8_estimate.attention_bytes_per_token_per_layer ==
+        full_fp8_bytes_per_token_per_layer);
     assert(mla_estimate.attention_bytes_per_token_per_layer ==
         SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t));
     assert(mla_estimate.dsa_index_bytes_per_token ==
@@ -780,8 +812,33 @@ static void SparkTestKvJitStageBudgetsMatchPp13Storage(void)
 {
     SparkGlm52KvJitStageBudgetRequest request;
     SparkGlm52KvJitStageBudget budget;
+    uint64_t full_bf16_bytes_per_token_per_layer;
+    uint64_t full_fp8_bytes_per_token_per_layer;
 
     memset(&request, 0, sizeof(request));
+    full_bf16_bytes_per_token_per_layer =
+        ((uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+         ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+          SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION) +
+         ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+          SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION)) * sizeof(uint16_t);
+    full_fp8_bytes_per_token_per_layer =
+        (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+        ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+         SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION) +
+        ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+         SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION) +
+        (((SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+           SPARK_GLM52_MODEL_FP8_SCALE_BLOCK - 1u) /
+          SPARK_GLM52_MODEL_FP8_SCALE_BLOCK) +
+         ((((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+            SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION) +
+           SPARK_GLM52_MODEL_FP8_SCALE_BLOCK - 1u) /
+          SPARK_GLM52_MODEL_FP8_SCALE_BLOCK) +
+         ((((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
+            SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION) +
+           SPARK_GLM52_MODEL_FP8_SCALE_BLOCK - 1u) /
+          SPARK_GLM52_MODEL_FP8_SCALE_BLOCK)) * sizeof(float);
     request.abi_version = SPARK_GLM52_KV_JIT_STAGE_BUDGET_ABI_VERSION;
     request.descriptor_bytes =
         SPARK_GLM52_KV_JIT_STAGE_BUDGET_REQUEST_DESCRIPTOR_BYTES;
@@ -826,8 +883,24 @@ static void SparkTestKvJitStageBudgetsMatchPp13Storage(void)
     assert(budget.resident_bytes_per_token == 4344u);
 
     request.attention_cache_layout =
-        SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED;
+        SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3;
+    assert(SparkGlm52KvCacheCalculateJitStageBudget(
+        &request, &budget) == SPARK_STATUS_OK);
+    assert(budget.mla_bytes_per_token ==
+        6u * full_fp8_bytes_per_token_per_layer);
+    assert(budget.resident_bytes_per_token ==
+        budget.mla_bytes_per_token + budget.dsa_index_bytes_per_token);
+
+    request.attention_cache_layout =
+        SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE;
     request.fp8_scale_block_size = 0u;
+    assert(SparkGlm52KvCacheCalculateJitStageBudget(
+        &request, &budget) == SPARK_STATUS_OK);
+    assert(budget.mla_bytes_per_token ==
+        6u * full_bf16_bytes_per_token_per_layer);
+
+    request.attention_cache_layout =
+        SPARK_GLM52_KV_CACHE_LAYOUT_MLA_COMPRESSED;
 
     request.first_layer_index = 6u;
     assert(SparkGlm52KvCacheCalculateJitStageBudget(

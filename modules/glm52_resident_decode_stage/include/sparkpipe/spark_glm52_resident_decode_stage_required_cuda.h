@@ -192,14 +192,33 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3KvCacheLoad(
     uint32_t scale_block_size,
     void *cuda_stream);
 
-SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedKvCacheStore(
-    const void *input_bf16_cache,
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedActiveRowsKvCacheStore(
+    const void *input_bf16_active_rows,
     const uint32_t *slot_mapping,
     uint8_t *output_fp8_e4m3,
     float *output_scale_f32,
     uint32_t active_sequence_count,
     uint32_t cache_token_capacity,
     uint32_t element_count,
+    uint32_t scale_block_size,
+    void *cuda_stream);
+
+SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3MappedActiveRowsKvCacheStoreTriple(
+    const void *mla_bf16_active_rows,
+    const void *raw_kv_b_bf16_active_rows,
+    const uint32_t *slot_mapping,
+    uint8_t *mla_cache_fp8_e4m3,
+    float *mla_cache_scale_f32,
+    uint8_t *key_nope_cache_fp8_e4m3,
+    float *key_nope_cache_scale_f32,
+    uint8_t *value_cache_fp8_e4m3,
+    float *value_cache_scale_f32,
+    uint32_t active_sequence_count,
+    uint32_t cache_token_capacity,
+    uint32_t mla_element_count,
+    uint32_t key_nope_element_count,
+    uint32_t value_element_count,
+    uint32_t raw_kv_b_element_count,
     uint32_t scale_block_size,
     void *cuda_stream);
 
@@ -299,7 +318,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan(
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedHiddenQuantize(
     const void *hidden_bf16,
-    const uint32_t *packed_source_token_indices,
+    const uint32_t *packed_route_rows_by_token_route,
     uint8_t *packed_hidden_fp8_e4m3,
     float *packed_hidden_scale_f32,
     float *packed_hidden_amax_f32,

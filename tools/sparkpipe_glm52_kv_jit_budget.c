@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
+#include "sparkpipe/spark_glm52_mtp_tree.h"
 #include "sparkpipe/spark_glm52_pp13_node_context_builder.h"
 #include "sparkpipe/spark_glm52_pp13_runtime.h"
 
@@ -79,6 +80,30 @@ static double SparkGlm52KvJitBudgetToolGiB(uint64_t bytes)
     return (double)bytes / (double)UINT64_C(1073741824);
 }
 
+static int SparkGlm52KvJitBudgetToolPopulateKvLayout(
+    uint32_t quantization_mode,
+    SparkGlm52KvJitStageBudgetRequest *request)
+{
+    if (request == 0)
+        return -1;
+    if (quantization_mode ==
+        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+    {
+        request->attention_cache_layout =
+            SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3;
+        request->fp8_scale_block_size = SPARK_GLM52_MODEL_FP8_SCALE_BLOCK;
+        return 0;
+    }
+    if (quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+    {
+        request->attention_cache_layout =
+            SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE;
+        request->fp8_scale_block_size = 0u;
+        return 0;
+    }
+    return -1;
+}
+
 int main(int argc,char **argv)
 {
     SparkGlm52KvJitBudgetToolConfiguration configuration;
@@ -89,10 +114,16 @@ int main(int argc,char **argv)
     uint64_t blocks_per_request;
     uint64_t physical_block_capacity;
     uint64_t reserved_context_token_count;
+    uint64_t canonical_active_blocks;
+    uint64_t persistent_backing_blocks;
+    uint64_t mtp_transient_blocks;
+    uint64_t mtp_shadow_token_records;
     uint64_t required_active_blocks;
-    uint64_t required_backing_blocks;
+    uint64_t all_requests_gpu_blocks;
+    uint64_t storage_token_capacity;
     uint64_t aggregate_nvme_capacity_bytes;
     uint64_t aggregate_nvme_required_bytes;
+    uint64_t aggregate_mtp_shadow_bytes;
     uint64_t maximum_active_sequence_count;
     uint64_t request_cohort_count;
     uint64_t resident_cohort_capacity;
@@ -152,14 +183,35 @@ int main(int argc,char **argv)
         (reserved_context_token_count +
          SPARK_GLM52_KV_BLOCK_TOKENS - 1u) /
         SPARK_GLM52_KV_BLOCK_TOKENS;
-    required_active_blocks = blocks_per_request *
+    canonical_active_blocks = blocks_per_request *
         configuration.active_sequence_count;
-    required_backing_blocks = blocks_per_request *
+    persistent_backing_blocks = blocks_per_request *
         configuration.backing_request_count;
+    mtp_transient_blocks = configuration.mtp_enabled != 0u
+        ? (uint64_t)SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT *
+            configuration.active_sequence_count
+        : 0u;
+    mtp_shadow_token_records = configuration.mtp_enabled != 0u
+        ? (uint64_t)SPARK_GLM52_MODEL_MTP_TREE_SHADOW_TOKEN_COUNT *
+            configuration.backing_request_count
+        : 0u;
+    if (mtp_shadow_token_records > UINT32_MAX ||
+        (uint64_t)configuration.physical_pool_token_capacity >
+            UINT32_MAX - mtp_shadow_token_records)
+    {
+        fprintf(stderr,"KV storage token capacity overflow\n");
+        return 2;
+    }
+    required_active_blocks = canonical_active_blocks + mtp_transient_blocks;
+    all_requests_gpu_blocks = persistent_backing_blocks + mtp_transient_blocks;
+    storage_token_capacity =
+        configuration.physical_pool_token_capacity + mtp_shadow_token_records;
     physical_block_capacity = configuration.physical_pool_token_capacity /
         SPARK_GLM52_KV_BLOCK_TOKENS;
     maximum_active_sequence_count = physical_block_capacity /
-        blocks_per_request;
+        (blocks_per_request +
+         (configuration.mtp_enabled != 0u
+            ? SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT : 0u));
     request_cohort_count =
         ((uint64_t)configuration.backing_request_count +
          configuration.active_sequence_count - 1u) /
@@ -168,9 +220,11 @@ int main(int argc,char **argv)
         ? physical_block_capacity / required_active_blocks : 0u;
     printf(
         "active=%u requests=%u average_context=%u generation_headroom=%u "
-        "reserved_context=%" PRIu64 " pool_tokens=%u "
-        "nvme_blocks=%u required_active_blocks=%" PRIu64 " "
-        "required_backing_blocks=%" PRIu64 " maximum_resident=%" PRIu64 " "
+        "reserved_context=%" PRIu64 " pool_tokens=%u storage_tokens=%" PRIu64 " "
+        "nvme_blocks=%u canonical_active_blocks=%" PRIu64 " "
+        "mtp_transient_blocks=%" PRIu64 " required_active_blocks=%" PRIu64 " "
+        "persistent_backing_blocks=%" PRIu64 " mtp_persistent_blocks=0 "
+        "mtp_shadow_records=%" PRIu64 " maximum_resident=%" PRIu64 " "
         "request_cohorts=%" PRIu64 " resident_cohorts=%" PRIu64 " "
         "gpu_fit=%s all_requests_gpu_fit=%s nvme_fit=%s\n",
         configuration.active_sequence_count,
@@ -179,16 +233,20 @@ int main(int argc,char **argv)
         configuration.generation_headroom_token_count,
         reserved_context_token_count,
         configuration.physical_pool_token_capacity,
+        storage_token_capacity,
         configuration.backing_block_capacity,
+        canonical_active_blocks,
+        mtp_transient_blocks,
         required_active_blocks,
-        required_backing_blocks,
+        persistent_backing_blocks,
+        mtp_shadow_token_records,
         maximum_active_sequence_count,
         request_cohort_count,
         resident_cohort_capacity,
         required_active_blocks <=
             physical_block_capacity ? "yes" : "no",
-        required_backing_blocks <= physical_block_capacity ? "yes" : "no",
-        required_backing_blocks <= configuration.backing_block_capacity
+        all_requests_gpu_blocks <= physical_block_capacity ? "yes" : "no",
+        persistent_backing_blocks <= configuration.backing_block_capacity
             ? "yes" : "no");
     if (required_active_blocks ==
         configuration.physical_pool_token_capacity /
@@ -196,13 +254,17 @@ int main(int argc,char **argv)
     {
         printf("warning=active_gpu_pool_has_zero_block_headroom\n");
     }
-    printf("rank layers dsa mtp gpu_pool_GiB record_KiB nvme_capacity_GiB "
-        "nvme_required_GiB compact_selected_mla_GiB\n");
+    printf("rank layers dsa mtp physical_gpu_pool_GiB mtp_shadow_GiB "
+        "gpu_storage_GiB record_KiB nvme_capacity_GiB nvme_required_GiB "
+        "compact_selected_mla_GiB\n");
     aggregate_nvme_capacity_bytes = 0u;
     aggregate_nvme_required_bytes = 0u;
+    aggregate_mtp_shadow_bytes = 0u;
     for (rank_index = 0u; rank_index < stage_plan.stage_count; ++rank_index)
     {
         uint64_t required_nvme_bytes;
+        uint64_t mtp_shadow_bytes;
+        uint64_t gpu_storage_bytes;
         const SparkGlm52StagePlanStage *stage;
 
         stage = &stage_plan.stages[rank_index];
@@ -223,31 +285,54 @@ int main(int argc,char **argv)
         request.block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
         request.record_alignment_bytes =
             SPARK_GLM52_KV_JIT_DEFAULT_RECORD_ALIGNMENT;
+        if (SparkGlm52KvJitBudgetToolPopulateKvLayout(
+                SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE,
+                &request) != 0)
+        {
+            fprintf(stderr,"rank %u KV layout is unsupported\n",rank_index);
+            return 1;
+        }
         if (SparkGlm52KvCacheCalculateJitStageBudget(
                 &request,&budget) != SPARK_STATUS_OK ||
-            required_backing_blocks > UINT64_MAX / budget.nvme_record_bytes)
+            persistent_backing_blocks > UINT64_MAX / budget.nvme_record_bytes ||
+            (budget.resident_bytes_per_token != 0u &&
+             mtp_shadow_token_records >
+                UINT64_MAX / budget.resident_bytes_per_token))
         {
             fprintf(stderr,"rank %u budget failed\n",rank_index);
             return 1;
         }
-        required_nvme_bytes = required_backing_blocks * budget.nvme_record_bytes;
+        required_nvme_bytes =
+            persistent_backing_blocks * budget.nvme_record_bytes;
+        mtp_shadow_bytes =
+            mtp_shadow_token_records * budget.resident_bytes_per_token;
+        if (budget.resident_pool_bytes > UINT64_MAX - mtp_shadow_bytes)
+        {
+            fprintf(stderr,"rank %u GPU storage budget overflow\n",rank_index);
+            return 1;
+        }
+        gpu_storage_bytes = budget.resident_pool_bytes + mtp_shadow_bytes;
         if (aggregate_nvme_capacity_bytes >
                 UINT64_MAX - budget.nvme_capacity_bytes ||
             aggregate_nvme_required_bytes >
-                UINT64_MAX - required_nvme_bytes)
+                UINT64_MAX - required_nvme_bytes ||
+            aggregate_mtp_shadow_bytes > UINT64_MAX - mtp_shadow_bytes)
         {
             fprintf(stderr,"aggregate NVMe budget overflow\n");
             return 1;
         }
         aggregate_nvme_capacity_bytes += budget.nvme_capacity_bytes;
         aggregate_nvme_required_bytes += required_nvme_bytes;
-        printf("%u %u:%u %u %u %.3f %.0f %.3f %.3f %.3f\n",
+        aggregate_mtp_shadow_bytes += mtp_shadow_bytes;
+        printf("%u %u:%u %u %u %.3f %.3f %.3f %.0f %.3f %.3f %.3f\n",
             rank_index,
             stage->first_layer_index,
             stage->layer_count,
             budget.local_dsa_index_layer_count,
             budget.include_mtp_layer,
             SparkGlm52KvJitBudgetToolGiB(budget.resident_pool_bytes),
+            SparkGlm52KvJitBudgetToolGiB(mtp_shadow_bytes),
+            SparkGlm52KvJitBudgetToolGiB(gpu_storage_bytes),
             (double)budget.nvme_record_bytes / 1024.0,
             SparkGlm52KvJitBudgetToolGiB(budget.nvme_capacity_bytes),
             SparkGlm52KvJitBudgetToolGiB(required_nvme_bytes),
@@ -255,11 +340,13 @@ int main(int argc,char **argv)
                 budget.compact_selected_mla_working_set_bytes));
     }
     printf("aggregate_nvme_capacity_GiB=%.3f "
-        "aggregate_nvme_required_GiB=%.3f\n",
+        "aggregate_nvme_required_GiB=%.3f "
+        "aggregate_mtp_shadow_GiB=%.3f\n",
         SparkGlm52KvJitBudgetToolGiB(aggregate_nvme_capacity_bytes),
-        SparkGlm52KvJitBudgetToolGiB(aggregate_nvme_required_bytes));
+        SparkGlm52KvJitBudgetToolGiB(aggregate_nvme_required_bytes),
+        SparkGlm52KvJitBudgetToolGiB(aggregate_mtp_shadow_bytes));
     return required_active_blocks <=
             physical_block_capacity &&
-        required_backing_blocks <= configuration.backing_block_capacity
+        persistent_backing_blocks <= configuration.backing_block_capacity
         ? 0 : 1;
 }

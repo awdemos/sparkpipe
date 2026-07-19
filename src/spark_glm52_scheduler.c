@@ -140,6 +140,13 @@ static uint32_t SparkGlm52SchedulerPromptCacheIsEnabled(
         SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_PREFIX_CACHE) != 0u;
 }
 
+static uint32_t SparkGlm52SchedulerCrossSequencePrefixReuseIsEnabled(
+    const SparkGlm52Scheduler *scheduler)
+{
+    return (scheduler->configuration_flags &
+        SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE) != 0u;
+}
+
 static uint32_t SparkGlm52SchedulerChunkedPrefillIsEnabled(
     const SparkGlm52Scheduler *scheduler)
 {
@@ -420,8 +427,9 @@ static SparkStatus SparkGlm52SchedulerLookupCachedPrefixTokenCount(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     *cached_prefix_token_count_out = 0u;
-    if (!SparkGlm52SchedulerRequestIsPrefill(request) ||
-        !SparkGlm52SchedulerPromptCacheIsEnabled(scheduler))
+    if (SparkGlm52SchedulerRequestIsPrefill(request) == 0u ||
+        SparkGlm52SchedulerPromptCacheIsEnabled(scheduler) == 0u ||
+        SparkGlm52SchedulerCrossSequencePrefixReuseIsEnabled(scheduler) == 0u)
     {
         return SPARK_STATUS_OK;
     }
@@ -437,6 +445,21 @@ static SparkStatus SparkGlm52SchedulerLookupCachedPrefixTokenCount(
     }
     *cached_prefix_token_count_out = lookup.matched_token_count;
     return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkGlm52SchedulerReservePrompt(
+    SparkGlm52Scheduler *scheduler,
+    const SparkGlm52SchedulerRequest *request,
+    uint32_t token_count,
+    SparkGlm52PrefixCacheReservation *reservation)
+{
+    if (SparkGlm52SchedulerCrossSequencePrefixReuseIsEnabled(scheduler) != 0u)
+        return SparkGlm52PrefixCacheReservePrompt(
+            scheduler->prefix_cache,request->sequence_id,
+            request->prompt_token_ids,token_count,reservation);
+    return SparkGlm52PrefixCacheReserveSequencePrompt(
+        scheduler->prefix_cache,request->sequence_id,
+        request->prompt_token_ids,token_count,reservation);
 }
 
 static uint32_t SparkGlm52SchedulerEffectiveComputedPromptTokenCount(
@@ -698,6 +721,7 @@ static SparkStatus SparkGlm52SchedulerValidateRequest(
          (request->sequence_id == 0u || request->prompt_token_ids == 0)) ||
         (is_prefill &&
          SparkGlm52SchedulerPromptCacheIsEnabled(scheduler) &&
+         SparkGlm52SchedulerCrossSequencePrefixReuseIsEnabled(scheduler) &&
          request->computed_prompt_token_count != 0u) ||
         (is_prefill &&
          request->computed_prompt_token_count >= request->prompt_token_count))
@@ -778,6 +802,128 @@ uint32_t SparkGlm52SchedulerSelectPipelineBatchWidth(
         batch_width = batch_capacity;
     }
     return batch_width;
+}
+
+static SparkStatus SparkGlm52SchedulerEstimateDecodeChunkNs(
+    const SparkGlm52Scheduler *scheduler,
+    uint32_t execution_row_count,
+    uint64_t *estimated_work_ns_out)
+{
+    SparkGlm52StagePlan stage_plan;
+    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT];
+    uint64_t final_stage_extra_cost_ns;
+    uint32_t batch_bucket;
+    uint32_t minimal_batch_bucket;
+    SparkStatus status;
+
+    status = SparkGlm52SchedulerSelectDecodeBatchBucket(
+        scheduler,
+        execution_row_count,
+        &batch_bucket,
+        &minimal_batch_bucket);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52SchedulerBuildMeasuredPlanAndCosts(
+        scheduler,
+        batch_bucket,
+        &stage_plan,
+        layer_cost_ns,
+        &final_stage_extra_cost_ns);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    *estimated_work_ns_out = SparkGlm52SchedulerPlanCriticalPathNs(
+        &stage_plan,
+        layer_cost_ns,
+        final_stage_extra_cost_ns,
+        1u);
+    return *estimated_work_ns_out != 0u
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_MODULE_NOT_VALIDATED;
+}
+
+static SparkStatus SparkGlm52SchedulerSumDecodeChunkWorkNs(
+    const SparkGlm52Scheduler *scheduler,
+    uint32_t logical_sequence_count,
+    uint32_t rows_per_sequence,
+    uint32_t maximum_sequences_per_chunk,
+    uint32_t chunk_count,
+    uint64_t *estimated_work_ns_out)
+{
+    uint64_t chunk_work_ns;
+    uint64_t total_work_ns;
+    uint32_t chunk_index;
+    uint32_t chunk_sequence_count;
+    uint32_t remaining_sequence_count;
+    SparkStatus status;
+
+    total_work_ns = 0u;
+    remaining_sequence_count = logical_sequence_count;
+    for (chunk_index = 0u; chunk_index < chunk_count; ++chunk_index)
+    {
+        chunk_sequence_count =
+            remaining_sequence_count < maximum_sequences_per_chunk
+            ? remaining_sequence_count
+            : maximum_sequences_per_chunk;
+        status = SparkGlm52SchedulerEstimateDecodeChunkNs(
+            scheduler,
+            chunk_sequence_count * rows_per_sequence,
+            &chunk_work_ns);
+        if (status != SPARK_STATUS_OK ||
+            UINT64_MAX - total_work_ns < chunk_work_ns)
+        {
+            return status != SPARK_STATUS_OK
+                ? status
+                : SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+        total_work_ns += chunk_work_ns;
+        remaining_sequence_count -= chunk_sequence_count;
+    }
+    if (remaining_sequence_count != 0u)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    *estimated_work_ns_out = total_work_ns;
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52SchedulerEstimateDecodeWorkNs(
+    const SparkGlm52Scheduler *scheduler,
+    uint32_t logical_sequence_count,
+    uint32_t rows_per_sequence,
+    uint32_t execution_row_capacity,
+    uint64_t *estimated_work_ns_out)
+{
+    uint32_t chunk_count;
+    uint32_t maximum_sequences_per_chunk;
+    SparkStatus status;
+
+    if (scheduler == 0 || estimated_work_ns_out == 0 ||
+        scheduler->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
+        scheduler->descriptor_bytes != SPARK_GLM52_SCHEDULER_DESCRIPTOR_BYTES)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52StagePlanExecutionChunkShape(
+        logical_sequence_count,
+        rows_per_sequence,
+        execution_row_capacity,
+        &maximum_sequences_per_chunk,
+        &chunk_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkGlm52SchedulerSumDecodeChunkWorkNs(
+        scheduler,
+        logical_sequence_count,
+        rows_per_sequence,
+        maximum_sequences_per_chunk,
+        chunk_count,
+        estimated_work_ns_out);
 }
 
 SparkStatus SparkGlm52SchedulerAdmit(
@@ -909,10 +1055,9 @@ SparkStatus SparkGlm52SchedulerAdmit(
                 decision->kv_physical_block_indices;
             prefix_cache_reservation.physical_block_capacity =
                 SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
-            status = SparkGlm52PrefixCacheReservePrompt(
-                scheduler->prefix_cache,
-                request->sequence_id,
-                request->prompt_token_ids,
+            status = SparkGlm52SchedulerReservePrompt(
+                scheduler,
+                request,
                 computed_prompt_token_count + scheduled_prompt_token_count,
                 &prefix_cache_reservation);
             if (status != SPARK_STATUS_OK)
@@ -1599,10 +1744,9 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
             SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
         prefix_cache_reservation.descriptor_bytes =
             SPARK_GLM52_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES;
-        status = SparkGlm52PrefixCacheReservePrompt(
-            scheduler->prefix_cache,
-            request->sequence_id,
-            request->prompt_token_ids,
+        status = SparkGlm52SchedulerReservePrompt(
+            scheduler,
+            request,
             computed_prompt_token_count + scheduled_prompt_token_count,
             &prefix_cache_reservation);
         if (status != SPARK_STATUS_OK)

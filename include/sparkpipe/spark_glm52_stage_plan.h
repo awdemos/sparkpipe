@@ -211,6 +211,13 @@ SparkStatus SparkGlm52StagePlanSelectBatchBucket(
     uint32_t active_sequence_count,
     uint32_t *bucket_out);
 
+SparkStatus SparkGlm52StagePlanExecutionChunkShape(
+    uint32_t logical_sequence_count,
+    uint32_t rows_per_sequence,
+    uint32_t execution_row_capacity,
+    uint32_t *maximum_sequences_per_chunk_out,
+    uint32_t *chunk_count_out);
+
 #ifdef __cplusplus
 }
 #endif

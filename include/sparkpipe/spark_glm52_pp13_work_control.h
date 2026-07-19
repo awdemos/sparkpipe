@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 11u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 13u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION UINT64_C(1)
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
@@ -58,7 +58,7 @@ extern "C" {
 	 SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT)
 #define SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT 1024u
 #define SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET \
-	256u
+	SPARK_GLM52_MODEL_MAX_PREFILL_TOKENS_PER_DISPATCH
 #define SPARK_GLM52_PP13_WORK_CONTROL_INVALID_REQUEST_SLOT UINT32_MAX
 
 #define SPARK_GLM52_PP13_KV_ENTRY_MISSING 0u
@@ -99,6 +99,13 @@ typedef struct SparkGlm52Pp13WorkControlKvDirectoryEntry
 	uint32_t backing_valid;
 } SparkGlm52Pp13WorkControlKvDirectoryEntry;
 
+typedef struct SparkGlm52Pp13WorkControlKvPrefetchEntry
+{
+	uint64_t sequence_id;
+	uint32_t logical_block_index;
+	uint32_t backing_block_index;
+} SparkGlm52Pp13WorkControlKvPrefetchEntry;
+
 typedef struct SparkGlm52Pp13WorkControlLane
 {
 	uint64_t request_id;
@@ -106,7 +113,6 @@ typedef struct SparkGlm52Pp13WorkControlLane
 	uint64_t sequence_position;
 	uint32_t request_slot_index;
 	uint32_t context_token_count;
-	uint32_t prefill_token_count;
 	uint32_t input_token_id;
 	uint32_t mtp_draft_token_count;
 	uint32_t speculative_token_count;
@@ -220,6 +226,11 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	uint32_t token_offset,
 	uint32_t token_count,
 	SparkGlm52Pp13WorkControlPacket *packet);
+SparkStatus SparkGlm52Pp13WorkControlSelectPrefillChunk(
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
+	uint32_t token_offset,
+	uint32_t maximum_execution_row_count,
+	uint32_t *token_count_out);
 SparkStatus SparkGlm52Pp13WorkControlInitializeKvState(
 	SparkGlm52Pp13WorkControlKvState *state,
 	uint32_t lane_capacity,
@@ -262,6 +273,13 @@ SparkStatus SparkGlm52Pp13WorkControlReleaseTransientPhysicalBlock(
 uint32_t SparkGlm52Pp13WorkControlBlockCount(
 	uint32_t token_count,
 	uint32_t block_token_count);
+SparkStatus SparkGlm52Pp13WorkControlCollectKvPrefetchEntries(
+	const SparkGlm52Pp13WorkControlPacket *packets,
+	uint32_t packet_count,
+	const SparkGlm52Pp13WorkControlKvState *state,
+	SparkGlm52Pp13WorkControlKvPrefetchEntry *entries,
+	uint32_t entry_capacity,
+	uint32_t *entry_count_out);
 SparkStatus SparkGlm52Pp13WorkControlPlanExecutionChunks(
 	uint32_t logical_lane_count,
 	uint32_t rows_per_lane,

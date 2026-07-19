@@ -74,6 +74,53 @@ static void SparkTestRankDaemonReadsSplitResidentMessage(void)
     close(sockets[1]);
 }
 
+static void SparkTestRankDaemonRequestsSubmitResult(void)
+{
+    static SparkGlm52Pp13DaemonRuntime runtime;
+    static SparkGlm52CudaResidentIpcSubmitWork submitted;
+    SparkGlm52CudaResidentIpcSubmitResult result;
+    SparkGlm52CudaResidentIpcHeader header;
+    SparkGlm52CudaResidentIpcHeader submitted_header;
+    SparkGlm52Pp13WorkControlPacket packet;
+    int32_t sockets[2];
+
+    memset(&runtime,0,sizeof(runtime));
+    memset(&result,0,sizeof(result));
+    memset(&submitted,0,sizeof(submitted));
+    SparkTestRankDaemonBuildPacket(&packet,31u,2u,
+        SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL);
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
+    runtime.cuda_resident_fd = sockets[0];
+    runtime.cuda_resident_socket_path = "attached";
+    runtime.rank_plan.rank_index = 1u;
+    result.descriptor_bytes =
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_RESULT_BYTES;
+    result.status = SPARK_STATUS_OK;
+    SparkGlm52CudaResidentIpcInitializeHeader(
+        &header,SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_RESULT,
+        runtime.rank_plan.rank_index,1u,sizeof(result));
+    assert(write(sockets[1],&header,sizeof(header)) == (ssize_t)sizeof(header));
+    assert(write(sockets[1],&result,sizeof(result)) == (ssize_t)sizeof(result));
+    assert(SparkGlm52Pp13DaemonSubmitWork(&runtime,&packet) == SPARK_STATUS_OK);
+    assert(SparkGlm52Pp13DaemonReadFull(
+        sockets[1],&submitted_header,sizeof(submitted_header)) ==
+        SPARK_STATUS_OK);
+    assert(submitted_header.kind ==
+        SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_WORK);
+    assert(submitted_header.payload_bytes ==
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_PREFIX_BYTES +
+        packet.descriptor_bytes);
+    assert(SparkGlm52Pp13DaemonReadFull(
+        sockets[1],&submitted,submitted_header.payload_bytes) ==
+        SPARK_STATUS_OK);
+    assert(submitted.flags ==
+        SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT);
+    assert(SparkGlm52CudaResidentIpcValidateSubmitWork(
+        &submitted,submitted_header.payload_bytes) == SPARK_STATUS_OK);
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
 static void SparkTestRankDaemonPacketIdentityIncludesPhase(void)
 {
     static SparkGlm52Pp13DaemonRuntime runtime;
@@ -189,6 +236,7 @@ static void SparkTestRankDaemonBackpressuresFullWorkQueue(void)
 int main(void)
 {
     SparkTestRankDaemonReadsSplitResidentMessage();
+    SparkTestRankDaemonRequestsSubmitResult();
     SparkTestRankDaemonPacketIdentityIncludesPhase();
     SparkTestRankDaemonFindsLaneDependency();
     SparkTestRankDaemonDecodeWaitsForSamePositionPrefill();

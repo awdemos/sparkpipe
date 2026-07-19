@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_driver_compiler.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_model_driver.h"
+#include "sparkpipe/spark_module_abi.h"
 #include "test_support.h"
 
 typedef struct SparkTestCompletionState
@@ -89,6 +90,8 @@ int main(void)
     SparkLoadedModelDriver loaded_driver;
     SparkModelDriverCreateRequest create_request;
     const SparkModelDriverProgramDescriptor *program;
+    SparkModelDriverAdmissionRequest admission_request;
+    SparkModelDriverAdmissionDecision admission_decision;
     SparkModelDriverFrame frame;
     SparkTestCompletionState completion_state;
     SparkTestCompletionState frame_completion_state;
@@ -98,6 +101,7 @@ int main(void)
     struct stat gathered_link_unit_status;
     char gathered_link_unit_path[SPARK_DRIVER_COMPILER_PATH_BYTES];
     char error_buffer[1024];
+    char module_abi_marker[64];
     char *generated_source;
     char *compiled_manifest;
 
@@ -126,13 +130,21 @@ int main(void)
     generated_source = SparkTestReadFile(compile_report.generated_source_path);
     assert(strstr(generated_source, "SparkTestAddOneExecute(instance->operation_0_state, frame)") != 0);
     assert(strstr(generated_source, "SparkTestDoubleExecute(instance->operation_1_state, frame)") != 0);
+    assert(strstr(generated_source, "instance->host_services.wake_function = request->wake_function") != 0);
+    assert(strstr(generated_source, "instance->host_services.wake_context = request->wake_context") != 0);
+    assert(strstr(generated_source, "if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u && request->new_token_count > 7u)") != 0);
     assert(strstr(generated_source, "SparkResolveValidatedModule") == 0);
     assert(strstr(generated_source, "for (") == 0);
     free(generated_source);
 
     compiled_manifest = SparkTestReadFile(compile_report.manifest_path);
     assert(strstr(compiled_manifest, "\"validation_recipe\": \"test.module.validator.v1\"") != 0);
-    assert(strstr(compiled_manifest, "\"module_abi_version\": 2") != 0);
+    assert(snprintf(
+        module_abi_marker,
+        sizeof(module_abi_marker),
+        "\"module_abi_version\": %u",
+        SPARK_FIRMWARE_MODULE_ABI_VERSION) > 0);
+    assert(strstr(compiled_manifest, module_abi_marker) != 0);
     assert(strstr(compiled_manifest, "\"execute_symbol\": \"SparkTestAddOneExecute\"") != 0);
     free(compiled_manifest);
 
@@ -154,6 +166,23 @@ int main(void)
     driver_instance = 0;
     assert(loaded_driver.interface->create(&create_request, &driver_instance) == SPARK_STATUS_OK);
     assert(driver_instance != 0);
+
+    memset(&admission_request, 0, sizeof(admission_request));
+    admission_request.descriptor_bytes = sizeof(admission_request);
+    admission_request.program_id = program->program_id;
+    admission_request.active_slot_count = 1u;
+    admission_request.new_token_count = 8u;
+    assert(loaded_driver.interface->admit(
+        driver_instance,&admission_request,&admission_decision) ==
+        SPARK_STATUS_OK);
+    assert(admission_decision.accepted == 0u);
+    assert(admission_decision.rejection_reason ==
+        SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
+    admission_request.frame_flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
+    assert(loaded_driver.interface->admit(
+        driver_instance,&admission_request,&admission_decision) ==
+        SPARK_STATUS_OK);
+    assert(admission_decision.accepted == 1u);
 
     memset(&frame, 0, sizeof(frame));
     frame.request_id = 77u;

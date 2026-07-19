@@ -186,6 +186,8 @@ static void SparkTestProductionRunnerSubmitsFrame(void)
         &runner,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DEFAULT_FLAGS);
     SparkTestProductionRunnerInitializeDispatch(&dispatch);
+    dispatch.flags =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_HIDDEN_INPUT_PRERECEIVED;
     assert(SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
         &runner,
         &dispatch) == SPARK_STATUS_OK);
@@ -203,6 +205,8 @@ static void SparkTestProductionRunnerSubmitsFrame(void)
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u);
     assert((TestState.last_frame_context.flags &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u);
+    assert((TestState.last_frame_context.flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_PRERECEIVED) != 0u);
     assert(TestState.last_frame_context.hidden_input_post_receive_function ==
         SparkHiddenTransportPostReceive);
     assert(TestState.last_frame_context.hidden_output_send_function ==
@@ -233,6 +237,7 @@ static void SparkTestProductionRunnerCarriesLayerMajorVerifyShape(void)
 {
     SparkGlm52ResidentDecodeStageProductionRunner runner;
     SparkGlm52ResidentDecodeStageProductionRunnerDispatch dispatch;
+    uint32_t mtp_draft_token_budgets[16];
 
     memset(&TestState, 0, sizeof(TestState));
     TestState.admit_accept = 1u;
@@ -245,10 +250,15 @@ static void SparkTestProductionRunnerCarriesLayerMajorVerifyShape(void)
     dispatch.rows_per_lane = 7u;
     dispatch.active_sequence_count = 112u;
     dispatch.new_token_count = 7u;
+    dispatch.mtp_draft_token_budgets = mtp_draft_token_budgets;
     assert(SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
         &runner,&dispatch) == SPARK_STATUS_OK);
     assert((TestState.last_frame_context.flags &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY) != 0u);
+    assert((TestState.last_frame_context.flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS) != 0u);
+    assert(TestState.last_frame_context.mtp_draft_token_budgets ==
+        mtp_draft_token_budgets);
     assert(TestState.last_frame_context.logical_lane_count == 16u);
     assert(TestState.last_frame_context.rows_per_lane == 7u);
     dispatch.active_sequence_count -= 1u;
@@ -256,21 +266,13 @@ static void SparkTestProductionRunnerCarriesLayerMajorVerifyShape(void)
         &runner,&dispatch) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-static void SparkTestProductionRunnerCarriesPrefillView(void)
+static void SparkTestProductionRunnerCarriesParallelPrefillShape(void)
 {
     SparkGlm52ResidentDecodeStageProductionRunner runner;
     SparkGlm52ResidentDecodeStageProductionRunnerDispatch dispatch;
-    SparkGlm52ResidentDecodeStagePrefillFrameView prefill_view;
 
     memset(&TestState, 0, sizeof(TestState));
     TestState.admit_accept = 1u;
-    memset(&prefill_view, 0, sizeof(prefill_view));
-    prefill_view.abi_version =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION;
-    prefill_view.descriptor_bytes =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_DESCRIPTOR_BYTES;
-    prefill_view.active_sequence_count = 1u;
-    prefill_view.prompt_token_count = 64u;
     SparkTestProductionRunnerInitializeKvTable();
     SparkTestProductionRunnerInitializeRunner(
         &runner,
@@ -282,17 +284,21 @@ static void SparkTestProductionRunnerCarriesPrefillView(void)
     dispatch.logical_lane_count = 1u;
     dispatch.rows_per_lane = 64u;
     dispatch.new_token_count = 64u;
-    dispatch.prefill_view = &prefill_view;
     assert(SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
         &runner,
         &dispatch) == SPARK_STATUS_OK);
     assert((TestState.last_frame.flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u);
     assert((TestState.last_frame_context.flags &
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW) != 0u);
-    assert(TestState.last_frame_context.prefill_view == &prefill_view);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME) != 0u);
+    assert((TestState.last_frame_context.flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY) == 0u);
+    assert((TestState.last_frame_context.flags &
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW) == 0u);
+    assert(TestState.last_frame_context.logical_lane_count == 1u);
+    assert(TestState.last_frame_context.rows_per_lane == 64u);
 }
 
-static void SparkTestProductionRunnerLeavesPrefillContextDecodeShaped(void)
+static void SparkTestProductionRunnerMarksSingleRowPrefill(void)
 {
     SparkGlm52ResidentDecodeStageProductionRunner runner;
     SparkGlm52ResidentDecodeStageProductionRunnerDispatch dispatch;
@@ -311,7 +317,7 @@ static void SparkTestProductionRunnerLeavesPrefillContextDecodeShaped(void)
         &dispatch) == SPARK_STATUS_OK);
     assert((TestState.last_frame.flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u);
     assert((TestState.last_frame_context.flags &
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME) == 0u);
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME) != 0u);
     assert((TestState.last_frame_context.flags &
         SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW) == 0u);
 }
@@ -362,8 +368,8 @@ int main(void)
     SparkTestProductionRunnerSubmitsFrame();
     SparkTestProductionRunnerCarriesLayerMajorVerifyShape();
     SparkTestProductionRunnerRejectsMissingTransport();
-    SparkTestProductionRunnerCarriesPrefillView();
-    SparkTestProductionRunnerLeavesPrefillContextDecodeShaped();
+    SparkTestProductionRunnerCarriesParallelPrefillShape();
+    SparkTestProductionRunnerMarksSingleRowPrefill();
     SparkTestProductionRunnerRejectsAdmissionFailure();
     SparkTestProductionRunnerRejectsSlowProgram();
     return 0;

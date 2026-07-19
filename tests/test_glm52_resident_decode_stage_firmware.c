@@ -23,14 +23,27 @@ static void SparkTestGlm52ResidentDecodeStageLinearPlanPreparedRowContract(void)
     memset(&linear_plan, 0, sizeof(linear_plan));
     linear_plan.maximum_active_sequence_count = 7u;
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
-        &linear_plan, 2u) == 2u);
+        &linear_plan, 2u) == 7u);
     linear_plan.output_is_f32 = 1u;
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
-        &linear_plan, 2u) == 1u);
+        &linear_plan, 2u) == 7u);
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
         &linear_plan, 0u) == 0u);
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
         &linear_plan, 8u) == 0u);
+    linear_plan.maximum_active_sequence_count = 1024u;
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 1u) == 16u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 6u) == 16u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 16u) == 16u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 17u) == 32u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 64u) == 64u);
+    assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
+        &linear_plan, 1024u) == 1024u);
 }
 
 static void SparkTestGlm52ResidentDecodeStageDsaSelectedBlockContract(void)
@@ -75,6 +88,15 @@ static void SparkGlm52ResidentDecodeStageTestCompletion(
     assert(state->completion_count < 8u);
     state->completions[state->completion_count] = *completion;
     state->completion_count += 1u;
+}
+
+static void SparkGlm52ResidentDecodeStageTestWake(void *wake_context)
+{
+    uint32_t *wake_count;
+
+    wake_count = (uint32_t *)wake_context;
+    assert(wake_count != 0);
+    *wake_count += 1u;
 }
 
 static void SparkTestInitializePrefillBridgeFixture(
@@ -1561,12 +1583,25 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     SparkFirmwareModuleHostServices host_services;
     SparkModelDriverFrame frame;
     SparkModelDriverRuntimeSnapshot runtime_snapshot;
+    SparkGlm52KvBlockTableView kv_block_table_view;
+    SparkGlm52ResidentDecodeStageFrameContext frame_context;
+    uint32_t physical_block_indices[24];
+    uint32_t lane_block_counts[6];
+    uint32_t mtp_draft_token_budgets[1];
+    uint32_t lane_index;
     void *module_state;
 
     SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
         &first_node_context,
         pipeline_slots,
         fake_streams);
+    first_node_context.reserved_execution_flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_RUNTIME_KV_BLOCK_TABLE;
+    first_node_context.kv_block_token_count =
+        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+    first_node_context.kv_block_count = 8u;
+    first_node_context.max_blocks_per_sequence = 4u;
+    first_node_context.cache_token_capacity = 128u;
     second_node_context = first_node_context;
     SparkTestInitializeStageSlicePlan(&stage_slice_plan);
     layer_node_contexts[0] = &first_node_context;
@@ -1611,6 +1646,34 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     frame.completion_context = &frame_completion_state;
     frame.scalar[SPARK_GLM52_RESIDENT_DECODE_STAGE_PIPELINE_SLOT_SCALAR_INDEX] =
         0u;
+    memset(physical_block_indices, 0, sizeof(physical_block_indices));
+    for (lane_index = 0u; lane_index < 6u; ++lane_index)
+    {
+        physical_block_indices[lane_index * 4u] = lane_index;
+        lane_block_counts[lane_index] = 1u;
+    }
+    memset(&kv_block_table_view, 0, sizeof(kv_block_table_view));
+    kv_block_table_view.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    kv_block_table_view.descriptor_bytes =
+        SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+    kv_block_table_view.block_token_count =
+        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+    kv_block_table_view.lane_count = 2u;
+    kv_block_table_view.lane_stride = 4u;
+    kv_block_table_view.lane_capacity = 4u;
+    kv_block_table_view.physical_block_indices = physical_block_indices;
+    kv_block_table_view.lane_physical_block_counts = lane_block_counts;
+    kv_block_table_view.host_physical_block_indices = physical_block_indices;
+    kv_block_table_view.host_lane_physical_block_counts = lane_block_counts;
+    memset(&frame_context, 0, sizeof(frame_context));
+    frame_context.abi_version =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
+    frame_context.descriptor_bytes =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES;
+    frame_context.flags =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE;
+    frame_context.kv_block_table = &kv_block_table_view;
+    frame.user_context = &frame_context;
     assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
         SPARK_STATUS_OK);
     assert(fake_streams[0].submit_count == 1u);
@@ -1621,12 +1684,38 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     assert(frame_completion_state.completion_count == 1u);
     assert(frame_completion_state.completions[0].request_id == 301u);
 
+    mtp_draft_token_budgets[0] =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
+    kv_block_table_view.lane_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
+    frame.request_id = 302u;
+    frame.sequence_position = 4u;
+    frame.active_slot_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
+    frame.new_token_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
+    frame_context.flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY |
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS;
+    frame_context.logical_lane_count = 1u;
+    frame_context.rows_per_lane =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT;
+    frame_context.mtp_draft_token_budgets = mtp_draft_token_budgets;
+    assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
+        SPARK_STATUS_OK);
+    assert(fake_streams[0].submit_count == 2u);
+    assert(fake_streams[0].last_active_sequence_count ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT);
+    assert(fake_streams[0].last_runtime_kv_lane_count ==
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT);
+    assert(frame_completion_state.completion_count == 2u);
+
     assert(SparkGlm52ResidentDecodeStageSnapshot(
         module_state,
         1u,
         &runtime_snapshot) == SPARK_STATUS_OK);
-    assert(runtime_snapshot.submitted_count == 1u);
-    assert(runtime_snapshot.completed_count == 1u);
+    assert(runtime_snapshot.submitted_count == 2u);
+    assert(runtime_snapshot.completed_count == 2u);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
 }
 
@@ -1703,6 +1792,7 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
     SparkModelDriverAdmissionRequest admission_request;
     SparkModelDriverAdmissionDecision admission_decision;
     SparkModelDriverRuntimeSnapshot snapshot;
+    uint32_t wake_count;
     void *module_state;
 
     SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
@@ -1747,12 +1837,15 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
                &output_session) == SPARK_STATUS_OK);
 
     memset(&completion_state, 0, sizeof(completion_state));
+    wake_count = 0u;
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
     memset(&host_services, 0, sizeof(host_services));
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
+    host_services.wake_function = SparkGlm52ResidentDecodeStageTestWake;
+    host_services.wake_context = &wake_count;
     host_services.node_context = &slice_node_context;
 
     module_state = 0;
@@ -1820,6 +1913,7 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
     assert(output_statistics.send_count == 0u);
 
     SparkGlm52ResidentDecodeStageFakeStreamComplete(&fake_streams[0]);
+    assert(wake_count == 1u);
     memset(&admission_request, 0, sizeof(admission_request));
     admission_request.descriptor_bytes = sizeof(admission_request);
     admission_request.program_id = 1u;
@@ -1841,6 +1935,25 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
                output_session,
                &output_statistics) == SPARK_STATUS_OK);
     assert(output_statistics.send_count == 1u);
+
+    SparkGlm52ResidentDecodeStageFakeStreamSetDeferred(
+        &fake_streams[0],
+        false);
+    frame_context.flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_PRERECEIVED;
+    frame.request_id = 310u;
+    frame.sequence_position = 34u;
+    assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
+        SPARK_STATUS_OK);
+    assert(completion_state.completion_count == 2u);
+    assert(SparkHiddenTransportPersistentRingGetStatistics(
+               input_session,
+               &input_statistics) == SPARK_STATUS_OK);
+    assert(SparkHiddenTransportPersistentRingGetStatistics(
+               output_session,
+               &output_statistics) == SPARK_STATUS_OK);
+    assert(input_statistics.receive_count == 1u);
+    assert(output_statistics.send_count == 2u);
 
     SparkGlm52ResidentDecodeStageDestroy(module_state);
     SparkHiddenTransportClose(input_session);
@@ -2012,20 +2125,16 @@ static void SparkTestGlm52ResidentDecodeStageBulkPrefillSubmit(void)
         prompt_hidden);
     frame.user_context = &frame_context;
     assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
-        SPARK_STATUS_OK);
-    assert(fake_streams[0].submit_count == 1u);
-    assert(fake_streams[0].last_active_sequence_count == 4u);
-    assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 0u);
-    assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 96u);
-    assert(completion_state.completion_count == 1u);
-    assert(completion_state.completions[0].accepted_token_count == 96u);
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
+    assert(fake_streams[0].submit_count == 0u);
+    assert(completion_state.completion_count == 0u);
 
     assert(SparkGlm52ResidentDecodeStageSnapshot(
         module_state,
         1u,
         &runtime_snapshot) == SPARK_STATUS_OK);
-    assert(runtime_snapshot.submitted_count == 1u);
-    assert(runtime_snapshot.completed_count == 1u);
+    assert(runtime_snapshot.submitted_count == 0u);
+    assert(runtime_snapshot.completed_count == 0u);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
 }
 
@@ -2110,7 +2219,7 @@ static void SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit(void)
         &admission_request,
         &admission_decision) == SPARK_STATUS_OK);
     assert(admission_decision.accepted == 1u);
-    assert(admission_decision.estimated_service_time_ns == 2468u);
+    assert(admission_decision.estimated_service_time_ns == 0u);
 
     memset(&frame, 0, sizeof(frame));
     frame.request_id = 303u;
@@ -2152,15 +2261,9 @@ static void SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit(void)
         prompt_hidden);
     frame.user_context = &frame_context;
     assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
-        SPARK_STATUS_OK);
-    assert(fake_streams[0].submit_count == 1u);
-    assert(fake_streams[0].last_active_sequence_count == 4u);
-    assert(fake_streams[0].last_stage_slice_layer_count == 2u);
-    assert(fake_streams[0].last_bulk_prefill_layer_count == 2u);
-    assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 0u);
-    assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 96u);
-    assert(completion_state.completion_count == 1u);
-    assert(completion_state.completions[0].accepted_token_count == 96u);
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
+    assert(fake_streams[0].submit_count == 0u);
+    assert(completion_state.completion_count == 0u);
     fake_streams[0].last_bulk_prefill_layer_count = 0xffffffffu;
     fake_streams[0].last_bulk_prefill_prompt_token_offset = 0xffffffffu;
     fake_streams[0].last_bulk_prefill_prompt_token_count = 0xffffffffu;
@@ -2178,7 +2281,7 @@ static void SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit(void)
         0u;
     assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
         SPARK_STATUS_OK);
-    assert(fake_streams[0].submit_count == 2u);
+    assert(fake_streams[0].submit_count == 1u);
     assert(fake_streams[0].last_active_sequence_count == 1u);
     assert(fake_streams[0].last_stage_slice_layer_count == 2u);
     assert(fake_streams[0].last_stage_slice_final_token_stage == 0u);
@@ -2187,8 +2290,8 @@ static void SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit(void)
     assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 0xffffffffu);
     assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 0xffffffffu);
     assert(fake_streams[0].last_prefill_frame_view == (const void *)1);
-    assert(completion_state.completion_count == 2u);
-    assert(completion_state.completions[1u].accepted_token_count == 1u);
+    assert(completion_state.completion_count == 1u);
+    assert(completion_state.completions[0].accepted_token_count == 1u);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
 }
 
@@ -2209,7 +2312,6 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     SparkGlm52RequestApiSubmitRequest request;
     SparkGlm52RequestApiHandle request_handle;
     SparkGlm52RequestApiDispatch dispatch;
-    SparkGlm52RequestApiCacheState cache_state;
     SparkGlm52KvBlockTableView block_table_view;
     SparkGlm52ResidentDecodeStageFrameContext frame_context;
     SparkGlm52ResidentDecodeStagePrefillFrameView prefill_view;
@@ -2385,31 +2487,13 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     frame.flags = SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL;
     frame.user_context = &frame_context;
     assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
-        SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
     assert(fake_streams[0].submit_count == 0u);
     prefill_view.prompt_token_offset = 16u;
     assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
-        SPARK_STATUS_OK);
-    assert(fake_streams[0].submit_count == 1u);
-    assert(fake_streams[0].last_stage_slice_layer_count == 2u);
-    assert(fake_streams[0].last_bulk_prefill_layer_count == 2u);
-    assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 16u);
-    assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 8u);
-    assert(fake_streams[0].last_prefill_frame_view == &prefill_view);
-    assert(fake_streams[0].last_runtime_kv_block_table == &block_table_view);
-    assert(fake_streams[0].last_runtime_kv_physical_block_indices ==
-        execution_block_indices);
-    assert(fake_streams[0].last_runtime_kv_lane_count == 1u);
-    assert(completion_state.completion_count == 1u);
-    assert(completion_state.completions[0].accepted_token_count == 8u);
-    assert(SparkGlm52RequestApiCompleteDispatch(
-        &bridge_fixture.api,
-        &dispatch) == SPARK_STATUS_OK);
-    assert(SparkGlm52RequestApiGetRequestCacheState(
-        &bridge_fixture.api,
-        request_handle,
-        &cache_state) == SPARK_STATUS_OK);
-    assert(cache_state.state == SPARK_GLM52_REQUEST_API_STATE_READY_DECODE);
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
+    assert(fake_streams[0].submit_count == 0u);
+    assert(completion_state.completion_count == 0u);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
 }
 
@@ -3254,14 +3338,9 @@ static void SparkTestGlm52ResidentDecodeStagePagedBulkPrefillPlanWithoutLaunchFu
     frame.user_context = &frame_context;
 
     assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
-        SPARK_STATUS_OK);
-    assert(fake_streams[0].submit_count == 1u);
-    assert(fake_streams[0].last_bulk_prefill_prompt_token_offset == 0u);
-    assert(fake_streams[0].last_bulk_prefill_prompt_token_count == 64u);
-    assert(fake_streams[0].last_runtime_kv_block_table == &kv_block_table_view);
-    assert(fake_streams[0].last_runtime_kv_block_token_count == 16u);
-    assert(fake_streams[0].last_runtime_kv_lane_count == 4u);
-    assert(completion_state.completion_count == 1u);
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
+    assert(fake_streams[0].submit_count == 0u);
+    assert(completion_state.completion_count == 0u);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
 }
 
@@ -3519,6 +3598,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
     SparkFirmwareModuleConfiguration configuration;
     SparkFirmwareModuleHostServices host_services;
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
+    void *bf16_cache;
     void *module_state;
 
     SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
@@ -3529,6 +3609,10 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
     node_context.fp8_kv_cache_plan = &fp8_kv_cache_plan;
     node_context.reserved_execution_flags |=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_FP8_KV_CACHE;
+    bf16_cache = node_context.mla_cache_bf16;
+    node_context.mla_cache_bf16 = 0;
+    node_context.key_nope_cache_bf16 = 0;
+    node_context.value_cache_bf16 = 0;
 
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
@@ -3546,6 +3630,14 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
         &module_state) == SPARK_STATUS_OK);
     assert(module_state != 0);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
+
+    node_context.mla_cache_bf16 = bf16_cache;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+    node_context.mla_cache_bf16 = 0;
 
     fp8_kv_cache_plan.value_cache_scale_f32 = 0;
     module_state = 0;
@@ -3575,6 +3667,20 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
         &module_state) == SPARK_STATUS_OK);
     assert(module_state != 0);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
+
+    node_context.attention_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
+    node_context.reserved_execution_flags |=
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_TILED_ONLINE_ATTENTION;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+    node_context.attention_execution_mode =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+    node_context.reserved_execution_flags &=
+        ~SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_TILED_ONLINE_ATTENTION;
 
     fp8_kv_cache_plan.value_cache_fp8_e4m3 =
         fp8_kv_cache_plan.mla_cache_fp8_e4m3;
@@ -3621,6 +3727,46 @@ static void SparkTestGlm52ResidentDecodeStageAbsorbedLatentCacheValidation(void)
 
     node_context.attention_execution_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
+}
+
+static void SparkTestGlm52ResidentDecodeStageKvStorageCapacityValidation(void)
+{
+    SparkGlm52ResidentDecodeStagePipelineSlot pipeline_slots[2];
+    SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
+    SparkGlm52ResidentDecodeStageNodeContext node_context;
+    SparkFirmwareModuleConfiguration configuration;
+    SparkFirmwareModuleHostServices host_services;
+    SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
+    void *module_state;
+
+    SparkInitializeGlm52ResidentDecodeStageTestNodeContext(
+        &node_context,
+        pipeline_slots,
+        fake_streams);
+    node_context.kv_storage_token_capacity = 130u;
+    memset(&completion_state, 0, sizeof(completion_state));
+    memset(&configuration, 0, sizeof(configuration));
+    configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    memset(&host_services, 0, sizeof(host_services));
+    host_services.completion_function =
+        SparkGlm52ResidentDecodeStageTestCompletion;
+    host_services.completion_context = &completion_state;
+    host_services.node_context = &node_context;
+
+    module_state = 0;
+    assert(SparkGlm52ResidentDecodeStageInitialize(
+        &configuration,
+        &host_services,
+        &module_state) == SPARK_STATUS_OK);
+    assert(module_state != 0);
+    SparkGlm52ResidentDecodeStageDestroy(module_state);
+
+    node_context.kv_storage_token_capacity = 127u;
     module_state = 0;
     assert(SparkGlm52ResidentDecodeStageInitialize(
         &configuration,
@@ -3712,6 +3858,7 @@ int main(void)
     SparkTestGlm52ResidentDecodeStageFp8DenseMlpPlanValidation();
     SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation();
     SparkTestGlm52ResidentDecodeStageAbsorbedLatentCacheValidation();
+    SparkTestGlm52ResidentDecodeStageKvStorageCapacityValidation();
     SparkTestGlm52ResidentDecodeStageDsaIndexShareFullRequiresScoreInputs();
     SparkTestGlm52ResidentDecodeStageBulkPrefillSubmit();
     SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit();
@@ -3867,6 +4014,12 @@ int main(void)
     assert(fake_streams[1].submit_count == 0u);
 
     SparkGlm52ResidentDecodeStageFakeStreamComplete(&fake_streams[0]);
+    assert(completion_state.completion_count == 0u);
+    assert(SparkOrchestratorGetDriverProgramSnapshot(
+               orchestrator,
+               driver_handle,
+               "decode",
+               &runtime_snapshot) == SPARK_STATUS_OK);
     assert(completion_state.completion_count == 1u);
     assert(completion_state.completions[0].request_id == 201u);
     assert(completion_state.completions[0].sequence_id == 7001u);
@@ -3901,6 +4054,12 @@ int main(void)
                orchestrator,
                driver_handle) == 1u);
     SparkGlm52ResidentDecodeStageFakeStreamComplete(&fake_streams[0]);
+    assert(completion_state.completion_count == 1u);
+    assert(SparkOrchestratorGetDriverProgramSnapshot(
+               orchestrator,
+               driver_handle,
+               "decode",
+               &runtime_snapshot) == SPARK_STATUS_OK);
     assert(completion_state.completion_count == 2u);
     assert(completion_state.completions[1].request_id == 202u);
     assert(completion_state.completions[1].driver_dispatch_slot == 0u);

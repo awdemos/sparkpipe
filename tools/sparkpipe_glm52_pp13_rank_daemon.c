@@ -1475,9 +1475,10 @@ static void SparkGlm52Pp13DaemonCompletion(
     if ((runtime->rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u)
         return;
-    if ((completion->completion_flags &
+    if (completion->status == SPARK_STATUS_OK &&
+        ((completion->completion_flags &
             SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u ||
-        completion->token_count == 0u)
+         completion->token_count == 0u))
     {
         if (runtime->trace_enabled != 0u)
             fprintf(stderr,"pp13_trace rank=%u final_event_skipped request=%llu position=%llu flags=0x%x tokens=%u\n",runtime->rank_plan.rank_index,(unsigned long long)completion->request_id,(unsigned long long)completion->sequence_position,completion->completion_flags,completion->token_count);
@@ -1911,7 +1912,6 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
 {
     SparkGlm52CudaResidentIpcSubmitWork submit_message;
     SparkStatus status;
-	uint32_t message_bytes;
     uint64_t trace_begin_ns;
 
     if (runtime == 0 || packet == 0)
@@ -1922,18 +1922,16 @@ static SparkStatus SparkGlm52Pp13DaemonSubmitWork(
         status = SparkGlm52Pp13DaemonEnsureCudaResident(runtime);
         if (status != SPARK_STATUS_OK)
             return status;
-        memset(&submit_message,0,sizeof(submit_message));
-        submit_message.work_packet = *packet;
-		message_bytes = SparkGlm52CudaResidentIpcCalculateSubmitWorkBytes(
-			&submit_message.work_packet);
-		if (message_bytes == 0u)
-			return SPARK_STATUS_INVALID_ARGUMENT;
-		submit_message.descriptor_bytes = message_bytes;
+        status = SparkGlm52CudaResidentIpcInitializeSubmitWork(
+            &submit_message,packet,
+            SPARK_GLM52_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT);
+        if (status != SPARK_STATUS_OK)
+            return status;
         status = SparkGlm52Pp13DaemonWriteResidentMessage(
             runtime,
             SPARK_GLM52_CUDA_RESIDENT_IPC_KIND_SUBMIT_WORK,
             &submit_message,
-			message_bytes);
+			submit_message.descriptor_bytes);
         if (status != SPARK_STATUS_OK)
         {
             SparkGlm52Pp13DaemonTeardownCudaResident(runtime,"submit_write");
@@ -1962,8 +1960,8 @@ static SparkStatus SparkGlm52Pp13DaemonProgressBuilder(
 {
 	if (runtime == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (runtime->cuda_resident_fd >= 0)
-		return SPARK_STATUS_OK;
+	if (runtime->cuda_resident_socket_path != 0)
+		return SparkGlm52Pp13DaemonEnsureCudaResident(runtime);
 	if (runtime->builder_state == 0 ||
 		runtime->builder_library.builder_interface.progress == 0)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;

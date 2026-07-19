@@ -51,7 +51,7 @@ SERVING_ADAPTER_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_s
 MODULE_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_resident_decode_stage.a
 ARTIFACT_CHECK_TOOL := $(BUILD_DIRECTORY)/glm52_artifact_check
 PACKAGE_DIRECTORY ?= $(REPOSITORY_ROOT)/build/packages/glm52_resident_decode_stage
-CUDA_HOME ?= $(abspath $(dir $(shell command -v $(NVCC)))/..)
+CUDA_HOME ?= /usr/local/cuda
 VALIDATION_RECIPE_VARIANT ?= $(GLM52_VALIDATION_MODE)
 VALIDATION_RECIPE := glm52.resident_decode_stage.$(CUDA_ARCH).$(VALIDATION_RECIPE_VARIANT).b$(GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT).max_us_$(MAX_STAGE_MICROSECONDS).v1
 REQUIRED_CUDA_CC_ARGS ?=
@@ -100,8 +100,11 @@ require_sm121a:
 		{ echo "GLM52 required CUDA module contract requires CUDA_ARCH=sm_121a" >&2; exit 2; }
 
 require_latency_limit:
-	@test "$(MAX_STAGE_MICROSECONDS)" != "0" || \
-		{ echo "set MAX_STAGE_MICROSECONDS to the qualified stage limit" >&2; exit 2; }
+	@case "$(MAX_STAGE_MICROSECONDS)" in \
+		''|0|*[!0-9]*) \
+			echo "set MAX_STAGE_MICROSECONDS to a positive integer qualified stage limit" >&2; \
+			exit 2 ;; \
+	esac
 
 require_model_dir:
 	@test -n "$(GLM52_MODEL_DIR)" || \

@@ -40,9 +40,18 @@ SparkStatus SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 		batch_bucket = request_dispatch->decode_batch_decision.batch_bucket;
 	else
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) == 0u ||
-		batch_bucket < batch_lane_or_row_count)
+	if (SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (batch_bucket < batch_lane_or_row_count)
+	{
+		SparkStatus status;
+
+		status = SparkGlm52StagePlanSelectBatchBucket(
+			batch_lane_or_row_count,
+			&batch_bucket);
+		if (status != SPARK_STATUS_OK)
+			return status;
+	}
 	*batch_bucket_out = batch_bucket;
 	return SPARK_STATUS_OK;
 }
@@ -80,6 +89,16 @@ SparkStatus SparkGlm52Pp13WorkControlSelectMtpDraftBudget(
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
 	*mtp_budget_out = requested_budget;
 	return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkGlm52Pp13WorkControlWrittenPositionCount(
+	const SparkGlm52Pp13WorkControlPacket *packet)
+{
+	if (packet != 0 &&
+		(packet->flags &
+			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_MTP_TREE_VERIFY) != 0u)
+		return SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION + 1u;
+	return packet == 0 ? 0u : packet->new_token_count;
 }
 
 static void SparkGlm52Pp13WorkControlSetDecodeFlags(
@@ -207,6 +226,7 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacketRange(
 	uint32_t speculative_verify;
 	uint32_t mtp_tree_verify;
 	uint32_t mtp_budget;
+	uint32_t packet_bytes;
 	SparkStatus status;
 
 	if (decode_dispatch == 0 || packet == 0 ||
@@ -241,7 +261,10 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacketRange(
 		&mtp_budget);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	memset(packet,0,sizeof(*packet));
+	packet_bytes = SparkGlm52Pp13WorkControlCalculatePacketBytes(lane_count);
+	if (packet_bytes == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	memset(packet,0,packet_bytes);
 	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
 	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
 	packet->control_generation =
@@ -268,7 +291,7 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacketRange(
 		packet->lane_count * packet->rows_per_lane;
 	status = SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 		decode_dispatch->request_dispatch,
-		packet->lane_count,
+		packet->execution_row_count,
 		&packet->execution_batch_bucket);
 	if (status != SPARK_STATUS_OK)
 		return status;
@@ -314,6 +337,59 @@ SparkStatus SparkGlm52Pp13WorkControlBuildDecodePacket(
 		speculative_token_index,packet);
 }
 
+SparkStatus SparkGlm52Pp13WorkControlSelectPrefillChunk(
+	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
+	uint32_t token_offset,
+	uint32_t maximum_execution_row_count,
+	uint32_t *token_count_out)
+{
+	const SparkGlm52RequestApiPrefillDispatchLaneView *lane;
+	uint32_t active_lane_count;
+	uint32_t lane_index;
+	uint32_t minimum_remaining_token_count;
+	uint32_t remaining_token_count;
+	uint32_t token_count;
+	if (prefill_dispatch == 0 || token_count_out == 0 ||
+		prefill_dispatch->prefill_view == 0 ||
+		prefill_dispatch->lane_count == 0u ||
+		prefill_dispatch->lane_count != prefill_dispatch->active_sequence_count ||
+		prefill_dispatch->lane_count !=
+			prefill_dispatch->prefill_view->lane_count ||
+		token_offset >= prefill_dispatch->prompt_token_count ||
+		maximum_execution_row_count == 0u ||
+		maximum_execution_row_count >
+			SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	active_lane_count = 0u;
+	minimum_remaining_token_count = UINT32_MAX;
+	for (lane_index = 0u; lane_index < prefill_dispatch->lane_count; ++lane_index)
+	{
+		lane = &prefill_dispatch->prefill_view->lanes[lane_index];
+		if (token_offset >= lane->prompt_token_count)
+			continue;
+		remaining_token_count = lane->prompt_token_count - token_offset;
+		if (minimum_remaining_token_count > remaining_token_count)
+			minimum_remaining_token_count = remaining_token_count;
+		active_lane_count += 1u;
+	}
+	if (active_lane_count == 0u ||
+		active_lane_count > maximum_execution_row_count)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	token_count = maximum_execution_row_count / active_lane_count;
+	if (token_count > minimum_remaining_token_count)
+		token_count = minimum_remaining_token_count;
+	if (token_count >
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET)
+		token_count =
+			SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET;
+	if (token_count > prefill_dispatch->prompt_token_count - token_offset)
+		token_count = prefill_dispatch->prompt_token_count - token_offset;
+	if (token_count == 0u)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	*token_count_out = token_count;
+	return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch,
 	uint32_t token_offset,
@@ -323,12 +399,11 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	const SparkGlm52RequestApiPrefillDispatchLaneView *source_lane;
 	SparkGlm52Pp13WorkControlLane *destination_lane;
 	uint32_t active_lane_count;
+	uint32_t execution_row_index;
+	uint32_t packet_bytes;
+	uint32_t row_offset;
 	uint32_t source_lane_index;
 	uint32_t position;
-	uint32_t lane_token_count;
-	uint32_t execution_row_index;
-	uint32_t row_offset;
-	uint64_t execution_row_count;
 
 	if (prefill_dispatch == 0 || packet == 0 ||
 		prefill_dispatch->request_dispatch == 0 ||
@@ -347,10 +422,32 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 		prefill_dispatch->host_token_stride == 0u ||
 		token_offset >= prefill_dispatch->prompt_token_count ||
 		token_count == 0u ||
-		token_count > SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET ||
+		token_count >
+			SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET ||
 		token_count > prefill_dispatch->prompt_token_count - token_offset)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	memset(packet,0,sizeof(*packet));
+	active_lane_count = 0u;
+	for (source_lane_index = 0u;
+		 source_lane_index < prefill_dispatch->lane_count;
+		 ++source_lane_index)
+	{
+		source_lane = &prefill_dispatch->prefill_view->lanes[source_lane_index];
+		if (token_offset < source_lane->prompt_token_count)
+		{
+			if (token_count >
+				source_lane->prompt_token_count - token_offset)
+				return SPARK_STATUS_INVALID_ARGUMENT;
+			active_lane_count += 1u;
+		}
+	}
+	if ((uint64_t)active_lane_count * token_count >
+		SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	packet_bytes =
+		SparkGlm52Pp13WorkControlCalculatePacketBytes(active_lane_count);
+	if (packet_bytes == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	memset(packet,0,packet_bytes);
 	packet->magic = SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC;
 	packet->abi_version = SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION;
 	packet->control_generation =
@@ -366,7 +463,6 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	packet->max_blocks_per_sequence =
 		SPARK_GLM52_PP13_WORK_CONTROL_KV_BLOCK_CAPACITY;
 	active_lane_count = 0u;
-	execution_row_index = 0u;
 	for (source_lane_index = 0u;
 		 source_lane_index < prefill_dispatch->lane_count;
 		 ++source_lane_index)
@@ -377,31 +473,29 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 		if (source_lane->prompt_token_count >
 			prefill_dispatch->host_token_stride)
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
-		lane_token_count = source_lane->prompt_token_count - token_offset;
-		if (lane_token_count > token_count)
-			lane_token_count = token_count;
+		if (source_lane->prompt_token_offset > UINT32_MAX - token_offset)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		position = source_lane->prompt_token_offset + token_offset;
+		if (position > UINT32_MAX - token_count)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		destination_lane = &packet->lanes[active_lane_count];
 		destination_lane->request_id = source_lane->request_id;
 		destination_lane->sequence_id = source_lane->sequence_id;
 		destination_lane->sequence_position = position;
 		destination_lane->request_slot_index =
 			source_lane->request_slot_index;
-		destination_lane->context_token_count = position + lane_token_count;
-		destination_lane->prefill_token_count = lane_token_count;
-		destination_lane->input_token_id = prefill_dispatch->host_token_ids[
-			((uint64_t)source_lane_index * prefill_dispatch->host_token_stride) +
-			token_offset + lane_token_count - 1u];
+		destination_lane->context_token_count = position + token_count;
+		execution_row_index = active_lane_count * token_count;
 		for (row_offset = 0u; row_offset < token_count; ++row_offset)
 		{
-			packet->prefill_token_ids[execution_row_index++] =
-				row_offset < lane_token_count
-					? prefill_dispatch->host_token_ids[
-						((uint64_t)source_lane_index *
-						 prefill_dispatch->host_token_stride) +
-						token_offset + row_offset]
-					: 0u;
+			packet->prefill_token_ids[execution_row_index + row_offset] =
+				prefill_dispatch->host_token_ids[
+					((uint64_t)source_lane_index *
+					 prefill_dispatch->host_token_stride) +
+					token_offset + row_offset];
 		}
+		destination_lane->input_token_id =
+			packet->prefill_token_ids[execution_row_index + token_count - 1u];
 		if (destination_lane->context_token_count >
 			packet->kv_block_table_token_count)
 			packet->kv_block_table_token_count =
@@ -413,12 +507,7 @@ SparkStatus SparkGlm52Pp13WorkControlBuildPrefillPacket(
 	packet->active_sequence_count = active_lane_count;
 	packet->lane_count = active_lane_count;
 	packet->rows_per_lane = token_count;
-	execution_row_count = (uint64_t)active_lane_count * token_count;
-	if (execution_row_count > UINT32_MAX ||
-		execution_row_count > SPARK_GLM52_PP13_WORK_CONTROL_MAX_ACTIVE_SEQUENCE_COUNT ||
-		execution_row_index != (uint32_t)execution_row_count)
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	packet->execution_row_count = (uint32_t)execution_row_count;
+	packet->execution_row_count = active_lane_count * token_count;
 	if (SparkGlm52Pp13WorkControlSelectExecutionBatchBucket(
 			prefill_dispatch->request_dispatch,
 			packet->execution_row_count,
@@ -449,25 +538,17 @@ SparkStatus SparkGlm52Pp13WorkControlPlanExecutionChunks(
 	uint32_t *maximum_lanes_per_chunk_out,
 	uint32_t *chunk_count_out)
 {
-	uint32_t maximum_lanes_per_chunk;
-	uint32_t chunk_count;
-
 	if (logical_lane_count == 0u ||
 		logical_lane_count > SPARK_GLM52_PP13_WORK_CONTROL_MAX_LANE_COUNT ||
 		rows_per_lane == 0u || execution_row_capacity == 0u ||
 		maximum_lanes_per_chunk_out == 0 || chunk_count_out == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	maximum_lanes_per_chunk = execution_row_capacity / rows_per_lane;
-	if (maximum_lanes_per_chunk == 0u)
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	if (maximum_lanes_per_chunk > logical_lane_count)
-		maximum_lanes_per_chunk = logical_lane_count;
-	chunk_count = logical_lane_count / maximum_lanes_per_chunk;
-	if (logical_lane_count % maximum_lanes_per_chunk != 0u)
-		chunk_count += 1u;
-	*maximum_lanes_per_chunk_out = maximum_lanes_per_chunk;
-	*chunk_count_out = chunk_count;
-	return SPARK_STATUS_OK;
+	return SparkGlm52StagePlanExecutionChunkShape(
+		logical_lane_count,
+		rows_per_lane,
+		execution_row_capacity,
+		maximum_lanes_per_chunk_out,
+		chunk_count_out);
 }
 
 SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
@@ -481,8 +562,7 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 	uint32_t mtp_tree_verify;
 	uint32_t speculative_verify;
 	uint32_t lane_index;
-	uint32_t row_offset;
-	uint32_t token_id;
+	uint32_t execution_row_index;
 	uint32_t expected_rows_per_lane;
 	uint64_t expected_execution_row_count;
 	uint32_t release_sequences;
@@ -586,8 +666,9 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 			SPARK_GLM52_PP13_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT + 1u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u &&
-		packet->new_token_count >
-			SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET)
+		(packet->new_token_count == 0u ||
+		 packet->new_token_count >
+			SPARK_GLM52_PP13_WORK_CONTROL_MAX_PREFILL_TOKENS_PER_PACKET))
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	dspark_verify = (packet->flags &
 		SPARK_GLM52_PP13_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u;
@@ -618,6 +699,17 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (packet->input_token_id >= SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u)
+	{
+		for (execution_row_index = 0u;
+			 execution_row_index < packet->execution_row_count;
+			 ++execution_row_index)
+		{
+			if (packet->prefill_token_ids[execution_row_index] >=
+				SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT)
+				return SPARK_STATUS_INVALID_ARGUMENT;
+		}
+	}
 	if (dspark_verify != 0u && mtp_verify != 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (mtp_tree_verify != 0u &&
@@ -695,12 +787,7 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 		uint32_t lane_position_count;
 		lane = &packet->lanes[lane_index];
 		lane_position_count =
-			(packet->flags &
-				SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u
-			? lane->prefill_token_count
-			: mtp_tree_verify != 0u
-				? SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION + 1u
-				: packet->new_token_count;
+			SparkGlm52Pp13WorkControlWrittenPositionCount(packet);
 		if (lane->request_id == 0u || lane->sequence_id == 0u ||
 			lane->request_slot_index == SPARK_GLM52_PP13_WORK_CONTROL_INVALID_REQUEST_SLOT ||
 			lane->context_token_count == 0u ||
@@ -714,23 +801,15 @@ SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		if ((packet->flags & SPARK_GLM52_PP13_WORK_CONTROL_FLAG_PREFILL) != 0u)
 		{
-			if (lane->prefill_token_count == 0u ||
-				lane->prefill_token_count > packet->new_token_count ||
-				lane->mtp_draft_token_count != 0u ||
-				lane->speculative_token_count != 0u)
+			if (lane->mtp_draft_token_count != 0u ||
+				lane->speculative_token_count != 0u ||
+				lane->context_token_count !=
+					lane->sequence_position + packet->new_token_count ||
+				lane->input_token_id != packet->prefill_token_ids[
+					(lane_index * packet->rows_per_lane) +
+					packet->rows_per_lane - 1u])
 				return SPARK_STATUS_INVALID_ARGUMENT;
-			for (row_offset = 0u; row_offset < packet->rows_per_lane; ++row_offset)
-			{
-				token_id = packet->prefill_token_ids[
-					(lane_index * packet->rows_per_lane) + row_offset];
-				if ((row_offset < lane->prefill_token_count &&
-					 token_id >= SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT) ||
-					(row_offset >= lane->prefill_token_count && token_id != 0u))
-					return SPARK_STATUS_INVALID_ARGUMENT;
-			}
 		}
-		else if (lane->prefill_token_count != 0u)
-			return SPARK_STATUS_INVALID_ARGUMENT;
 		if (lane->mtp_resolution_proposed_token_count == 0u)
 		{
 			if (lane->mtp_resolution_accepted_token_count != 0u ||
@@ -956,7 +1035,7 @@ SparkStatus SparkGlm52Pp13WorkControlUnpinPhysicalBlock(
 
 static SparkStatus SparkGlm52Pp13WorkControlValidateKvState(
 	const SparkGlm52Pp13WorkControlPacket *packet,
-	SparkGlm52Pp13WorkControlKvState *state)
+	const SparkGlm52Pp13WorkControlKvState *state)
 {
 	if (packet == 0 || state == 0 ||
 		state->abi_version != SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION ||
@@ -1124,7 +1203,7 @@ static uint64_t SparkGlm52Pp13WorkControlKvDirectoryHash(
 }
 
 static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryFind(
-	SparkGlm52Pp13WorkControlKvState *state,
+	const SparkGlm52Pp13WorkControlKvState *state,
 	uint64_t sequence_id,
 	uint32_t logical_block_index,
 	uint32_t *directory_index_out,
@@ -1143,7 +1222,7 @@ static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryFind(
 		 probe_index < state->directory_capacity;
 		 ++probe_index)
 	{
-		SparkGlm52Pp13WorkControlKvDirectoryEntry *entry;
+		const SparkGlm52Pp13WorkControlKvDirectoryEntry *entry;
 		entry = &state->directory_entries[directory_index];
 		if (entry->state == SPARK_GLM52_PP13_KV_DIRECTORY_EMPTY)
 		{
@@ -1183,6 +1262,93 @@ static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryFind(
 		return SPARK_STATUS_OK;
 	}
 	return SPARK_STATUS_CAPACITY_EXCEEDED;
+}
+
+static uint32_t SparkGlm52Pp13WorkControlPrefetchEntryExists(
+	const SparkGlm52Pp13WorkControlKvPrefetchEntry *entries,
+	uint32_t entry_count,
+	uint64_t sequence_id,
+	uint32_t logical_block_index)
+{
+	uint32_t entry_index;
+	for (entry_index = 0u; entry_index < entry_count; ++entry_index)
+	{
+		if (entries[entry_index].sequence_id == sequence_id &&
+			entries[entry_index].logical_block_index == logical_block_index)
+			return 1u;
+	}
+	return 0u;
+}
+
+SparkStatus SparkGlm52Pp13WorkControlCollectKvPrefetchEntries(
+	const SparkGlm52Pp13WorkControlPacket *packets,
+	uint32_t packet_count,
+	const SparkGlm52Pp13WorkControlKvState *state,
+	SparkGlm52Pp13WorkControlKvPrefetchEntry *entries,
+	uint32_t entry_capacity,
+	uint32_t *entry_count_out)
+{
+	uint32_t packet_index,lane_index,block_index,entry_count;
+	if (packets == 0 || packet_count == 0u || state == 0 || entries == 0 ||
+		entry_capacity == 0u || entry_count_out == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	entry_count = 0u;
+	for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+	{
+		const SparkGlm52Pp13WorkControlPacket *packet;
+		SparkStatus status;
+		packet = &packets[packet_index];
+		status = SparkGlm52Pp13WorkControlValidateKvState(packet,state);
+		if (status != SPARK_STATUS_OK)
+			return status;
+		if (packet->control_generation != state->control_generation)
+			continue;
+		if ((packet->flags &
+			SPARK_GLM52_PP13_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u)
+			continue;
+		for (lane_index = 0u; lane_index < packet->active_sequence_count;
+			 ++lane_index)
+		{
+			uint32_t block_count;
+			block_count = SparkGlm52Pp13WorkControlBlockCount(
+				packet->lanes[lane_index].context_token_count,
+				packet->block_token_count);
+			for (block_index = 0u; block_index < block_count; ++block_index)
+			{
+				const SparkGlm52Pp13WorkControlKvDirectoryEntry *directory_entry;
+				uint32_t directory_index,found;
+				status = SparkGlm52Pp13WorkControlKvDirectoryFind(
+					state,
+					packet->lanes[lane_index].sequence_id,block_index,
+					&directory_index,&found);
+				if (status != SPARK_STATUS_OK)
+					return status;
+				if (found == 0u)
+					continue;
+				directory_entry = &state->directory_entries[directory_index];
+				if (directory_entry->residency_state !=
+						SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NVME ||
+					directory_entry->backing_valid == 0u ||
+					SparkGlm52Pp13WorkControlPrefetchEntryExists(
+						entries,entry_count,directory_entry->sequence_id,
+						directory_entry->logical_block_index))
+					continue;
+				if (entry_count >= entry_capacity)
+				{
+					*entry_count_out = entry_count;
+					return SPARK_STATUS_CAPACITY_EXCEEDED;
+				}
+				entries[entry_count].sequence_id = directory_entry->sequence_id;
+				entries[entry_count].logical_block_index =
+					directory_entry->logical_block_index;
+				entries[entry_count].backing_block_index =
+					directory_entry->backing_block_index;
+				entry_count += 1u;
+			}
+		}
+	}
+	*entry_count_out = entry_count;
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52Pp13WorkControlKvBackingAcquire(
@@ -1729,6 +1895,7 @@ SparkStatus SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
 	uint32_t found;
 	uint32_t lane_index;
 	uint32_t block_index;
+	uint32_t written_position_count;
 	SparkStatus status;
 
 	status = SparkGlm52Pp13WorkControlMarkTable(
@@ -1737,10 +1904,14 @@ SparkStatus SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
 		SPARK_GLM52_PP13_KV_ENTRY_RESIDENT);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	written_position_count =
+		SparkGlm52Pp13WorkControlWrittenPositionCount(packet);
+	if (written_position_count == 0u)
+		return SPARK_STATUS_INVALID_ARGUMENT;
 	for (lane_index = 0u; lane_index < packet->active_sequence_count; ++lane_index)
 	{
 		write_end_token = packet->lanes[lane_index].sequence_position +
-			(uint64_t)packet->new_token_count - 1u;
+			(uint64_t)written_position_count - 1u;
 		if (write_end_token >= packet->lanes[lane_index].context_token_count)
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		first_written_block =

@@ -309,6 +309,13 @@ def main():
             r"message->control_generation\s*=\s*state->session_id_base\s*;",
             backend_text) is None:
         violations.append("attached decode IPC omits the gateway generation")
+    if re.search(
+            r"if \(state->mtp_enabled != 0u\)\s*"
+            r"request_api_configuration\.configuration_flags \|=\s*"
+            r"SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT \|\s*"
+            r"SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;",
+            backend_text) is None:
+        violations.append("MTP backend does not force MTP request scheduling")
     residentd_text = (
         ROOT / "tools/sparkpipe_glm52_cuda_residentd.c").read_text()
     if re.search(

@@ -40,8 +40,8 @@ static void SparkTestGlm52Pp13RuntimeRankPlan(void)
     assert(rank_plan.next_port == 52101u);
     assert(rank_plan.logical_lane_capacity == 1024u);
     assert(rank_plan.maximum_speculative_rows_per_lane == 8u);
-    assert(rank_plan.execution_row_capacity == 8192u);
-    assert(rank_plan.output_endpoint.max_active_sequence_count == 8192u);
+    assert(rank_plan.execution_row_capacity == 1024u);
+    assert(rank_plan.output_endpoint.max_active_sequence_count == 1024u);
     assert((rank_plan.flags &
         SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_DENSE_PREFIX) != 0u);
     assert((rank_plan.flags &
@@ -51,6 +51,10 @@ static void SparkTestGlm52Pp13RuntimeRankPlan(void)
         "10.10.100.10_to_10.10.100.11_hidden") == 0);
     assert(rank_plan.quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT);
+    assert(SparkGlm52Pp13RuntimeExecutionRowCapacity(1u) == 8u);
+    assert(SparkGlm52Pp13RuntimeExecutionRowCapacity(64u) == 512u);
+    assert(SparkGlm52Pp13RuntimeExecutionRowCapacity(256u) == 1024u);
+    assert(SparkGlm52Pp13RuntimeExecutionRowCapacity(1024u) == 1024u);
     assert(SparkGlm52Pp13RuntimeBuildRankPlan(
         12u,1024u,52100u,
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,&rank_plan,error_buffer,sizeof(error_buffer)) ==

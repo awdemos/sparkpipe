@@ -545,6 +545,8 @@ static void SparkWriteGeneratedCreate(FILE *file, const SparkDriverBuildImage *d
     fputs("    instance->completion_context = request->completion_context;\n", file);
     fputs("    instance->host_services.completion_function = request->completion_function;\n", file);
     fputs("    instance->host_services.completion_context = request->completion_context;\n", file);
+    fputs("    instance->host_services.wake_function = request->wake_function;\n", file);
+    fputs("    instance->host_services.wake_context = request->wake_context;\n", file);
     fputs("    instance->host_services.node_id = request->node_id;\n", file);
     fputs("    instance->host_services.node_target = request->node_target;\n", file);
     fputs("    instance->host_services.node_context = request->node_context;\n", file);
@@ -737,15 +739,7 @@ static void SparkWriteGeneratedAdmitFunction(
         }
         if (program->scheduling.max_new_tokens != 0u)
         {
-            if ((program->scheduling.flags &
-                 SPARK_MODEL_DRIVER_PROGRAM_FLAG_BULK_PREFILL) != 0u)
-            {
-                fprintf(file, "            if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u && request->new_token_count > %uu)\n            {\n", program->scheduling.max_new_tokens);
-            }
-            else
-            {
-                fprintf(file, "            if (request->new_token_count > %uu)\n            {\n", program->scheduling.max_new_tokens);
-            }
+            fprintf(file, "            if ((request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) == 0u && request->new_token_count > %uu)\n            {\n", program->scheduling.max_new_tokens);
             fputs("                return SparkGeneratedRejectAdmission(decision, SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);\n            }\n", file);
         }
         fprintf(file, "            decision->estimated_service_time_ns = %lluull;\n", (unsigned long long)program->scheduling.target_latency_ns);
