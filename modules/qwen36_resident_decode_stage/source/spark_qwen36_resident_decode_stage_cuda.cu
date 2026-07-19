@@ -274,6 +274,180 @@ static __global__ void SparkQwen36EmbeddingGatherKernel(const uint32_t *token_id
 	SparkLmFloatToBf16(hidden_bf16,index,SparkLmBf16ToFloat(embedding_bf16,((uint64_t)token_ids[row] * SPARK_QWEN36_MODEL_HIDDEN_DIMENSION) + element));
 }
 
+/*
+ * Chunked GDN prefill, mirroring the PROVEN CPU chunk stages one to one
+ * (validation reference agrees with the recurrence at 2e-8 from a warmed
+ * state). One launch sequence processes ONE 64-token chunk for one lane
+ * across all value heads in parallel; the module loops chunks on the
+ * stream, which serializes the state dependency for free. Workspace lives
+ * in slot global memory (per head: qn/kn 64x128, decay/attn 64x64, w/kg
+ * 64x128) because the set exceeds shared memory. This is the simple correct
+ * formulation; the wmma tiling of the three inner products is the later
+ * throughput commit, the same discipline as the decode attention.
+ */
+#define SPARK_QWEN36_CUDA_CHUNK SPARK_QWEN36_MODEL_GDN_CHUNK_TOKENS
+
+typedef struct SparkQwen36ChunkWorkspaceView
+{
+	float *qn;
+	float *kn;
+	float *cum_g;
+	float *decay;
+	float *attn;
+	float *w;
+	float *kg;
+} SparkQwen36ChunkWorkspaceView;
+
+static __device__ __forceinline__ uint64_t SparkQwen36ChunkHeadOffset(uint32_t head, uint32_t per_head_elements)
+{
+	return((uint64_t)head * per_head_elements);
+}
+
+// Stage 1: per-head L2 norms with the 1/sqrt(dk) query scale, the intra-
+// chunk decay cumsum, the decay mask and the strictly-lower beta-scaled
+// -k_beta k^T attention seed. Block per head, thread per token row.
+static __global__ void SparkQwen36ChunkPrepareKernel(const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, SparkQwen36ChunkWorkspaceView views, uint32_t token_count)
+{
+	uint32_t head = blockIdx.x,row = threadIdx.x,key_head = head / SPARK_QWEN36_CUDA_GVA_GROUP,element,column;
+	uint64_t conv_row,qk_base = SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DK);
+	uint64_t mat_base = SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_CHUNK);
+	float total,value,product;
+	if ( row >= token_count )
+		return;
+	conv_row = (uint64_t)row * SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS;
+	total = 0.0f;
+	for (element = 0; element < SPARK_QWEN36_CUDA_DK; element++)
+	{
+		value = SparkLmBf16ToFloat(conv_out_bf16,conv_row + ((uint64_t)key_head * SPARK_QWEN36_CUDA_DK) + element);
+		total += (value * value);
+	}
+	total = rsqrtf(total + 1e-6f) * rsqrtf((float)SPARK_QWEN36_CUDA_DK);
+	for (element = 0; element < SPARK_QWEN36_CUDA_DK; element++)
+		views.qn[qk_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DK) + element] = SparkLmBf16ToFloat(conv_out_bf16,conv_row + ((uint64_t)key_head * SPARK_QWEN36_CUDA_DK) + element) * total;
+	total = 0.0f;
+	for (element = 0; element < SPARK_QWEN36_CUDA_DK; element++)
+	{
+		value = SparkLmBf16ToFloat(conv_out_bf16,conv_row + SPARK_QWEN36_MODEL_GDN_QK_DIMENSION + ((uint64_t)key_head * SPARK_QWEN36_CUDA_DK) + element);
+		total += (value * value);
+	}
+	total = rsqrtf(total + 1e-6f);
+	for (element = 0; element < SPARK_QWEN36_CUDA_DK; element++)
+		views.kn[qk_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DK) + element] = SparkLmBf16ToFloat(conv_out_bf16,conv_row + SPARK_QWEN36_MODEL_GDN_QK_DIMENSION + ((uint64_t)key_head * SPARK_QWEN36_CUDA_DK) + element) * total;
+	if ( row == 0u )
+	{
+		total = 0.0f;
+		for (element = 0; element < token_count; element++)
+		{
+			total += log_decay_f32[((uint64_t)element * SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT) + head];
+			views.cum_g[SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK) + element] = total;
+		}
+	}
+	__syncthreads();
+	for (column = 0; column < token_count; column++)
+	{
+		value = column <= row ? __expf(views.cum_g[SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK) + row] - views.cum_g[SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK) + column]) : 0.0f;
+		views.decay[mat_base + ((uint64_t)row * SPARK_QWEN36_CUDA_CHUNK) + column] = value;
+		product = 0.0f;
+		for (element = 0; element < SPARK_QWEN36_CUDA_DK && column < row; element++)
+			product += (views.kn[qk_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DK) + element] * beta_f32[((uint64_t)row * SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT) + head] * views.kn[qk_base + ((uint64_t)column * SPARK_QWEN36_CUDA_DK) + element]);
+		views.attn[mat_base + ((uint64_t)row * SPARK_QWEN36_CUDA_CHUNK) + column] = column < row ? -(product * value) : 0.0f;
+	}
+}
+
+// Stage 2: the forward-substitution UT transform T = (I - A)^-1, in place.
+// The row recurrence is sequential; columns of a row are parallel. Block
+// per head, thread per column.
+static __global__ void SparkQwen36ChunkSolveKernel(SparkQwen36ChunkWorkspaceView views, uint32_t token_count)
+{
+	uint32_t head = blockIdx.x,column = threadIdx.x,row,element;
+	uint64_t mat_base = SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_CHUNK);
+	float accumulator;
+	for (row = 1; row < token_count; row++)
+	{
+		if ( column < row )
+		{
+			accumulator = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN36_CUDA_CHUNK) + column];
+			for (element = 0; element < row; element++)
+				accumulator += (views.attn[mat_base + ((uint64_t)row * SPARK_QWEN36_CUDA_CHUNK) + element] * views.attn[mat_base + ((uint64_t)element * SPARK_QWEN36_CUDA_CHUNK) + column]);
+			views.attn[mat_base + ((uint64_t)row * SPARK_QWEN36_CUDA_CHUNK) + column] = accumulator;
+		}
+		__syncthreads();
+	}
+	if ( column < token_count )
+		views.attn[mat_base + ((uint64_t)column * SPARK_QWEN36_CUDA_CHUNK) + column] += 1.0f;
+}
+
+// Stage 3: w = T (v o beta) and kg = T (k o beta o e^G). Block per (head,
+// token row), thread per output column striped over dv then dk.
+static __global__ void SparkQwen36ChunkTransformKernel(const void *conv_out_bf16, const float *beta_f32, SparkQwen36ChunkWorkspaceView views, uint32_t token_count)
+{
+	uint32_t head = blockIdx.x,row = blockIdx.y,column = threadIdx.x,element;
+	uint64_t mat_base = SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_CHUNK);
+	uint64_t vec_base = SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DK);
+	float accumulator,transform;
+	if ( row >= token_count )
+		return;
+	accumulator = 0.0f;
+	for (element = 0; element < token_count; element++)
+	{
+		transform = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN36_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT) + head];
+		accumulator += (transform * SparkLmBf16ToFloat(conv_out_bf16,((uint64_t)element * SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS) + (2u * SPARK_QWEN36_MODEL_GDN_QK_DIMENSION) + ((uint64_t)head * SPARK_QWEN36_CUDA_DV) + column));
+	}
+	views.w[vec_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DV) + column] = accumulator;
+	accumulator = 0.0f;
+	for (element = 0; element < token_count; element++)
+	{
+		transform = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN36_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT) + head] * __expf(views.cum_g[SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK) + element]);
+		accumulator += (transform * views.kn[vec_base + ((uint64_t)element * SPARK_QWEN36_CUDA_DK) + column]);
+	}
+	views.kg[vec_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DK) + column] = accumulator;
+}
+
+// Stage 4: v_new = w - kg S, out = (q o e^G) S + (q k^T o D) v_new, and the
+// carried state S <- S e^G_last + (k o e^(G_last - G))^T v_new. Block per
+// (head, state row is the thread's dk stripe? No): thread per dv column,
+// mirroring the decode step's coalesced state-column ownership.
+static __global__ void SparkQwen36ChunkStepKernel(const float *log_decay_f32, SparkQwen36ChunkWorkspaceView views, float *state_f32, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t state_lane_stride, uint64_t state_layer_stride)
+{
+	uint32_t head = blockIdx.x,column = threadIdx.x,row,element;
+	uint64_t vec_base = SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DK);
+	uint64_t g_base = SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK);
+	uint64_t mat_base = SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_CHUNK);
+	uint64_t state_base = ((uint64_t)lane_index * state_lane_stride) + ((uint64_t)gdn_layer_ordinal * state_layer_stride) + ((uint64_t)head * SPARK_QWEN36_CUDA_DK * SPARK_QWEN36_CUDA_DV);
+	float v_new[SPARK_QWEN36_CUDA_CHUNK],accumulator,g_last = views.cum_g[g_base + token_count - 1u],carry;
+	(void)log_decay_f32;
+	for (row = 0; row < token_count; row++)
+	{
+		accumulator = 0.0f;
+		for (element = 0; element < SPARK_QWEN36_CUDA_DK; element++)
+			accumulator += (views.kg[vec_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DK) + element] * state_f32[state_base + ((uint64_t)element * SPARK_QWEN36_CUDA_DV) + column]);
+		v_new[row] = views.w[vec_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DV) + column] - accumulator;
+	}
+	for (row = 0; row < token_count; row++)
+	{
+		accumulator = 0.0f;
+		for (element = 0; element < SPARK_QWEN36_CUDA_DK; element++)
+			accumulator += (views.qn[vec_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DK) + element] * state_f32[state_base + ((uint64_t)element * SPARK_QWEN36_CUDA_DV) + column]);
+		accumulator *= __expf(views.cum_g[g_base + row]);
+		for (element = 0; element <= row; element++)
+		{
+			float dot = 0.0f;
+			uint32_t inner;
+			for (inner = 0; inner < SPARK_QWEN36_CUDA_DK; inner++)
+				dot += (views.qn[vec_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DK) + inner] * views.kn[vec_base + ((uint64_t)element * SPARK_QWEN36_CUDA_DK) + inner]);
+			accumulator += (dot * views.decay[mat_base + ((uint64_t)row * SPARK_QWEN36_CUDA_CHUNK) + element] * v_new[element]);
+		}
+		SparkLmFloatToBf16(core_out_bf16,((uint64_t)row * SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION) + ((uint64_t)head * SPARK_QWEN36_CUDA_DV) + column,accumulator);
+	}
+	for (element = 0; element < SPARK_QWEN36_CUDA_DK; element++)
+	{
+		carry = state_f32[state_base + ((uint64_t)element * SPARK_QWEN36_CUDA_DV) + column] * __expf(g_last);
+		for (row = 0; row < token_count; row++)
+			carry += (views.kn[vec_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DK) + element] * __expf(g_last - views.cum_g[g_base + row]) * v_new[row]);
+		state_f32[state_base + ((uint64_t)element * SPARK_QWEN36_CUDA_DV) + column] = carry;
+	}
+}
+
 // Residual add and SwiGLU combine, both row-shaped elementwise.
 static __global__ void SparkQwen36ResidualAddKernel(void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
 {
@@ -343,6 +517,33 @@ extern "C" cudaError_t SparkQwen36LaunchAttnDecode(cudaStream_t stream, const vo
 {
 	dim3 grid(SPARK_QWEN36_MODEL_ATTN_QUERY_HEAD_COUNT,row_count,1u);
 	SparkQwen36AttnDecodeKernel<<<grid,SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION,0,stream>>>(q_fused_bf16,kv_cache_bf16,table->physical_block_indices,table->lane_physical_block_counts,row_lane_indices,context_lengths,head_out_bf16,row_count,table->lane_stride,attn_layer_ordinal,cache_layer_stride,cache_block_stride);
+	return(cudaGetLastError());
+}
+
+/*
+ * One chunk of one lane's prefill through the GDN core: conv_out and the
+ * decay/beta arrays hold token_count (at most 64) consecutive positions.
+ * The module loops chunks on the stream; the state dependency serializes
+ * for free. Workspace pointers are slot-owned device buffers sized per the
+ * view layout (per head: qn/kn/w/kg 64 x 128, decay/attn 64 x 64, cum_g 64).
+ */
+extern "C" cudaError_t SparkQwen36LaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkQwen36GdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal)
+{
+	SparkQwen36ChunkWorkspaceView views;
+	dim3 transform_grid(SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT,token_count,1u);
+	views.qn = workspace_qn;
+	views.kn = workspace_kn;
+	views.cum_g = workspace_cum_g;
+	views.decay = workspace_decay;
+	views.attn = workspace_attn;
+	views.w = workspace_w;
+	views.kg = workspace_kg;
+	if ( token_count == 0u || token_count > SPARK_QWEN36_CUDA_CHUNK )
+		return(cudaErrorInvalidValue);
+	SparkQwen36ChunkPrepareKernel<<<SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT,SPARK_QWEN36_CUDA_CHUNK,0,stream>>>(conv_out_bf16,log_decay_f32,beta_f32,views,token_count);
+	SparkQwen36ChunkSolveKernel<<<SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT,SPARK_QWEN36_CUDA_CHUNK,0,stream>>>(views,token_count);
+	SparkQwen36ChunkTransformKernel<<<transform_grid,SPARK_QWEN36_CUDA_DV,0,stream>>>(conv_out_bf16,beta_f32,views,token_count);
+	SparkQwen36ChunkStepKernel<<<SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT,SPARK_QWEN36_CUDA_DV,0,stream>>>(log_decay_f32,views,pool->state_f32,core_out_bf16,lane_index,token_count,gdn_layer_ordinal,pool->state_lane_stride_elements,pool->state_layer_stride_elements);
 	return(cudaGetLastError());
 }
 
