@@ -106,17 +106,16 @@ static int32_t SparkQwen36SynthesizeAppendEveryLayer(SparkQwen36SynthesizeContex
 
 static int32_t SparkQwen36SynthesizeAppendGdnLayer(SparkQwen36SynthesizeContext *context, uint32_t layer_index, uint32_t quantize)
 {
-	static const uint32_t kinds[11] =
+	static const uint32_t kinds[9] =
 	{
-		SPARK_QWEN36_STAGEPACK_TENSOR_GDN_QUERY,SPARK_QWEN36_STAGEPACK_TENSOR_GDN_KEY,
-		SPARK_QWEN36_STAGEPACK_TENSOR_GDN_VALUE,SPARK_QWEN36_STAGEPACK_TENSOR_GDN_GATE,
-		SPARK_QWEN36_STAGEPACK_TENSOR_GDN_BA,SPARK_QWEN36_STAGEPACK_TENSOR_GDN_OUTPUT,
-		SPARK_QWEN36_STAGEPACK_TENSOR_GDN_CONV_WEIGHT,SPARK_QWEN36_STAGEPACK_TENSOR_GDN_CONV_BIAS,
+		SPARK_QWEN36_STAGEPACK_TENSOR_GDN_QKV,SPARK_QWEN36_STAGEPACK_TENSOR_GDN_GATE,
+		SPARK_QWEN36_STAGEPACK_TENSOR_GDN_BETA,SPARK_QWEN36_STAGEPACK_TENSOR_GDN_DECAY,
+		SPARK_QWEN36_STAGEPACK_TENSOR_GDN_OUTPUT,SPARK_QWEN36_STAGEPACK_TENSOR_GDN_CONV_WEIGHT,
 		SPARK_QWEN36_STAGEPACK_TENSOR_GDN_A_LOG,SPARK_QWEN36_STAGEPACK_TENSOR_GDN_DT_BIAS,
 		SPARK_QWEN36_STAGEPACK_TENSOR_GDN_NORM
 	};
 	uint32_t index;
-	for (index = 0; index < 11u; index++)
+	for (index = 0; index < 9u; index++)
 		if ( SparkQwen36SynthesizeAppend(context,kinds[index],layer_index,0u,quantize) < 0 )
 			return(-1 - (int32_t)index);
 	return(0);
@@ -124,15 +123,14 @@ static int32_t SparkQwen36SynthesizeAppendGdnLayer(SparkQwen36SynthesizeContext 
 
 static int32_t SparkQwen36SynthesizeAppendAttnLayer(SparkQwen36SynthesizeContext *context, uint32_t layer_index, uint32_t quantize)
 {
-	static const uint32_t kinds[7] =
+	static const uint32_t kinds[6] =
 	{
 		SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY,SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY,
-		SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_VALUE,SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT_GATE,
-		SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT,SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY_NORM,
-		SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY_NORM
+		SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_VALUE,SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT,
+		SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY_NORM,SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY_NORM
 	};
 	uint32_t index;
-	for (index = 0; index < 7u; index++)
+	for (index = 0; index < 6u; index++)
 		if ( SparkQwen36SynthesizeAppend(context,kinds[index],layer_index,0u,quantize) < 0 )
 			return(-1 - (int32_t)index);
 	return(0);

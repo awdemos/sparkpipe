@@ -17,10 +17,12 @@
  * misdeclare its own inventory. The whole-stack case is first_layer_index 0
  * with layer_count 64, which is simply the one-stage pipeline.
  *
- * MODELING-PIN rows (conv bias, gdn norm span) carry the Qwen3-Next lineage
- * shape and are verified against modeling_qwen3_5 before the CUDA lands; a
- * pin that moves one is a single case in the shape table and a converter
- * change, never a silent reinterpretation.
+ * The MODELING-PIN pass against transformers main modeling_qwen3_5 (2026-07)
+ * settled the checkpoint layout this table now states: the GDN q|k|v
+ * projection is ONE fused tensor in conv channel order, beta and decay are
+ * separate 48-row projections, the depthwise conv carries NO bias, and the
+ * attention query projection fuses a per-head output gate (each head's 512
+ * columns are 256 query then 256 gate, applied as sigmoid before o_proj).
  *
  * Layout: [header][directory: tensor_count entries][payload bytes].
  * All offsets are absolute file offsets. Payload of a tensor is contiguous.
@@ -41,25 +43,22 @@ typedef enum SparkQwen36StagePackTensorKind
 	SPARK_QWEN36_STAGEPACK_TENSOR_FFN_GATE = 5,
 	SPARK_QWEN36_STAGEPACK_TENSOR_FFN_UP = 6,
 	SPARK_QWEN36_STAGEPACK_TENSOR_FFN_DOWN = 7,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_QUERY = 8,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_KEY = 9,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_VALUE = 10,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_GATE = 11,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_BA = 12,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_OUTPUT = 13,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_CONV_WEIGHT = 14,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_CONV_BIAS = 15,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_A_LOG = 16,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_DT_BIAS = 17,
-	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_NORM = 18,
-	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY = 19,
-	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY = 20,
-	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_VALUE = 21,
-	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT_GATE = 22,
-	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT = 23,
-	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY_NORM = 24,
-	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY_NORM = 25,
-	SPARK_QWEN36_STAGEPACK_TENSOR_KIND_COUNT = 26
+	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_QKV = 8,
+	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_GATE = 9,
+	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_BETA = 10,
+	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_DECAY = 11,
+	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_OUTPUT = 12,
+	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_CONV_WEIGHT = 13,
+	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_A_LOG = 14,
+	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_DT_BIAS = 15,
+	SPARK_QWEN36_STAGEPACK_TENSOR_GDN_NORM = 16,
+	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY = 17,
+	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY = 18,
+	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_VALUE = 19,
+	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT = 20,
+	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY_NORM = 21,
+	SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_KEY_NORM = 22,
+	SPARK_QWEN36_STAGEPACK_TENSOR_KIND_COUNT = 23
 } SparkQwen36StagePackTensorKind;
 
 // A kind belongs to a layer class; the resolver enforces class against the
@@ -133,15 +132,15 @@ static inline uint32_t SparkQwen36StagePackFullAttentionLayersBelow(uint32_t lay
 
 /*
  * The tensor inventory of a slice, computed, never declared: five tensors on
- * every layer (two norms and the SwiGLU triple), eleven more on a GDN layer,
- * seven more on a full-attention layer, the embedding on stage zero and the
+ * every layer (two norms and the SwiGLU triple), nine more on a GDN layer,
+ * six more on a full-attention layer, the embedding on stage zero and the
  * final norm plus LM head on the last stage.
  */
 static inline uint32_t SparkQwen36StagePackExpectedTensorCount(uint32_t first_layer_index, uint32_t layer_count)
 {
 	uint32_t full = SparkQwen36StagePackFullAttentionLayersBelow(first_layer_index + layer_count) - SparkQwen36StagePackFullAttentionLayersBelow(first_layer_index);
 	uint32_t gdn = layer_count - full;
-	uint32_t tensors = (layer_count * 5u) + (gdn * 11u) + (full * 7u);
+	uint32_t tensors = (layer_count * 5u) + (gdn * 9u) + (full * 6u);
 	if ( first_layer_index == 0u )
 		tensors += 1u;
 	if ( first_layer_index + layer_count == SPARK_QWEN36_MODEL_LAYER_COUNT )
@@ -315,20 +314,19 @@ static inline int32_t SparkQwen36StagePackShapeGdn(uint32_t tensor_kind, SparkQw
 	shape->layer_class = SPARK_QWEN36_STAGEPACK_CLASS_GDN_LAYER;
 	switch ( tensor_kind )
 	{
-	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_QUERY:
-	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_KEY:
-		shape->rows = SPARK_QWEN36_MODEL_GDN_QK_DIMENSION;
+	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_QKV:
+		shape->rows = SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS;
 		shape->columns = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
 		shape->quantizable = 1u;
 		return(0);
-	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_VALUE:
 	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_GATE:
 		shape->rows = SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION;
 		shape->columns = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
 		shape->quantizable = 1u;
 		return(0);
-	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_BA:
-		shape->rows = 2u * SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT;
+	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_BETA:
+	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_DECAY:
+		shape->rows = SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT;
 		shape->columns = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
 		return(0);
 	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_OUTPUT:
@@ -339,10 +337,6 @@ static inline int32_t SparkQwen36StagePackShapeGdn(uint32_t tensor_kind, SparkQw
 	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_CONV_WEIGHT:
 		shape->rows = SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS;
 		shape->columns = SPARK_QWEN36_MODEL_GDN_CONV_KERNEL;
-		return(0);
-	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_CONV_BIAS:
-		shape->rows = 1u;
-		shape->columns = SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS;
 		return(0);
 	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_A_LOG:
 	case SPARK_QWEN36_STAGEPACK_TENSOR_GDN_DT_BIAS:
@@ -365,8 +359,7 @@ static inline int32_t SparkQwen36StagePackShapeAttn(uint32_t tensor_kind, SparkQ
 	switch ( tensor_kind )
 	{
 	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_QUERY:
-	case SPARK_QWEN36_STAGEPACK_TENSOR_ATTN_OUTPUT_GATE:
-		shape->rows = SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION;
+		shape->rows = 2u * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION;
 		shape->columns = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION;
 		shape->quantizable = 1u;
 		return(0);

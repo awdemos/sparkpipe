@@ -83,44 +83,43 @@ typedef struct SparkQwen36LinearView
 } SparkQwen36LinearView;
 
 /*
- * Gated DeltaNet layer weights. The stage pack carries SPLIT projections
- * (query, key, value, gate) regardless of how the checkpoint fuses them; the
- * pack converter splits against the safetensors index at build time. The ba
- * projection produces the two per-value-head scalars (beta preactivation,
- * decay preactivation) as one 2 x 48 output. a_log and dt_bias are the fp32
- * per-value-head decay parameters. MODELING-PIN: the exact decay composition
- * (-exp(a_log) * softplus(a + dt_bias) in the Qwen3-Next lineage), the conv
- * bias presence, and the gated-norm weight shape are pinned against
- * modeling_qwen3_5 before the CUDA is written; each is one tensor row in the
- * shape table if the pin moves it.
+ * Gated DeltaNet layer weights, PINNED against transformers main
+ * modeling_qwen3_5 (2026-07). The qkv projection is ONE fused tensor whose
+ * rows are conv channel order: query (2048) | key (2048) | value (6144); its
+ * output feeds the depthwise causal conv (kernel 4, NO bias, silu on the
+ * conv output) directly, then splits. beta and decay are separate 48-row
+ * projections: beta = sigmoid(b); per-head log decay
+ * g = -exp(a_log) * softplus(a + dt_bias), fp32 math. Inside the delta rule
+ * q and k are L2-normalized per head. The gated norm is per-value-head
+ * RMSNorm(128) in fp32, times the weight, times silu(z) - norm before gate -
+ * and gate z comes from its own 6144-row projection.
  */
 typedef struct SparkQwen36GdnLayerWeights
 {
-	SparkQwen36LinearView query;
-	SparkQwen36LinearView key;
-	SparkQwen36LinearView value;
+	SparkQwen36LinearView qkv;
 	SparkQwen36LinearView gate;
-	SparkQwen36LinearView ba;
+	SparkQwen36LinearView beta;
+	SparkQwen36LinearView decay;
 	SparkQwen36LinearView output;
 	const void *conv_weight_bf16;
-	const void *conv_bias_bf16;
 	const float *a_log_f32;
 	const float *dt_bias_f32;
 	const void *gdn_norm_weight_bf16;
 } SparkQwen36GdnLayerWeights;
 
 /*
- * Full attention layer weights. Query and key head RMSNorm gains span one
- * head (256). The output gate is a learned projection to the query width,
- * applied elementwise to the attention output before the output projection
- * (MODELING-PIN: gate activation).
+ * Full attention layer weights, PINNED: the query projection fuses a
+ * per-head output gate - each head's 512 rows are 256 query then 256 gate.
+ * The query half gets per-head RMSNorm(256) then RoPE on its first 64 dims;
+ * the gate half is applied as sigmoid to the attention output, per head,
+ * before the output projection. Key gets per-head RMSNorm(256) then the same
+ * partial RoPE; value is unnormalized.
  */
 typedef struct SparkQwen36AttnLayerWeights
 {
 	SparkQwen36LinearView query;
 	SparkQwen36LinearView key;
 	SparkQwen36LinearView value;
-	SparkQwen36LinearView output_gate;
 	SparkQwen36LinearView output;
 	const void *query_norm_weight_bf16;
 	const void *key_norm_weight_bf16;
