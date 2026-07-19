@@ -10,7 +10,7 @@
 #define PIPESIM_SPARK_COUNT SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT
 #define PIPESIM_LANE_CAPACITY 128u
 #define PIPESIM_REQUEST_SLOTS 1024u
-#define PIPESIM_KV_BLOCKS 2048u
+#define PIPESIM_KV_BLOCKS 32768u
 #define PIPESIM_PREFIX_BINDINGS (PIPESIM_KV_BLOCKS + 64u)
 #define PIPESIM_EVENT_CAPACITY 16384u
 #define PIPESIM_PREFILL_STRIDE 256u
@@ -75,6 +75,7 @@ typedef struct PipesimFixture
 	uint64_t prefill_last_completion_ns;
 	uint64_t prefill_dispatch_count;
 	uint64_t verify_dispatch_count;
+	uint64_t peak_resident_kv_blocks;
 	uint64_t producer_dispatch_count;
 	uint64_t committed_token_estimate;
 	uint64_t accept_accum_milli;
@@ -508,6 +509,17 @@ int main(int argc, char **argv)
 			continue;
 		}
 		PipesimDeliverCompletion(fixture, pending);
+		{
+			uint64_t resident_now;
+			uint32_t kv_block_index;
+
+			resident_now = 0u;
+			for (kv_block_index = 0u; kv_block_index < PIPESIM_KV_BLOCKS; ++kv_block_index)
+				if (fixture->kv_blocks[kv_block_index].reference_count != 0u)
+					resident_now += 1u;
+			if (resident_now > fixture->peak_resident_kv_blocks)
+				fixture->peak_resident_kv_blocks = resident_now;
+		}
 		if (getenv("SPARKPIPE_SIM_TRACE"))
 			fprintf(stderr, "T %llu kind=%u lanes=%u queued=%u running=%u pending=%u\n",
 				(unsigned long long)(fixture->now_ns / 1000000u),
@@ -525,6 +537,7 @@ int main(int argc, char **argv)
 		printf("prefill_tokens=%" PRIu64 " prefill_dispatches=%" PRIu64 " prefill_done_ms=%" PRIu64 " prefill_tok_per_s=%.1f\n", fixture->prefill_completed_token_count, fixture->prefill_dispatch_count, fixture->prefill_last_completion_ns / 1000000u, fixture->prefill_last_completion_ns != 0u ? fixture->prefill_completed_token_count * 1e9 / (double)fixture->prefill_last_completion_ns : 0.0);
 	printf("tokens=%" PRIu64 " virtual_ms=%" PRIu64 " tok_per_s=%.1f\n", fixture->decoded_token_count, fixture->now_ns / 1000000u, fixture->decoded_token_count * 1e9 / (double)fixture->now_ns);
 	printf("steady_tok_per_s=%.1f steady_tokens=%" PRIu64 "\n", steady_ns != 0u ? steady_tokens * 1e9 / (double)steady_ns : 0.0, steady_tokens);
+	printf("peak_resident_kv_blocks=%" PRIu64 " of %u (%.1f%%)\n", fixture->peak_resident_kv_blocks, PIPESIM_KV_BLOCKS, fixture->peak_resident_kv_blocks * 100.0 / PIPESIM_KV_BLOCKS);
 	printf("dispatches=%" PRIu64 " mean_width=%.2f max_concurrent=%u mean_concurrent=%.2f\n", fixture->stats.dispatch_count, fixture->stats.dispatch_count != 0u ? (double)fixture->stats.lane_dispatch_count / (double)fixture->stats.dispatch_count : 0.0, fixture->stats.max_concurrent, fixture->stats.observed_ns != 0u ? (double)fixture->stats.concurrency_weighted_ns / (double)fixture->stats.observed_ns : 0.0);
 	for (width_index = 0u; width_index <= PIPESIM_LANE_CAPACITY; ++width_index)
 		if (fixture->stats.width_histogram[width_index] != 0u)
