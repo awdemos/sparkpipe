@@ -828,6 +828,47 @@ static SparkStatus SparkMimo25ModuleRunFfn(SparkMimo25ModuleSlot *slot, const Sp
 	return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"ffn_residual"));
 }
 
+/*
+ * dspark aux-layer tap: after a listed layer completes, the rows' hidden
+ * is strided into the caller's fused arena - one pitched device copy per
+ * tap, arena row = [aux0|aux1|...]. The list must sit inside the slice
+ * so a misconfigured serving plane fails before the first frame runs.
+ */
+static SparkStatus SparkMimo25ModuleValidateTap(const SparkMimo25ModuleState *state, const SparkMimo25ResidentDecodeStageFrameContext *context)
+{
+	uint32_t tap;
+	if ( (context->flags & SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_TAP) == 0u )
+		return(SPARK_STATUS_OK);
+	if ( context->tap_layer_count == 0u || context->tap_layer_count > SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_TAP_LAYERS || context->tap_layer_indices == 0 || context->tap_arena_bf16 == 0 )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	for (tap = 0; tap < context->tap_layer_count; tap++)
+		if ( context->tap_layer_indices[tap] < state->first_layer_index || context->tap_layer_indices[tap] >= state->first_layer_index + state->layer_count )
+		{
+			fprintf(stderr,"%s tap_layer_out_of_slice layer=%u slice=%u+%u\n",SPARK_MIMO25_MODULE_TAG,context->tap_layer_indices[tap],state->first_layer_index,state->layer_count);
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+	return(SPARK_STATUS_OK);
+}
+
+static SparkStatus SparkMimo25ModuleTapLayer(SparkMimo25ModuleSlot *slot, const SparkMimo25ResidentDecodeStageFrameContext *context, uint32_t layer_index, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	uint64_t dim = SPARK_MIMO25_MODEL_HIDDEN_DIMENSION,bf16 = SPARK_MIMO25_MODEL_BF16_ELEMENT_BYTES;
+	uint64_t arena_pitch;
+	uint32_t tap;
+	cudaError_t error = cudaSuccess;
+	if ( context == 0 || (context->flags & SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_TAP) == 0u )
+		return(SPARK_STATUS_OK);
+	arena_pitch = (uint64_t)context->tap_layer_count * dim * bf16;
+	for (tap = 0; error == cudaSuccess && tap < context->tap_layer_count; tap++)
+	{
+		if ( context->tap_layer_indices[tap] != layer_index )
+			continue;
+		error = cudaMemcpy2DAsync((uint8_t *)context->tap_arena_bf16 + (uint64_t)tap * dim * bf16,arena_pitch,slot->hidden_bf16,dim * bf16,dim * bf16,rows,cudaMemcpyDeviceToDevice,stream);
+	}
+	return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"hidden_tap"));
+}
+
 static SparkStatus SparkMimo25ModuleRunLayer(SparkMimo25ModuleState *state, SparkMimo25ModuleSlot *slot, const SparkMimo25DecodeBatchView *batch, uint32_t layer_index, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -1015,6 +1056,9 @@ SparkStatus SparkMimo25ResidentDecodeStageExecute(void *module_state, SparkModel
 		return(status);
 	batch = context->decode_batch;
 	rows = batch->row_count;
+	status = SparkMimo25ModuleValidateTap(state,context);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
 	status = SparkStageModuleSlotClaim(state->slot_states,state->pipeline_slot_count,&slot_index);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
@@ -1023,7 +1067,11 @@ SparkStatus SparkMimo25ResidentDecodeStageExecute(void *module_state, SparkModel
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMimo25ModuleBeginHidden(state,slot,context,frame,rows);
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
+	{
 		status = SparkMimo25ModuleRunLayer(state,slot,batch,layer,rows);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkMimo25ModuleTapLayer(slot,context,layer,rows);
+	}
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMimo25ModuleFinish(state,slot,context,frame,rows);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u && state->mtp_armed != 0u )

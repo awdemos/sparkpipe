@@ -97,6 +97,8 @@ typedef struct SparkMimo25DecodeBatchView
 #define SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT 0x00000002u
 #define SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT 0x00000004u
 #define SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW 0x00000008u
+#define SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_TAP 0x00000010u
+#define SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_TAP_LAYERS 8u
 
 typedef SparkStatus (*SparkMimo25HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
 typedef SparkStatus (*SparkMimo25HiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
@@ -119,6 +121,18 @@ typedef struct SparkMimo25ResidentDecodeStageFrameContext
 	uint32_t flags;
 	uint32_t mtp_draft_depth;
 	uint32_t *mtp_draft_tokens;
+	/*
+	 * dspark aux-layer tap, the glm52 TapOutputPointers contract from the
+	 * target's side: after each listed layer completes, the batch's rows'
+	 * hidden lands in the caller's device arena at
+	 * arena[row * tap_layer_count * hidden + aux_index * hidden], the
+	 * fused [aux0|aux1|...] row the draft backend consumes. Listed layers
+	 * must sit inside this stage's slice.
+	 */
+	uint32_t tap_layer_count;
+	uint32_t tap_reserved;
+	const uint32_t *tap_layer_indices;
+	void *tap_arena_bf16;
 	const SparkMimo25DecodeBatchView *decode_batch;
 	SparkHiddenTransportSession *hidden_input_transport_session;
 	SparkHiddenTransportSession *hidden_output_transport_session;
