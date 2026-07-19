@@ -29,6 +29,7 @@
 #define SPARK_LM_WEIGHT_FORMAT_F32 1u
 #define SPARK_LM_WEIGHT_FORMAT_U32 2u
 #define SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 3u
+#define SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 4u
 
 static __device__ __forceinline__ float SparkLmBf16ToFloat(const void *source, uint64_t index)
 {
@@ -46,6 +47,21 @@ static __device__ __forceinline__ float SparkLmDecodeE2m1(uint32_t nibble)
 	const float magnitude[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
 	float value = magnitude[nibble & 7u];
 	return((nibble & 8u) != 0u ? -value : value);
+}
+
+// E4M3fn byte to float: 4 exponent bits bias 7, 3 mantissa bits, finite
+// only, 0x7f/0xff are NaN -> zero; subnormals at 2^-9 granularity.
+static __device__ __forceinline__ float SparkLmDecodeE4m3(uint32_t byte_value)
+{
+	uint32_t exponent = (byte_value >> 3u) & 0x0fu,mantissa = byte_value & 7u;
+	float sign = (byte_value & 0x80u) != 0u ? -1.0f : 1.0f,magnitude;
+	if ( (byte_value & 0x7fu) == 0x7fu )
+		return(0.0f);
+	if ( exponent == 0u )
+		magnitude = (float)mantissa * 0.001953125f;
+	else
+		magnitude = (1.0f + ((float)mantissa * 0.125f)) * exp2f((float)(int32_t)exponent - 7.0f);
+	return(sign * magnitude);
 }
 
 // E8M0 scale byte: pure power of two, bias 127, 0xff reserved as NaN -> zero.
@@ -159,16 +175,70 @@ static __global__ void SparkLmRmsNormKernel(const void *input_bf16, const void *
  * scale group and must match the stage pack; it is a template parameter so a
  * mismatch is a compile error at the launch site, never a silent default.
  */
+static __device__ __forceinline__ float SparkLmDotRowBf16(const float *shared_input, const void *weight_payload, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
+{
+	uint64_t weight_row_offset = (uint64_t)neuron * input_dimension;
+	uint32_t element;
+	float accumulator = 0.0f;
+	for (element = lane; element < input_dimension; element += SPARK_LM_WARP_LANES)
+		accumulator += (shared_input[element] * SparkLmBf16ToFloat(weight_payload,weight_row_offset + element));
+	return(accumulator);
+}
+
+template <uint32_t GROUP_SIZE>
+static __device__ __forceinline__ float SparkLmDotRowMxfp4(const float *shared_input, const void *weight_payload, const uint8_t *weight_scale_e8m0, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
+{
+	uint64_t weight_row_offset = (uint64_t)neuron * (input_dimension / 2u);
+	uint32_t packed_index,pair_base,packed;
+	float accumulator = 0.0f,scale_value;
+	for (packed_index = lane; packed_index < (input_dimension / 2u); packed_index += SPARK_LM_WARP_LANES)
+	{
+		pair_base = packed_index << 1u;
+		packed = ((const uint8_t *)weight_payload)[weight_row_offset + packed_index];
+		scale_value = SparkLmDecodeE8m0(weight_scale_e8m0[((uint64_t)neuron * (input_dimension / GROUP_SIZE)) + (pair_base / GROUP_SIZE)]);
+		accumulator += (shared_input[pair_base] * (SparkLmDecodeE2m1(packed & 0x0fu) * scale_value));
+		accumulator += (shared_input[pair_base + 1u] * (SparkLmDecodeE2m1(packed >> 4u) * scale_value));
+	}
+	return(accumulator);
+}
+
+// FP8 weights: one e4m3 byte per element, one E8M0 scale per GROUP_SIZE
+// columns per row - the DeepSeek block-quantized layout.
+template <uint32_t GROUP_SIZE>
+static __device__ __forceinline__ float SparkLmDotRowFp8(const float *shared_input, const void *weight_payload, const uint8_t *weight_scale_e8m0, uint32_t neuron, uint32_t input_dimension, uint32_t lane)
+{
+	uint64_t weight_row_offset = (uint64_t)neuron * input_dimension;
+	uint32_t element;
+	float accumulator = 0.0f,scale_value;
+	for (element = lane; element < input_dimension; element += SPARK_LM_WARP_LANES)
+	{
+		scale_value = SparkLmDecodeE8m0(weight_scale_e8m0[((uint64_t)neuron * (input_dimension / GROUP_SIZE)) + (element / GROUP_SIZE)]);
+		accumulator += (shared_input[element] * (SparkLmDecodeE4m3(((const uint8_t *)weight_payload)[weight_row_offset + element]) * scale_value));
+	}
+	return(accumulator);
+}
+
+// Token embedding gather: one block per row, threads stripe the hidden.
+static __global__ void SparkLmEmbeddingGatherKernel(const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t hidden_dimension)
+{
+	uint32_t row = blockIdx.x,element;
+	uint64_t source_offset,destination_offset;
+	if ( row >= row_count )
+		return;
+	source_offset = (uint64_t)token_ids[row] * hidden_dimension;
+	destination_offset = (uint64_t)row * hidden_dimension;
+	for (element = threadIdx.x; element < hidden_dimension; element += blockDim.x)
+		SparkLmFloatToBf16(hidden_bf16,destination_offset + element,SparkLmBf16ToFloat(embedding_bf16,source_offset + element));
+}
+
 template <uint32_t GROUP_SIZE>
 static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *weight_payload, const uint8_t *weight_scale_e8m0, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
 	extern __shared__ float shared_input[];
 	uint32_t row = blockIdx.x,neuron_base = blockIdx.y * SPARK_LM_CTA_WARPS;
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
-	uint32_t neuron,element,packed_index,pair_base;
-	uint64_t weight_row_offset;
-	float accumulator,scale_value;
-	uint32_t packed;
+	uint32_t neuron,element;
+	float accumulator;
 	if ( row >= row_count )
 		return;
 	for (element = threadIdx.x; element < input_dimension; element += blockDim.x)
@@ -177,25 +247,12 @@ static __global__ void SparkLmLinearKernel(uint32_t weight_format, const void *w
 	neuron = neuron_base + warp;
 	if ( neuron >= output_dimension )
 		return;
-	accumulator = 0.0f;
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_BF16 )
-	{
-		weight_row_offset = (uint64_t)neuron * input_dimension;
-		for (element = lane; element < input_dimension; element += SPARK_LM_WARP_LANES)
-			accumulator += (shared_input[element] * SparkLmBf16ToFloat(weight_payload,weight_row_offset + element));
-	}
+		accumulator = SparkLmDotRowBf16(shared_input,weight_payload,neuron,input_dimension,lane);
+	else if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
+		accumulator = SparkLmDotRowFp8<GROUP_SIZE>(shared_input,weight_payload,weight_scale_e8m0,neuron,input_dimension,lane);
 	else
-	{
-		weight_row_offset = (uint64_t)neuron * (input_dimension / 2u);
-		for (packed_index = lane; packed_index < (input_dimension / 2u); packed_index += SPARK_LM_WARP_LANES)
-		{
-			pair_base = packed_index << 1u;
-			packed = ((const uint8_t *)weight_payload)[weight_row_offset + packed_index];
-			scale_value = SparkLmDecodeE8m0(weight_scale_e8m0[((uint64_t)neuron * (input_dimension / GROUP_SIZE)) + (pair_base / GROUP_SIZE)]);
-			accumulator += (shared_input[pair_base] * (SparkLmDecodeE2m1(packed & 0x0fu) * scale_value));
-			accumulator += (shared_input[pair_base + 1u] * (SparkLmDecodeE2m1(packed >> 4u) * scale_value));
-		}
-	}
+		accumulator = SparkLmDotRowMxfp4<GROUP_SIZE>(shared_input,weight_payload,weight_scale_e8m0,neuron,input_dimension,lane);
 	accumulator = SparkLmWarpReduceSum(accumulator);
 	if ( lane == 0u )
 		SparkLmFloatToBf16(output_bf16,((uint64_t)row * output_dimension) + neuron,accumulator);
