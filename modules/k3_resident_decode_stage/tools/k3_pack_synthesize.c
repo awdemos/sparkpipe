@@ -178,20 +178,28 @@ static int32_t SparkK3SynthesizeAppendLayer(SparkK3SynthesizeContext *context, u
 	return(SparkK3SynthesizeAppendMlpLayer(context,layer_index,quantize));
 }
 
-static int32_t SparkK3SynthesizeBuildDirectory(SparkK3SynthesizeContext *context, uint32_t quantize)
+// The embedding rides only the first slice, the head-side globals only the
+// last; a PP slice pack carries exactly what its stage dereferences.
+static int32_t SparkK3SynthesizeBuildDirectory(SparkK3SynthesizeContext *context, uint32_t quantize, uint32_t first_layer, uint32_t layer_count)
 {
-	static const uint32_t global_kinds[] = {
-		SPARK_K3_STAGEPACK_TENSOR_EMBEDDING,SPARK_K3_STAGEPACK_TENSOR_ATTNRES_FINAL_QUERY,SPARK_K3_STAGEPACK_TENSOR_ATTNRES_FINAL_NORM,
+	static const uint32_t head_kinds[] = {
+		SPARK_K3_STAGEPACK_TENSOR_ATTNRES_FINAL_QUERY,SPARK_K3_STAGEPACK_TENSOR_ATTNRES_FINAL_NORM,
 		SPARK_K3_STAGEPACK_TENSOR_FINAL_NORM,SPARK_K3_STAGEPACK_TENSOR_LM_HEAD_RESTRICTED,SPARK_K3_STAGEPACK_TENSOR_RESTRICTED_TOKEN_IDS };
-	uint32_t index;
+	uint32_t index,owns_head = first_layer + layer_count == SPARK_K3_MODEL_LAYER_COUNT ? 1u : 0u;
 	int32_t result;
-	for (index = 0; index < (sizeof(global_kinds) / sizeof(global_kinds[0])); index++)
+	if ( first_layer == 0u )
 	{
-		result = SparkK3SynthesizeAppend(context,global_kinds[index],SPARK_K3_STAGEPACK_GLOBAL_LAYER,quantize);
+		result = SparkK3SynthesizeAppend(context,SPARK_K3_STAGEPACK_TENSOR_EMBEDDING,SPARK_K3_STAGEPACK_GLOBAL_LAYER,quantize);
 		if ( result < 0 )
 			return(result);
 	}
-	for (index = 0; index < SPARK_K3_MODEL_LAYER_COUNT; index++)
+	for (index = 0; owns_head != 0u && index < (sizeof(head_kinds) / sizeof(head_kinds[0])); index++)
+	{
+		result = SparkK3SynthesizeAppend(context,head_kinds[index],SPARK_K3_STAGEPACK_GLOBAL_LAYER,quantize);
+		if ( result < 0 )
+			return(result);
+	}
+	for (index = first_layer; index < first_layer + layer_count; index++)
 	{
 		result = SparkK3SynthesizeAppendLayer(context,index,quantize);
 		if ( result < 0 )
@@ -342,44 +350,53 @@ static void SparkK3SynthesizeReport(const SparkK3SynthesizeContext *context, con
 	fprintf(stderr,"k3_pack_synthesize tensors=%u mxfp4_bytes=%llu dense_bytes=%llu file_bytes=%llu file_gib=%.1f\n",context->entry_count,(unsigned long long)quantized_bytes,(unsigned long long)dense_bytes,(unsigned long long)header->file_bytes,(double)header->file_bytes / (1024.0 * 1024.0 * 1024.0));
 }
 
+static int32_t SparkK3SynthesizeParseArguments(int argc, char **argv, SparkK3SynthesizeContext *context, const char **path, uint32_t *quantize, uint32_t *dry_run, uint32_t *first_layer, uint32_t *layer_count)
+{
+	int32_t argument;
+	for (argument = 1; argument < argc; argument++)
+	{
+		if ( strcmp(argv[argument],"--output") == 0 && (argument + 1) < argc )
+			*path = argv[++argument];
+		else if ( strcmp(argv[argument],"--seed") == 0 && (argument + 1) < argc )
+			context->seed = strtoull(argv[++argument],0,10);
+		else if ( strcmp(argv[argument],"--bf16") == 0 )
+			*quantize = 0u;
+		else if ( strcmp(argv[argument],"--dry-run") == 0 )
+			*dry_run = 1u;
+		else if ( strcmp(argv[argument],"--first") == 0 && (argument + 1) < argc )
+			*first_layer = (uint32_t)strtoul(argv[++argument],0,10);
+		else if ( strcmp(argv[argument],"--layers") == 0 && (argument + 1) < argc )
+			*layer_count = (uint32_t)strtoul(argv[++argument],0,10);
+		else
+			return(-1);
+	}
+	if ( (*path == 0 && *dry_run == 0u) || *layer_count == 0u || *first_layer + *layer_count > SPARK_K3_MODEL_LAYER_COUNT )
+		return(-1);
+	return(0);
+}
+
 int main(int argc, char **argv)
 {
 	static SparkK3SynthesizeContext context;
 	SparkK3StagePackHeader header;
 	const char *path = 0;
-	uint32_t quantize = 1u,dry_run = 0u;
-	int32_t result,argument;
+	uint32_t quantize = 1u,dry_run = 0u,first_layer = 0u,layer_count = SPARK_K3_MODEL_LAYER_COUNT;
+	int32_t result;
 	context.seed = 20260727u;
-	for (argument = 1; argument < argc; argument++)
+	if ( SparkK3SynthesizeParseArguments(argc,argv,&context,&path,&quantize,&dry_run,&first_layer,&layer_count) != 0 )
 	{
-		if ( strcmp(argv[argument],"--output") == 0 && (argument + 1) < argc )
-			path = argv[++argument];
-		else if ( strcmp(argv[argument],"--seed") == 0 && (argument + 1) < argc )
-			context.seed = strtoull(argv[++argument],0,10);
-		else if ( strcmp(argv[argument],"--bf16") == 0 )
-			quantize = 0u;
-		else if ( strcmp(argv[argument],"--dry-run") == 0 )
-			dry_run = 1u;
-		else
-		{
-			fprintf(stderr,"usage: k3_pack_synthesize --output PATH [--seed N] [--bf16] [--dry-run]\n");
-			return(2);
-		}
-	}
-	if ( path == 0 && dry_run == 0u )
-	{
-		fprintf(stderr,"usage: k3_pack_synthesize --output PATH [--seed N] [--bf16] [--dry-run]\n");
+		fprintf(stderr,"usage: k3_pack_synthesize --output PATH [--seed N] [--bf16] [--dry-run] [--first N --layers N]\n");
 		return(2);
 	}
 	context.entry_count = 0u;
 	context.payload_cursor = 0u;
-	result = SparkK3SynthesizeBuildDirectory(&context,quantize);
+	result = SparkK3SynthesizeBuildDirectory(&context,quantize,first_layer,layer_count);
 	if ( result < 0 )
 	{
 		fprintf(stderr,"k3_pack_synthesize directory_failed result=%d\n",result);
 		return(1);
 	}
-	SparkK3StagePackExpectedGeometry(&header,0u,SPARK_K3_MODEL_LAYER_COUNT,context.entry_count);
+	SparkK3StagePackExpectedGeometry(&header,first_layer,layer_count,context.entry_count);
 	header.payload_offset = SparkK3SynthesizeAlign((uint64_t)header.header_bytes + ((uint64_t)context.entry_count * header.directory_entry_bytes));
 	SparkK3SynthesizeShiftPayload(&context,header.payload_offset);
 	header.file_bytes = context.payload_cursor;

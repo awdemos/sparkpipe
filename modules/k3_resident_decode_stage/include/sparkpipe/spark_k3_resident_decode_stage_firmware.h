@@ -12,7 +12,8 @@ extern "C" {
 #endif
 
 #define SPARK_K3_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 1u
-#define SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
+#define SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
+#define SPARK_K3_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION 1u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_KDA_STATE_POOL_ABI_VERSION 1u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_MLA_BLOCK_TABLE_ABI_VERSION 1u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_MXFP4_LINEAR_VIEW_ABI_VERSION 1u
@@ -20,6 +21,8 @@ extern "C" {
 #define SPARK_K3_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION SPARK_K3_MODEL_HIDDEN_DIMENSION
 #define SPARK_K3_RESIDENT_DECODE_STAGE_LAYER_COUNT SPARK_K3_MODEL_LAYER_COUNT
 #define SPARK_K3_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 4u
+#define SPARK_K3_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT 16u
+#define SPARK_K3_RESIDENT_DECODE_STAGE_SIDEBAND_KIND_ATTNRES 1u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT 64u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_MLA_BLOCK_TOKENS 64u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_INVALID_TOKEN_ID UINT32_MAX
@@ -307,6 +310,36 @@ typedef struct SparkK3ResidentDecodeStageNodeContext
 	uint64_t estimated_service_time_ns;
 } SparkK3ResidentDecodeStageNodeContext;
 
+/*
+ * A batched decode dispatch: one token for each of row_count DISTINCT
+ * lanes. Version 2 requires it on every decode frame; the per-row lane
+ * and position replace the frame-level dispatch slot and sequence
+ * position for decode. Prefill keeps the single-lane frame shape.
+ */
+typedef struct SparkK3DecodeBatchView
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t row_count;
+	uint32_t reserved0;
+	const uint32_t *row_lane_indices;
+	const uint64_t *row_positions;
+	const uint64_t *row_sequence_ids;
+} SparkK3DecodeBatchView;
+
+typedef SparkStatus (*SparkK3HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
+typedef SparkStatus (*SparkK3HiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
+
+/*
+ * The stage boundary state is the AttnRes representation array itself:
+ * entering layer L a row owns COMPLETED_BLOCKS_BEFORE_LAYER(L) completed
+ * blocks (the embedding block among them) plus the running partial. The
+ * whole live prefix rides the transport sideband in the array's own
+ * representation-major layout - (completed(L) + 1) x hidden per row,
+ * sideband kind ATTNRES - while hidden_bf16 points at the partial. A
+ * slice planner should prefer post-block cuts, where the freshly
+ * reopened partial makes the boundary carry no mid-block state.
+ */
 typedef struct SparkK3ResidentDecodeStageFrameContext
 {
 	uint32_t abi_version;
@@ -314,13 +347,19 @@ typedef struct SparkK3ResidentDecodeStageFrameContext
 	uint32_t flags;
 	uint32_t logical_lane_count;
 	const SparkK3MlaBlockTableView *mla_block_table;
+	const SparkK3DecodeBatchView *decode_batch;
 	SparkHiddenTransportSession *hidden_input_transport_session;
 	SparkHiddenTransportSession *hidden_output_transport_session;
+	SparkK3HiddenTransportPostReceiveFunction hidden_input_post_receive_function;
+	SparkK3HiddenTransportSendFunction hidden_output_send_function;
+	SparkHiddenTransportPacket hidden_input_packet;
+	SparkHiddenTransportPacket hidden_output_packet;
 } SparkK3ResidentDecodeStageFrameContext;
 
 #define SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MLA_BLOCK_TABLE 0x00000001u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT 0x00000002u
 #define SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT 0x00000004u
+#define SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW 0x00000008u
 
 SparkStatus SparkK3ResidentDecodeStageInitialize(
 	const SparkFirmwareModuleConfiguration *configuration,

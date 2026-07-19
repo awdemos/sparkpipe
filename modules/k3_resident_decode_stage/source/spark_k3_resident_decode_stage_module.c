@@ -76,6 +76,8 @@ typedef struct SparkK3ModuleState
 	uint32_t *host_lane_block_counts;
 	uint32_t lane_capacity;
 	uint32_t row_capacity;
+	uint32_t stage_count;
+	uint32_t stage_index;
 	uint32_t max_context_tokens;
 	uint32_t blocks_per_lane;
 	uint32_t scratch_block_index;
@@ -465,7 +467,7 @@ static SparkStatus SparkK3ModuleBindExpertConcatenation(SparkK3ModuleState *stat
  * where quantization is allowed, the extents must match exactly, and the
  * payload and scale byte counts must be exactly what that shape implies.
  */
-static SparkStatus SparkK3ModuleValidateEntry(const SparkK3StagePackEntry *entry, uint64_t file_bytes)
+static SparkStatus SparkK3ModuleValidateEntry(const SparkK3ModuleState *state, const SparkK3StagePackEntry *entry, uint64_t file_bytes)
 {
 	SparkK3StagePackTensorShape shape;
 	uint32_t is_global = (entry->layer_index == SPARK_K3_STAGEPACK_GLOBAL_LAYER);
@@ -481,8 +483,11 @@ static SparkStatus SparkK3ModuleValidateEntry(const SparkK3StagePackEntry *entry
 		fprintf(stderr,"k3_stage pack_entry_layer_scope kind=%u layer=%u per_layer=%u\n",entry->tensor_kind,entry->layer_index,shape.per_layer);
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	if ( is_global == 0u && entry->layer_index >= SPARK_K3_MODEL_LAYER_COUNT )
+	if ( is_global == 0u && (entry->layer_index < state->node_context.first_layer_index || entry->layer_index >= state->node_context.first_layer_index + state->node_context.layer_count) )
+	{
+		fprintf(stderr,"k3_stage pack_entry_out_of_slice kind=%u layer=%u slice=%u+%u\n",entry->tensor_kind,entry->layer_index,state->node_context.first_layer_index,state->node_context.layer_count);
 		return(SPARK_STATUS_SCHEMA_ERROR);
+	}
 	if ( entry->rows != shape.rows || entry->columns != shape.columns )
 	{
 		fprintf(stderr,"k3_stage pack_entry_shape kind=%u layer=%u rows=%u expected=%u columns=%u expected=%u\n",entry->tensor_kind,entry->layer_index,entry->rows,shape.rows,entry->columns,shape.columns);
@@ -529,7 +534,7 @@ static SparkStatus SparkK3ModuleLoadTensor(SparkK3ModuleState *state, FILE *file
 	SparkStatus status;
 	void *payload = 0;
 	void *scale = 0;
-	status = SparkK3ModuleValidateEntry(entry,file_bytes);
+	status = SparkK3ModuleValidateEntry(state,entry,file_bytes);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	status = SparkK3ModuleLoadDeviceRegion(state,file,entry->payload_offset,entry->payload_bytes,&payload);
@@ -554,22 +559,12 @@ static SparkStatus SparkK3ModuleLoadTensor(SparkK3ModuleState *state, FILE *file
  * pipelined K3 needs must also carry the AttnRes block array, which is a
  * protocol change tracked in DIFFERENCES.md, not something to fake here.
  */
-static SparkStatus SparkK3ModuleValidateSliceIsWholeStack(const SparkK3StagePackHeader *header)
-{
-	if ( header->first_layer_index != 0u || header->layer_count != SPARK_K3_MODEL_LAYER_COUNT )
-	{
-		fprintf(stderr,"k3_stage pack_slice_unsupported first_layer=%u layers=%u expected_first=0 expected_layers=%u\n",header->first_layer_index,header->layer_count,SPARK_K3_MODEL_LAYER_COUNT);
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	}
-	return(SPARK_STATUS_OK);
-}
-
 /*
  * Load the pack: header first, then the geometry comparison, then every
  * directory entry. A geometry mismatch names the offending field and fails
  * the load; the driver never adapts to the pack.
  */
-static SparkStatus SparkK3ModuleReadPackHeader(FILE *file, const char *path, SparkK3StagePackHeader *header)
+static SparkStatus SparkK3ModuleReadPackHeader(const SparkK3ModuleState *state, FILE *file, const char *path, SparkK3StagePackHeader *header)
 {
 	SparkK3StagePackHeader expected;
 	SparkStatus status;
@@ -577,16 +572,13 @@ static SparkStatus SparkK3ModuleReadPackHeader(FILE *file, const char *path, Spa
 	status = SparkK3ModulePackRead(file,0u,header,sizeof(*header));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	SparkK3StagePackExpectedGeometry(&expected,header->first_layer_index,header->layer_count,header->tensor_count);
+	SparkK3StagePackExpectedGeometry(&expected,state->node_context.first_layer_index,state->node_context.layer_count,header->tensor_count);
 	mismatch = SparkK3StagePackCompareGeometry(header,&expected);
 	if ( mismatch != 0 )
 	{
 		fprintf(stderr,"k3_stage pack_geometry_mismatch field=%s path=%s\n",SparkK3StagePackGeometryFieldName(mismatch),path);
 		return(SPARK_STATUS_SCHEMA_ERROR);
 	}
-	status = SparkK3ModuleValidateSliceIsWholeStack(header);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
 	if ( ((uint64_t)header->tensor_count * sizeof(SparkK3StagePackEntry)) > header->file_bytes || header->directory_offset > header->file_bytes - ((uint64_t)header->tensor_count * sizeof(SparkK3StagePackEntry)) )
 	{
 		fprintf(stderr,"k3_stage pack_directory_bounds offset=%llu tensors=%u file=%llu\n",(unsigned long long)header->directory_offset,header->tensor_count,(unsigned long long)header->file_bytes);
@@ -608,7 +600,7 @@ static SparkStatus SparkK3ModuleLoadPack(SparkK3ModuleState *state, const char *
 		fprintf(stderr,"k3_stage pack_open_failed path=%s\n",path);
 		return(SPARK_STATUS_NOT_FOUND);
 	}
-	status = SparkK3ModuleReadPackHeader(file,path,&header);
+	status = SparkK3ModuleReadPackHeader(state,file,path,&header);
 	if ( status != SPARK_STATUS_OK )
 	{
 		fclose(file);
@@ -679,13 +671,11 @@ static SparkStatus SparkK3ModuleValidateResidentWeights(const SparkK3ModuleState
 {
 	SparkStatus status;
 	uint32_t layer_index;
-	if ( state->node_context.token_embedding_bf16 == 0 || state->node_context.final_norm_weight_bf16 == 0 )
+	if ( state->node_context.owns_embedding != 0u && state->node_context.token_embedding_bf16 == 0 )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( state->node_context.restricted_lm_head_weight_bf16 == 0 || state->node_context.restricted_token_ids == 0 )
+	if ( state->node_context.owns_final_head != 0u && (state->node_context.final_norm_weight_bf16 == 0 || state->node_context.restricted_lm_head_weight_bf16 == 0 || state->node_context.restricted_token_ids == 0 || state->attnres_final_site.pseudo_query_bf16 == 0 || state->attnres_final_site.key_norm_weight_bf16 == 0) )
 		return(SPARK_STATUS_SCHEMA_ERROR);
-	if ( state->attnres_final_site.pseudo_query_bf16 == 0 || state->attnres_final_site.key_norm_weight_bf16 == 0 )
-		return(SPARK_STATUS_SCHEMA_ERROR);
-	for (layer_index = 0; layer_index < SPARK_K3_MODEL_LAYER_COUNT; layer_index++)
+	for (layer_index = state->node_context.first_layer_index; layer_index < state->node_context.first_layer_index + state->node_context.layer_count; layer_index++)
 	{
 		status = SparkK3ModuleValidateLayerWeights(state,layer_index);
 		if ( status != SPARK_STATUS_OK )
@@ -704,7 +694,7 @@ static void SparkK3ModuleAssignLayerOrdinals(SparkK3ModuleState *state)
 	uint32_t layer_index;
 	state->kda_layer_count = 0u;
 	state->mla_layer_count = 0u;
-	for (layer_index = 0; layer_index < SPARK_K3_MODEL_LAYER_COUNT; layer_index++)
+	for (layer_index = state->node_context.first_layer_index; layer_index < state->node_context.first_layer_index + state->node_context.layer_count; layer_index++)
 	{
 		if ( SPARK_K3_MODEL_LAYER_IS_KDA(layer_index) != 0u )
 		{
@@ -1019,10 +1009,6 @@ static void SparkK3ModuleConfigureNodeContext(SparkK3ModuleState *state)
 	node->abi_version = SPARK_K3_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION;
 	node->max_active_sequence_count = state->row_capacity;
 	node->max_prefill_tokens = SPARK_K3_MODEL_KDA_CHUNK_TOKENS;
-	node->first_layer_index = 0u;
-	node->layer_count = SPARK_K3_MODEL_LAYER_COUNT;
-	node->owns_embedding = 1u;
-	node->owns_final_head = 1u;
 	node->rms_norm_epsilon = SPARK_K3_MODEL_RMS_NORM_EPSILON;
 	node->moe_routed_scaling_factor = SPARK_K3_MODEL_MOE_ROUTED_SCALING_FACTOR;
 	node->moe_norm_topk_prob = SPARK_K3_MODEL_MOE_NORM_TOPK_PROB;
@@ -1049,6 +1035,14 @@ static SparkStatus SparkK3ModuleReadConfiguration(SparkK3ModuleState *state, con
 		status = SparkK3ModuleEnvironmentUnsigned("K3_MAX_CONTEXT_TOKENS",SPARK_K3_RESIDENT_DECODE_STAGE_MLA_BLOCK_TOKENS,SPARK_K3_MODEL_MAXIMUM_CONTEXT_TOKENS,&state->max_context_tokens);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkK3ModuleEnvironmentUnsigned("K3_PIPELINE_SLOTS",1u,SPARK_K3_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT,&slots);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkK3ModuleEnvironmentUnsigned("K3_STAGE_COUNT",1u,SPARK_K3_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT,&state->stage_count);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkK3ModuleEnvironmentUnsigned("K3_STAGE_INDEX",0u,SPARK_K3_RESIDENT_DECODE_STAGE_MAX_STAGE_COUNT - 1u,&state->stage_index);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkK3ModuleEnvironmentUnsigned("K3_STAGE_FIRST_LAYER",0u,SPARK_K3_MODEL_LAYER_COUNT - 1u,&state->node_context.first_layer_index);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkK3ModuleEnvironmentUnsigned("K3_STAGE_LAYER_COUNT",1u,SPARK_K3_MODEL_LAYER_COUNT,&state->node_context.layer_count);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	state->node_context.pipeline_slot_count = slots;
@@ -1058,6 +1052,35 @@ static SparkStatus SparkK3ModuleReadConfiguration(SparkK3ModuleState *state, con
 	// derive from max_active_sequence_count.
 	state->row_capacity = state->lane_capacity > SPARK_K3_MODEL_KDA_CHUNK_TOKENS ? state->lane_capacity : SPARK_K3_MODEL_KDA_CHUNK_TOKENS;
 	return(SPARK_STATUS_OK);
+}
+
+// The stage's slice: ownership of the embedding and the head follows the
+// slice edges, and the slice's place in the pipeline must agree with the
+// stage index so a misdeployed ring fails at initialize, not at the first
+// frame.
+static SparkStatus SparkK3ModuleValidateSlice(SparkK3ModuleState *state)
+{
+	SparkK3ResidentDecodeStageNodeContext *node = &state->node_context;
+	if ( state->stage_index >= state->stage_count || node->first_layer_index + node->layer_count > SPARK_K3_MODEL_LAYER_COUNT )
+	{
+		fprintf(stderr,"k3_stage config_slice_invalid stage=%u/%u slice=%u+%u\n",state->stage_index,state->stage_count,node->first_layer_index,node->layer_count);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	node->owns_embedding = node->first_layer_index == 0u ? 1u : 0u;
+	node->owns_final_head = node->first_layer_index + node->layer_count == SPARK_K3_MODEL_LAYER_COUNT ? 1u : 0u;
+	if ( (state->stage_index == 0u) != (node->owns_embedding != 0u) || (state->stage_index + 1u == state->stage_count) != (node->owns_final_head != 0u) )
+	{
+		fprintf(stderr,"k3_stage config_position_mismatch stage=%u/%u slice=%u+%u\n",state->stage_index,state->stage_count,node->first_layer_index,node->layer_count);
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	}
+	return(SPARK_STATUS_OK);
+}
+
+// The AttnRes boundary entering layer L: every completed block (the
+// embedding block among them) plus the running partial.
+static uint32_t SparkK3ModuleBoundaryRepresentations(uint32_t layer_index)
+{
+	return(SPARK_K3_MODEL_ATTNRES_COMPLETED_BLOCKS_BEFORE_LAYER(layer_index) + 1u);
 }
 
 SparkStatus SparkK3ResidentDecodeStageInitialize(const SparkFirmwareModuleConfiguration *configuration, const SparkFirmwareModuleHostServices *host_services, void **module_state)
@@ -1079,6 +1102,8 @@ SparkStatus SparkK3ResidentDecodeStageInitialize(const SparkFirmwareModuleConfig
 	state->program_id = configuration->operation_index;
 	status = SparkK3ModuleReadConfiguration(state,&pack_path);
 	if ( status == SPARK_STATUS_OK )
+		status = SparkK3ModuleValidateSlice(state);
+	if ( status == SPARK_STATUS_OK )
 	{
 		SparkK3ModuleAssignLayerOrdinals(state);
 		SparkK3ModuleConfigureNodeContext(state);
@@ -1099,7 +1124,7 @@ SparkStatus SparkK3ResidentDecodeStageInitialize(const SparkFirmwareModuleConfig
 		SparkK3ResidentDecodeStageDestroy(state);
 		return(status);
 	}
-	fprintf(stderr,"k3_stage initialized lanes=%u rows=%u context=%u slots=%u device_bytes=%llu\n",state->lane_capacity,state->row_capacity,state->max_context_tokens,state->node_context.pipeline_slot_count,(unsigned long long)state->device_bytes_resident);
+	fprintf(stderr,"k3_stage initialized stage=%u/%u slice=%u+%u lanes=%u rows=%u context=%u slots=%u boundary_in=%u boundary_out=%u device_bytes=%llu\n",state->stage_index,state->stage_count,state->node_context.first_layer_index,state->node_context.layer_count,state->lane_capacity,state->row_capacity,state->max_context_tokens,state->node_context.pipeline_slot_count,state->stage_index > 0u ? SparkK3ModuleBoundaryRepresentations(state->node_context.first_layer_index) : 0u,state->node_context.owns_final_head == 0u ? SparkK3ModuleBoundaryRepresentations(state->node_context.first_layer_index + state->node_context.layer_count) : 0u,(unsigned long long)state->device_bytes_resident);
 	*module_state = state;
 	return(SPARK_STATUS_OK);
 }
@@ -1133,6 +1158,37 @@ static SparkStatus SparkK3ModuleValidateWireTokens(const uint32_t *token_ids, ui
 			fprintf(stderr,"k3_stage token_out_of_vocab row=%u token=%u vocab=%u\n",row,token_ids[row],SPARK_K3_MODEL_OUTPUT_VOCAB_COUNT);
 			return(SPARK_STATUS_INVALID_ARGUMENT);
 		}
+	return(SPARK_STATUS_OK);
+}
+
+// Batched decode rows: one token for each of row_count DISTINCT lanes,
+// every row's cache slot and context length from its own lane position.
+static SparkStatus SparkK3ModuleFillDecodeBatchMetadata(SparkK3ModuleState *state, SparkK3ModuleSlotStaging *staging, const SparkK3DecodeBatchView *batch, const SparkK3MlaBlockTableView *block_table)
+{
+	uint8_t lane_used[SPARK_K3_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT];
+	uint32_t row,lane,position,blocks_needed;
+	memset(lane_used,0,sizeof(lane_used));
+	for (row = 0; row < batch->row_count; row++)
+	{
+		lane = batch->row_lane_indices[row];
+		if ( lane >= state->lane_capacity || lane_used[lane] != 0u || batch->row_positions[row] >= (uint64_t)state->max_context_tokens )
+		{
+			fprintf(stderr,"k3_stage decode_batch_row_invalid row=%u lane=%u position=%llu\n",row,lane,(unsigned long long)batch->row_positions[row]);
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		lane_used[lane] = 1u;
+		position = (uint32_t)batch->row_positions[row];
+		blocks_needed = ((position + 1u) + SPARK_K3_RESIDENT_DECODE_STAGE_MLA_BLOCK_TOKENS - 1u) / SPARK_K3_RESIDENT_DECODE_STAGE_MLA_BLOCK_TOKENS;
+		if ( lane >= block_table->lane_count || blocks_needed > block_table->host_lane_physical_block_counts[lane] || blocks_needed > block_table->lane_stride )
+		{
+			fprintf(stderr,"k3_stage block_table_short lane=%u needed=%u\n",lane,blocks_needed);
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		}
+		staging->row_lane_indices[row] = lane;
+		staging->row_slot_mapping[row] = SparkK3ModuleCacheSlotForPosition(state,lane,position);
+		staging->row_context_lengths[row] = position + 1u;
+		staging->row_cold_flags[row] = position == 0u ? 1u : 0u;
+	}
 	return(SPARK_STATUS_OK);
 }
 
@@ -1186,14 +1242,54 @@ static SparkStatus SparkK3ModuleUploadRowMetadata(SparkK3ModuleSlotStaging *stag
  * previous tenant of the lane and must be treated as zero on first touch. The
  * flag is per row because both KDA kernels read it per row.
  */
-static SparkStatus SparkK3ModuleUpdateLaneState(SparkK3ModuleState *state, SparkK3ModuleSlotStaging *staging, const SparkModelDriverFrame *frame, uint32_t padded_rows, cudaStream_t stream)
+// Decode fills the per-row cold flags from the batch view; prefill marks
+// its single sequence uniformly. Both paths upload from here.
+static SparkStatus SparkK3ModuleUploadColdFlags(SparkK3ModuleState *state, SparkK3ModuleSlotStaging *staging, uint32_t padded_rows, cudaStream_t stream)
 {
 	SparkK3KdaStatePool *pool = &state->node_context.kda_state_pool;
-	uint32_t cold = (frame->sequence_position == 0u) ? 1u : 0u;
-	uint32_t row;
-	for (row = 0; row < padded_rows; row++)
-		staging->row_cold_flags[row] = cold;
 	return(SparkK3ModuleCudaStatus(cudaMemcpyAsync(pool->state_cold_by_row,staging->row_cold_flags,(size_t)padded_rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream),"cold_flags_h2d"));
+}
+
+/*
+ * The AttnRes boundary over the wire, in the representation array's own
+ * layout: the sender's live prefix is boundary_representations x
+ * representation_stride bf16 elements, the receiver copies it straight
+ * into its own array. Per-row accounting rides sideband_bytes_per_sequence
+ * so a slice mismatch between neighbors fails loudly.
+ */
+static SparkStatus SparkK3ModuleReceiveBoundary(SparkK3ModuleState *state, const SparkK3PipelineSlot *slot, SparkK3ResidentDecodeStageFrameContext *context, uint32_t padded_rows, cudaStream_t stream)
+{
+	uint32_t boundary = SparkK3ModuleBoundaryRepresentations(state->node_context.first_layer_index);
+	uint64_t representation_stride = (uint64_t)state->row_capacity * SPARK_K3_MODEL_HIDDEN_DIMENSION;
+	SparkHiddenTransportPacket *packet = &context->hidden_input_packet;
+	SparkStatus status;
+	status = context->hidden_input_post_receive_function(context->hidden_input_transport_session,packet);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( packet->active_sequence_count != padded_rows || packet->hidden_dimension != SPARK_K3_MODEL_HIDDEN_DIMENSION || packet->sideband_payload == 0 )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	if ( packet->sideband_kind != SPARK_K3_RESIDENT_DECODE_STAGE_SIDEBAND_KIND_ATTNRES || packet->sideband_bytes_per_sequence != (uint64_t)boundary * SPARK_K3_MODEL_HIDDEN_DIMENSION * SPARK_K3_MODEL_BF16_ELEMENT_BYTES )
+	{
+		fprintf(stderr,"k3_stage boundary_mismatch kind=%u bytes=%llu expected_reps=%u\n",packet->sideband_kind,(unsigned long long)packet->sideband_bytes_per_sequence,boundary);
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	}
+	return(SparkK3ModuleCudaStatus(cudaMemcpyAsync(slot->attnres_representations_bf16,packet->sideband_payload,(size_t)((uint64_t)boundary * representation_stride * SPARK_K3_MODEL_BF16_ELEMENT_BYTES),cudaMemcpyDeviceToDevice,stream),"boundary_d2d"));
+}
+
+static SparkStatus SparkK3ModuleSendBoundary(SparkK3ModuleState *state, const SparkK3PipelineSlot *slot, SparkK3ResidentDecodeStageFrameContext *context, uint32_t padded_rows, cudaStream_t stream)
+{
+	uint32_t boundary = SparkK3ModuleBoundaryRepresentations(state->node_context.first_layer_index + state->node_context.layer_count);
+	uint64_t representation_stride = (uint64_t)state->row_capacity * SPARK_K3_MODEL_HIDDEN_DIMENSION;
+	SparkHiddenTransportPacket *packet = &context->hidden_output_packet;
+	packet->active_sequence_count = padded_rows;
+	packet->hidden_dimension = SPARK_K3_MODEL_HIDDEN_DIMENSION;
+	packet->bytes_per_sequence = SPARK_K3_MODEL_HIDDEN_DIMENSION * SPARK_K3_MODEL_BF16_ELEMENT_BYTES;
+	packet->hidden_bf16 = (uint8_t *)slot->attnres_representations_bf16 + ((uint64_t)(boundary - 1u) * representation_stride * SPARK_K3_MODEL_BF16_ELEMENT_BYTES);
+	packet->sideband_payload = slot->attnres_representations_bf16;
+	packet->sideband_kind = SPARK_K3_RESIDENT_DECODE_STAGE_SIDEBAND_KIND_ATTNRES;
+	packet->sideband_bytes_per_sequence = (uint64_t)boundary * SPARK_K3_MODEL_HIDDEN_DIMENSION * SPARK_K3_MODEL_BF16_ELEMENT_BYTES;
+	packet->cuda_stream = stream;
+	return(context->hidden_output_send_function(context->hidden_output_transport_session,packet));
 }
 
 /*
@@ -1272,11 +1368,14 @@ static SparkStatus SparkK3ModuleRunStage(SparkK3ModuleState *state, const SparkK
 {
 	const SparkK3ResidentDecodeStageNodeContext *node = &state->node_context;
 	uint32_t final_completed = SPARK_K3_MODEL_ATTNRES_COMPLETED_BLOCKS_BEFORE_LAYER(SPARK_K3_MODEL_LAYER_COUNT - 1u) + SPARK_K3_MODEL_ATTNRES_LAYER_OPENS_BLOCK(SPARK_K3_MODEL_LAYER_COUNT - 1u);
-	SparkStatus status;
+	SparkStatus status = SPARK_STATUS_OK;
 	uint32_t layer_index;
-	status = SparkK3LaunchEmbeddingGather(node,slot,row_count,stream);
-	for (layer_index = 0; layer_index < SPARK_K3_MODEL_LAYER_COUNT && status == SPARK_STATUS_OK; layer_index++)
+	if ( node->owns_embedding != 0u )
+		status = SparkK3LaunchEmbeddingGather(node,slot,row_count,stream);
+	for (layer_index = node->first_layer_index; layer_index < node->first_layer_index + node->layer_count && status == SPARK_STATUS_OK; layer_index++)
 		status = SparkK3ModuleRunLayer(state,slot,staging,block_table,layer_index,row_count,is_prefill,carry_state,stream);
+	if ( node->owns_final_head == 0u )
+		return(status);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkK3LaunchAttnResMix(node,slot,&state->attnres_final_site,final_completed + 1u,row_count,stream);
 	if ( status == SPARK_STATUS_OK )
@@ -1300,7 +1399,7 @@ static SparkStatus SparkK3ModuleValidateFrameShape(const SparkK3ModuleState *sta
 	uint32_t prefill = (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
 	if ( frame->program_id == 0u || frame->buffer_count != 2u || frame->buffers == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( (frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) == 0u || frame->driver_dispatch_slot >= state->lane_capacity )
+	if ( prefill != 0u && ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_DRIVER_DISPATCH_SLOT_VALID) == 0u || frame->driver_dispatch_slot >= state->lane_capacity) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( frame->active_slot_count == 0u || frame->active_slot_count > state->lane_capacity )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1310,7 +1409,7 @@ static SparkStatus SparkK3ModuleValidateFrameShape(const SparkK3ModuleState *sta
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( prefill != 0u && frame->new_token_count > SPARK_K3_MODEL_KDA_CHUNK_TOKENS )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( prefill == 0u && frame->new_token_count != 1u )
+	if ( prefill == 0u && frame->new_token_count > state->lane_capacity )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( (frame->buffers[0].flags & SPARK_MODEL_DRIVER_BUFFER_FLAG_READ) == 0u || frame->buffers[0].address == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1324,23 +1423,39 @@ static SparkStatus SparkK3ModuleValidateFrameShape(const SparkK3ModuleState *sta
 }
 
 /*
- * A frame context is optional and, when present, may only override the block
- * table. Version 1 has no pipeline transport, so a frame asking for one is
- * rejected instead of being served without it.
+ * Resolve the frame context. Transport flags must mirror the stage's place
+ * in the pipeline: every non-first stage receives the AttnRes boundary,
+ * every non-last stage sends it. Decode frames carry the batch view; the
+ * block table override stays optional on any stage that runs MLA.
  */
-static SparkStatus SparkK3ModuleResolveBlockTable(SparkK3ModuleState *state, const SparkModelDriverFrame *frame, const SparkK3MlaBlockTableView **block_table)
+static SparkStatus SparkK3ModuleResolveFrameContext(SparkK3ModuleState *state, const SparkModelDriverFrame *frame, uint32_t is_prefill, SparkK3ResidentDecodeStageFrameContext **context_out, const SparkK3MlaBlockTableView **block_table)
 {
-	const SparkK3ResidentDecodeStageFrameContext *context;
+	SparkK3ResidentDecodeStageFrameContext *context;
+	uint32_t needs_input = state->stage_index > 0u ? 1u : 0u,needs_output = state->stage_index + 1u < state->stage_count ? 1u : 0u;
 	*block_table = &state->owned_block_table;
+	*context_out = 0;
 	if ( frame->user_context == 0 )
-		return(SPARK_STATUS_OK);
-	context = (const SparkK3ResidentDecodeStageFrameContext *)frame->user_context;
+		return(needs_input == 0u && needs_output == 0u && is_prefill != 0u ? SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT);
+	context = (SparkK3ResidentDecodeStageFrameContext *)frame->user_context;
+	*context_out = context;
 	if ( context->abi_version != SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION || context->descriptor_bytes != (uint32_t)sizeof(SparkK3ResidentDecodeStageFrameContext) )
 		return(SPARK_STATUS_ABI_MISMATCH);
-	if ( (context->flags & (SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT | SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT)) != 0u )
-	{
-		fprintf(stderr,"k3_stage transport_unsupported flags=0x%08x\n",context->flags);
+	if ( ((context->flags & SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT) != 0u) != (needs_input != 0u) )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( ((context->flags & SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT) != 0u) != (needs_output != 0u) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( needs_input != 0u && (context->hidden_input_transport_session == 0 || context->hidden_input_post_receive_function == 0) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( needs_output != 0u && (context->hidden_output_transport_session == 0 || context->hidden_output_send_function == 0) )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( is_prefill == 0u )
+	{
+		if ( (context->flags & SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW) == 0u || context->decode_batch == 0 )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
+		if ( context->decode_batch->abi_version != SPARK_K3_RESIDENT_DECODE_STAGE_DECODE_BATCH_VIEW_ABI_VERSION || context->decode_batch->descriptor_bytes != (uint32_t)sizeof(SparkK3DecodeBatchView) )
+			return(SPARK_STATUS_ABI_MISMATCH);
+		if ( context->decode_batch->row_count != frame->new_token_count || context->decode_batch->row_lane_indices == 0 || context->decode_batch->row_positions == 0 )
+			return(SPARK_STATUS_INVALID_ARGUMENT);
 	}
 	if ( (context->flags & SPARK_K3_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MLA_BLOCK_TABLE) == 0u )
 		return(SPARK_STATUS_OK);
@@ -1412,32 +1527,56 @@ static int32_t SparkK3ModuleClaimSlot(SparkK3ModuleState *state, uint32_t *slot_
 	return(-1);
 }
 
-static SparkStatus SparkK3ModuleExecuteOnSlot(SparkK3ModuleState *state, const SparkK3PipelineSlot *slot, SparkK3ModuleSlotStaging *staging, SparkModelDriverFrame *frame, const SparkK3MlaBlockTableView *block_table, uint32_t is_prefill, uint32_t rows)
+static SparkStatus SparkK3ModuleStageDispatch(SparkK3ModuleState *state, const SparkK3PipelineSlot *slot, SparkK3ModuleSlotStaging *staging, SparkModelDriverFrame *frame, SparkK3ResidentDecodeStageFrameContext *context, const SparkK3MlaBlockTableView *block_table, uint32_t is_prefill, uint32_t rows, uint32_t padded_rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	SparkStatus status;
+	uint32_t row;
+	memcpy(staging->row_token_ids,frame->buffers[0].address,(size_t)rows * sizeof(uint32_t));
+	if ( is_prefill != 0u )
+	{
+		status = SparkK3ModuleFillRowMetadata(state,staging,frame,frame->driver_dispatch_slot,rows,padded_rows);
+		for (row = 0; row < padded_rows; row++)
+			staging->row_cold_flags[row] = frame->sequence_position == 0u ? 1u : 0u;
+	}
+	else
+		status = SparkK3ModuleFillDecodeBatchMetadata(state,staging,context->decode_batch,block_table);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkK3ModuleUploadRowMetadata(staging,slot,padded_rows,rows,stream);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkK3ModuleUploadColdFlags(state,staging,padded_rows,stream);
+	if ( status == SPARK_STATUS_OK && state->stage_index > 0u )
+		status = SparkK3ModuleReceiveBoundary(state,slot,context,padded_rows,stream);
+	return(status);
+}
+
+static SparkStatus SparkK3ModuleExecuteOnSlot(SparkK3ModuleState *state, const SparkK3PipelineSlot *slot, SparkK3ModuleSlotStaging *staging, SparkModelDriverFrame *frame, SparkK3ResidentDecodeStageFrameContext *context, const SparkK3MlaBlockTableView *block_table, uint32_t is_prefill, uint32_t rows)
 {
 	SparkModelDriverCompletion completion;
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	SparkStatus status;
-	uint32_t lane = frame->driver_dispatch_slot;
 	uint32_t carry_state = frame->sequence_position != 0u ? 1u : 0u;
 	uint32_t padded_rows = is_prefill != 0u ? SPARK_K3_MODEL_KDA_CHUNK_TOKENS : rows;
-	memcpy(staging->row_token_ids,frame->buffers[0].address,(size_t)rows * sizeof(uint32_t));
-	status = SparkK3ModuleFillRowMetadata(state,staging,frame,lane,rows,padded_rows);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkK3ModuleUploadRowMetadata(staging,slot,padded_rows,rows,stream);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkK3ModuleUpdateLaneState(state,staging,frame,padded_rows,stream);
+	status = SparkK3ModuleStageDispatch(state,slot,staging,frame,context,block_table,is_prefill,rows,padded_rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkK3ModuleRunStage(state,slot,staging,block_table,padded_rows,is_prefill,carry_state,stream);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && state->node_context.owns_final_head != 0u )
 		status = SparkK3ModuleCudaStatus(cudaMemcpyAsync(staging->row_output_token_ids,slot->output_token_ids,(size_t)rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream),"output_ids_d2h");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkK3ModuleCudaStatus(cudaStreamSynchronize(stream),"cudaStreamSynchronize");
+	if ( status == SPARK_STATUS_OK && state->node_context.owns_final_head == 0u )
+		status = SparkK3ModuleSendBoundary(state,slot,context,padded_rows,stream);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	memcpy(frame->buffers[1].address,staging->row_output_token_ids,(size_t)rows * sizeof(uint32_t));
+	if ( state->node_context.owns_final_head != 0u )
+		memcpy(frame->buffers[1].address,staging->row_output_token_ids,(size_t)rows * sizeof(uint32_t));
+	else
+		memset(frame->buffers[1].address,0,(size_t)rows * sizeof(uint32_t));
 	if ( frame->completion_function != 0 )
 	{
 		SparkK3ModuleFillCompletion(staging,frame,rows,&completion);
+		if ( state->node_context.owns_final_head == 0u )
+			completion.token_ids[0] = 0u;
 		frame->completion_function(frame->completion_context,&completion);
 	}
 	return(SPARK_STATUS_OK);
@@ -1446,6 +1585,7 @@ static SparkStatus SparkK3ModuleExecuteOnSlot(SparkK3ModuleState *state, const S
 SparkStatus SparkK3ResidentDecodeStageExecute(void *module_state, SparkModelDriverFrame *frame)
 {
 	SparkK3ModuleState *state = (SparkK3ModuleState *)module_state;
+	SparkK3ResidentDecodeStageFrameContext *context = 0;
 	const SparkK3MlaBlockTableView *block_table;
 	SparkStatus status;
 	uint32_t is_prefill,rows,slot_index;
@@ -1453,10 +1593,10 @@ SparkStatus SparkK3ResidentDecodeStageExecute(void *module_state, SparkModelDriv
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	status = SparkK3ModuleValidateFrameShape(state,frame,&is_prefill,&rows);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkK3ModuleResolveBlockTable(state,frame,&block_table);
-	if ( status == SPARK_STATUS_OK )
+		status = SparkK3ModuleResolveFrameContext(state,frame,is_prefill,&context,&block_table);
+	if ( status == SPARK_STATUS_OK && is_prefill != 0u )
 		status = SparkK3ModuleValidateBlockCoverage(block_table,frame,frame->driver_dispatch_slot,rows);
-	if ( status == SPARK_STATUS_OK )
+	if ( status == SPARK_STATUS_OK && state->node_context.owns_embedding != 0u )
 		status = SparkK3ModuleValidateWireTokens((const uint32_t *)frame->buffers[0].address,rows);
 	if ( status != SPARK_STATUS_OK )
 	{
@@ -1470,7 +1610,7 @@ SparkStatus SparkK3ResidentDecodeStageExecute(void *module_state, SparkModelDriv
 		return(SPARK_STATUS_BUSY);
 	}
 	atomic_fetch_add_explicit(&state->submitted_count,1u,memory_order_relaxed);
-	status = SparkK3ModuleExecuteOnSlot(state,&state->pipeline_slots[slot_index],&state->slot_staging[slot_index],frame,block_table,is_prefill,rows);
+	status = SparkK3ModuleExecuteOnSlot(state,&state->pipeline_slots[slot_index],&state->slot_staging[slot_index],frame,context,block_table,is_prefill,rows);
 	atomic_fetch_add_explicit(status == SPARK_STATUS_OK ? &state->completed_count : &state->failed_count,1u,memory_order_relaxed);
 	atomic_store_explicit(&state->slot_staging[slot_index].busy,0u,memory_order_release);
 	return(status);
@@ -1489,7 +1629,7 @@ SparkStatus SparkK3ResidentDecodeStageAdmit(void *module_state, const SparkModel
 	prefill = (request->frame_flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u ? 1u : 0u;
 	if ( request->active_slot_count == 0u || request->active_slot_count > state->lane_capacity )
 		decision->rejection_reason = SPARK_STATUS_CAPACITY_EXCEEDED;
-	else if ( request->new_token_count == 0u || (prefill != 0u && request->new_token_count > SPARK_K3_MODEL_KDA_CHUNK_TOKENS) || (prefill == 0u && request->new_token_count != 1u) )
+	else if ( request->new_token_count == 0u || (prefill != 0u && request->new_token_count > SPARK_K3_MODEL_KDA_CHUNK_TOKENS) || (prefill == 0u && request->new_token_count > state->lane_capacity) )
 		decision->rejection_reason = SPARK_STATUS_INVALID_ARGUMENT;
 	else if ( request->sequence_position + request->new_token_count > (uint64_t)state->max_context_tokens )
 		decision->rejection_reason = SPARK_STATUS_CAPACITY_EXCEEDED;

@@ -3,6 +3,7 @@
 #include <mma.h>
 
 #include "sparkpipe/spark_k3_resident_decode_stage_firmware.h"
+#include "sparkpipe/spark_lm_kernels.cuh"
 
 #define SPARK_K3_WARP_LANES 32u
 #define SPARK_K3_CTA_THREADS 256u
@@ -24,72 +25,6 @@ typedef wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::row_major> Sp
 typedef wmma::fragment<wmma::matrix_b,16,16,16,__nv_bfloat16,wmma::col_major> SparkK3FragBCol;
 typedef wmma::fragment<wmma::accumulator,16,16,16,float> SparkK3FragAcc;
 
-__device__ __forceinline__ float SparkK3Bf16ToFloat(const void *source, uint64_t index)
-{
-	return(__bfloat162float(((const __nv_bfloat16 *)source)[index]));
-}
-
-__device__ __forceinline__ void SparkK3FloatToBf16(void *destination, uint64_t index, float value)
-{
-	((__nv_bfloat16 *)destination)[index] = __float2bfloat16(value);
-}
-
-// E2M1 nibble to float: sign, 2 exponent bits (bias 1), 1 mantissa bit.
-__device__ __forceinline__ float SparkK3DecodeE2m1(uint32_t nibble)
-{
-	const float magnitude[8] = {0.0f,0.5f,1.0f,1.5f,2.0f,3.0f,4.0f,6.0f};
-	float value = magnitude[nibble & 7u];
-	return((nibble & 8u) != 0u ? -value : value);
-}
-
-// E8M0 scale byte: pure power of two, bias 127, 0xff reserved as NaN -> zero.
-__device__ __forceinline__ float SparkK3DecodeE8m0(uint32_t byte_value)
-{
-	if ( byte_value == 0xffu )
-		return(0.0f);
-	return(exp2f((float)(int32_t)byte_value - 127.0f));
-}
-
-__device__ __forceinline__ float SparkK3Sigmoid(float value)
-{
-	return(1.0f / (1.0f + __expf(-value)));
-}
-
-__device__ __forceinline__ float SparkK3Softplus(float value)
-{
-	if ( value > 20.0f )
-		return(value);
-	return(log1pf(__expf(value)));
-}
-
-__device__ __forceinline__ float SparkK3WarpReduceSum(float value)
-{
-	uint32_t offset;
-	for (offset = SPARK_K3_WARP_LANES / 2u; offset != 0u; offset >>= 1u)
-		value += __shfl_down_sync(0xffffffffu,value,offset);
-	return(value);
-}
-
-// Block sum over blockDim.x threads; scratch must hold SPARK_K3_CTA_WARPS floats.
-__device__ float SparkK3BlockReduceSum(float value, float *scratch)
-{
-	uint32_t lane = threadIdx.x % SPARK_K3_WARP_LANES,warp = threadIdx.x / SPARK_K3_WARP_LANES;
-	uint32_t warp_count = (blockDim.x + SPARK_K3_WARP_LANES - 1u) / SPARK_K3_WARP_LANES;
-	value = SparkK3WarpReduceSum(value);
-	if ( lane == 0u )
-		scratch[warp] = value;
-	__syncthreads();
-	value = (threadIdx.x < warp_count) ? scratch[threadIdx.x] : 0.0f;
-	if ( warp == 0u )
-		value = SparkK3WarpReduceSum(value);
-	if ( threadIdx.x == 0u )
-		scratch[0] = value;
-	__syncthreads();
-	value = scratch[0];
-	__syncthreads();
-	return(value);
-}
-
 // Seeds the AttnRes candidate array from the token embedding: representation 0
 // is the embedding block and representation 1 is the running partial sum, both
 // the embedding vector itself. This is the entry state the published forward()
@@ -107,9 +42,9 @@ __global__ void SparkK3EmbeddingGatherKernel(const uint32_t *token_ids, const vo
 	partial_base = (SPARK_K3_MODEL_ATTNRES_COMPLETED_BLOCKS_BEFORE_LAYER(0) * representation_stride) + destination;
 	for (element = threadIdx.x; element < SPARK_K3_MODEL_HIDDEN_DIMENSION; element += blockDim.x)
 	{
-		value = SparkK3Bf16ToFloat(embedding_bf16,source_base + element);
-		SparkK3FloatToBf16(representations_bf16,destination + element,value);
-		SparkK3FloatToBf16(representations_bf16,partial_base + element,value);
+		value = SparkLmBf16ToFloat(embedding_bf16,source_base + element);
+		SparkLmFloatToBf16(representations_bf16,destination + element,value);
+		SparkLmFloatToBf16(representations_bf16,partial_base + element,value);
 	}
 }
 
@@ -166,12 +101,12 @@ __global__ void SparkK3AttnResMixKernel(const void *representations_bf16, uint64
 		dot = 0.0f;
 		for (element = threadIdx.x; element < SPARK_K3_MODEL_HIDDEN_DIMENSION; element += blockDim.x)
 		{
-			value = SparkK3Bf16ToFloat(representations_bf16,candidate_offset + element);
+			value = SparkLmBf16ToFloat(representations_bf16,candidate_offset + element);
 			sum_squares += (value * value);
-			dot += ((SparkK3Bf16ToFloat(pseudo_query_bf16,element) * SparkK3Bf16ToFloat(key_norm_weight_bf16,element)) * value);
+			dot += ((SparkLmBf16ToFloat(pseudo_query_bf16,element) * SparkLmBf16ToFloat(key_norm_weight_bf16,element)) * value);
 		}
-		sum_squares = SparkK3BlockReduceSum(sum_squares,reduce_scratch);
-		dot = SparkK3BlockReduceSum(dot,reduce_scratch);
+		sum_squares = SparkLmBlockReduceSum(sum_squares,reduce_scratch);
+		dot = SparkLmBlockReduceSum(dot,reduce_scratch);
 		inverse_rms = rsqrtf((sum_squares / (float)SPARK_K3_MODEL_HIDDEN_DIMENSION) + epsilon);
 		if ( threadIdx.x == 0u )
 			logits[candidate] = (dot * inverse_rms);
@@ -182,8 +117,8 @@ __global__ void SparkK3AttnResMixKernel(const void *representations_bf16, uint64
 	{
 		mixed = 0.0f;
 		for (candidate = 0; candidate < representation_count; candidate++)
-			mixed += (weights[candidate] * SparkK3Bf16ToFloat(representations_bf16,((uint64_t)candidate * representation_stride) + row_offset + element));
-		SparkK3FloatToBf16(mixed_bf16,row_offset + element,mixed);
+			mixed += (weights[candidate] * SparkLmBf16ToFloat(representations_bf16,((uint64_t)candidate * representation_stride) + row_offset + element));
+		SparkLmFloatToBf16(mixed_bf16,row_offset + element,mixed);
 	}
 }
 
@@ -207,84 +142,11 @@ __global__ void SparkK3AttnResAccumulateKernel(void *representations_bf16, uint6
 	partial_offset = ((uint64_t)(completed_block_count + open_new_block) * representation_stride) + row_offset;
 	for (element = threadIdx.x; element < SPARK_K3_MODEL_HIDDEN_DIMENSION; element += blockDim.x)
 	{
-		output_value = SparkK3Bf16ToFloat(sublayer_output_bf16,row_offset + element);
+		output_value = SparkLmBf16ToFloat(sublayer_output_bf16,row_offset + element);
 		if ( open_new_block == 0u )
-			output_value += SparkK3Bf16ToFloat(representations_bf16,partial_offset + element);
-		SparkK3FloatToBf16(representations_bf16,partial_offset + element,output_value);
+			output_value += SparkLmBf16ToFloat(representations_bf16,partial_offset + element);
+		SparkLmFloatToBf16(representations_bf16,partial_offset + element,output_value);
 	}
-}
-
-__global__ void SparkK3RmsNormKernel(const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
-{
-	__shared__ float reduce_scratch[SPARK_K3_CTA_WARPS];
-	uint32_t row = blockIdx.x;
-	uint64_t row_offset;
-	uint32_t element;
-	float value,sum_squares,inverse_rms;
-	if ( row >= row_count )
-		return;
-	row_offset = (uint64_t)row * (uint64_t)dimension;
-	sum_squares = 0.0f;
-	for (element = threadIdx.x; element < dimension; element += blockDim.x)
-	{
-		value = SparkK3Bf16ToFloat(input_bf16,row_offset + element);
-		sum_squares += (value * value);
-	}
-	sum_squares = SparkK3BlockReduceSum(sum_squares,reduce_scratch);
-	inverse_rms = rsqrtf((sum_squares / (float)dimension) + epsilon);
-	for (element = threadIdx.x; element < dimension; element += blockDim.x)
-	{
-		value = SparkK3Bf16ToFloat(input_bf16,row_offset + element);
-		SparkK3FloatToBf16(output_bf16,row_offset + element,(value * inverse_rms) * SparkK3Bf16ToFloat(gain_bf16,element));
-	}
-}
-
-/*
- * Row-major linear, one warp per output neuron, eight neurons in flight per
- * block, activations staged once in shared memory. The weight branch is
- * launch-uniform (bf16 or MXFP4 nibble pairs with one E8M0 scale per group),
- * so both formats share the loop. Weight fetch is the bound at decode batch
- * sizes, which this layout keeps fully coalesced.
- */
-__global__ void SparkK3LinearKernel(uint32_t weight_format, const void *weight_payload, const uint8_t *weight_scale_e8m0, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
-{
-	extern __shared__ float shared_input[];
-	uint32_t row = blockIdx.x,neuron_base = blockIdx.y * SPARK_K3_CTA_WARPS;
-	uint32_t warp = threadIdx.x / SPARK_K3_WARP_LANES,lane = threadIdx.x % SPARK_K3_WARP_LANES;
-	uint32_t neuron,element,packed_index,pair_base;
-	uint64_t weight_row_offset;
-	float accumulator,scale_value;
-	uint32_t packed;
-	if ( row >= row_count )
-		return;
-	for (element = threadIdx.x; element < input_dimension; element += blockDim.x)
-		shared_input[element] = SparkK3Bf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + element);
-	__syncthreads();
-	neuron = neuron_base + warp;
-	if ( neuron >= output_dimension )
-		return;
-	accumulator = 0.0f;
-	if ( weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
-	{
-		weight_row_offset = (uint64_t)neuron * input_dimension;
-		for (element = lane; element < input_dimension; element += SPARK_K3_WARP_LANES)
-			accumulator += (shared_input[element] * SparkK3Bf16ToFloat(weight_payload,weight_row_offset + element));
-	}
-	else
-	{
-		weight_row_offset = (uint64_t)neuron * (input_dimension / 2u);
-		for (packed_index = lane; packed_index < (input_dimension / 2u); packed_index += SPARK_K3_WARP_LANES)
-		{
-			pair_base = packed_index << 1u;
-			packed = ((const uint8_t *)weight_payload)[weight_row_offset + packed_index];
-			scale_value = SparkK3DecodeE8m0(weight_scale_e8m0[((uint64_t)neuron * (input_dimension / SPARK_K3_MODEL_MXFP4_GROUP_SIZE)) + (pair_base / SPARK_K3_MODEL_MXFP4_GROUP_SIZE)]);
-			accumulator += (shared_input[pair_base] * (SparkK3DecodeE2m1(packed & 0x0fu) * scale_value));
-			accumulator += (shared_input[pair_base + 1u] * (SparkK3DecodeE2m1(packed >> 4u) * scale_value));
-		}
-	}
-	accumulator = SparkK3WarpReduceSum(accumulator);
-	if ( lane == 0u )
-		SparkK3FloatToBf16(output_bf16,((uint64_t)row * output_dimension) + neuron,accumulator);
 }
 
 /*
@@ -308,19 +170,19 @@ __global__ void SparkK3KdaNormalizeQkKernel(void *query_bf16, void *key_bf16, ui
 	key_squares = 0.0f;
 	for (element = threadIdx.x; element < SPARK_K3_KDA_DK; element += blockDim.x)
 	{
-		query_value = SparkK3Bf16ToFloat(query_bf16,base + element);
-		key_value = SparkK3Bf16ToFloat(key_bf16,base + element);
+		query_value = SparkLmBf16ToFloat(query_bf16,base + element);
+		key_value = SparkLmBf16ToFloat(key_bf16,base + element);
 		query_squares += (query_value * query_value);
 		key_squares += (key_value * key_value);
 	}
-	query_squares = SparkK3BlockReduceSum(query_squares,reduce_scratch);
-	key_squares = SparkK3BlockReduceSum(key_squares,reduce_scratch);
+	query_squares = SparkLmBlockReduceSum(query_squares,reduce_scratch);
+	key_squares = SparkLmBlockReduceSum(key_squares,reduce_scratch);
 	query_scale = rsqrtf(query_squares + 1e-12f);
 	key_scale = rsqrtf(key_squares + 1e-12f);
 	for (element = threadIdx.x; element < SPARK_K3_KDA_DK; element += blockDim.x)
 	{
-		SparkK3FloatToBf16(query_bf16,base + element,SparkK3Bf16ToFloat(query_bf16,base + element) * query_scale);
-		SparkK3FloatToBf16(key_bf16,base + element,SparkK3Bf16ToFloat(key_bf16,base + element) * key_scale);
+		SparkLmFloatToBf16(query_bf16,base + element,SparkLmBf16ToFloat(query_bf16,base + element) * query_scale);
+		SparkLmFloatToBf16(key_bf16,base + element,SparkLmBf16ToFloat(key_bf16,base + element) * key_scale);
 	}
 }
 
@@ -338,11 +200,11 @@ __global__ void SparkK3KdaGateBetaKernel(void *log_decay_bf16, void *output_gate
 	uint64_t element;
 	for (element = index; element < wide_elements; element += stride)
 	{
-		SparkK3FloatToBf16(log_decay_bf16,element,-SparkK3Softplus(SparkK3Bf16ToFloat(log_decay_bf16,element)));
-		SparkK3FloatToBf16(output_gate_bf16,element,SparkK3Sigmoid(SparkK3Bf16ToFloat(output_gate_bf16,element)));
+		SparkLmFloatToBf16(log_decay_bf16,element,-SparkLmSoftplus(SparkLmBf16ToFloat(log_decay_bf16,element)));
+		SparkLmFloatToBf16(output_gate_bf16,element,SparkLmSigmoid(SparkLmBf16ToFloat(output_gate_bf16,element)));
 	}
 	for (element = index; element < beta_elements; element += stride)
-		SparkK3FloatToBf16(beta_bf16,element,SparkK3Sigmoid(SparkK3Bf16ToFloat(beta_bf16,element)));
+		SparkLmFloatToBf16(beta_bf16,element,SparkLmSigmoid(SparkLmBf16ToFloat(beta_bf16,element)));
 }
 
 typedef struct SparkK3KdaSmemLayout
@@ -728,15 +590,15 @@ __global__ void SparkK3KdaFinishKernel(const void *core_output_bf16, const void 
 	sum_squares = 0.0f;
 	for (element = threadIdx.x; element < SPARK_K3_KDA_DV; element += blockDim.x)
 	{
-		value = SparkK3Bf16ToFloat(core_output_bf16,base + element);
+		value = SparkLmBf16ToFloat(core_output_bf16,base + element);
 		sum_squares += (value * value);
 	}
-	sum_squares = SparkK3BlockReduceSum(sum_squares,reduce_scratch);
+	sum_squares = SparkLmBlockReduceSum(sum_squares,reduce_scratch);
 	inverse_rms = rsqrtf((sum_squares / (float)SPARK_K3_KDA_DV) + epsilon);
 	for (element = threadIdx.x; element < SPARK_K3_KDA_DV; element += blockDim.x)
 	{
-		value = (SparkK3Bf16ToFloat(core_output_bf16,base + element) * inverse_rms) * SparkK3Bf16ToFloat(head_norm_weight_bf16,element);
-		SparkK3FloatToBf16(gated_bf16,base + element,value * SparkK3Bf16ToFloat(gate_bf16,base + element));
+		value = (SparkLmBf16ToFloat(core_output_bf16,base + element) * inverse_rms) * SparkLmBf16ToFloat(head_norm_weight_bf16,element);
+		SparkLmFloatToBf16(gated_bf16,base + element,value * SparkLmBf16ToFloat(gate_bf16,base + element));
 	}
 }
 
@@ -757,7 +619,7 @@ __global__ void SparkK3MlaKvWriteKernel(const void *kv_a_bf16, void *cache_bf16,
 		return;
 	destination = (uint64_t)slot_mapping[row] * SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS;
 	for (element = threadIdx.x; element < SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS; element += blockDim.x)
-		SparkK3FloatToBf16(cache_bf16,destination + element,SparkK3Bf16ToFloat(kv_a_bf16,((uint64_t)row * SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS) + element));
+		SparkLmFloatToBf16(cache_bf16,destination + element,SparkLmBf16ToFloat(kv_a_bf16,((uint64_t)row * SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS) + element));
 }
 
 __global__ void SparkK3MlaAbsorbQueryKernel(const void *query_b_bf16, uint32_t query_b_format, const void *kv_b_payload, const uint8_t *kv_b_scale_e8m0, uint32_t kv_b_format, void *query_latent_bf16, uint32_t row_count)
@@ -777,19 +639,19 @@ __global__ void SparkK3MlaAbsorbQueryKernel(const void *query_b_bf16, uint32_t q
 		accumulator = 0.0f;
 		for (channel = 0; channel < SPARK_K3_MODEL_MLA_QK_NOPE_HEAD_DIMENSION; channel++)
 		{
-			query_value = SparkK3Bf16ToFloat(query_b_bf16,query_base + channel);
+			query_value = SparkLmBf16ToFloat(query_b_bf16,query_base + channel);
 			weight_index = ((weight_row_base + channel) * SPARK_K3_MODEL_MLA_LATENT_DIMENSION) + latent;
 			if ( kv_b_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
-				weight_value = SparkK3Bf16ToFloat(kv_b_payload,weight_index);
+				weight_value = SparkLmBf16ToFloat(kv_b_payload,weight_index);
 			else
 			{
 				packed = ((const uint8_t *)kv_b_payload)[weight_index >> 1u];
-				scale_value = SparkK3DecodeE8m0(kv_b_scale_e8m0[weight_index / SPARK_K3_MODEL_MXFP4_GROUP_SIZE]);
-				weight_value = SparkK3DecodeE2m1((weight_index & 1u) != 0u ? (packed >> 4u) : (packed & 0x0fu)) * scale_value;
+				scale_value = SparkLmDecodeE8m0(kv_b_scale_e8m0[weight_index / SPARK_K3_MODEL_MXFP4_GROUP_SIZE]);
+				weight_value = SparkLmDecodeE2m1((weight_index & 1u) != 0u ? (packed >> 4u) : (packed & 0x0fu)) * scale_value;
 			}
 			accumulator += (query_value * weight_value);
 		}
-		SparkK3FloatToBf16(query_latent_bf16,latent_base + latent,accumulator);
+		SparkLmFloatToBf16(query_latent_bf16,latent_base + latent,accumulator);
 	}
 	(void)query_b_format;
 }
@@ -837,8 +699,8 @@ __global__ void SparkK3MlaAttendKernel(const void *query_latent_bf16, const void
 		{
 			score = 0.0f;
 			for (latent = lane_id; latent < SPARK_K3_MODEL_MLA_LATENT_DIMENSION; latent += SPARK_K3_WARP_LANES)
-				score += (SparkK3Bf16ToFloat(query_latent_bf16,query_base + latent) * __bfloat162float(token_tile[tile_token][latent]));
-			score = SparkK3WarpReduceSum(score);
+				score += (SparkLmBf16ToFloat(query_latent_bf16,query_base + latent) * __bfloat162float(token_tile[tile_token][latent]));
+			score = SparkLmWarpReduceSum(score);
 			score = __shfl_sync(0xffffffffu,score,0) * qk_scale;
 			previous_maximum = maximum;
 			if ( score > maximum )
@@ -856,7 +718,7 @@ __global__ void SparkK3MlaAttendKernel(const void *query_latent_bf16, const void
 	for (element = 0; element < (SPARK_K3_MODEL_MLA_LATENT_DIMENSION / SPARK_K3_WARP_LANES); element++)
 	{
 		latent = (element * SPARK_K3_WARP_LANES) + lane_id;
-		SparkK3FloatToBf16(attention_latent_bf16,query_base + latent,context_accumulator[element] / total);
+		SparkLmFloatToBf16(attention_latent_bf16,query_base + latent,context_accumulator[element] / total);
 	}
 }
 
@@ -872,7 +734,7 @@ __global__ void SparkK3MlaValueUpKernel(const void *attention_latent_bf16, const
 	uint32_t packed;
 	if ( row >= row_count )
 		return;
-	gate_value = SparkK3Sigmoid(SparkK3Bf16ToFloat(head_gate_bf16,((uint64_t)row * SPARK_K3_MODEL_MLA_HEAD_COUNT) + head));
+	gate_value = SparkLmSigmoid(SparkLmBf16ToFloat(head_gate_bf16,((uint64_t)row * SPARK_K3_MODEL_MLA_HEAD_COUNT) + head));
 	for (channel = threadIdx.x; channel < SPARK_K3_MODEL_MLA_VALUE_HEAD_DIMENSION; channel += blockDim.x)
 	{
 		accumulator = 0.0f;
@@ -880,16 +742,16 @@ __global__ void SparkK3MlaValueUpKernel(const void *attention_latent_bf16, const
 		{
 			weight_index = ((weight_row_base + channel) * SPARK_K3_MODEL_MLA_LATENT_DIMENSION) + latent;
 			if ( kv_b_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
-				weight_value = SparkK3Bf16ToFloat(kv_b_payload,weight_index);
+				weight_value = SparkLmBf16ToFloat(kv_b_payload,weight_index);
 			else
 			{
 				packed = ((const uint8_t *)kv_b_payload)[weight_index >> 1u];
-				scale_value = SparkK3DecodeE8m0(kv_b_scale_e8m0[weight_index / SPARK_K3_MODEL_MXFP4_GROUP_SIZE]);
-				weight_value = SparkK3DecodeE2m1((weight_index & 1u) != 0u ? (packed >> 4u) : (packed & 0x0fu)) * scale_value;
+				scale_value = SparkLmDecodeE8m0(kv_b_scale_e8m0[weight_index / SPARK_K3_MODEL_MXFP4_GROUP_SIZE]);
+				weight_value = SparkLmDecodeE2m1((weight_index & 1u) != 0u ? (packed >> 4u) : (packed & 0x0fu)) * scale_value;
 			}
-			accumulator += (SparkK3Bf16ToFloat(attention_latent_bf16,latent_base + latent) * weight_value);
+			accumulator += (SparkLmBf16ToFloat(attention_latent_bf16,latent_base + latent) * weight_value);
 		}
-		SparkK3FloatToBf16(head_output_bf16,output_base + channel,accumulator * gate_value);
+		SparkLmFloatToBf16(head_output_bf16,output_base + channel,accumulator * gate_value);
 	}
 }
 
@@ -911,7 +773,7 @@ __global__ void SparkK3MoeRouteKernel(const void *router_logits_bf16, const floa
 		return;
 	for (expert = threadIdx.x; expert < SPARK_K3_MODEL_MOE_EXPERT_COUNT; expert += blockDim.x)
 	{
-		score = SparkK3Sigmoid(SparkK3Bf16ToFloat(router_logits_bf16,((uint64_t)row * SPARK_K3_MODEL_MOE_EXPERT_COUNT) + expert));
+		score = SparkLmSigmoid(SparkLmBf16ToFloat(router_logits_bf16,((uint64_t)row * SPARK_K3_MODEL_MOE_EXPERT_COUNT) + expert));
 		scores[expert] = score + score_bias_f32[expert];
 	}
 	__syncthreads();
@@ -950,10 +812,10 @@ __device__ __forceinline__ float SparkK3ExpertWeightValue(uint32_t weight_format
 	uint32_t packed;
 	float scale_value;
 	if ( weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
-		return(SparkK3Bf16ToFloat(payload,weight_index));
+		return(SparkLmBf16ToFloat(payload,weight_index));
 	packed = ((const uint8_t *)payload)[weight_index >> 1u];
-	scale_value = SparkK3DecodeE8m0(scale_e8m0[weight_index / SPARK_K3_MODEL_MXFP4_GROUP_SIZE]);
-	return(SparkK3DecodeE2m1((weight_index & 1u) != 0u ? (packed >> 4u) : (packed & 0x0fu)) * scale_value);
+	scale_value = SparkLmDecodeE8m0(scale_e8m0[weight_index / SPARK_K3_MODEL_MXFP4_GROUP_SIZE]);
+	return(SparkLmDecodeE2m1((weight_index & 1u) != 0u ? (packed >> 4u) : (packed & 0x0fu)) * scale_value);
 }
 
 /*
@@ -979,7 +841,7 @@ __global__ void SparkK3MoeExpertInterKernel(const void *input_bf16, const uint32
 	if ( row >= row_count )
 		return;
 	for (element = threadIdx.x; element < input_dimension; element += blockDim.x)
-		shared_input[element] = SparkK3Bf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + element);
+		shared_input[element] = SparkLmBf16ToFloat(input_bf16,((uint64_t)row * input_dimension) + element);
 	__syncthreads();
 	for (neuron = warp; neuron < intermediate_dimension; neuron += SPARK_K3_CTA_WARPS)
 	{
@@ -991,10 +853,10 @@ __global__ void SparkK3MoeExpertInterKernel(const void *input_bf16, const uint32
 			gate_accumulator += (shared_input[element] * SparkK3ExpertWeightValue(weight_format,gate_base,gate_scale_base,weight_row + element));
 			up_accumulator += (shared_input[element] * SparkK3ExpertWeightValue(weight_format,up_base,up_scale_base,weight_row + element));
 		}
-		gate_accumulator = SparkK3WarpReduceSum(gate_accumulator);
-		up_accumulator = SparkK3WarpReduceSum(up_accumulator);
+		gate_accumulator = SparkLmWarpReduceSum(gate_accumulator);
+		up_accumulator = SparkLmWarpReduceSum(up_accumulator);
 		if ( lane == 0u )
-			SparkK3FloatToBf16(intermediate_bf16,((((uint64_t)row * route_count) + route) * intermediate_dimension) + neuron,SparkK3Sigmoid(gate_accumulator) * tanhf(up_accumulator));
+			SparkLmFloatToBf16(intermediate_bf16,((((uint64_t)row * route_count) + route) * intermediate_dimension) + neuron,SparkLmSigmoid(gate_accumulator) * tanhf(up_accumulator));
 	}
 }
 
@@ -1021,15 +883,15 @@ __global__ void SparkK3MoeExpertDownKernel(const void *intermediate_bf16, const 
 		weight_row = (uint64_t)neuron * intermediate_dimension;
 		route_accumulator = 0.0f;
 		for (element = lane; element < intermediate_dimension; element += SPARK_K3_WARP_LANES)
-			route_accumulator += (SparkK3Bf16ToFloat(intermediate_bf16,((((uint64_t)row * route_count) + route) * intermediate_dimension) + element) * SparkK3ExpertWeightValue(weight_format,down_base,down_scale_base,weight_row + element));
+			route_accumulator += (SparkLmBf16ToFloat(intermediate_bf16,((((uint64_t)row * route_count) + route) * intermediate_dimension) + element) * SparkK3ExpertWeightValue(weight_format,down_base,down_scale_base,weight_row + element));
 		total += (route_weight * route_accumulator);
 	}
-	total = SparkK3WarpReduceSum(total);
+	total = SparkLmWarpReduceSum(total);
 	if ( lane == 0u )
 	{
 		if ( accumulate != 0u )
-			total += SparkK3Bf16ToFloat(output_bf16,((uint64_t)row * output_dimension) + neuron);
-		SparkK3FloatToBf16(output_bf16,((uint64_t)row * output_dimension) + neuron,total);
+			total += SparkLmBf16ToFloat(output_bf16,((uint64_t)row * output_dimension) + neuron);
+		SparkLmFloatToBf16(output_bf16,((uint64_t)row * output_dimension) + neuron,total);
 	}
 }
 
@@ -1044,8 +906,8 @@ __global__ void SparkK3RestrictedLogitsKernel(const void *normalized_hidden_bf16
 		return;
 	accumulator = 0.0f;
 	for (element = lane; element < SPARK_K3_MODEL_HIDDEN_DIMENSION; element += SPARK_K3_WARP_LANES)
-		accumulator += (SparkK3Bf16ToFloat(normalized_hidden_bf16,((uint64_t)row * SPARK_K3_MODEL_HIDDEN_DIMENSION) + element) * SparkK3Bf16ToFloat(lm_head_bf16,((uint64_t)candidate * SPARK_K3_MODEL_HIDDEN_DIMENSION) + element));
-	accumulator = SparkK3WarpReduceSum(accumulator);
+		accumulator += (SparkLmBf16ToFloat(normalized_hidden_bf16,((uint64_t)row * SPARK_K3_MODEL_HIDDEN_DIMENSION) + element) * SparkLmBf16ToFloat(lm_head_bf16,((uint64_t)candidate * SPARK_K3_MODEL_HIDDEN_DIMENSION) + element));
+	accumulator = SparkLmWarpReduceSum(accumulator);
 	if ( lane == 0u )
 		logits_f32[((uint64_t)row * restricted_vocab_count) + candidate] = accumulator;
 }
@@ -1118,7 +980,7 @@ extern "C" SparkStatus SparkK3LaunchRmsNorm(const void *input_bf16, const void *
 {
 	if ( input_bf16 == 0 || gain_bf16 == 0 || output_bf16 == 0 || row_count == 0u || dimension == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	SparkK3RmsNormKernel<<<row_count,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(input_bf16,gain_bf16,output_bf16,row_count,dimension,epsilon);
+	SparkLmRmsNormKernel<<<row_count,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(input_bf16,gain_bf16,output_bf16,row_count,dimension,epsilon);
 	return(SparkK3LaunchStatus());
 }
 
@@ -1136,9 +998,9 @@ extern "C" SparkStatus SparkK3LaunchLinear(const SparkK3Mxfp4LinearView *view, c
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	grid = dim3(row_count,(view->output_dimension + SPARK_K3_CTA_WARPS - 1u) / SPARK_K3_CTA_WARPS,1);
 	shared_bytes = view->input_dimension * (uint32_t)sizeof(float);
-	if ( cudaFuncSetAttribute(SparkK3LinearKernel,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared_bytes) != cudaSuccess )
+	if ( cudaFuncSetAttribute(SparkLmLinearKernel<SPARK_K3_MODEL_MXFP4_GROUP_SIZE>,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared_bytes) != cudaSuccess )
 		return(SPARK_STATUS_INTERNAL_ERROR);
-	SparkK3LinearKernel<<<grid,SPARK_K3_CTA_THREADS,shared_bytes,(cudaStream_t)stream>>>(view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension);
+	SparkLmLinearKernel<SPARK_K3_MODEL_MXFP4_GROUP_SIZE><<<grid,SPARK_K3_CTA_THREADS,shared_bytes,(cudaStream_t)stream>>>(view->weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 ? SPARK_LM_WEIGHT_FORMAT_BF16 : SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension);
 	return(SparkK3LaunchStatus());
 }
 
