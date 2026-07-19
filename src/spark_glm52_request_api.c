@@ -748,7 +748,12 @@ SparkStatus SparkGlm52RequestApiSubmit(
 static uint32_t SparkGlm52RequestApiSlotIsSchedulablePrefill(
     const SparkGlm52RequestApiSlot *slot)
 {
-    return slot->state == SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL;
+    if (slot->state == SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL)
+        return 1u;
+    return slot->state == SPARK_GLM52_REQUEST_API_STATE_RUNNING_PREFILL &&
+        slot->dispatched_prompt_token_count < slot->prompt_token_count &&
+        slot->inflight_prefill_dispatch_count <
+            SPARK_GLM52_REQUEST_API_PREFILL_INFLIGHT_WAVE_LIMIT;
 }
 
 static uint32_t SparkGlm52RequestApiSlotIsSchedulableDecode(
@@ -3439,7 +3444,9 @@ static void SparkGlm52RequestApiFillPrefillSchedulerRequest(
     scheduler_request->prompt_token_count = prompt_token_count;
     scheduler_request->computed_prompt_token_count =
         SparkGlm52RequestApiCrossSequencePrefixReuseIsEnabled(api) != 0u
-            ? 0u : slot->computed_prompt_token_count;
+            ? 0u : SparkGlm52RequestApiMaximumU32(
+                slot->computed_prompt_token_count,
+                slot->dispatched_prompt_token_count);
     scheduler_request->flags = SPARK_GLM52_SCHEDULER_REQUEST_FLAG_PREFILL;
     scheduler_request->max_scheduled_prompt_token_count =
         max_scheduled_prompt_token_count != 0u
@@ -3673,9 +3680,20 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefill(
         committed_prefix_token_count = slot->prompt_token_count;
     }
 
-    slot->state = SPARK_GLM52_REQUEST_API_STATE_RUNNING_PREFILL;
+    if (slot->state == SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL)
+    {
+        slot->state = SPARK_GLM52_REQUEST_API_STATE_RUNNING_PREFILL;
+        api->queued_request_count -= 1u;
+    }
+    if (slot->inflight_prefill_dispatch_count == 0u &&
+        slot->dispatched_prompt_token_count <
+            slot->computed_prompt_token_count)
+        slot->dispatched_prompt_token_count =
+            slot->computed_prompt_token_count;
+    if (committed_prefix_token_count > slot->dispatched_prompt_token_count)
+        slot->dispatched_prompt_token_count = committed_prefix_token_count;
+    slot->inflight_prefill_dispatch_count += 1u;
     slot->scheduled_prefill_step_count += 1u;
-    api->queued_request_count -= 1u;
     api->running_request_count += 1u;
     api->scheduled_prefill_dispatch_count += 1u;
 
@@ -3935,6 +3953,10 @@ static SparkStatus SparkGlm52RequestApiSchedulePrefillBatch(
     SparkStatus status;
 
     if (!SparkGlm52RequestApiPrefillBatchingIsEnabled(api))
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    if (first_slot->state != SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL)
     {
         return SPARK_STATUS_NOT_FOUND;
     }
@@ -5178,6 +5200,10 @@ static void SparkGlm52RequestApiFinishSlotAfterPrefill(
 {
     uint32_t committed_prompt_token_count;
 
+    if (slot->inflight_prefill_dispatch_count != 0u)
+        slot->inflight_prefill_dispatch_count -= 1u;
+    api->running_request_count -= 1u;
+    slot->completed_prefill_step_count += 1u;
     committed_prompt_token_count = decision->cache_commit_token_count_after_step;
     if (committed_prompt_token_count > slot->prompt_token_count)
     {
@@ -5189,15 +5215,20 @@ static void SparkGlm52RequestApiFinishSlotAfterPrefill(
         slot->last_committed_prefix_token_count = committed_prompt_token_count;
         slot->last_committed_prefix_hash = decision->prefix_cache_result_hash;
     }
-
-    slot->completed_prefill_step_count += 1u;
-    api->running_request_count -= 1u;
     if (slot->computed_prompt_token_count < slot->prompt_token_count)
     {
+        if (slot->inflight_prefill_dispatch_count != 0u)
+            return;
+        if (slot->dispatched_prompt_token_count >
+            slot->computed_prompt_token_count)
+            slot->dispatched_prompt_token_count =
+                slot->computed_prompt_token_count;
         slot->state = SPARK_GLM52_REQUEST_API_STATE_QUEUED_PREFILL;
         api->queued_request_count += 1u;
         return;
     }
+    if (slot->inflight_prefill_dispatch_count != 0u)
+        return;
 
     slot->state = SPARK_GLM52_REQUEST_API_STATE_READY_DECODE;
     if (slot->remaining_thinking_token_budget == 0u &&
@@ -5907,6 +5938,12 @@ SparkStatus SparkGlm52RequestApiCompleteDispatch(
             slot = SparkGlm52RequestApiFindSlotByHandle(
                 api,
                 dispatch->request_handles[request_index]);
+            if (slot != 0 && request_index == 0u &&
+                slot->state == SPARK_GLM52_REQUEST_API_STATE_CANCELLED)
+            {
+                api->stale_prefill_completion_count += 1u;
+                continue;
+            }
             if (slot == 0 ||
                 (request_index == 0u &&
                  slot->state != SPARK_GLM52_REQUEST_API_STATE_RUNNING_PREFILL) ||

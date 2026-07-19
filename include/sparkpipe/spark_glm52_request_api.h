@@ -111,6 +111,7 @@ extern "C" {
 #define SPARK_GLM52_REQUEST_API_MTP_COMMIT_EMA_INITIAL_MILLI 2900u
 #define SPARK_GLM52_REQUEST_API_MTP_SUPPRESS_THRESHOLD_MILLI 1150u
 #define SPARK_GLM52_REQUEST_API_MTP_REPROBE_INTERVAL 16u
+#define SPARK_GLM52_REQUEST_API_PREFILL_INFLIGHT_WAVE_LIMIT 12u
 
 #define SPARK_GLM52_REQUEST_API_PENDING_PREFETCH_CAPACITY 8u
 #define SPARK_GLM52_REQUEST_API_SLOT_HASH_SLOTS 4096u
@@ -156,6 +157,8 @@ typedef struct SparkGlm52RequestApiSlot
     uint32_t priority;
     uint32_t prompt_token_count;
     uint32_t computed_prompt_token_count;
+    uint32_t dispatched_prompt_token_count;
+    uint32_t inflight_prefill_dispatch_count;
     uint32_t scheduled_prefill_step_count;
     uint32_t completed_prefill_step_count;
     uint32_t max_prefill_tokens_per_step;
@@ -360,6 +363,7 @@ typedef struct SparkGlm52RequestApi
     uint64_t submission_counter;
     uint64_t submitted_request_count;
     uint64_t scheduled_prefill_dispatch_count;
+    uint64_t stale_prefill_completion_count;
     uint64_t scheduled_decode_dispatch_count;
     uint64_t jit_prefetch_dispatch_count;
     uint64_t jit_prefetch_block_count;
