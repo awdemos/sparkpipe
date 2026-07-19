@@ -5,12 +5,13 @@
 #include "sparkpipe/spark_lm_kernels.cuh"
 
 /*
- * Qwen 3.6 27B decode-path device code. Every kernel here serves the
- * production hot path: a decode microbatch of up to 512 rows, one next token
- * per distinct lane, walked through this stage's layer slice. Prefill in v1
- * is the same path applied token by token, which the carry oracle proves
- * BITWISE equal to any chunked formulation; the chunked prefill kernel is a
- * later throughput commit, not a correctness requirement.
+ * Qwen 3.6 27B device code. Two production hot paths share these kernels: a
+ * decode microbatch of up to 512 rows, one next token per distinct lane; and
+ * a prefill frame of up to 512 consecutive positions of ONE lane, whose
+ * projections, norms and attention batch over all positions (each kernel is
+ * already per-row correct) while the GDN core runs the chunked formulation
+ * below, proven against the CPU chunk oracle and BITWISE carry-equal to the
+ * recurrence.
  *
  * Shared machinery (RmsNorm, dual-format Linear, fused argmax head, reduces)
  * comes from spark_lm_kernels.cuh; this file holds only what is Qwen:
@@ -448,6 +449,45 @@ static __global__ void SparkQwen36ChunkStepKernel(const float *log_decay_f32, Sp
 	}
 }
 
+/*
+ * Chunked depthwise causal conv for one lane's whole prefill frame: one
+ * thread per channel slides a 4-tap register window over token_count
+ * consecutive positions, seeded by the carried tail, silu on each output.
+ * The register triple left after the walk is exactly the oracle
+ * RefConvChannel tail for every token_count including short frames, so the
+ * write-back needs no blending cases. Frames chain: the tail written here
+ * seeds the next frame's first window.
+ */
+static __global__ void SparkQwen36ChunkConvKernel(const void *qkv_bf16, const void *conv_weight_bf16, void *conv_out_bf16, void *conv_tail_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal, uint64_t tail_lane_stride, uint64_t tail_layer_stride)
+{
+	uint32_t channel = (blockIdx.x * blockDim.x) + threadIdx.x,token,tap;
+	uint64_t tail_base,element;
+	float window[4],weight[4],accumulator;
+	if ( channel >= SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS )
+		return;
+	tail_base = ((uint64_t)lane_index * tail_lane_stride) + ((uint64_t)gdn_layer_ordinal * tail_layer_stride) + ((uint64_t)channel * SPARK_QWEN36_MODEL_GDN_CONV_TAIL_COLUMNS);
+	window[0] = SparkLmBf16ToFloat(conv_tail_bf16,tail_base + 0u);
+	window[1] = SparkLmBf16ToFloat(conv_tail_bf16,tail_base + 1u);
+	window[2] = SparkLmBf16ToFloat(conv_tail_bf16,tail_base + 2u);
+	for (tap = 0; tap < SPARK_QWEN36_MODEL_GDN_CONV_KERNEL; tap++)
+		weight[tap] = SparkLmBf16ToFloat(conv_weight_bf16,((uint64_t)channel * SPARK_QWEN36_MODEL_GDN_CONV_KERNEL) + tap);
+	for (token = 0; token < token_count; token++)
+	{
+		element = ((uint64_t)token * SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS) + channel;
+		window[3] = SparkLmBf16ToFloat(qkv_bf16,element);
+		accumulator = 0.0f;
+		for (tap = 0; tap < SPARK_QWEN36_MODEL_GDN_CONV_KERNEL; tap++)
+			accumulator += (window[tap] * weight[tap]);
+		SparkLmFloatToBf16(conv_out_bf16,element,SparkLmSwish(accumulator));
+		window[0] = window[1];
+		window[1] = window[2];
+		window[2] = window[3];
+	}
+	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 0u,window[0]);
+	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 1u,window[1]);
+	SparkLmFloatToBf16(conv_tail_bf16,tail_base + 2u,window[2]);
+}
+
 // Residual add and SwiGLU combine, both row-shaped elementwise.
 static __global__ void SparkQwen36ResidualAddKernel(void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
 {
@@ -517,6 +557,14 @@ extern "C" cudaError_t SparkQwen36LaunchAttnDecode(cudaStream_t stream, const vo
 {
 	dim3 grid(SPARK_QWEN36_MODEL_ATTN_QUERY_HEAD_COUNT,row_count,1u);
 	SparkQwen36AttnDecodeKernel<<<grid,SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION,0,stream>>>(q_fused_bf16,kv_cache_bf16,table->physical_block_indices,table->lane_physical_block_counts,row_lane_indices,context_lengths,head_out_bf16,row_count,table->lane_stride,attn_layer_ordinal,cache_layer_stride,cache_block_stride);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkQwen36LaunchChunkConv(cudaStream_t stream, const void *qkv_bf16, const SparkQwen36GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen36GdnStatePool *pool, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal)
+{
+	if ( token_count == 0u )
+		return(cudaErrorInvalidValue);
+	SparkQwen36ChunkConvKernel<<<(SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,weights->conv_weight_bf16,conv_out_bf16,pool->conv_tail_bf16,lane_index,token_count,gdn_layer_ordinal,pool->conv_tail_lane_stride_elements,pool->conv_tail_layer_stride_elements);
 	return(cudaGetLastError());
 }
 

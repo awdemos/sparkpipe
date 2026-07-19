@@ -41,12 +41,15 @@ extern "C" {
  * Decode frames are BATCHED: one frame carries one next-token row for up to
  * max_active_sequence_count distinct lanes, which is what keeps every stage
  * of the pipeline saturated at 500-way long-memory concurrency. Prefill
- * frames remain one lane per frame, chunked at the GDN chunk width, because a
- * prefill already fills the stage on its own.
+ * frames are one lane per frame carrying up to max_active_sequence_count
+ * consecutive positions, because a prefill already fills the stage on its
+ * own: projections, norms and attention batch over every position at once
+ * and the GDN core walks the frame in 64-token chunks on the slot stream.
  */
 
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 1u
-#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 1u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION 2u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_GDN_STATE_POOL_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TABLE_ABI_VERSION 1u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_LINEAR_VIEW_ABI_VERSION 1u
@@ -234,6 +237,13 @@ typedef struct SparkQwen36PipelineSlot
 	void *ffn_intermediate_bf16;
 	void *argmax_score_f32;
 	void *argmax_token_ids;
+	float *chunk_qn_f32;
+	float *chunk_kn_f32;
+	float *chunk_cum_g_f32;
+	float *chunk_decay_f32;
+	float *chunk_attn_f32;
+	float *chunk_w_f32;
+	float *chunk_kg_f32;
 } SparkQwen36PipelineSlot;
 
 /*
@@ -292,10 +302,36 @@ typedef struct SparkQwen36DecodeBatchView
 	const uint64_t *row_sequence_ids;
 } SparkQwen36DecodeBatchView;
 
+/*
+ * A prefill frame is ONE lane's consecutive prompt positions
+ * [base_position, base_position + token_count): the module batches every
+ * projection, norm and attention pass over all token_count rows and walks
+ * the GDN core in 64-token chunks on the slot stream, so the state
+ * dependency serializes for free. token_count is capped by
+ * max_active_sequence_count so the decode-sized slot buffers hold a whole
+ * frame; the runtime splits longer prompts into consecutive frames and the
+ * resident GDN state, conv tails and KV cache carry between them. A frame
+ * with base_position zero resets the lane (recurrent state and conv tails
+ * are zeroed before the walk); a nonzero base requires a warm lane. On the
+ * embedding stage buffers[0] carries token_count wire token ids; the head
+ * stage samples ONLY the final position and writes exactly one token id.
+ * frame->new_token_count must equal token_count.
+ */
+typedef struct SparkQwen36PrefillFrameView
+{
+	uint32_t abi_version;
+	uint32_t descriptor_bytes;
+	uint32_t lane_index;
+	uint32_t token_count;
+	uint64_t base_position;
+	uint64_t sequence_id;
+} SparkQwen36PrefillFrameView;
+
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE 0x00000001u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DECODE_BATCH_VIEW 0x00000002u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_INPUT_TRANSPORT 0x00000004u
 #define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_OUTPUT_TRANSPORT 0x00000008u
+#define SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW 0x00000010u
 
 typedef SparkStatus (*SparkQwen36HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
 typedef SparkStatus (*SparkQwen36HiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);
@@ -306,8 +342,10 @@ typedef SparkStatus (*SparkQwen36HiddenTransportSendFunction)(SparkHiddenTranspo
  * with stage_index + 1 < stage_count requires HIDDEN_OUTPUT_TRANSPORT; the
  * module refuses a frame whose transport flags disagree with its position in
  * the pipeline, in either direction. The packet's hidden payload is rows x
- * hidden bf16; sideband_kind is zero for Qwen (nothing but the residual
- * crosses a boundary).
+ * hidden bf16 - for a prefill frame rows is token_count, every position of
+ * the chunk crosses the boundary; sideband_kind is zero for Qwen (nothing
+ * but the residual crosses a boundary). Exactly one of DECODE_BATCH_VIEW
+ * and PREFILL_FRAME_VIEW must be set, with the matching view non-null.
  */
 typedef struct SparkQwen36ResidentDecodeStageFrameContext
 {
@@ -317,6 +355,7 @@ typedef struct SparkQwen36ResidentDecodeStageFrameContext
 	uint32_t reserved0;
 	const SparkQwen36KvBlockTableView *kv_block_table;
 	const SparkQwen36DecodeBatchView *decode_batch;
+	const SparkQwen36PrefillFrameView *prefill_frame;
 	SparkHiddenTransportSession *hidden_input_transport_session;
 	SparkHiddenTransportSession *hidden_output_transport_session;
 	SparkQwen36HiddenTransportPostReceiveFunction hidden_input_post_receive_function;
