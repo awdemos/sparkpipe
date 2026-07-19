@@ -5,6 +5,10 @@
 
 #include "sparkpipe/spark_kv_store.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /*
  * Stage-module client for the family KV backing tier (spark_kv_store, the
  * Mooncake provider). One instance per stage: it loads the provider shared
@@ -39,5 +43,9 @@ SparkStatus SparkStageKvClientSubmit(SparkStageKvClient *client, uint32_t operat
 SparkStatus SparkStageKvClientPoll(SparkStageKvClient *client, uint64_t batch_id, SparkKvStoreCompletion *completion);
 SparkStatus SparkStageKvClientAllocateBuffer(SparkStageKvClient *client, uint64_t buffer_bytes, void **buffer);
 void SparkStageKvClientClose(SparkStageKvClient *client);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
