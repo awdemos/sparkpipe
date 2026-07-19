@@ -2873,7 +2873,7 @@ static void SparkTestRequestApiDsparkCapturesTapsAndRunsSpeculativeVerify(void)
     assert(fixture.api.dspark_rejected_token_count == 4u);
     assert(fixture.api.completed_request_count == 0u);
     assert(fixture.dspark_capture.call_count == 2u);
-    assert(fixture.dspark_capture.requested_token_count == 5u);
+    assert(fixture.dspark_capture.requested_token_count == 4u);
     assert(fixture.dspark_capture.sequence_position == 21u);
 
     assert(SparkGlm52RequestApiCancelRequest(
@@ -2948,7 +2948,7 @@ static void SparkTestRequestApiDsparkBatchesEqualLengthDrafts(void)
     assert(dispatch.kind ==
         SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH);
     assert(dispatch.request_count == 3u);
-    assert(dispatch.speculative_token_count == 7u);
+    assert(dispatch.speculative_token_count == 6u);
     {
         uint32_t verifier_tokens[3u][
             SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u];
@@ -2957,18 +2957,17 @@ static void SparkTestRequestApiDsparkBatchesEqualLengthDrafts(void)
         for (request_index = 0u; request_index < 3u; ++request_index)
         {
             for (token_index = 0u;
-                 token_index <
-                    SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT - 1u;
+                 token_index < dispatch.speculative_token_count - 1u;
                  ++token_index)
             {
                 verifier_tokens[request_index][token_index] =
                     dispatch.speculative_draft_token_ids[request_index][token_index];
             }
             verifier_tokens[request_index][
-                SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT - 1u] =
+                dispatch.speculative_token_count - 1u] =
                 148000u + request_index;
             verifier_tokens[request_index][
-                SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT] =
+                dispatch.speculative_token_count] =
                 149000u + request_index;
         }
         assert(SparkGlm52RequestApiResolveSpeculativeVerifyDispatch(
@@ -2976,15 +2975,15 @@ static void SparkTestRequestApiDsparkBatchesEqualLengthDrafts(void)
             &dispatch,
             &verifier_tokens[0u][0u],
             SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u,
-            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT + 1u) ==
+            dispatch.speculative_verifier_token_count) ==
             SPARK_STATUS_OK);
     }
     assert(SparkGlm52RequestApiCompleteDispatch(
         &fixture.api,
         &dispatch) == SPARK_STATUS_OK);
-    assert(fixture.api.completed_request_count == 3u);
-    assert(fixture.api.dspark_accepted_draft_token_count == 18u);
-    assert(fixture.api.dspark_committed_token_count == 21u);
+    assert(fixture.api.completed_request_count == 0u);
+    assert(fixture.api.dspark_accepted_draft_token_count == 15u);
+    assert(fixture.api.dspark_committed_token_count == 18u);
 }
 
 static void SparkTestRequestApiDescribesAndCopiesFullPrefillTokenWindows(void)
