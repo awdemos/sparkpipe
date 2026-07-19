@@ -3645,6 +3645,92 @@ static void SparkTestRequestApiMtpDraftBudgetRemainsTransactional(void)
         &fixture.api,handle) == SPARK_STATUS_OK);
 }
 
+static void SparkTestRequestApiPrefillWavesPipelineThroughRing(void)
+{
+    SparkTestRequestApiFixture fixture;
+    SparkGlm52RequestApiSubmitRequest request;
+    SparkGlm52RequestApiDispatch wave_dispatches[3u];
+    SparkGlm52RequestApiPrefillDispatchView prefill_view;
+    SparkGlm52RequestApiSlot *slot;
+    SparkGlm52RequestApiHandle handle;
+    SparkGlm52RequestApiDispatch decode_dispatch;
+    static uint32_t prompt[640u];
+    SparkStatus status;
+
+    SparkTestFillTokenIds(prompt,640u,130000u);
+    SparkTestInitializeFixture(&fixture);
+    fixture.scheduler.queue_depth_per_spark = 3u;
+    SparkTestInitializeSubmitRequest(
+        &request,1580u,11580u,SPARK_GLM52_REQUEST_API_DEFAULT_PRIORITY,
+        prompt,640u,8u);
+    request.thinking_token_budget = 0u;
+    request.max_prefill_tokens_per_step = 0u;
+    assert(SparkGlm52RequestApiSubmit(
+        &fixture.api,&request,&handle) == SPARK_STATUS_OK);
+    slot = &fixture.request_slots[0u];
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&wave_dispatches[0u]) == SPARK_STATUS_OK);
+    assert(wave_dispatches[0u].kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiDescribePrefillDispatch(
+        &wave_dispatches[0u],&prefill_view) == SPARK_STATUS_OK);
+    assert(prefill_view.prompt_token_offset == 0u);
+    assert(prefill_view.prompt_token_count == 256u);
+    assert(slot->state == SPARK_GLM52_REQUEST_API_STATE_RUNNING_PREFILL);
+    assert(slot->inflight_prefill_dispatch_count == 1u);
+    assert(slot->dispatched_prompt_token_count == 256u);
+    assert(slot->computed_prompt_token_count == 0u);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&wave_dispatches[1u]) == SPARK_STATUS_OK);
+    assert(wave_dispatches[1u].kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiDescribePrefillDispatch(
+        &wave_dispatches[1u],&prefill_view) == SPARK_STATUS_OK);
+    assert(prefill_view.prompt_token_offset == 256u);
+    assert(prefill_view.prompt_token_count == 256u);
+    assert(slot->inflight_prefill_dispatch_count == 2u);
+    assert(slot->dispatched_prompt_token_count == 512u);
+    assert(slot->computed_prompt_token_count == 0u);
+    status = SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&wave_dispatches[2u]);
+    assert(status != SPARK_STATUS_OK ||
+        wave_dispatches[2u].accepted == 0u ||
+        wave_dispatches[2u].kind !=
+            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,&wave_dispatches[0u]) == SPARK_STATUS_OK);
+    assert(slot->computed_prompt_token_count == 256u);
+    assert(slot->inflight_prefill_dispatch_count == 1u);
+    assert(slot->state == SPARK_GLM52_REQUEST_API_STATE_RUNNING_PREFILL);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&wave_dispatches[2u]) == SPARK_STATUS_OK);
+    assert(wave_dispatches[2u].kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(SparkGlm52RequestApiDescribePrefillDispatch(
+        &wave_dispatches[2u],&prefill_view) == SPARK_STATUS_OK);
+    assert(prefill_view.prompt_token_offset == 512u);
+    assert(prefill_view.prompt_token_count == 128u);
+    assert(slot->inflight_prefill_dispatch_count == 2u);
+    assert(slot->dispatched_prompt_token_count == 640u);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,&wave_dispatches[1u]) == SPARK_STATUS_OK);
+    assert(slot->computed_prompt_token_count == 512u);
+    assert(slot->state == SPARK_GLM52_REQUEST_API_STATE_RUNNING_PREFILL);
+    assert(SparkGlm52RequestApiCompleteDispatch(
+        &fixture.api,&wave_dispatches[2u]) == SPARK_STATUS_OK);
+    assert(slot->computed_prompt_token_count == 640u);
+    assert(slot->inflight_prefill_dispatch_count == 0u);
+    assert(slot->state == SPARK_GLM52_REQUEST_API_STATE_READY_DECODE);
+    assert(SparkGlm52RequestApiScheduleNext(
+        &fixture.api,&decode_dispatch) == SPARK_STATUS_OK);
+    assert(decode_dispatch.kind ==
+        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+    assert(SparkGlm52RequestApiCancelDispatch(
+        &fixture.api,&decode_dispatch) == SPARK_STATUS_OK);
+    assert(SparkGlm52RequestApiCancelRequest(
+        &fixture.api,handle) == SPARK_STATUS_OK);
+}
+
 static void SparkTestRequestApiPrefillWaveSpansMultipleKvBlocks(void)
 {
     SparkTestRequestApiFixture fixture;
@@ -4597,6 +4683,7 @@ int main(void)
     SparkTestRequestApiMtpVerifyCapturesDsparkBatchTap();
     SparkTestRequestApiUsesHigherYieldMtpBeforeEqualPriorityDecode();
     SparkTestRequestApiMtpDraftBudgetRemainsTransactional();
+    SparkTestRequestApiPrefillWavesPipelineThroughRing();
     SparkTestRequestApiPrefillWaveSpansMultipleKvBlocks();
     SparkTestRequestApiMtpAdaptiveFloorSuppressesAndRecovers();
     SparkTestRequestApiMtpRejectedDraftStaysOutsideNextContext();

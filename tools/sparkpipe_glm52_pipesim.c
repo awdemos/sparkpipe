@@ -10,18 +10,19 @@
 #define PIPESIM_SPARK_COUNT SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT
 #define PIPESIM_LANE_CAPACITY 64u
 #define PIPESIM_REQUEST_SLOTS 256u
-#define PIPESIM_KV_BLOCKS 256u
+#define PIPESIM_KV_BLOCKS 2048u
 #define PIPESIM_PREFIX_BINDINGS (PIPESIM_KV_BLOCKS + 64u)
 #define PIPESIM_EVENT_CAPACITY 16384u
 #define PIPESIM_PREFILL_STRIDE 256u
 #define PIPESIM_PENDING_CAPACITY 64u
 #define PIPESIM_QUEUE_DEPTH_PER_SPARK 14u
 #define PIPESIM_TOKEN_STRIDE SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE
-#define PIPESIM_REQUEST_TOKEN_STRIDE 256u
+#define PIPESIM_REQUEST_TOKEN_STRIDE 8448u
 
 typedef struct PipesimPending
 {
 	uint32_t active;
+	uint32_t is_prefill;
 	uint64_t completion_ns;
 	SparkGlm52RequestApiDispatch dispatch;
 } PipesimPending;
@@ -30,6 +31,7 @@ typedef struct PipesimRing
 {
 	uint64_t stage_free_ns[PIPESIM_SPARK_COUNT];
 	uint64_t stage_ns;
+	uint64_t prefill_stage_ns;
 	uint64_t hop_ns;
 } PipesimRing;
 
@@ -68,7 +70,11 @@ typedef struct PipesimFixture
 	PipesimStats stats;
 	uint64_t now_ns;
 	uint64_t decoded_token_count;
+	uint64_t prefill_completed_token_count;
+	uint64_t prefill_last_completion_ns;
+	uint64_t prefill_dispatch_count;
 	uint32_t pending_count;
+	uint32_t queue_depth;
 } PipesimFixture;
 
 static PipesimFixture Pipesim;
@@ -89,14 +95,7 @@ static SparkStatus PipesimReleaseSequence(void *context, uint64_t request_id, ui
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus PipesimPrefill(void *context, const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
-{
-	(void)context;
-	(void)prefill_dispatch;
-	return SPARK_STATUS_OK;
-}
-
-static uint64_t PipesimRingTraverse(PipesimRing *ring, uint64_t enter_ns)
+static uint64_t PipesimRingTraverse(PipesimRing *ring, uint64_t enter_ns, uint64_t stage_ns)
 {
 	uint64_t stage_index, ready_ns;
 	ready_ns = enter_ns;
@@ -104,12 +103,39 @@ static uint64_t PipesimRingTraverse(PipesimRing *ring, uint64_t enter_ns)
 	{
 		if (ring->stage_free_ns[stage_index] > ready_ns)
 			ready_ns = ring->stage_free_ns[stage_index];
-		ready_ns += ring->stage_ns;
+		ready_ns += stage_ns;
 		ring->stage_free_ns[stage_index] = ready_ns;
 		ready_ns += ring->hop_ns;
 	}
 	return ready_ns;
 }
+
+static SparkStatus PipesimPrefill(void *context, const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+{
+	PipesimFixture *fixture;
+	PipesimPending *pending;
+	uint32_t pending_index;
+	fixture = (PipesimFixture *)context;
+	pending = 0;
+	for (pending_index = 0u; pending_index < PIPESIM_PENDING_CAPACITY; ++pending_index)
+		if (fixture->pendings[pending_index].active == 0u)
+		{
+			pending = &fixture->pendings[pending_index];
+			break;
+		}
+	if (pending == 0)
+		return SPARK_STATUS_BUSY;
+	pending->active = 1u;
+	pending->is_prefill = 1u;
+	pending->dispatch = *prefill_dispatch->request_dispatch;
+	pending->completion_ns = PipesimRingTraverse(&fixture->ring, fixture->now_ns, fixture->ring.prefill_stage_ns);
+	fixture->pending_count += 1u;
+	if (fixture->pending_count > fixture->stats.max_concurrent)
+		fixture->stats.max_concurrent = fixture->pending_count;
+	fixture->prefill_dispatch_count += 1u;
+	return SPARK_STATUS_PENDING;
+}
+
 
 static SparkStatus PipesimDecode(void *context, const SparkGlm52ServingDecodeDispatch *decode_dispatch, SparkGlm52ServingDecodeResult *decode_result)
 {
@@ -129,7 +155,8 @@ static SparkStatus PipesimDecode(void *context, const SparkGlm52ServingDecodeDis
 		return SPARK_STATUS_BUSY;
 	pending->active = 1u;
 	pending->dispatch = *decode_dispatch->request_dispatch;
-	pending->completion_ns = PipesimRingTraverse(&fixture->ring, fixture->now_ns);
+	pending->is_prefill = 0u;
+	pending->completion_ns = PipesimRingTraverse(&fixture->ring, fixture->now_ns, fixture->ring.stage_ns);
 	fixture->pending_count += 1u;
 	if (fixture->pending_count > fixture->stats.max_concurrent)
 		fixture->stats.max_concurrent = fixture->pending_count;
@@ -175,6 +202,19 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 	}
 	pending->active = 0u;
 	fixture->pending_count -= 1u;
+	if (pending->is_prefill != 0u)
+	{
+		fixture->prefill_completed_token_count +=
+			pending->dispatch.prefill_decision.scheduled_prompt_token_count;
+		fixture->prefill_last_completion_ns = fixture->now_ns;
+		status = SparkGlm52ServingEngineCompletePrefillDispatch(&fixture->serving_engine, &pending->dispatch);
+		if (status != SPARK_STATUS_OK)
+		{
+			fprintf(stderr, "pipesim complete_prefill status=%u\n", (uint32_t)status);
+			exit(6);
+		}
+		return;
+	}
 	status = SparkGlm52ServingEngineCompleteDecodeDispatch(&fixture->serving_engine, &pending->dispatch, &decode_result);
 	if (status != SPARK_STATUS_OK)
 	{
@@ -224,10 +264,10 @@ static void PipesimInitializeCore(PipesimFixture *fixture)
 	scheduler_configuration.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
 	scheduler_configuration.descriptor_bytes = SPARK_GLM52_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES;
 	scheduler_configuration.spark_count = PIPESIM_SPARK_COUNT;
-	scheduler_configuration.queue_depth_per_spark = PIPESIM_QUEUE_DEPTH_PER_SPARK;
+	scheduler_configuration.queue_depth_per_spark = fixture->queue_depth;
 	scheduler_configuration.measured_profile_id = SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701;
 	scheduler_configuration.quantization_mode = SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
-	scheduler_configuration.max_prefill_tokens_per_step = SPARK_GLM52_KV_BLOCK_TOKENS;
+	scheduler_configuration.max_prefill_tokens_per_step = PIPESIM_PREFILL_STRIDE;
 	scheduler_configuration.configuration_flags = SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
 	scheduler_configuration.prefix_cache_block_tokens = SPARK_GLM52_KV_BLOCK_TOKENS;
 	scheduler_configuration.prefix_cache = &fixture->prefix_cache;
@@ -265,8 +305,8 @@ static void PipesimInitializeServing(PipesimFixture *fixture)
 		SPARK_GLM52_SERVING_ENGINE_FLAG_CLAMP_BUDGET_TO_CONTEXT;
 	serving_configuration.runtime_contract_flags = SPARK_GLM52_SERVING_RUNTIME_CONTRACT_CURRENT_IMPLEMENTED_FLAGS;
 	serving_configuration.default_output_token_budget = 16u;
-	serving_configuration.default_max_prefill_tokens_per_step = SPARK_GLM52_KV_BLOCK_TOKENS;
-	serving_configuration.max_context_tokens = SPARK_GLM52_KV_BLOCK_TOKENS * 4u;
+	serving_configuration.default_max_prefill_tokens_per_step = PIPESIM_PREFILL_STRIDE;
+	serving_configuration.max_context_tokens = PIPESIM_REQUEST_TOKEN_STRIDE;
 	serving_configuration.request_api = &fixture->request_api;
 	serving_configuration.request_records = fixture->request_records;
 	serving_configuration.request_record_capacity = PIPESIM_REQUEST_SLOTS;
@@ -290,25 +330,27 @@ static void PipesimInitializeServing(PipesimFixture *fixture)
 		exit(14);
 }
 
-static void PipesimSubmitRequests(PipesimFixture *fixture, uint32_t request_count, uint32_t output_tokens)
+static void PipesimSubmitRequests(PipesimFixture *fixture, uint32_t request_count, uint32_t output_tokens, uint32_t prompt_tokens)
 {
-	static uint32_t PromptTokens[9];
+	static uint32_t PromptTokens[8192u];
 	SparkGlm52ServingSubmitTokenIdsRequest submit_request;
 	SparkGlm52ServingSubmitResult submit_result;
 	uint32_t request_index, token_index;
-	for (token_index = 0u; token_index < 9u; ++token_index)
+	for (token_index = 0u; token_index < prompt_tokens; ++token_index)
 		PromptTokens[token_index] = 5000u + token_index;
 	for (request_index = 0u; request_index < request_count; ++request_index)
 	{
 		SparkGlm52ServingInitializeSubmitTokenIdsRequest(&submit_request);
 		submit_request.request_id = 1000u + request_index;
-		submit_request.token_count = 9u;
+		submit_request.token_count = prompt_tokens;
 		submit_request.token_ids = PromptTokens;
 		submit_request.output_token_budget = output_tokens;
 		memset(&submit_result, 0, sizeof(submit_result));
-		if (SparkGlm52ServingEngineSubmitTokenIds(&fixture->serving_engine, &submit_request, &submit_result) != SPARK_STATUS_OK)
+		SparkStatus submit_status;
+		submit_status = SparkGlm52ServingEngineSubmitTokenIds(&fixture->serving_engine, &submit_request, &submit_result);
+		if (submit_status != SPARK_STATUS_OK)
 		{
-			fprintf(stderr, "pipesim submit %u failed\n", request_index);
+			fprintf(stderr, "pipesim submit %u failed status=%u\n", request_index, (uint32_t)submit_status);
 			exit(15);
 		}
 	}
@@ -326,27 +368,34 @@ int main(int argc, char **argv)
 {
 	PipesimFixture *fixture;
 	PipesimPending *pending;
-	uint64_t stage_us, hop_us, steady_tokens, steady_ns, iteration;
-	uint32_t request_count, output_tokens, width_index;
+	uint64_t stage_us, hop_us, prefill_stage_us, steady_tokens, steady_ns, iteration;
+	uint32_t request_count, output_tokens, prompt_tokens, queue_depth, width_index;
 	SparkStatus status;
 	fixture = &Pipesim;
 	stage_us = argc > 1 ? strtoull(argv[1], 0, 10) : 16000u;
 	hop_us = argc > 2 ? strtoull(argv[2], 0, 10) : 100u;
 	request_count = argc > 3 ? (uint32_t)strtoul(argv[3], 0, 10) : 64u;
 	output_tokens = argc > 4 ? (uint32_t)strtoul(argv[4], 0, 10) : 16u;
+	prompt_tokens = argc > 5 ? (uint32_t)strtoul(argv[5], 0, 10) : 9u;
+	prefill_stage_us = argc > 6 ? strtoull(argv[6], 0, 10) : stage_us;
+	queue_depth = argc > 7 ? (uint32_t)strtoul(argv[7], 0, 10) : PIPESIM_QUEUE_DEPTH_PER_SPARK;
 	if (request_count == 0u || request_count > PIPESIM_REQUEST_SLOTS ||
-		output_tokens == 0u || output_tokens + 9u > PIPESIM_REQUEST_TOKEN_STRIDE)
+		output_tokens == 0u || prompt_tokens == 0u || prompt_tokens > 8192u ||
+		output_tokens + prompt_tokens > PIPESIM_REQUEST_TOKEN_STRIDE ||
+		queue_depth == 0u || queue_depth > 16u)
 	{
-		fprintf(stderr,"pipesim invalid requests=%u output=%u\n",
-			request_count,output_tokens);
+		fprintf(stderr,"pipesim invalid requests=%u output=%u prompt=%u depth=%u\n",
+			request_count,output_tokens,prompt_tokens,queue_depth);
 		return 2;
 	}
 	memset(fixture, 0, sizeof(*fixture));
 	fixture->ring.stage_ns = stage_us * 1000u;
+	fixture->ring.prefill_stage_ns = prefill_stage_us * 1000u;
 	fixture->ring.hop_ns = hop_us * 1000u;
+	fixture->queue_depth = queue_depth;
 	PipesimInitializeCore(fixture);
 	PipesimInitializeServing(fixture);
-	PipesimSubmitRequests(fixture, request_count, output_tokens);
+	PipesimSubmitRequests(fixture, request_count, output_tokens, prompt_tokens);
 	for (iteration = 0u; iteration < 2000000u; ++iteration)
 	{
 		status = SparkGlm52ServingEnginePump(&fixture->serving_engine, 0u, 64u, 0);
@@ -373,7 +422,9 @@ int main(int argc, char **argv)
 	}
 	steady_tokens = fixture->decoded_token_count - fixture->stats.steady_begin_tokens;
 	steady_ns = fixture->now_ns - fixture->stats.steady_begin_ns;
-	printf("stage_us=%" PRIu64 " hop_us=%" PRIu64 " requests=%u output=%u\n", stage_us, hop_us, request_count, output_tokens);
+	printf("stage_us=%" PRIu64 " hop_us=%" PRIu64 " requests=%u output=%u prompt=%u prefill_stage_us=%" PRIu64 " depth=%u\n", stage_us, hop_us, request_count, output_tokens, prompt_tokens, prefill_stage_us, queue_depth);
+	if (fixture->prefill_completed_token_count != 0u)
+		printf("prefill_tokens=%" PRIu64 " prefill_dispatches=%" PRIu64 " prefill_done_ms=%" PRIu64 " prefill_tok_per_s=%.1f\n", fixture->prefill_completed_token_count, fixture->prefill_dispatch_count, fixture->prefill_last_completion_ns / 1000000u, fixture->prefill_last_completion_ns != 0u ? fixture->prefill_completed_token_count * 1e9 / (double)fixture->prefill_last_completion_ns : 0.0);
 	printf("tokens=%" PRIu64 " virtual_ms=%" PRIu64 " tok_per_s=%.1f\n", fixture->decoded_token_count, fixture->now_ns / 1000000u, fixture->decoded_token_count * 1e9 / (double)fixture->now_ns);
 	printf("steady_tok_per_s=%.1f steady_tokens=%" PRIu64 "\n", steady_ns != 0u ? steady_tokens * 1e9 / (double)steady_ns : 0.0, steady_tokens);
 	printf("dispatches=%" PRIu64 " mean_width=%.2f max_concurrent=%u mean_concurrent=%.2f\n", fixture->stats.dispatch_count, fixture->stats.dispatch_count != 0u ? (double)fixture->stats.lane_dispatch_count / (double)fixture->stats.dispatch_count : 0.0, fixture->stats.max_concurrent, fixture->stats.observed_ns != 0u ? (double)fixture->stats.concurrency_weighted_ns / (double)fixture->stats.observed_ns : 0.0);
