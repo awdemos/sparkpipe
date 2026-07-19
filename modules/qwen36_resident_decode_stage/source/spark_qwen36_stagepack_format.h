@@ -123,6 +123,22 @@ typedef struct SparkQwen36StagePackEntry
 _Static_assert(sizeof(SparkQwen36StagePackHeader) == SPARK_QWEN36_STAGEPACK_HEADER_BYTES,"qwen36 stage pack header must be 112 wire bytes");
 _Static_assert(sizeof(SparkQwen36StagePackEntry) == SPARK_QWEN36_STAGEPACK_ENTRY_BYTES,"qwen36 stage pack directory entry must be 56 wire bytes");
 
+// Model-geometry compile-time proofs live here, in the C-only pack header,
+// because the CUDA translation unit includes the model header and the C++
+// front end does not accept _Static_assert.
+_Static_assert(SPARK_QWEN36_MODEL_GDN_LAYER_COUNT + SPARK_QWEN36_MODEL_FULL_ATTENTION_LAYER_COUNT == SPARK_QWEN36_MODEL_LAYER_COUNT,"qwen36 layer split must cover the stack");
+_Static_assert((SPARK_QWEN36_MODEL_LAYER_COUNT % SPARK_QWEN36_MODEL_ATTENTION_PERIOD) == 0u,"qwen36 layer count must be whole periods");
+_Static_assert(SPARK_QWEN36_MODEL_GDN_LAYER_COUNT == (SPARK_QWEN36_MODEL_LAYER_COUNT / SPARK_QWEN36_MODEL_ATTENTION_PERIOD) * (SPARK_QWEN36_MODEL_ATTENTION_PERIOD - 1u),"qwen36 gdn count must match the 3:1 period");
+_Static_assert((SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT % SPARK_QWEN36_MODEL_GDN_KEY_HEAD_COUNT) == 0u,"qwen36 value heads must group evenly onto key heads");
+_Static_assert(SPARK_QWEN36_MODEL_GDN_VALUE_HEADS_PER_KEY_HEAD == 3u,"qwen36 grouped-value ratio is three per config");
+_Static_assert((SPARK_QWEN36_MODEL_ATTN_QUERY_HEAD_COUNT % SPARK_QWEN36_MODEL_ATTN_KV_HEAD_COUNT) == 0u,"qwen36 query heads must group evenly onto kv heads");
+_Static_assert(SPARK_QWEN36_MODEL_ATTN_ROPE_DIMENSION == SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION / 4u,"qwen36 rope covers a quarter of the head");
+_Static_assert((SPARK_QWEN36_MODEL_ATTN_ROPE_DIMENSION % 2u) == 0u,"qwen36 rope dimension must pair");
+_Static_assert(SPARK_QWEN36_MODEL_GDN_CONV_CHANNELS == 10240u,"qwen36 conv width is q+k+v concatenated");
+_Static_assert(SPARK_QWEN36_MODEL_GDN_QK_DIMENSION == 2048u && SPARK_QWEN36_MODEL_GDN_VALUE_DIMENSION == 6144u,"qwen36 gdn projection widths per config");
+_Static_assert(SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION == 6144u && SPARK_QWEN36_MODEL_ATTN_KV_DIMENSION == 1024u,"qwen36 attention projection widths per config");
+_Static_assert((SPARK_QWEN36_MODEL_GDN_CHUNK_TOKENS % 16u) == 0u,"qwen36 chunk must tile for wmma");
+
 // Full-attention layers among the first n of the stack: phase 3 in period 4
 // puts them at 3, 7, 11, ..., so the count is simply n / 4.
 static inline uint32_t SparkQwen36StagePackFullAttentionLayersBelow(uint32_t layer_count)
