@@ -56,6 +56,8 @@ typedef struct SparkDsv4LayerWeights
 typedef struct SparkDsv4ModuleSlot
 {
 	void *cuda_stream;
+	void *layer_graph_exec;
+	uint32_t layer_graph_rows;
 	uint32_t *input_token_ids;
 	uint32_t *output_token_ids;
 	uint32_t *row_lane_indices;
@@ -116,6 +118,7 @@ typedef struct SparkDsv4ModuleState
 	uint32_t layer_count;
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
+	uint32_t layer_graphs_enabled;
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
@@ -1113,6 +1116,58 @@ static SparkStatus SparkDsv4ModuleRunLayer(SparkDsv4ModuleState *state, SparkDsv
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"ffn_side"));
 }
 
+static SparkStatus SparkDsv4ModuleRunLayersDirect(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4DecodeBatchView *batch, uint32_t rows)
+{
+	uint32_t layer;
+	SparkStatus status = SPARK_STATUS_OK;
+	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
+		status = SparkDsv4ModuleRunLayer(state,slot,batch,layer,rows);
+	return(status);
+}
+
+/*
+ * glm52-style graph replay of the layer region, opt-in via
+ * SPARK_DSV4_STAGE_GRAPHS: the device-grouped step is pure stream work with
+ * slot-stable pointers, so the slice captures once per row shape and
+ * replays as ONE launch. Frame-context taps carry per-call pointers, so
+ * a tapped step always runs direct; any capture or instantiate failure
+ * also falls back - ThreadLocal capture means captured work never
+ * executed, so the fallback owns the step.
+ */
+static SparkStatus SparkDsv4ModuleRunLayers(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, const SparkDsv4DecodeBatchView *batch, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaGraph_t graph = 0;
+	cudaGraphExec_t exec = (cudaGraphExec_t)slot->layer_graph_exec;
+	SparkStatus status;
+	cudaError_t error;
+	if ( state->layer_graphs_enabled == 0u )
+		return(SparkDsv4ModuleRunLayersDirect(state,slot,batch,rows));
+	if ( exec != 0 && slot->layer_graph_rows == rows )
+		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaGraphLaunch(exec,stream),"layer_graph_launch"));
+	if ( exec != 0 )
+	{
+		cudaGraphExecDestroy(exec);
+		slot->layer_graph_exec = 0;
+	}
+	if ( cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal) != cudaSuccess )
+		return(SparkDsv4ModuleRunLayersDirect(state,slot,batch,rows));
+	status = SparkDsv4ModuleRunLayersDirect(state,slot,batch,rows);
+	error = cudaStreamEndCapture(stream,&graph);
+	if ( status != SPARK_STATUS_OK || error != cudaSuccess )
+	{
+		if ( graph != 0 )
+			cudaGraphDestroy(graph);
+		return(status != SPARK_STATUS_OK ? status : SparkDsv4ModuleRunLayersDirect(state,slot,batch,rows));
+	}
+	error = cudaGraphInstantiate((cudaGraphExec_t *)&slot->layer_graph_exec,graph,0);
+	cudaGraphDestroy(graph);
+	if ( error != cudaSuccess )
+		return(SparkDsv4ModuleRunLayersDirect(state,slot,batch,rows));
+	slot->layer_graph_rows = rows;
+	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaGraphLaunch((cudaGraphExec_t)slot->layer_graph_exec,stream),"layer_graph_launch"));
+}
+
 static SparkStatus SparkDsv4ModuleFinish(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, SparkDsv4ResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -1158,7 +1213,7 @@ SparkStatus SparkDsv4ResidentDecodeStageExecute(void *module_state, SparkModelDr
 	SparkDsv4ResidentDecodeStageFrameContext *context = 0;
 	const SparkDsv4DecodeBatchView *batch;
 	SparkDsv4ModuleSlot *slot;
-	uint32_t slot_index = 0u,rows,layer;
+	uint32_t slot_index = 0u,rows;
 	SparkStatus status;
 	if ( state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1174,8 +1229,8 @@ SparkStatus SparkDsv4ResidentDecodeStageExecute(void *module_state, SparkModelDr
 	status = SparkDsv4ModuleStageRows(state,batch,slot);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleBeginStreams(state,slot,context,frame,rows);
-	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
-		status = SparkDsv4ModuleRunLayer(state,slot,batch,layer,rows);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ModuleRunLayers(state,slot,batch,rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleFinish(state,slot,context,frame,rows);
 	SparkStageModuleSlotRelease(state->slot_states,slot_index);
@@ -1224,6 +1279,8 @@ void SparkDsv4ResidentDecodeStageDestroy(void *module_state)
 	{
 		if ( state->slots[slot_index].cuda_stream != 0 )
 			cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
+		if ( state->slots[slot_index].layer_graph_exec != 0 )
+			cudaGraphExecDestroy((cudaGraphExec_t)state->slots[slot_index].layer_graph_exec);
 	}
 	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state->host_topk_idxs);
@@ -1245,6 +1302,7 @@ SparkStatus SparkDsv4ResidentDecodeStageInitialize(const SparkFirmwareModuleConf
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->ledger.module_tag = SPARK_DSV4_MODULE_TAG;
 	status = SparkDsv4ModuleConfigure(state);
+	state->layer_graphs_enabled = getenv("SPARK_DSV4_STAGE_GRAPHS") != 0 ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleValidateSlice(state);
 	if ( status == SPARK_STATUS_OK )

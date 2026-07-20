@@ -48,6 +48,8 @@ typedef struct SparkMimo25LayerWeights
 typedef struct SparkMimo25ModuleSlot
 {
 	void *cuda_stream;
+	void *layer_graph_exec;
+	uint32_t layer_graph_rows;
 	uint32_t *input_token_ids;
 	uint32_t *output_token_ids;
 	uint32_t *row_lane_indices;
@@ -92,6 +94,7 @@ typedef struct SparkMimo25ModuleState
 	uint32_t layer_count;
 	uint32_t owns_embedding;
 	uint32_t owns_final_head;
+	uint32_t layer_graphs_enabled;
 	uint32_t max_active_sequence_count;
 	uint32_t pipeline_slot_count;
 	uint32_t max_sequence_positions;
@@ -977,6 +980,62 @@ static SparkStatus SparkMimo25ModuleRunMtp(SparkMimo25ModuleState *state, SparkM
 	return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"mtp_draft_out"));
 }
 
+static SparkStatus SparkMimo25ModuleRunLayersDirect(SparkMimo25ModuleState *state, SparkMimo25ModuleSlot *slot, const SparkMimo25DecodeBatchView *batch, const SparkMimo25ResidentDecodeStageFrameContext *context, uint32_t rows)
+{
+	uint32_t layer;
+	SparkStatus status = SPARK_STATUS_OK;
+	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
+	{
+		status = SparkMimo25ModuleRunLayer(state,slot,batch,layer,rows);
+		if ( status == SPARK_STATUS_OK )
+			status = SparkMimo25ModuleTapLayer(slot,context,layer,rows);
+	}
+	return(status);
+}
+
+/*
+ * glm52-style graph replay of the layer region, opt-in via
+ * SPARK_MIMO25_STAGE_GRAPHS: the device-grouped step is pure stream work with
+ * slot-stable pointers, so the slice captures once per row shape and
+ * replays as ONE launch. Frame-context taps carry per-call pointers, so
+ * a tapped step always runs direct; any capture or instantiate failure
+ * also falls back - ThreadLocal capture means captured work never
+ * executed, so the fallback owns the step.
+ */
+static SparkStatus SparkMimo25ModuleRunLayers(SparkMimo25ModuleState *state, SparkMimo25ModuleSlot *slot, const SparkMimo25DecodeBatchView *batch, const SparkMimo25ResidentDecodeStageFrameContext *context, uint32_t rows)
+{
+	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
+	cudaGraph_t graph = 0;
+	cudaGraphExec_t exec = (cudaGraphExec_t)slot->layer_graph_exec;
+	SparkStatus status;
+	cudaError_t error;
+	if ( state->layer_graphs_enabled == 0u || (context != 0 && context->tap_layer_count != 0u) )
+		return(SparkMimo25ModuleRunLayersDirect(state,slot,batch,context,rows));
+	if ( exec != 0 && slot->layer_graph_rows == rows )
+		return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaGraphLaunch(exec,stream),"layer_graph_launch"));
+	if ( exec != 0 )
+	{
+		cudaGraphExecDestroy(exec);
+		slot->layer_graph_exec = 0;
+	}
+	if ( cudaStreamBeginCapture(stream,cudaStreamCaptureModeThreadLocal) != cudaSuccess )
+		return(SparkMimo25ModuleRunLayersDirect(state,slot,batch,context,rows));
+	status = SparkMimo25ModuleRunLayersDirect(state,slot,batch,context,rows);
+	error = cudaStreamEndCapture(stream,&graph);
+	if ( status != SPARK_STATUS_OK || error != cudaSuccess )
+	{
+		if ( graph != 0 )
+			cudaGraphDestroy(graph);
+		return(status != SPARK_STATUS_OK ? status : SparkMimo25ModuleRunLayersDirect(state,slot,batch,context,rows));
+	}
+	error = cudaGraphInstantiate((cudaGraphExec_t *)&slot->layer_graph_exec,graph,0);
+	cudaGraphDestroy(graph);
+	if ( error != cudaSuccess )
+		return(SparkMimo25ModuleRunLayersDirect(state,slot,batch,context,rows));
+	slot->layer_graph_rows = rows;
+	return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaGraphLaunch((cudaGraphExec_t)slot->layer_graph_exec,stream),"layer_graph_launch"));
+}
+
 static SparkStatus SparkMimo25ModuleFinish(SparkMimo25ModuleState *state, SparkMimo25ModuleSlot *slot, SparkMimo25ResidentDecodeStageFrameContext *context, SparkModelDriverFrame *frame, uint32_t rows)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -1018,7 +1077,7 @@ SparkStatus SparkMimo25ResidentDecodeStageExecute(void *module_state, SparkModel
 	SparkMimo25ResidentDecodeStageFrameContext *context = 0;
 	const SparkMimo25DecodeBatchView *batch;
 	SparkMimo25ModuleSlot *slot;
-	uint32_t slot_index = 0u,rows,layer;
+	uint32_t slot_index = 0u,rows;
 	SparkStatus status;
 	if ( state == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
@@ -1037,12 +1096,8 @@ SparkStatus SparkMimo25ResidentDecodeStageExecute(void *module_state, SparkModel
 	status = SparkMimo25ModuleStageRows(state,batch,slot);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMimo25ModuleBeginHidden(state,slot,context,frame,rows);
-	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
-	{
-		status = SparkMimo25ModuleRunLayer(state,slot,batch,layer,rows);
-		if ( status == SPARK_STATUS_OK )
-			status = SparkMimo25ModuleTapLayer(slot,context,layer,rows);
-	}
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMimo25ModuleRunLayers(state,slot,batch,context,rows);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMimo25ModuleFinish(state,slot,context,frame,rows);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u && state->mtp_armed != 0u )
@@ -1097,6 +1152,8 @@ void SparkMimo25ResidentDecodeStageDestroy(void *module_state)
 	{
 		if ( state->slots[slot_index].cuda_stream != 0 )
 			cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
+		if ( state->slots[slot_index].layer_graph_exec != 0 )
+			cudaGraphExecDestroy((cudaGraphExec_t)state->slots[slot_index].layer_graph_exec);
 		if ( state->slots[slot_index].host_mtp_positions != 0 )
 			cudaFreeHost(state->slots[slot_index].host_mtp_positions);
 	}
@@ -1118,6 +1175,7 @@ SparkStatus SparkMimo25ResidentDecodeStageInitialize(const SparkFirmwareModuleCo
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	state->ledger.module_tag = SPARK_MIMO25_MODULE_TAG;
 	status = SparkMimo25ModuleConfigure(state);
+	state->layer_graphs_enabled = getenv("SPARK_MIMO25_STAGE_GRAPHS") != 0 ? 1u : 0u;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMimo25ModuleValidateSlice(state);
 	if ( status == SPARK_STATUS_OK )
