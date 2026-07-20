@@ -99,6 +99,7 @@ typedef struct SparkMimo25DecodeBatchView
 #define SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME_VIEW 0x00000008u
 #define SPARK_MIMO25_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_HIDDEN_TAP 0x00000010u
 #define SPARK_MIMO25_RESIDENT_DECODE_STAGE_MAX_TAP_LAYERS 8u
+#define SPARK_MIMO25_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP 4096u
 
 typedef SparkStatus (*SparkMimo25HiddenTransportPostReceiveFunction)(SparkHiddenTransportSession *transport_session, SparkHiddenTransportPacket *packet);
 typedef SparkStatus (*SparkMimo25HiddenTransportSendFunction)(SparkHiddenTransportSession *transport_session, const SparkHiddenTransportPacket *packet);

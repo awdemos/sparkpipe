@@ -504,6 +504,234 @@ static __global__ void SparkLmLogitsArgmaxKernel(const void *logits_bf16, const 
 		output_token_ids[row] = token_ids != 0 ? token_ids[best_candidate[0]] : best_candidate[0];
 }
 
+// Block max of a per-thread scalar into a shared float, warp shuffles
+// then a thread-zero scan; both barriers included.
+static __device__ void SparkLmAttnBlockScalarMax(float local_maximum, float *scratch, float *shared_maximum)
+{
+	uint32_t offset,warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	float value;
+	for (offset = SPARK_LM_WARP_LANES / 2u; offset != 0u; offset >>= 1u)
+	{
+		value = __shfl_down_sync(0xffffffffu,local_maximum,offset);
+		if ( value > local_maximum )
+			local_maximum = value;
+	}
+	if ( lane == 0u )
+		scratch[warp] = local_maximum;
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+	{
+		for (offset = 1; offset < SPARK_LM_CTA_WARPS; offset++)
+			if ( scratch[offset] > scratch[0] )
+				scratch[0] = scratch[offset];
+		*shared_maximum = scratch[0];
+	}
+	__syncthreads();
+}
+
+/*
+ * Screened full-vocabulary head: an MXFP4 shadow of the lm_head (built
+ * once at initialize, one third the bytes) produces coarse logits
+ * through the tensor-core tile; the screen then keeps only candidates
+ * whose coarse logit PLUS its certified error bound reaches the best
+ * guaranteed lower bound, and the exact bf16 rescore touches just those
+ * rows. The bound is |exact - coarse| <= ||hidden||_2 * e_n with e_n
+ * the neuron's quantization error norm precomputed at shadow build, so
+ * the true argmax is provably in the candidate set and the emitted
+ * token EQUALS the reference argmax, deterministically. Rows whose set
+ * overflows the cap fall back to the exact full scan on device - no
+ * host round trip anywhere. Idle compute buys a ~4x cut of the head
+ * stage's dominant memory stream.
+ */
+#define SPARK_LM_HEAD_SCREEN_CAP 4096u
+
+// Rounding slack for the SCREEN only: the certified e_n bound covers
+// the fp4 weight error, this covers the bf16 store of the coarse logit
+// and the tile's own accumulate rounding, relative-aware so large
+// logits stay sound. Applied on both sides of the keep test.
+static __device__ __forceinline__ float SparkLmHeadScreenSlack(float coarse)
+{
+	return(1.0f + (fabsf(coarse) * 0.0078125f));
+}
+#define SPARK_LM_HEAD_SHADOW_GROUP 32u
+
+// Nearest E2M1 code for value / scale, magnitude set {0,.5,1,1.5,2,3,4,6}.
+static __device__ __forceinline__ uint32_t SparkLmEncodeE2m1(float value)
+{
+	const float edges[7] = {0.25f,0.75f,1.25f,1.75f,2.5f,3.5f,5.0f};
+	uint32_t sign = value < 0.0f ? 8u : 0u,code = 0u,edge;
+	float magnitude = fabsf(value);
+	for (edge = 0; edge < 7u; edge++)
+		if ( magnitude >= edges[edge] )
+			code = edge + 1u;
+	return(sign | code);
+}
+
+// One warp per neuron row: per-group absmax to an E8M0 scale (smallest
+// power of two whose 6.0 span covers the group), nibble encode, and the
+// accumulated squared error reduced into the neuron's certified bound.
+static __global__ void SparkLmHeadShadowQuantizeKernel(const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale_e8m0, float *error_norm_f32, uint32_t candidate_count, uint32_t hidden_dimension)
+{
+	uint32_t neuron = (blockIdx.x * SPARK_LM_CTA_WARPS) + (threadIdx.x / SPARK_LM_WARP_LANES);
+	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES,group,element,packed,nibble,exponent;
+	uint64_t row_base = (uint64_t)neuron * hidden_dimension;
+	float absmax,scale_value,exact,coded,error_squares = 0.0f;
+	if ( neuron >= candidate_count )
+		return;
+	for (group = lane; group < (hidden_dimension / SPARK_LM_HEAD_SHADOW_GROUP); group += SPARK_LM_WARP_LANES)
+	{
+		absmax = 0.0f;
+		for (element = 0; element < SPARK_LM_HEAD_SHADOW_GROUP; element++)
+			absmax = fmaxf(absmax,fabsf(SparkLmBf16ToFloat(head_bf16,row_base + (group * SPARK_LM_HEAD_SHADOW_GROUP) + element)));
+		exponent = 127u;
+		if ( absmax > 0.0f )
+			exponent = (uint32_t)((int32_t)ceilf(log2f(absmax / 6.0f)) + 127);
+		shadow_scale_e8m0[((uint64_t)neuron * (hidden_dimension / SPARK_LM_HEAD_SHADOW_GROUP)) + group] = (uint8_t)exponent;
+		scale_value = SparkLmDecodeE8m0(exponent);
+		for (element = 0; element < SPARK_LM_HEAD_SHADOW_GROUP; element += 8u)
+		{
+			packed = 0u;
+			for (nibble = 0; nibble < 8u; nibble++)
+			{
+				exact = SparkLmBf16ToFloat(head_bf16,row_base + (group * SPARK_LM_HEAD_SHADOW_GROUP) + element + nibble);
+				packed |= SparkLmEncodeE2m1(scale_value > 0.0f ? exact / scale_value : 0.0f) << (nibble << 2u);
+				coded = SparkLmDecodeE2m1((packed >> (nibble << 2u)) & 0x0fu) * scale_value;
+				error_squares = fmaf(exact - coded,exact - coded,error_squares);
+			}
+			((uint32_t *)shadow_payload)[((row_base + (group * SPARK_LM_HEAD_SHADOW_GROUP) + element) >> 3u)] = packed;
+		}
+	}
+	error_squares = SparkLmWarpReduceSum(error_squares);
+	if ( lane == 0u )
+		error_norm_f32[neuron] = sqrtf(error_squares);
+}
+
+// Screen one row: the hidden norm prices the bound, pass one takes the
+// best guaranteed lower bound L = max(coarse - s*e), pass two appends
+// every candidate whose upper bound reaches L. Overflow leaves the
+// count past the cap and the exact fallback owns the row.
+static __global__ void SparkLmHeadScreenKernel(const void *hidden_bf16, const void *coarse_logits_bf16, const float *error_norm_f32, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
+{
+	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	__shared__ float shared_norm,shared_bound;
+	__shared__ uint32_t shared_cursor;
+	uint32_t row = blockIdx.x,element,candidate,slot;
+	uint64_t row_base = (uint64_t)row * candidate_count;
+	float sum_squares = 0.0f,lower = -3.0e38f,coarse,priced;
+	float2 pair_value;
+	if ( row >= row_count )
+		return;
+	for (element = threadIdx.x; element < (hidden_dimension >> 1u); element += blockDim.x)
+	{
+		pair_value = SparkLmLoadBf16Pair(hidden_bf16,(((uint64_t)row * hidden_dimension) >> 1u) + element);
+		sum_squares = fmaf(pair_value.x,pair_value.x,fmaf(pair_value.y,pair_value.y,sum_squares));
+	}
+	sum_squares = SparkLmBlockReduceSum(sum_squares,reduce_scratch);
+	if ( threadIdx.x == 0u )
+	{
+		shared_norm = sqrtf(sum_squares);
+		shared_cursor = 0u;
+	}
+	__syncthreads();
+	for (candidate = threadIdx.x; candidate < candidate_count; candidate += blockDim.x)
+	{
+		coarse = SparkLmBf16ToFloat(coarse_logits_bf16,row_base + candidate);
+		priced = coarse - (shared_norm * __ldg(error_norm_f32 + candidate)) - SparkLmHeadScreenSlack(coarse);
+		lower = priced > lower ? priced : lower;
+	}
+	SparkLmAttnBlockScalarMax(lower,reduce_scratch,&shared_bound);
+	for (candidate = threadIdx.x; candidate < candidate_count; candidate += blockDim.x)
+	{
+		coarse = SparkLmBf16ToFloat(coarse_logits_bf16,row_base + candidate);
+		if ( coarse + (shared_norm * __ldg(error_norm_f32 + candidate)) + SparkLmHeadScreenSlack(coarse) < shared_bound )
+			continue;
+		slot = atomicAdd(&shared_cursor,1u);
+		if ( slot < SPARK_LM_HEAD_SCREEN_CAP )
+			candidate_ids[((uint64_t)row * SPARK_LM_HEAD_SCREEN_CAP) + slot] = candidate;
+	}
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+		candidate_counts[row] = shared_cursor;
+}
+
+// Exact bf16 rescore and argmax over the screened candidates; rows past
+// the cap defer to the exact fallback and exit immediately.
+static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_ids, const uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t hidden_dimension)
+{
+	extern __shared__ float rescore_shared[];
+	float *hidden_shared = rescore_shared;
+	__shared__ float best_score[SPARK_LM_CTA_WARPS];
+	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
+	uint32_t row = blockIdx.x,warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	uint32_t count,slot,neuron,element;
+	float running_best = -3.0e38f,score;
+	uint32_t running_candidate = 0u;
+	float2 stage_pair;
+	if ( row >= row_count )
+		return;
+	count = candidate_counts[row];
+	if ( count > SPARK_LM_HEAD_SCREEN_CAP )
+		return;
+	for (element = threadIdx.x; element < (hidden_dimension >> 1u); element += blockDim.x)
+	{
+		stage_pair = SparkLmLoadBf16Pair(hidden_bf16,(((uint64_t)row * hidden_dimension) >> 1u) + element);
+		hidden_shared[element << 1u] = stage_pair.x;
+		hidden_shared[(element << 1u) + 1u] = stage_pair.y;
+	}
+	__syncthreads();
+	for (slot = warp; slot < count; slot += SPARK_LM_CTA_WARPS)
+	{
+		neuron = candidate_ids[((uint64_t)row * SPARK_LM_HEAD_SCREEN_CAP) + slot];
+		score = SparkLmWarpReduceSum(SparkLmDotRowBf16(hidden_shared,head_weight_bf16,neuron,hidden_dimension,lane));
+		score = __shfl_sync(0xffffffffu,score,0);
+		if ( lane == 0u && (score > running_best || (score == running_best && neuron < running_candidate)) )
+		{
+			running_best = score;
+			running_candidate = neuron;
+		}
+	}
+	SparkLmArgmaxReduce(running_best,running_candidate,best_score,best_candidate);
+	if ( threadIdx.x == 0u )
+		output_token_ids[row] = best_candidate[0];
+}
+
+// Exact full scan for the rare overflow row - the pre-screen shape,
+// gated so only rows the screen abandoned pay for it.
+static __global__ void SparkLmHeadOverflowArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t hidden_dimension, uint32_t candidate_count)
+{
+	extern __shared__ float rescore_shared[];
+	float *hidden_shared = rescore_shared;
+	__shared__ float best_score[SPARK_LM_CTA_WARPS];
+	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
+	uint32_t row = blockIdx.x,warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	uint32_t neuron,element;
+	float running_best = -3.0e38f,score;
+	uint32_t running_candidate = 0u;
+	float2 stage_pair;
+	if ( row >= row_count || candidate_counts[row] <= SPARK_LM_HEAD_SCREEN_CAP )
+		return;
+	for (element = threadIdx.x; element < (hidden_dimension >> 1u); element += blockDim.x)
+	{
+		stage_pair = SparkLmLoadBf16Pair(hidden_bf16,(((uint64_t)row * hidden_dimension) >> 1u) + element);
+		hidden_shared[element << 1u] = stage_pair.x;
+		hidden_shared[(element << 1u) + 1u] = stage_pair.y;
+	}
+	__syncthreads();
+	for (neuron = warp; neuron < candidate_count; neuron += SPARK_LM_CTA_WARPS)
+	{
+		score = SparkLmWarpReduceSum(SparkLmDotRowBf16(hidden_shared,head_weight_bf16,neuron,hidden_dimension,lane));
+		score = __shfl_sync(0xffffffffu,score,0);
+		if ( lane == 0u && (score > running_best || (score == running_best && neuron < running_candidate)) )
+		{
+			running_best = score;
+			running_candidate = neuron;
+		}
+	}
+	SparkLmArgmaxReduce(running_best,running_candidate,best_score,best_candidate);
+	if ( threadIdx.x == 0u )
+		output_token_ids[row] = best_candidate[0];
+}
+
 /*
  * Single-pass decode attention for one (row, head): eight warps stripe
  * the key range, each warp computing one key's logit cooperatively -

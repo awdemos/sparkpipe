@@ -77,6 +77,8 @@ typedef struct SparkMimo25ModuleSlot
 	void *moe_slot_up_bf16;
 	void *moe_slot_out_bf16;
 	void *head_logits_bf16;
+	uint32_t *head_candidate_ids_u32;
+	uint32_t *head_candidate_counts_u32;
 	uint32_t *host_moe_indices;
 	uint32_t *host_grouped_rows;
 	uint32_t *host_grouped_weight_slots;
@@ -108,6 +110,9 @@ typedef struct SparkMimo25ModuleState
 	const void *token_embedding_bf16;
 	const void *final_norm_weight_bf16;
 	const void *lm_head_weight_bf16;
+	uint8_t *head_shadow_payload;
+	uint8_t *head_shadow_scale;
+	float *head_error_norm_f32;
 	float *full_freqs_f32;
 	float *swa_freqs_f32;
 	void *k_full_cache_bf16;
@@ -142,6 +147,8 @@ extern cudaError_t SparkMimo25LaunchExpertTile(cudaStream_t stream, const SparkM
 extern cudaError_t SparkMimo25LaunchScatterScaledAdd(cudaStream_t stream, void *destination_bf16, const void *source_bf16, const uint32_t *row_map, const float *weights_f32, const uint32_t *weight_map, uint32_t slot_count, uint32_t width);
 extern cudaError_t SparkMimo25LaunchCacheScatter(cudaStream_t stream, const void *qkv_bf16, uint64_t qkv_row_stride, uint32_t k_offset, uint32_t k_width, uint32_t v_offset, uint32_t v_width, void *k_cache_bf16, void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t window_slots, uint32_t row_count);
 extern cudaError_t SparkMimo25LaunchHeadTiledArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, void *logits_bf16, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
+extern cudaError_t SparkMimo25LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
+extern cudaError_t SparkMimo25LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkMimo25LaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t width);
 
 static SparkStatus SparkMimo25ModuleConfigure(SparkMimo25ModuleState *state)
@@ -450,6 +457,28 @@ static SparkStatus SparkMimo25ModuleUploadFreqs(SparkMimo25ModuleState *state)
 // Two cache pools per side: full layers keep max_seq history, SWA layers
 // the ring; a slot holds every kv head of one position contiguously, k
 // at 192 wide and v at 128.
+// One-time MXFP4 shadow of the lm_head plus the per-neuron certified
+// error norms: a third of the bytes for the coarse pass, the bound that
+// keeps the screened head EXACT. Head stage only; built synchronously
+// at initialize on the default stream.
+static SparkStatus SparkMimo25ModuleBuildHeadShadow(SparkMimo25ModuleState *state)
+{
+	uint64_t vocab = SPARK_MIMO25_MODEL_VOCAB_COUNT,dim = SPARK_MIMO25_MODEL_HIDDEN_DIMENSION;
+	SparkStatus status;
+	if ( state->owns_final_head == 0u )
+		return(SPARK_STATUS_OK);
+	status = SparkStageModuleDeviceAllocate(&state->ledger,(vocab * dim) / 2u,(void **)&state->head_shadow_payload);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(vocab * dim) / 32u,(void **)&state->head_shadow_scale);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,vocab * sizeof(float),(void **)&state->head_error_norm_f32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,SparkMimo25LaunchHeadShadowQuantize(0,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,(uint32_t)vocab,(uint32_t)dim),"head_shadow_quantize");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaDeviceSynchronize(),"head_shadow_sync");
+	return(status);
+}
+
 static SparkStatus SparkMimo25ModuleAllocatePools(SparkMimo25ModuleState *state)
 {
 	uint64_t lanes = state->max_active_sequence_count,bf16 = SPARK_MIMO25_MODEL_BF16_ELEMENT_BYTES;
@@ -568,6 +597,10 @@ static SparkStatus SparkMimo25ModuleAllocateSlot(SparkMimo25ModuleState *state, 
 		status = SparkMimo25ModuleAllocateSlotBatched(state,slot);
 	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_VOCAB_COUNT * bf16,&slot->head_logits_bf16);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP * sizeof(uint32_t),(void **)&slot->head_candidate_ids_u32);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->head_candidate_counts_u32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMimo25ModuleAllocateSlotMtp(state,slot);
 	if ( status == SPARK_STATUS_OK )
@@ -981,7 +1014,7 @@ static SparkStatus SparkMimo25ModuleMtpFinishStep(SparkMimo25ModuleState *state,
 	if ( error == cudaSuccess )
 		error = SparkMimo25LaunchRmsNorm(stream,slot->mtp_hidden_bf16,mtp->final_norm_bf16,slot->normalized_bf16,rows,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION,SPARK_MIMO25_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )
-		error = SparkMimo25LaunchHeadTiledArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,slot->head_logits_bf16,slot->mtp_step_ids_u32,rows,SPARK_MIMO25_MODEL_VOCAB_COUNT,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION);
+		error = SparkMimo25LaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->mtp_step_ids_u32,rows,SPARK_MIMO25_MODEL_VOCAB_COUNT,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION);
 	if ( error == cudaSuccess )
 		error = cudaMemcpy2DAsync(slot->mtp_draft_ids_u32 + step,(uint64_t)depth * sizeof(uint32_t),slot->mtp_step_ids_u32,sizeof(uint32_t),sizeof(uint32_t),rows,cudaMemcpyDeviceToDevice,stream);
 	return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"mtp_finish"));
@@ -1023,7 +1056,7 @@ static SparkStatus SparkMimo25ModuleFinish(SparkMimo25ModuleState *state, SparkM
 	{
 		error = SparkMimo25LaunchRmsNorm(stream,slot->hidden_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION,SPARK_MIMO25_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
-			error = SparkMimo25LaunchHeadTiledArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,slot->head_logits_bf16,slot->output_token_ids,rows,SPARK_MIMO25_MODEL_VOCAB_COUNT,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION);
+			error = SparkMimo25LaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->output_token_ids,rows,SPARK_MIMO25_MODEL_VOCAB_COUNT,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION);
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(frame->buffers[out_index].address,slot->output_token_ids,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 		status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"head");
@@ -1163,6 +1196,8 @@ SparkStatus SparkMimo25ResidentDecodeStageInitialize(const SparkFirmwareModuleCo
 		status = SparkMimo25ModuleUploadFreqs(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMimo25ModuleAllocatePools(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkMimo25ModuleBuildHeadShadow(state);
 	for (slot_index = 0; status == SPARK_STATUS_OK && slot_index < state->pipeline_slot_count; slot_index++)
 		status = SparkMimo25ModuleAllocateSlot(state,&state->slots[slot_index]);
 	if ( status != SPARK_STATUS_OK )
