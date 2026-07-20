@@ -477,19 +477,30 @@ static SparkStatus SparkMimo25ModuleAllocatePools(SparkMimo25ModuleState *state)
 	return(status);
 }
 
+// GB10 unified memory: one physical DRAM behind host and device, so the
+// control plane goes ZERO-COPY - one mapped pinned allocation, the host
+// pointer for CPU grouping and the device alias for the kernels. Every
+// former copy of these bytes was a read plus a write through the same
+// ~250GB/s bus plus a submit; now the producer's write is the only
+// traffic.
+static SparkStatus SparkMimo25ModuleMappedAllocate(uint64_t bytes, void **host_out, void **device_out, const char *label)
+{
+	SparkStatus status;
+	status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaHostAlloc(host_out,bytes,cudaHostAllocMapped),label);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaHostGetDevicePointer(device_out,*host_out,0),label);
+	return(status);
+}
+
 static SparkStatus SparkMimo25ModuleAllocateSlotBatched(SparkMimo25ModuleState *state, SparkMimo25ModuleSlot *slot)
 {
 	uint64_t rows = state->max_active_sequence_count,dim = SPARK_MIMO25_MODEL_HIDDEN_DIMENSION,bf16 = SPARK_MIMO25_MODEL_BF16_ELEMENT_BYTES;
 	SparkStatus status;
-	status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->grouped_rows_u32);
+	status = SparkMimo25ModuleMappedAllocate(rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->host_moe_indices,(void **)&slot->moe_indices_u32,"map_moe_indices");
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->grouped_weight_slots_u32);
+		status = SparkMimo25ModuleMappedAllocate(rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->host_grouped_rows,(void **)&slot->grouped_rows_u32,"map_grouped_rows");
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaHostAlloc((void **)&slot->host_moe_indices,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaHostAllocDefault),"pin_moe_indices");
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaHostAlloc((void **)&slot->host_grouped_rows,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaHostAllocDefault),"pin_grouped_rows");
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaHostAlloc((void **)&slot->host_grouped_weight_slots,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaHostAllocDefault),"pin_grouped_slots");
+		status = SparkMimo25ModuleMappedAllocate(rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->host_grouped_weight_slots,(void **)&slot->grouped_weight_slots_u32,"map_grouped_slots");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * SPARK_MIMO25_MODEL_EXPERT_INTERMEDIATE_DIMENSION * bf16,&slot->moe_slot_gate_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -505,9 +516,7 @@ static SparkStatus SparkMimo25ModuleAllocateSlotMtp(SparkMimo25ModuleState *stat
 	SparkStatus status = SPARK_STATUS_OK;
 	if ( state->mtp_armed == 0u )
 		return(SPARK_STATUS_OK);
-	status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint64_t),(void **)&slot->mtp_positions_u64);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaHostAlloc((void **)&slot->host_mtp_positions,rows * sizeof(uint64_t),cudaHostAllocDefault),"pin_mtp_positions");
+	status = SparkMimo25ModuleMappedAllocate(rows * sizeof(uint64_t),(void **)&slot->host_mtp_positions,(void **)&slot->mtp_positions_u64,"map_mtp_positions");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->mtp_step_ids_u32);
 	if ( status == SPARK_STATUS_OK )
@@ -545,8 +554,6 @@ static SparkStatus SparkMimo25ModuleAllocateSlot(SparkMimo25ModuleState *state, 
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * dim * bf16,&slot->delta_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT * sizeof(float),(void **)&slot->moe_scores_f32);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->moe_indices_u32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(float),(void **)&slot->moe_weights_f32);
 	if ( status == SPARK_STATUS_OK )
@@ -713,10 +720,8 @@ static void SparkMimo25ModuleExpertView(SparkMimo25LinearView *view, const Spark
 // weight each slot applies at the OUTPUT scatter.
 static SparkStatus SparkMimo25ModuleGroupByExpert(SparkMimo25ModuleSlot *slot, uint32_t rows, uint32_t *active_out)
 {
-	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	uint32_t counts[SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT];
 	uint32_t pair_count = rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN,pair,expert,cursor = 0u,active = 0u;
-	cudaError_t error;
 	memset(counts,0,sizeof(counts));
 	for (pair = 0; pair < pair_count; pair++)
 	{
@@ -740,16 +745,16 @@ static SparkStatus SparkMimo25ModuleGroupByExpert(SparkMimo25ModuleSlot *slot, u
 		slot->host_grouped_weight_slots[counts[expert]] = pair;
 		counts[expert]++;
 	}
-	error = cudaMemcpyAsync(slot->grouped_rows_u32,slot->host_grouped_rows,(uint64_t)pair_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
-	if ( error == cudaSuccess )
-		error = cudaMemcpyAsync(slot->grouped_weight_slots_u32,slot->host_grouped_weight_slots,(uint64_t)pair_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	*active_out = active;
-	return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"moe_group"));
+	return(SPARK_STATUS_OK);
 }
 
-// One expert's group: gathered w1/w3 into dense slots (the tensor-core
-// tile once the group is a full tile wide), silu-mul across the group,
-// down projection, then the weighted OUTPUT scatter into the true rows.
+// One expert's group. On GB10's ~250GB/s unified memory the expert
+// weights are the traffic that matters: the tile reads them ONCE per
+// group (padding unused rows costs only free compute), the gather shape
+// once per SLOT - so any group of two or more takes the tile and the
+// per-layer expert traffic drops to its floor, one pass per ACTIVE
+// expert. Single-slot groups keep the gather, same traffic, no padding.
 static cudaError_t SparkMimo25ModuleRunExpertGroup(SparkMimo25ModuleSlot *slot, const SparkMimo25MoeWeights *moe, uint32_t expert, uint32_t offset, uint32_t count)
 {
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -762,18 +767,18 @@ static cudaError_t SparkMimo25ModuleRunExpertGroup(SparkMimo25ModuleSlot *slot, 
 	uint8_t *slot_out = (uint8_t *)slot->moe_slot_out_bf16 + (uint64_t)offset * dim * bf16;
 	cudaError_t error;
 	SparkMimo25ModuleExpertView(&expert_view,&moe->experts_w1,expert,inter,dim,&payload,&scale);
-	error = count >= 16u ? SparkMimo25LaunchExpertTile(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_gate,count) : SparkMimo25LaunchGatherLinear(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_gate,count);
+	error = count >= 2u ? SparkMimo25LaunchExpertTile(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_gate,count) : SparkMimo25LaunchGatherLinear(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_gate,count);
 	if ( error == cudaSuccess )
 	{
 		SparkMimo25ModuleExpertView(&expert_view,&moe->experts_w3,expert,inter,dim,&payload,&scale);
-		error = count >= 16u ? SparkMimo25LaunchExpertTile(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_up,count) : SparkMimo25LaunchGatherLinear(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_up,count);
+		error = count >= 2u ? SparkMimo25LaunchExpertTile(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_up,count) : SparkMimo25LaunchGatherLinear(stream,&expert_view,payload,scale,slot->normalized_bf16,row_map,slot_up,count);
 	}
 	if ( error == cudaSuccess )
 		error = SparkMimo25LaunchSiluMul(stream,slot_gate,slot_up,count,(uint32_t)inter);
 	if ( error == cudaSuccess )
 	{
 		SparkMimo25ModuleExpertView(&expert_view,&moe->experts_w2,expert,dim,inter,&payload,&scale);
-		error = count >= 16u ? SparkMimo25LaunchExpertTile(stream,&expert_view,payload,scale,slot_up,0,slot_out,count) : SparkMimo25LaunchGatherLinear(stream,&expert_view,payload,scale,slot_up,0,slot_out,count);
+		error = count >= 2u ? SparkMimo25LaunchExpertTile(stream,&expert_view,payload,scale,slot_up,0,slot_out,count) : SparkMimo25LaunchGatherLinear(stream,&expert_view,payload,scale,slot_up,0,slot_out,count);
 	}
 	if ( error == cudaSuccess )
 		error = SparkMimo25LaunchScatterScaledAdd(stream,slot->ffn_accum_bf16,slot_out,row_map,slot->moe_weights_f32,slot->grouped_weight_slots_u32 + offset,count,(uint32_t)dim);
@@ -786,9 +791,7 @@ static SparkStatus SparkMimo25ModuleRunMoeRouted(SparkMimo25ModuleSlot *slot, co
 	uint32_t expert,offset,count,active = 0u;
 	SparkStatus status;
 	cudaError_t error;
-	error = cudaMemcpyAsync(slot->host_moe_indices,slot->moe_indices_u32,(uint64_t)rows * SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
-	if ( error == cudaSuccess )
-		error = cudaStreamSynchronize(stream);
+	error = cudaStreamSynchronize(stream);
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"moe_readback"));
 	status = SparkMimo25ModuleGroupByExpert(slot,rows,&active);
@@ -917,9 +920,7 @@ static SparkStatus SparkMimo25ModuleMtpStageStep(SparkMimo25ModuleState *state, 
 	cudaError_t error;
 	for (row = 0; row < rows; row++)
 		slot->host_mtp_positions[row] = batch->row_positions[row] + 1u + step;
-	error = cudaMemcpyAsync(slot->mtp_positions_u64,slot->host_mtp_positions,(uint64_t)rows * sizeof(uint64_t),cudaMemcpyHostToDevice,stream);
-	if ( error == cudaSuccess )
-		error = SparkMimo25LaunchEmbeddingGather(stream,step == 0u ? slot->output_token_ids : slot->mtp_step_ids_u32,state->token_embedding_bf16,slot->mtp_scratch_bf16,rows,(uint32_t)dim);
+	error = SparkMimo25LaunchEmbeddingGather(stream,step == 0u ? slot->output_token_ids : slot->mtp_step_ids_u32,state->token_embedding_bf16,slot->mtp_scratch_bf16,rows,(uint32_t)dim);
 	if ( error == cudaSuccess )
 		error = SparkMimo25LaunchRmsNorm(stream,slot->mtp_scratch_bf16,mtp->enorm_bf16,slot->mtp_scratch_bf16,rows,(uint32_t)dim,SPARK_MIMO25_MODEL_RMS_NORM_EPSILON);
 	if ( error == cudaSuccess )

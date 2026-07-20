@@ -595,6 +595,19 @@ static SparkStatus SparkDsv4ModuleAllocatePools(SparkDsv4ModuleState *state)
 	return(status);
 }
 
+// GB10 unified memory zero-copy control plane, mirrored from mimo25:
+// one mapped pinned allocation per array, host pointer for the CPU
+// grouping, device alias for the kernels; every former copy was a read
+// plus a write through the same bus.
+static SparkStatus SparkDsv4ModuleMappedAllocate(uint64_t bytes, void **host_out, void **device_out, const char *label)
+{
+	SparkStatus status;
+	status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaHostAlloc(host_out,bytes,cudaHostAllocMapped),label);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaHostGetDevicePointer(device_out,*host_out,0),label);
+	return(status);
+}
+
 static SparkStatus SparkDsv4ModuleAllocateSlotSmall(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot)
 {
 	uint32_t rows = state->max_active_sequence_count;
@@ -626,8 +639,6 @@ static SparkStatus SparkDsv4ModuleAllocateSlotSmall(SparkDsv4ModuleState *state,
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_DSV4_MODEL_HC_STREAM_COUNT * SPARK_DSV4_MODEL_HC_STREAM_COUNT * sizeof(float),(void **)&slot->comb_f32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT * sizeof(float),(void **)&slot->moe_scores_f32);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->moe_indices_u32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,(uint64_t)rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(float),(void **)&slot->moe_weights_f32);
 	return(status);
@@ -691,15 +702,11 @@ static SparkStatus SparkDsv4ModuleAllocateSlotTail(SparkDsv4ModuleState *state, 
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * dim * bf16,&slot->ffn_accum_bf16);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->grouped_rows_u32);
+		status = SparkDsv4ModuleMappedAllocate(rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->host_moe_indices,(void **)&slot->moe_indices_u32,"map_moe_indices");
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->grouped_weight_slots_u32);
+		status = SparkDsv4ModuleMappedAllocate(rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->host_grouped_rows,(void **)&slot->grouped_rows_u32,"map_grouped_rows");
 	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaHostAlloc((void **)&slot->host_moe_indices,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaHostAllocDefault),"pin_moe_indices");
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaHostAlloc((void **)&slot->host_grouped_rows,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaHostAllocDefault),"pin_grouped_rows");
-	if ( status == SPARK_STATUS_OK )
-		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaHostAlloc((void **)&slot->host_grouped_weight_slots,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaHostAllocDefault),"pin_grouped_slots");
+		status = SparkDsv4ModuleMappedAllocate(rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->host_grouped_weight_slots,(void **)&slot->grouped_weight_slots_u32,"map_grouped_slots");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION * bf16,&slot->moe_slot_gate_bf16);
 	if ( status == SPARK_STATUS_OK )
@@ -1019,10 +1026,8 @@ static void SparkDsv4ModuleExpertView(SparkDsv4LinearView *view, const SparkDsv4
 // through the weight-slot indirection, per the dsv4 reference.
 static SparkStatus SparkDsv4ModuleGroupByExpert(SparkDsv4ModuleSlot *slot, uint32_t rows, uint32_t *active_out)
 {
-	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	uint32_t counts[SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT];
 	uint32_t pair_count = rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,pair,expert,cursor = 0u,active = 0u;
-	cudaError_t error;
 	memset(counts,0,sizeof(counts));
 	for (pair = 0; pair < pair_count; pair++)
 	{
@@ -1046,11 +1051,8 @@ static SparkStatus SparkDsv4ModuleGroupByExpert(SparkDsv4ModuleSlot *slot, uint3
 		slot->host_grouped_weight_slots[counts[expert]] = pair;
 		counts[expert]++;
 	}
-	error = cudaMemcpyAsync(slot->grouped_rows_u32,slot->host_grouped_rows,(uint64_t)pair_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
-	if ( error == cudaSuccess )
-		error = cudaMemcpyAsync(slot->grouped_weight_slots_u32,slot->host_grouped_weight_slots,(uint64_t)pair_count * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	*active_out = active;
-	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"moe_group"));
+	return(SPARK_STATUS_OK);
 }
 
 static cudaError_t SparkDsv4ModuleRunExpertGroup(SparkDsv4ModuleSlot *slot, const SparkDsv4MoeWeights *moe, uint32_t expert, uint32_t offset, uint32_t count)
@@ -1064,18 +1066,18 @@ static cudaError_t SparkDsv4ModuleRunExpertGroup(SparkDsv4ModuleSlot *slot, cons
 	uint8_t *slot_out = (uint8_t *)slot->moe_slot_out_bf16 + (uint64_t)offset * dim * bf16;
 	cudaError_t error;
 	SparkDsv4ModuleExpertView(&expert_view,&moe->experts_w1,expert,inter,dim);
-	error = count >= 16u ? SparkDsv4LaunchExpertTile(stream,&expert_view,slot->normalized_bf16,row_map,slot_gate,count) : SparkDsv4LaunchGatherLinear(stream,&expert_view,slot->normalized_bf16,row_map,slot_gate,count);
+	error = count >= 2u ? SparkDsv4LaunchExpertTile(stream,&expert_view,slot->normalized_bf16,row_map,slot_gate,count) : SparkDsv4LaunchGatherLinear(stream,&expert_view,slot->normalized_bf16,row_map,slot_gate,count);
 	if ( error == cudaSuccess )
 	{
 		SparkDsv4ModuleExpertView(&expert_view,&moe->experts_w3,expert,inter,dim);
-		error = count >= 16u ? SparkDsv4LaunchExpertTile(stream,&expert_view,slot->normalized_bf16,row_map,slot_up,count) : SparkDsv4LaunchGatherLinear(stream,&expert_view,slot->normalized_bf16,row_map,slot_up,count);
+		error = count >= 2u ? SparkDsv4LaunchExpertTile(stream,&expert_view,slot->normalized_bf16,row_map,slot_up,count) : SparkDsv4LaunchGatherLinear(stream,&expert_view,slot->normalized_bf16,row_map,slot_up,count);
 	}
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchSwigluClamp(stream,slot_gate,slot_up,count,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_SWIGLU_LIMIT,slot->moe_weights_f32,slot->grouped_weight_slots_u32 + offset);
 	if ( error == cudaSuccess )
 	{
 		SparkDsv4ModuleExpertView(&expert_view,&moe->experts_w2,expert,dim,inter);
-		error = count >= 16u ? SparkDsv4LaunchExpertTile(stream,&expert_view,slot_up,0,slot_out,count) : SparkDsv4LaunchGatherLinear(stream,&expert_view,slot_up,0,slot_out,count);
+		error = count >= 2u ? SparkDsv4LaunchExpertTile(stream,&expert_view,slot_up,0,slot_out,count) : SparkDsv4LaunchGatherLinear(stream,&expert_view,slot_up,0,slot_out,count);
 	}
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchScatterAdd(stream,slot->ffn_accum_bf16,slot_out,row_map,count,(uint32_t)dim);
@@ -1088,9 +1090,7 @@ static SparkStatus SparkDsv4ModuleRunMoeRouted(SparkDsv4ModuleSlot *slot, const 
 	uint32_t expert,offset,count,active = 0u;
 	SparkStatus status;
 	cudaError_t error;
-	error = cudaMemcpyAsync(slot->host_moe_indices,slot->moe_indices_u32,(uint64_t)rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
-	if ( error == cudaSuccess )
-		error = cudaStreamSynchronize(stream);
+	error = cudaStreamSynchronize(stream);
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"moe_readback"));
 	status = SparkDsv4ModuleGroupByExpert(slot,rows,&active);
