@@ -150,7 +150,6 @@ extern cudaError_t SparkMimo25LaunchMoeGroup(cudaStream_t stream, const uint32_t
 extern cudaError_t SparkMimo25LaunchExpertTileAll(cudaStream_t stream, const SparkMimo25LinearView *stacked, const void *unused_payload, const void *unused_scale, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t max_group_slots, uint64_t rows_per_expert, uint64_t columns);
 extern cudaError_t SparkMimo25LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count);
 extern cudaError_t SparkMimo25LaunchCacheScatter(cudaStream_t stream, const void *qkv_bf16, uint64_t qkv_row_stride, uint32_t k_offset, uint32_t k_width, uint32_t v_offset, uint32_t v_width, void *k_cache_bf16, void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t window_slots, uint32_t row_count);
-extern cudaError_t SparkMimo25LaunchHeadTiledArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, void *logits_bf16, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkMimo25LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkMimo25LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkMimo25LaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t width);
@@ -669,11 +668,18 @@ static SparkStatus SparkMimo25ModuleStageRows(SparkMimo25ModuleState *state, con
 
 static SparkStatus SparkMimo25ModuleBeginHidden(SparkMimo25ModuleState *state, SparkMimo25ModuleSlot *slot, SparkMimo25ResidentDecodeStageFrameContext *context, const SparkModelDriverFrame *frame, uint32_t rows)
 {
+	uint32_t token_guard;
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	SparkStatus status;
 	cudaError_t error;
 	if ( state->owns_embedding != 0u )
 	{
+		for (token_guard = 0; token_guard < rows; token_guard++)
+			if ( ((const uint32_t *)frame->buffers[0].address)[token_guard] >= SPARK_MIMO25_MODEL_VOCAB_COUNT )
+			{
+				fprintf(stderr,"%s token_id_out_of_range row=%u\n",SPARK_MIMO25_MODULE_TAG,token_guard);
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+			}
 		error = cudaMemcpyAsync(slot->input_token_ids,frame->buffers[0].address,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 		if ( error == cudaSuccess )
 			error = SparkMimo25LaunchEmbeddingGather(stream,slot->input_token_ids,state->token_embedding_bf16,slot->hidden_bf16,rows,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION);
@@ -763,13 +769,13 @@ static SparkStatus SparkMimo25ModuleRunMoeRouted(SparkMimo25ModuleSlot *slot, co
 	cudaError_t error;
 	error = SparkMimo25LaunchMoeGroup(stream,slot->moe_indices_u32,pair_count,slot->expert_offsets_u32,slot->grouped_rows_u32,slot->grouped_weight_slots_u32,slot->moe_inverse_u32);
 	if ( error == cudaSuccess )
-		error = SparkMimo25LaunchExpertTileAll(stream,&moe->experts_w1,0,0,slot->normalized_bf16,slot->grouped_rows_u32,slot->expert_offsets_u32,slot->moe_slot_gate_bf16,rows,inter,dim);
+		error = SparkMimo25LaunchExpertTileAll(stream,&moe->experts_w1,0,0,slot->normalized_bf16,slot->grouped_rows_u32,slot->expert_offsets_u32,slot->moe_slot_gate_bf16,pair_count,inter,dim);
 	if ( error == cudaSuccess )
-		error = SparkMimo25LaunchExpertTileAll(stream,&moe->experts_w3,0,0,slot->normalized_bf16,slot->grouped_rows_u32,slot->expert_offsets_u32,slot->moe_slot_up_bf16,rows,inter,dim);
+		error = SparkMimo25LaunchExpertTileAll(stream,&moe->experts_w3,0,0,slot->normalized_bf16,slot->grouped_rows_u32,slot->expert_offsets_u32,slot->moe_slot_up_bf16,pair_count,inter,dim);
 	if ( error == cudaSuccess )
 		error = SparkMimo25LaunchSiluMul(stream,slot->moe_slot_gate_bf16,slot->moe_slot_up_bf16,pair_count,(uint32_t)inter);
 	if ( error == cudaSuccess )
-		error = SparkMimo25LaunchExpertTileAll(stream,&moe->experts_w2,0,0,slot->moe_slot_up_bf16,0,slot->expert_offsets_u32,slot->moe_slot_out_bf16,rows,dim,inter);
+		error = SparkMimo25LaunchExpertTileAll(stream,&moe->experts_w2,0,0,slot->moe_slot_up_bf16,0,slot->expert_offsets_u32,slot->moe_slot_out_bf16,pair_count,dim,inter);
 	if ( error == cudaSuccess )
 		error = SparkMimo25LaunchMoePairReduce(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->moe_weights_f32,slot->ffn_accum_bf16,rows);
 	return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"moe_routed"));

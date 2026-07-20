@@ -295,19 +295,6 @@ extern "C" cudaError_t SparkMimo25LaunchHeadShadowQuantize(cudaStream_t stream, 
 
 // Screened exact head: coarse fp4 tile, certified screen, exact rescore
 // of the survivors, device-side overflow fallback. The emitted token is
-// the reference bf16 argmax, always.
-extern "C" cudaError_t SparkMimo25LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
-{
-	return(SparkLmHostLaunchHeadScreenedArgmax(stream,hidden_bf16,head_weight_bf16,shadow_payload,shadow_scale,error_norm,logits_bf16,candidate_ids,candidate_counts,output_token_ids,row_count,candidate_count,hidden_dimension));
-}
-
-extern "C" cudaError_t SparkMimo25LaunchHeadTiledArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, void *logits_bf16, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
-{
-	dim3 grid((row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(candidate_count + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
-	SparkLmExpertTileKernel<128u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(SPARK_LM_WEIGHT_FORMAT_BF16,head_weight_bf16,0,hidden_bf16,0,logits_bf16,row_count,hidden_dimension,candidate_count);
-	SparkLmLogitsArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(logits_bf16,0,output_token_ids,row_count,candidate_count);
-	return(cudaGetLastError());
-}
 
 extern "C" cudaError_t SparkMimo25LaunchAttnDecode(cudaStream_t stream, const void *q_bf16, uint64_t q_row_stride, const void *k_cache_bf16, const void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, uint64_t k_slot_stride, uint64_t v_slot_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t group_size, uint32_t head_dim, uint32_t value_dim, uint32_t window_slots)
 {

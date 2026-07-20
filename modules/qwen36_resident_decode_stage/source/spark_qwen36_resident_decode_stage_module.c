@@ -924,6 +924,7 @@ static SparkStatus SparkQwen36ModuleStageMtpDraft(SparkQwen36ModuleState *state,
 
 static SparkStatus SparkQwen36ModuleUploadRows(SparkQwen36ModuleState *state, SparkQwen36ModuleSlot *slot, const SparkQwen36ResidentDecodeStageFrameContext *context, const SparkModelDriverFrame *frame, const SparkQwen36PrefillFrameView *prefill, uint32_t rows)
 {
+	uint32_t token_guard;
 	uint32_t drafted = (context->flags & SPARK_QWEN36_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_AFTER) != 0u ? 1u : 0u;
 	uint32_t staged = rows + (drafted != 0u ? context->mtp_draft->draft_token_count - 1u : 0u);
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
@@ -938,7 +939,15 @@ static SparkStatus SparkQwen36ModuleUploadRows(SparkQwen36ModuleState *state, Sp
 	if ( error == cudaSuccess && state->attn_layer_count != 0u )
 		error = cudaMemcpyAsync(slot->context_lengths,state->host_context_lengths,staged * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	if ( error == cudaSuccess && state->owns_embedding != 0u )
+	{
+		for (token_guard = 0; token_guard < rows; token_guard++)
+			if ( ((const uint32_t *)frame->buffers[0].address)[token_guard] >= SPARK_QWEN36_MODEL_OUTPUT_VOCAB_COUNT )
+			{
+				fprintf(stderr,"%s token_id_out_of_range row=%u\n",SPARK_QWEN36_MODULE_TAG,token_guard);
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+			}
 		error = cudaMemcpyAsync(slot->input_token_ids,frame->buffers[0].address,rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
+	}
 	if ( error == cudaSuccess && drafted != 0u && state->owns_embedding == 0u )
 		error = cudaMemcpyAsync(slot->input_token_ids,context->mtp_draft->row_token_ids,(prefill != 0 ? rows : 1u) * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 	return(SparkStageModuleCudaStatus(SPARK_QWEN36_MODULE_TAG,error,"stage_upload"));

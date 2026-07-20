@@ -186,6 +186,7 @@ extern cudaError_t SparkDsv4LaunchGateScores(cudaStream_t stream, const SparkDsv
 extern cudaError_t SparkDsv4LaunchGateSelect(cudaStream_t stream, const float *scores_f32, const float *bias_f32, const uint32_t *tid2eid_u32, const uint32_t *token_ids, uint32_t row_count, uint32_t expert_count, uint32_t topk, float route_scale, uint32_t *indices_u32, float *weights_f32);
 extern cudaError_t SparkDsv4LaunchSwigluClamp(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t width, float limit, const float *row_weights_f32, const uint32_t *weight_map);
 extern cudaError_t SparkDsv4LaunchGatherLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count);
+extern cudaError_t SparkDsv4LaunchValidateTid2Eid(cudaStream_t stream, const uint32_t *tid2eid, uint64_t entry_count, uint32_t *violation_flag);
 extern cudaError_t SparkDsv4LaunchMoeGroup(cudaStream_t stream, const uint32_t *pair_expert_ids, uint32_t pair_count, uint32_t *expert_offsets, uint32_t *grouped_rows, uint32_t *grouped_weight_slots, uint32_t *inverse_map);
 extern cudaError_t SparkDsv4LaunchExpertTileAll(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t max_group_slots, uint64_t rows_per_expert, uint64_t columns);
 extern cudaError_t SparkDsv4LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, void *accum_bf16, uint32_t row_count);
@@ -583,6 +584,40 @@ static SparkStatus SparkDsv4ModuleUploadFreqs(SparkDsv4ModuleState *state)
 // One-time MXFP4 shadow of the lm_head plus per-neuron certified error
 // norms, the mimo25 screened-head pattern; head stage only, built
 // synchronously at initialize.
+
+/*
+ * The hash routing tables come off the pack unchecked and feed the
+ * device grouping kernel's shared histogram directly, so a corrupt or
+ * mismatched table would write out of bounds. One init-time scan per
+ * hash layer, blocking readback, hard failure on any out-of-range
+ * entry.
+ */
+static SparkStatus SparkDsv4ModuleValidateHashTables(SparkDsv4ModuleState *state)
+{
+	uint32_t layer,*flag_device,flag_host = 0u;
+	uint64_t entries = (uint64_t)SPARK_DSV4_MODEL_VOCAB_COUNT * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN;
+	SparkStatus status = SPARK_STATUS_OK;
+	cudaError_t error;
+	error = cudaMalloc((void **)&flag_device,sizeof(uint32_t));
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tid2eid_flag"));
+	error = cudaMemset(flag_device,0,sizeof(uint32_t));
+	for (layer = state->first_layer_index; error == cudaSuccess && layer < state->first_layer_index + state->layer_count; layer++)
+		if ( state->layers[layer].moe.gate_tid2eid_u32 != 0 )
+			error = SparkDsv4LaunchValidateTid2Eid(0,state->layers[layer].moe.gate_tid2eid_u32,entries,flag_device);
+	if ( error == cudaSuccess )
+		error = cudaMemcpy(&flag_host,flag_device,sizeof(uint32_t),cudaMemcpyDeviceToHost);
+	cudaFree(flag_device);
+	if ( error != cudaSuccess )
+		return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"tid2eid_scan"));
+	if ( flag_host != 0u )
+	{
+		fprintf(stderr,"%s hash_table_out_of_range\n",SPARK_DSV4_MODULE_TAG);
+		status = SPARK_STATUS_VALIDATION_FAILED;
+	}
+	return(status);
+}
+
 static SparkStatus SparkDsv4ModuleBuildHeadShadow(SparkDsv4ModuleState *state)
 {
 	uint64_t vocab = SPARK_DSV4_MODEL_VOCAB_COUNT,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
@@ -824,6 +859,7 @@ static SparkStatus SparkDsv4ModuleStageRows(SparkDsv4ModuleState *state, const S
 
 static SparkStatus SparkDsv4ModuleBeginStreams(SparkDsv4ModuleState *state, SparkDsv4ModuleSlot *slot, SparkDsv4ResidentDecodeStageFrameContext *context, const SparkModelDriverFrame *frame, uint32_t rows)
 {
+	uint32_t token_guard;
 	cudaStream_t stream = (cudaStream_t)slot->cuda_stream;
 	uint64_t stream_bytes = (uint64_t)rows * SPARK_DSV4_MODEL_BOUNDARY_STREAM_ELEMENTS * SPARK_DSV4_MODEL_BF16_ELEMENT_BYTES;
 	SparkStatus status;
@@ -831,6 +867,12 @@ static SparkStatus SparkDsv4ModuleBeginStreams(SparkDsv4ModuleState *state, Spar
 	uint32_t copy;
 	if ( state->owns_embedding != 0u )
 	{
+		for (token_guard = 0; token_guard < rows; token_guard++)
+			if ( ((const uint32_t *)frame->buffers[0].address)[token_guard] >= SPARK_DSV4_MODEL_VOCAB_COUNT )
+			{
+				fprintf(stderr,"%s token_id_out_of_range row=%u\n",SPARK_DSV4_MODULE_TAG,token_guard);
+				return(SPARK_STATUS_INVALID_ARGUMENT);
+			}
 		error = cudaMemcpyAsync(slot->input_token_ids,frame->buffers[0].address,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyHostToDevice,stream);
 		if ( error == cudaSuccess )
 			error = SparkDsv4LaunchEmbeddingGather(stream,slot->input_token_ids,state->token_embedding_bf16,slot->reduced_bf16,rows,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
@@ -1055,13 +1097,13 @@ static SparkStatus SparkDsv4ModuleRunMoeRouted(SparkDsv4ModuleSlot *slot, const 
 	cudaError_t error;
 	error = SparkDsv4LaunchMoeGroup(stream,slot->moe_indices_u32,pair_count,slot->expert_offsets_u32,slot->grouped_rows_u32,slot->grouped_weight_slots_u32,slot->moe_inverse_u32);
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchExpertTileAll(stream,&moe->experts_w1,slot->normalized_bf16,slot->grouped_rows_u32,slot->expert_offsets_u32,slot->moe_slot_gate_bf16,rows,inter,dim);
+		error = SparkDsv4LaunchExpertTileAll(stream,&moe->experts_w1,slot->normalized_bf16,slot->grouped_rows_u32,slot->expert_offsets_u32,slot->moe_slot_gate_bf16,pair_count,inter,dim);
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchExpertTileAll(stream,&moe->experts_w3,slot->normalized_bf16,slot->grouped_rows_u32,slot->expert_offsets_u32,slot->moe_slot_up_bf16,rows,inter,dim);
+		error = SparkDsv4LaunchExpertTileAll(stream,&moe->experts_w3,slot->normalized_bf16,slot->grouped_rows_u32,slot->expert_offsets_u32,slot->moe_slot_up_bf16,pair_count,inter,dim);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchSwigluClamp(stream,slot->moe_slot_gate_bf16,slot->moe_slot_up_bf16,pair_count,SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION,SPARK_DSV4_MODEL_SWIGLU_LIMIT,slot->moe_weights_f32,slot->grouped_weight_slots_u32);
 	if ( error == cudaSuccess )
-		error = SparkDsv4LaunchExpertTileAll(stream,&moe->experts_w2,slot->moe_slot_up_bf16,0,slot->expert_offsets_u32,slot->moe_slot_out_bf16,rows,dim,inter);
+		error = SparkDsv4LaunchExpertTileAll(stream,&moe->experts_w2,slot->moe_slot_up_bf16,0,slot->expert_offsets_u32,slot->moe_slot_out_bf16,pair_count,dim,inter);
 	if ( error == cudaSuccess )
 		error = SparkDsv4LaunchMoePairReduce(stream,slot->moe_slot_out_bf16,slot->moe_inverse_u32,slot->ffn_accum_bf16,rows);
 	return(SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"moe_routed"));
@@ -1316,6 +1358,8 @@ SparkStatus SparkDsv4ResidentDecodeStageInitialize(const SparkFirmwareModuleConf
 		status = SparkDsv4ModuleUploadFreqs(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleAllocatePools(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ModuleValidateHashTables(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleBuildHeadShadow(state);
 	if ( status == SPARK_STATUS_OK )

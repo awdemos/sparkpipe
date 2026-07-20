@@ -913,6 +913,24 @@ extern "C" cudaError_t SparkDsv4LaunchGatherLinear(cudaStream_t stream, const Sp
 	return(cudaGetLastError());
 }
 
+// Init-time range scan of a hash routing table: any entry at or past
+// the expert count trips the flag. Runs once per hash layer at
+// initialize with a blocking readback - the load path is allowed to
+// synchronize.
+static __global__ void SparkDsv4ValidateTid2EidKernel(const uint32_t *tid2eid, uint64_t entry_count, uint32_t expert_count, uint32_t *violation_flag)
+{
+	uint64_t entry = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,stride = (uint64_t)gridDim.x * blockDim.x;
+	for (; entry < entry_count; entry += stride)
+		if ( __ldg(tid2eid + entry) >= expert_count )
+			atomicOr(violation_flag,1u);
+}
+
+extern "C" cudaError_t SparkDsv4LaunchValidateTid2Eid(cudaStream_t stream, const uint32_t *tid2eid, uint64_t entry_count, uint32_t *violation_flag)
+{
+	SparkDsv4ValidateTid2EidKernel<<<256u,SPARK_LM_CTA_THREADS,0,stream>>>(tid2eid,entry_count,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,violation_flag);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkDsv4LaunchMoeGroup(cudaStream_t stream, const uint32_t *pair_expert_ids, uint32_t pair_count, uint32_t *expert_offsets, uint32_t *grouped_rows, uint32_t *grouped_weight_slots, uint32_t *inverse_map)
 {
 	static_assert(SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= SPARK_LM_MOE_MAX_EXPERTS,"expert table exceeds group kernel shared capacity");

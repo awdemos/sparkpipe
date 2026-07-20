@@ -465,45 +465,6 @@ static __device__ void SparkLmArgmaxReduce(float running_best, uint32_t running_
 	__syncthreads();
 }
 
-static __global__ void SparkLmLogitsArgmaxKernel(const void *logits_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count)
-{
-	__shared__ float best_score[SPARK_LM_CTA_WARPS];
-	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
-	uint32_t row = blockIdx.x,pair;
-	uint64_t row_base = ((uint64_t)row * candidate_count) >> 1u;
-	float running_best = -3.0e38f,tail_score;
-	uint32_t running_candidate = 0u;
-	float2 pair_value;
-	if ( row >= row_count )
-		return;
-	for (pair = threadIdx.x; pair < (candidate_count >> 1u); pair += blockDim.x)
-	{
-		pair_value = SparkLmLoadBf16Pair(logits_bf16,row_base + pair);
-		if ( pair_value.x > running_best || (pair_value.x == running_best && (pair << 1u) < running_candidate) )
-		{
-			running_best = pair_value.x;
-			running_candidate = pair << 1u;
-		}
-		if ( pair_value.y > running_best || (pair_value.y == running_best && (pair << 1u) + 1u < running_candidate) )
-		{
-			running_best = pair_value.y;
-			running_candidate = (pair << 1u) + 1u;
-		}
-	}
-	if ( (candidate_count & 1u) != 0u && threadIdx.x == 0u )
-	{
-		tail_score = SparkLmBf16ToFloat(logits_bf16,((uint64_t)row * candidate_count) + candidate_count - 1u);
-		if ( tail_score > running_best )
-		{
-			running_best = tail_score;
-			running_candidate = candidate_count - 1u;
-		}
-	}
-	SparkLmArgmaxReduce(running_best,running_candidate,best_score,best_candidate);
-	if ( threadIdx.x == 0u )
-		output_token_ids[row] = token_ids != 0 ? token_ids[best_candidate[0]] : best_candidate[0];
-}
-
 // Block max of a per-thread scalar into a shared float, warp shuffles
 // then a thread-zero scan; both barriers included.
 static __device__ void SparkLmAttnBlockScalarMax(float local_maximum, float *scratch, float *shared_maximum)
@@ -952,6 +913,9 @@ static __global__ void SparkLmExpertTileKernel(uint32_t weight_format, const voi
  * cycles - the whole routed w1/w3/w2 phase becomes ONE launch with no
  * host knowledge of the grouping. Identity mapping (row_map zero) shifts
  * the input base by the group offset so the w2 shape works unchanged.
+ * gridDim.x MUST cover the worst-case group - the FULL pair count, not
+ * the row count: hash-routed layers can send several of one row's ranks
+ * to the same expert, so a group is bounded only by the pair total.
  */
 template <uint32_t GROUP_SIZE>
 static __global__ void SparkLmExpertTileAllKernel(uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_expert_stride_bytes, uint64_t scale_expert_stride_bytes, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
