@@ -678,6 +678,29 @@ extern "C" cudaError_t SparkQwen36LaunchSwiGlu(cudaStream_t stream, const void *
 	return(cudaGetLastError());
 }
 
+static_assert(SPARK_QWEN36_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP == SPARK_LM_HEAD_SCREEN_CAP,"screen cap must match the shared kernels");
+
+extern "C" cudaError_t SparkQwen36LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension)
+{
+	uint32_t blocks = (candidate_count + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS;
+	SparkLmHeadShadowQuantizeKernel<<<blocks,SPARK_LM_CTA_THREADS,0,stream>>>(head_bf16,shadow_payload,shadow_scale,error_norm,candidate_count,hidden_dimension);
+	return(cudaGetLastError());
+}
+
+// Screened exact head, the mimo25 pattern: coarse fp4 tile, certified
+// screen, exact rescore, device-side overflow fallback; the token
+// equals the reference argmax always.
+extern "C" cudaError_t SparkQwen36LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count)
+{
+	dim3 tile_grid((row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(candidate_count + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
+	uint32_t rescore_shared_bytes = SPARK_QWEN36_MODEL_HIDDEN_DIMENSION * (uint32_t)sizeof(float);
+	SparkLmExpertTileKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,shadow_payload,shadow_scale,hidden_bf16,0,logits_bf16,row_count,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,candidate_count);
+	SparkLmHeadScreenKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,logits_bf16,error_norm,candidate_ids,candidate_counts,row_count,candidate_count,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION);
+	SparkLmHeadRescoreArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,rescore_shared_bytes,stream>>>(hidden_bf16,head_weight_bf16,candidate_ids,candidate_counts,output_token_ids,row_count,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION);
+	SparkLmHeadOverflowArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,rescore_shared_bytes,stream>>>(hidden_bf16,head_weight_bf16,candidate_counts,output_token_ids,row_count,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,candidate_count);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkQwen36LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count)
 {
 	SparkLmHeadArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,head_weight_bf16,token_ids,output_token_ids,row_count,SPARK_QWEN36_MODEL_HIDDEN_DIMENSION,candidate_count);

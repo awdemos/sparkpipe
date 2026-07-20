@@ -100,6 +100,9 @@ typedef struct SparkDsv4ModuleSlot
 	void *moe_slot_gate_bf16;
 	void *moe_slot_up_bf16;
 	void *moe_slot_out_bf16;
+	void *head_logits_bf16;
+	uint32_t *head_candidate_ids_u32;
+	uint32_t *head_candidate_counts_u32;
 	uint32_t *host_moe_indices;
 	uint32_t *host_grouped_rows;
 	uint32_t *host_grouped_weight_slots;
@@ -136,6 +139,9 @@ typedef struct SparkDsv4ModuleState
 	const void *token_embedding_bf16;
 	const void *final_norm_weight_bf16;
 	const void *lm_head_weight_bf16;
+	uint8_t *head_shadow_payload;
+	uint8_t *head_shadow_scale;
+	float *head_error_norm_f32;
 	const float *hc_head_fn_f32;
 	const float *hc_head_base_f32;
 	const float *hc_head_scale_f32;
@@ -165,6 +171,8 @@ extern cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv4Lin
 extern cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *payload, const uint8_t *scale, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t hidden_dimension);
 extern cudaError_t SparkDsv4LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
+extern cudaError_t SparkDsv4LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension);
+extern cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension);
 extern cudaError_t SparkDsv4LaunchQuantSim(cudaStream_t stream, void *data_bf16, uint32_t row_count, uint32_t row_stride, uint32_t width, uint32_t block, uint32_t fp4);
 extern cudaError_t SparkDsv4LaunchRope(cudaStream_t stream, void *data_bf16, const float *freqs_f32, const uint64_t *row_positions, uint32_t row_count, uint32_t head_count, uint32_t head_dim, uint32_t rope_dim, uint32_t inverse);
 extern cudaError_t SparkDsv4LaunchQueryHeadRms(cudaStream_t stream, void *data_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dim, float epsilon);
@@ -568,6 +576,27 @@ static SparkStatus SparkDsv4ModuleUploadFreqs(SparkDsv4ModuleState *state)
  * strided uniformly per (layer ordinal, lane); the indexer keeps its own
  * rotated cache and small overlap state per CSA ordinal.
  */
+// One-time MXFP4 shadow of the lm_head plus per-neuron certified error
+// norms, the mimo25 screened-head pattern; head stage only, built
+// synchronously at initialize.
+static SparkStatus SparkDsv4ModuleBuildHeadShadow(SparkDsv4ModuleState *state)
+{
+	uint64_t vocab = SPARK_DSV4_MODEL_VOCAB_COUNT,dim = SPARK_DSV4_MODEL_HIDDEN_DIMENSION;
+	SparkStatus status;
+	if ( state->owns_final_head == 0u )
+		return(SPARK_STATUS_OK);
+	status = SparkStageModuleDeviceAllocate(&state->ledger,(vocab * dim) / 2u,(void **)&state->head_shadow_payload);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,(vocab * dim) / 32u,(void **)&state->head_shadow_scale);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,vocab * sizeof(float),(void **)&state->head_error_norm_f32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,SparkDsv4LaunchHeadShadowQuantize(0,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,(uint32_t)vocab,(uint32_t)dim),"head_shadow_quantize");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaDeviceSynchronize(),"head_shadow_sync");
+	return(status);
+}
+
 static SparkStatus SparkDsv4ModuleAllocatePools(SparkDsv4ModuleState *state)
 {
 	uint64_t compressed_slots = state->max_sequence_positions / SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO;
@@ -713,6 +742,12 @@ static SparkStatus SparkDsv4ModuleAllocateSlotTail(SparkDsv4ModuleState *state, 
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION * bf16,&slot->moe_slot_up_bf16);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * dim * bf16,&slot->moe_slot_out_bf16);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_VOCAB_COUNT * bf16,&slot->head_logits_bf16);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP * sizeof(uint32_t),(void **)&slot->head_candidate_ids_u32);
+	if ( status == SPARK_STATUS_OK && state->owns_final_head != 0u )
+		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * sizeof(uint32_t),(void **)&slot->head_candidate_counts_u32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaStreamCreateWithFlags((cudaStream_t *)&slot->cuda_stream,cudaStreamNonBlocking),"stream_create");
 	return(status);
@@ -1170,7 +1205,7 @@ static SparkStatus SparkDsv4ModuleFinish(SparkDsv4ModuleState *state, SparkDsv4M
 		if ( error == cudaSuccess )
 			error = SparkDsv4LaunchRmsNorm(stream,slot->reduced_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_DSV4_MODEL_HIDDEN_DIMENSION,SPARK_DSV4_MODEL_RMS_NORM_EPSILON);
 		if ( error == cudaSuccess )
-			error = SparkDsv4LaunchHeadArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,0,slot->output_token_ids,rows,SPARK_DSV4_MODEL_VOCAB_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
+			error = SparkDsv4LaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->output_token_ids,rows,SPARK_DSV4_MODEL_VOCAB_COUNT,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
 		if ( error == cudaSuccess )
 			error = cudaMemcpyAsync(frame->buffers[out_index].address,slot->output_token_ids,(uint64_t)rows * sizeof(uint32_t),cudaMemcpyDeviceToHost,stream);
 		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,error,"head");
@@ -1299,6 +1334,8 @@ SparkStatus SparkDsv4ResidentDecodeStageInitialize(const SparkFirmwareModuleConf
 		status = SparkDsv4ModuleUploadFreqs(state);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleAllocatePools(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ModuleBuildHeadShadow(state);
 	if ( status == SPARK_STATUS_OK )
 	{
 		state->host_topk_idxs = (int32_t *)malloc((uint64_t)state->max_active_sequence_count * state->topk_column_count * sizeof(int32_t));
