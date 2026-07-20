@@ -636,6 +636,17 @@ static SparkStatus SparkDsv4ModuleBuildHeadShadow(SparkDsv4ModuleState *state)
 	return(status);
 }
 
+// Post-pack validation and derived-weight construction, one call from
+// the initialize chain.
+static SparkStatus SparkDsv4ModuleFinalizeLoad(SparkDsv4ModuleState *state)
+{
+	SparkStatus status;
+	status = SparkDsv4ModuleValidateHashTables(state);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkDsv4ModuleBuildHeadShadow(state);
+	return(status);
+}
+
 static SparkStatus SparkDsv4ModuleAllocatePools(SparkDsv4ModuleState *state)
 {
 	uint64_t compressed_slots = state->max_sequence_positions / SPARK_DSV4_MODEL_CSA_COMPRESS_RATIO;
@@ -1359,9 +1370,7 @@ SparkStatus SparkDsv4ResidentDecodeStageInitialize(const SparkFirmwareModuleConf
 	if ( status == SPARK_STATUS_OK )
 		status = SparkDsv4ModuleAllocatePools(state);
 	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ModuleValidateHashTables(state);
-	if ( status == SPARK_STATUS_OK )
-		status = SparkDsv4ModuleBuildHeadShadow(state);
+		status = SparkDsv4ModuleFinalizeLoad(state);
 	if ( status == SPARK_STATUS_OK )
 	{
 		state->host_topk_idxs = (int32_t *)malloc((uint64_t)state->max_active_sequence_count * state->topk_column_count * sizeof(int32_t));
