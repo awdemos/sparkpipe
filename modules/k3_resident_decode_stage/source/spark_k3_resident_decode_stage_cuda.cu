@@ -34,17 +34,17 @@ __global__ void SparkK3EmbeddingGatherKernel(const uint32_t *token_ids, const vo
 	uint32_t row = blockIdx.x;
 	uint64_t source_base,destination,partial_base;
 	uint32_t element;
-	float value;
+	uint4 row_vector;
 	if ( row >= row_count )
 		return;
 	source_base = (uint64_t)token_ids[row] * (uint64_t)SPARK_K3_MODEL_HIDDEN_DIMENSION;
 	destination = (uint64_t)row * (uint64_t)SPARK_K3_MODEL_HIDDEN_DIMENSION;
 	partial_base = (SPARK_K3_MODEL_ATTNRES_COMPLETED_BLOCKS_BEFORE_LAYER(0) * representation_stride) + destination;
-	for (element = threadIdx.x; element < SPARK_K3_MODEL_HIDDEN_DIMENSION; element += blockDim.x)
+	for (element = threadIdx.x; element < (SPARK_K3_MODEL_HIDDEN_DIMENSION >> 3u); element += blockDim.x)
 	{
-		value = SparkLmBf16ToFloat(embedding_bf16,source_base + element);
-		SparkLmFloatToBf16(representations_bf16,destination + element,value);
-		SparkLmFloatToBf16(representations_bf16,partial_base + element,value);
+		row_vector = __ldg(((const uint4 *)embedding_bf16) + (source_base >> 3u) + element);
+		((uint4 *)representations_bf16)[(destination >> 3u) + element] = row_vector;
+		((uint4 *)representations_bf16)[(partial_base >> 3u) + element] = row_vector;
 	}
 }
 
@@ -170,27 +170,30 @@ __global__ void SparkK3KdaNormalizeQkKernel(void *query_bf16, void *key_bf16, ui
 	uint32_t row = blockIdx.x,head = blockIdx.y;
 	uint64_t base;
 	uint32_t element;
-	float query_value,key_value,query_squares,key_squares,query_scale,key_scale;
+	float query_squares,key_squares,query_scale,key_scale;
+	float2 query_pair,key_pair;
 	if ( row >= row_count )
 		return;
 	base = (((uint64_t)row * SPARK_K3_MODEL_KDA_HEAD_COUNT) + head) * SPARK_K3_KDA_DK;
 	query_squares = 0.0f;
 	key_squares = 0.0f;
-	for (element = threadIdx.x; element < SPARK_K3_KDA_DK; element += blockDim.x)
+	for (element = threadIdx.x; element < (SPARK_K3_KDA_DK >> 1u); element += blockDim.x)
 	{
-		query_value = SparkLmBf16ToFloat(query_bf16,base + element);
-		key_value = SparkLmBf16ToFloat(key_bf16,base + element);
-		query_squares += (query_value * query_value);
-		key_squares += (key_value * key_value);
+		query_pair = SparkLmLoadBf16Pair(query_bf16,(base >> 1u) + element);
+		key_pair = SparkLmLoadBf16Pair(key_bf16,(base >> 1u) + element);
+		query_squares = fmaf(query_pair.x,query_pair.x,fmaf(query_pair.y,query_pair.y,query_squares));
+		key_squares = fmaf(key_pair.x,key_pair.x,fmaf(key_pair.y,key_pair.y,key_squares));
 	}
 	query_squares = SparkLmBlockReduceSum(query_squares,reduce_scratch);
 	key_squares = SparkLmBlockReduceSum(key_squares,reduce_scratch);
 	query_scale = rsqrtf(query_squares + 1e-12f);
 	key_scale = rsqrtf(key_squares + 1e-12f);
-	for (element = threadIdx.x; element < SPARK_K3_KDA_DK; element += blockDim.x)
+	for (element = threadIdx.x; element < (SPARK_K3_KDA_DK >> 1u); element += blockDim.x)
 	{
-		SparkLmFloatToBf16(query_bf16,base + element,SparkLmBf16ToFloat(query_bf16,base + element) * query_scale);
-		SparkLmFloatToBf16(key_bf16,base + element,SparkLmBf16ToFloat(key_bf16,base + element) * key_scale);
+		query_pair = SparkLmLoadBf16Pair(query_bf16,(base >> 1u) + element);
+		key_pair = SparkLmLoadBf16Pair(key_bf16,(base >> 1u) + element);
+		SparkLmStoreBf16Pair(query_bf16,(base >> 1u) + element,query_pair.x * query_scale,query_pair.y * query_scale);
+		SparkLmStoreBf16Pair(key_bf16,(base >> 1u) + element,key_pair.x * key_scale,key_pair.y * key_scale);
 	}
 }
 
@@ -206,13 +209,19 @@ __global__ void SparkK3KdaGateBetaKernel(void *log_decay_bf16, void *output_gate
 	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
 	uint64_t stride = (uint64_t)gridDim.x * blockDim.x;
 	uint64_t element;
-	for (element = index; element < wide_elements; element += stride)
+	float2 decay_pair,gate_pair;
+	for (element = index; element < (wide_elements >> 1u); element += stride)
 	{
-		SparkLmFloatToBf16(log_decay_bf16,element,-SparkLmSoftplus(SparkLmBf16ToFloat(log_decay_bf16,element)));
-		SparkLmFloatToBf16(output_gate_bf16,element,SparkLmSigmoid(SparkLmBf16ToFloat(output_gate_bf16,element)));
+		decay_pair = SparkLmLoadBf16Pair(log_decay_bf16,element);
+		gate_pair = SparkLmLoadBf16Pair(output_gate_bf16,element);
+		SparkLmStoreBf16Pair(log_decay_bf16,element,-SparkLmSoftplus(decay_pair.x),-SparkLmSoftplus(decay_pair.y));
+		SparkLmStoreBf16Pair(output_gate_bf16,element,SparkLmSigmoid(gate_pair.x),SparkLmSigmoid(gate_pair.y));
 	}
-	for (element = index; element < beta_elements; element += stride)
-		SparkLmFloatToBf16(beta_bf16,element,SparkLmSigmoid(SparkLmBf16ToFloat(beta_bf16,element)));
+	for (element = index; element < (beta_elements >> 1u); element += stride)
+	{
+		decay_pair = SparkLmLoadBf16Pair(beta_bf16,element);
+		SparkLmStoreBf16Pair(beta_bf16,element,SparkLmSigmoid(decay_pair.x),SparkLmSigmoid(decay_pair.y));
+	}
 }
 
 typedef struct SparkK3KdaSmemLayout
@@ -538,49 +547,79 @@ __global__ __launch_bounds__(SPARK_K3_CTA_THREADS) void SparkK3KdaChunkKernel(co
 
 // Single-token decode: the delta recurrence applied directly.
 // S <- Diag(a) S; delta = b (v - S^T k); S += k delta^T; o = S^T q
+/*
+ * Delta-rule decode step with the head state RESIDENT IN SHARED for all
+ * four phases: the old kernel walked the 64KB state through global four
+ * times per token - decay read+write, delta read, rank-one update
+ * read+write, output read: 384KB of traffic for a 64KB state. Now the
+ * state loads once (decay fused into the load as float4), delta and
+ * output run split-dot from shared with k and q staged, and the update
+ * writes back fused - 128KB per token, one read and one write, 3x less
+ * state traffic. Layout of the dynamic region, floats: state 16384,
+ * gates 128, k 128, q 128, split-dot partials 256, delta 128.
+ */
+#define SPARK_K3_KDA_DECODE_SMEM_FLOATS (16384u + 128u + 128u + 128u + 256u + 128u)
+
+static __device__ void SparkK3KdaDecodeSplitDot(const float *state, const float *vector, float *partial, float *combined, float combine_scale, const float *combine_bias, uint32_t negate)
+{
+	uint32_t column = threadIdx.x & (SPARK_K3_KDA_DV - 1u),half = threadIdx.x >> 7u,channel;
+	float accumulator = 0.0f;
+	for (channel = half * (SPARK_K3_KDA_DK / 2u); channel < (half + 1u) * (SPARK_K3_KDA_DK / 2u); channel++)
+		accumulator = fmaf(vector[channel],state[(channel * SPARK_K3_KDA_DV) + column],accumulator);
+	partial[threadIdx.x] = accumulator;
+	__syncthreads();
+	if ( threadIdx.x < SPARK_K3_KDA_DV )
+	{
+		accumulator = partial[threadIdx.x] + partial[threadIdx.x + SPARK_K3_KDA_DV];
+		combined[threadIdx.x] = combine_scale * ((combine_bias != 0 ? combine_bias[threadIdx.x] : 0.0f) + (negate != 0u ? -accumulator : accumulator));
+	}
+	__syncthreads();
+}
+
 __global__ __launch_bounds__(SPARK_K3_CTA_THREADS) void SparkK3KdaDecodeStepKernel(const __nv_bfloat16 *query, const __nv_bfloat16 *key, const __nv_bfloat16 *value, const __nv_bfloat16 *log_decay, const __nv_bfloat16 *beta, SparkK3KdaStatePool pool, const uint32_t *state_lane_indices, const uint32_t *state_cold_flags, uint32_t layer_ordinal, __nv_bfloat16 *output)
 {
-	__shared__ float delta[SPARK_K3_KDA_DV];
-	__shared__ float decayed_gate[SPARK_K3_KDA_DK];
+	extern __shared__ float kda_smem[];
+	float *state = kda_smem,*gates = kda_smem + 16384u,*k_vector = gates + SPARK_K3_KDA_DK,*q_vector = k_vector + SPARK_K3_KDA_DK,*partial = q_vector + SPARK_K3_KDA_DK,*delta = partial + SPARK_K3_CTA_THREADS,*value_stage = delta;
 	uint32_t row = blockIdx.y,head = blockIdx.x;
 	uint64_t vector_base = (((uint64_t)row * SPARK_K3_MODEL_KDA_HEAD_COUNT) + head) * SPARK_K3_KDA_DK;
 	uint64_t value_base = (((uint64_t)row * SPARK_K3_MODEL_KDA_HEAD_COUNT) + head) * SPARK_K3_KDA_DV;
 	float *state_head = SparkK3KdaStateHead(pool,state_lane_indices[row],layer_ordinal,head);
 	uint32_t cold = state_cold_flags[row];
 	float beta_value = __bfloat162float(beta[((uint64_t)row * SPARK_K3_MODEL_KDA_HEAD_COUNT) + head]);
-	uint32_t channel,column;
-	float gate,accumulator;
+	uint32_t channel,group;
+	float gate;
+	float4 state_quad,delta_quad;
 	for (channel = threadIdx.x; channel < SPARK_K3_KDA_DK; channel += blockDim.x)
 	{
 		gate = __bfloat162float(log_decay[vector_base + channel]);
-		if ( gate < SPARK_K3_MODEL_KDA_MIN_LOG_DECAY )
-			gate = SPARK_K3_MODEL_KDA_MIN_LOG_DECAY;
-		decayed_gate[channel] = __expf(gate);
+		gates[channel] = __expf(gate < SPARK_K3_MODEL_KDA_MIN_LOG_DECAY ? SPARK_K3_MODEL_KDA_MIN_LOG_DECAY : gate);
+		k_vector[channel] = __bfloat162float(key[vector_base + channel]);
+		q_vector[channel] = __bfloat162float(query[vector_base + channel]);
 	}
+	if ( threadIdx.x < SPARK_K3_KDA_DV )
+		value_stage[threadIdx.x] = __bfloat162float(value[value_base + threadIdx.x]);
 	__syncthreads();
-	for (channel = threadIdx.x; channel < SPARK_K3_KDA_DK; channel += blockDim.x)
-		for (column = 0; column < SPARK_K3_KDA_DV; column++)
-			state_head[(channel * SPARK_K3_KDA_DV) + column] = cold != 0u ? 0.0f : (state_head[(channel * SPARK_K3_KDA_DV) + column] * decayed_gate[channel]);
-	__syncthreads();
-	for (column = threadIdx.x; column < SPARK_K3_KDA_DV; column += blockDim.x)
+	for (group = threadIdx.x; group < (SPARK_K3_KDA_DK * SPARK_K3_KDA_DV) / 4u; group += blockDim.x)
 	{
-		accumulator = 0.0f;
-		for (channel = 0; channel < SPARK_K3_KDA_DK; channel++)
-			accumulator += (__bfloat162float(key[vector_base + channel]) * state_head[(channel * SPARK_K3_KDA_DV) + column]);
-		delta[column] = beta_value * (__bfloat162float(value[value_base + column]) - accumulator);
+		state_quad = cold != 0u ? make_float4(0.0f,0.0f,0.0f,0.0f) : ((const float4 *)state_head)[group];
+		gate = gates[group >> 5u];
+		((float4 *)state)[group] = make_float4(state_quad.x * gate,state_quad.y * gate,state_quad.z * gate,state_quad.w * gate);
 	}
 	__syncthreads();
-	for (channel = threadIdx.x; channel < SPARK_K3_KDA_DK; channel += blockDim.x)
-		for (column = 0; column < SPARK_K3_KDA_DV; column++)
-			state_head[(channel * SPARK_K3_KDA_DV) + column] += (__bfloat162float(key[vector_base + channel]) * delta[column]);
-	__syncthreads();
-	for (column = threadIdx.x; column < SPARK_K3_KDA_DV; column += blockDim.x)
+	SparkK3KdaDecodeSplitDot(state,k_vector,partial,delta,beta_value,value_stage,1u);
+	for (group = threadIdx.x; group < (SPARK_K3_KDA_DK * SPARK_K3_KDA_DV) / 4u; group += blockDim.x)
 	{
-		accumulator = 0.0f;
-		for (channel = 0; channel < SPARK_K3_KDA_DK; channel++)
-			accumulator += (__bfloat162float(query[vector_base + channel]) * state_head[(channel * SPARK_K3_KDA_DV) + column]);
-		output[value_base + column] = __float2bfloat16(accumulator);
+		delta_quad = ((const float4 *)delta)[group & 31u];
+		gate = k_vector[group >> 5u];
+		state_quad = ((const float4 *)state)[group];
+		state_quad = make_float4(fmaf(gate,delta_quad.x,state_quad.x),fmaf(gate,delta_quad.y,state_quad.y),fmaf(gate,delta_quad.z,state_quad.z),fmaf(gate,delta_quad.w,state_quad.w));
+		((float4 *)state)[group] = state_quad;
+		((float4 *)state_head)[group] = state_quad;
 	}
+	__syncthreads();
+	SparkK3KdaDecodeSplitDot(state,q_vector,partial,delta,1.0f,0,0u);
+	if ( threadIdx.x < SPARK_K3_KDA_DV )
+		output[value_base + threadIdx.x] = __float2bfloat16(delta[threadIdx.x]);
 }
 
 // Per-head RMS norm of the delta-rule output (gains shared across heads,
@@ -591,22 +630,25 @@ __global__ void SparkK3KdaFinishKernel(const void *core_output_bf16, const void 
 	uint32_t row = blockIdx.x,head = blockIdx.y;
 	uint64_t base;
 	uint32_t element;
-	float value,sum_squares,inverse_rms;
+	float sum_squares,inverse_rms;
+	float2 core_pair,norm_pair,gate_pair;
 	if ( row >= row_count )
 		return;
 	base = (((uint64_t)row * SPARK_K3_MODEL_KDA_HEAD_COUNT) + head) * SPARK_K3_KDA_DV;
 	sum_squares = 0.0f;
-	for (element = threadIdx.x; element < SPARK_K3_KDA_DV; element += blockDim.x)
+	for (element = threadIdx.x; element < (SPARK_K3_KDA_DV >> 1u); element += blockDim.x)
 	{
-		value = SparkLmBf16ToFloat(core_output_bf16,base + element);
-		sum_squares += (value * value);
+		core_pair = SparkLmLoadBf16Pair(core_output_bf16,(base >> 1u) + element);
+		sum_squares = fmaf(core_pair.x,core_pair.x,fmaf(core_pair.y,core_pair.y,sum_squares));
 	}
 	sum_squares = SparkLmBlockReduceSum(sum_squares,reduce_scratch);
 	inverse_rms = rsqrtf((sum_squares / (float)SPARK_K3_KDA_DV) + epsilon);
-	for (element = threadIdx.x; element < SPARK_K3_KDA_DV; element += blockDim.x)
+	for (element = threadIdx.x; element < (SPARK_K3_KDA_DV >> 1u); element += blockDim.x)
 	{
-		value = (SparkLmBf16ToFloat(core_output_bf16,base + element) * inverse_rms) * SparkLmBf16ToFloat(head_norm_weight_bf16,element);
-		SparkLmFloatToBf16(gated_bf16,base + element,value * SparkLmBf16ToFloat(gate_bf16,base + element));
+		core_pair = SparkLmLoadBf16Pair(core_output_bf16,(base >> 1u) + element);
+		norm_pair = SparkLmLoadBf16Pair(head_norm_weight_bf16,element);
+		gate_pair = SparkLmLoadBf16Pair(gate_bf16,(base >> 1u) + element);
+		SparkLmStoreBf16Pair(gated_bf16,(base >> 1u) + element,(core_pair.x * inverse_rms) * norm_pair.x * gate_pair.x,(core_pair.y * inverse_rms) * norm_pair.y * gate_pair.y);
 	}
 }
 
@@ -626,12 +668,13 @@ __global__ void SparkK3MlaKvWriteKernel(const void *kv_a_bf16, void *cache_bf16,
 	if ( row >= row_count )
 		return;
 	destination = (uint64_t)slot_mapping[row] * SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS;
-	for (element = threadIdx.x; element < SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS; element += blockDim.x)
-		SparkLmFloatToBf16(cache_bf16,destination + element,SparkLmBf16ToFloat(kv_a_bf16,((uint64_t)row * SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS) + element));
+	for (element = threadIdx.x; element < (SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS >> 3u); element += blockDim.x)
+		((uint4 *)cache_bf16)[(destination >> 3u) + element] = __ldg(((const uint4 *)kv_a_bf16) + ((((uint64_t)row * SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS) >> 3u)) + element);
 }
 
 __global__ void SparkK3MlaAbsorbQueryKernel(const void *query_b_bf16, uint32_t query_b_format, const void *kv_b_payload, const uint8_t *kv_b_scale_e8m0, uint32_t kv_b_format, void *query_latent_bf16, uint32_t row_count)
 {
+	__shared__ float query_shared[SPARK_K3_MODEL_MLA_QK_NOPE_HEAD_DIMENSION];
 	uint32_t row = blockIdx.x,head = blockIdx.y;
 	uint64_t query_base = (((uint64_t)row * SPARK_K3_MODEL_MLA_HEAD_COUNT) + head) * SPARK_K3_MODEL_MLA_QK_HEAD_DIMENSION;
 	uint64_t weight_row_base = (uint64_t)head * (SPARK_K3_MODEL_MLA_QK_NOPE_HEAD_DIMENSION + SPARK_K3_MODEL_MLA_VALUE_HEAD_DIMENSION);
@@ -642,12 +685,15 @@ __global__ void SparkK3MlaAbsorbQueryKernel(const void *query_b_bf16, uint32_t q
 	uint32_t packed;
 	if ( row >= row_count )
 		return;
+	for (channel = threadIdx.x; channel < SPARK_K3_MODEL_MLA_QK_NOPE_HEAD_DIMENSION; channel += blockDim.x)
+		query_shared[channel] = SparkLmBf16ToFloat(query_b_bf16,query_base + channel);
+	__syncthreads();
 	for (latent = threadIdx.x; latent < SPARK_K3_MODEL_MLA_LATENT_DIMENSION; latent += blockDim.x)
 	{
 		accumulator = 0.0f;
 		for (channel = 0; channel < SPARK_K3_MODEL_MLA_QK_NOPE_HEAD_DIMENSION; channel++)
 		{
-			query_value = SparkLmBf16ToFloat(query_b_bf16,query_base + channel);
+			query_value = query_shared[channel];
 			weight_index = ((weight_row_base + channel) * SPARK_K3_MODEL_MLA_LATENT_DIMENSION) + latent;
 			if ( kv_b_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
 				weight_value = SparkLmBf16ToFloat(kv_b_payload,weight_index);
@@ -671,13 +717,13 @@ __device__ void SparkK3MlaLoadTokenTile(const void *cache_bf16, const uint32_t *
 	uint32_t element,tile_token,logical_block,physical_block;
 	uint64_t token_offset;
 	__syncthreads();
-	for (element = threadIdx.x; element < (tile_count * SPARK_K3_MODEL_MLA_LATENT_DIMENSION); element += blockDim.x)
+	for (element = threadIdx.x; element < ((tile_count * SPARK_K3_MODEL_MLA_LATENT_DIMENSION) >> 1u); element += blockDim.x)
 	{
-		tile_token = element / SPARK_K3_MODEL_MLA_LATENT_DIMENSION;
+		tile_token = element / (SPARK_K3_MODEL_MLA_LATENT_DIMENSION >> 1u);
 		logical_block = (tile_base + tile_token) / block_token_count;
-		physical_block = physical_block_indices[((uint64_t)lane * lane_stride) + logical_block];
+		physical_block = __ldg(physical_block_indices + ((uint64_t)lane * lane_stride) + logical_block);
 		token_offset = (((uint64_t)physical_block * block_token_count) + ((tile_base + tile_token) % block_token_count)) * SPARK_K3_MODEL_MLA_CACHE_TOKEN_ELEMENTS;
-		tile[tile_token][element % SPARK_K3_MODEL_MLA_LATENT_DIMENSION] = ((const __nv_bfloat16 *)cache_bf16)[token_offset + (element % SPARK_K3_MODEL_MLA_LATENT_DIMENSION)];
+		((uint32_t *)&tile[tile_token][0])[element % (SPARK_K3_MODEL_MLA_LATENT_DIMENSION >> 1u)] = __ldg(((const uint32_t *)cache_bf16) + (token_offset >> 1u) + (element % (SPARK_K3_MODEL_MLA_LATENT_DIMENSION >> 1u)));
 	}
 	__syncthreads();
 }
@@ -734,35 +780,56 @@ __global__ void SparkK3MlaAttendKernel(const void *query_latent_bf16, const void
 	}
 }
 
+// One kv_b value row dotted against the staged latent: the thread owns
+// the whole contiguous row, so weight fetches are 4-byte vector runs -
+// eight E2M1 elements or two bf16 per load, one scale per in-group run.
+static __device__ __forceinline__ float SparkK3ValueUpRow(const float *latent_shared, const void *payload, const uint8_t *scale_e8m0, uint32_t weight_format, uint64_t weight_row)
+{
+	uint64_t pair_base = (weight_row * SPARK_K3_MODEL_MLA_LATENT_DIMENSION) >> 1u,run_base = (weight_row * SPARK_K3_MODEL_MLA_LATENT_DIMENSION) >> 3u;
+	uint64_t scale_row = weight_row * (SPARK_K3_MODEL_MLA_LATENT_DIMENSION / SPARK_K3_MODEL_MXFP4_GROUP_SIZE);
+	uint32_t pair,run,nibble,packed;
+	float accumulator = 0.0f,scale_value;
+	float2 weight_pair;
+	if ( weight_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
+	{
+		#pragma unroll 4
+		for (pair = 0; pair < (SPARK_K3_MODEL_MLA_LATENT_DIMENSION >> 1u); pair++)
+		{
+			weight_pair = SparkLmLoadBf16Pair(payload,pair_base + pair);
+			accumulator = fmaf(latent_shared[pair << 1u],weight_pair.x,fmaf(latent_shared[(pair << 1u) + 1u],weight_pair.y,accumulator));
+		}
+		return(accumulator);
+	}
+	#pragma unroll 2
+	for (run = 0; run < (SPARK_K3_MODEL_MLA_LATENT_DIMENSION >> 3u); run++)
+	{
+		packed = __ldg(((const uint32_t *)payload) + run_base + run);
+		scale_value = SparkLmDecodeE8m0(scale_e8m0[scale_row + ((run << 3u) / SPARK_K3_MODEL_MXFP4_GROUP_SIZE)]);
+		#pragma unroll
+		for (nibble = 0; nibble < 8u; nibble++)
+			accumulator = fmaf(latent_shared[(run << 3u) + nibble],SparkLmDecodeE2m1((packed >> (nibble << 2u)) & 0x0fu) * scale_value,accumulator);
+	}
+	return(accumulator);
+}
+
 __global__ void SparkK3MlaValueUpKernel(const void *attention_latent_bf16, const void *kv_b_payload, const uint8_t *kv_b_scale_e8m0, uint32_t kv_b_format, const void *head_gate_bf16, void *head_output_bf16, uint32_t row_count)
 {
+	__shared__ float latent_shared[SPARK_K3_MODEL_MLA_LATENT_DIMENSION];
 	uint32_t row = blockIdx.x,head = blockIdx.y;
 	uint64_t latent_base = (((uint64_t)row * SPARK_K3_MODEL_MLA_HEAD_COUNT) + head) * SPARK_K3_MODEL_MLA_LATENT_DIMENSION;
 	uint64_t weight_row_base = ((uint64_t)head * (SPARK_K3_MODEL_MLA_QK_NOPE_HEAD_DIMENSION + SPARK_K3_MODEL_MLA_VALUE_HEAD_DIMENSION)) + SPARK_K3_MODEL_MLA_QK_NOPE_HEAD_DIMENSION;
 	uint64_t output_base = (((uint64_t)row * SPARK_K3_MODEL_MLA_HEAD_COUNT) + head) * SPARK_K3_MODEL_MLA_VALUE_HEAD_DIMENSION;
 	uint32_t channel,latent;
-	uint64_t weight_index;
-	float gate_value,accumulator,weight_value,scale_value;
-	uint32_t packed;
+	float gate_value,accumulator;
 	if ( row >= row_count )
 		return;
 	gate_value = SparkLmSigmoid(SparkLmBf16ToFloat(head_gate_bf16,((uint64_t)row * SPARK_K3_MODEL_MLA_HEAD_COUNT) + head));
+	for (latent = threadIdx.x; latent < SPARK_K3_MODEL_MLA_LATENT_DIMENSION; latent += blockDim.x)
+		latent_shared[latent] = SparkLmBf16ToFloat(attention_latent_bf16,latent_base + latent);
+	__syncthreads();
 	for (channel = threadIdx.x; channel < SPARK_K3_MODEL_MLA_VALUE_HEAD_DIMENSION; channel += blockDim.x)
 	{
-		accumulator = 0.0f;
-		for (latent = 0; latent < SPARK_K3_MODEL_MLA_LATENT_DIMENSION; latent++)
-		{
-			weight_index = ((weight_row_base + channel) * SPARK_K3_MODEL_MLA_LATENT_DIMENSION) + latent;
-			if ( kv_b_format == SPARK_K3_RESIDENT_DECODE_STAGE_WEIGHT_FORMAT_BF16 )
-				weight_value = SparkLmBf16ToFloat(kv_b_payload,weight_index);
-			else
-			{
-				packed = ((const uint8_t *)kv_b_payload)[weight_index >> 1u];
-				scale_value = SparkLmDecodeE8m0(kv_b_scale_e8m0[weight_index / SPARK_K3_MODEL_MXFP4_GROUP_SIZE]);
-				weight_value = SparkLmDecodeE2m1((weight_index & 1u) != 0u ? (packed >> 4u) : (packed & 0x0fu)) * scale_value;
-			}
-			accumulator += (SparkLmBf16ToFloat(attention_latent_bf16,latent_base + latent) * weight_value);
-		}
+		accumulator = SparkK3ValueUpRow(latent_shared,kv_b_payload,kv_b_scale_e8m0,kv_b_format,weight_row_base + channel);
 		SparkLmFloatToBf16(head_output_bf16,output_base + channel,accumulator * gate_value);
 	}
 }
@@ -1081,6 +1148,9 @@ extern "C" SparkStatus SparkK3LaunchKdaDecodeStep(const SparkK3ResidentDecodeSta
 	if ( slot->lane_indices == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	grid = dim3(SPARK_K3_MODEL_KDA_HEAD_COUNT,row_count,1);
+	if ( cudaFuncSetAttribute(SparkK3KdaDecodeStepKernel,cudaFuncAttributeMaxDynamicSharedMemorySize,(int)(SPARK_K3_KDA_DECODE_SMEM_FLOATS * sizeof(float))) != cudaSuccess )
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	SparkK3KdaDecodeStepKernel<<<grid,SPARK_K3_CTA_THREADS,SPARK_K3_KDA_DECODE_SMEM_FLOATS * sizeof(float),(cudaStream_t)stream>>>((const __nv_bfloat16 *)slot->kda_query_bf16,(const __nv_bfloat16 *)slot->kda_key_bf16,(const __nv_bfloat16 *)slot->kda_value_bf16,(const __nv_bfloat16 *)slot->kda_log_decay_bf16,(const __nv_bfloat16 *)slot->kda_beta_bf16,node_context->kda_state_pool,slot->lane_indices,node_context->kda_state_pool.state_cold_by_row,kda_layer_ordinal,(__nv_bfloat16 *)slot->kda_core_output_bf16);
 	SparkK3KdaDecodeStepKernel<<<grid,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>((const __nv_bfloat16 *)slot->kda_query_bf16,(const __nv_bfloat16 *)slot->kda_key_bf16,(const __nv_bfloat16 *)slot->kda_value_bf16,(const __nv_bfloat16 *)slot->kda_log_decay_bf16,(const __nv_bfloat16 *)slot->kda_beta_bf16,node_context->kda_state_pool,slot->lane_indices,node_context->kda_state_pool.state_cold_by_row,kda_layer_ordinal,(__nv_bfloat16 *)slot->kda_core_output_bf16);
 	return(SparkK3LaunchStatus());
 }
