@@ -472,6 +472,19 @@ static __device__ void SparkLmAttnMergeStore(const float *merge_max, const float
 	}
 }
 
+// Stage the head's query into shared, zero the merge scratch and the
+// register accumulators.
+static __device__ void SparkLmAttnStage(const void *q_bf16, uint64_t q_row_stride, uint32_t row, uint32_t head, uint32_t head_dim, uint32_t value_dim, float *q_shared, float *merge_acc, float2 *accumulator)
+{
+	uint32_t element,pair;
+	for (element = threadIdx.x; element < head_dim; element += blockDim.x)
+		q_shared[element] = SparkLmBf16ToFloat(q_bf16,((uint64_t)row * q_row_stride) + ((uint64_t)head * head_dim) + element);
+	for (element = threadIdx.x; element < SPARK_LM_CTA_WARPS * value_dim; element += blockDim.x)
+		merge_acc[element] = 0.0f;
+	for (pair = 0; pair < SPARK_LM_ATTN_MAX_VALUE_PAIRS_PER_LANE; pair++)
+		accumulator[pair] = make_float2(0.0f,0.0f);
+}
+
 static __global__ void SparkLmAttnDecodeKernel(const void *q_bf16, uint64_t q_row_stride, const void *k_cache_bf16, const void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, uint64_t k_slot_stride, uint64_t v_slot_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t group_size, uint32_t head_dim, uint32_t value_dim, uint32_t window_slots)
 {
 	extern __shared__ float attn_shared[];
@@ -490,12 +503,7 @@ static __global__ void SparkLmAttnDecodeKernel(const void *q_bf16, uint64_t q_ro
 	first_key = window_slots != 0u && position + 1u > window_slots ? position + 1u - window_slots : 0u;
 	k_base = ((uint64_t)row_lane_indices[row] * k_lane_stride) + ((uint64_t)kv_head * head_dim);
 	v_base = ((uint64_t)row_lane_indices[row] * v_lane_stride) + ((uint64_t)kv_head * value_dim);
-	for (element = threadIdx.x; element < head_dim; element += blockDim.x)
-		q_shared[element] = SparkLmBf16ToFloat(q_bf16,((uint64_t)row * q_row_stride) + ((uint64_t)head * head_dim) + element);
-	for (pair = 0; pair < SPARK_LM_ATTN_MAX_VALUE_PAIRS_PER_LANE; pair++)
-		accumulator[pair] = make_float2(0.0f,0.0f);
-	for (element = threadIdx.x; element < SPARK_LM_CTA_WARPS * value_dim; element += blockDim.x)
-		merge_acc[element] = 0.0f;
+	SparkLmAttnStage(q_bf16,q_row_stride,row,head,head_dim,value_dim,q_shared,merge_acc,accumulator);
 	__syncthreads();
 	for (key = first_key + warp; key <= position; key += SPARK_LM_CTA_WARPS)
 	{

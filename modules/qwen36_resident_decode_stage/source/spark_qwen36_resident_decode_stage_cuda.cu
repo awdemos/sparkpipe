@@ -246,6 +246,23 @@ static __device__ void SparkQwen36AttnMergeStore(const float *merge_max, const f
 	}
 }
 
+// One token's logit: lanes pair-load the cached key against the shared
+// query, warp-reduce, fixed 1/sqrt(128) scale.
+static __device__ __forceinline__ float SparkQwen36AttnTokenLogit(const float *q_shared, const void *kv_cache_bf16, uint64_t token_base, uint32_t lane)
+{
+	uint32_t pair;
+	float logit = 0.0f;
+	float2 pair_value;
+	#pragma unroll
+	for (pair = 0; pair < SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION / (2u * SPARK_LM_WARP_LANES); pair++)
+	{
+		pair_value = SparkLmLoadBf16Pair(kv_cache_bf16,(token_base >> 1u) + (pair * SPARK_LM_WARP_LANES) + lane);
+		logit = fmaf(q_shared[((pair * SPARK_LM_WARP_LANES) + lane) << 1u],pair_value.x,logit);
+		logit = fmaf(q_shared[(((pair * SPARK_LM_WARP_LANES) + lane) << 1u) + 1u],pair_value.y,logit);
+	}
+	return(SparkLmWarpReduceSum(logit) * (1.0f / 16.0f));
+}
+
 static __global__ void SparkQwen36AttnDecodeKernel(const void *q_fused_bf16, const void *kv_cache_bf16, const uint32_t *block_indices, const uint32_t *block_counts, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t lane_stride, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride)
 {
 	__shared__ float q_shared[SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION];
@@ -257,7 +274,7 @@ static __global__ void SparkQwen36AttnDecodeKernel(const void *q_fused_bf16, con
 	uint64_t lane_base,token_base;
 	uint32_t context,token,pair,element;
 	float running_max = -3.0e38f,running_den = 0.0f,logit,rescale,weight;
-	float2 accumulator[2],pair_value;
+	float2 accumulator[2] = {{0.0f,0.0f},{0.0f,0.0f}},pair_value;
 	if ( row >= row_count )
 		return;
 	(void)block_counts;
@@ -265,23 +282,13 @@ static __global__ void SparkQwen36AttnDecodeKernel(const void *q_fused_bf16, con
 		q_shared[element] = SparkLmBf16ToFloat(q_fused_bf16,q_base + element);
 	for (element = threadIdx.x; element < SPARK_LM_CTA_WARPS * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION; element += blockDim.x)
 		merge_acc[element] = 0.0f;
-	accumulator[0] = make_float2(0.0f,0.0f);
-	accumulator[1] = make_float2(0.0f,0.0f);
 	__syncthreads();
 	lane_base = (uint64_t)row_lane_indices[row] * lane_stride;
 	context = context_lengths[row];
 	for (token = warp; token < context; token += SPARK_LM_CTA_WARPS)
 	{
 		token_base = SparkQwen36AttnTokenBase(block_indices,lane_base,token,attn_layer_ordinal,cache_layer_stride,cache_block_stride,kv_head);
-		logit = 0.0f;
-		#pragma unroll
-		for (pair = 0; pair < SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION / (2u * SPARK_LM_WARP_LANES); pair++)
-		{
-			pair_value = SparkLmLoadBf16Pair(kv_cache_bf16,(token_base >> 1u) + (pair * SPARK_LM_WARP_LANES) + lane);
-			logit = fmaf(q_shared[((pair * SPARK_LM_WARP_LANES) + lane) << 1u],pair_value.x,logit);
-			logit = fmaf(q_shared[(((pair * SPARK_LM_WARP_LANES) + lane) << 1u) + 1u],pair_value.y,logit);
-		}
-		logit = SparkLmWarpReduceSum(logit) * (1.0f / 16.0f);
+		logit = SparkQwen36AttnTokenLogit(q_shared,kv_cache_bf16,token_base,lane);
 		rescale = logit > running_max ? __expf(running_max - logit) : 1.0f;
 		weight = logit > running_max ? 1.0f : __expf(logit - running_max);
 		running_max = logit > running_max ? logit : running_max;
