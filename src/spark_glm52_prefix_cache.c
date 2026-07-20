@@ -1002,14 +1002,43 @@ SparkStatus SparkGlm52PrefixCacheProbePrompt(
         content_hash = SparkGlm52PrefixCacheHashBlockContent(
             &token_ids[token_offset],
             cache->block_token_count);
-        entry = SparkGlm52PrefixCacheFindEntry(
-            cache,
-            parent_hash,
-            block_hash,
-            content_hash,
-            token_offset,
-            cache->block_token_count,
-            1u);
+        entry = 0;
+        {
+            SparkGlm52PrefixCacheSequenceBinding *own_binding;
+
+            own_binding = SparkGlm52PrefixCacheFindBindingAtTokenOffset(
+                cache,
+                sequence_id,
+                token_offset);
+            if (own_binding != 0 &&
+                own_binding->entry_index < cache->entry_count)
+            {
+                SparkGlm52PrefixCacheEntry *own_entry;
+
+                own_entry = &cache->entries[own_binding->entry_index];
+                if ((own_entry->flags &
+                        SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_VALID) != 0u &&
+                    own_entry->first_token_index == token_offset &&
+                    own_entry->token_count == cache->block_token_count &&
+                    own_entry->parent_hash == parent_hash &&
+                    own_entry->block_hash == block_hash &&
+                    own_entry->content_hash == content_hash)
+                {
+                    entry = own_entry;
+                }
+            }
+        }
+        if (entry == 0)
+        {
+            entry = SparkGlm52PrefixCacheFindEntry(
+                cache,
+                parent_hash,
+                block_hash,
+                content_hash,
+                token_offset,
+                cache->block_token_count,
+                1u);
+        }
         if (entry == 0)
         {
             break;

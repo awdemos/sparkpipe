@@ -1435,6 +1435,11 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveR
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
+        if (binding->storage[plan_index].prepared_active_sequence_count >=
+            prepared_active_sequence_count)
+        {
+            continue;
+        }
         status = SparkGlm52LinearPlanPrepareOne(
             binding,
             &binding->storage[plan_index],

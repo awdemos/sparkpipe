@@ -1295,17 +1295,16 @@ static SparkStatus SparkGlm52ServingInvokePrefill(
     status = engine->prefill_function(
         engine->callback_context,
         &prefill_dispatch);
-    if (status != SPARK_STATUS_OK)
+    if (status != SPARK_STATUS_OK && status != SPARK_STATUS_PENDING)
     {
         return status;
     }
 
-    status = SparkGlm52ServingPublishPrefillEvents(
-        engine,
-        &prefill_dispatch);
-    if (status != SPARK_STATUS_OK)
+    if (SparkGlm52ServingPublishPrefillEvents(
+            engine,
+            &prefill_dispatch) != SPARK_STATUS_OK)
     {
-        return status;
+        return SPARK_STATUS_IO_ERROR;
     }
 
     engine->stats.prefill_dispatch_count += 1u;
@@ -1326,7 +1325,7 @@ static SparkStatus SparkGlm52ServingInvokePrefill(
     {
         engine->stats.maximum_prefill_lane_count = prefill_view.lane_count;
     }
-    return SPARK_STATUS_OK;
+    return status;
 }
 
 static SparkStatus SparkGlm52ServingBuildDecodeDispatch(
@@ -1469,7 +1468,11 @@ static SparkStatus SparkGlm52ServingValidateDecodeResult(
             (dispatch->kind !=
                 SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH ||
              (dispatch->flags &
-                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u))
+                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u) &&
+            (dispatch->kind !=
+                SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
+             (dispatch->flags &
+                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) == 0u))
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -1529,10 +1532,14 @@ static SparkStatus SparkGlm52ServingCaptureMtpDraftTokens(
         decode_result->draft_token_counts[0u] != 0u)
     {
         draft_token_count = decode_result->draft_token_counts[0u];
-        if (dispatch->kind !=
+        if (((dispatch->kind !=
                 SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH ||
-            (dispatch->flags &
-                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u ||
+              (dispatch->flags &
+                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) == 0u) &&
+             (dispatch->kind !=
+                SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
+              (dispatch->flags &
+                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) == 0u)) ||
             draft_token_ids == 0 || draft_lane_stride < draft_token_count)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1991,7 +1998,7 @@ SparkStatus SparkGlm52ServingEngineCompleteDecodeDispatch(
             mtp_draft_token_count);
         if (status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND)
         {
-            return status;
+                return status;
         }
         if (status == SPARK_STATUS_OK)
         {
@@ -2061,6 +2068,19 @@ static SparkStatus SparkGlm52ServingCompletePrefillDispatch(
     const SparkGlm52RequestApiDispatch *dispatch)
 {
     return SparkGlm52RequestApiCompleteDispatch(engine->request_api, dispatch);
+}
+
+SparkStatus SparkGlm52ServingEngineCompletePrefillDispatch(
+    SparkGlm52ServingEngine *engine,
+    const SparkGlm52RequestApiDispatch *dispatch)
+{
+    if (engine == 0 || dispatch == 0 ||
+        (dispatch->kind != SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL &&
+         dispatch->kind != SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SparkGlm52ServingCompletePrefillDispatch(engine, dispatch);
 }
 
 SparkStatus SparkGlm52ServingEnginePump(
@@ -2163,7 +2183,7 @@ SparkStatus SparkGlm52ServingEnginePump(
                     fprintf(stderr,"serving_prefill_complete_failed status=%u request=%llu\n",(uint32_t)status,(unsigned long long)dispatch.request_ids[0u]);
                 }
             }
-            else
+            else if (status != SPARK_STATUS_PENDING)
             {
                 fprintf(stderr,"serving_prefill_invoke_failed status=%u request=%llu\n",(uint32_t)status,(unsigned long long)dispatch.request_ids[0u]);
             }
@@ -2202,6 +2222,10 @@ SparkStatus SparkGlm52ServingEnginePump(
         {
             if (status == SPARK_STATUS_PENDING &&
                 (dispatch.kind ==
+                    SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
+                 dispatch.kind ==
+                    SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH ||
+                 dispatch.kind ==
                     SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
                  dispatch.kind ==
                     SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH))

@@ -304,6 +304,7 @@ typedef struct SparkGlm52Scheduler
     uint32_t reserved;
     SparkGlm52PrefixCache *prefix_cache;
     uint32_t spark_inflight_counts[SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT];
+    uint32_t prefill_demand;
     uint64_t admitted_count;
     uint64_t rejected_count;
     uint64_t completed_count;
@@ -342,6 +343,9 @@ SparkStatus SparkGlm52SchedulerEstimateDecodeWorkNs(
     uint32_t execution_row_capacity,
     uint64_t *estimated_work_ns_out);
 
+void SparkGlm52SchedulerSetPrefillDemand(
+    SparkGlm52Scheduler *scheduler,
+    uint32_t prefill_demand);
 SparkStatus SparkGlm52SchedulerAdmit(
     SparkGlm52Scheduler *scheduler,
     const SparkGlm52SchedulerRequest *request,

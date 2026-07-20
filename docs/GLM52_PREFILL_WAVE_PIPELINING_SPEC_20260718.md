@@ -95,3 +95,38 @@ with per-rank wave times from packet timing, plus decode-latency impact of
 a concurrent saturating prefill. Accept pipelining when prefill >= 4x the
 serialized-256 number and B64 decode P95 step time degrades < 25% under
 concurrent prefill; otherwise retain the counterexample tables.
+
+## Implementation status (2026-07-19)
+
+Implemented host-side and verified in unit tests plus virtual time.
+
+Mechanics as landed: slots track dispatched_prompt_token_count and
+inflight_prefill_dispatch_count (cap 12); RUNNING_PREFILL slots with
+undispatched prompt stay schedulable; prefill batch dispatch remains
+QUEUED-leader only; FinishSlotAfterPrefill transitions only at
+inflight zero; completions against a cancelled slot are tolerated and
+counted. Because cross-sequence prefix reuse is in the default flags
+and the scheduler forbids nonzero request.computed in that mode, the
+offset authority stayed the prefix cache: ProbePrompt now matches the
+probing sequence's own pending bindings (hash-chain verified), so an
+in-flight chain advances the next wave's offset. Correctness rests on
+ring order: wave N writes its KV at every rank before wave N+1 arrives
+there. The serving engine gained the async contract the backend needs:
+prefill_function may return PENDING and
+SparkGlm52ServingEngineCompletePrefillDispatch delivers completion.
+
+Prefill inflight is bounded by queue_depth_per_spark minus the decode
+interleave reserve, so ring depth is the pipelining knob: waves in
+flight = min(depth - 1, 12, ring size).
+
+Virtual-time receipts (pipesim, real request api + scheduler + engine,
+stage 16 ms, hop 100 us, 8192-token prompt, 256-token waves):
+serialized depth 2 = 1223 tok/s (analytic 256/209.3 ms exactly);
+depth 8 = 7485 tok/s (6.1x); depth 14 = 11072 tok/s (9.1x), prompt
+latency 6.70 s -> 0.74 s. Mixed 4-request load confirms prefix reuse
+composes with pipelining and decode interleave holds its reserved slot.
+
+Ring gates: per-rank 256-token wave time from
+SPARKPIPE_PP13_PACKET_TIMING fixes the absolute scale; confirm builder
+per-rank wave submission depth matches the scheduler depth; then the
+serialized-vs-pipelined A/B on hardware.
