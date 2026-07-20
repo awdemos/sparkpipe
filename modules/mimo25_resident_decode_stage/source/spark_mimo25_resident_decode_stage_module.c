@@ -1026,7 +1026,7 @@ static SparkStatus SparkMimo25ModuleRunLayers(SparkMimo25ModuleState *state, Spa
 	{
 		if ( graph != 0 )
 			cudaGraphDestroy(graph);
-		return(status != SPARK_STATUS_OK ? status : SparkMimo25ModuleRunLayersDirect(state,slot,batch,context,rows));
+		return(SparkMimo25ModuleRunLayersDirect(state,slot,batch,context,rows));
 	}
 	error = cudaGraphInstantiate((cudaGraphExec_t *)&slot->layer_graph_exec,graph,0);
 	cudaGraphDestroy(graph);

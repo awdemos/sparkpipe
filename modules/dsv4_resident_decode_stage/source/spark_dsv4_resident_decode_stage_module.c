@@ -1158,7 +1158,7 @@ static SparkStatus SparkDsv4ModuleRunLayers(SparkDsv4ModuleState *state, SparkDs
 	{
 		if ( graph != 0 )
 			cudaGraphDestroy(graph);
-		return(status != SPARK_STATUS_OK ? status : SparkDsv4ModuleRunLayersDirect(state,slot,batch,rows));
+		return(SparkDsv4ModuleRunLayersDirect(state,slot,batch,rows));
 	}
 	error = cudaGraphInstantiate((cudaGraphExec_t *)&slot->layer_graph_exec,graph,0);
 	cudaGraphDestroy(graph);

@@ -814,22 +814,14 @@ static_assert(SPARK_DSV4_RESIDENT_DECODE_STAGE_HEAD_SCREEN_CAP == SPARK_LM_HEAD_
 
 extern "C" cudaError_t SparkDsv4LaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension)
 {
-	uint32_t blocks = (candidate_count + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS;
-	SparkLmHeadShadowQuantizeKernel<<<blocks,SPARK_LM_CTA_THREADS,0,stream>>>(head_bf16,shadow_payload,shadow_scale,error_norm,candidate_count,hidden_dimension);
-	return(cudaGetLastError());
+	return(SparkLmHostLaunchHeadShadowQuantize<SPARK_LM_HEAD_SHADOW_GROUP>(stream,head_bf16,shadow_payload,shadow_scale,error_norm,candidate_count,hidden_dimension));
 }
 
 // Screened exact head, the mimo25 pattern; replaces the block-per-row
 // full scan outright - dsv4 never carried the intermediate tiled form.
 extern "C" cudaError_t SparkDsv4LaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
 {
-	dim3 tile_grid((row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(candidate_count + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
-	uint32_t rescore_shared_bytes = hidden_dimension * (uint32_t)sizeof(float);
-	SparkLmExpertTileKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,shadow_payload,shadow_scale,hidden_bf16,0,logits_bf16,row_count,hidden_dimension,candidate_count);
-	SparkLmHeadScreenKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,logits_bf16,error_norm,candidate_ids,candidate_counts,row_count,candidate_count,hidden_dimension);
-	SparkLmHeadRescoreArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,rescore_shared_bytes,stream>>>(hidden_bf16,head_weight_bf16,candidate_ids,candidate_counts,output_token_ids,row_count,hidden_dimension);
-	SparkLmHeadOverflowArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,rescore_shared_bytes,stream>>>(hidden_bf16,head_weight_bf16,candidate_counts,output_token_ids,row_count,hidden_dimension,candidate_count);
-	return(cudaGetLastError());
+	return(SparkLmHostLaunchHeadScreenedArgmax(stream,hidden_bf16,head_weight_bf16,shadow_payload,shadow_scale,error_norm,logits_bf16,candidate_ids,candidate_counts,output_token_ids,row_count,candidate_count,hidden_dimension));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchHeadArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
@@ -924,8 +916,8 @@ extern "C" cudaError_t SparkDsv4LaunchGatherLinear(cudaStream_t stream, const Sp
 extern "C" cudaError_t SparkDsv4LaunchMoeGroup(cudaStream_t stream, const uint32_t *pair_expert_ids, uint32_t pair_count, uint32_t *expert_offsets, uint32_t *grouped_rows, uint32_t *grouped_weight_slots, uint32_t *inverse_map)
 {
 	static_assert(SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= SPARK_LM_MOE_MAX_EXPERTS,"expert table exceeds group kernel shared capacity");
-	SparkLmMoeGroupKernel<<<1u,SPARK_LM_CTA_THREADS,0,stream>>>(pair_expert_ids,pair_count,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,expert_offsets,grouped_rows,grouped_weight_slots,inverse_map);
-	return(cudaGetLastError());
+	static_assert(SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN <= SPARK_LM_MOE_MAX_TOPK,"topk exceeds reduce register cache");
+	return(SparkLmHostLaunchMoeGroup(stream,pair_expert_ids,pair_count,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,expert_offsets,grouped_rows,grouped_weight_slots,inverse_map));
 }
 
 // All-expert tile over the mxfp4 expert stacks: strides derive from the
@@ -941,8 +933,7 @@ extern "C" cudaError_t SparkDsv4LaunchExpertTileAll(cudaStream_t stream, const S
 
 extern "C" cudaError_t SparkDsv4LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, void *accum_bf16, uint32_t row_count)
 {
-	SparkLmMoePairReduceKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(slot_out_bf16,inverse_map,0,accum_bf16,row_count,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
-	return(cudaGetLastError());
+	return(SparkLmHostLaunchMoePairReduce(stream,slot_out_bf16,inverse_map,0,accum_bf16,row_count,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_HIDDEN_DIMENSION));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchExpertTile(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count)

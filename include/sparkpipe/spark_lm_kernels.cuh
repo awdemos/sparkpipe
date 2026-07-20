@@ -659,24 +659,27 @@ static __global__ void SparkLmHeadScreenKernel(const void *hidden_bf16, const vo
 		candidate_counts[row] = shared_cursor;
 }
 
-// Exact bf16 rescore and argmax over the screened candidates; rows past
-// the cap defer to the exact fallback and exit immediately.
-static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_ids, const uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t hidden_dimension)
+// Exact bf16 argmax over either the screened candidate list or, when
+// candidate_ids is null, the full range - the overflow fallback. A row
+// runs in exactly one of the two launches: candidate mode owns counts
+// within the cap, full mode owns rows past it.
+static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_ids, const uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t hidden_dimension, uint32_t candidate_count)
 {
 	extern __shared__ float rescore_shared[];
 	float *hidden_shared = rescore_shared;
 	__shared__ float best_score[SPARK_LM_CTA_WARPS];
 	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
 	uint32_t row = blockIdx.x,warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
-	uint32_t count,slot,neuron,element;
+	uint32_t count,bound,slot,neuron,element;
 	float running_best = -3.0e38f,score;
 	uint32_t running_candidate = 0u;
 	float2 stage_pair;
 	if ( row >= row_count )
 		return;
 	count = candidate_counts[row];
-	if ( count > SPARK_LM_HEAD_SCREEN_CAP )
+	if ( candidate_ids != 0 ? count > SPARK_LM_HEAD_SCREEN_CAP : count <= SPARK_LM_HEAD_SCREEN_CAP )
 		return;
+	bound = candidate_ids != 0 ? count : candidate_count;
 	for (element = threadIdx.x; element < (hidden_dimension >> 1u); element += blockDim.x)
 	{
 		stage_pair = SparkLmLoadBf16Pair(hidden_bf16,(((uint64_t)row * hidden_dimension) >> 1u) + element);
@@ -684,9 +687,9 @@ static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, c
 		hidden_shared[(element << 1u) + 1u] = stage_pair.y;
 	}
 	__syncthreads();
-	for (slot = warp; slot < count; slot += SPARK_LM_CTA_WARPS)
+	for (slot = warp; slot < bound; slot += SPARK_LM_CTA_WARPS)
 	{
-		neuron = candidate_ids[((uint64_t)row * SPARK_LM_HEAD_SCREEN_CAP) + slot];
+		neuron = candidate_ids != 0 ? candidate_ids[((uint64_t)row * SPARK_LM_HEAD_SCREEN_CAP) + slot] : slot;
 		score = SparkLmWarpReduceSum(SparkLmDotRowBf16(hidden_shared,head_weight_bf16,neuron,hidden_dimension,lane));
 		score = __shfl_sync(0xffffffffu,score,0);
 		if ( lane == 0u && (score > running_best || (score == running_best && neuron < running_candidate)) )
@@ -700,42 +703,7 @@ static __global__ void SparkLmHeadRescoreArgmaxKernel(const void *hidden_bf16, c
 		output_token_ids[row] = best_candidate[0];
 }
 
-// Exact full scan for the rare overflow row - the pre-screen shape,
-// gated so only rows the screen abandoned pay for it.
-static __global__ void SparkLmHeadOverflowArgmaxKernel(const void *hidden_bf16, const void *head_weight_bf16, const uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t hidden_dimension, uint32_t candidate_count)
-{
-	extern __shared__ float rescore_shared[];
-	float *hidden_shared = rescore_shared;
-	__shared__ float best_score[SPARK_LM_CTA_WARPS];
-	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
-	uint32_t row = blockIdx.x,warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
-	uint32_t neuron,element;
-	float running_best = -3.0e38f,score;
-	uint32_t running_candidate = 0u;
-	float2 stage_pair;
-	if ( row >= row_count || candidate_counts[row] <= SPARK_LM_HEAD_SCREEN_CAP )
-		return;
-	for (element = threadIdx.x; element < (hidden_dimension >> 1u); element += blockDim.x)
-	{
-		stage_pair = SparkLmLoadBf16Pair(hidden_bf16,(((uint64_t)row * hidden_dimension) >> 1u) + element);
-		hidden_shared[element << 1u] = stage_pair.x;
-		hidden_shared[(element << 1u) + 1u] = stage_pair.y;
-	}
-	__syncthreads();
-	for (neuron = warp; neuron < candidate_count; neuron += SPARK_LM_CTA_WARPS)
-	{
-		score = SparkLmWarpReduceSum(SparkLmDotRowBf16(hidden_shared,head_weight_bf16,neuron,hidden_dimension,lane));
-		score = __shfl_sync(0xffffffffu,score,0);
-		if ( lane == 0u && (score > running_best || (score == running_best && neuron < running_candidate)) )
-		{
-			running_best = score;
-			running_candidate = neuron;
-		}
-	}
-	SparkLmArgmaxReduce(running_best,running_candidate,best_score,best_candidate);
-	if ( threadIdx.x == 0u )
-		output_token_ids[row] = best_candidate[0];
-}
+
 
 /*
  * Single-pass decode attention for one (row, head): eight warps stripe
@@ -1042,23 +1010,30 @@ static __global__ void SparkLmMoeGroupKernel(const uint32_t *pair_expert_ids, ui
 // Race-free replacement for the per-group output scatter: every pair's
 // expert output sits at its grouped slot, so one block per row sums the
 // row's contributions through the inverse map and accumulates once.
+#define SPARK_LM_MOE_MAX_TOPK 16u
+
 static __global__ void SparkLmMoePairReduceKernel(const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t experts_per_token, uint32_t width)
 {
 	uint32_t row = blockIdx.x,element,rank;
 	uint64_t pair_base = (uint64_t)row * experts_per_token;
-	float weight;
+	uint64_t rank_pair_base[SPARK_LM_MOE_MAX_TOPK];
+	float rank_weight[SPARK_LM_MOE_MAX_TOPK];
 	float2 pair_value,accum_pair;
 	if ( row >= row_count )
 		return;
+	for (rank = 0; rank < experts_per_token; rank++)
+	{
+		rank_pair_base[rank] = ((uint64_t)__ldg(inverse_map + pair_base + rank) * width) >> 1u;
+		rank_weight[rank] = pair_weights_f32 != 0 ? __ldg(pair_weights_f32 + pair_base + rank) : 1.0f;
+	}
 	for (element = threadIdx.x; element < (width >> 1u); element += blockDim.x)
 	{
 		accum_pair = SparkLmLoadBf16Pair(accum_bf16,(((uint64_t)row * width) >> 1u) + element);
 		for (rank = 0; rank < experts_per_token; rank++)
 		{
-			weight = pair_weights_f32 != 0 ? __ldg(pair_weights_f32 + pair_base + rank) : 1.0f;
-			pair_value = SparkLmLoadBf16Pair(slot_out_bf16,(((uint64_t)__ldg(inverse_map + pair_base + rank) * width) >> 1u) + element);
-			accum_pair.x = fmaf(weight,pair_value.x,accum_pair.x);
-			accum_pair.y = fmaf(weight,pair_value.y,accum_pair.y);
+			pair_value = SparkLmLoadBf16Pair(slot_out_bf16,rank_pair_base[rank] + element);
+			accum_pair.x = fmaf(rank_weight[rank],pair_value.x,accum_pair.x);
+			accum_pair.y = fmaf(rank_weight[rank],pair_value.y,accum_pair.y);
 		}
 		SparkLmStoreBf16Pair(accum_bf16,(((uint64_t)row * width) >> 1u) + element,accum_pair.x,accum_pair.y);
 	}
@@ -1116,4 +1091,40 @@ static __global__ void SparkLmHeadArgmaxKernel(const void *hidden_bf16, const vo
 				winner = candidate;
 		output_token_ids[row] = token_ids != 0 ? token_ids[best_candidate[winner]] : best_candidate[winner];
 	}
+}
+
+/*
+ * Shared host-side launch pipelines - each driver wraps these in a
+ * two-line extern with its own constants, so the sequence lives once.
+ */
+template <uint32_t GROUP_SIZE>
+static cudaError_t SparkLmHostLaunchHeadShadowQuantize(cudaStream_t stream, const void *head_bf16, uint8_t *shadow_payload, uint8_t *shadow_scale, float *error_norm, uint32_t candidate_count, uint32_t hidden_dimension)
+{
+	uint32_t blocks = (candidate_count + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS;
+	(void)sizeof(char[GROUP_SIZE == SPARK_LM_HEAD_SHADOW_GROUP ? 1 : -1]);
+	SparkLmHeadShadowQuantizeKernel<<<blocks,SPARK_LM_CTA_THREADS,0,stream>>>(head_bf16,shadow_payload,shadow_scale,error_norm,candidate_count,hidden_dimension);
+	return(cudaGetLastError());
+}
+
+static inline cudaError_t SparkLmHostLaunchHeadScreenedArgmax(cudaStream_t stream, const void *hidden_bf16, const void *head_weight_bf16, const uint8_t *shadow_payload, const uint8_t *shadow_scale, const float *error_norm, void *logits_bf16, uint32_t *candidate_ids, uint32_t *candidate_counts, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count, uint32_t hidden_dimension)
+{
+	dim3 tile_grid((row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(candidate_count + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
+	uint32_t rescore_shared_bytes = hidden_dimension * (uint32_t)sizeof(float);
+	SparkLmExpertTileKernel<SPARK_LM_HEAD_SHADOW_GROUP><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1,shadow_payload,shadow_scale,hidden_bf16,0,logits_bf16,row_count,hidden_dimension,candidate_count);
+	SparkLmHeadScreenKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,logits_bf16,error_norm,candidate_ids,candidate_counts,row_count,candidate_count,hidden_dimension);
+	SparkLmHeadRescoreArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,rescore_shared_bytes,stream>>>(hidden_bf16,head_weight_bf16,candidate_ids,candidate_counts,output_token_ids,row_count,hidden_dimension,candidate_count);
+	SparkLmHeadRescoreArgmaxKernel<<<row_count,SPARK_LM_CTA_THREADS,rescore_shared_bytes,stream>>>(hidden_bf16,head_weight_bf16,0,candidate_counts,output_token_ids,row_count,hidden_dimension,candidate_count);
+	return(cudaGetLastError());
+}
+
+static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const uint32_t *pair_expert_ids, uint32_t pair_count, uint32_t expert_count, uint32_t experts_per_token, uint32_t *expert_offsets, uint32_t *grouped_rows, uint32_t *grouped_weight_slots, uint32_t *inverse_map)
+{
+	SparkLmMoeGroupKernel<<<1u,SPARK_LM_CTA_THREADS,0,stream>>>(pair_expert_ids,pair_count,expert_count,experts_per_token,expert_offsets,grouped_rows,grouped_weight_slots,inverse_map);
+	return(cudaGetLastError());
+}
+
+static inline cudaError_t SparkLmHostLaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t experts_per_token, uint32_t width)
+{
+	SparkLmMoePairReduceKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,experts_per_token,width);
+	return(cudaGetLastError());
 }
