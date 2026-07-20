@@ -423,6 +423,88 @@ static __device__ __forceinline__ float SparkLmWeightElement(uint32_t weight_for
 }
 
 /*
+ * Argmax over a precomputed logits matrix, the second phase of the
+ * two-phase head: the tile GEMM writes logits [row][candidate] with the
+ * head weights read once per SIXTEEN rows instead of once per row - the
+ * old one-block-per-row argmax streamed the entire vocab-by-hidden
+ * matrix per row, sixteen times the traffic of this split at a full row
+ * tile. Warps stripe the candidates with paired loads, ties go to the
+ * lower index, and the optional id table maps restricted candidates.
+ */
+// Warp-then-block argmax reduce with ties to the lower index; thread
+// zero leaves the winner in the scratch slots' zeroth entries.
+static __device__ void SparkLmArgmaxReduce(float running_best, uint32_t running_candidate, float *best_score, uint32_t *best_candidate)
+{
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES,offset,candidate,shuffle_candidate;
+	float shuffle_score;
+	for (offset = SPARK_LM_WARP_LANES / 2u; offset != 0u; offset >>= 1u)
+	{
+		shuffle_score = __shfl_down_sync(0xffffffffu,running_best,offset);
+		shuffle_candidate = __shfl_down_sync(0xffffffffu,running_candidate,offset);
+		if ( shuffle_score > running_best || (shuffle_score == running_best && shuffle_candidate < running_candidate) )
+		{
+			running_best = shuffle_score;
+			running_candidate = shuffle_candidate;
+		}
+	}
+	if ( lane == 0u )
+	{
+		best_score[warp] = running_best;
+		best_candidate[warp] = running_candidate;
+	}
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+	{
+		for (candidate = 1; candidate < SPARK_LM_CTA_WARPS; candidate++)
+			if ( best_score[candidate] > best_score[0] || (best_score[candidate] == best_score[0] && best_candidate[candidate] < best_candidate[0]) )
+			{
+				best_score[0] = best_score[candidate];
+				best_candidate[0] = best_candidate[candidate];
+			}
+	}
+	__syncthreads();
+}
+
+static __global__ void SparkLmLogitsArgmaxKernel(const void *logits_bf16, const uint32_t *token_ids, uint32_t *output_token_ids, uint32_t row_count, uint32_t candidate_count)
+{
+	__shared__ float best_score[SPARK_LM_CTA_WARPS];
+	__shared__ uint32_t best_candidate[SPARK_LM_CTA_WARPS];
+	uint32_t row = blockIdx.x,pair;
+	uint64_t row_base = ((uint64_t)row * candidate_count) >> 1u;
+	float running_best = -3.0e38f,tail_score;
+	uint32_t running_candidate = 0u;
+	float2 pair_value;
+	if ( row >= row_count )
+		return;
+	for (pair = threadIdx.x; pair < (candidate_count >> 1u); pair += blockDim.x)
+	{
+		pair_value = SparkLmLoadBf16Pair(logits_bf16,row_base + pair);
+		if ( pair_value.x > running_best || (pair_value.x == running_best && (pair << 1u) < running_candidate) )
+		{
+			running_best = pair_value.x;
+			running_candidate = pair << 1u;
+		}
+		if ( pair_value.y > running_best || (pair_value.y == running_best && (pair << 1u) + 1u < running_candidate) )
+		{
+			running_best = pair_value.y;
+			running_candidate = (pair << 1u) + 1u;
+		}
+	}
+	if ( (candidate_count & 1u) != 0u && threadIdx.x == 0u )
+	{
+		tail_score = SparkLmBf16ToFloat(logits_bf16,((uint64_t)row * candidate_count) + candidate_count - 1u);
+		if ( tail_score > running_best )
+		{
+			running_best = tail_score;
+			running_candidate = candidate_count - 1u;
+		}
+	}
+	SparkLmArgmaxReduce(running_best,running_candidate,best_score,best_candidate);
+	if ( threadIdx.x == 0u )
+		output_token_ids[row] = token_ids != 0 ? token_ids[best_candidate[0]] : best_candidate[0];
+}
+
+/*
  * Single-pass decode attention for one (row, head): eight warps stripe
  * the key range, each warp computing one key's logit cooperatively -
  * lanes pair-load the key so every K fetch is a full-width transaction -

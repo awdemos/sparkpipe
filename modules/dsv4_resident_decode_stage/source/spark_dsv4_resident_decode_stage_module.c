@@ -100,9 +100,9 @@ typedef struct SparkDsv4ModuleSlot
 	void *moe_slot_gate_bf16;
 	void *moe_slot_up_bf16;
 	void *moe_slot_out_bf16;
-	uint32_t host_moe_indices[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN];
-	uint32_t host_grouped_rows[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN];
-	uint32_t host_grouped_weight_slots[SPARK_DSV4_RESIDENT_DECODE_STAGE_MAX_ACTIVE_SEQUENCE_COUNT * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN];
+	uint32_t *host_moe_indices;
+	uint32_t *host_grouped_rows;
+	uint32_t *host_grouped_weight_slots;
 	uint32_t host_expert_offsets[SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT + 1u];
 } SparkDsv4ModuleSlot;
 
@@ -694,6 +694,12 @@ static SparkStatus SparkDsv4ModuleAllocateSlotTail(SparkDsv4ModuleState *state, 
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->grouped_rows_u32);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),(void **)&slot->grouped_weight_slots_u32);
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaHostAlloc((void **)&slot->host_moe_indices,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaHostAllocDefault),"pin_moe_indices");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaHostAlloc((void **)&slot->host_grouped_rows,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaHostAllocDefault),"pin_grouped_rows");
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleCudaStatus(SPARK_DSV4_MODULE_TAG,cudaHostAlloc((void **)&slot->host_grouped_weight_slots,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * sizeof(uint32_t),cudaHostAllocDefault),"pin_grouped_slots");
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocate(&state->ledger,rows * SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN * SPARK_DSV4_MODEL_EXPERT_INTERMEDIATE_DIMENSION * bf16,&slot->moe_slot_gate_bf16);
 	if ( status == SPARK_STATUS_OK )
