@@ -211,57 +211,102 @@ static __global__ void SparkQwen36AttnPrepareKernel(void *q_fused_bf16, const vo
 }
 
 /*
- * Paged GQA decode attention with online softmax and the fused sigmoid
- * output gate. One block per (row, query head), one warp lane per cache
- * position stripe; the value accumulation runs per thread over the head dim
- * in registers with an online max/denominator rescale. This is the simple
- * correct kernel: the tensor-core version is a later throughput commit.
+ * Paged GQA decode with the fused per-head sigmoid gate, flash style:
+ * eight warps stripe the context, each warp resolving its token's block
+ * through the lane's table and computing the logit cooperatively - lanes
+ * pair-load K so every fetch is a full transaction - into a per-warp
+ * online softmax with the value half of the cache row accumulated in
+ * registers. One pass, no per-token barriers, one staged merge at the
+ * end where the gate multiplies the normalized output.
  */
+static __device__ __forceinline__ uint64_t SparkQwen36AttnTokenBase(const uint32_t *block_indices, uint64_t lane_base, uint32_t token, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride, uint32_t kv_head)
+{
+	uint32_t block = __ldg(block_indices + lane_base + (token / SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS));
+	return(((uint64_t)block * cache_block_stride) + ((uint64_t)attn_layer_ordinal * cache_layer_stride) + ((uint64_t)(token % SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS) * SPARK_QWEN36_MODEL_ATTN_CACHE_TOKEN_ELEMENTS) + ((uint64_t)kv_head * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION));
+}
+
+// Cross-warp merge with the fused sigmoid gate applied at the store.
+static __device__ void SparkQwen36AttnMergeStore(const float *merge_max, const float *merge_den, const float *merge_acc, const void *q_fused_bf16, uint64_t q_base, void *head_out_bf16, uint64_t out_base)
+{
+	uint32_t element,partial;
+	float block_max,block_den,merged,gate;
+	block_max = merge_max[0];
+	for (partial = 1; partial < SPARK_LM_CTA_WARPS; partial++)
+		block_max = merge_max[partial] > block_max ? merge_max[partial] : block_max;
+	block_den = 0.0f;
+	for (partial = 0; partial < SPARK_LM_CTA_WARPS; partial++)
+		block_den += merge_den[partial] * __expf(merge_max[partial] - block_max);
+	for (element = threadIdx.x; element < SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION; element += blockDim.x)
+	{
+		merged = 0.0f;
+		for (partial = 0; partial < SPARK_LM_CTA_WARPS; partial++)
+			merged = fmaf(merge_acc[(partial * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION) + element],__expf(merge_max[partial] - block_max),merged);
+		gate = SparkLmSigmoid(SparkLmBf16ToFloat(q_fused_bf16,q_base + SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION + element));
+		SparkLmFloatToBf16(head_out_bf16,out_base + element,(merged / block_den) * gate);
+	}
+}
+
 static __global__ void SparkQwen36AttnDecodeKernel(const void *q_fused_bf16, const void *kv_cache_bf16, const uint32_t *block_indices, const uint32_t *block_counts, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t lane_stride, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride)
 {
-	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS],running_max,running_denominator,rescale;
-	uint32_t row = blockIdx.y,head = blockIdx.x,column = threadIdx.x,kv_head = head / SPARK_QWEN36_CUDA_ATTN_GROUP;
+	__shared__ float q_shared[SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION];
+	__shared__ float merge_max[SPARK_LM_CTA_WARPS],merge_den[SPARK_LM_CTA_WARPS];
+	__shared__ float merge_acc[SPARK_LM_CTA_WARPS * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION];
+	uint32_t row = blockIdx.y,head = blockIdx.x,kv_head = head / SPARK_QWEN36_CUDA_ATTN_GROUP;
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
 	uint64_t q_base = ((uint64_t)row * 2u * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION) + ((uint64_t)head * 2u * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION);
-	float query = 0.0f,accumulator = 0.0f,score,probability,gate;
-	uint32_t token,block,offset,context;
+	uint64_t lane_base,token_base;
+	uint32_t context,token,pair,element;
+	float running_max = -3.0e38f,running_den = 0.0f,logit,rescale,weight;
+	float2 accumulator[2],pair_value;
 	if ( row >= row_count )
 		return;
-	query = SparkLmBf16ToFloat(q_fused_bf16,q_base + column);
-	if ( threadIdx.x == 0u )
-	{
-		running_max = -3.0e38f;
-		running_denominator = 0.0f;
-	}
+	(void)block_counts;
+	for (element = threadIdx.x; element < SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION; element += blockDim.x)
+		q_shared[element] = SparkLmBf16ToFloat(q_fused_bf16,q_base + element);
+	for (element = threadIdx.x; element < SPARK_LM_CTA_WARPS * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION; element += blockDim.x)
+		merge_acc[element] = 0.0f;
+	accumulator[0] = make_float2(0.0f,0.0f);
+	accumulator[1] = make_float2(0.0f,0.0f);
 	__syncthreads();
+	lane_base = (uint64_t)row_lane_indices[row] * lane_stride;
 	context = context_lengths[row];
-	for (token = 0; token < context; token++)
+	for (token = warp; token < context; token += SPARK_LM_CTA_WARPS)
 	{
-		block = block_indices[((uint64_t)row_lane_indices[row] * lane_stride) + (token / SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS)];
-		offset = token % SPARK_QWEN36_RESIDENT_DECODE_STAGE_KV_BLOCK_TOKENS;
+		token_base = SparkQwen36AttnTokenBase(block_indices,lane_base,token,attn_layer_ordinal,cache_layer_stride,cache_block_stride,kv_head);
+		logit = 0.0f;
+		#pragma unroll
+		for (pair = 0; pair < SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION / (2u * SPARK_LM_WARP_LANES); pair++)
 		{
-			uint64_t cache_base = ((uint64_t)block * cache_block_stride) + ((uint64_t)attn_layer_ordinal * cache_layer_stride) + ((uint64_t)offset * SPARK_QWEN36_MODEL_ATTN_CACHE_TOKEN_ELEMENTS) + ((uint64_t)kv_head * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION);
-			score = SparkLmBlockReduceSum(query * SparkLmBf16ToFloat(kv_cache_bf16,cache_base + column),reduce_scratch) * (1.0f / 16.0f);
-			if ( threadIdx.x == 0u )
-			{
-				if ( score > running_max )
-				{
-					rescale = __expf(running_max - score);
-					running_max = score;
-				}
-				else
-					rescale = 1.0f;
-				running_denominator = (running_denominator * rescale) + __expf(score - running_max);
-				reduce_scratch[0] = __expf(score - running_max);
-				reduce_scratch[1] = rescale;
-			}
-			__syncthreads();
-			probability = reduce_scratch[0];
-			accumulator = (accumulator * reduce_scratch[1]) + (probability * SparkLmBf16ToFloat(kv_cache_bf16,cache_base + SPARK_QWEN36_MODEL_ATTN_KV_DIMENSION + column));
-			__syncthreads();
+			pair_value = SparkLmLoadBf16Pair(kv_cache_bf16,(token_base >> 1u) + (pair * SPARK_LM_WARP_LANES) + lane);
+			logit = fmaf(q_shared[((pair * SPARK_LM_WARP_LANES) + lane) << 1u],pair_value.x,logit);
+			logit = fmaf(q_shared[(((pair * SPARK_LM_WARP_LANES) + lane) << 1u) + 1u],pair_value.y,logit);
+		}
+		logit = SparkLmWarpReduceSum(logit) * (1.0f / 16.0f);
+		rescale = logit > running_max ? __expf(running_max - logit) : 1.0f;
+		weight = logit > running_max ? 1.0f : __expf(logit - running_max);
+		running_max = logit > running_max ? logit : running_max;
+		running_den = fmaf(running_den,rescale,weight);
+		#pragma unroll
+		for (pair = 0; pair < 2u; pair++)
+		{
+			pair_value = SparkLmLoadBf16Pair(kv_cache_bf16,((token_base + SPARK_QWEN36_MODEL_ATTN_KV_DIMENSION) >> 1u) + (pair * SPARK_LM_WARP_LANES) + lane);
+			accumulator[pair].x = fmaf(accumulator[pair].x,rescale,weight * pair_value.x);
+			accumulator[pair].y = fmaf(accumulator[pair].y,rescale,weight * pair_value.y);
 		}
 	}
-	gate = SparkLmSigmoid(SparkLmBf16ToFloat(q_fused_bf16,q_base + SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION + column));
-	SparkLmFloatToBf16(head_out_bf16,((uint64_t)row * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION) + ((uint64_t)head * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION) + column,(accumulator / running_denominator) * gate);
+	if ( lane == 0u )
+	{
+		merge_max[warp] = running_max;
+		merge_den[warp] = running_den;
+	}
+	#pragma unroll
+	for (pair = 0; pair < 2u; pair++)
+	{
+		merge_acc[(warp * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION) + (((pair * SPARK_LM_WARP_LANES) + lane) << 1u)] = accumulator[pair].x;
+		merge_acc[(warp * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION) + (((pair * SPARK_LM_WARP_LANES) + lane) << 1u) + 1u] = accumulator[pair].y;
+	}
+	__syncthreads();
+	SparkQwen36AttnMergeStore(merge_max,merge_den,merge_acc,q_fused_bf16,q_base,head_out_bf16,((uint64_t)row * SPARK_QWEN36_MODEL_ATTN_QUERY_DIMENSION) + ((uint64_t)head * SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION));
 }
 
 // Embedding gather: one thread per (row, element); token ids are validated
@@ -491,18 +536,28 @@ static __global__ void SparkQwen36ChunkConvKernel(const void *qkv_bf16, const vo
 // Residual add and SwiGLU combine, both row-shaped elementwise.
 static __global__ void SparkQwen36ResidualAddKernel(void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
 {
-	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
-	if ( index >= ((uint64_t)row_count * dimension) )
+	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,pair_count = ((uint64_t)row_count * dimension) >> 1u;
+	float2 hidden_pair,delta_pair;
+	if ( pair >= pair_count )
 		return;
-	SparkLmFloatToBf16(hidden_bf16,index,SparkLmBf16ToFloat(hidden_bf16,index) + SparkLmBf16ToFloat(delta_bf16,index));
+	hidden_pair = SparkLmLoadBf16Pair(hidden_bf16,pair);
+	delta_pair = SparkLmLoadBf16Pair(delta_bf16,pair);
+	SparkLmStoreBf16Pair(hidden_bf16,pair,hidden_pair.x + delta_pair.x,hidden_pair.y + delta_pair.y);
+	if ( pair == 0u && (((uint64_t)row_count * dimension) & 1u) != 0u )
+		SparkLmFloatToBf16(hidden_bf16,((uint64_t)row_count * dimension) - 1u,SparkLmBf16ToFloat(hidden_bf16,((uint64_t)row_count * dimension) - 1u) + SparkLmBf16ToFloat(delta_bf16,((uint64_t)row_count * dimension) - 1u));
 }
 
 static __global__ void SparkQwen36SwiGluKernel(const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension)
 {
-	uint64_t index = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x;
-	if ( index >= ((uint64_t)row_count * dimension) )
+	uint64_t pair = ((uint64_t)blockIdx.x * blockDim.x) + threadIdx.x,pair_count = ((uint64_t)row_count * dimension) >> 1u;
+	float2 gate_pair,up_pair;
+	if ( pair >= pair_count )
 		return;
-	SparkLmFloatToBf16(up_bf16,index,SparkLmSwish(SparkLmBf16ToFloat(gate_bf16,index)) * SparkLmBf16ToFloat(up_bf16,index));
+	gate_pair = SparkLmLoadBf16Pair(gate_bf16,pair);
+	up_pair = SparkLmLoadBf16Pair(up_bf16,pair);
+	SparkLmStoreBf16Pair(up_bf16,pair,SparkLmSwish(gate_pair.x) * up_pair.x,SparkLmSwish(gate_pair.y) * up_pair.y);
+	if ( pair == 0u && (((uint64_t)row_count * dimension) & 1u) != 0u )
+		SparkLmFloatToBf16(up_bf16,((uint64_t)row_count * dimension) - 1u,SparkLmSwish(SparkLmBf16ToFloat(gate_bf16,((uint64_t)row_count * dimension) - 1u)) * SparkLmBf16ToFloat(up_bf16,((uint64_t)row_count * dimension) - 1u));
 }
 
 extern "C" cudaError_t SparkQwen36LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
@@ -556,7 +611,7 @@ extern "C" cudaError_t SparkQwen36LaunchAttnPrepare(cudaStream_t stream, void *q
 extern "C" cudaError_t SparkQwen36LaunchAttnDecode(cudaStream_t stream, const void *q_fused_bf16, const void *kv_cache_bf16, const SparkQwen36KvBlockTableView *table, const uint32_t *row_lane_indices, const uint32_t *context_lengths, void *head_out_bf16, uint32_t row_count, uint32_t attn_layer_ordinal, uint64_t cache_layer_stride, uint64_t cache_block_stride)
 {
 	dim3 grid(SPARK_QWEN36_MODEL_ATTN_QUERY_HEAD_COUNT,row_count,1u);
-	SparkQwen36AttnDecodeKernel<<<grid,SPARK_QWEN36_MODEL_ATTN_HEAD_DIMENSION,0,stream>>>(q_fused_bf16,kv_cache_bf16,table->physical_block_indices,table->lane_physical_block_counts,row_lane_indices,context_lengths,head_out_bf16,row_count,table->lane_stride,attn_layer_ordinal,cache_layer_stride,cache_block_stride);
+	SparkQwen36AttnDecodeKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(q_fused_bf16,kv_cache_bf16,table->physical_block_indices,table->lane_physical_block_counts,row_lane_indices,context_lengths,head_out_bf16,row_count,table->lane_stride,attn_layer_ordinal,cache_layer_stride,cache_block_stride);
 	return(cudaGetLastError());
 }
 
@@ -604,15 +659,15 @@ extern "C" cudaError_t SparkQwen36LaunchEmbeddingGather(cudaStream_t stream, con
 
 extern "C" cudaError_t SparkQwen36LaunchResidualAdd(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, uint32_t row_count, uint32_t dimension)
 {
-	uint64_t elements = (uint64_t)row_count * dimension;
-	SparkQwen36ResidualAddKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,delta_bf16,row_count,dimension);
+	uint64_t pairs = ((uint64_t)row_count * dimension + 1u) >> 1u;
+	SparkQwen36ResidualAddKernel<<<(uint32_t)((pairs + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(hidden_bf16,delta_bf16,row_count,dimension);
 	return(cudaGetLastError());
 }
 
 extern "C" cudaError_t SparkQwen36LaunchSwiGlu(cudaStream_t stream, const void *gate_bf16, void *up_bf16, uint32_t row_count, uint32_t dimension)
 {
-	uint64_t elements = (uint64_t)row_count * dimension;
-	SparkQwen36SwiGluKernel<<<(uint32_t)((elements + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(gate_bf16,up_bf16,row_count,dimension);
+	uint64_t pairs = ((uint64_t)row_count * dimension + 1u) >> 1u;
+	SparkQwen36SwiGluKernel<<<(uint32_t)((pairs + SPARK_LM_CTA_THREADS - 1u) / SPARK_LM_CTA_THREADS),SPARK_LM_CTA_THREADS,0,stream>>>(gate_bf16,up_bf16,row_count,dimension);
 	return(cudaGetLastError());
 }
 

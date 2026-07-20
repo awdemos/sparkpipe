@@ -172,74 +172,114 @@ static __global__ void SparkDsv4HadamardKernel(void *data_bf16, uint32_t vector_
 		SparkLmFloatToBf16(data_bf16,base + element,hadamard_shared[element] * scale);
 }
 
-static __device__ __forceinline__ float SparkDsv4SlotDot(const float *q_shared, const void *kv_bf16, uint64_t slot_base, uint32_t head_dim)
+// Block max into a shared scalar: warp shuffles, per-warp scratch, a
+// thread-zero scan, one barrier each side.
+static __device__ void SparkDsv4AttnBlockMax(float local_maximum, float *scratch, float *shared_maximum)
 {
-	uint32_t element;
-	float accumulator = 0.0f;
-	for (element = 0; element < head_dim; element++)
-		accumulator += q_shared[element] * SparkLmBf16ToFloat(kv_bf16,slot_base + element);
-	return(accumulator);
+	uint32_t offset,warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
+	float value;
+	for (offset = SPARK_LM_WARP_LANES / 2u; offset != 0u; offset >>= 1u)
+	{
+		value = __shfl_down_sync(0xffffffffu,local_maximum,offset);
+		if ( value > local_maximum )
+			local_maximum = value;
+	}
+	if ( lane == 0u )
+		scratch[warp] = local_maximum;
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+	{
+		for (offset = 1; offset < SPARK_LM_CTA_WARPS; offset++)
+			if ( scratch[offset] > scratch[0] )
+				scratch[0] = scratch[offset];
+		*shared_maximum = scratch[0];
+	}
+	__syncthreads();
 }
 
 /*
- * Sparse attention, one block per (row, head): pass one computes every
- * gathered slot's logit into shared memory (thread-per-slot stripes, -1
- * indices at -inf) and the block max; pass two accumulates the output
- * dims stripe-wise with the sink joining the denominator only. topk is
- * bounded by the launcher at the shared-memory logit capacity.
+ * DSA sparse decode attention: warps stripe the selected slots computing
+ * logits cooperatively - lanes pair-load K, one full transaction per
+ * fetch - into shared; one block softmax turns them into weights IN
+ * PLACE, exp evaluated once per slot ever; the value pass then walks
+ * slots per element pair with plain multiplies. Negative indices drop
+ * out; the sink joins the denominator.
  */
+// Weighted value recombination over the selected slots: weights already
+// normalized in place, zero entries skipped, pair loads and stores.
+static __device__ void SparkDsv4SparseValuePass(const float *weights, const int32_t *topk_idxs, uint64_t topk_row, uint32_t topk, const void *kv_cache_bf16, uint64_t kv_base, uint32_t head_dim, float denominator, void *out_bf16, uint64_t out_base)
+{
+	uint32_t pair,slot;
+	int32_t index;
+	float accumulator_low,accumulator_high;
+	float2 pair_value;
+	for (pair = threadIdx.x; pair < (head_dim >> 1u); pair += blockDim.x)
+	{
+		accumulator_low = 0.0f;
+		accumulator_high = 0.0f;
+		for (slot = 0; slot < topk; slot++)
+		{
+			if ( weights[slot] == 0.0f )
+				continue;
+			index = __ldg(topk_idxs + topk_row + slot);
+			pair_value = SparkLmLoadBf16Pair(kv_cache_bf16,((kv_base + ((uint64_t)(uint32_t)index * head_dim)) >> 1u) + pair);
+			accumulator_low = fmaf(weights[slot],pair_value.x,accumulator_low);
+			accumulator_high = fmaf(weights[slot],pair_value.y,accumulator_high);
+		}
+		SparkLmStoreBf16Pair(out_bf16,(out_base >> 1u) + pair,accumulator_low / denominator,accumulator_high / denominator);
+	}
+}
+
 static __global__ void SparkDsv4SparseAttnKernel(const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, const int32_t *topk_idxs, uint32_t topk, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t head_dim)
 {
 	extern __shared__ float attn_shared[];
 	float *logits = attn_shared,*q_shared = attn_shared + topk;
 	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
-	uint32_t row = blockIdx.x,head = blockIdx.y,slot,element;
+	__shared__ float shared_maximum,shared_denominator;
+	uint32_t row = blockIdx.x,head = blockIdx.y,slot,element,pair;
+	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
 	uint64_t q_base = (((uint64_t)row * head_count) + head) * head_dim,kv_base;
 	int32_t index;
-	float maximum = -3.0e38f,value,denominator,weight;
+	float maximum = -3.0e38f,value,denominator;
+	float2 pair_value;
 	if ( row >= row_count || head >= head_count )
 		return;
 	kv_base = (uint64_t)row_lane_indices[row] * lane_stride_elements;
 	for (element = threadIdx.x; element < head_dim; element += blockDim.x)
 		q_shared[element] = SparkLmBf16ToFloat(q_bf16,q_base + element);
 	__syncthreads();
-	for (slot = threadIdx.x; slot < topk; slot += blockDim.x)
+	for (slot = warp; slot < topk; slot += SPARK_LM_CTA_WARPS)
 	{
-		index = topk_idxs[((uint64_t)row * topk) + slot];
-		logits[slot] = index < 0 ? -3.0e38f : SparkDsv4SlotDot(q_shared,kv_cache_bf16,kv_base + ((uint64_t)(uint32_t)index * head_dim),head_dim) * scale;
-		if ( logits[slot] > maximum )
+		index = __ldg(topk_idxs + ((uint64_t)row * topk) + slot);
+		value = 0.0f;
+		if ( index >= 0 )
+		{
+			for (pair = lane; pair < (head_dim >> 1u); pair += SPARK_LM_WARP_LANES)
+			{
+				pair_value = SparkLmLoadBf16Pair(kv_cache_bf16,((kv_base + ((uint64_t)(uint32_t)index * head_dim)) >> 1u) + pair);
+				value = fmaf(q_shared[pair << 1u],pair_value.x,value);
+				value = fmaf(q_shared[(pair << 1u) + 1u],pair_value.y,value);
+			}
+			value = SparkLmWarpReduceSum(value) * scale;
+		}
+		if ( lane == 0u )
+			logits[slot] = index < 0 ? -3.0e38f : value;
+		if ( lane == 0u && logits[slot] > maximum )
 			maximum = logits[slot];
 	}
-	for (element = SPARK_LM_WARP_LANES / 2u; element != 0u; element >>= 1u)
+	SparkDsv4AttnBlockMax(maximum,reduce_scratch,&shared_maximum);
+	denominator = 0.0f;
+	for (slot = threadIdx.x; slot < topk; slot += blockDim.x)
 	{
-		value = __shfl_down_sync(0xffffffffu,maximum,element);
-		if ( value > maximum )
-			maximum = value;
+		value = logits[slot] <= -3.0e38f ? 0.0f : __expf(logits[slot] - shared_maximum);
+		logits[slot] = value;
+		denominator += value;
 	}
-	if ( threadIdx.x % SPARK_LM_WARP_LANES == 0u )
-		reduce_scratch[threadIdx.x / SPARK_LM_WARP_LANES] = maximum;
+	denominator = SparkLmBlockReduceSum(denominator,reduce_scratch);
+	if ( threadIdx.x == 0u )
+		shared_denominator = denominator + __expf(sink_f32[head] - shared_maximum);
 	__syncthreads();
-	maximum = reduce_scratch[0];
-	for (element = 1; element < SPARK_LM_CTA_WARPS; element++)
-		if ( reduce_scratch[element] > maximum )
-			maximum = reduce_scratch[element];
-	__syncthreads();
-	denominator = __expf(sink_f32[head] - maximum);
-	for (slot = 0; slot < topk; slot++)
-		denominator += logits[slot] <= -3.0e38f ? 0.0f : __expf(logits[slot] - maximum);
-	for (element = threadIdx.x; element < head_dim; element += blockDim.x)
-	{
-		value = 0.0f;
-		for (slot = 0; slot < topk; slot++)
-		{
-			index = topk_idxs[((uint64_t)row * topk) + slot];
-			if ( index < 0 )
-				continue;
-			weight = __expf(logits[slot] - maximum);
-			value += weight * SparkLmBf16ToFloat(kv_cache_bf16,kv_base + ((uint64_t)(uint32_t)index * head_dim) + element);
-		}
-		SparkLmFloatToBf16(out_bf16,q_base + element,value / denominator);
-	}
+	SparkDsv4SparseValuePass(logits,topk_idxs,(uint64_t)row * topk,topk,kv_cache_bf16,kv_base,head_dim,shared_denominator,out_bf16,q_base);
 }
 
 // Softmax pooling of one output channel over the pool slots: -inf scores
@@ -407,35 +447,39 @@ static __global__ void SparkDsv4SwigluClampKernel(const void *gate_bf16, void *u
 {
 	uint32_t row = blockIdx.x,element;
 	uint64_t offset = (uint64_t)row * width;
-	float gate,up,weight;
+	float weight;
+	float2 gate_pair,up_pair;
 	if ( row >= row_count )
 		return;
 	weight = row_weights_f32 != 0 ? row_weights_f32[weight_map != 0 ? weight_map[row] : row] : 1.0f;
-	for (element = threadIdx.x; element < width; element += blockDim.x)
+	for (element = threadIdx.x; element < (width >> 1u); element += blockDim.x)
 	{
-		gate = SparkLmBf16ToFloat(gate_bf16,offset + element);
-		up = SparkLmBf16ToFloat(up_bf16,offset + element);
+		gate_pair = SparkLmLoadBf16Pair(gate_bf16,(offset >> 1u) + element);
+		up_pair = SparkLmLoadBf16Pair(up_bf16,(offset >> 1u) + element);
 		if ( limit > 0.0f )
 		{
-			if ( up > limit )
-				up = limit;
-			if ( up < -limit )
-				up = -limit;
-			if ( gate > limit )
-				gate = limit;
+			up_pair.x = up_pair.x > limit ? limit : (up_pair.x < -limit ? -limit : up_pair.x);
+			up_pair.y = up_pair.y > limit ? limit : (up_pair.y < -limit ? -limit : up_pair.y);
+			gate_pair.x = gate_pair.x > limit ? limit : gate_pair.x;
+			gate_pair.y = gate_pair.y > limit ? limit : gate_pair.y;
 		}
-		SparkLmFloatToBf16(up_bf16,offset + element,SparkLmSwish(gate) * up * weight);
+		SparkLmStoreBf16Pair(up_bf16,(offset >> 1u) + element,SparkLmSwish(gate_pair.x) * up_pair.x * weight,SparkLmSwish(gate_pair.y) * up_pair.y * weight);
 	}
 }
 
 static __global__ void SparkDsv4AccumAddKernel(void *destination_bf16, const void *source_bf16, uint32_t row_count, uint32_t width)
 {
 	uint32_t row = blockIdx.x,element;
-	uint64_t offset = (uint64_t)row * width;
+	uint64_t offset = ((uint64_t)row * width) >> 1u;
+	float2 destination_pair,source_pair;
 	if ( row >= row_count )
 		return;
-	for (element = threadIdx.x; element < width; element += blockDim.x)
-		SparkLmFloatToBf16(destination_bf16,offset + element,SparkLmBf16ToFloat(destination_bf16,offset + element) + SparkLmBf16ToFloat(source_bf16,offset + element));
+	for (element = threadIdx.x; element < (width >> 1u); element += blockDim.x)
+	{
+		destination_pair = SparkLmLoadBf16Pair(destination_bf16,offset + element);
+		source_pair = SparkLmLoadBf16Pair(source_bf16,offset + element);
+		SparkLmStoreBf16Pair(destination_bf16,offset + element,destination_pair.x + source_pair.x,destination_pair.y + source_pair.y);
+	}
 }
 
 // The indexer score: relu(q_h . kv) per head times the projected head
@@ -443,10 +487,21 @@ static __global__ void SparkDsv4AccumAddKernel(void *destination_bf16, const voi
 static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)
 {
 	uint32_t row = blockIdx.x,slot = blockIdx.y * SPARK_LM_CTA_WARPS + threadIdx.x / SPARK_LM_WARP_LANES;
+	extern __shared__ float q_shared[];
 	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES,head,element;
 	uint64_t q_base = (uint64_t)row * head_count * head_dim,kv_base;
 	float accumulator,total = 0.0f;
-	if ( row >= row_count || slot >= max_slots )
+	float2 key_pair,q_pair;
+	if ( row >= row_count )
+		return;
+	for (element = threadIdx.x; element < ((head_count * head_dim) >> 1u); element += blockDim.x)
+	{
+		q_pair = SparkLmLoadBf16Pair(q_bf16,(q_base >> 1u) + element);
+		q_shared[element << 1u] = q_pair.x;
+		q_shared[(element << 1u) + 1u] = q_pair.y;
+	}
+	__syncthreads();
+	if ( slot >= max_slots )
 		return;
 	if ( slot >= slot_counts[row] )
 	{
@@ -458,12 +513,16 @@ static __global__ void SparkDsv4IndexerScoreKernel(const void *q_bf16, const voi
 	for (head = 0; head < head_count; head++)
 	{
 		accumulator = 0.0f;
-		for (element = lane; element < head_dim; element += SPARK_LM_WARP_LANES)
-			accumulator += SparkLmBf16ToFloat(q_bf16,q_base + ((uint64_t)head * head_dim) + element) * SparkLmBf16ToFloat(kv_cache_bf16,kv_base + element);
+		for (element = lane; element < (head_dim >> 1u); element += SPARK_LM_WARP_LANES)
+		{
+			key_pair = SparkLmLoadBf16Pair(kv_cache_bf16,(kv_base >> 1u) + element);
+			accumulator = fmaf(q_shared[((uint64_t)head * head_dim) + (element << 1u)],key_pair.x,accumulator);
+			accumulator = fmaf(q_shared[((uint64_t)head * head_dim) + (element << 1u) + 1u],key_pair.y,accumulator);
+		}
 		accumulator = SparkLmWarpReduceSum(accumulator);
 		accumulator = __shfl_sync(0xffffffffu,accumulator,0);
 		if ( accumulator > 0.0f )
-			total += accumulator * head_weights_f32[((uint64_t)row * head_count) + head];
+			total += accumulator * __ldg(head_weights_f32 + ((uint64_t)row * head_count) + head);
 	}
 	if ( lane == 0u )
 		scores_f32[((uint64_t)row * max_slots) + slot] = total;
@@ -841,7 +900,7 @@ extern "C" cudaError_t SparkDsv4LaunchGatherLinear(cudaStream_t stream, const Sp
 
 extern "C" cudaError_t SparkDsv4LaunchExpertTile(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count)
 {
-	dim3 grid((slot_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(view->rows + SPARK_LM_TILE - 1u) / SPARK_LM_TILE);
+	dim3 grid((slot_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(view->rows + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
 	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
 		SparkLmExpertTileKernel<128u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(view->weight_format,view->payload,view->scale_e8m0,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
 	else
@@ -864,7 +923,8 @@ extern "C" cudaError_t SparkDsv4LaunchAccumAdd(cudaStream_t stream, void *destin
 extern "C" cudaError_t SparkDsv4LaunchIndexerScore(cudaStream_t stream, const void *q_bf16, const void *kv_cache_bf16, uint64_t lane_stride_elements, const uint32_t *row_lane_indices, const uint32_t *slot_counts, const float *head_weights_f32, float *scores_f32, uint32_t row_count, uint32_t max_slots, uint32_t head_count, uint32_t head_dim)
 {
 	dim3 grid(row_count,(max_slots + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
-	SparkDsv4IndexerScoreKernel<<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(q_bf16,kv_cache_bf16,lane_stride_elements,row_lane_indices,slot_counts,head_weights_f32,scores_f32,row_count,max_slots,head_count,head_dim);
+	uint32_t shared_bytes = head_count * head_dim * (uint32_t)sizeof(float);
+	SparkDsv4IndexerScoreKernel<<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(q_bf16,kv_cache_bf16,lane_stride_elements,row_lane_indices,slot_counts,head_weights_f32,scores_f32,row_count,max_slots,head_count,head_dim);
 	return(cudaGetLastError());
 }
 
