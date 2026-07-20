@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "xiaomi.mimo-2.5.resident-decode-stage-firmware",
+    "revision": "h4096-l48-swa128-e256k8-mtp3-v152576-v1"
+  },
+  "metadata": {
+    "architecture": "mimo25_resident_decode_stage",
+    "purpose": "resident decode-stage firmware for MiMo 2.5: interleaved full and sliding-window attention with per-branch kv head counts and rope thetas, 256-expert MoE, three MTP layers with per-layer sliding rings, screened exact full-vocabulary head",
+    "provenance": {
+      "status": "implemented driver, codex/model-driver-family (PR #491)",
+      "disclosed_source": [
+        "hugging face model config"
+      ]
+    },
+    "module_geometry": {
+      "hidden_dimension": 4096,
+      "layer_count": 48,
+      "attn_head_count": 64,
+      "attn_head_dimension": 192,
+      "attn_value_dimension": 128,
+      "attn_rope_dimension": 64,
+      "full_kv_head_count": 4,
+      "swa_kv_head_count": 8,
+      "full_qkv_dimension": 13568,
+      "swa_qkv_dimension": 14848,
+      "q_dimension": 12288,
+      "sliding_window_tokens": 128,
+      "attn_value_scale": 0.707,
+      "full_rope_theta": 10000000.0,
+      "swa_rope_theta": 10000.0,
+      "dense_intermediate_dimension": 16384,
+      "expert_intermediate_dimension": 2048,
+      "routed_expert_count": 256,
+      "experts_per_token": 8,
+      "fp8_scale_block": 128,
+      "mtp_layer_count": 3,
+      "vocab_count": 152576,
+      "head_screen_cap": 4096
+    },
+    "hf_config_geometry": {
+      "hidden_size": 4096,
+      "num_hidden_layers": 48,
+      "vocab_size": 152576,
+      "num_attention_heads": 64,
+      "head_dim": 192,
+      "v_head_dim": 128,
+      "partial_rotary_factor": 0.3333,
+      "sliding_window": 128,
+      "rms_norm_eps": 1e-05,
+      "max_position_embeddings": 1048576,
+      "n_routed_experts": 256,
+      "num_experts_per_tok": 8,
+      "moe_intermediate_size": 2048,
+      "intermediate_size": 16384,
+      "mtp_num_hidden_layers": 3,
+      "routed_scaling_factor": null
+    }
+  },
+  "stages": [
+    {
+      "name": "mimo25_resident_decode_stage",
+      "target": "cuda_sm_121a",
+      "programs": [
+        {
+          "name": "resident_decode",
+          "id": 1,
+          "operations": [
+            "SparkMimo25ResidentDecodeStageInitialize",
+            "SparkMimo25ResidentDecodeStageExecute",
+            "SparkMimo25ResidentDecodeStageAdmit",
+            "SparkMimo25ResidentDecodeStageSnapshot",
+            "SparkMimo25ResidentDecodeStageDestroy"
+          ],
+          "environment": {
+            "SPARK_MIMO25_STAGE_PACK_PATH": "path to the mimo25 stage pack, required",
+            "SPARK_MIMO25_STAGE_INDEX": "this stage's index, required",
+            "SPARK_MIMO25_STAGE_COUNT": "total stages, required",
+            "SPARK_MIMO25_STAGE_FIRST_LAYER": "first layer of the slice, required",
+            "SPARK_MIMO25_STAGE_LAYER_COUNT": "layers in the slice, required",
+            "SPARK_MIMO25_STAGE_MAX_ACTIVE_SEQUENCES": "concurrent lanes, required",
+            "SPARK_MIMO25_STAGE_MAX_SEQ": "per-lane context cap, required",
+            "SPARK_MIMO25_STAGE_PIPELINE_SLOTS": "1..4, required",
+            "SPARK_MIMO25_STAGE_MTP": "MTP draft depth 0..3, optional"
+          },
+          "frame_contract": {
+            "dispatch": "one sequence per frame",
+            "driver_dispatch_slot": "required and valid, it is the lane",
+            "buffers": [
+              {
+                "slot": 0,
+                "flags": "read",
+                "contents": "new_token_count host token ids"
+              },
+              {
+                "slot": 1,
+                "flags": "write",
+                "contents": "new_token_count host sampled token ids"
+              }
+            ],
+            "decode_new_token_count": 1,
+            "mtp": "three drafts appended row-major [row][depth] after the sampled token when armed, frame context v2"
+          }
+        }
+      ]
+    }
+  ]
+}

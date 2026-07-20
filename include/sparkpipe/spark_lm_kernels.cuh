@@ -574,6 +574,7 @@ static __global__ void SparkLmHeadShadowQuantizeKernel(const void *head_bf16, ui
 {
 	uint32_t neuron = (blockIdx.x * SPARK_LM_CTA_WARPS) + (threadIdx.x / SPARK_LM_WARP_LANES);
 	uint32_t lane = threadIdx.x % SPARK_LM_WARP_LANES,group,element,packed,nibble,exponent;
+	int32_t clamped;
 	uint64_t row_base = (uint64_t)neuron * hidden_dimension;
 	float absmax,scale_value,exact,coded,error_squares = 0.0f;
 	if ( neuron >= candidate_count )
@@ -585,7 +586,11 @@ static __global__ void SparkLmHeadShadowQuantizeKernel(const void *head_bf16, ui
 			absmax = fmaxf(absmax,fabsf(SparkLmBf16ToFloat(head_bf16,row_base + (group * SPARK_LM_HEAD_SHADOW_GROUP) + element)));
 		exponent = 127u;
 		if ( absmax > 0.0f )
-			exponent = (uint32_t)((int32_t)ceilf(log2f(absmax / 6.0f)) + 127);
+		{
+			clamped = (int32_t)ceilf(log2f(absmax / 6.0f));
+			clamped = clamped < -127 ? -127 : (clamped > 127 ? 127 : clamped);
+			exponent = (uint32_t)(clamped + 127);
+		}
 		shadow_scale_e8m0[((uint64_t)neuron * (hidden_dimension / SPARK_LM_HEAD_SHADOW_GROUP)) + group] = (uint8_t)exponent;
 		scale_value = SparkLmDecodeE8m0(exponent);
 		for (element = 0; element < SPARK_LM_HEAD_SHADOW_GROUP; element += 8u)

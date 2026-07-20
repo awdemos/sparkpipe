@@ -1163,8 +1163,18 @@ void SparkMimo25ResidentDecodeStageDestroy(void *module_state)
 	if ( state == 0 )
 		return;
 	for (slot_index = 0; slot_index < state->pipeline_slot_count; slot_index++)
+	{
 		if ( state->slots[slot_index].cuda_stream != 0 )
 			cudaStreamDestroy((cudaStream_t)state->slots[slot_index].cuda_stream);
+		if ( state->slots[slot_index].host_moe_indices != 0 )
+			cudaFreeHost(state->slots[slot_index].host_moe_indices);
+		if ( state->slots[slot_index].host_grouped_rows != 0 )
+			cudaFreeHost(state->slots[slot_index].host_grouped_rows);
+		if ( state->slots[slot_index].host_grouped_weight_slots != 0 )
+			cudaFreeHost(state->slots[slot_index].host_grouped_weight_slots);
+		if ( state->slots[slot_index].host_mtp_positions != 0 )
+			cudaFreeHost(state->slots[slot_index].host_mtp_positions);
+	}
 	SparkStageModuleLedgerRelease(&state->ledger);
 	free(state);
 }

@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "model": {
+    "id": "alibaba.qwen3.6-27b.resident-decode-stage-firmware",
+    "revision": "bf16-h5120-l64-gdn48-full16-v248320-mtp1-v1"
+  },
+  "metadata": {
+    "architecture": "qwen36_resident_decode_stage",
+    "purpose": "resident decode-stage firmware for Qwen 3.6 27B: 3:1 Gated DeltaNet to gated full attention, partial RoPE, dense SwiGLU FFN, bf16 weights, one-layer MTP, screened exact full-vocabulary head",
+    "provenance": {
+      "status": "implemented driver, codex/model-driver-family (PR #491)",
+      "disclosed_source": [
+        "hugging face model config"
+      ]
+    },
+    "module_geometry": {
+      "hidden_dimension": 5120,
+      "layer_count": 64,
+      "gdn_layer_count": 48,
+      "full_attention_layer_count": 16,
+      "attention_period": 4,
+      "full_attention_phase": 3,
+      "gdn_key_head_count": 16,
+      "gdn_value_head_count": 48,
+      "gdn_head_key_dimension": 128,
+      "gdn_head_value_dimension": 128,
+      "gdn_conv_kernel": 4,
+      "gdn_chunk_tokens": 64,
+      "attn_query_head_count": 24,
+      "attn_kv_head_count": 4,
+      "attn_head_dimension": 256,
+      "attn_rope_dimension": 64,
+      "attn_output_gate": true,
+      "ffn_intermediate_dimension": 17408,
+      "vocab_count": 248320,
+      "mtp_layer_count": 1,
+      "head_screen_cap": 4096
+    },
+    "hf_config_geometry": {
+      "hidden_size": 5120,
+      "num_hidden_layers": 64,
+      "vocab_size": 248320,
+      "intermediate_size": 17408,
+      "num_attention_heads": 24,
+      "num_key_value_heads": 4,
+      "head_dim": 256,
+      "partial_rotary_factor": 0.25,
+      "rope_theta": 10000000.0,
+      "rms_norm_eps": 1e-06,
+      "full_attention_interval": 4,
+      "linear_num_key_heads": 16,
+      "linear_num_value_heads": 48,
+      "linear_key_head_dim": 128,
+      "linear_value_head_dim": 128,
+      "linear_conv_kernel_dim": 4,
+      "attn_output_gate": true,
+      "mtp_num_hidden_layers": 1,
+      "tie_word_embeddings": false
+    }
+  },
+  "stages": [
+    {
+      "name": "qwen36_resident_decode_stage",
+      "target": "cuda_sm_121a",
+      "programs": [
+        {
+          "name": "resident_decode",
+          "id": 1,
+          "operations": [
+            "SparkQwen36ResidentDecodeStageInitialize",
+            "SparkQwen36ResidentDecodeStageExecute",
+            "SparkQwen36ResidentDecodeStageAdmit",
+            "SparkQwen36ResidentDecodeStageSnapshot",
+            "SparkQwen36ResidentDecodeStageDestroy"
+          ],
+          "environment": {
+            "SPARK_QWEN36_STAGE_PACK_PATH": "path to the qwen36 stage pack, required",
+            "SPARK_QWEN36_STAGE_INDEX": "this stage's index, required",
+            "SPARK_QWEN36_STAGE_COUNT": "total stages, required",
+            "SPARK_QWEN36_STAGE_FIRST_LAYER": "first layer of the slice, required",
+            "SPARK_QWEN36_STAGE_LAYER_COUNT": "layers in the slice, required",
+            "SPARK_QWEN36_STAGE_MAX_ACTIVE_SEQUENCES": "concurrent lanes, required",
+            "SPARK_QWEN36_STAGE_MAX_SEQ": "per-lane context cap, required",
+            "SPARK_QWEN36_STAGE_PIPELINE_SLOTS": "1..4, required",
+            "SPARK_QWEN36_STAGE_MTP": "MTP draft depth, optional",
+            "SPARK_QWEN36_STAGE_KV_POOL_BYTES": "jit kv pool bytes, optional",
+            "SPARK_QWEN36_STAGE_KV_BLOCKS": "paged kv blocks, optional",
+            "SPARK_QWEN36_STAGE_GDN_SNAPSHOT_SLOTS": "gdn state snapshot slots, optional"
+          },
+          "frame_contract": {
+            "dispatch": "one sequence per frame",
+            "driver_dispatch_slot": "required and valid, it is the lane",
+            "buffers": [
+              {
+                "slot": 0,
+                "flags": "read",
+                "contents": "new_token_count host token ids"
+              },
+              {
+                "slot": 1,
+                "flags": "write",
+                "contents": "new_token_count host sampled token ids"
+              }
+            ],
+            "decode_new_token_count": 1,
+            "mtp": "drafts appended after the sampled token when armed, per the driver frame context"
+          }
+        }
+      ]
+    }
+  ]
+}
