@@ -249,6 +249,34 @@ static __global__ void SparkMimo25CacheScatterKernel(const void *qkv_bf16, uint6
 		((uint4 *)v_cache_bf16)[v_base + element] = __ldg(((const uint4 *)qkv_bf16) + v_source + element);
 }
 
+extern "C" cudaError_t SparkMimo25LaunchMoeGroup(cudaStream_t stream, const uint32_t *pair_expert_ids, uint32_t pair_count, uint32_t *expert_offsets, uint32_t *grouped_rows, uint32_t *grouped_weight_slots, uint32_t *inverse_map)
+{
+	static_assert(SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT <= SPARK_LM_MOE_MAX_EXPERTS,"expert table exceeds group kernel shared capacity");
+	SparkLmMoeGroupKernel<<<1u,SPARK_LM_CTA_THREADS,0,stream>>>(pair_expert_ids,pair_count,SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT,SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN,expert_offsets,grouped_rows,grouped_weight_slots,inverse_map);
+	return(cudaGetLastError());
+}
+
+// One launch covers every routed expert for one projection shape: the
+// grid's z axis is the expert table, offsets live on device, empty
+// tiles exit immediately. rows_per_expert and columns describe ONE
+// expert's matrix; strides derive from the fp8 block-scale layout.
+extern "C" cudaError_t SparkMimo25LaunchExpertTileAll(cudaStream_t stream, const SparkMimo25LinearView *stacked, const void *unused_payload, const void *unused_scale, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t max_group_slots, uint64_t rows_per_expert, uint64_t columns)
+{
+	uint64_t payload_stride = rows_per_expert * columns;
+	uint64_t scale_stride = (rows_per_expert / SPARK_MIMO25_MODEL_FP8_SCALE_BLOCK) * (columns / SPARK_MIMO25_MODEL_FP8_SCALE_BLOCK) * sizeof(float);
+	dim3 grid((max_group_slots + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,((uint32_t)rows_per_expert + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N,SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT);
+	(void)unused_payload;
+	(void)unused_scale;
+	SparkLmExpertTileAllKernel<128u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(stacked->weight_format,stacked->payload,stacked->scale,payload_stride,scale_stride,input_bf16,grouped_rows,expert_offsets,output_bf16,(uint32_t)columns,(uint32_t)rows_per_expert);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkMimo25LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count)
+{
+	SparkLmMoePairReduceKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION);
+	return(cudaGetLastError());
+}
+
 extern "C" cudaError_t SparkMimo25LaunchCacheScatter(cudaStream_t stream, const void *qkv_bf16, uint64_t qkv_row_stride, uint32_t k_offset, uint32_t k_width, uint32_t v_offset, uint32_t v_width, void *k_cache_bf16, void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, uint32_t window_slots, uint32_t row_count)
 {
 	SparkMimo25CacheScatterKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(qkv_bf16,qkv_row_stride,k_offset,k_width,v_offset,v_width,k_cache_bf16,v_cache_bf16,k_lane_stride,v_lane_stride,row_lane_indices,row_positions,window_slots,row_count);

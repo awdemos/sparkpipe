@@ -1,5 +1,6 @@
 #include "sparkpipe/spark_lm_kernels.cuh"
 #include "sparkpipe/spark_dsv4_resident_decode_stage_firmware.h"
+#include "spark_dsv4_stagepack_format.h"
 
 #include <math.h>
 
@@ -917,6 +918,30 @@ extern "C" cudaError_t SparkDsv4LaunchGatherLinear(cudaStream_t stream, const Sp
 		SparkLmGatherLinearKernel<128u><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,view->payload,view->scale_e8m0,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
 	else
 		SparkLmGatherLinearKernel<32u><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,view->payload,view->scale_e8m0,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchMoeGroup(cudaStream_t stream, const uint32_t *pair_expert_ids, uint32_t pair_count, uint32_t *expert_offsets, uint32_t *grouped_rows, uint32_t *grouped_weight_slots, uint32_t *inverse_map)
+{
+	static_assert(SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT <= SPARK_LM_MOE_MAX_EXPERTS,"expert table exceeds group kernel shared capacity");
+	SparkLmMoeGroupKernel<<<1u,SPARK_LM_CTA_THREADS,0,stream>>>(pair_expert_ids,pair_count,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,expert_offsets,grouped_rows,grouped_weight_slots,inverse_map);
+	return(cudaGetLastError());
+}
+
+// All-expert tile over the mxfp4 expert stacks: strides derive from the
+// nibble payload and per-group e8m0 scale layout.
+extern "C" cudaError_t SparkDsv4LaunchExpertTileAll(cudaStream_t stream, const SparkDsv4LinearView *stacked, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t max_group_slots, uint64_t rows_per_expert, uint64_t columns)
+{
+	uint64_t payload_stride = (rows_per_expert * columns) / 2u;
+	uint64_t scale_stride = rows_per_expert * (columns / SPARK_DSV4_STAGEPACK_FP4_SCALE_BLOCK);
+	dim3 grid((max_group_slots + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,((uint32_t)rows_per_expert + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N,SPARK_DSV4_MODEL_ROUTED_EXPERT_COUNT);
+	SparkLmExpertTileAllKernel<32u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(stacked->weight_format,stacked->payload,stacked->scale_e8m0,payload_stride,scale_stride,input_bf16,grouped_rows,expert_offsets,output_bf16,(uint32_t)columns,(uint32_t)rows_per_expert);
+	return(cudaGetLastError());
+}
+
+extern "C" cudaError_t SparkDsv4LaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, void *accum_bf16, uint32_t row_count)
+{
+	SparkLmMoePairReduceKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(slot_out_bf16,inverse_map,0,accum_bf16,row_count,SPARK_DSV4_MODEL_EXPERTS_PER_TOKEN,SPARK_DSV4_MODEL_HIDDEN_DIMENSION);
 	return(cudaGetLastError());
 }
 

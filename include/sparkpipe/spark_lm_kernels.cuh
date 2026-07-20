@@ -931,7 +931,7 @@ static __device__ __forceinline__ void SparkLmTileStageInput(const void *input_b
  * guarded, so any slot count and output width are served.
  */
 template <uint32_t GROUP_SIZE>
-static __global__ void SparkLmExpertTileKernel(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension)
+static __device__ void SparkLmExpertTileBody(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t slot_base, uint32_t neuron_base)
 {
 	__shared__ __nv_bfloat16 tile_input[SPARK_LM_TILE * SPARK_LM_TILE_K];
 	__shared__ __nv_bfloat16 tile_weight[SPARK_LM_TILE_N * SPARK_LM_TILE_K];
@@ -939,7 +939,6 @@ static __global__ void SparkLmExpertTileKernel(uint32_t weight_format, const voi
 	nvcuda::wmma::fragment<nvcuda::wmma::matrix_a,16,16,16,__nv_bfloat16,nvcuda::wmma::row_major> frag_input;
 	nvcuda::wmma::fragment<nvcuda::wmma::matrix_b,16,16,16,__nv_bfloat16,nvcuda::wmma::col_major> frag_weight;
 	nvcuda::wmma::fragment<nvcuda::wmma::accumulator,16,16,16,float> frag_accum;
-	uint32_t slot_base = blockIdx.x * SPARK_LM_TILE,neuron_base = blockIdx.y * SPARK_LM_TILE_N;
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES;
 	uint32_t stage_neuron = neuron_base + (threadIdx.x & (SPARK_LM_TILE_N - 1u)),stage_k = (threadIdx.x >> 7u) << 5u;
 	uint32_t k_base,k_step,entry,slot,neuron;
@@ -972,6 +971,99 @@ static __global__ void SparkLmExpertTileKernel(uint32_t weight_format, const voi
 			SparkLmFloatToBf16(output_bf16,((uint64_t)slot * output_dimension) + neuron,tile_output[entry / SPARK_LM_TILE_N][entry % SPARK_LM_TILE_N]);
 	}
 }
+
+template <uint32_t GROUP_SIZE>
+static __global__ void SparkLmExpertTileKernel(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	SparkLmExpertTileBody<GROUP_SIZE>(weight_format,weight_payload,weight_scale,input_bf16,input_row_map,output_bf16,slot_count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
+}
+
+/*
+ * All-expert tile: gridDim.z spans the routed expert table, the group
+ * offsets live on DEVICE, and empty or out-of-range tiles exit in a few
+ * cycles - the whole routed w1/w3/w2 phase becomes ONE launch with no
+ * host knowledge of the grouping. Identity mapping (row_map zero) shifts
+ * the input base by the group offset so the w2 shape works unchanged.
+ */
+template <uint32_t GROUP_SIZE>
+static __global__ void SparkLmExpertTileAllKernel(uint32_t weight_format, const void *payload_base, const void *scale_base, uint64_t payload_expert_stride_bytes, uint64_t scale_expert_stride_bytes, const void *input_bf16, const uint32_t *grouped_rows, const uint32_t *expert_offsets, void *output_bf16, uint32_t input_dimension, uint32_t output_dimension)
+{
+	uint32_t expert = blockIdx.z;
+	uint32_t offset = expert_offsets[expert],count = expert_offsets[expert + 1u] - offset;
+	const void *payload = (const uint8_t *)payload_base + ((uint64_t)expert * payload_expert_stride_bytes);
+	const void *scale = (const uint8_t *)scale_base + ((uint64_t)expert * scale_expert_stride_bytes);
+	const void *input = grouped_rows != 0 ? input_bf16 : (const void *)((const uint8_t *)input_bf16 + ((uint64_t)offset * input_dimension * 2u));
+	if ( (blockIdx.x * SPARK_LM_TILE) >= count )
+		return;
+	SparkLmExpertTileBody<GROUP_SIZE>(weight_format,payload,scale,input,grouped_rows != 0 ? grouped_rows + offset : 0,(void *)((uint8_t *)output_bf16 + ((uint64_t)offset * output_dimension * 2u)),count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
+}
+
+/*
+ * Device grouping: ONE single-block kernel replaces the per-layer host
+ * round trip - histogram, exclusive prefix, and the stable scatter with
+ * the inverse map the pair reduce walks. Indices come from the driver's
+ * own gate select and are in range by construction. Kills the stream
+ * synchronize every MoE layer paid and makes the step graph-capturable.
+ */
+#define SPARK_LM_MOE_MAX_EXPERTS 512u
+
+static __global__ void SparkLmMoeGroupKernel(const uint32_t *pair_expert_ids, uint32_t pair_count, uint32_t expert_count, uint32_t experts_per_token, uint32_t *expert_offsets, uint32_t *grouped_rows, uint32_t *grouped_weight_slots, uint32_t *inverse_map)
+{
+	__shared__ uint32_t counts[SPARK_LM_MOE_MAX_EXPERTS];
+	__shared__ uint32_t cursors[SPARK_LM_MOE_MAX_EXPERTS];
+	uint32_t pair,expert,slot,running;
+	for (expert = threadIdx.x; expert < expert_count; expert += blockDim.x)
+		counts[expert] = 0u;
+	__syncthreads();
+	for (pair = threadIdx.x; pair < pair_count; pair += blockDim.x)
+		atomicAdd(&counts[pair_expert_ids[pair]],1u);
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+	{
+		running = 0u;
+		for (expert = 0; expert < expert_count; expert++)
+		{
+			cursors[expert] = running;
+			expert_offsets[expert] = running;
+			running += counts[expert];
+		}
+		expert_offsets[expert_count] = running;
+	}
+	__syncthreads();
+	for (pair = threadIdx.x; pair < pair_count; pair += blockDim.x)
+	{
+		slot = atomicAdd(&cursors[pair_expert_ids[pair]],1u);
+		grouped_rows[slot] = pair / experts_per_token;
+		grouped_weight_slots[slot] = pair;
+		inverse_map[pair] = slot;
+	}
+}
+
+// Race-free replacement for the per-group output scatter: every pair's
+// expert output sits at its grouped slot, so one block per row sums the
+// row's contributions through the inverse map and accumulates once.
+static __global__ void SparkLmMoePairReduceKernel(const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t experts_per_token, uint32_t width)
+{
+	uint32_t row = blockIdx.x,element,rank;
+	uint64_t pair_base = (uint64_t)row * experts_per_token;
+	float weight;
+	float2 pair_value,accum_pair;
+	if ( row >= row_count )
+		return;
+	for (element = threadIdx.x; element < (width >> 1u); element += blockDim.x)
+	{
+		accum_pair = SparkLmLoadBf16Pair(accum_bf16,(((uint64_t)row * width) >> 1u) + element);
+		for (rank = 0; rank < experts_per_token; rank++)
+		{
+			weight = pair_weights_f32 != 0 ? __ldg(pair_weights_f32 + pair_base + rank) : 1.0f;
+			pair_value = SparkLmLoadBf16Pair(slot_out_bf16,(((uint64_t)__ldg(inverse_map + pair_base + rank) * width) >> 1u) + element);
+			accum_pair.x = fmaf(weight,pair_value.x,accum_pair.x);
+			accum_pair.y = fmaf(weight,pair_value.y,accum_pair.y);
+		}
+		SparkLmStoreBf16Pair(accum_bf16,(((uint64_t)row * width) >> 1u) + element,accum_pair.x,accum_pair.y);
+	}
+}
+
 
 
 /*
