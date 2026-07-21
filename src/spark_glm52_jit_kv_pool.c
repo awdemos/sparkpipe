@@ -80,13 +80,15 @@ static void SparkGlm52JitKvPoolHeapRemove(SparkGlm52JitKvPool *pool,uint32_t fra
 	SparkGlm52JitKvPoolHeapSiftUp(pool,position);
 }
 
-static void SparkGlm52JitKvPoolHeapUpdate(SparkGlm52JitKvPool *pool,uint32_t fragment_id)
+static void SparkGlm52JitKvPoolHeapDecreaseKey(SparkGlm52JitKvPool *pool,uint32_t fragment_id)
 {
+	// The only caller decreases next_need_ns before calling. In a max-heap a
+	// decreased key can only sink toward the leaves, never rise, so sift-down
+	// alone restores the heap and the sift-up is provably unnecessary.
 	uint32_t position = pool->fragments[fragment_id].heap_position;
 	if ( position >= pool->eviction_heap_count || pool->eviction_heap[position] != fragment_id )
 		return;
 	SparkGlm52JitKvPoolHeapSiftDown(pool,position);
-	SparkGlm52JitKvPoolHeapSiftUp(pool,position);
 }
 
 SparkStatus SparkGlm52JitKvPoolInitialize(SparkGlm52JitKvPool *pool,const SparkGlm52JitKvPoolConfiguration *configuration)
@@ -232,7 +234,7 @@ SparkStatus SparkGlm52JitKvPoolRequireByEta(SparkGlm52JitKvPool *pool,uint64_t n
 		{
 			fragment->next_need_ns = need_ns;
 			if ( fragment->state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM )
-				SparkGlm52JitKvPoolHeapUpdate(pool,fragment_ids[request_index]);
+				SparkGlm52JitKvPoolHeapDecreaseKey(pool,fragment_ids[request_index]);
 		}
 		if ( fragment->state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM ||
 			fragment->state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_STAGING_IN )
