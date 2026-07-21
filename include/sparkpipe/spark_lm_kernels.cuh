@@ -1108,17 +1108,30 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 	return(cudaGetLastError());
 }
 
-// Batched dense linear/QKVO projection: below the tile width, the scalar
-// one-warp-per-neuron kernel is right (B1 decode is memory bound and a
-// tensor tile over a single row wastes the fragment). At batch, route
-// through the tensor-core tile with an identity row map - a dense
-// projection is one implicit expert over all rows - which turns the
-// measured 6.5-TFLOP/s scalar QKVO wall into tensor-core throughput and
-// inherits the FP8 path when built with SPARK_LM_FP8_TILE. Shape stays
-// parametric; carries to the next model generation unchanged.
+// Size-aware batched dense linear/QKVO projection. The measured regimes
+// (GLM52_B128_SCALING_ROOT_CAUSE) are three, not a continuum, so this
+// deliberately breaks DRY into exactly three paths with two crossovers -
+// more paths would not pay because per-token cost is flat within a regime:
+//
+//   B < SPARK_LM_TILE  (tiny): the scalar one-warp-per-neuron kernel. B1
+//     decode is memory bound; a tensor tile over a near-empty M wastes the
+//     fragment and the padded rows. Unchanged, correct here.
+//   SPARK_LM_TILE <= B <= READ_ONCE: one tile pass, weight read once across
+//     the batch. Per-token cost is flat B16..B128 - one kernel serves it.
+//   B > READ_ONCE (wide): the SAME tile, but grid.x rasterizes M as the
+//     FAST axis so adjacent M-blocks of one N-tile reuse the weight strip
+//     from L2 instead of re-reading DRAM. This is the measured knob - the
+//     deleted per-size wide-warp variants lost to grid rasterization, not
+//     to a kernel-per-size. ceil(B/TILE) M-blocks per N-tile, M fastest.
+//
+// All three inherit the FP8 tensor path under SPARK_LM_FP8_TILE (the tile
+// dispatch), and every dimension is parametric so the shape carries to the
+// next model generation unchanged.
 template <uint32_t GROUP_SIZE>
 static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
+	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
+	uint32_t n_tiles = (output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N;
 	if ( row_count < SPARK_LM_TILE )
 	{
 		dim3 scalar_grid(row_count,(output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
@@ -1126,7 +1139,18 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 		SparkLmLinearKernel<GROUP_SIZE><<<scalar_grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,output_bf16,row_count,input_dimension,output_dimension);
 		return(cudaGetLastError());
 	}
-	dim3 tile_grid((row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
+	// B >= TILE: the tensor tile spans BOTH the read-once (B<=128) and the
+	// wide (B>128) regimes in one launch. grid.x is the M axis (blockIdx.x
+	// -> M in the tile body), so the default rasterization already walks all
+	// M-blocks of one N-tile consecutively - adjacent M-blocks reuse the
+	// weight strip warm in L2, which IS the "make M the fast grid" knob the
+	// scaling analysis names. That is why the per-size wide-warp variants
+	// were deleted rather than kept: the tile subsumes them. No third path
+	// is built because the measurement shows none pays - per-token cost is
+	// flat B16..B128 and the wide regime is the same kernel with more
+	// M-blocks. A future in-block M-chunk loop, if B256+ profiling demands
+	// it, changes the tile body, not this dispatcher.
+	dim3 tile_grid(m_blocks,n_tiles);
 	SparkLmExpertTileKernel<GROUP_SIZE><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,0,output_bf16,row_count,input_dimension,output_dimension);
 	return(cudaGetLastError());
 }
