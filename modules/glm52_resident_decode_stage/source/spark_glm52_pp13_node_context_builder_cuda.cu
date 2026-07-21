@@ -9757,9 +9757,18 @@ static SparkStatus SparkGlm52Pp13BuilderBuildResidentKvTable(
 	mooncake_enabled = state->kv_store_state != 0 ? 1u : 0u;
 	if (nvme_enabled != 0u || mooncake_enabled != 0u)
 	{
+		// A load pending at batch open is a same-step protocol violation
+		// on either backend. A store pending is different for mooncake:
+		// its PUT batch may still be draining on an adapter worker across
+		// a step boundary, and the store hook already returns BUSY while
+		// that batch is in flight so nothing new accumulates. Tolerating
+		// the store carryover keeps a slow provider from wedging the step
+		// with INTERNAL_ERROR - the batch simply completes a step later.
+		// NVMe stores are synchronous per step, so they are never carried
+		// and the stricter check still applies to that backend.
 		if (state->kv_nvme_batch_active != 0u ||
-			state->kv_nvme_pending_store_count != 0u ||
-			state->kv_nvme_pending_load_count != 0u)
+			state->kv_nvme_pending_load_count != 0u ||
+			(nvme_enabled != 0u && state->kv_nvme_pending_store_count != 0u))
 			return SPARK_STATUS_INTERNAL_ERROR;
 		state->kv_nvme_batch_active = 1u;
 	}
