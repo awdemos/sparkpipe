@@ -48,6 +48,7 @@ typedef struct SparkMimo25LayerWeights
 typedef struct SparkMimo25ModuleSlot
 {
 	void *cuda_stream;
+	uint32_t residual_pending;
 	void *layer_graph_exec;
 	uint32_t layer_graph_rows;
 	uint32_t *input_token_ids;
@@ -863,13 +864,16 @@ static SparkStatus SparkMimo25ModuleRunLayer(SparkMimo25ModuleState *state, Spar
 	const SparkMimo25LayerWeights *layer = &state->layers[layer_index];
 	cudaError_t error;
 	SparkStatus status;
-	error = SparkMimo25LaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,layer_index == state->first_layer_index ? 0 : slot->ffn_accum_bf16,layer->attn.attn_norm_bf16,slot->normalized_bf16,rows,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION,SPARK_MIMO25_MODEL_RMS_NORM_EPSILON);
+	error = SparkMimo25LaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,slot->residual_pending != 0u ? slot->ffn_accum_bf16 : 0,layer->attn.attn_norm_bf16,slot->normalized_bf16,rows,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION,SPARK_MIMO25_MODEL_RMS_NORM_EPSILON);
 	if ( error != cudaSuccess )
 		return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"attn_norm"));
 	status = SparkMimo25ModuleRunAttention(state,slot,layer,batch,layer_index,rows);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
-	return(SparkMimo25ModuleRunFfn(slot,layer,layer_index,rows));
+	status = SparkMimo25ModuleRunFfn(slot,layer,layer_index,rows);
+	if ( status == SPARK_STATUS_OK )
+		slot->residual_pending = 1u;
+	return(status);
 }
 
 /*
@@ -991,6 +995,11 @@ static SparkStatus SparkMimo25ModuleRunLayersDirect(SparkMimo25ModuleState *stat
 	for (layer = state->first_layer_index; status == SPARK_STATUS_OK && layer < state->first_layer_index + state->layer_count; layer++)
 	{
 		status = SparkMimo25ModuleRunLayer(state,slot,batch,layer,rows);
+		if ( status == SPARK_STATUS_OK && context != 0 && context->tap_layer_count != 0u && slot->residual_pending != 0u )
+		{
+			status = SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,SparkMimo25LaunchResidualAdd((cudaStream_t)slot->cuda_stream,slot->hidden_bf16,slot->ffn_accum_bf16,rows,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION),"tap_residual");
+			slot->residual_pending = 0u;
+		}
 		if ( status == SPARK_STATUS_OK )
 			status = SparkMimo25ModuleTapLayer(slot,context,layer,rows);
 	}
@@ -1016,7 +1025,12 @@ static SparkStatus SparkMimo25ModuleRunLayers(SparkMimo25ModuleState *state, Spa
 	if ( state->layer_graphs_enabled == 0u || (context != 0 && context->tap_layer_count != 0u) )
 		return(SparkMimo25ModuleRunLayersDirect(state,slot,batch,context,rows));
 	if ( exec != 0 && slot->layer_graph_rows == rows )
-		return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,cudaGraphLaunch(exec,stream),"layer_graph_launch"));
+	{
+		error = cudaGraphLaunch(exec,stream);
+		if ( error == cudaSuccess )
+			slot->residual_pending = 1u;
+		return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"layer_graph_launch"));
+	}
 	if ( exec != 0 )
 	{
 		cudaGraphExecDestroy(exec);
@@ -1048,7 +1062,8 @@ static SparkStatus SparkMimo25ModuleFinish(SparkMimo25ModuleState *state, SparkM
 	cudaError_t error;
 	if ( state->owns_final_head != 0u )
 	{
-		error = SparkMimo25LaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,slot->ffn_accum_bf16,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION,SPARK_MIMO25_MODEL_RMS_NORM_EPSILON);
+		error = SparkMimo25LaunchFusedResidualRmsNorm(stream,slot->hidden_bf16,slot->residual_pending != 0u ? slot->ffn_accum_bf16 : 0,state->final_norm_weight_bf16,slot->normalized_bf16,rows,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION,SPARK_MIMO25_MODEL_RMS_NORM_EPSILON);
+		slot->residual_pending = 0u;
 		if ( error == cudaSuccess )
 			error = SparkMimo25LaunchHeadScreenedArgmax(stream,slot->normalized_bf16,state->lm_head_weight_bf16,state->head_shadow_payload,state->head_shadow_scale,state->head_error_norm_f32,slot->head_logits_bf16,slot->head_candidate_ids_u32,slot->head_candidate_counts_u32,slot->output_token_ids,rows,SPARK_MIMO25_MODEL_VOCAB_COUNT,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION);
 		if ( error == cudaSuccess )
@@ -1062,6 +1077,13 @@ static SparkStatus SparkMimo25ModuleFinish(SparkMimo25ModuleState *state, SparkM
 		context->hidden_output_packet.active_sequence_count = rows;
 		context->hidden_output_packet.hidden_dimension = SPARK_MIMO25_MODEL_HIDDEN_DIMENSION;
 		context->hidden_output_packet.bytes_per_sequence = SPARK_MIMO25_MODEL_HIDDEN_DIMENSION * SPARK_MIMO25_MODEL_BF16_ELEMENT_BYTES;
+		if ( slot->residual_pending != 0u )
+		{
+			error = SparkMimo25LaunchResidualAdd(stream,slot->hidden_bf16,slot->ffn_accum_bf16,rows,SPARK_MIMO25_MODEL_HIDDEN_DIMENSION);
+			if ( error != cudaSuccess )
+				return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"ship_residual"));
+			slot->residual_pending = 0u;
+		}
 		context->hidden_output_packet.hidden_bf16 = slot->hidden_bf16;
 		context->hidden_output_packet.cuda_stream = stream;
 		context->hidden_output_packet.sideband_payload = 0;
@@ -1100,6 +1122,7 @@ SparkStatus SparkMimo25ResidentDecodeStageExecute(void *module_state, SparkModel
 	status = SparkMimo25ModuleStageRows(state,batch,slot);
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMimo25ModuleBeginHidden(state,slot,context,frame,rows);
+	slot->residual_pending = 0u;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkMimo25ModuleRunLayers(state,slot,batch,context,rows);
 	if ( status == SPARK_STATUS_OK )

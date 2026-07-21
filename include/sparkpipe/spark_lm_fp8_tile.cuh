@@ -176,8 +176,11 @@ static __device__ void SparkLmExpertTileBodyFp8(const void *weight_payload_fp8, 
 	uint32_t k_base,k_step,row_in_tile,neuron,entry,acc_row,acc_col;
 	unsigned frag_a[4],frag_b[2];
 	for (row_in_tile = warp; row_in_tile < SPARK_LM_FP8_MMA_M; row_in_tile += (blockDim.x / SPARK_LM_WARP_LANES))
+	{
+		float row_absmax = SparkLmFp8RowAbsmax(input_bf16,input_row_map,slot_base,slot_count,row_in_tile,input_dimension,lane);
 		if ( lane == 0u )
-			row_scale[row_in_tile] = SparkLmFp8RowAbsmax(input_bf16,input_row_map,slot_base,slot_count,row_in_tile,input_dimension,0u) / SPARK_LM_FP8_E4M3_MAX;
+			row_scale[row_in_tile] = row_absmax / SPARK_LM_FP8_E4M3_MAX;
+	}
 	__syncthreads();
 	for (k_base = 0; k_base < input_dimension; k_base += SPARK_LM_FP8_TILE_K)
 	{
