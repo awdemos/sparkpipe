@@ -162,6 +162,23 @@ static __device__ void SparkLmFp8StageWeight(const void *weight_payload_fp8, uin
 	}
 }
 
+// Accumulator write: mma.sync m16n8 lane L holds acc[0..3] for rows
+// {L/4, L/4+8} x cols {(L%4)*2, (L%4)*2+1}. Apply per-row activation scale
+// and per-neuron weight dequant on store. weight_dequant folds the block
+// scale for this warp's neuron; a single per-tile scale is used pending the
+// per-block indexing confirmation on the ring.
+static __device__ __forceinline__ void SparkLmFp8StoreAccumulator(float tile_output[SPARK_LM_FP8_MMA_M][SPARK_LM_FP8_TILE_N + 8u], const float acc[4], const float *row_scale, const void *weight_scale, uint32_t warp, uint32_t lane)
+{
+	float weight_dequant = weight_scale != 0 ? ((const float *)weight_scale)[0] : 1.0f;
+	uint32_t acc_row = lane >> 2u,acc_col = (warp * SPARK_LM_FP8_MMA_N) + ((lane & 3u) << 1u);
+	if ( acc_col >= SPARK_LM_FP8_TILE_N )
+		return;
+	tile_output[acc_row][acc_col] = acc[0] * row_scale[acc_row] * weight_dequant;
+	tile_output[acc_row][acc_col + 1u] = acc[1] * row_scale[acc_row] * weight_dequant;
+	tile_output[acc_row + 8u][acc_col] = acc[2] * row_scale[acc_row + 8u] * weight_dequant;
+	tile_output[acc_row + 8u][acc_col + 1u] = acc[3] * row_scale[acc_row + 8u] * weight_dequant;
+}
+
 // FP8 expert/linear tile body. Same interface contract as the bf16
 // SparkLmExpertTileBody. weight_payload_fp8 is E4M3; weight_scale is the
 // per-block dequant scale (applied to the FP32 accumulator). Output bf16.
@@ -171,9 +188,9 @@ static __device__ void SparkLmExpertTileBodyFp8(const void *weight_payload_fp8, 
 	__shared__ __nv_fp8_storage_t tile_weight[SPARK_LM_FP8_TILE_N * SPARK_LM_FP8_TILE_K];
 	__shared__ float row_scale[SPARK_LM_FP8_MMA_M];
 	__shared__ float tile_output[SPARK_LM_FP8_MMA_M][SPARK_LM_FP8_TILE_N + 8u];
-	float acc[4] = {0.0f,0.0f,0.0f,0.0f},weight_dequant;
+	float acc[4] = {0.0f,0.0f,0.0f,0.0f};
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
-	uint32_t k_base,k_step,row_in_tile,neuron,entry,acc_row,acc_col;
+	uint32_t k_base,k_step,row_in_tile,neuron,entry;
 	unsigned frag_a[4],frag_b[2];
 	for (row_in_tile = warp; row_in_tile < SPARK_LM_FP8_MMA_M; row_in_tile += (blockDim.x / SPARK_LM_WARP_LANES))
 	{
@@ -196,21 +213,7 @@ static __device__ void SparkLmExpertTileBodyFp8(const void *weight_payload_fp8, 
 		}
 		__syncthreads();
 	}
-	// Accumulator write: mma.sync m16n8 lane L holds acc[0..3] for rows
-	// {L/4, L/4+8} x cols {(L%4)*2, (L%4)*2+1}. Apply per-row activation
-	// scale and per-neuron weight dequant on store. weight_dequant folds the
-	// block scale for this warp's neuron; a single per-tile scale is used
-	// pending the per-block indexing confirmation on the ring.
-	weight_dequant = weight_scale != 0 ? ((const float *)weight_scale)[0] : 1.0f;
-	acc_row = lane >> 2u;
-	acc_col = (warp * SPARK_LM_FP8_MMA_N) + ((lane & 3u) << 1u);
-	if ( acc_col < SPARK_LM_FP8_TILE_N )
-	{
-		tile_output[acc_row][acc_col] = acc[0] * row_scale[acc_row] * weight_dequant;
-		tile_output[acc_row][acc_col + 1u] = acc[1] * row_scale[acc_row] * weight_dequant;
-		tile_output[acc_row + 8u][acc_col] = acc[2] * row_scale[acc_row + 8u] * weight_dequant;
-		tile_output[acc_row + 8u][acc_col + 1u] = acc[3] * row_scale[acc_row + 8u] * weight_dequant;
-	}
+	SparkLmFp8StoreAccumulator(tile_output,acc,row_scale,weight_scale,warp,lane);
 	__syncthreads();
 	for (entry = threadIdx.x; entry < SPARK_LM_FP8_MMA_M * SPARK_LM_FP8_TILE_N; entry += blockDim.x)
 	{
