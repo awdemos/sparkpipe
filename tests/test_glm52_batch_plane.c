@@ -38,6 +38,21 @@ static void SparkTestExpertQueueThresholdDeadlineAndOrder(void)
 	assert(firing.layer_index == 2u && firing.expert_index == 3u && firing.row_count == 1u);
 	assert(test_queue.enqueued_row_count == 0u);
 	assert(test_queue.firing_count == 3u && test_queue.fired_row_count == 6u);
+	// Lazy free-list correctness: allocate past a fired-and-recycled batch and
+	// confirm rows keep flowing without the eager init that used to touch 1M
+	// entries. Overfill one slot beyond the emit cap and verify the cap holds
+	// and the remainder stays queued with a correct advanced oldest arrival.
+	{
+		uint32_t bulk_index;
+		SparkGlm52ExpertQueueFiring bulk;
+		for (bulk_index=0u; bulk_index<SPARK_GLM52_EXPERT_QUEUE_MAX_FIRING_ROWS + 200u; ++bulk_index)
+			assert(SparkGlm52ExpertQueueEnqueueRow(&test_queue,0u,0u,7000u + bulk_index,10u + bulk_index) == SPARK_STATUS_OK);
+		assert(SparkGlm52ExpertQueueNextFiring(&test_queue,0u,&bulk) == SPARK_STATUS_OK);
+		assert(bulk.row_count == SPARK_GLM52_EXPERT_QUEUE_MAX_FIRING_ROWS);
+		assert(bulk.row_ids[0u] == 7000u);
+		assert(test_queue.slots[0u][0u].count == 200u);
+		assert(test_queue.slots[0u][0u].oldest_arrival_ns == 10u + SPARK_GLM52_EXPERT_QUEUE_MAX_FIRING_ROWS);
+	}
 }
 
 static void SparkTestJitKvPoolPrefetchEvictionAndLateness(void)

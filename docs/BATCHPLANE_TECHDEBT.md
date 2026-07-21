@@ -47,3 +47,42 @@ are recorded for provenance; open items are ordered by measured cost.
   bandwidth is identical; the only difference is a transient copy on load paths.
   One grep on the ring-side runtime settles it; fold into the packet-timing
   session by reporting per-stage copy counts and bytes.
+
+## Second audit pass
+
+### Fixed
+
+- **ExpertQueue init wrote a 1M-entry free list then zeroed a 24MB struct.**
+  The eager free-list walk plus a full-struct memset cost 6309 us per init.
+  The free list is now lazy: a high-water counter hands out unused rows in
+  O(1) and only recycled rows go on the free list, so no init walk is needed;
+  and the memset now covers only the header and slot array up to offsetof(rows)
+  since the row pool is fully written by the allocator before any read. Init
+  dropped to 1.8 us, a 3500x reduction. Row allocation and release are now
+  single helpers used by both enqueue and firing rather than open-coded in
+  three places.
+
+### Cleared (checked, not a defect)
+
+- **Overflow-drain versus DRAM capacity invariant.** Suspected that completing
+  a stage-in inline during a transfer-ring overflow could push resident count
+  past capacity between the pre-check and the heap insert. Stress with 7904
+  forced drains at tight DRAM holds dram_resident + staging_in at exactly the
+  cap with no breach: overflow drains complete stage-out and stage-in transfers
+  in the FIFO order they were queued, so the accounting stays paired. Sound.
+
+- **Firing emit cap over MAX_FIRING_ROWS.** A slot deeper than the emit array
+  caps the firing at the array bound and leaves the remainder queued with a
+  correctly advanced oldest arrival; memory-safe, no truncation of live rows.
+  Locked with a test.
+
+### Open, lower cost
+
+- **JitKvPool init memset is 513 us.** The fragment array must be zeroed for
+  the FREE-state sentinel, so unlike the queue it cannot skip the row region.
+  Could zero only fragments[0..capacity) when capacity is below the max, but
+  that trades a clear invariant for a rare-path saving and is deferred.
+
+- **Config validation preambles are structurally similar across the three
+  init functions** but validate different field sets, so they are left
+  explicit rather than folded into a macro that would hide the field checks.

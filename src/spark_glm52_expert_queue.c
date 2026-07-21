@@ -1,10 +1,11 @@
 #include "sparkpipe/spark_glm52_expert_queue.h"
 
+#include <stddef.h>
 #include <string.h>
 
 SparkStatus SparkGlm52ExpertQueueInitialize(SparkGlm52ExpertQueue *queue,const SparkGlm52ExpertQueueConfiguration *configuration)
 {
-	uint32_t row_index,layer_index,expert_index;
+	uint32_t layer_index,expert_index;
 	if ( queue == 0 || configuration == 0 ||
 		configuration->abi_version != SPARK_GLM52_EXPERT_QUEUE_ABI_VERSION ||
 		configuration->layer_count == 0u ||
@@ -15,16 +16,14 @@ SparkStatus SparkGlm52ExpertQueueInitialize(SparkGlm52ExpertQueue *queue,const S
 		configuration->firing_threshold_rows > SPARK_GLM52_EXPERT_QUEUE_MAX_FIRING_ROWS ||
 		configuration->firing_deadline_ns == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	memset(queue,0,sizeof(*queue));
+	memset(queue,0,offsetof(SparkGlm52ExpertQueue,rows));
 	queue->abi_version = SPARK_GLM52_EXPERT_QUEUE_ABI_VERSION;
 	queue->layer_count = configuration->layer_count;
 	queue->expert_count = configuration->expert_count;
 	queue->firing_threshold_rows = configuration->firing_threshold_rows;
 	queue->firing_deadline_ns = configuration->firing_deadline_ns;
-	for (row_index=0u; row_index<SPARK_GLM52_EXPERT_QUEUE_MAX_ROWS; row_index++)
-		queue->rows[row_index].list_next = (row_index + 1u);
-	queue->rows[SPARK_GLM52_EXPERT_QUEUE_MAX_ROWS - 1u].list_next = UINT32_MAX;
-	queue->free_head = 0u;
+	queue->free_head = UINT32_MAX;
+	queue->free_high_water = 0u;
 	for (layer_index=0u; layer_index<queue->layer_count; layer_index++)
 		for (expert_index=0u; expert_index<queue->expert_count; expert_index++)
 		{
@@ -34,16 +33,39 @@ SparkStatus SparkGlm52ExpertQueueInitialize(SparkGlm52ExpertQueue *queue,const S
 	return(SPARK_STATUS_OK);
 }
 
+static uint32_t SparkGlm52ExpertQueueAllocateRow(SparkGlm52ExpertQueue *queue)
+{
+	uint32_t row_index;
+	if ( queue->free_head != UINT32_MAX )
+	{
+		row_index = queue->free_head;
+		queue->free_head = queue->rows[row_index].list_next;
+		return(row_index);
+	}
+	if ( queue->free_high_water < SPARK_GLM52_EXPERT_QUEUE_MAX_ROWS )
+	{
+		row_index = queue->free_high_water;
+		queue->free_high_water += 1u;
+		return(row_index);
+	}
+	return(UINT32_MAX);
+}
+
+static void SparkGlm52ExpertQueueReleaseRow(SparkGlm52ExpertQueue *queue,uint32_t row_index)
+{
+	queue->rows[row_index].list_next = queue->free_head;
+	queue->free_head = row_index;
+}
+
 SparkStatus SparkGlm52ExpertQueueEnqueueRow(SparkGlm52ExpertQueue *queue,uint32_t layer_index,uint32_t expert_index,uint64_t row_id,uint64_t arrival_ns)
 {
 	SparkGlm52ExpertQueueSlot *slot;
 	uint32_t row_index;
 	if ( queue == 0 || layer_index >= queue->layer_count || expert_index >= queue->expert_count )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( queue->free_head == UINT32_MAX )
+	row_index = SparkGlm52ExpertQueueAllocateRow(queue);
+	if ( row_index == UINT32_MAX )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
-	row_index = queue->free_head;
-	queue->free_head = queue->rows[row_index].list_next;
 	queue->rows[row_index].row_id = row_id;
 	queue->rows[row_index].arrival_ns = arrival_ns;
 	queue->rows[row_index].list_next = UINT32_MAX;
@@ -104,8 +126,7 @@ SparkStatus SparkGlm52ExpertQueueNextFiring(SparkGlm52ExpertQueue *queue,uint64_
 			{
 				uint32_t next = queue->rows[row_index].list_next;
 				firing_out->row_ids[emit_index] = queue->rows[row_index].row_id;
-				queue->rows[row_index].list_next = queue->free_head;
-				queue->free_head = row_index;
+				SparkGlm52ExpertQueueReleaseRow(queue,row_index);
 				row_index = next;
 			}
 			slot->head = row_index;
