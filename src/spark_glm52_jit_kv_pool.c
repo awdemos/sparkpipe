@@ -165,12 +165,7 @@ static SparkStatus SparkGlm52JitKvPoolQueueTransfer(SparkGlm52JitKvPool *pool,ui
 	uint64_t start_ns,duration_ns;
 	uint32_t tail;
 	if ( pool->transfer_count >= SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS )
-	{
-		SparkGlm52JitKvPoolCompleteTransfer(pool,pool->transfer_head,now_ns);
-		pool->transfer_head = ((pool->transfer_head + 1u) % SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS);
-		pool->transfer_count -= 1u;
-		pool->overflow_drain_count += 1u;
-	}
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	start_ns = (pool->nvme_busy_until_ns > now_ns ? pool->nvme_busy_until_ns : now_ns);
 	duration_ns = ((pool->fragment_bytes * 1000000000u) / pool->nvme_bytes_per_second);
 	if ( duration_ns == 0u )
@@ -186,11 +181,29 @@ static SparkStatus SparkGlm52JitKvPoolQueueTransfer(SparkGlm52JitKvPool *pool,ui
 	return(SPARK_STATUS_OK);
 }
 
+static SparkStatus SparkGlm52JitKvPoolEnsureTransferSpace(SparkGlm52JitKvPool *pool,uint32_t needed,uint64_t now_ns)
+{
+	while (SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS - pool->transfer_count < needed)
+	{
+		if ( pool->transfers[pool->transfer_head].done_ns > now_ns )
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
+		SparkGlm52JitKvPoolCompleteTransfer(pool,pool->transfer_head,now_ns);
+		pool->transfer_head = ((pool->transfer_head + 1u) % SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS);
+		pool->transfer_count -= 1u;
+		pool->overflow_drain_count += 1u;
+	}
+	return(SPARK_STATUS_OK);
+}
+
 static SparkStatus SparkGlm52JitKvPoolStageIn(SparkGlm52JitKvPool *pool,uint32_t fragment_id,uint64_t now_ns)
 {
 	SparkGlm52JitKvFragment *fragment = &pool->fragments[fragment_id];
+	uint32_t eviction_needed = (pool->dram_resident_count + pool->staging_in_count >= pool->dram_fragment_capacity ? 1u : 0u);
 	SparkStatus status;
-	if ( pool->dram_resident_count + pool->staging_in_count >= pool->dram_fragment_capacity )
+	status = SparkGlm52JitKvPoolEnsureTransferSpace(pool,eviction_needed + 1u,now_ns);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	if ( eviction_needed != 0u )
 	{
 		uint32_t victim;
 		if ( pool->eviction_heap_count == 0u )
@@ -241,6 +254,15 @@ SparkStatus SparkGlm52JitKvPoolRequireByEta(SparkGlm52JitKvPool *pool,uint64_t n
 		{
 			pool->hit_count += 1u;
 			continue;
+		}
+		if ( fragment->state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_STAGING_OUT )
+		{
+			// Mid-eviction: the outbound transfer is queued and its completion
+			// will mark the fragment NVME. Re-staging it in now would overwrite
+			// the state under a live transfer and desynchronize the counters.
+			// Refuse; the caller retries after a Tick and the fragment stages
+			// in from NVME normally.
+			return(SPARK_STATUS_CAPACITY_EXCEEDED);
 		}
 		pool->miss_count += 1u;
 		status = SparkGlm52JitKvPoolStageIn(pool,fragment_ids[request_index],now_ns);

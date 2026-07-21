@@ -98,14 +98,14 @@ static void SparkTestJitKvPoolPrefetchEvictionAndLateness(void)
 static void SparkTestBatchSequenceTableLifecycleAndThreshold(void)
 {
 	SparkGlm52BatchSequenceTableConfiguration configuration;
-	uint32_t first_index,second_index;
+	uint32_t first_handle,second_handle,first_index;
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version = SPARK_GLM52_BATCH_SEQUENCE_ABI_VERSION;
 	configuration.sequence_capacity = 4u;
 	configuration.lane_count = 8u;
 	assert(SparkGlm52BatchSequenceTableInitialize(&test_table,&configuration) == SPARK_STATUS_OK);
-	assert(SparkGlm52BatchSequenceTableAdmit(&test_table,900u,8192u,0u,128u,&first_index) == SPARK_STATUS_OK);
-	assert(SparkGlm52BatchSequenceTableAdmit(&test_table,901u,8192u,128u,128u,&second_index) == SPARK_STATUS_OK);
+	assert(SparkGlm52BatchSequenceTableAdmit(&test_table,900u,8192u,0u,128u,&first_handle) == SPARK_STATUS_OK);
+	assert(SparkGlm52BatchSequenceTableAdmit(&test_table,901u,8192u,128u,128u,&second_handle) == SPARK_STATUS_OK);
 	assert(test_table.active_count == 2u);
 	assert(SparkGlm52BatchSequenceTableFiringThreshold(&test_table,8u,256u,1024u) == 1u);
 	{
@@ -115,24 +115,32 @@ static void SparkTestBatchSequenceTableLifecycleAndThreshold(void)
 		assert(SparkGlm52BatchSequenceTableAdmit(&test_table,999u,8192u,512u,128u,&scratch) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
 	assert(SparkGlm52BatchSequenceTableFiringThreshold(&test_table,8u,256u,1024u) == 1u);
-	assert(SparkGlm52BatchSequenceTablePauseForTool(&test_table,first_index) == SPARK_STATUS_OK);
+	assert(SparkGlm52BatchSequenceTablePauseForTool(&test_table,first_handle) == SPARK_STATUS_OK);
 	assert(test_table.active_count == 3u && test_table.awaiting_tool_count == 1u);
-	assert(SparkGlm52BatchSequenceTablePauseForTool(&test_table,first_index) == SPARK_STATUS_INVALID_ARGUMENT);
-	assert(SparkGlm52BatchSequenceTableBeginExchange(&test_table,first_index,192u) == SPARK_STATUS_OK);
+	assert(SparkGlm52BatchSequenceTablePauseForTool(&test_table,first_handle) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkGlm52BatchSequenceTableBeginExchange(&test_table,first_handle,192u) == SPARK_STATUS_OK);
+	first_index = (first_handle & SPARK_GLM52_BATCH_SEQUENCE_HANDLE_INDEX_MASK);
 	assert(test_table.sequences[first_index].exchange_number == 1u);
 	assert(test_table.sequences[first_index].context_tokens == 8384u);
 	assert(test_table.active_count == 4u && test_table.exchange_count == 5u);
-	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_index) == SPARK_STATUS_OK);
+	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_handle) == SPARK_STATUS_OK);
 	assert(test_table.active_count == 3u && test_table.complete_count == 1u);
-	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_index) == SPARK_STATUS_INVALID_ARGUMENT);
+	// The stale handle now fails handle resolution, not just the state check:
+	// the generation moved when the slot was freed, so a holdover handle can
+	// never act on the slot's next occupant.
+	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_handle) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkGlm52BatchSequenceTablePauseForTool(&test_table,second_handle) == SPARK_STATUS_NOT_FOUND);
 	// The completed slot must be reclaimable: a capacity-4 table that has seen
 	// completions keeps admitting under churn instead of leaking slots forever.
 	{
-		uint32_t churn_index,recycled;
+		uint32_t churn_index,recycled,previous = second_handle;
 		for (churn_index=0u; churn_index<64u; ++churn_index)
 		{
 			assert(SparkGlm52BatchSequenceTableAdmit(&test_table,5000u + churn_index,4089u,0u,64u,&recycled) == SPARK_STATUS_OK);
-			assert(recycled == second_index);
+			assert((recycled & SPARK_GLM52_BATCH_SEQUENCE_HANDLE_INDEX_MASK) ==
+				(second_handle & SPARK_GLM52_BATCH_SEQUENCE_HANDLE_INDEX_MASK));
+			assert(recycled != previous);
+			previous = recycled;
 			assert(SparkGlm52BatchSequenceTableComplete(&test_table,recycled) == SPARK_STATUS_OK);
 		}
 	}
@@ -155,15 +163,44 @@ static void SparkTestJitKvPoolScaleAndBurst(void)
 	for (fragment_index=0u; fragment_index<200000u; fragment_index++)
 		assert(SparkGlm52JitKvPoolAdmitFragment(&stress_pool,fragment_index,fragment_index / 32u,fragment_index % 32u,fragment_index < 100000u ? SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM : SPARK_GLM52_JIT_KV_FRAGMENT_STATE_NVME) == SPARK_STATUS_OK);
 	assert(stress_pool.eviction_heap_count == 100000u);
-	// Burst far beyond the transfer ring without ticking: inline overflow drain
-	// must keep every require succeeding rather than hard-failing.
-	for (fragment_index=0u; fragment_index<10000u; fragment_index++)
+	// Frozen-time burst: once the transfer ring is full of in-flight pairs the
+	// NVMe is saturated and the require must REFUSE, never complete a transfer
+	// whose done time is in the future, because that would mark a fragment
+	// resident before its data physically arrived.
 	{
-		require_id = 100000u + fragment_index;
-		assert(SparkGlm52JitKvPoolRequireByEta(&stress_pool,now_ns,&require_id,1u,now_ns + 20000000000u) == SPARK_STATUS_OK);
+		uint32_t refused = 0u;
+		SparkStatus burst_status;
+		for (fragment_index=0u; fragment_index<3000u; fragment_index++)
+		{
+			require_id = 100000u + fragment_index;
+			burst_status = SparkGlm52JitKvPoolRequireByEta(&stress_pool,now_ns,&require_id,1u,now_ns + 20000000000u);
+			if ( burst_status == SPARK_STATUS_CAPACITY_EXCEEDED )
+			{
+				refused += 1u;
+				continue;
+			}
+			assert(burst_status == SPARK_STATUS_OK);
+		}
+		assert(refused != 0u);
+		assert(stress_pool.overflow_drain_count == 0u);
+		// Nothing staged at frozen time may report resident: no transfer's done
+		// time has passed.
+		assert(SparkGlm52JitKvPoolFragmentIsResident(&stress_pool,100000u) == 0u);
 	}
-	assert(stress_pool.overflow_drain_count != 0u);
-	assert(stress_pool.transfer_count <= SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS);
+	// Advancing-time burst: with real time passing each require, completed
+	// transfers drain opportunistically and every require succeeds without any
+	// early completion.
+	{
+		uint64_t transfer_ns = ((442368ull * 1000000000ull) / 6000000000ull);
+		for (fragment_index=0u; fragment_index<10000u; fragment_index++)
+		{
+			now_ns += (2u * transfer_ns);
+			require_id = 110000u + fragment_index;
+			assert(SparkGlm52JitKvPoolRequireByEta(&stress_pool,now_ns,&require_id,1u,now_ns + 20000000000u) == SPARK_STATUS_OK);
+		}
+		assert(stress_pool.overflow_drain_count != 0u);
+		assert(stress_pool.transfer_count <= SPARK_GLM52_JIT_KV_POOL_MAX_PENDING_TRANSFERS);
+	}
 	// Heap root is always the farthest-future need among residents.
 	{
 		uint32_t root = stress_pool.eviction_heap[0u],child;
@@ -215,6 +252,74 @@ static void SparkTestKvDedupSharingRefcountAndClusterIntegrity(void)
 	assert(SparkGlm52KvDedupResolve(&test_dedup,0x30u,999u,&physical_id,&shared) == SPARK_STATUS_OK && physical_id == 600u && shared == 1u);
 }
 
+static SparkGlm52JitKvPool property_pool;
+
+static uint32_t SparkTestJitKvPoolReferenceVictim(void)
+{
+	uint32_t best = UINT32_MAX,fragment_index;
+	uint64_t best_need = 0u;
+	for (fragment_index=0u; fragment_index<property_pool.fragment_capacity; fragment_index++)
+	{
+		const SparkGlm52JitKvFragment *fragment = &property_pool.fragments[fragment_index];
+		if ( fragment->state != SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM )
+			continue;
+		if ( best == UINT32_MAX || fragment->next_need_ns > best_need ||
+			(fragment->next_need_ns == best_need && fragment_index > best) )
+		{
+			best_need = fragment->next_need_ns;
+			best = fragment_index;
+		}
+	}
+	return(best);
+}
+
+static void SparkTestJitKvPoolHeapMatchesReferenceUnderRandomOps(void)
+{
+	SparkGlm52JitKvPoolConfiguration configuration;
+	uint32_t fragment_index,operation_index,random_state = 42u;
+	uint64_t now_ns = 0u;
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_GLM52_JIT_KV_POOL_ABI_VERSION;
+	configuration.fragment_capacity = 512u;
+	configuration.dram_fragment_capacity = 64u;
+	configuration.fragment_bytes = 442368u;
+	configuration.nvme_bytes_per_second = 6000000000u;
+	assert(SparkGlm52JitKvPoolInitialize(&property_pool,&configuration) == SPARK_STATUS_OK);
+	for (fragment_index=0u; fragment_index<512u; fragment_index++)
+		assert(SparkGlm52JitKvPoolAdmitFragment(&property_pool,fragment_index,fragment_index,0u,fragment_index < 64u ? SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM : SPARK_GLM52_JIT_KV_FRAGMENT_STATE_NVME) == SPARK_STATUS_OK);
+	for (operation_index=0u; operation_index<50000u; operation_index++)
+	{
+		uint32_t require_id,dram_count = 0u,staging_in = 0u,staging_out = 0u;
+		uint64_t need_ns;
+		SparkStatus status;
+		random_state = (random_state * 1664525u + 1013904223u);
+		require_id = (random_state >> 8) % 512u;
+		random_state = (random_state * 1664525u + 1013904223u);
+		need_ns = (now_ns + 1000000u + (uint64_t)((random_state >> 8) % 50000u) * 1000u);
+		if ( property_pool.eviction_heap_count != 0u )
+			assert(property_pool.eviction_heap[0u] == SparkTestJitKvPoolReferenceVictim());
+		status = SparkGlm52JitKvPoolRequireByEta(&property_pool,now_ns,&require_id,1u,need_ns);
+		assert(status == SPARK_STATUS_OK || status == SPARK_STATUS_CAPACITY_EXCEEDED);
+		now_ns += 18432u;
+		if ( (operation_index & 63u) == 0u )
+			SparkGlm52JitKvPoolTick(&property_pool,now_ns);
+		if ( (operation_index & 1023u) != 0u )
+			continue;
+		for (fragment_index=0u; fragment_index<512u; fragment_index++)
+		{
+			uint32_t state = property_pool.fragments[fragment_index].state;
+			dram_count += (state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM ? 1u : 0u);
+			staging_in += (state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_STAGING_IN ? 1u : 0u);
+			staging_out += (state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_STAGING_OUT ? 1u : 0u);
+		}
+		assert(dram_count == property_pool.dram_resident_count);
+		assert(staging_in == property_pool.staging_in_count);
+		assert(staging_out == property_pool.staging_out_count);
+		assert(dram_count == property_pool.eviction_heap_count);
+		assert(property_pool.dram_resident_count + property_pool.staging_in_count <= configuration.dram_fragment_capacity);
+	}
+}
+
 int main(void)
 {
 	SparkTestExpertQueueThresholdDeadlineAndOrder();
@@ -222,6 +327,7 @@ int main(void)
 	SparkTestBatchSequenceTableLifecycleAndThreshold();
 	SparkTestJitKvPoolScaleAndBurst();
 	SparkTestKvDedupSharingRefcountAndClusterIntegrity();
+	SparkTestJitKvPoolHeapMatchesReferenceUnderRandomOps();
 	printf("test_glm52_batch_plane PASS\n");
 	return(0);
 }

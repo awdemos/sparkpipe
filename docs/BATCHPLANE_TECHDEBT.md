@@ -172,3 +172,65 @@ sequence table. Two is a pattern, not yet a violation; the intrusive link field
 differs between them (list_next in a row versus free_next in a sequence), so a
 shared helper would need a generic intrusive-list contract. Extract if a third
 component needs it.
+
+## Correctness audit
+
+### Fixed — overflow drain committed time travel
+
+The transfer-ring overflow path completed the oldest in-flight transfer inline
+regardless of its completion time, so a fragment could be marked DRAM-resident
+while its transfer's done time was still in the future. Proven with a probe: at
+a frozen clock a burst filled the ring and the drained fragment reported
+resident at time zero with its DMA due 73.7 microseconds later. In the
+production integration, where Tick is driven by real DMA completion events,
+this records a fragment resident before its data has arrived and the GPU reads
+garbage KV. Fixed: transfer space is reserved for the whole evict-plus-in pair
+up front, the reservation drains only transfers whose done time has passed, and
+when the oldest transfer is still in flight the require refuses with
+CAPACITY_EXCEEDED, because a saturated NVMe has no other honest answer. The
+burst stress test is restaged to both behaviors: frozen-time bursts must refuse
+and must show nothing resident, advancing-time bursts drain opportunistically
+and always succeed. The prior never-hard-fail behavior was the bug wearing a
+feature costume.
+
+### Fixed — require during eviction desynchronized the state machine
+
+Found by a randomized property test, not by any hand-written case: requiring a
+fragment in STAGING_OUT treated it as an ordinary miss and re-staged it in,
+overwriting the state under a live outbound transfer; the outbound's completion
+then clobbered the inbound state and the resident, staging-in, and staging-out
+counters drifted from the true fragment states. The require path now refuses a
+mid-eviction fragment; its outbound completes on a Tick, it lands in NVMe, and
+the retry stages it in normally. Deterministic and race-free.
+
+### Fixed — stale sequence handle acted on a recycled slot's next occupant
+
+Proven with a probe: after a sequence completed and its slot was recycled, a
+holdover index silently paused the slot's new occupant with a success status,
+leaving an unrelated sequence stuck awaiting a tool it never requested. Handles
+are now generation-tagged, fourteen index bits and eighteen generation bits,
+the generation incremented when the slot frees, and every transition resolves
+the handle and refuses a stale generation with NOT_FOUND. ABI version bumped.
+
+### Added — randomized property tests in the suite
+
+Fifty thousand randomized require, tick, and time-advance operations assert on
+every step that the eviction heap root equals a brute-force scan over all DRAM
+fragments including the tie-break, and periodically that the resident,
+staging-in, and staging-out counters equal the true per-fragment state counts
+and that resident plus staging-in never exceeds the DRAM capacity. A three
+hundred thousand operation dedup run against a reference map verified physical
+id assignment, sharing, refcounts, frees, and capacity refusal exactly; the
+pool property test is the one that found the eviction race and lives in the
+permanent suite.
+
+### Verified correct under review
+
+Heap remove's swap-with-last followed by sift-down then sift-up is correct: the
+element rising into the vacated position during sift-down is a former child of
+the removed element, so it is bounded by the grandparent and the trailing
+sift-up terminates on its first comparison. The decrease-key sift-down-only
+argument holds for its single caller. The dedup backward-shift delete preserves
+probe clusters, exercised by both the hand-written mid-cluster free and the
+property run. Partial-failure semantics of a batched require are idempotent on
+retry since a staging-in fragment counts as a hit.
