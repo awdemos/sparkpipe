@@ -117,3 +117,25 @@ and was caught by AddressSanitizer. There is no compile-time guard. These are
 singletons by design and belong in static or caller-provided storage; anything
 introducing a stack instance will crash at entry. Worth a static-assert on a
 stack-hostile size if a guard mechanism is added.
+
+### Measured — dedup is a capacity win, not a throughput win at the current point
+
+Wiring dedup into the integrated sim's admission and measuring corrected the
+earlier framing. At five hundred to four thousand sequences with a 2048-token
+selection the working set fits DRAM, so the fifteen-second wave transit already
+hides all NVMe latency and removing paging traffic leaves committed throughput
+flat at 16601. Dedup's effect there is not tok/s but headroom: with a
+twenty-four-fragment shared prefix the resident need at four thousand sequences
+drops from 128000 fragments to under the 65556-fragment pool, so a population
+that otherwise pages stays fully resident, and stage-ins fall from 48112 to
+27081 to 12 as the shared prefix deepens. The sequence ceiling before the paging
+wall roughly doubles, and NVMe pressure drops about threefold. This converts to
+throughput only past the pool ceiling, above roughly seven thousand
+select-2048 sequences or at longer contexts, which is the stack-more-runs
+regime. The claim is therefore: dedup raises the resident sequence ceiling and
+cuts NVMe pressure unconditionally, and turns into throughput exactly when the
+plane becomes paging-bound. The integrated sim caps at four thousand sequences
+and models NVMe as latency-hidden rather than a clock throttle, so the
+throughput crossover itself is shown by the closed-form model, not the sim; that
+sim limitation is the next thing to lift if the crossover regime needs direct
+simulation.

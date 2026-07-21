@@ -324,8 +324,8 @@ build/sparkpipe_glm52_pipesim: tools/sparkpipe_glm52_pipesim.c $(COMMON_LIBRARY)
 build/test_glm52_batch_plane: tests/test_glm52_batch_plane.c src/spark_glm52_expert_queue.c src/spark_glm52_jit_kv_pool.c src/spark_glm52_batch_sequence_table.c src/spark_glm52_kv_dedup.c
 	$(CC) $(CFLAGS) -Iinclude -o $@ tests/test_glm52_batch_plane.c src/spark_glm52_expert_queue.c src/spark_glm52_jit_kv_pool.c src/spark_glm52_batch_sequence_table.c src/spark_glm52_kv_dedup.c
 
-build/sparkpipe_glm52_batchplane_sim: tools/sparkpipe_glm52_batchplane_sim.c src/spark_glm52_expert_queue.c src/spark_glm52_jit_kv_pool.c
-	$(CC) $(CFLAGS) -Iinclude -o $@ tools/sparkpipe_glm52_batchplane_sim.c src/spark_glm52_expert_queue.c src/spark_glm52_jit_kv_pool.c
+build/sparkpipe_glm52_batchplane_sim: tools/sparkpipe_glm52_batchplane_sim.c src/spark_glm52_expert_queue.c src/spark_glm52_jit_kv_pool.c src/spark_glm52_kv_dedup.c
+	$(CC) $(CFLAGS) -Iinclude -o $@ tools/sparkpipe_glm52_batchplane_sim.c src/spark_glm52_expert_queue.c src/spark_glm52_jit_kv_pool.c src/spark_glm52_kv_dedup.c
 
 build/sparkpipe_glm52_batchplane_model: tools/sparkpipe_glm52_batchplane_model.c 
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@

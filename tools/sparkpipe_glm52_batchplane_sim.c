@@ -15,6 +15,7 @@
 // Usage: sparkpipe_glm52_batchplane_sim sequences waves [share_milli] [rt_milli] [fire_rows] [quant4]
 #include "sparkpipe/spark_glm52_expert_queue.h"
 #include "sparkpipe/spark_glm52_jit_kv_pool.h"
+#include "sparkpipe/spark_glm52_kv_dedup.h"
 
 #include <stdint.h>
 #include <inttypes.h>
@@ -55,6 +56,7 @@ typedef struct
 static SparkGlm52ExpertQueue bsim_queue;
 static SparkGlm52JitKvPool bsim_pool;
 static bsim_sequence_t bsim_sequences[BSIM_MAX_SEQUENCES];
+static SparkGlm52KvDedup bsim_dedup;
 
 static uint64_t bsim_route_hash(uint64_t a,uint64_t b,uint64_t c,uint64_t d)
 {
@@ -96,6 +98,7 @@ int main(int argc,char **argv)
 	uint32_t realtime_milli = (argc > 4 ? (uint32_t)strtoul(argv[4],0,10) : 250u);
 	uint32_t fire_rows = (argc > 5 ? (uint32_t)strtoul(argv[5],0,10) : 512u);
 	uint32_t quant4 = (argc > 6 ? (uint32_t)strtoul(argv[6],0,10) : 1u);
+	uint32_t shared_prefix_frags = (argc > 7 ? (uint32_t)strtoul(argv[7],0,10) : 0u);
 	double expert_bytes = (quant4 != 0u ? BSIM_EXPERT_BYTES_FP4 : BSIM_EXPERT_BYTES_8B);
 	double bw = (BSIM_BW_EFF * (1000.0 - (double)realtime_milli) / 1000.0);
 	double shared_fraction = ((double)share_milli / 1000.0);
@@ -134,17 +137,36 @@ int main(int argc,char **argv)
 	if ( SparkGlm52JitKvPoolInitialize(&bsim_pool,&pool_configuration) != SPARK_STATUS_OK )
 		return(1);
 	memset(bsim_sequences,0,sizeof(bsim_sequences));
+	{
+		SparkGlm52KvDedupConfiguration dedup_configuration;
+		memset(&dedup_configuration,0,sizeof(dedup_configuration));
+		dedup_configuration.abi_version = SPARK_GLM52_KV_DEDUP_ABI_VERSION;
+		dedup_configuration.table_capacity = 65536u;
+		if ( SparkGlm52KvDedupInitialize(&bsim_dedup,&dedup_configuration) != SPARK_STATUS_OK )
+			return(1);
+	}
+	if ( shared_prefix_frags > fragments_per_sequence )
+		shared_prefix_frags = fragments_per_sequence;
 	for (sequence_index=0u; sequence_index<sequence_count; sequence_index++)
 	{
 		bsim_sequence_t *sequence = &bsim_sequences[sequence_index];
-		uint32_t fragment_index,admitted_dram = 0u;
+		uint32_t fragment_index;
 		sequence->fragment_base = (sequence_index * fragments_per_sequence);
 		for (fragment_index=0u; fragment_index<fragments_per_sequence && sequence->fragment_base + fragment_index < pool_configuration.fragment_capacity; fragment_index++)
 		{
-			uint32_t want_dram = (fragment_index < select_fragments && bsim_pool.dram_resident_count < pool_configuration.dram_fragment_capacity) ? 1u : 0u;
-			if ( SparkGlm52JitKvPoolAdmitFragment(&bsim_pool,sequence->fragment_base + fragment_index,sequence_index,fragment_index,want_dram != 0u ? SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM : SPARK_GLM52_JIT_KV_FRAGMENT_STATE_NVME) != SPARK_STATUS_OK )
+			uint32_t physical_id = sequence->fragment_base + fragment_index,shared = 0u;
+			uint32_t want_dram;
+			if ( fragment_index < shared_prefix_frags )
+			{
+				uint64_t content_hash = 0x9000000000000000u | (uint64_t)fragment_index;
+				if ( SparkGlm52KvDedupResolve(&bsim_dedup,content_hash,physical_id,&physical_id,&shared) != SPARK_STATUS_OK )
+					return(1);
+				if ( shared != 0u )
+					continue;
+			}
+			want_dram = (fragment_index < select_fragments && bsim_pool.dram_resident_count < pool_configuration.dram_fragment_capacity) ? 1u : 0u;
+			if ( SparkGlm52JitKvPoolAdmitFragment(&bsim_pool,physical_id,sequence_index,fragment_index,want_dram != 0u ? SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM : SPARK_GLM52_JIT_KV_FRAGMENT_STATE_NVME) != SPARK_STATUS_OK )
 				return(1);
-			admitted_dram += want_dram;
 		}
 		sequence->wave_start_ns = now_ns;
 		bsim_enqueue_layer(sequence_index,now_ns);
@@ -209,11 +231,12 @@ int main(int argc,char **argv)
 			transit_count += bsim_sequences[sequence_index].transit_samples;
 		}
 		transit_s = (transit_count != 0u ? (double)transit_total / (double)transit_count / 1.0e9 : 0.0);
-		printf("batchplane_sim seqs=%u waves=%" PRIu64 " commit_tok_per_s=%.0f per_req=%.3f transit_s=%.1f avg_rows_per_firing=%.1f expert_GBps=%.1f attn_GBps=%.1f jit_hit=%" PRIu64 " jit_miss=%" PRIu64 " jit_late=%" PRIu64 " stagein=%" PRIu64 "\n",
+		printf("batchplane_sim seqs=%u waves=%" PRIu64 " commit_tok_per_s=%.0f per_req=%.3f transit_s=%.1f avg_rows_per_firing=%.1f expert_GBps=%.1f attn_GBps=%.1f jit_hit=%" PRIu64 " jit_miss=%" PRIu64 " jit_late=%" PRIu64 " stagein=%" PRIu64 " dedup_shared=%" PRIu64 " dram_frags=%u/%u\n",
 			sequence_count,total_committed_waves,committed / elapsed_s,committed / elapsed_s / ((double)sequence_count * BSIM_LANES),transit_s,
 			(double)bsim_queue.fired_row_count / (double)(bsim_queue.firing_count != 0u ? bsim_queue.firing_count : 1u),
 			(double)expert_bytes_total / elapsed_s / 1.0e9,(double)attention_bytes_total / elapsed_s / 1.0e9,
-			bsim_pool.hit_count,bsim_pool.miss_count,bsim_pool.late_count,bsim_pool.stage_in_count);
+			bsim_pool.hit_count,bsim_pool.miss_count,bsim_pool.late_count,bsim_pool.stage_in_count,
+			bsim_dedup.shared_reference_count,bsim_pool.dram_resident_count,pool_configuration.dram_fragment_capacity);
 	}
 	return(0);
 }
