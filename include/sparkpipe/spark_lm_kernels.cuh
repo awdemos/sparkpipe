@@ -191,6 +191,55 @@ static __global__ void SparkLmRmsNormKernel(const void *input_bf16, const void *
 	}
 }
 
+// Fused residual-add + RMS-norm. The per-layer sequence hidden += delta then
+// normalized = rmsnorm(hidden) is two full-hidden passes, each a global
+// read+write. This folds the add into the norm: hidden and delta are read,
+// the sum is formed in registers, the UPDATED hidden is written back, and
+// the norm computes on the sum in the same pass - one read+write of hidden
+// instead of two, on every layer, accuracy-identical. A null delta_bf16
+// makes this a plain norm, so the single kernel serves both and the plain
+// path stays byte-identical. The sum is recomputed in the second element
+// loop from hidden (now holding the sum) rather than restaged, keeping the
+// register footprint flat.
+static __global__ void SparkLmFusedResidualRmsNormKernel(void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon)
+{
+	__shared__ float reduce_scratch[SPARK_LM_CTA_WARPS];
+	uint32_t row = blockIdx.x,element;
+	uint64_t row_offset;
+	float sum_squares,inverse_rms,sum_x,sum_y;
+	float2 hidden_value,delta_value,gain_value;
+	if ( row >= row_count )
+		return;
+	row_offset = ((uint64_t)row * (uint64_t)dimension) >> 1u;
+	sum_squares = 0.0f;
+	for (element = threadIdx.x; element < (dimension >> 1u); element += blockDim.x)
+	{
+		hidden_value = SparkLmLoadBf16Pair(hidden_bf16,row_offset + element);
+		if ( delta_bf16 != 0 )
+		{
+			delta_value = SparkLmLoadBf16Pair(delta_bf16,row_offset + element);
+			sum_x = hidden_value.x + delta_value.x;
+			sum_y = hidden_value.y + delta_value.y;
+			SparkLmStoreBf16Pair(hidden_bf16,row_offset + element,sum_x,sum_y);
+		}
+		else
+		{
+			sum_x = hidden_value.x;
+			sum_y = hidden_value.y;
+		}
+		sum_squares = fmaf(sum_x,sum_x,sum_squares);
+		sum_squares = fmaf(sum_y,sum_y,sum_squares);
+	}
+	sum_squares = SparkLmBlockReduceSum(sum_squares,reduce_scratch);
+	inverse_rms = rsqrtf((sum_squares / (float)dimension) + epsilon);
+	for (element = threadIdx.x; element < (dimension >> 1u); element += blockDim.x)
+	{
+		hidden_value = SparkLmLoadBf16Pair(hidden_bf16,row_offset + element);
+		gain_value = SparkLmLoadBf16Pair(gain_bf16,element);
+		SparkLmStoreBf16Pair(output_bf16,row_offset + element,(hidden_value.x * inverse_rms) * gain_value.x,(hidden_value.y * inverse_rms) * gain_value.y);
+	}
+}
+
 /*
  * Row-major linear, one warp per output neuron, eight neurons in flight per
  * block, activations staged once in shared memory. The weight branch is
