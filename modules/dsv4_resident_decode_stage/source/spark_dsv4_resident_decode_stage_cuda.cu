@@ -787,13 +787,9 @@ extern "C" cudaError_t SparkDsv4LaunchRmsNorm(cudaStream_t stream, const void *i
 
 extern "C" cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
-	dim3 grid(row_count,(view->rows + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
-	uint32_t shared_bytes = view->columns * (uint32_t)sizeof(float);
 	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 )
-		SparkLmLinearKernel<128u><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,view->payload,view->scale_e8m0,input_bf16,output_bf16,row_count,view->columns,view->rows);
-	else
-		SparkLmLinearKernel<32u><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,view->payload,view->scale_e8m0,input_bf16,output_bf16,row_count,view->columns,view->rows);
-	return(cudaGetLastError());
+		return(SparkLmHostLaunchBatchedLinear<128u>(stream,view->weight_format,view->payload,view->scale_e8m0,input_bf16,output_bf16,row_count,view->columns,view->rows));
+	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->payload,view->scale_e8m0,input_bf16,output_bf16,row_count,view->columns,view->rows));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *payload, const uint8_t *scale, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t row_count)

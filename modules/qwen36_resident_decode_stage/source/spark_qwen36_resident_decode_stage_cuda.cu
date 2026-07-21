@@ -575,10 +575,7 @@ extern "C" cudaError_t SparkQwen36LaunchRmsNorm(cudaStream_t stream, const void 
 
 extern "C" cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen36LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
-	dim3 grid(row_count,(view->output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS,1u);
-	uint32_t shared_bytes = view->input_dimension * (uint32_t)sizeof(float);
-	SparkLmLinearKernel<32u><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension);
-	return(cudaGetLastError());
+	return(SparkLmHostLaunchBatchedLinear<32u>(stream,view->weight_format,view->weight_payload,view->weight_scale_e8m0,input_bf16,output_bf16,row_count,view->input_dimension,view->output_dimension));
 }
 
 extern "C" cudaError_t SparkQwen36LaunchConvUpdate(cudaStream_t stream, const void *qkv_bf16, const SparkQwen36GdnLayerWeights *weights, void *conv_out_bf16, const SparkQwen36GdnStatePool *pool, const uint32_t *row_lane_indices, uint32_t row_count, uint32_t gdn_layer_ordinal)
