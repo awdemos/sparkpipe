@@ -195,10 +195,7 @@ extern "C" cudaError_t SparkMimo25LaunchRmsNorm(cudaStream_t stream, const void 
 
 extern "C" cudaError_t SparkMimo25LaunchLinear(cudaStream_t stream, const SparkMimo25LinearView *view, const void *payload, const void *scale, const void *input_bf16, void *output_bf16, uint32_t row_count)
 {
-	dim3 grid(row_count,(view->rows + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
-	uint32_t shared_bytes = view->columns * (uint32_t)sizeof(float);
-	SparkLmLinearKernel<128u><<<grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(view->weight_format,payload != 0 ? payload : view->payload,scale != 0 ? scale : view->scale,input_bf16,output_bf16,row_count,view->columns,view->rows);
-	return(cudaGetLastError());
+	return(SparkLmHostLaunchBatchedLinear<128u>(stream,view->weight_format,payload != 0 ? payload : view->payload,scale != 0 ? scale : view->scale,input_bf16,output_bf16,row_count,view->columns,view->rows));
 }
 
 extern "C" cudaError_t SparkMimo25LaunchEmbeddingGather(cudaStream_t stream, const uint32_t *token_ids, const void *embedding_bf16, void *hidden_bf16, uint32_t row_count, uint32_t hidden_dimension)

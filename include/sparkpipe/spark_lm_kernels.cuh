@@ -1108,6 +1108,29 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 	return(cudaGetLastError());
 }
 
+// Batched dense linear/QKVO projection: below the tile width, the scalar
+// one-warp-per-neuron kernel is right (B1 decode is memory bound and a
+// tensor tile over a single row wastes the fragment). At batch, route
+// through the tensor-core tile with an identity row map - a dense
+// projection is one implicit expert over all rows - which turns the
+// measured 6.5-TFLOP/s scalar QKVO wall into tensor-core throughput and
+// inherits the FP8 path when built with SPARK_LM_FP8_TILE. Shape stays
+// parametric; carries to the next model generation unchanged.
+template <uint32_t GROUP_SIZE>
+static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
+{
+	if ( row_count < SPARK_LM_TILE )
+	{
+		dim3 scalar_grid(row_count,(output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
+		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);
+		SparkLmLinearKernel<GROUP_SIZE><<<scalar_grid,SPARK_LM_CTA_THREADS,shared_bytes,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,output_bf16,row_count,input_dimension,output_dimension);
+		return(cudaGetLastError());
+	}
+	dim3 tile_grid((row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
+	SparkLmExpertTileKernel<GROUP_SIZE><<<tile_grid,SPARK_LM_CTA_THREADS,0,stream>>>(weight_format,weight_payload,weight_scale,input_bf16,0,output_bf16,row_count,input_dimension,output_dimension);
+	return(cudaGetLastError());
+}
+
 static inline cudaError_t SparkLmHostLaunchMoePairReduce(cudaStream_t stream, const void *slot_out_bf16, const uint32_t *inverse_map, const float *pair_weights_f32, void *accum_bf16, uint32_t row_count, uint32_t experts_per_token, uint32_t width)
 {
 	SparkLmMoePairReduceKernel<<<row_count,SPARK_LM_CTA_THREADS,0,stream>>>(slot_out_bf16,inverse_map,pair_weights_f32,accum_bf16,row_count,experts_per_token,width);
