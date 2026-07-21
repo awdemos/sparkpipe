@@ -901,10 +901,31 @@ static __device__ void SparkLmExpertTileBody(uint32_t weight_format, const void 
 	}
 }
 
+#if defined(SPARK_LM_FP8_TILE)
+#include "sparkpipe/spark_lm_fp8_tile.cuh"
+#endif
+
+// Body dispatch: the FP8 tensor tile is opt-in and numerics-ring-pending, so
+// it is selected ONLY when built with SPARK_LM_FP8_TILE and the weight is
+// E4M3. Every other path, and the default build, uses the validated bf16
+// tile. The all-expert and single kernels call this, never a body directly.
+template <uint32_t GROUP_SIZE>
+static __device__ void SparkLmExpertTileDispatch(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t slot_base, uint32_t neuron_base)
+{
+#if defined(SPARK_LM_FP8_TILE)
+	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 || weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+	{
+		SparkLmExpertTileBodyFp8(weight_payload,weight_scale,input_bf16,input_row_map,output_bf16,slot_count,input_dimension,output_dimension,slot_base,neuron_base);
+		return;
+	}
+#endif
+	SparkLmExpertTileBody<GROUP_SIZE>(weight_format,weight_payload,weight_scale,input_bf16,input_row_map,output_bf16,slot_count,input_dimension,output_dimension,slot_base,neuron_base);
+}
+
 template <uint32_t GROUP_SIZE>
 static __global__ void SparkLmExpertTileKernel(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension)
 {
-	SparkLmExpertTileBody<GROUP_SIZE>(weight_format,weight_payload,weight_scale,input_bf16,input_row_map,output_bf16,slot_count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
+	SparkLmExpertTileDispatch<GROUP_SIZE>(weight_format,weight_payload,weight_scale,input_bf16,input_row_map,output_bf16,slot_count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
 }
 
 /*
@@ -927,7 +948,7 @@ static __global__ void SparkLmExpertTileAllKernel(uint32_t weight_format, const 
 	const void *input = grouped_rows != 0 ? input_bf16 : (const void *)((const uint8_t *)input_bf16 + ((uint64_t)offset * input_dimension * 2u));
 	if ( (blockIdx.x * SPARK_LM_TILE) >= count )
 		return;
-	SparkLmExpertTileBody<GROUP_SIZE>(weight_format,payload,scale,input,grouped_rows != 0 ? grouped_rows + offset : 0,(void *)((uint8_t *)output_bf16 + ((uint64_t)offset * output_dimension * 2u)),count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
+	SparkLmExpertTileDispatch<GROUP_SIZE>(weight_format,payload,scale,input,grouped_rows != 0 ? grouped_rows + offset : 0,(void *)((uint8_t *)output_bf16 + ((uint64_t)offset * output_dimension * 2u)),count,input_dimension,output_dimension,blockIdx.x * SPARK_LM_TILE,blockIdx.y * SPARK_LM_TILE_N);
 }
 
 /*
