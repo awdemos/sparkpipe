@@ -15,7 +15,10 @@
 //
 // Open-addressed hash table, linear probing, power-of-two capacity, no dynamic
 // allocation. Determinism: identical admit sequences produce identical physical
-// id assignments for the ring SHA gates.
+// id assignments for the ring SHA gates. Sizing contract: provision at least
+// twice the expected distinct-fragment count. Linear probing degrades sharply
+// past a 0.7 load factor; max_probe_length is exported so a caller can detect a
+// table that is running too full before resolve latency becomes a problem.
 
 #define SPARK_GLM52_KV_DEDUP_ABI_VERSION 1u
 #define SPARK_GLM52_KV_DEDUP_MAX_ENTRIES 524288u
@@ -44,6 +47,7 @@ typedef struct SparkGlm52KvDedup
 	uint64_t resolve_insert_count;
 	uint64_t shared_reference_count;
 	uint64_t release_free_count;
+	uint32_t max_probe_length;
 	SparkGlm52KvDedupEntry entries[SPARK_GLM52_KV_DEDUP_MAX_ENTRIES];
 } SparkGlm52KvDedup;
 

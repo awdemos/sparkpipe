@@ -14,32 +14,41 @@ SparkStatus SparkGlm52BatchSequenceTableInitialize(SparkGlm52BatchSequenceTable 
 	table->abi_version = SPARK_GLM52_BATCH_SEQUENCE_ABI_VERSION;
 	table->sequence_capacity = configuration->sequence_capacity;
 	table->lane_count = configuration->lane_count;
+	table->free_head = UINT32_MAX;
+	table->free_high_water = 0u;
 	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkGlm52BatchSequenceTableAdmit(SparkGlm52BatchSequenceTable *table,uint64_t sequence_id,uint32_t context_tokens,uint32_t fragment_base,uint32_t fragment_count,uint32_t *sequence_index_out)
 {
+	SparkGlm52BatchSequence *sequence;
 	uint32_t sequence_index;
 	if ( table == 0 || sequence_index_out == 0 || fragment_count == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	for (sequence_index=0u; sequence_index<table->sequence_capacity; sequence_index++)
+	if ( table->free_head != UINT32_MAX )
 	{
-		SparkGlm52BatchSequence *sequence = &table->sequences[sequence_index];
-		if ( sequence->state != SPARK_GLM52_BATCH_SEQUENCE_STATE_FREE )
-			continue;
-		sequence->sequence_id = sequence_id;
-		sequence->state = SPARK_GLM52_BATCH_SEQUENCE_STATE_ACTIVE;
-		sequence->lane_count = table->lane_count;
-		sequence->exchange_number = 0u;
-		sequence->context_tokens = context_tokens;
-		sequence->fragment_base = fragment_base;
-		sequence->fragment_count = fragment_count;
-		table->active_count += 1u;
-		table->exchange_count += 1u;
-		*sequence_index_out = sequence_index;
-		return(SPARK_STATUS_OK);
+		sequence_index = table->free_head;
+		table->free_head = table->sequences[sequence_index].free_next;
 	}
-	return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	else if ( table->free_high_water < table->sequence_capacity )
+	{
+		sequence_index = table->free_high_water;
+		table->free_high_water += 1u;
+	}
+	else
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	sequence = &table->sequences[sequence_index];
+	sequence->sequence_id = sequence_id;
+	sequence->state = SPARK_GLM52_BATCH_SEQUENCE_STATE_ACTIVE;
+	sequence->lane_count = table->lane_count;
+	sequence->exchange_number = 0u;
+	sequence->context_tokens = context_tokens;
+	sequence->fragment_base = fragment_base;
+	sequence->fragment_count = fragment_count;
+	table->active_count += 1u;
+	table->exchange_count += 1u;
+	*sequence_index_out = sequence_index;
+	return(SPARK_STATUS_OK);
 }
 
 SparkStatus SparkGlm52BatchSequenceTableBeginExchange(SparkGlm52BatchSequenceTable *table,uint32_t sequence_index,uint32_t appended_context_tokens)
@@ -87,6 +96,8 @@ SparkStatus SparkGlm52BatchSequenceTableComplete(SparkGlm52BatchSequenceTable *t
 	else
 		table->awaiting_tool_count -= 1u;
 	sequence->state = SPARK_GLM52_BATCH_SEQUENCE_STATE_COMPLETE;
+	sequence->free_next = table->free_head;
+	table->free_head = sequence_index;
 	table->complete_count += 1u;
 	return(SPARK_STATUS_OK);
 }

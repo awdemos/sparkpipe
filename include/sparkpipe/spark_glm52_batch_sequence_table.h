@@ -31,6 +31,7 @@ typedef struct SparkGlm52BatchSequence
 	uint32_t context_tokens;
 	uint32_t fragment_base;
 	uint32_t fragment_count;
+	uint32_t free_next;
 } SparkGlm52BatchSequence;
 
 typedef struct SparkGlm52BatchSequenceTableConfiguration
@@ -48,6 +49,8 @@ typedef struct SparkGlm52BatchSequenceTable
 	uint32_t active_count;
 	uint32_t awaiting_tool_count;
 	uint32_t complete_count;
+	uint32_t free_head;
+	uint32_t free_high_water;
 	uint64_t exchange_count;
 	SparkGlm52BatchSequence sequences[SPARK_GLM52_BATCH_SEQUENCE_MAX_SEQUENCES];
 } SparkGlm52BatchSequenceTable;

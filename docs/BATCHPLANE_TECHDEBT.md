@@ -139,3 +139,36 @@ and models NVMe as latency-hidden rather than a clock throttle, so the
 throughput crossover itself is shown by the closed-form model, not the sim; that
 sim limitation is the next thing to lift if the crossover regime needs direct
 simulation.
+
+## Fourth pass
+
+### Fixed — sequence table admit was O(n) and completed slots leaked
+
+Admit linear-scanned for a free slot on every call, so filling the 16384-entry
+table was O(n squared): 83.6 ms to admit a full batch, and 10.3 us per admit
+under steady realtime churn. Worse, Complete marked a sequence COMPLETE but
+never returned its slot, so under realtime churn the table filled permanently
+and admit would eventually fail forever. Both fixed with the same lazy free-list
+the expert queue uses: a high-water counter hands out never-used slots in O(1),
+Complete pushes the slot onto the free list, and Admit pops it. Admit dropped to
+0.004 us and churn to 0.009 us, roughly 1300x and 1100x. A churn test locks the
+recycling and the leak fix by admitting and completing sixty-four times on a
+capacity-four table and asserting the freed index is reused.
+
+### Cleared — dedup table is correct at the capacity boundary
+
+Verified the open-addressed table refuses cleanly at 100 percent load
+(CAPACITY_EXCEEDED at the exact capacity, no infinite probe) and still resolves
+existing entries when full. Not a defect. But linear probing degrades past a 0.7
+load factor, and the table has no resize, so a max_probe_length counter is now
+exported and the header states the sizing contract: provision at least twice the
+expected distinct-fragment count. The caller watches max_probe_length to catch a
+too-small table before latency suffers.
+
+### Watch — free-list pattern now in two components
+
+The lazy free-list with high-water counter appears in the expert queue and the
+sequence table. Two is a pattern, not yet a violation; the intrusive link field
+differs between them (list_next in a row versus free_next in a sequence), so a
+shared helper would need a generic intrusive-list contract. Extract if a third
+component needs it.

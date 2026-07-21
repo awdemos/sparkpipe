@@ -29,7 +29,7 @@ SparkStatus SparkGlm52KvDedupInitialize(SparkGlm52KvDedup *dedup,const SparkGlm5
 	return(SPARK_STATUS_OK);
 }
 
-static uint32_t SparkGlm52KvDedupFindSlot(const SparkGlm52KvDedup *dedup,uint64_t content_hash,uint32_t *found_out)
+static uint32_t SparkGlm52KvDedupFindSlot(SparkGlm52KvDedup *dedup,uint64_t content_hash,uint32_t *found_out)
 {
 	uint32_t slot = (uint32_t)(SparkGlm52KvDedupMix(content_hash) & dedup->table_mask),probes = 0u;
 	*found_out = 0u;
@@ -37,9 +37,15 @@ static uint32_t SparkGlm52KvDedupFindSlot(const SparkGlm52KvDedup *dedup,uint64_
 	{
 		const SparkGlm52KvDedupEntry *entry = &dedup->entries[slot];
 		if ( entry->content_hash == SPARK_GLM52_KV_DEDUP_EMPTY_HASH )
+		{
+			if ( probes > dedup->max_probe_length )
+				dedup->max_probe_length = probes;
 			return(slot);
+		}
 		if ( entry->content_hash == content_hash )
 		{
+			if ( probes > dedup->max_probe_length )
+				dedup->max_probe_length = probes;
 			*found_out = 1u;
 			return(slot);
 		}

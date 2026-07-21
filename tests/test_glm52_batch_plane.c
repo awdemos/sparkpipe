@@ -125,6 +125,17 @@ static void SparkTestBatchSequenceTableLifecycleAndThreshold(void)
 	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_index) == SPARK_STATUS_OK);
 	assert(test_table.active_count == 3u && test_table.complete_count == 1u);
 	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_index) == SPARK_STATUS_INVALID_ARGUMENT);
+	// The completed slot must be reclaimable: a capacity-4 table that has seen
+	// completions keeps admitting under churn instead of leaking slots forever.
+	{
+		uint32_t churn_index,recycled;
+		for (churn_index=0u; churn_index<64u; ++churn_index)
+		{
+			assert(SparkGlm52BatchSequenceTableAdmit(&test_table,5000u + churn_index,4089u,0u,64u,&recycled) == SPARK_STATUS_OK);
+			assert(recycled == second_index);
+			assert(SparkGlm52BatchSequenceTableComplete(&test_table,recycled) == SPARK_STATUS_OK);
+		}
+	}
 }
 
 static SparkGlm52JitKvPool stress_pool;
