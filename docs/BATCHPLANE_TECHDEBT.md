@@ -86,3 +86,34 @@ are recorded for provenance; open items are ordered by measured cost.
 - **Config validation preambles are structurally similar across the three
   init functions** but validate different field sets, so they are left
   explicit rather than folded into a macro that would hide the field checks.
+
+## Third pass: unconditional optimization
+
+### Added — content-addressed KV dedup
+
+The batch plane's dominant bandwidth term is attention, not the expert sweep
+(measured 82 vs 48 GB/s per rank at the four-thousand-sequence point), and the
+attention traffic is dominated by re-reading latent KV. Most levers there are
+workload-conditional: FP8 latent is a quality tradeoff, and lane selection
+co-scheduling depends on the unmeasured natural overlap of the eight lanes'
+DSA selections. Content-addressed dedup is the one that is strictly never worse
+in any workload: byte-identical prefix fragments shared across sequences (system
+prompt, tool schemas, few-shot examples, shared longmem memory) resolve through
+a content hash to a single physical fragment, refcounted, freed only at zero
+references. With no sharing the physical assignment is identical to per-sequence
+storage, a 1.00x floor with zero regression; at a realistic twenty-four-fragment
+shared prefix across five hundred sequences it frees 5.3 GB per rank, which
+converts directly into more DRAM-resident sequences and less NVMe paging, and
+the shared physical fragment is read once for attention across every sequence
+that points at it. Open-addressed table, linear probing, backward-shift delete
+with cluster reinsert, no allocation. Tested for sharing, refcount lifecycle,
+and probe-cluster integrity after a mid-cluster free.
+
+### Footgun recorded — batch-plane structs must never be stack-allocated
+
+The dedup struct is about 10 MB, the expert queue 24 MB, the JIT pool 9 MB.
+A stack local of any of them overflows immediately; a test that did so segfaulted
+and was caught by AddressSanitizer. There is no compile-time guard. These are
+singletons by design and belong in static or caller-provided storage; anything
+introducing a stack instance will crash at entry. Worth a static-assert on a
+stack-hostile size if a guard mechanism is added.

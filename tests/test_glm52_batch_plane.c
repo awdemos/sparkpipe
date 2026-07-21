@@ -1,6 +1,7 @@
 #include "sparkpipe/spark_glm52_batch_sequence_table.h"
 #include "sparkpipe/spark_glm52_expert_queue.h"
 #include "sparkpipe/spark_glm52_jit_kv_pool.h"
+#include "sparkpipe/spark_glm52_kv_dedup.h"
 
 #include <assert.h>
 #include <stdio.h>
@@ -9,6 +10,7 @@
 static SparkGlm52ExpertQueue test_queue;
 static SparkGlm52JitKvPool test_pool;
 static SparkGlm52BatchSequenceTable test_table;
+static SparkGlm52KvDedup test_dedup;
 
 static void SparkTestExpertQueueThresholdDeadlineAndOrder(void)
 {
@@ -159,12 +161,56 @@ static void SparkTestJitKvPoolScaleAndBurst(void)
 	}
 }
 
+static void SparkTestKvDedupSharingRefcountAndClusterIntegrity(void)
+{
+	SparkGlm52KvDedupConfiguration configuration;
+	uint32_t physical_id,shared,freed,free_physical;
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_GLM52_KV_DEDUP_ABI_VERSION;
+	configuration.table_capacity = 1024u;
+	assert(SparkGlm52KvDedupInitialize(&test_dedup,&configuration) == SPARK_STATUS_OK);
+	// Non-power-of-two capacity is rejected (reuse the static instance; the
+	// dedup struct is far too large to place on the stack).
+	{
+		SparkGlm52KvDedupConfiguration bad = configuration;
+		bad.table_capacity = 1000u;
+		assert(SparkGlm52KvDedupInitialize(&test_dedup,&bad) == SPARK_STATUS_INVALID_ARGUMENT);
+		assert(SparkGlm52KvDedupInitialize(&test_dedup,&configuration) == SPARK_STATUS_OK);
+	}
+	assert(SparkGlm52KvDedupResolve(&test_dedup,SPARK_GLM52_KV_DEDUP_EMPTY_HASH,1u,&physical_id,&shared) == SPARK_STATUS_INVALID_ARGUMENT);
+	// First sight adopts the proposed physical id; repeats share it, refcount grows.
+	assert(SparkGlm52KvDedupResolve(&test_dedup,0xA5A5u,100u,&physical_id,&shared) == SPARK_STATUS_OK);
+	assert(physical_id == 100u && shared == 0u);
+	assert(SparkGlm52KvDedupResolve(&test_dedup,0xA5A5u,200u,&physical_id,&shared) == SPARK_STATUS_OK);
+	assert(physical_id == 100u && shared == 1u);
+	assert(SparkGlm52KvDedupResolve(&test_dedup,0xA5A5u,300u,&physical_id,&shared) == SPARK_STATUS_OK);
+	assert(physical_id == 100u && shared == 1u);
+	// Distinct content gets its own physical id, never shared.
+	assert(SparkGlm52KvDedupResolve(&test_dedup,0x5A5Au,400u,&physical_id,&shared) == SPARK_STATUS_OK);
+	assert(physical_id == 400u && shared == 0u);
+	assert(test_dedup.live_entry_count == 2u);
+	// The physical fragment frees only when the last reference drops.
+	assert(SparkGlm52KvDedupRelease(&test_dedup,0xA5A5u,&freed,&free_physical) == SPARK_STATUS_OK && freed == 0u);
+	assert(SparkGlm52KvDedupRelease(&test_dedup,0xA5A5u,&freed,&free_physical) == SPARK_STATUS_OK && freed == 0u);
+	assert(SparkGlm52KvDedupRelease(&test_dedup,0xA5A5u,&freed,&free_physical) == SPARK_STATUS_OK && freed == 1u && free_physical == 100u);
+	assert(test_dedup.live_entry_count == 1u);
+	// Probe-cluster integrity: three hashes to one home slot, free the middle,
+	// the trailing entries must still resolve after the backward-shift reinsert.
+	assert(SparkGlm52KvDedupResolve(&test_dedup,0x30u,600u,&physical_id,&shared) == SPARK_STATUS_OK);
+	assert(SparkGlm52KvDedupResolve(&test_dedup,0x30u + 1024u,601u,&physical_id,&shared) == SPARK_STATUS_OK);
+	assert(SparkGlm52KvDedupResolve(&test_dedup,0x30u + 2048u,602u,&physical_id,&shared) == SPARK_STATUS_OK);
+	assert(SparkGlm52KvDedupRelease(&test_dedup,0x30u + 1024u,&freed,&free_physical) == SPARK_STATUS_OK && freed == 1u);
+	assert(SparkGlm52KvDedupResolve(&test_dedup,0x30u + 2048u,999u,&physical_id,&shared) == SPARK_STATUS_OK && physical_id == 602u && shared == 1u);
+	assert(SparkGlm52KvDedupResolve(&test_dedup,0x30u,999u,&physical_id,&shared) == SPARK_STATUS_OK && physical_id == 600u && shared == 1u);
+}
+
 int main(void)
 {
 	SparkTestExpertQueueThresholdDeadlineAndOrder();
 	SparkTestJitKvPoolPrefetchEvictionAndLateness();
 	SparkTestBatchSequenceTableLifecycleAndThreshold();
 	SparkTestJitKvPoolScaleAndBurst();
+	SparkTestKvDedupSharingRefcountAndClusterIntegrity();
 	printf("test_glm52_batch_plane PASS\n");
 	return(0);
 }
