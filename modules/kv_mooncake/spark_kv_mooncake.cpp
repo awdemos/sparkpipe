@@ -116,17 +116,27 @@ static SparkStatus SparkMooncakeRunBatch(
 	if (operation == SPARK_KV_STORE_OPERATION_GET)
 	{
 		std::vector<int64_t> results;
+		SparkStatus get_status;
 		results = state->client->batch_get_into(keys,buffers,sizes);
 		if (results.size() != request->batch.block_count)
 			return SPARK_STATUS_IO_ERROR;
+		get_status = SPARK_STATUS_OK;
 		for (block_index = 0u; block_index < results.size(); ++block_index)
 		{
-			if (results[block_index] != (int64_t)sizes[block_index])
-				return results[block_index] < 0
-					? SPARK_STATUS_NOT_FOUND : SPARK_STATUS_VALIDATION_FAILED;
-			request->completed_block_count += 1u;
+			if (results[block_index] == (int64_t)sizes[block_index])
+			{
+				request->completed_block_count += 1u;
+				continue;
+			}
+			if (results[block_index] < 0)
+			{
+				if (get_status == SPARK_STATUS_OK)
+					get_status = SPARK_STATUS_NOT_FOUND;
+			}
+			else
+				get_status = SPARK_STATUS_VALIDATION_FAILED;
 		}
-		return SPARK_STATUS_OK;
+		return get_status;
 	}
 	mooncake::ReplicateConfig replicate_config;
 	std::vector<std::string> pending_keys;

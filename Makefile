@@ -115,7 +115,9 @@ COMMON_SOURCES := \
     src/spark_glm52_service.c \
     src/spark_glm52_service_backend.c \
     src/spark_glm52_compat_api.c \
-    src/spark_glm52_http_gateway.c
+    src/spark_glm52_http_gateway.c \
+    src/spark_stage_kv_client.c \
+    src/spark_qwen36_work_control.c
 
 COMPILER_SOURCES := \
     src/spark_model_description.c \
@@ -167,6 +169,7 @@ TEST_NAMES := \
     test_glm52_kv_cache \
     test_kv_store \
     test_kv_mooncake \
+    test_qwen36_work_control \
     test_glm52_dspark \
     test_glm52_stage_plan \
     test_glm52_mtp_tree \
@@ -488,6 +491,9 @@ build/test_kv_store: tests/test_kv_store.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_kv_mooncake: tests/test_kv_mooncake.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
+	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_qwen36_work_control: tests/test_qwen36_work_control.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
 	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_stage_plan: tests/test_glm52_stage_plan.c $(COMMON_LIBRARY)

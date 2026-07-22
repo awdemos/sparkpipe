@@ -5508,17 +5508,29 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeRank0InputBuffers(
 			logical_lane_capacity * sizeof(uint32_t));
 	if (status != SPARK_STATUS_OK)
 		return status;
-	state->host_decode_positions =
-		(uint32_t *)malloc((size_t)(max_active * sizeof(uint32_t)));
-	state->host_decode_token_ids =
-		(uint32_t *)malloc((size_t)(max_active * sizeof(uint32_t)));
-	state->host_decode_result_token_ids =
-		(uint32_t *)malloc((size_t)(max_active * sizeof(uint32_t)));
-	state->host_mtp_committed_token_ids =
-		(uint32_t *)malloc(
+	/* Pinned: these four stage every decode step's uploads and result
+	 * readbacks. Pageable memory made the async uploads silently
+	 * synchronous staged copies and put the blocking result copies on
+	 * the null stream, serializing against the kv io and query streams.
+	 */
+	if (cudaHostAlloc((void **)&state->host_decode_positions,
+			(size_t)(max_active * sizeof(uint32_t)),
+			cudaHostAllocDefault) != cudaSuccess)
+		state->host_decode_positions = 0;
+	if (cudaHostAlloc((void **)&state->host_decode_token_ids,
+			(size_t)(max_active * sizeof(uint32_t)),
+			cudaHostAllocDefault) != cudaSuccess)
+		state->host_decode_token_ids = 0;
+	if (cudaHostAlloc((void **)&state->host_decode_result_token_ids,
+			(size_t)(max_active * sizeof(uint32_t)),
+			cudaHostAllocDefault) != cudaSuccess)
+		state->host_decode_result_token_ids = 0;
+	if (cudaHostAlloc((void **)&state->host_mtp_committed_token_ids,
 			(size_t)(logical_lane_capacity *
 				SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
-				sizeof(uint32_t)));
+				sizeof(uint32_t)),
+			cudaHostAllocDefault) != cudaSuccess)
+		state->host_mtp_committed_token_ids = 0;
 	if (state->host_decode_positions == 0 ||
 		state->host_decode_token_ids == 0 ||
 		state->host_decode_result_token_ids == 0 ||
@@ -6281,11 +6293,11 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 	free(state->mtp_kv_transactions);
 	free(state->mtp_shadow_free_indices);
 	free(state->host_backing_block_free_next);
-	free(state->host_decode_positions);
-	free(state->host_decode_token_ids);
-	free(state->host_decode_result_token_ids);
+	cudaFreeHost(state->host_decode_positions);
+	cudaFreeHost(state->host_decode_token_ids);
+	cudaFreeHost(state->host_decode_result_token_ids);
 	free(state->host_mtp_draft_budgets);
-	free(state->host_mtp_committed_token_ids);
+	cudaFreeHost(state->host_mtp_committed_token_ids);
 	free(state->host_mtp_request_slot_indices);
 	free(state->host_mtp_previous_sequence_ids);
 	free(state->host_mtp_previous_positions);
@@ -7318,11 +7330,14 @@ static SparkStatus SparkGlm52Pp13BuilderLaunchPreparedVerifierMtpDraft(
 		&state->mtp_draft_plan,&final_layer->node,&base_slot,lane_count,
 		(void *)state->stream);
 	if (status == SPARK_STATUS_OK)
-		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy(
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
 			state->host_mtp_committed_token_ids,final_layer->mtp_draft_token_ids,
 			(size_t)lane_count *
 				SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
-				sizeof(uint32_t),cudaMemcpyDeviceToHost));
+				sizeof(uint32_t),cudaMemcpyDeviceToHost,state->stream));
+	if (status == SPARK_STATUS_OK)
+		status = SparkGlm52Pp13BuilderCudaStatus(
+			cudaStreamSynchronize(state->stream));
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderReportMtpGpuProfile(
 			state,profile_kind,lane_count,draft_token_count);
@@ -7352,11 +7367,11 @@ static SparkStatus SparkGlm52Pp13BuilderEmitWideDecodeCompletions(
 	if (final_layer->restricted_selected_token_ids == 0 ||
 		state->host_decode_result_token_ids == 0)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
-	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy(
+	status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
 		state->host_decode_result_token_ids,
 		final_layer->restricted_selected_token_ids,
 		(size_t)work_packet->lane_count * sizeof(uint32_t),
-		cudaMemcpyDeviceToHost));
+		cudaMemcpyDeviceToHost,state->stream));
 	if (status != SPARK_STATUS_OK)
 		return status;
 	maximum_draft_count = 0u;
@@ -7372,16 +7387,20 @@ static SparkStatus SparkGlm52Pp13BuilderEmitWideDecodeCompletions(
 		if (final_layer->mtp_draft_token_ids == 0 ||
 			state->host_mtp_committed_token_ids == 0)
 			return SPARK_STATUS_MODULE_NOT_VALIDATED;
-		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpy(
+		status = SparkGlm52Pp13BuilderCudaStatus(cudaMemcpyAsync(
 			state->host_mtp_committed_token_ids,
 			final_layer->mtp_draft_token_ids,
 			(size_t)work_packet->lane_count *
 				SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
 				sizeof(uint32_t),
-			cudaMemcpyDeviceToHost));
+			cudaMemcpyDeviceToHost,state->stream));
 		if (status != SPARK_STATUS_OK)
 			return status;
 	}
+	status = SparkGlm52Pp13BuilderCudaStatus(
+		cudaStreamSynchronize(state->stream));
+	if (status != SPARK_STATUS_OK)
+		return status;
 	status = SparkGlm52Pp13BuilderReportMtpGpuProfile(
 		state,"decode",work_packet->lane_count,maximum_draft_count);
 	if (status != SPARK_STATUS_OK)
@@ -9738,9 +9757,18 @@ static SparkStatus SparkGlm52Pp13BuilderBuildResidentKvTable(
 	mooncake_enabled = state->kv_store_state != 0 ? 1u : 0u;
 	if (nvme_enabled != 0u || mooncake_enabled != 0u)
 	{
+		// A load pending at batch open is a same-step protocol violation
+		// on either backend. A store pending is different for mooncake:
+		// its PUT batch may still be draining on an adapter worker across
+		// a step boundary, and the store hook already returns BUSY while
+		// that batch is in flight so nothing new accumulates. Tolerating
+		// the store carryover keeps a slow provider from wedging the step
+		// with INTERNAL_ERROR - the batch simply completes a step later.
+		// NVMe stores are synchronous per step, so they are never carried
+		// and the stricter check still applies to that backend.
 		if (state->kv_nvme_batch_active != 0u ||
-			state->kv_nvme_pending_store_count != 0u ||
-			state->kv_nvme_pending_load_count != 0u)
+			state->kv_nvme_pending_load_count != 0u ||
+			(nvme_enabled != 0u && state->kv_nvme_pending_store_count != 0u))
 			return SPARK_STATUS_INTERNAL_ERROR;
 		state->kv_nvme_batch_active = 1u;
 	}
