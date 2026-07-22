@@ -397,6 +397,16 @@ void SparkGlm52ServingInitializeDecodeResult(
     decode_result->token_stride = token_stride;
 }
 
+void SparkGlm52ServingEngineDestroy(
+    SparkGlm52ServingEngine *engine)
+{
+    if (engine == 0)
+    {
+        return;
+    }
+    SparkTokenizerWorkspaceDestroy(&engine->tokenizer_workspace);
+}
+
 SparkStatus SparkGlm52ServingEngineInitialize(
     SparkGlm52ServingEngine *engine,
     const SparkGlm52ServingEngineConfiguration *configuration)
@@ -433,6 +443,7 @@ SparkStatus SparkGlm52ServingEngineInitialize(
         configuration->request_id_base);
     engine->request_api = configuration->request_api;
     engine->tokenizer = configuration->tokenizer;
+    SparkTokenizerWorkspaceReset(&engine->tokenizer_workspace);
     engine->request_records = configuration->request_records;
     engine->request_record_capacity = configuration->request_record_capacity;
     engine->request_token_storage = configuration->request_token_storage;
@@ -1084,11 +1095,12 @@ SparkStatus SparkGlm52ServingEngineSubmitText(
     SparkTokenizerEncodingReset(&encoding);
     encoding.token_ids = record->token_ids;
     encoding.token_capacity = record->token_capacity;
-    status = SparkTokenizerEncodeUtf8(
+    status = SparkTokenizerEncodeUtf8WithWorkspace(
         engine->tokenizer,
         request->text,
         text_bytes,
         request->tokenizer_encode_flags,
+        &engine->tokenizer_workspace,
         &encoding);
     if (status == SPARK_STATUS_CAPACITY_EXCEEDED &&
         (engine->flags &
@@ -1105,11 +1117,12 @@ SparkStatus SparkGlm52ServingEngineSubmitText(
             SparkTokenizerEncodingReset(&encoding);
             encoding.token_ids = record->token_ids;
             encoding.token_capacity = record->token_capacity;
-            status = SparkTokenizerEncodeUtf8(
+            status = SparkTokenizerEncodeUtf8WithWorkspace(
                 engine->tokenizer,
                 request->text,
                 text_bytes,
                 request->tokenizer_encode_flags,
+                &engine->tokenizer_workspace,
                 &encoding);
         }
     }

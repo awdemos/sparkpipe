@@ -357,6 +357,7 @@ typedef struct SparkGlm52ServingEngine
     uint64_t next_generated_request_id;
     SparkGlm52RequestApi *request_api;
     const SparkTokenizer *tokenizer;
+    SparkTokenizerWorkspace tokenizer_workspace;
     SparkGlm52ServingRequestRecord *request_records;
     uint32_t request_record_capacity;
     uint32_t free_record_head;
@@ -402,6 +403,14 @@ void SparkGlm52ServingInitializeDecodeResult(
 SparkStatus SparkGlm52ServingEngineInitialize(
     SparkGlm52ServingEngine *engine,
     const SparkGlm52ServingEngineConfiguration *configuration);
+
+// Releases resources the engine owns internally. The engine's request records,
+// token storage, and other buffers remain caller-owned and are not touched; this
+// frees only the persistent tokenizer workspace the engine allocates to keep the
+// piece cache warm across requests. Safe to call on a zero-initialized engine and
+// safe to call more than once.
+void SparkGlm52ServingEngineDestroy(
+    SparkGlm52ServingEngine *engine);
 
 SparkStatus SparkGlm52ServingEngineSubmitTokenIds(
     SparkGlm52ServingEngine *engine,
