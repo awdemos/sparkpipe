@@ -49,6 +49,7 @@ typedef struct SparkGlm52ExpertQueue
 	uint32_t firing_threshold_rows;
 	uint64_t firing_deadline_ns;
 	uint32_t free_head;
+	uint32_t free_high_water;
 	uint32_t enqueued_row_count;
 	uint32_t layer_enqueued_row_count[SPARK_GLM52_EXPERT_QUEUE_MAX_LAYERS];
 	uint64_t firing_count;

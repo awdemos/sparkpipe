@@ -14,8 +14,13 @@
 // for a tool call is the signal that its KV fragments become demotable in the
 // JIT pool.
 
-#define SPARK_GLM52_BATCH_SEQUENCE_ABI_VERSION 1u
+#define SPARK_GLM52_BATCH_SEQUENCE_ABI_VERSION 2u
 #define SPARK_GLM52_BATCH_SEQUENCE_MAX_SEQUENCES 16384u
+// Handles returned by Admit tag the slot index with a generation that
+// increments when the slot is recycled, so a stale handle held past Complete is
+// refused instead of silently acting on the slot's next occupant.
+#define SPARK_GLM52_BATCH_SEQUENCE_HANDLE_INDEX_BITS 14u
+#define SPARK_GLM52_BATCH_SEQUENCE_HANDLE_INDEX_MASK ((1u << SPARK_GLM52_BATCH_SEQUENCE_HANDLE_INDEX_BITS) - 1u)
 
 #define SPARK_GLM52_BATCH_SEQUENCE_STATE_FREE 0u
 #define SPARK_GLM52_BATCH_SEQUENCE_STATE_ACTIVE 1u
@@ -31,6 +36,8 @@ typedef struct SparkGlm52BatchSequence
 	uint32_t context_tokens;
 	uint32_t fragment_base;
 	uint32_t fragment_count;
+	uint32_t free_next;
+	uint32_t generation;
 } SparkGlm52BatchSequence;
 
 typedef struct SparkGlm52BatchSequenceTableConfiguration
@@ -48,13 +55,15 @@ typedef struct SparkGlm52BatchSequenceTable
 	uint32_t active_count;
 	uint32_t awaiting_tool_count;
 	uint32_t complete_count;
+	uint32_t free_head;
+	uint32_t free_high_water;
 	uint64_t exchange_count;
 	SparkGlm52BatchSequence sequences[SPARK_GLM52_BATCH_SEQUENCE_MAX_SEQUENCES];
 } SparkGlm52BatchSequenceTable;
 
 SparkStatus SparkGlm52BatchSequenceTableInitialize(SparkGlm52BatchSequenceTable *table,const SparkGlm52BatchSequenceTableConfiguration *configuration);
-SparkStatus SparkGlm52BatchSequenceTableAdmit(SparkGlm52BatchSequenceTable *table,uint64_t sequence_id,uint32_t context_tokens,uint32_t fragment_base,uint32_t fragment_count,uint32_t *sequence_index_out);
-SparkStatus SparkGlm52BatchSequenceTableBeginExchange(SparkGlm52BatchSequenceTable *table,uint32_t sequence_index,uint32_t appended_context_tokens);
-SparkStatus SparkGlm52BatchSequenceTablePauseForTool(SparkGlm52BatchSequenceTable *table,uint32_t sequence_index);
-SparkStatus SparkGlm52BatchSequenceTableComplete(SparkGlm52BatchSequenceTable *table,uint32_t sequence_index);
+SparkStatus SparkGlm52BatchSequenceTableAdmit(SparkGlm52BatchSequenceTable *table,uint64_t sequence_id,uint32_t context_tokens,uint32_t fragment_base,uint32_t fragment_count,uint32_t *sequence_handle_out);
+SparkStatus SparkGlm52BatchSequenceTableBeginExchange(SparkGlm52BatchSequenceTable *table,uint32_t sequence_handle,uint32_t appended_context_tokens);
+SparkStatus SparkGlm52BatchSequenceTablePauseForTool(SparkGlm52BatchSequenceTable *table,uint32_t sequence_handle);
+SparkStatus SparkGlm52BatchSequenceTableComplete(SparkGlm52BatchSequenceTable *table,uint32_t sequence_handle);
 uint32_t SparkGlm52BatchSequenceTableFiringThreshold(const SparkGlm52BatchSequenceTable *table,uint32_t topk,uint32_t expert_count,uint32_t threshold_cap);
