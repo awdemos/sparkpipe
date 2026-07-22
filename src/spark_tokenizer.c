@@ -1177,6 +1177,8 @@ void SparkTokenizerWorkspaceDestroy(
     free(workspace->next_symbol_indices);
     free(workspace->symbol_generations);
     free(workspace->merge_heap);
+    free(workspace->piece_cache_entries);
+    free(workspace->piece_cache_token_pool);
     SparkTokenizerWorkspaceReset(workspace);
 }
 
@@ -1209,9 +1211,17 @@ SparkStatus SparkTokenizerWorkspaceInitialize(
         (uint64_t)maximum_symbol_count * sizeof(*workspace->symbol_generations));
     workspace->merge_heap = (SparkTokenizerMergeCandidate *)malloc(
         (uint64_t)workspace->heap_capacity * sizeof(*workspace->merge_heap));
+    workspace->piece_cache_slot_count = SPARK_TOKENIZER_PIECE_CACHE_SLOT_COUNT;
+    workspace->piece_cache_token_capacity = SPARK_TOKENIZER_PIECE_CACHE_TOKEN_CAPACITY;
+    workspace->piece_cache_token_used = 0u;
+    workspace->piece_cache_entries = (SparkTokenizerPieceCacheEntry *)calloc(
+        (uint64_t)workspace->piece_cache_slot_count,sizeof(*workspace->piece_cache_entries));
+    workspace->piece_cache_token_pool = (uint32_t *)malloc(
+        (uint64_t)workspace->piece_cache_token_capacity * sizeof(*workspace->piece_cache_token_pool));
     if (workspace->symbol_token_ids == 0 || workspace->previous_symbol_indices == 0 ||
         workspace->next_symbol_indices == 0 || workspace->symbol_generations == 0 ||
-        workspace->merge_heap == 0)
+        workspace->merge_heap == 0 || workspace->piece_cache_entries == 0 ||
+        workspace->piece_cache_token_pool == 0)
     {
         SparkTokenizerWorkspaceDestroy(workspace);
         return SPARK_STATUS_INTERNAL_ERROR;
@@ -1874,18 +1884,55 @@ static SparkStatus SparkTokenizerPushPairCandidate(
     return SparkTokenizerHeapPush(workspace, &candidate);
 }
 
-static SparkStatus SparkTokenizerEncodeByteLevelPiece(
+static uint64_t SparkTokenizerPieceHash(const char *text,uint32_t text_bytes)
+{
+    uint64_t hash = 1469598103934665603u;
+    uint32_t byte_index;
+    for (byte_index = 0u; byte_index < text_bytes; ++byte_index)
+    {
+        hash ^= (uint8_t)text[byte_index];
+        hash *= 1099511628211u;
+    }
+    if (hash == SPARK_TOKENIZER_PIECE_CACHE_EMPTY_HASH)
+        hash = 1u;
+    return hash;
+}
+
+static SparkTokenizerPieceCacheEntry *SparkTokenizerPieceCacheLookup(SparkTokenizerWorkspace *workspace,const char *text,uint32_t text_bytes,uint64_t hash)
+{
+    uint32_t slot = (uint32_t)(hash & (workspace->piece_cache_slot_count - 1u)),probes = 0u;
+    while (probes < workspace->piece_cache_slot_count)
+    {
+        SparkTokenizerPieceCacheEntry *entry = &workspace->piece_cache_entries[slot];
+        if (entry->hash == SPARK_TOKENIZER_PIECE_CACHE_EMPTY_HASH)
+            return entry;
+        if (entry->hash == hash && entry->piece_bytes == text_bytes &&
+            memcmp(entry->piece,text,text_bytes) == 0)
+            return entry;
+        slot = ((slot + 1u) & (workspace->piece_cache_slot_count - 1u));
+        probes += 1u;
+    }
+    return 0;
+}
+
+static SparkStatus SparkTokenizerEncodeByteLevelPieceUncached(
     const SparkTokenizer *tokenizer,
     const char *text,
     uint32_t text_bytes,
     SparkTokenizerWorkspace *workspace,
-    SparkTokenizerEncoding *encoding)
+    uint32_t *token_ids_out,
+    uint32_t token_ids_capacity,
+    uint32_t *token_count_out,
+    uint32_t *invalid_out)
 {
     uint32_t symbol_index;
     uint32_t head_symbol_index;
     uint32_t live_symbol_count;
+    uint32_t emitted_count;
     SparkStatus status;
 
+    *token_count_out = 0u;
+    *invalid_out = 0u;
     if (text_bytes == 0u)
     {
         return SPARK_STATUS_OK;
@@ -1903,7 +1950,7 @@ static SparkStatus SparkTokenizerEncodeByteLevelPiece(
         token_id = tokenizer->byte_token_ids[(uint8_t)text[symbol_index]];
         if (token_id == SPARK_TOKENIZER_NO_TOKEN_ID)
         {
-            encoding->invalid_segment_count += 1u;
+            *invalid_out = 1u;
             return SPARK_STATUS_NOT_FOUND;
         }
         workspace->symbol_token_ids[symbol_index] = token_id;
@@ -1984,16 +2031,123 @@ static SparkStatus SparkTokenizerEncodeByteLevelPiece(
     }
 
     symbol_index = head_symbol_index;
+    emitted_count = 0u;
     while (symbol_index != SPARK_TOKENIZER_SYMBOL_NONE)
     {
-        status = SparkTokenizerAppendTokenToEncoding(encoding, workspace->symbol_token_ids[symbol_index]);
+        if (emitted_count >= token_ids_capacity)
+        {
+            return SPARK_STATUS_CAPACITY_EXCEEDED;
+        }
+        token_ids_out[emitted_count] = workspace->symbol_token_ids[symbol_index];
+        emitted_count += 1u;
+        symbol_index = workspace->next_symbol_indices[symbol_index];
+    }
+    *token_count_out = emitted_count;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkTokenizerEncodeByteLevelPiece(
+    const SparkTokenizer *tokenizer,
+    const char *text,
+    uint32_t text_bytes,
+    uint32_t encode_flags,
+    SparkTokenizerWorkspace *workspace,
+    SparkTokenizerEncoding *encoding)
+{
+    SparkTokenizerPieceCacheEntry *entry;
+    uint64_t hash;
+    uint32_t token_index;
+    SparkStatus status;
+
+    if (text_bytes == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    // Pieces too long to cache inline, when the cache is unavailable, or when the
+    // caller disables the cache, encode directly through the merge loop.
+    if (text_bytes > SPARK_TOKENIZER_PIECE_CACHE_INLINE_BYTES ||
+        (encode_flags & SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_PIECE_CACHE) != 0u ||
+        workspace->piece_cache_entries == 0 || workspace->piece_cache_token_pool == 0)
+    {
+        uint32_t direct_count = 0u,invalid = 0u,emit_index;
+        status = SparkTokenizerEncodeByteLevelPieceUncached(
+            tokenizer,text,text_bytes,workspace,
+            workspace->symbol_token_ids,workspace->maximum_symbol_count,
+            &direct_count,&invalid);
+        if (invalid != 0u)
+        {
+            encoding->invalid_segment_count += 1u;
+        }
         if (status != SPARK_STATUS_OK)
         {
             return status;
         }
-        symbol_index = workspace->next_symbol_indices[symbol_index];
+        for (emit_index = 0u; emit_index < direct_count; ++emit_index)
+        {
+            status = SparkTokenizerAppendTokenToEncoding(encoding,workspace->symbol_token_ids[emit_index]);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
+        }
+        return SPARK_STATUS_OK;
     }
-    return SPARK_STATUS_OK;
+    hash = SparkTokenizerPieceHash(text,text_bytes);
+    entry = SparkTokenizerPieceCacheLookup(workspace,text,text_bytes,hash);
+    if (entry != 0 && entry->hash != SPARK_TOKENIZER_PIECE_CACHE_EMPTY_HASH)
+    {
+        // Hit: replay the memoized token sequence from the pool.
+        const uint32_t *cached = &workspace->piece_cache_token_pool[entry->token_offset];
+        for (token_index = 0u; token_index < entry->token_count; ++token_index)
+        {
+            status = SparkTokenizerAppendTokenToEncoding(encoding,cached[token_index]);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
+        }
+        return SPARK_STATUS_OK;
+    }
+    // Miss: encode once into the pool tail, then, if it fits and a free slot
+    // exists, commit the entry so future occurrences hit.
+    {
+        uint32_t produced = 0u,invalid = 0u,pool_room,token_index_local;
+        uint32_t pool_start = workspace->piece_cache_token_used;
+        pool_room = workspace->piece_cache_token_capacity - pool_start;
+        status = SparkTokenizerEncodeByteLevelPieceUncached(
+            tokenizer,text,text_bytes,workspace,
+            workspace->symbol_token_ids,workspace->maximum_symbol_count,
+            &produced,&invalid);
+        if (invalid != 0u)
+        {
+            encoding->invalid_segment_count += 1u;
+        }
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        for (token_index_local = 0u; token_index_local < produced; ++token_index_local)
+        {
+            status = SparkTokenizerAppendTokenToEncoding(encoding,workspace->symbol_token_ids[token_index_local]);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
+        }
+        if (entry != 0 && produced <= pool_room)
+        {
+            for (token_index_local = 0u; token_index_local < produced; ++token_index_local)
+                workspace->piece_cache_token_pool[pool_start + token_index_local] =
+                    workspace->symbol_token_ids[token_index_local];
+            entry->hash = hash;
+            entry->piece_bytes = text_bytes;
+            entry->token_offset = pool_start;
+            entry->token_count = produced;
+            memcpy(entry->piece,text,text_bytes);
+            workspace->piece_cache_token_used = pool_start + produced;
+        }
+        return SPARK_STATUS_OK;
+    }
 }
 
 static uint32_t SparkTokenizerIsAsciiWhitespace(
@@ -2003,65 +2157,39 @@ static uint32_t SparkTokenizerIsAsciiWhitespace(
         value == '\r' || value == '\f' || value == '\v';
 }
 
-static uint32_t SparkTokenizerIsAsciiDigit(
-    uint8_t value)
+// Byte classification for GPT-2 style pretokenization, as a 256-entry table so
+// the hot run-scan is a branchless load rather than a chain of comparisons. The
+// classes match SparkTokenizerPieceClass exactly: 1 whitespace, 2 letter or any
+// UTF-8 continuation/lead byte (>=0x80), 3 digit, 4 everything else. Because all
+// bytes of any UTF-8 multibyte character are >=0x80 and therefore class 2, a
+// byte-at-a-time scan finds the same run boundaries as a character-at-a-time
+// scan, which is what makes the scan safe to vectorize.
+static const uint8_t g_spark_tokenizer_byte_class[256] =
 {
-    return value >= '0' && value <= '9';
-}
+    4,4,4,4,4,4,4,4,4,1,1,1,1,1,4,4, 4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+    1,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4, 3,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,
+    4,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,4,4,4,4,4,
+    4,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,4,4,4,4,4,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
+};
 
-static uint32_t SparkTokenizerIsAsciiAlpha(
-    uint8_t value)
+// Advance from start while the byte class equals target_class, returning the
+// exclusive end. Written as a plain counted loop over a byte array so the
+// compiler auto-vectorizes it to NEON or SVE2 on Grace and to AVX2 on x86; no
+// intrinsics, one portable source. The class table load and equality test are
+// data parallel, and the loop carries no dependency other than the index.
+static uint32_t SparkTokenizerScanClassRun(const char *text,uint32_t text_bytes,uint32_t start,uint8_t target_class)
 {
-    return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z');
-}
-
-static uint32_t SparkTokenizerUtf8ByteLength(
-    uint8_t value)
-{
-    if ((value & 0x80u) == 0u)
+    uint32_t scan_position = start;
+    while (scan_position < text_bytes &&
+        g_spark_tokenizer_byte_class[(uint8_t)text[scan_position]] == target_class)
     {
-        return 1u;
+        scan_position += 1u;
     }
-    if ((value & 0xe0u) == 0xc0u)
-    {
-        return 2u;
-    }
-    if ((value & 0xf0u) == 0xe0u)
-    {
-        return 3u;
-    }
-    if ((value & 0xf8u) == 0xf0u)
-    {
-        return 4u;
-    }
-    return 1u;
-}
-
-static uint32_t SparkTokenizerPieceClass(
-    const char *text,
-    uint32_t text_bytes,
-    uint32_t position)
-{
-    uint8_t value;
-
-    if (position >= text_bytes)
-    {
-        return 0u;
-    }
-    value = (uint8_t)text[position];
-    if (SparkTokenizerIsAsciiWhitespace(value))
-    {
-        return 1u;
-    }
-    if (SparkTokenizerIsAsciiAlpha(value) || value >= 0x80u)
-    {
-        return 2u;
-    }
-    if (SparkTokenizerIsAsciiDigit(value))
-    {
-        return 3u;
-    }
-    return 4u;
+    return scan_position;
 }
 
 static uint32_t SparkTokenizerMatchesContraction(
@@ -2136,38 +2264,50 @@ static uint32_t SparkTokenizerFindNextRegexPiece(
         !SparkTokenizerIsAsciiWhitespace((uint8_t)text[position + 1u]))
     {
         scan_position = position + 1u;
-        class_id = SparkTokenizerPieceClass(text, text_bytes, scan_position);
-        while (scan_position < text_bytes && SparkTokenizerPieceClass(text, text_bytes, scan_position) == class_id)
+        class_id = g_spark_tokenizer_byte_class[(uint8_t)text[scan_position]];
+        // A leading-space run of letters or digits has no interior boundary and
+        // scans in one vectorized sweep. An "other" (class 4) run can be cut
+        // short by a contraction apostrophe, so it is scanned byte by byte with
+        // the contraction check.
+        if (class_id == 2u || class_id == 3u)
         {
-            uint32_t character_bytes;
-
-            character_bytes = SparkTokenizerUtf8ByteLength((uint8_t)text[scan_position]);
-            if (scan_position + character_bytes > text_bytes)
+            scan_position = SparkTokenizerScanClassRun(text, text_bytes, scan_position, (uint8_t)class_id);
+        }
+        else
+        {
+            while (scan_position < text_bytes &&
+                g_spark_tokenizer_byte_class[(uint8_t)text[scan_position]] == class_id)
             {
-                character_bytes = 1u;
+                if (SparkTokenizerMatchesContraction(text, text_bytes, scan_position, &piece_bytes))
+                {
+                    break;
+                }
+                scan_position += 1u;
             }
-            scan_position += character_bytes;
         }
         *piece_bytes_out = scan_position - position;
         return 1u;
     }
 
-    class_id = SparkTokenizerPieceClass(text, text_bytes, position);
-    scan_position = position;
-    while (scan_position < text_bytes && SparkTokenizerPieceClass(text, text_bytes, scan_position) == class_id)
+    class_id = g_spark_tokenizer_byte_class[(uint8_t)text[position]];
+    if (class_id == 2u || class_id == 3u || class_id == 1u)
     {
-        uint32_t character_bytes;
-
-        if (class_id != 1u && SparkTokenizerMatchesContraction(text, text_bytes, scan_position, &piece_bytes))
+        // Letter, digit, and whitespace runs have no interior contraction break,
+        // so they scan in a single vectorized sweep.
+        scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, (uint8_t)class_id);
+    }
+    else
+    {
+        scan_position = position;
+        while (scan_position < text_bytes &&
+            g_spark_tokenizer_byte_class[(uint8_t)text[scan_position]] == class_id)
         {
-            break;
+            if (SparkTokenizerMatchesContraction(text, text_bytes, scan_position, &piece_bytes))
+            {
+                break;
+            }
+            scan_position += 1u;
         }
-        character_bytes = SparkTokenizerUtf8ByteLength((uint8_t)text[scan_position]);
-        if (scan_position + character_bytes > text_bytes)
-        {
-            character_bytes = 1u;
-        }
-        scan_position += character_bytes;
     }
     *piece_bytes_out = scan_position - position;
     return *piece_bytes_out != 0u;
@@ -2191,7 +2331,7 @@ static SparkStatus SparkTokenizerEncodeRegularSegmentWithWorkspace(
     if (tokenizer->byte_level_use_regex == 0u ||
         (encode_flags & SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_REGEX_PRETOKENIZATION) != 0u)
     {
-        return SparkTokenizerEncodeByteLevelPiece(tokenizer, text, text_bytes, workspace, encoding);
+        return SparkTokenizerEncodeByteLevelPiece(tokenizer, text, text_bytes, encode_flags, workspace, encoding);
     }
 
     position = 0u;
@@ -2208,6 +2348,7 @@ static SparkStatus SparkTokenizerEncodeRegularSegmentWithWorkspace(
             tokenizer,
             text + piece_start,
             piece_bytes,
+            encode_flags,
             workspace,
             encoding);
         if (status != SPARK_STATUS_OK)

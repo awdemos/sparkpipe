@@ -23,6 +23,18 @@ extern "C" {
 #define SPARK_TOKENIZER_BATCH_ENCODE_CONFIGURATION_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkTokenizerBatchEncodeConfiguration))
 #define SPARK_TOKENIZER_BPE_MODEL_KIND_BYTE_LEVEL 1u
+// Pretoken cache: a byte-level BPE re-encodes the same short words millions of
+// times on natural text (word frequencies are Zipfian), so memoizing the token
+// sequence a piece produces converts the dominant merge-loop cost into a hash
+// lookup on repeats. The cache is thread-local in the workspace so there is no
+// contention. Pieces up to the inline byte bound are cached; longer pieces (rare
+// in BPE, which splits on whitespace and punctuation) bypass the cache and encode
+// directly. The slot count is a power of two for masking; the token pool holds
+// the cached id sequences and is bounded, with new inserts skipped once full.
+#define SPARK_TOKENIZER_PIECE_CACHE_INLINE_BYTES 32u
+#define SPARK_TOKENIZER_PIECE_CACHE_SLOT_COUNT 16384u
+#define SPARK_TOKENIZER_PIECE_CACHE_TOKEN_CAPACITY 262144u
+#define SPARK_TOKENIZER_PIECE_CACHE_EMPTY_HASH 0u
 #define SPARK_TOKENIZER_MAX_MERGE_KEY_INLINE_BYTES 256u
 #define SPARK_TOKENIZER_NO_TOKEN_ID 0xffffffffu
 #define SPARK_TOKENIZER_BYTE_COUNT 256u
@@ -33,10 +45,12 @@ extern "C" {
 #define SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_SPECIAL_TOKEN_MATCH 0x00000001u
 #define SPARK_TOKENIZER_ENCODE_FLAG_ADD_PREFIX_SPACE 0x00000002u
 #define SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_REGEX_PRETOKENIZATION 0x00000004u
+#define SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_PIECE_CACHE 0x00000008u
 #define SPARK_TOKENIZER_ENCODE_KNOWN_FLAGS \
     (SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_SPECIAL_TOKEN_MATCH | \
      SPARK_TOKENIZER_ENCODE_FLAG_ADD_PREFIX_SPACE | \
-     SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_REGEX_PRETOKENIZATION)
+     SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_REGEX_PRETOKENIZATION | \
+     SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_PIECE_CACHE)
 #define SPARK_TOKENIZER_DECODE_FLAG_SKIP_SPECIAL_TOKENS 0x00000001u
 #define SPARK_TOKENIZER_DECODE_KNOWN_FLAGS \
     SPARK_TOKENIZER_DECODE_FLAG_SKIP_SPECIAL_TOKENS
@@ -106,6 +120,15 @@ typedef struct SparkTokenizerEncoding
     uint32_t reserved1;
 } SparkTokenizerEncoding;
 
+typedef struct SparkTokenizerPieceCacheEntry
+{
+    uint64_t hash;
+    uint32_t piece_bytes;
+    uint32_t token_offset;
+    uint32_t token_count;
+    uint8_t piece[SPARK_TOKENIZER_PIECE_CACHE_INLINE_BYTES];
+} SparkTokenizerPieceCacheEntry;
+
 typedef struct SparkTokenizerWorkspace
 {
     uint32_t abi_version;
@@ -121,8 +144,11 @@ typedef struct SparkTokenizerWorkspace
     uint32_t *symbol_generations;
     SparkTokenizerMergeCandidate *merge_heap;
     uint32_t merge_heap_count;
-    uint32_t reserved0;
-    uint32_t reserved1;
+    uint32_t piece_cache_slot_count;
+    uint32_t piece_cache_token_capacity;
+    uint32_t piece_cache_token_used;
+    struct SparkTokenizerPieceCacheEntry *piece_cache_entries;
+    uint32_t *piece_cache_token_pool;
 } SparkTokenizerWorkspace;
 
 typedef struct SparkTokenizerBatchEncodeConfiguration

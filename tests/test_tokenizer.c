@@ -402,8 +402,50 @@ static void SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk(void)
     SparkTokenizerDestroy(&tokenizer);
 }
 
+static void SparkTestTokenizerPieceCacheMatchesUncached(void)
+{
+    // The piece cache must produce byte-identical output to the uncached merge
+    // path. Encode a repetitive corpus both ways and compare token for token;
+    // the cache is exercised heavily by the repeats, the bypass by the flag.
+    static const char corpus[] =
+        "the quick brown fox the quick brown fox jumps over the lazy dog "
+        "the the the quick quick brown fox jumps jumps over over the lazy lazy "
+        "hello world hello world foo bar foo bar baz qux the quick brown fox";
+    SparkTokenizerHuggingFaceJsonConfiguration configuration;
+    SparkTokenizer tokenizer;
+    SparkTokenizerEncoding cached_encoding;
+    SparkTokenizerEncoding uncached_encoding;
+    uint32_t cached_ids[512];
+    uint32_t uncached_ids[512];
+    uint32_t corpus_bytes = (uint32_t)(sizeof(corpus) - 1u);
+    uint32_t token_index;
+    memset(&configuration,0,sizeof(configuration));
+    configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
+    configuration.tokenizer_json_path = "build/test_tokenizer_large_merge_hf_byte_bpe.json";
+    if (SparkTokenizerLoadHuggingFaceJson(&tokenizer,&configuration) != SPARK_STATUS_OK)
+        return;
+    memset(&cached_encoding,0,sizeof(cached_encoding));
+    memset(&uncached_encoding,0,sizeof(uncached_encoding));
+    cached_encoding.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    cached_encoding.descriptor_bytes = sizeof(cached_encoding);
+    cached_encoding.token_ids = cached_ids;
+    cached_encoding.token_capacity = 512u;
+    uncached_encoding.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    uncached_encoding.descriptor_bytes = sizeof(uncached_encoding);
+    uncached_encoding.token_ids = uncached_ids;
+    uncached_encoding.token_capacity = 512u;
+    assert(SparkTokenizerEncodeUtf8(&tokenizer,corpus,corpus_bytes,0u,&cached_encoding) == SPARK_STATUS_OK);
+    assert(SparkTokenizerEncodeUtf8(&tokenizer,corpus,corpus_bytes,SPARK_TOKENIZER_ENCODE_FLAG_DISABLE_PIECE_CACHE,&uncached_encoding) == SPARK_STATUS_OK);
+    assert(cached_encoding.token_count == uncached_encoding.token_count);
+    for (token_index = 0u; token_index < cached_encoding.token_count; ++token_index)
+        assert(cached_ids[token_index] == uncached_ids[token_index]);
+    SparkTokenizerDestroy(&tokenizer);
+}
+
 int main(void)
 {
+    SparkTestTokenizerPieceCacheMatchesUncached();
     SparkTestTokenizerEncodesByteBpeAndSpecialTokens();
     SparkTestTokenizerDecodesByteLevelTokens();
     SparkTestTokenizerEncodesBatch();
