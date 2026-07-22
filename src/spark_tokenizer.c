@@ -2157,65 +2157,39 @@ static uint32_t SparkTokenizerIsAsciiWhitespace(
         value == '\r' || value == '\f' || value == '\v';
 }
 
-static uint32_t SparkTokenizerIsAsciiDigit(
-    uint8_t value)
+// Byte classification for GPT-2 style pretokenization, as a 256-entry table so
+// the hot run-scan is a branchless load rather than a chain of comparisons. The
+// classes match SparkTokenizerPieceClass exactly: 1 whitespace, 2 letter or any
+// UTF-8 continuation/lead byte (>=0x80), 3 digit, 4 everything else. Because all
+// bytes of any UTF-8 multibyte character are >=0x80 and therefore class 2, a
+// byte-at-a-time scan finds the same run boundaries as a character-at-a-time
+// scan, which is what makes the scan safe to vectorize.
+static const uint8_t g_spark_tokenizer_byte_class[256] =
 {
-    return value >= '0' && value <= '9';
-}
+    4,4,4,4,4,4,4,4,4,1,1,1,1,1,4,4, 4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4,
+    1,4,4,4,4,4,4,4,4,4,4,4,4,4,4,4, 3,3,3,3,3,3,3,3,3,3,4,4,4,4,4,4,
+    4,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,4,4,4,4,4,
+    4,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,4,4,4,4,4,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2, 2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
+};
 
-static uint32_t SparkTokenizerIsAsciiAlpha(
-    uint8_t value)
+// Advance from start while the byte class equals target_class, returning the
+// exclusive end. Written as a plain counted loop over a byte array so the
+// compiler auto-vectorizes it to NEON or SVE2 on Grace and to AVX2 on x86; no
+// intrinsics, one portable source. The class table load and equality test are
+// data parallel, and the loop carries no dependency other than the index.
+static uint32_t SparkTokenizerScanClassRun(const char *text,uint32_t text_bytes,uint32_t start,uint8_t target_class)
 {
-    return (value >= 'a' && value <= 'z') || (value >= 'A' && value <= 'Z');
-}
-
-static uint32_t SparkTokenizerUtf8ByteLength(
-    uint8_t value)
-{
-    if ((value & 0x80u) == 0u)
+    uint32_t scan_position = start;
+    while (scan_position < text_bytes &&
+        g_spark_tokenizer_byte_class[(uint8_t)text[scan_position]] == target_class)
     {
-        return 1u;
+        scan_position += 1u;
     }
-    if ((value & 0xe0u) == 0xc0u)
-    {
-        return 2u;
-    }
-    if ((value & 0xf0u) == 0xe0u)
-    {
-        return 3u;
-    }
-    if ((value & 0xf8u) == 0xf0u)
-    {
-        return 4u;
-    }
-    return 1u;
-}
-
-static uint32_t SparkTokenizerPieceClass(
-    const char *text,
-    uint32_t text_bytes,
-    uint32_t position)
-{
-    uint8_t value;
-
-    if (position >= text_bytes)
-    {
-        return 0u;
-    }
-    value = (uint8_t)text[position];
-    if (SparkTokenizerIsAsciiWhitespace(value))
-    {
-        return 1u;
-    }
-    if (SparkTokenizerIsAsciiAlpha(value) || value >= 0x80u)
-    {
-        return 2u;
-    }
-    if (SparkTokenizerIsAsciiDigit(value))
-    {
-        return 3u;
-    }
-    return 4u;
+    return scan_position;
 }
 
 static uint32_t SparkTokenizerMatchesContraction(
@@ -2290,38 +2264,50 @@ static uint32_t SparkTokenizerFindNextRegexPiece(
         !SparkTokenizerIsAsciiWhitespace((uint8_t)text[position + 1u]))
     {
         scan_position = position + 1u;
-        class_id = SparkTokenizerPieceClass(text, text_bytes, scan_position);
-        while (scan_position < text_bytes && SparkTokenizerPieceClass(text, text_bytes, scan_position) == class_id)
+        class_id = g_spark_tokenizer_byte_class[(uint8_t)text[scan_position]];
+        // A leading-space run of letters or digits has no interior boundary and
+        // scans in one vectorized sweep. An "other" (class 4) run can be cut
+        // short by a contraction apostrophe, so it is scanned byte by byte with
+        // the contraction check.
+        if (class_id == 2u || class_id == 3u)
         {
-            uint32_t character_bytes;
-
-            character_bytes = SparkTokenizerUtf8ByteLength((uint8_t)text[scan_position]);
-            if (scan_position + character_bytes > text_bytes)
+            scan_position = SparkTokenizerScanClassRun(text, text_bytes, scan_position, (uint8_t)class_id);
+        }
+        else
+        {
+            while (scan_position < text_bytes &&
+                g_spark_tokenizer_byte_class[(uint8_t)text[scan_position]] == class_id)
             {
-                character_bytes = 1u;
+                if (SparkTokenizerMatchesContraction(text, text_bytes, scan_position, &piece_bytes))
+                {
+                    break;
+                }
+                scan_position += 1u;
             }
-            scan_position += character_bytes;
         }
         *piece_bytes_out = scan_position - position;
         return 1u;
     }
 
-    class_id = SparkTokenizerPieceClass(text, text_bytes, position);
-    scan_position = position;
-    while (scan_position < text_bytes && SparkTokenizerPieceClass(text, text_bytes, scan_position) == class_id)
+    class_id = g_spark_tokenizer_byte_class[(uint8_t)text[position]];
+    if (class_id == 2u || class_id == 3u || class_id == 1u)
     {
-        uint32_t character_bytes;
-
-        if (class_id != 1u && SparkTokenizerMatchesContraction(text, text_bytes, scan_position, &piece_bytes))
+        // Letter, digit, and whitespace runs have no interior contraction break,
+        // so they scan in a single vectorized sweep.
+        scan_position = SparkTokenizerScanClassRun(text, text_bytes, position, (uint8_t)class_id);
+    }
+    else
+    {
+        scan_position = position;
+        while (scan_position < text_bytes &&
+            g_spark_tokenizer_byte_class[(uint8_t)text[scan_position]] == class_id)
         {
-            break;
+            if (SparkTokenizerMatchesContraction(text, text_bytes, scan_position, &piece_bytes))
+            {
+                break;
+            }
+            scan_position += 1u;
         }
-        character_bytes = SparkTokenizerUtf8ByteLength((uint8_t)text[scan_position]);
-        if (scan_position + character_bytes > text_bytes)
-        {
-            character_bytes = 1u;
-        }
-        scan_position += character_bytes;
     }
     *piece_bytes_out = scan_position - position;
     return *piece_bytes_out != 0u;
