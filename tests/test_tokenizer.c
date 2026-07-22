@@ -402,6 +402,66 @@ static void SparkTestTokenizerLoadsLargeMergeArrayWithoutIndexedArrayWalk(void)
     SparkTokenizerDestroy(&tokenizer);
 }
 
+static void SparkTestTokenizerWarmCacheSurvivesGrowthAndMatches(void)
+{
+    // A persistent workspace must keep its piece cache warm across encode calls
+    // and across symbol-buffer growth, and warm-cache output must stay identical
+    // to a fresh cold encode. Feed varying request sizes, including ones that
+    // force the buffers to grow, and compare every result against EncodeUtf8.
+    static const char base[] =
+        "the quick brown fox jumps over the lazy dog and the cat sat on the mat "
+        "she said don't and he said can't while they walked to the market today "
+        "numbers 123 456 and symbols !!! ... mixed with words words words again";
+    SparkTokenizerHuggingFaceJsonConfiguration configuration;
+    SparkTokenizer tokenizer;
+    SparkTokenizerWorkspace workspace;
+    uint32_t sizes[6];
+    uint32_t base_bytes = (uint32_t)(sizeof(base) - 1u);
+    uint32_t request_index;
+    memset(&configuration,0,sizeof(configuration));
+    configuration.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
+    configuration.tokenizer_json_path = "build/test_tokenizer_large_merge_hf_byte_bpe.json";
+    if (SparkTokenizerLoadHuggingFaceJson(&tokenizer,&configuration) != SPARK_STATUS_OK)
+        return;
+    SparkTokenizerWorkspaceReset(&workspace);
+    assert(SparkTokenizerWorkspaceInitialize(&workspace,16u) == SPARK_STATUS_OK);
+    sizes[0] = 20u;
+    sizes[1] = 20u;
+    sizes[2] = base_bytes;
+    sizes[3] = 20u;
+    sizes[4] = base_bytes;
+    sizes[5] = 30u;
+    for (request_index = 0u; request_index < 6u; ++request_index)
+    {
+        SparkTokenizerEncoding warm_encoding;
+        SparkTokenizerEncoding cold_encoding;
+        uint32_t warm_ids[512];
+        uint32_t cold_ids[512];
+        uint32_t request_bytes = sizes[request_index];
+        uint32_t token_index;
+        if (request_bytes > base_bytes)
+            request_bytes = base_bytes;
+        memset(&warm_encoding,0,sizeof(warm_encoding));
+        memset(&cold_encoding,0,sizeof(cold_encoding));
+        warm_encoding.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+        warm_encoding.descriptor_bytes = sizeof(warm_encoding);
+        warm_encoding.token_ids = warm_ids;
+        warm_encoding.token_capacity = 512u;
+        cold_encoding.abi_version = SPARK_TOKENIZER_ABI_VERSION;
+        cold_encoding.descriptor_bytes = sizeof(cold_encoding);
+        cold_encoding.token_ids = cold_ids;
+        cold_encoding.token_capacity = 512u;
+        assert(SparkTokenizerEncodeUtf8WithWorkspace(&tokenizer,base,request_bytes,0u,&workspace,&warm_encoding) == SPARK_STATUS_OK);
+        assert(SparkTokenizerEncodeUtf8(&tokenizer,base,request_bytes,0u,&cold_encoding) == SPARK_STATUS_OK);
+        assert(warm_encoding.token_count == cold_encoding.token_count);
+        for (token_index = 0u; token_index < warm_encoding.token_count; ++token_index)
+            assert(warm_ids[token_index] == cold_ids[token_index]);
+    }
+    SparkTokenizerWorkspaceDestroy(&workspace);
+    SparkTokenizerDestroy(&tokenizer);
+}
+
 static void SparkTestTokenizerPieceCacheMatchesUncached(void)
 {
     // The piece cache must produce byte-identical output to the uncached merge
@@ -446,6 +506,7 @@ static void SparkTestTokenizerPieceCacheMatchesUncached(void)
 int main(void)
 {
     SparkTestTokenizerPieceCacheMatchesUncached();
+    SparkTestTokenizerWarmCacheSurvivesGrowthAndMatches();
     SparkTestTokenizerEncodesByteBpeAndSpecialTokens();
     SparkTestTokenizerDecodesByteLevelTokens();
     SparkTestTokenizerEncodesBatch();

@@ -1182,15 +1182,54 @@ void SparkTokenizerWorkspaceDestroy(
     SparkTokenizerWorkspaceReset(workspace);
 }
 
-SparkStatus SparkTokenizerWorkspaceInitialize(
-    SparkTokenizerWorkspace *workspace,
-    uint32_t maximum_symbol_count)
+static SparkStatus SparkTokenizerWorkspaceEnsurePieceCache(SparkTokenizerWorkspace *workspace)
 {
-    if (workspace == 0 || maximum_symbol_count == 0u)
+    // The piece cache is keyed on piece bytes and is independent of the input
+    // size, so it is allocated once and preserved across encode calls and across
+    // symbol-buffer growth. Only allocate if it is not already present; never
+    // wipe a warm cache when the symbol buffers are merely resized for a larger
+    // input, which is what lets the cache stay warm across serving requests.
+    if (workspace->piece_cache_entries != 0 && workspace->piece_cache_token_pool != 0)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
+        return SPARK_STATUS_OK;
     }
-    SparkTokenizerWorkspaceDestroy(workspace);
+    workspace->piece_cache_slot_count = SPARK_TOKENIZER_PIECE_CACHE_SLOT_COUNT;
+    workspace->piece_cache_token_capacity = SPARK_TOKENIZER_PIECE_CACHE_TOKEN_CAPACITY;
+    workspace->piece_cache_token_used = 0u;
+    workspace->piece_cache_entries = (SparkTokenizerPieceCacheEntry *)calloc(
+        (uint64_t)workspace->piece_cache_slot_count,sizeof(*workspace->piece_cache_entries));
+    workspace->piece_cache_token_pool = (uint32_t *)malloc(
+        (uint64_t)workspace->piece_cache_token_capacity * sizeof(*workspace->piece_cache_token_pool));
+    if (workspace->piece_cache_entries == 0 || workspace->piece_cache_token_pool == 0)
+    {
+        free(workspace->piece_cache_entries);
+        free(workspace->piece_cache_token_pool);
+        workspace->piece_cache_entries = 0;
+        workspace->piece_cache_token_pool = 0;
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkTokenizerWorkspaceEnsureSymbolBuffers(SparkTokenizerWorkspace *workspace,uint32_t maximum_symbol_count)
+{
+    // Grow only the input-sized buffers, leaving the piece cache untouched so it
+    // stays warm. Called both on first use and whenever a larger input arrives.
+    if (workspace->symbol_token_ids != 0 &&
+        workspace->maximum_symbol_count >= maximum_symbol_count)
+    {
+        return SPARK_STATUS_OK;
+    }
+    free(workspace->symbol_token_ids);
+    free(workspace->previous_symbol_indices);
+    free(workspace->next_symbol_indices);
+    free(workspace->symbol_generations);
+    free(workspace->merge_heap);
+    workspace->symbol_token_ids = 0;
+    workspace->previous_symbol_indices = 0;
+    workspace->next_symbol_indices = 0;
+    workspace->symbol_generations = 0;
+    workspace->merge_heap = 0;
     workspace->maximum_symbol_count = maximum_symbol_count;
     if (maximum_symbol_count >
         (UINT32_MAX - SPARK_TOKENIZER_MERGE_HEAP_CAPACITY_SLACK) /
@@ -1211,20 +1250,38 @@ SparkStatus SparkTokenizerWorkspaceInitialize(
         (uint64_t)maximum_symbol_count * sizeof(*workspace->symbol_generations));
     workspace->merge_heap = (SparkTokenizerMergeCandidate *)malloc(
         (uint64_t)workspace->heap_capacity * sizeof(*workspace->merge_heap));
-    workspace->piece_cache_slot_count = SPARK_TOKENIZER_PIECE_CACHE_SLOT_COUNT;
-    workspace->piece_cache_token_capacity = SPARK_TOKENIZER_PIECE_CACHE_TOKEN_CAPACITY;
-    workspace->piece_cache_token_used = 0u;
-    workspace->piece_cache_entries = (SparkTokenizerPieceCacheEntry *)calloc(
-        (uint64_t)workspace->piece_cache_slot_count,sizeof(*workspace->piece_cache_entries));
-    workspace->piece_cache_token_pool = (uint32_t *)malloc(
-        (uint64_t)workspace->piece_cache_token_capacity * sizeof(*workspace->piece_cache_token_pool));
     if (workspace->symbol_token_ids == 0 || workspace->previous_symbol_indices == 0 ||
         workspace->next_symbol_indices == 0 || workspace->symbol_generations == 0 ||
-        workspace->merge_heap == 0 || workspace->piece_cache_entries == 0 ||
-        workspace->piece_cache_token_pool == 0)
+        workspace->merge_heap == 0)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkTokenizerWorkspaceInitialize(
+    SparkTokenizerWorkspace *workspace,
+    uint32_t maximum_symbol_count)
+{
+    SparkStatus status;
+    if (workspace == 0 || maximum_symbol_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    SparkTokenizerWorkspaceDestroy(workspace);
+    workspace->abi_version = SPARK_TOKENIZER_ABI_VERSION;
+    workspace->descriptor_bytes = SPARK_TOKENIZER_WORKSPACE_DESCRIPTOR_BYTES;
+    status = SparkTokenizerWorkspaceEnsureSymbolBuffers(workspace,maximum_symbol_count);
+    if (status != SPARK_STATUS_OK)
     {
         SparkTokenizerWorkspaceDestroy(workspace);
-        return SPARK_STATUS_INTERNAL_ERROR;
+        return status;
+    }
+    status = SparkTokenizerWorkspaceEnsurePieceCache(workspace);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkTokenizerWorkspaceDestroy(workspace);
+        return status;
     }
     return SPARK_STATUS_OK;
 }
@@ -2394,11 +2451,19 @@ SparkStatus SparkTokenizerEncodeUtf8WithWorkspace(
         workspace->symbol_generations == 0 ||
         workspace->merge_heap == 0)
     {
-        status = SparkTokenizerWorkspaceInitialize(workspace, text_bytes + 1u);
+        // Grow the input-sized buffers without wiping the piece cache, so a
+        // larger request does not cold-start the cache that earlier requests
+        // warmed.
+        status = SparkTokenizerWorkspaceEnsureSymbolBuffers(workspace, text_bytes + 1u);
         if (status != SPARK_STATUS_OK)
         {
             return status;
         }
+    }
+    status = SparkTokenizerWorkspaceEnsurePieceCache(workspace);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
     }
 
     encoding->token_count = 0u;
