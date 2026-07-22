@@ -11,6 +11,28 @@ LDLIBS ?= -ldl -pthread
 CUDA_ARCH ?= sm_121a
 NVCCFLAGS ?= -O3 --use_fast_math -arch=$(CUDA_ARCH)
 UNAME_S := $(shell uname -s)
+UNAME_M := $(shell uname -m)
+
+# Architecture tuning for auto-vectorization. The tokenizer and other hot loops
+# are written as portable scalar C that the compiler auto-vectorizes; these flags
+# tell it which vector units the build host actually has, so it emits AVX2 on x86
+# and NEON or SVE2 on an Arm Grace host, from one source with no intrinsics.
+# ARCH_TUNE_FLAGS can be overridden or set empty for reproducible or cross builds.
+# On Arm the Grace core is Neoverse V2; older compilers that do not know that name
+# fall back to -mcpu=native. The flag is probed so an unsupported one is dropped
+# rather than breaking the build.
+spark-cc-supports = $(shell printf 'int main(void){return 0;}' | $(CC) $(1) -x c -c - -o /dev/null >/dev/null 2>&1 && printf '%s' '$(1)')
+ifeq ($(UNAME_M),aarch64)
+ARCH_TUNE_FLAGS ?= $(or $(call spark-cc-supports,-mcpu=neoverse-v2),$(call spark-cc-supports,-mcpu=native))
+else ifeq ($(UNAME_M),arm64)
+ARCH_TUNE_FLAGS ?= $(or $(call spark-cc-supports,-mcpu=native),$(call spark-cc-supports,-mcpu=apple-m1))
+else ifeq ($(UNAME_M),x86_64)
+ARCH_TUNE_FLAGS ?= $(call spark-cc-supports,-march=native)
+else
+ARCH_TUNE_FLAGS ?=
+endif
+CFLAGS += $(ARCH_TUNE_FLAGS)
+CXXFLAGS += $(ARCH_TUNE_FLAGS)
 ifeq ($(UNAME_S),Darwin)
 SHARED_LIBRARY_FLAGS ?= -dynamiclib
 SHARED_LIBRARY_EXT ?= dylib

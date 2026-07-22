@@ -1303,6 +1303,7 @@ static void SparkGlm52Pp13ServiceBackendFreeStorage(
 {
 	if (state == 0)
 		return;
+	SparkGlm52ServingEngineDestroy(&state->serving_engine);
 	free(state->kv_blocks);
 	free(state->prefix_entries);
 	free(state->prefix_bindings);
