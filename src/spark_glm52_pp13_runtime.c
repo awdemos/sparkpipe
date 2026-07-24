@@ -198,6 +198,31 @@ static void SparkGlm52Pp13RuntimeInitializeEndpoint(
     endpoint->route_name = route_name;
 }
 
+// Shape derivation over the authoritative model constants: one call site for
+// the geometry and inputs so the plan, the sharder, and the packs cannot
+// disagree. The latent KV element is one byte, the FP8 latent cache.
+static SparkStatus SparkGlm52Pp13RuntimeShapeNodeConfig(
+    const SparkGlm52TpShapeDescriptor *shape,
+    SparkGlm52ShapeNodeConfig *config)
+{
+    SparkGlm52TpModelGeometry geometry;
+    SparkGlm52ShapeModelInputs inputs;
+
+    SparkGlm52TpModelGeometryFromModel(&geometry);
+    memset(&inputs, 0, sizeof(inputs));
+    inputs.abi_version = SPARK_GLM52_SHAPE_CONFIG_ABI_VERSION;
+    inputs.total_layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
+    inputs.hidden_dimension = SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
+    inputs.moe_intermediate_dimension =
+        SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION;
+    inputs.dense_intermediate_dimension =
+        SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION;
+    inputs.kv_latent_plus_rope_dimension =
+        SPARK_GLM52_MODEL_LATENT_DIMENSION + SPARK_GLM52_MODEL_ROPE_DIMENSION;
+    inputs.kv_bytes_per_element = 1u;
+    return SparkGlm52ShapeDeriveNodeConfig(shape, &geometry, &inputs, config);
+}
+
 SparkStatus SparkGlm52Pp13RuntimeBuildFixedStagePlan(
     SparkGlm52StagePlan *stage_plan,
     char *error_buffer,
@@ -299,6 +324,34 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     rank_plan->bytes_per_sequence =
         SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE;
     rank_plan->quantization_mode = quantization_mode;
+    rank_plan->tp_degree = 1u;
+    rank_plan->tp_rank = 0u;
+    rank_plan->pp_stage_count = SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT;
+    rank_plan->pp_stage_index = rank_index;
+    rank_plan->tp_collective_listen_port = 0u;
+    {
+        SparkGlm52TpShapeDescriptor shape;
+        SparkGlm52ShapeNodeConfig shape_config;
+        memset(&shape, 0, sizeof(shape));
+        shape.abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+        shape.tp_degree = 1u;
+        shape.tp_rank = 0u;
+        shape.pp_stage_count = SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT;
+        shape.pp_stage_index = rank_index;
+        status = SparkGlm52Pp13RuntimeShapeNodeConfig(&shape, &shape_config);
+        if (status != SPARK_STATUS_OK ||
+            shape_config.first_layer_index != rank_plan->first_layer_index ||
+            shape_config.layer_count != rank_plan->layer_count)
+        {
+            return SparkGlm52Pp13RuntimeReport(
+                error_buffer,
+                error_buffer_bytes,
+                SPARK_STATUS_VALIDATION_FAILED,
+                "PP13 fixed stage plan disagrees with shape derivation");
+        }
+        rank_plan->shape_configuration_hash =
+            shape_config.configuration_hash;
+    }
     rank_plan->max_packet_bytes =
         (uint64_t)SPARK_GLM52_PP13_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
         (uint64_t)rank_plan->execution_row_capacity;
@@ -379,33 +432,209 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
         error_buffer_bytes);
 }
 
+SparkStatus SparkGlm52Pp13RuntimeBuildShapeRankPlan(
+    const SparkGlm52TpShapeDescriptor *shape,
+    uint32_t logical_lane_capacity,
+    uint32_t port_base,
+    uint32_t tp_port_base,
+    uint32_t quantization_mode,
+    SparkGlm52Pp13RuntimeRankPlan *rank_plan,
+    char *error_buffer,
+    uint32_t error_buffer_bytes)
+{
+    SparkGlm52ShapeNodeConfig shape_config;
+    SparkStatus status;
+    uint32_t node_index,step_index,step_count;
+
+    if (shape == 0 || rank_plan == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52Pp13RuntimeShapeNodeConfig(shape, &shape_config);
+    if (status != SPARK_STATUS_OK)
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            status,
+            "PP13 shape does not derive a node configuration");
+    }
+    node_index = shape->pp_stage_index * shape->tp_degree + shape->tp_rank;
+    memset(rank_plan, 0, sizeof(*rank_plan));
+    rank_plan->abi_version = SPARK_GLM52_PP13_RUNTIME_ABI_VERSION;
+    rank_plan->descriptor_bytes =
+        SPARK_GLM52_PP13_RUNTIME_RANK_PLAN_DESCRIPTOR_BYTES;
+    rank_plan->rank_index = node_index;
+    rank_plan->first_layer_index = shape_config.first_layer_index;
+    rank_plan->layer_count = shape_config.layer_count;
+    rank_plan->previous_rank_index = UINT32_MAX;
+    rank_plan->next_rank_index = UINT32_MAX;
+    rank_plan->listen_port = port_base + node_index;
+    rank_plan->next_port = 0u;
+    rank_plan->logical_lane_capacity = logical_lane_capacity;
+    rank_plan->maximum_speculative_rows_per_lane =
+        SPARK_GLM52_PP13_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE;
+    rank_plan->execution_row_capacity =
+        SparkGlm52Pp13RuntimeExecutionRowCapacity(logical_lane_capacity);
+    rank_plan->hidden_dimension = SPARK_GLM52_PP13_RUNTIME_HIDDEN_DIMENSION;
+    rank_plan->bytes_per_sequence =
+        SPARK_GLM52_PP13_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE;
+    rank_plan->quantization_mode = quantization_mode;
+    rank_plan->tp_degree = shape->tp_degree;
+    rank_plan->tp_rank = shape->tp_rank;
+    rank_plan->pp_stage_count = shape->pp_stage_count;
+    rank_plan->pp_stage_index = shape->pp_stage_index;
+    rank_plan->tp_collective_listen_port = tp_port_base + node_index;
+    rank_plan->shape_configuration_hash = shape_config.configuration_hash;
+    rank_plan->max_packet_bytes =
+        (uint64_t)SPARK_GLM52_PP13_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
+        (uint64_t)rank_plan->execution_row_capacity;
+    status = SparkGlm52Pp13RuntimeRankHostName(
+        node_index,
+        rank_plan->host_name,
+        sizeof(rank_plan->host_name));
+    if (status != SPARK_STATUS_OK)
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            status,
+            "PP13 shape node index exceeds the host table");
+    }
+    if (shape->pp_stage_index > 0u)
+    {
+        rank_plan->flags |= SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS;
+        rank_plan->previous_rank_index = node_index - shape->tp_degree;
+        status = SparkGlm52Pp13RuntimeRankHostName(
+            rank_plan->previous_rank_index,
+            rank_plan->previous_host_name,
+            sizeof(rank_plan->previous_host_name));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52Pp13RuntimeFormatRoute(
+            rank_plan->previous_host_name,
+            rank_plan->host_name,
+            rank_plan->input_route_name,
+            sizeof(rank_plan->input_route_name));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        SparkGlm52Pp13RuntimeInitializeEndpoint(
+            &rank_plan->input_endpoint,
+            rank_plan->execution_row_capacity,
+            rank_plan->input_route_name);
+    }
+    if (shape->pp_stage_index + 1u < shape->pp_stage_count)
+    {
+        rank_plan->flags |= SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT;
+        rank_plan->next_rank_index = node_index + shape->tp_degree;
+        rank_plan->next_port = port_base + rank_plan->next_rank_index;
+        status = SparkGlm52Pp13RuntimeRankHostName(
+            rank_plan->next_rank_index,
+            rank_plan->next_host_name,
+            sizeof(rank_plan->next_host_name));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkGlm52Pp13RuntimeFormatRoute(
+            rank_plan->host_name,
+            rank_plan->next_host_name,
+            rank_plan->output_route_name,
+            sizeof(rank_plan->output_route_name));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        SparkGlm52Pp13RuntimeInitializeEndpoint(
+            &rank_plan->output_endpoint,
+            rank_plan->execution_row_capacity,
+            rank_plan->output_route_name);
+    }
+    step_count = 0u;
+    while ((shape->tp_degree >> (step_count + 1u)) != 0u)
+    {
+        step_count += 1u;
+    }
+    for (step_index = 0u; step_index < step_count; ++step_index)
+    {
+        uint32_t partner_rank = shape->tp_rank ^ (1u << step_index);
+        uint32_t partner_node =
+            shape->pp_stage_index * shape->tp_degree + partner_rank;
+        status = SparkGlm52Pp13RuntimeRankHostName(
+            partner_node,
+            rank_plan->tp_peer_host_names[step_index],
+            sizeof(rank_plan->tp_peer_host_names[step_index]));
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        rank_plan->tp_peer_ports[step_index] = tp_port_base + partner_node;
+    }
+    if (shape->pp_stage_index == 0u)
+    {
+        rank_plan->flags |= SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_DENSE_PREFIX;
+    }
+    if (shape->pp_stage_index + 1u == shape->pp_stage_count)
+    {
+        rank_plan->flags |= SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_FINAL_STAGE;
+    }
+    return SparkGlm52Pp13RuntimeValidateRankPlan(
+        rank_plan,
+        error_buffer,
+        error_buffer_bytes);
+}
+
 SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
     const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    SparkGlm52StagePlan stage_plan;
+    SparkGlm52TpShapeDescriptor shape;
+    SparkGlm52ShapeNodeConfig shape_config;
     SparkStatus status;
 
-    status = SparkGlm52Pp13RuntimeBuildFixedStagePlan(
-        &stage_plan,
-        error_buffer,
-        error_buffer_bytes);
+    if (rank_plan == 0)
+    {
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "PP13 rank plan is null");
+    }
+    memset(&shape, 0, sizeof(shape));
+    shape.abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+    shape.tp_degree = rank_plan->tp_degree;
+    shape.tp_rank = rank_plan->tp_rank;
+    shape.pp_stage_count = rank_plan->pp_stage_count;
+    shape.pp_stage_index = rank_plan->pp_stage_index;
+    status = SparkGlm52Pp13RuntimeShapeNodeConfig(&shape, &shape_config);
     if (status != SPARK_STATUS_OK)
     {
-        return status;
+        return SparkGlm52Pp13RuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            status,
+            "PP13 rank plan shape does not derive");
     }
 
     if (rank_plan == 0 ||
         rank_plan->abi_version != SPARK_GLM52_PP13_RUNTIME_ABI_VERSION ||
         rank_plan->descriptor_bytes !=
             SPARK_GLM52_PP13_RUNTIME_RANK_PLAN_DESCRIPTOR_BYTES ||
-        rank_plan->rank_index >= SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT ||
+        rank_plan->rank_index !=
+            rank_plan->pp_stage_index * rank_plan->tp_degree +
+                rank_plan->tp_rank ||
+        rank_plan->rank_index >=
+            rank_plan->pp_stage_count * rank_plan->tp_degree ||
         (rank_plan->flags & ~SPARK_GLM52_PP13_RUNTIME_RANK_KNOWN_FLAGS) != 0u ||
-        rank_plan->first_layer_index !=
-            stage_plan.stages[rank_plan->rank_index].first_layer_index ||
-        rank_plan->layer_count !=
-            stage_plan.stages[rank_plan->rank_index].layer_count ||
+        rank_plan->first_layer_index != shape_config.first_layer_index ||
+        rank_plan->layer_count != shape_config.layer_count ||
+        rank_plan->shape_configuration_hash !=
+            shape_config.configuration_hash ||
         rank_plan->host_name[0] == '\0' ||
         rank_plan->logical_lane_capacity == 0u ||
         rank_plan->logical_lane_capacity >
@@ -458,12 +687,12 @@ SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
                 "PP13 output transport endpoint is invalid");
         }
     }
-    if (rank_plan->rank_index == 0u &&
+    if (rank_plan->pp_stage_index == 0u &&
         (rank_plan->flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (rank_plan->rank_index + 1u == SPARK_GLM52_PP13_RUNTIME_STAGE_COUNT &&
+    if (rank_plan->pp_stage_index + 1u == rank_plan->pp_stage_count &&
         (rank_plan->flags & SPARK_GLM52_PP13_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -479,10 +708,27 @@ SparkStatus SparkGlm52Pp13RuntimeBuildMoePackPath(
     const char *pack_root,
     uint32_t quantization_mode,
     uint32_t layer_index,
+    uint32_t tp_degree,
+    uint32_t tp_rank,
     char *pack_path,
     uint32_t pack_path_bytes)
 {
+    char shape_tag[24];
     int written;
+
+    if (tp_degree == 0u || tp_rank >= tp_degree)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (tp_degree == 1u)
+    {
+        shape_tag[0] = '\0';
+    }
+    else if (snprintf(shape_tag, sizeof(shape_tag), "_tp%ur%u",
+            tp_degree, tp_rank) <= 0)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
 
     if (pack_root == 0 || pack_root[0] == '\0' || pack_path == 0 ||
         pack_path_bytes == 0u ||
@@ -496,9 +742,10 @@ SparkStatus SparkGlm52Pp13RuntimeBuildMoePackPath(
         written = snprintf(
             pack_path,
             pack_path_bytes,
-            "%s/glm52_layer_%04u_fp8_moe.spfp8",
+            "%s/glm52_layer_%04u_fp8_moe%s.spfp8",
             pack_root,
-            layer_index);
+            layer_index,
+            shape_tag);
     }
     else if (quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
@@ -506,9 +753,10 @@ SparkStatus SparkGlm52Pp13RuntimeBuildMoePackPath(
         written = snprintf(
             pack_path,
             pack_path_bytes,
-            "%s/glm52_layer_%04u_b12x_moe.spb12x",
+            "%s/glm52_layer_%04u_b12x_moe%s.spb12x",
             pack_root,
-            layer_index);
+            layer_index,
+            shape_tag);
     }
     else if (quantization_mode ==
         SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
@@ -516,9 +764,10 @@ SparkStatus SparkGlm52Pp13RuntimeBuildMoePackPath(
         written = snprintf(
             pack_path,
             pack_path_bytes,
-            "%s/glm52_layer_%04u_w8lut_moe.spw8lut",
+            "%s/glm52_layer_%04u_w8lut_moe%s.spw8lut",
             pack_root,
-            layer_index);
+            layer_index,
+            shape_tag);
     }
     else
     {
@@ -629,6 +878,8 @@ SparkStatus SparkGlm52Pp13RuntimeValidateStageMoePackFiles(
             pack_root,
             rank_plan->quantization_mode,
             layer_index,
+            rank_plan->tp_degree,
+            rank_plan->tp_rank,
             pack_path,
             sizeof(pack_path));
         if (status != SPARK_STATUS_OK)

@@ -6,6 +6,8 @@
 #include "sparkpipe/spark_glm52_production_topology.h"
 #include "sparkpipe/spark_glm52_stage_plan.h"
 #include "sparkpipe/spark_hidden_transport.h"
+#include "sparkpipe/spark_glm52_shape_config.h"
+#include "sparkpipe/spark_tp_collective.h"
 #include "sparkpipe/spark_model_driver.h"
 #include "sparkpipe/spark_status.h"
 
@@ -86,10 +88,27 @@ typedef struct SparkGlm52Pp13RuntimeRankPlan
     uint32_t hidden_dimension;
     uint32_t bytes_per_sequence;
     uint32_t quantization_mode;
+    // Inference shape: the node serves pp_stage_index of pp_stage_count
+    // pipeline stages and tp_rank of tp_degree tensor-parallel shards of
+    // that stage's layers. rank_index is the linear node index
+    // pp_stage_index times tp_degree plus tp_rank. Legacy PP13 plans carry
+    // degree one, rank zero, thirteen stages, and stage index equal to
+    // rank index, so existing deployments validate unchanged. The
+    // configuration hash is the shape config derivation over the model
+    // constants; two nodes agreeing on it agree on the whole geometry.
+    uint32_t tp_degree;
+    uint32_t tp_rank;
+    uint32_t pp_stage_count;
+    uint32_t pp_stage_index;
+    uint32_t tp_collective_listen_port;
+    uint32_t reserved_shape;
+    uint64_t shape_configuration_hash;
     uint64_t max_packet_bytes;
     char host_name[SPARK_GLM52_PP13_RUNTIME_HOST_NAME_BYTES];
     char previous_host_name[SPARK_GLM52_PP13_RUNTIME_HOST_NAME_BYTES];
     char next_host_name[SPARK_GLM52_PP13_RUNTIME_HOST_NAME_BYTES];
+    char tp_peer_host_names[SPARK_TP_COLLECTIVE_MAX_STEPS][SPARK_GLM52_PP13_RUNTIME_HOST_NAME_BYTES];
+    uint32_t tp_peer_ports[SPARK_TP_COLLECTIVE_MAX_STEPS];
     char input_route_name[SPARK_GLM52_PP13_RUNTIME_ROUTE_NAME_BYTES];
     char output_route_name[SPARK_GLM52_PP13_RUNTIME_ROUTE_NAME_BYTES];
     SparkHiddenTransportEndpoint input_endpoint;
@@ -180,6 +199,23 @@ SparkStatus SparkGlm52Pp13RuntimeBuildRankPlan(
     char *error_buffer,
     uint32_t error_buffer_bytes);
 
+// Build a rank plan from the inference shape: the node holds exactly the
+// layers of its PP stage and its TP shard of them, the pipeline ring links
+// stage neighbors at the same TP rank, and the collective peers are the
+// same-stage partners whose ranks differ in one bit, with collective ports
+// allocated from tp_port_base by linear node index. Hosts come from the
+// fixed host table by linear node index, so shapes needing more nodes than
+// the table lists fail closed until the table grows with the hardware.
+SparkStatus SparkGlm52Pp13RuntimeBuildShapeRankPlan(
+    const SparkGlm52TpShapeDescriptor *shape,
+    uint32_t logical_lane_capacity,
+    uint32_t port_base,
+    uint32_t tp_port_base,
+    uint32_t quantization_mode,
+    SparkGlm52Pp13RuntimeRankPlan *rank_plan,
+    char *error_buffer,
+    uint32_t error_buffer_bytes);
+
 SparkStatus SparkGlm52Pp13RuntimeValidateRankPlan(
     const SparkGlm52Pp13RuntimeRankPlan *rank_plan,
     char *error_buffer,
@@ -189,6 +225,8 @@ SparkStatus SparkGlm52Pp13RuntimeBuildMoePackPath(
     const char *pack_root,
     uint32_t quantization_mode,
     uint32_t layer_index,
+    uint32_t tp_degree,
+    uint32_t tp_rank,
     char *pack_path,
     uint32_t pack_path_bytes);
 
