@@ -442,7 +442,11 @@ static void SparkTestGlm52ResidentDecodeStageDsaIndexShareFullRequiresScoreInput
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -946,7 +950,11 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInQuantizedProjectionValidatio
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -1023,7 +1031,11 @@ static void SparkTestGlm52ResidentDecodeStageNvfp4ModelVariantValidation(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -1338,7 +1350,11 @@ static void SparkTestGlm52ResidentDecodeStageFp8ModelVariantValidation(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -1512,8 +1528,12 @@ static void SparkTestGlm52ResidentDecodeStageW8lutModelVariantValidation(void)
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT;
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -1621,7 +1641,11 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -1840,7 +1864,11 @@ static void SparkTestGlm52ResidentDecodeStagePersistentHiddenTransportDeferredOu
     wake_count = 0u;
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -2002,7 +2030,11 @@ static void SparkTestGlm52ResidentDecodeStageDensePrefixSliceRules(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -2072,7 +2104,11 @@ static void SparkTestGlm52ResidentDecodeStageBulkPrefillSubmit(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -2195,7 +2231,11 @@ static void SparkTestGlm52ResidentDecodeStageSliceBulkPrefillSubmit(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -2425,7 +2465,11 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -2571,7 +2615,11 @@ static void SparkTestGlm52ResidentDecodeStageExactPp13PlanWithoutLaunchFunction(
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -2676,7 +2724,11 @@ static void SparkTestGlm52ResidentDecodeStageRejectsUnbackedExactPp13AotPlan(voi
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -2777,7 +2829,11 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFinalTokenEpilogueValidation
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -2904,7 +2960,11 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeValidation(void
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -3035,7 +3095,11 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeB12xValidation(
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -3160,7 +3224,11 @@ static void SparkTestGlm52ResidentDecodeStageFinalStageRequiresBuiltInEpilogueWo
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -3280,7 +3348,11 @@ static void SparkTestGlm52ResidentDecodeStagePagedBulkPrefillPlanWithoutLaunchFu
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -3373,7 +3445,11 @@ static void SparkTestGlm52ResidentDecodeStageRuntimeKvBlockTableSubmit(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -3566,7 +3642,11 @@ static void SparkTestGlm52ResidentDecodeStageFp8DenseMlpPlanValidation(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -3617,7 +3697,11 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -3712,7 +3796,11 @@ static void SparkTestGlm52ResidentDecodeStageAbsorbedLatentCacheValidation(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -3752,7 +3840,11 @@ static void SparkTestGlm52ResidentDecodeStageKvStorageCapacityValidation(void)
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;
@@ -3794,7 +3886,11 @@ static void SparkTestGlm52ResidentDecodeStageLogicalKvStrideExceedsPhysicalPool(
     memset(&completion_state, 0, sizeof(completion_state));
     memset(&configuration, 0, sizeof(configuration));
     configuration.abi_version = SPARK_FIRMWARE_MODULE_ABI_VERSION;
+    configuration.descriptor_bytes = sizeof(configuration);
     memset(&host_services, 0, sizeof(host_services));
+    host_services.abi_version =
+        SPARK_FIRMWARE_MODULE_HOST_SERVICES_ABI_VERSION;
+    host_services.descriptor_bytes = sizeof(host_services);
     host_services.completion_function =
         SparkGlm52ResidentDecodeStageTestCompletion;
     host_services.completion_context = &completion_state;

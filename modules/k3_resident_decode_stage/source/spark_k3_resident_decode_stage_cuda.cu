@@ -1050,7 +1050,7 @@ extern "C" SparkStatus SparkK3LaunchEmbeddingGather(const SparkK3ResidentDecodeS
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( node_context->token_embedding_bf16 == 0 || node_context->owns_embedding == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	representation_stride = (uint64_t)node_context->max_active_sequence_count * SPARK_K3_MODEL_HIDDEN_DIMENSION;
+	representation_stride = (uint64_t)node_context->row_capacity * SPARK_K3_MODEL_HIDDEN_DIMENSION;
 	SparkK3EmbeddingGatherKernel<<<row_count,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(slot->input_token_ids,node_context->token_embedding_bf16,slot->attnres_representations_bf16,row_count,representation_stride);
 	return(SparkK3LaunchStatus());
 }
@@ -1062,7 +1062,7 @@ extern "C" SparkStatus SparkK3LaunchAttnResMix(const SparkK3ResidentDecodeStageN
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( representation_count == 0u || representation_count > SPARK_K3_MODEL_ATTNRES_MAX_REPRESENTATIONS )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	representation_stride = (uint64_t)node_context->max_active_sequence_count * SPARK_K3_MODEL_HIDDEN_DIMENSION;
+	representation_stride = (uint64_t)node_context->row_capacity * SPARK_K3_MODEL_HIDDEN_DIMENSION;
 	SparkK3AttnResMixKernel<<<row_count,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(slot->attnres_representations_bf16,representation_stride,site->pseudo_query_bf16,site->key_norm_weight_bf16,slot->mixed_hidden_bf16,representation_count,row_count,node_context->rms_norm_epsilon);
 	return(SparkK3LaunchStatus());
 }
@@ -1074,7 +1074,7 @@ extern "C" SparkStatus SparkK3LaunchAttnResAccumulate(const SparkK3ResidentDecod
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( open_new_block > 1u || (completed_block_count + open_new_block) >= SPARK_K3_MODEL_ATTNRES_MAX_REPRESENTATIONS )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	representation_stride = (uint64_t)node_context->max_active_sequence_count * SPARK_K3_MODEL_HIDDEN_DIMENSION;
+	representation_stride = (uint64_t)node_context->row_capacity * SPARK_K3_MODEL_HIDDEN_DIMENSION;
 	SparkK3AttnResAccumulateKernel<<<row_count,SPARK_K3_CTA_THREADS,0,(cudaStream_t)stream>>>(slot->attnres_representations_bf16,representation_stride,sublayer_output_bf16,open_new_block,completed_block_count,row_count);
 	return(SparkK3LaunchStatus());
 }

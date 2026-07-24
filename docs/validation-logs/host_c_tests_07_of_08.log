@@ -1,0 +1,10 @@
+cc -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen36/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -Itests -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -march=native tests/test_glm52_compat_api.c build/libglm52_host.a build/libsparkpipe_model_common.a build/libsparkpipe_core.a  -ldl -pthread -o build/test_glm52_compat_api
+cc -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen36/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -Itests -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -march=native tests/test_glm52_http_gateway.c build/libglm52_host.a build/libsparkpipe_model_common.a build/libsparkpipe_core.a  -ldl -pthread -o build/test_glm52_http_gateway
+cc -Iinclude -Isrc -Imodel-families/common/include -Imodel-families/glm52/include -Imodel-families/qwen36/include -Imodel-families/dsv4/include -Imodel-families/k3/include -Imodel-families/mimo25/include -Ideployment/include -Ideployment/src -Itests -Imodules/glm52_resident_decode_stage/include -std=c11 -Wall -Wextra -Werror -O3 -g -pthread -march=native tests/test_glm52_pp13_rank_daemon.c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_production_runner.c build/libsparkpipe_runtime.a build/libglm52_host.a build/libsparkpipe_model_common.a build/libsparkpipe_core.a  -ldl -pthread -o build/test_glm52_pp13_rank_daemon
+make: 'build/test_model_description' is up to date.
+make: 'build/test_stage_module_common' is up to date.
+RUN build/test_glm52_compat_api
+RUN build/test_glm52_http_gateway
+RUN build/test_glm52_pp13_rank_daemon
+RUN build/test_model_description
+RUN build/test_stage_module_common

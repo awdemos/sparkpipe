@@ -1,0 +1,12 @@
+make: 'build/sparkpipe_glm52_prefill_dryrun' is up to date.
+make -C modules/glm52_w8lut_quality_weights test_ref crosscheck
+make[1]: Entering directory '/mnt/data/sparkpipe-completed-20260724/modules/glm52_w8lut_quality_weights'
+mkdir -p build
+cc -O2 -Wall -Wextra -Isource -o build/test_w8lut_ref source/w8lut_ref.c source/test_w8lut_ref.c -lm
+cc -O2 -Wall -Wextra -Isource -o build/w8lut_dump source/w8lut_dump.c source/w8lut_ref.c
+W8LUT_DUMP=/mnt/data/sparkpipe-completed-20260724/modules/glm52_w8lut_quality_weights/build/w8lut_dump python3 source/test_crosscheck.py
+build/test_w8lut_ref
+property: e0=113 below=5477ppm maxrel=0.03030 frob=0.01407
+G0 ALL PASS (v2)
+crosscheck PASS: {'element_count': 300000, 'below_window_count': 5853, 'below_window_ppm': 19510, 'e0': 116}
+make[1]: Leaving directory '/mnt/data/sparkpipe-completed-20260724/modules/glm52_w8lut_quality_weights'

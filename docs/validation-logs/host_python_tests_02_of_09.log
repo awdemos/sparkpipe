@@ -1,0 +1,5 @@
+RUN tests/test_b12x_scale_layout.py
+RUN tests/test_glm52_dspark_manifest.py
+dspark_manifest path=/tmp/tmpkr_ppsxl/manifest.json
+RUN tests/test_glm52_dspark_artifact_preflight.py
+dspark_manifest path=/tmp/tmprl2n18jx/manifest.json

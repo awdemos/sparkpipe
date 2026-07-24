@@ -34,12 +34,12 @@ static void SparkTestShapeInputs(SparkGlm52ShapeModelInputs *inputs)
 {
 	memset(inputs,0,sizeof(*inputs));
 	inputs->abi_version = SPARK_GLM52_SHAPE_CONFIG_ABI_VERSION;
-	inputs->total_layer_count = 78u;
-	inputs->hidden_dimension = 6144u;
-	inputs->moe_intermediate_dimension = 2048u;
-	inputs->dense_intermediate_dimension = 12288u;
-	inputs->kv_latent_plus_rope_dimension = 576u;
-	inputs->kv_bytes_per_element = 1u;
+	inputs->total_layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
+	inputs->hidden_dimension = SPARK_GLM52_MODEL_HIDDEN_DIMENSION;
+	inputs->moe_intermediate_dimension = SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION;
+	inputs->dense_intermediate_dimension = SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION;
+	inputs->kv_latent_plus_rope_dimension = SPARK_GLM52_MODEL_KV_A_DIMENSION;
+	inputs->kv_bytes_per_element = sizeof(uint8_t);
 }
 
 // PP13 reproduces the deployed 6-layer stages; TP4 x PP3 gives 26-layer
@@ -59,7 +59,7 @@ static void SparkTestShapeDerivation(void)
 	assert(config.first_layer_index == 30u);
 	assert(config.layer_count == 6u);
 	assert(config.heads_per_rank == 64u);
-	assert(config.kv_bytes_per_token == 6u * 576u);
+	assert(config.kv_bytes_per_token == 6u * SPARK_GLM52_MODEL_KV_A_DIMENSION);
 	SparkTestShapeDescriptor(&shape,4u,2u,3u,1u);
 	assert(SparkGlm52ShapeDeriveNodeConfig(&shape,&geometry,&inputs,&config) == SPARK_STATUS_OK);
 	assert(config.first_layer_index == 26u);
@@ -70,7 +70,7 @@ static void SparkTestShapeDerivation(void)
 	assert(config.q_b_output_per_rank == 16u * 256u);
 	assert(config.kv_b_output_per_rank == 16u * 448u);
 	assert(config.o_proj_input_per_rank == 16u * 256u);
-	assert(config.kv_bytes_per_token == 26u * 576u);
+	assert(config.kv_bytes_per_token == 26u * SPARK_GLM52_MODEL_KV_A_DIMENSION);
 	SparkTestShapeDescriptor(&shape,16u,15u,1u,0u);
 	assert(SparkGlm52ShapeDeriveNodeConfig(&shape,&geometry,&inputs,&config) == SPARK_STATUS_OK);
 	assert(config.layer_count == 78u);
@@ -82,7 +82,7 @@ static void SparkTestShapeDerivation(void)
 	assert(config.first_layer_index == 0u);
 	assert(config.layer_count == 78u);
 	assert(config.heads_per_rank == 8u);
-	assert(config.kv_bytes_per_token == 78u * 576u);
+	assert(config.kv_bytes_per_token == SPARK_GLM52_MODEL_LAYER_COUNT * SPARK_GLM52_MODEL_KV_A_DIMENSION);
 }
 
 static void SparkTestShapeFailsClosed(void)
@@ -153,8 +153,8 @@ static void SparkTestShapeNodePackRoundTrip(void)
 	snprintf(path,sizeof(path),"%s/tensors.bin",SPARK_TEST_SHAPE_FULL_ROOT);
 	stream = fopen(path,"wb");
 	assert(stream != 0);
-	assert(fwrite(gate,sizeof(uint16_t),32u,stream) == 32u);
-	assert(fwrite(down,sizeof(uint16_t),32u,stream) == 32u);
+	assert(fwrite(gate,sizeof(gate[0]),sizeof(gate) / sizeof(gate[0]),stream) == sizeof(gate) / sizeof(gate[0]));
+	assert(fwrite(down,sizeof(down[0]),sizeof(down) / sizeof(down[0]),stream) == sizeof(down) / sizeof(down[0]));
 	fclose(stream);
 	snprintf(path,sizeof(path),"%s/%s",SPARK_TEST_SHAPE_FULL_ROOT,SPARK_GLM52_STAGEPACK_INDEX_FILE);
 	stream = fopen(path,"w");
@@ -173,7 +173,7 @@ static void SparkTestShapeNodePackRoundTrip(void)
 	memset(specs,0,sizeof(specs));
 	specs[0].abi_version = SPARK_GLM52_STAGEPACK_ABI_VERSION;
 	specs[0].rank = 2u;
-	specs[0].bytes_per_element = 2u;
+	specs[0].bytes_per_element = sizeof(uint16_t);
 	specs[0].shape[0] = 8u;
 	specs[0].shape[1] = 4u;
 	specs[0].tensor_name = "model.layers.0.mlp.gate_proj.weight";
@@ -196,7 +196,7 @@ static void SparkTestShapeNodePackRoundTrip(void)
 	stream = fopen(region.file_path,"rb");
 	assert(stream != 0);
 	assert(fseek(stream,(long)region.file_offset,SEEK_SET) == 0);
-	assert(fread(loaded,sizeof(uint16_t),16u,stream) == 16u);
+	assert(fread(loaded,sizeof(loaded[0]),sizeof(loaded) / sizeof(loaded[0]),stream) == sizeof(loaded) / sizeof(loaded[0]));
 	fclose(stream);
 	assert(memcmp(loaded,gate + 16u,16u * sizeof(uint16_t)) == 0);
 	// The node pack's down is the second half of every original row.
@@ -207,7 +207,7 @@ static void SparkTestShapeNodePackRoundTrip(void)
 	stream = fopen(region.file_path,"rb");
 	assert(stream != 0);
 	assert(fseek(stream,(long)region.file_offset,SEEK_SET) == 0);
-	assert(fread(loaded,sizeof(uint16_t),16u,stream) == 16u);
+	assert(fread(loaded,sizeof(loaded[0]),sizeof(loaded) / sizeof(loaded[0]),stream) == sizeof(loaded) / sizeof(loaded[0]));
 	fclose(stream);
 	for (row_index = 0u; row_index < 4u; ++row_index)
 		for (element_index = 0u; element_index < 4u; ++element_index)

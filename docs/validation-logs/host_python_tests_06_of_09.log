@@ -1,0 +1,6 @@
+RUN tests/test_glm52_w8lut_validation_wiring.py
+RUN tests/test_glm52_w8lut_stage_pack_watch.py
+RUN tests/test_glm52_b12x_relocate_aot_bundle.py
+relocated_files=2
+/tmp/tmp7at657h3/generated/tvm_ffi_flags.mk
+/tmp/tmp7at657h3/generated/runtime_link_args.txt

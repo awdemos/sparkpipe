@@ -3150,15 +3150,13 @@ SparkStatus SparkGlm52ResidentDecodeStageInitialize(
     uint32_t pipeline_slot_index;
     SparkStatus status;
 
-    if (configuration == 0 || host_services == 0 || module_state == 0)
+    status = SparkFirmwareModuleValidateInitialization(
+        configuration,
+        host_services,
+        module_state);
+    if (status != SPARK_STATUS_OK)
     {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    *module_state = 0;
-    if (configuration->abi_version != SPARK_FIRMWARE_MODULE_ABI_VERSION ||
-        configuration->reserved != 0u)
-    {
-        return SPARK_STATUS_ABI_MISMATCH;
+        return status;
     }
     if (host_services->completion_function == 0 ||
         host_services->node_context == 0)

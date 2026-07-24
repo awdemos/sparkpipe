@@ -12,7 +12,7 @@ static void SparkTestTpShardSpec(SparkGlm52StagePackTensorSpec *spec,const char 
 	memset(spec,0,sizeof(*spec));
 	spec->abi_version = SPARK_GLM52_STAGEPACK_ABI_VERSION;
 	spec->rank = 2u;
-	spec->bytes_per_element = 2u;
+	spec->bytes_per_element = SPARK_GLM52_MODEL_BF16_ELEMENT_BYTES;
 	spec->shape[0] = dim0;
 	spec->shape[1] = dim1;
 	spec->tensor_name = name;
@@ -32,11 +32,7 @@ static void SparkTestTpShardShape(SparkGlm52TpShapeDescriptor *shape,uint32_t de
 static void SparkTestTpShardGeometry(SparkGlm52TpModelGeometry *geometry)
 {
 	memset(geometry,0,sizeof(*geometry));
-	geometry->abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
-	geometry->head_count = 64u;
-	geometry->q_b_head_block = 256u;
-	geometry->kv_b_head_block = 448u;
-	geometry->o_proj_head_block = 256u;
+	SparkGlm52TpModelGeometryFromModel(geometry);
 }
 
 static void SparkTestTpShardClassification(void)
@@ -77,7 +73,7 @@ static void SparkTestTpShardTilingExactness(void)
 	uint32_t rank_index;
 	SparkTestTpShardSpec(&spec,"model.layers.3.self_attn.q_b_proj.weight",16384u,1536u);
 	SparkTestTpShardGeometry(&geometry);
-	full_bytes = 16384u * 1536u * 2u;
+	full_bytes = 16384u * 1536u * sizeof(uint16_t);
 	next_offset = 0u;
 	total_bytes = 0u;
 	for (rank_index = 0u; rank_index < 4u; ++rank_index)
@@ -105,14 +101,14 @@ static void SparkTestTpShardInputDimHeads(void)
 	SparkGlm52TpShapeDescriptor shape;
 	SparkGlm52TpModelGeometry geometry;
 	SparkGlm52TpShardView view;
-	SparkTestTpShardSpec(&spec,"model.layers.3.self_attn.o_proj.weight",6144u,16384u);
+	SparkTestTpShardSpec(&spec,"model.layers.3.self_attn.o_proj.weight",SPARK_GLM52_MODEL_HIDDEN_DIMENSION,SPARK_GLM52_MODEL_ATTENTION_PROJECTION_DIMENSION);
 	SparkTestTpShardShape(&shape,8u,5u);
 	SparkTestTpShardGeometry(&geometry);
 	assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_OK);
 	assert(view.split_dimension == 1u);
 	assert(view.element_extent == 2048u);
 	assert(view.element_offset == 5u * 2048u);
-	assert(view.shard_bytes == 6144u * 2048u * 2u);
+	assert(view.shard_bytes == SPARK_GLM52_MODEL_HIDDEN_DIMENSION * 2048u * sizeof(uint16_t));
 }
 
 // Replicated tensors load whole on every rank; the latent kv_a path is the
@@ -123,13 +119,13 @@ static void SparkTestTpShardReplicated(void)
 	SparkGlm52TpShapeDescriptor shape;
 	SparkGlm52TpModelGeometry geometry;
 	SparkGlm52TpShardView view;
-	SparkTestTpShardSpec(&spec,"model.layers.3.self_attn.kv_a_proj_with_mqa.weight",576u,6144u);
+	SparkTestTpShardSpec(&spec,"model.layers.3.self_attn.kv_a_proj_with_mqa.weight",SPARK_GLM52_MODEL_KV_A_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
 	SparkTestTpShardShape(&shape,4u,2u);
 	SparkTestTpShardGeometry(&geometry);
 	assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_OK);
 	assert(view.shard_class == SPARK_GLM52_TP_SHARD_CLASS_REPLICATED);
 	assert(view.element_offset == 0u);
-	assert(view.shard_bytes == 576u * 6144u * 2u);
+	assert(view.shard_bytes == SPARK_GLM52_MODEL_KV_A_DIMENSION * SPARK_GLM52_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t));
 }
 
 // Degree one is a whole-tensor view for every class including unknown, so
@@ -144,7 +140,7 @@ static void SparkTestTpShardDegreeOneCompat(void)
 	SparkTestTpShardShape(&shape,1u,0u);
 	SparkTestTpShardGeometry(&geometry);
 	assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_OK);
-	assert(view.shard_bytes == 100u * 200u * 2u);
+	assert(view.shard_bytes == 100u * 200u * sizeof(uint16_t));
 }
 
 static void SparkTestTpShardFailsClosed(void)
@@ -153,7 +149,7 @@ static void SparkTestTpShardFailsClosed(void)
 	SparkGlm52TpShapeDescriptor shape;
 	SparkGlm52TpModelGeometry geometry;
 	SparkGlm52TpShardView view;
-	SparkTestTpShardSpec(&spec,"model.layers.0.mlp.gate_proj.weight",12288u,6144u);
+	SparkTestTpShardSpec(&spec,"model.layers.0.mlp.gate_proj.weight",SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
 	SparkTestTpShardGeometry(&geometry);
 	// Degrees that do not divide the model are rejected outright.
 	SparkTestTpShardShape(&shape,3u,0u);
@@ -163,7 +159,7 @@ static void SparkTestTpShardFailsClosed(void)
 	{
 		SparkGlm52StagePackTensorSpec sixteen_spec;
 		SparkGlm52TpShardView sixteen_view;
-		SparkTestTpShardSpec(&sixteen_spec,"model.layers.0.mlp.gate_proj.weight",12288u,6144u);
+		SparkTestTpShardSpec(&sixteen_spec,"model.layers.0.mlp.gate_proj.weight",SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
 		assert(SparkGlm52TpShardComputeView(&sixteen_spec,&shape,&geometry,&sixteen_view) == SPARK_STATUS_OK);
 		assert(sixteen_view.element_extent == 768u);
 	}
@@ -173,15 +169,15 @@ static void SparkTestTpShardFailsClosed(void)
 	SparkTestTpShardShape(&shape,4u,4u);
 	assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_INVALID_ARGUMENT);
 	// Unknown tensors at any real degree fail closed instead of guessing.
-	SparkTestTpShardSpec(&spec,"model.layers.0.mystery.weight",12288u,6144u);
+	SparkTestTpShardSpec(&spec,"model.layers.0.mystery.weight",SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
 	SparkTestTpShardShape(&shape,2u,0u);
 	assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_VALIDATION_FAILED);
 	// A dimension the degree does not divide is rejected.
-	SparkTestTpShardSpec(&spec,"model.layers.0.mlp.gate_proj.weight",12290u,6144u);
+	SparkTestTpShardSpec(&spec,"model.layers.0.mlp.gate_proj.weight",SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION + 2u,SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
 	SparkTestTpShardShape(&shape,8u,0u);
 	assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_INVALID_ARGUMENT);
 	// Head count that the degree does not divide is rejected at validation.
-	SparkTestTpShardSpec(&spec,"model.layers.0.mlp.gate_proj.weight",12288u,6144u);
+	SparkTestTpShardSpec(&spec,"model.layers.0.mlp.gate_proj.weight",SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
 	SparkTestTpShardShape(&shape,4u,0u);
 	geometry.head_count = 6u;
 	assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_INVALID_ARGUMENT);

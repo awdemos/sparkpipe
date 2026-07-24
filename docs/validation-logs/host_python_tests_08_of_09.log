@@ -1,0 +1,3 @@
+RUN tests/test_glm52_firmware_package.py
+RUN tests/test_measured_status.py
+RUN tests/test_release_assemble.py

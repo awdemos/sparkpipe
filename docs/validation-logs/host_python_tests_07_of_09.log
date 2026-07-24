@@ -1,0 +1,3 @@
+RUN tests/test_glm52_b12x_deterministic_finalize.py
+RUN tests/test_glm52_final_from_hidden_mode.py
+RUN tests/test_glm52_exact_pp13_prefill_hidden.py
