@@ -27,6 +27,7 @@ from glm52_resident_pack_common import (
     import_torch,
     parse_layers,
     tensor_name,
+    tp_shard_range,
 )
 import glm52_w8lut_codec as w8lut
 
@@ -79,12 +80,12 @@ class W8lutMoePackHeader:
     reserved1: int
 
 
-def reserve_regions() -> List[Dict[str, int]]:
-    w1_rows = W1_COMPONENT_COUNT * INTERMEDIATE_DIMENSION
+def reserve_regions(intermediate_dimension: int = INTERMEDIATE_DIMENSION) -> List[Dict[str, int]]:
+    w1_rows = W1_COMPONENT_COUNT * intermediate_dimension
     byte_counts = (
         EXPERT_COUNT * w1_rows * HIDDEN_DIMENSION,
         EXPERT_COUNT * W1_COMPONENT_COUNT * UINT16_BYTES,
-        EXPERT_COUNT * HIDDEN_DIMENSION * INTERMEDIATE_DIMENSION,
+        EXPERT_COUNT * HIDDEN_DIMENSION * intermediate_dimension,
         EXPERT_COUNT * UINT16_BYTES,
     )
     offset = HEADER_BYTES
@@ -96,7 +97,7 @@ def reserve_regions() -> List[Dict[str, int]]:
     return regions
 
 
-def expected_pack_header(layer: int, max_active: int) -> W8lutMoePackHeader:
+def expected_pack_header(layer: int, max_active: int, tp_degree: int = 1, tp_rank: int = 0) -> W8lutMoePackHeader:
     if max_active <= 0:
         raise PackFailure("maximum active sequence count must be positive")
     return W8lutMoePackHeader(
@@ -106,7 +107,7 @@ def expected_pack_header(layer: int, max_active: int) -> W8lutMoePackHeader:
         layer_index=layer,
         maximum_token_count=max_active,
         hidden_dimension=HIDDEN_DIMENSION,
-        intermediate_dimension=INTERMEDIATE_DIMENSION,
+        intermediate_dimension=INTERMEDIATE_DIMENSION // tp_degree,
         expert_count=EXPERT_COUNT,
         top_k=TOP_K,
         gate_up_order=GATE_UP_ORDER_UP_GATE,
@@ -115,13 +116,13 @@ def expected_pack_header(layer: int, max_active: int) -> W8lutMoePackHeader:
         quant_mode=QUANT_MODE_W8LUT,
         output_dtype=OUTPUT_DTYPE_BF16,
         cuda_architecture=CUDA_ARCHITECTURE_SM121,
-        reserved0=0,
-        reserved1=0,
+        reserved0=tp_degree,
+        reserved1=tp_rank,
     )
 
 
-def pack_header(layer: int, regions: List[Dict[str, int]], max_active: int) -> bytes:
-    fields = expected_pack_header(layer, max_active)
+def pack_header(layer: int, regions: List[Dict[str, int]], max_active: int, tp_degree: int = 1, tp_rank: int = 0) -> bytes:
+    fields = expected_pack_header(layer, max_active, tp_degree, tp_rank)
     prefix = HEADER_PREFIX_STRUCT.pack(
         fields.magic,
         fields.abi_version,
@@ -219,13 +220,19 @@ def validate_output_directory(output_dir: Path) -> None:
             raise PackFailure(f"W8LUT output directory contains non-W8LUT artifact: {path}")
 
 
-def write_layer_pack(model_dir: Path, output_dir: Path, layer: int, max_active: int) -> Dict[str, Any]:
+def write_layer_pack(model_dir: Path, output_dir: Path, layer: int, max_active: int, tp_degree: int = 1, tp_rank: int = 0) -> Dict[str, Any]:
     validate_output_directory(output_dir)
-    output_path = output_dir / PACK_FILE_TEMPLATE.format(layer=layer)
+    shard_start, shard_count = tp_shard_range(INTERMEDIATE_DIMENSION, tp_degree, tp_rank)
+    shape_tag = "" if tp_degree == 1 else f"_tp{tp_degree}r{tp_rank}"
+    base_name = PACK_FILE_TEMPLATE.format(layer=layer)
+    if shape_tag:
+        stem, dot, extension = base_name.rpartition(".")
+        base_name = f"{stem}{shape_tag}{dot}{extension}"
+    output_path = output_dir / base_name
     if output_path.exists():
         raise PackFailure(f"refusing to replace existing W8LUT pack: {output_path}")
     reader = SafetensorReader(model_dir)
-    regions = reserve_regions()
+    regions = reserve_regions(shard_count)
     expected_bytes = regions[-1]["offset"] + regions[-1]["bytes"]
     w1_e0: List[int] = []
     w2_e0: List[int] = []
@@ -241,14 +248,14 @@ def write_layer_pack(model_dir: Path, output_dir: Path, layer: int, max_active: 
             delete=False,
         ) as file:
             temp_path = Path(file.name)
-            file.write(pack_header(layer, regions, max_active))
+            file.write(pack_header(layer, regions, max_active, tp_degree, tp_rank))
             seek_region(file, regions, REGION_W1_CODES)
             for expert in range(EXPERT_COUNT):
                 for projection in ("up_proj", "gate_proj"):
                     name = tensor_name(layer, expert, projection, "weight")
                     codes, e0, stats = encode_tensor(
-                        reader.tensor(name),
-                        (INTERMEDIATE_DIMENSION, HIDDEN_DIMENSION),
+                        reader.tensor(name)[shard_start:shard_start + shard_count],
+                        (shard_count, HIDDEN_DIMENSION),
                         name,
                     )
                     file.write(codes.tobytes(order="C"))
@@ -261,8 +268,8 @@ def write_layer_pack(model_dir: Path, output_dir: Path, layer: int, max_active: 
             for expert in range(EXPERT_COUNT):
                 name = tensor_name(layer, expert, "down_proj", "weight")
                 codes, e0, stats = encode_tensor(
-                    reader.tensor(name),
-                    (HIDDEN_DIMENSION, INTERMEDIATE_DIMENSION),
+                    reader.tensor(name)[:, shard_start:shard_start + shard_count].contiguous(),
+                    (HIDDEN_DIMENSION, shard_count),
                     name,
                 )
                 file.write(codes.tobytes(order="C"))
@@ -295,9 +302,9 @@ def write_layer_pack(model_dir: Path, output_dir: Path, layer: int, max_active: 
             temp_path.unlink()
 
 
-def worker(argument: Tuple[str, str, int, int]) -> Dict[str, Any]:
-    model_dir, output_dir, layer, max_active = argument
-    return write_layer_pack(Path(model_dir), Path(output_dir), layer, max_active)
+def worker(argument: Tuple[str, str, int, int, int, int]) -> Dict[str, Any]:
+    model_dir, output_dir, layer, max_active, tp_degree, tp_rank = argument
+    return write_layer_pack(Path(model_dir), Path(output_dir), layer, max_active, tp_degree, tp_rank)
 
 
 def index_sha256(model_dir: Path) -> str:
@@ -351,12 +358,17 @@ def main() -> int:
     parser.add_argument("--layers", required=True)
     parser.add_argument("--jobs", type=int, default=1)
     parser.add_argument("--max-active", type=int, default=DEFAULT_MAX_ACTIVE_SEQUENCE_COUNT)
+    parser.add_argument("--tp-degree", type=int, default=1,
+        help="Tensor-parallel degree: expert up and gate rows and down "
+        "columns are sliced to this rank's intermediate shard before "
+        "encoding, per-shard e0 windows included.")
+    parser.add_argument("--tp-rank", type=int, default=0)
     args = parser.parse_args()
     layers = parse_layers(args.layers)
     if args.max_active <= 0:
         raise PackFailure("--max-active must be positive")
     tasks = [
-        (str(args.model_dir), str(args.output_dir), layer, args.max_active)
+        (str(args.model_dir), str(args.output_dir), layer, args.max_active, int(args.tp_degree), int(args.tp_rank),)
         for layer in layers
     ]
     jobs = max(1, min(int(args.jobs), len(tasks)))
