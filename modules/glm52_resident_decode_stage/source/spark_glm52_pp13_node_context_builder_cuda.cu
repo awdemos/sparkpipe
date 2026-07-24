@@ -4280,6 +4280,8 @@ static SparkStatus SparkGlm52Pp13BuilderBindFp8Moe(
 		state->configuration.moe_pack_root,
 		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
 		layer_index,
+		state->rank_plan.tp_degree,
+		state->rank_plan.tp_rank,
 		path,
 		(uint32_t)sizeof(path));
 	if (status != SPARK_STATUS_OK)
@@ -4338,6 +4340,8 @@ static SparkStatus SparkGlm52Pp13BuilderBindW8lutMoe(
 		state->configuration.moe_pack_root,
 		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,
 		layer_index,
+		state->rank_plan.tp_degree,
+		state->rank_plan.tp_rank,
 		path,
 		(uint32_t)sizeof(path));
 	if (status != SPARK_STATUS_OK)
@@ -4397,6 +4401,8 @@ static SparkStatus SparkGlm52Pp13BuilderBindB12xMoe(
 		state->configuration.moe_pack_root,
 		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,
 		layer_index,
+		state->rank_plan.tp_degree,
+		state->rank_plan.tp_rank,
 		path,
 		(uint32_t)sizeof(path));
 	if (status != SPARK_STATUS_OK)
