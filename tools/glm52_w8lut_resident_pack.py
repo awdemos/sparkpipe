@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import struct
 import tempfile
-from typing import Any, BinaryIO, Dict, List, Tuple
+from typing import Any, BinaryIO, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -80,7 +80,9 @@ class W8lutMoePackHeader:
     reserved1: int
 
 
-def reserve_regions(intermediate_dimension: int = INTERMEDIATE_DIMENSION) -> List[Dict[str, int]]:
+def reserve_regions(intermediate_dimension: Optional[int] = None) -> List[Dict[str, int]]:
+    if intermediate_dimension is None:
+        intermediate_dimension = INTERMEDIATE_DIMENSION
     w1_rows = W1_COMPONENT_COUNT * intermediate_dimension
     byte_counts = (
         EXPERT_COUNT * w1_rows * HIDDEN_DIMENSION,

@@ -556,7 +556,7 @@
             "static_workspace_bytes": 0,
             "device_memcpy_bytes_per_submit_ceiling": 0,
             "host_staging_bytes_per_submit_ceiling": 0,
-            "private_queue_count": 0
+            "private_queue_count": 1
           }
         }
       ]

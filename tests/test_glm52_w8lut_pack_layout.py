@@ -24,12 +24,20 @@ def load_tool(name: str):
     return module
 
 
+class FakeTensor:
+    def __getitem__(self, key):
+        return self
+
+    def contiguous(self):
+        return self
+
+
 class FakeReader:
     def __init__(self, model_dir: Path) -> None:
         self.model_dir = model_dir
 
     def tensor(self, name: str):
-        return name
+        return FakeTensor()
 
     def close(self) -> None:
         return
