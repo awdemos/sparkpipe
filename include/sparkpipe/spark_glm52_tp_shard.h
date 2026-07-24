@@ -5,6 +5,7 @@
 
 #include "sparkpipe/spark_glm52_stagepack.h"
 #include "sparkpipe/spark_status.h"
+#include "sparkpipe/spark_glm52_model.h"
 
 // Tensor-parallel shard geometry: the single source of truth for how each
 // GLM-5.2 tensor splits across a TP group. The stagepack loader consumes the
@@ -71,6 +72,22 @@ typedef struct SparkGlm52TpShardView
 	uint64_t element_extent;
 	uint64_t shard_bytes;
 } SparkGlm52TpShardView;
+
+// Fill the model geometry from the authoritative model constants: the q_b
+// output block is one head's nope plus rope columns, the kv_b output block
+// one head's nope plus value columns, and the o_proj input block one head's
+// value columns. Every consumer derives from these definitions, so the
+// sharder, the shape config, and the kernels cannot drift apart.
+static inline void SparkGlm52TpModelGeometryFromModel(SparkGlm52TpModelGeometry *geometry)
+{
+	geometry->abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+	geometry->head_count = SPARK_GLM52_MODEL_HEAD_COUNT;
+	geometry->q_b_head_block =
+		SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION + SPARK_GLM52_MODEL_ROPE_DIMENSION;
+	geometry->kv_b_head_block =
+		SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION + SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION;
+	geometry->o_proj_head_block = SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION;
+}
 
 // Classify by the resolved tensor-name suffix. Unknown names return the
 // unknown class; callers must treat that as a hard error for any tp_degree

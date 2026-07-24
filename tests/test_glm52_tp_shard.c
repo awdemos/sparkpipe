@@ -325,6 +325,16 @@ static void SparkTestTpShardRoundTrip(void)
 	}
 }
 
+// The model-derived geometry must equal the values every test in this file
+// hardcodes, proving the initializer and the authoritative constants agree.
+static void SparkTestTpShardModelGeometry(void)
+{
+	SparkGlm52TpModelGeometry from_model,reference;
+	SparkGlm52TpModelGeometryFromModel(&from_model);
+	SparkTestTpShardGeometry(&reference);
+	assert(memcmp(&from_model,&reference,sizeof(reference)) == 0);
+}
+
 int main(void)
 {
 	SparkTestTpShardClassification();
@@ -334,6 +344,7 @@ int main(void)
 	SparkTestTpShardDegreeOneCompat();
 	SparkTestTpShardFailsClosed();
 	SparkTestTpShardGeometryHash();
+	SparkTestTpShardModelGeometry();
 	SparkTestTpShardRoundTrip();
 	return 0;
 }
