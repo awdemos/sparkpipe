@@ -131,6 +131,7 @@ COMMON_SOURCES := \
     src/spark_glm52_tp_shard.c \
     src/spark_glm52_shape_config.c \
     src/spark_tp_collective.c \
+    src/spark_glm52_row_allocator.c \
     src/spark_glm52_long_context.c \
     src/spark_tokenizer.c \
     src/spark_glm52_chat_template.c \
@@ -201,6 +202,7 @@ TEST_NAMES := \
     test_glm52_tp_shard \
     test_glm52_shape_config \
     test_tp_collective \
+    test_glm52_row_allocator \
     test_glm52_stagepack \
     test_glm52_production_topology \
     test_glm52_pp13_runtime \
@@ -534,6 +536,7 @@ build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
 build/test_glm52_tp_shard: tests/test_glm52_tp_shard.c include/sparkpipe/spark_glm52_tp_shard.h $(COMMON_LIBRARY)
+build/test_glm52_row_allocator: tests/test_glm52_row_allocator.c include/sparkpipe/spark_glm52_row_allocator.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
