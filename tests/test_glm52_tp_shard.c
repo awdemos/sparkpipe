@@ -204,6 +204,118 @@ static void SparkTestTpShardGeometryHash(void)
 	assert(SparkGlm52TpShardGeometryHash(&spec,&shape_b,&view_b) != hash_a);
 }
 
+// Round-trip against a synthetic on-disk pack: three tensors with distinct
+// linear-index patterns at a nonzero file offset, read back as tp2 shards.
+// The two shards of each split tensor must reconstruct the original
+// byte-exactly, replication must return the whole tensor, and a wrong
+// destination size must fail closed without touching the buffer contract.
+#include <stdio.h>
+#include <stdlib.h>
+
+#define SPARK_TEST_TP_SHARD_ROOT "/tmp/spark_tp_shard_pack"
+#define SPARK_TEST_TP_SHARD_DATA_OFFSET 64u
+
+static void SparkTestTpShardWriteFixture(uint16_t *gate,uint32_t gate_elements,uint16_t *down,uint32_t down_elements)
+{
+	FILE *stream;
+	char path[256];
+	uint32_t element_index;
+	uint8_t padding[SPARK_TEST_TP_SHARD_DATA_OFFSET];
+	for (element_index = 0u; element_index < gate_elements; ++element_index)
+		gate[element_index] = (uint16_t)(element_index + 1u);
+	for (element_index = 0u; element_index < down_elements; ++element_index)
+		down[element_index] = (uint16_t)(0x8000u + element_index);
+	memset(padding,0xEE,sizeof(padding));
+	assert(system("mkdir -p " SPARK_TEST_TP_SHARD_ROOT) == 0);
+	snprintf(path,sizeof(path),"%s/tensors.bin",SPARK_TEST_TP_SHARD_ROOT);
+	stream = fopen(path,"wb");
+	assert(stream != 0);
+	assert(fwrite(padding,1u,sizeof(padding),stream) == sizeof(padding));
+	assert(fwrite(gate,sizeof(uint16_t),gate_elements,stream) == gate_elements);
+	assert(fwrite(down,sizeof(uint16_t),down_elements,stream) == down_elements);
+	fclose(stream);
+	snprintf(path,sizeof(path),"%s/%s",SPARK_TEST_TP_SHARD_ROOT,SPARK_GLM52_STAGEPACK_INDEX_FILE);
+	stream = fopen(path,"w");
+	assert(stream != 0);
+	fprintf(stream,
+		"{\n"
+		"  \"format\": \"%s\",\n"
+		"  \"tensor_map\": {\n"
+		"    \"model.layers.0.mlp.gate_proj.weight\": {\n"
+		"      \"file\": \"tensors.bin\", \"dtype\": \"BF16\",\n"
+		"      \"shape\": [8, 4], \"offset\": %u, \"bytes\": %u},\n"
+		"    \"model.layers.0.mlp.down_proj.weight\": {\n"
+		"      \"file\": \"tensors.bin\", \"dtype\": \"BF16\",\n"
+		"      \"shape\": [4, 8], \"offset\": %u, \"bytes\": %u}\n"
+		"  }\n"
+		"}\n",
+		SPARK_GLM52_STAGEPACK_FORMAT,
+		SPARK_TEST_TP_SHARD_DATA_OFFSET,
+		(unsigned)(32u * sizeof(uint16_t)),
+		(unsigned)(SPARK_TEST_TP_SHARD_DATA_OFFSET + 32u * sizeof(uint16_t)),
+		(unsigned)(32u * sizeof(uint16_t)));
+	fclose(stream);
+}
+
+static void SparkTestTpShardRoundTrip(void)
+{
+	SparkGlm52StagePackTensorSpec gate_spec,down_spec;
+	SparkGlm52TpModelGeometry geometry;
+	SparkGlm52TpShardView view;
+	uint16_t gate[32],down[32];
+	uint16_t shard_a[16],shard_b[16],rebuilt[32];
+	uint32_t rank_index,row_index,element_index;
+	SparkTestTpShardWriteFixture(gate,32u,down,32u);
+	SparkTestTpShardGeometry(&geometry);
+	geometry.head_count = 2u;
+	SparkTestTpShardSpec(&gate_spec,"model.layers.0.mlp.gate_proj.weight",8u,4u);
+	SparkTestTpShardSpec(&down_spec,"model.layers.0.mlp.down_proj.weight",4u,8u);
+	// gate splits its leading dimension: rank 0 takes rows 0..3, rank 1 rows
+	// 4..7, and the concatenation is the original tensor.
+	for (rank_index = 0u; rank_index < 2u; ++rank_index)
+	{
+		SparkGlm52TpShapeDescriptor shape;
+		uint16_t *target = rank_index == 0u ? shard_a : shard_b;
+		SparkTestTpShardShape(&shape,2u,rank_index);
+		assert(SparkGlm52TpShardReadTensor(SPARK_TEST_TP_SHARD_ROOT,&gate_spec,&shape,&geometry,target,16u * sizeof(uint16_t),&view) == SPARK_STATUS_OK);
+		assert(view.split_dimension == 0u);
+	}
+	memcpy(rebuilt,shard_a,16u * sizeof(uint16_t));
+	memcpy(rebuilt + 16u,shard_b,16u * sizeof(uint16_t));
+	assert(memcmp(rebuilt,gate,sizeof(gate)) == 0);
+	// down splits its inner dimension: each rank gathers a 4-element chunk per
+	// outer row, and interleaving the chunks rebuilds the original rows.
+	for (rank_index = 0u; rank_index < 2u; ++rank_index)
+	{
+		SparkGlm52TpShapeDescriptor shape;
+		uint16_t *target = rank_index == 0u ? shard_a : shard_b;
+		SparkTestTpShardShape(&shape,2u,rank_index);
+		assert(SparkGlm52TpShardReadTensor(SPARK_TEST_TP_SHARD_ROOT,&down_spec,&shape,&geometry,target,16u * sizeof(uint16_t),&view) == SPARK_STATUS_OK);
+		assert(view.split_dimension == 1u);
+		assert(view.element_extent == 4u);
+	}
+	for (row_index = 0u; row_index < 4u; ++row_index)
+		for (element_index = 0u; element_index < 4u; ++element_index)
+		{
+			rebuilt[row_index * 8u + element_index] = shard_a[row_index * 4u + element_index];
+			rebuilt[row_index * 8u + 4u + element_index] = shard_b[row_index * 4u + element_index];
+		}
+	assert(memcmp(rebuilt,down,sizeof(down)) == 0);
+	// Degree one returns the whole tensor from the same entry point.
+	{
+		SparkGlm52TpShapeDescriptor shape;
+		SparkTestTpShardShape(&shape,1u,0u);
+		assert(SparkGlm52TpShardReadTensor(SPARK_TEST_TP_SHARD_ROOT,&gate_spec,&shape,&geometry,rebuilt,32u * sizeof(uint16_t),&view) == SPARK_STATUS_OK);
+		assert(memcmp(rebuilt,gate,sizeof(gate)) == 0);
+	}
+	// A wrong destination size fails closed before any byte is read.
+	{
+		SparkGlm52TpShapeDescriptor shape;
+		SparkTestTpShardShape(&shape,2u,0u);
+		assert(SparkGlm52TpShardReadTensor(SPARK_TEST_TP_SHARD_ROOT,&gate_spec,&shape,&geometry,shard_a,15u * sizeof(uint16_t),&view) == SPARK_STATUS_INVALID_ARGUMENT);
+	}
+}
+
 int main(void)
 {
 	SparkTestTpShardClassification();
@@ -213,5 +325,6 @@ int main(void)
 	SparkTestTpShardDegreeOneCompat();
 	SparkTestTpShardFailsClosed();
 	SparkTestTpShardGeometryHash();
+	SparkTestTpShardRoundTrip();
 	return 0;
 }

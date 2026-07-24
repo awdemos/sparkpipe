@@ -1,4 +1,10 @@
+#define _POSIX_C_SOURCE 200809L
+#define _FILE_OFFSET_BITS 64
+
 #include "sparkpipe/spark_glm52_tp_shard.h"
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <string.h>
 
@@ -189,4 +195,85 @@ uint64_t SparkGlm52TpShardGeometryHash(
 	hash = SparkGlm52TpShardHashBytes(hash,&view->element_offset,sizeof(view->element_offset));
 	hash = SparkGlm52TpShardHashBytes(hash,&view->element_extent,sizeof(view->element_extent));
 	return hash;
+}
+
+// Split read geometry for a view: outer rows before the split dimension, the
+// full-tensor pitch of one outer row, the shard chunk within that row, and the
+// chunk's byte offset. A leading-dimension split degenerates to one outer row
+// covering the contiguous shard, so the same loop serves every class.
+static void SparkGlm52TpShardReadGeometry(const SparkGlm52StagePackTensorSpec *spec,const SparkGlm52TpShardView *view,uint64_t *outer_rows,uint64_t *row_pitch_bytes,uint64_t *chunk_bytes,uint64_t *chunk_offset_bytes)
+{
+	uint64_t inner_bytes = spec->bytes_per_element;
+	uint64_t outer = 1u;
+	uint32_t dimension_index;
+	for (dimension_index = view->split_dimension + 1u; dimension_index < spec->rank; ++dimension_index)
+		inner_bytes *= spec->shape[dimension_index];
+	for (dimension_index = 0u; dimension_index < view->split_dimension; ++dimension_index)
+		outer *= spec->shape[dimension_index];
+	*outer_rows = outer;
+	*row_pitch_bytes = spec->shape[view->split_dimension] * inner_bytes;
+	*chunk_bytes = view->element_extent * inner_bytes;
+	*chunk_offset_bytes = view->element_offset * inner_bytes;
+}
+
+static SparkStatus SparkGlm52TpShardReadRegion(const SparkGlm52StagePackTensorRegion *region,uint64_t outer_rows,uint64_t row_pitch_bytes,uint64_t chunk_bytes,uint64_t chunk_offset_bytes,uint8_t *destination)
+{
+	int file_descriptor;
+	uint64_t row_index;
+	file_descriptor = open(region->file_path,O_RDONLY);
+	if (file_descriptor < 0)
+		return SPARK_STATUS_IO_ERROR;
+	for (row_index = 0u; row_index < outer_rows; ++row_index)
+	{
+		off_t read_offset = (off_t)(region->file_offset +
+			row_index * row_pitch_bytes + chunk_offset_bytes);
+		uint64_t read_bytes = 0u;
+		while (read_bytes < chunk_bytes)
+		{
+			ssize_t got = pread(file_descriptor,
+				destination + row_index * chunk_bytes + read_bytes,
+				(size_t)(chunk_bytes - read_bytes),
+				read_offset + (off_t)read_bytes);
+			if (got <= 0)
+			{
+				close(file_descriptor);
+				return SPARK_STATUS_IO_ERROR;
+			}
+			read_bytes += (uint64_t)got;
+		}
+	}
+	close(file_descriptor);
+	return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52TpShardReadTensor(
+	const char *stagepack_root,
+	const SparkGlm52StagePackTensorSpec *spec,
+	const SparkGlm52TpShapeDescriptor *shape,
+	const SparkGlm52TpModelGeometry *geometry,
+	void *destination,
+	uint64_t destination_bytes,
+	SparkGlm52TpShardView *view_out)
+{
+	SparkGlm52TpShardView view;
+	SparkGlm52StagePackTensorRegion region;
+	uint64_t outer_rows,row_pitch_bytes,chunk_bytes,chunk_offset_bytes;
+	SparkStatus status;
+	if (destination == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52TpShardComputeView(spec,shape,geometry,&view);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	if (destination_bytes != view.shard_bytes)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52StagePackResolveTensor(stagepack_root,spec,&region);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	SparkGlm52TpShardReadGeometry(spec,&view,&outer_rows,&row_pitch_bytes,&chunk_bytes,&chunk_offset_bytes);
+	status = SparkGlm52TpShardReadRegion(&region,outer_rows,row_pitch_bytes,chunk_bytes,chunk_offset_bytes,(uint8_t *)destination);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	if (view_out != 0)
+		*view_out = view;
+	return SPARK_STATUS_OK;
 }

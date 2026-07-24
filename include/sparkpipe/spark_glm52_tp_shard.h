@@ -99,4 +99,20 @@ uint64_t SparkGlm52TpShardGeometryHash(
 	const SparkGlm52TpShapeDescriptor *shape,
 	const SparkGlm52TpShardView *view);
 
+// Read this rank's shard of the tensor from the stagepack into the caller's
+// buffer, which must be exactly the shard's bytes; any mismatch fails closed
+// rather than truncating. A split on the leading dimension (and every
+// replicated or degree-one view) is one contiguous range read; a split on an
+// inner dimension gathers one chunk per outer row at the full-tensor row
+// pitch. Fails with the same closed semantics as the geometry: unknown
+// tensors, indivisible dimensions, and shape mismatches never produce bytes.
+SparkStatus SparkGlm52TpShardReadTensor(
+	const char *stagepack_root,
+	const SparkGlm52StagePackTensorSpec *spec,
+	const SparkGlm52TpShapeDescriptor *shape,
+	const SparkGlm52TpModelGeometry *geometry,
+	void *destination,
+	uint64_t destination_bytes,
+	SparkGlm52TpShardView *view_out);
+
 #endif
