@@ -1,3 +1,0 @@
-RUN tests/test_glm52_stage_pack.py
-RUN tests/test_glm52_stage_bucket_sweep.py
-RUN tests/test_glm52_prompt_pipeline_input.py

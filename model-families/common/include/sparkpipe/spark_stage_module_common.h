@@ -45,11 +45,6 @@ SparkStatus SparkStageModuleEnvironmentUnsigned64(
     uint64_t minimum,
     uint64_t maximum,
     uint64_t *value);
-SparkStatus SparkStageModuleEnvironmentOptionalBoolean(
-    const char *module_tag,
-    const char *name,
-    uint32_t default_value,
-    uint32_t *value);
 SparkStatus SparkStageModuleDeviceAllocate(
     SparkStageModuleLedger *ledger,
     uint64_t bytes,

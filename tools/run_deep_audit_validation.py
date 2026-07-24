@@ -25,6 +25,8 @@ FINGERPRINT_EXCLUDED_DIRECTORY_NAMES = {
     "build",
 }
 FINGERPRINT_EXCLUDED_PATHS = {
+    "PACKAGE_MANIFEST.json",
+    "SHA256SUMS",
     "docs/PROPOSED_CHANGE_MANIFEST.md",
     "docs/VALIDATION_STATUS.json",
     "docs/VALIDATION_STATUS.md",
@@ -283,6 +285,10 @@ def run_step(
     step: ValidationStep,
 ) -> ValidationResult:
     log_path = log_directory / f"{step.name}.log"
+    step_environment = os.environ.copy()
+    step_environment["PYTHONPYCACHEPREFIX"] = str(
+        repository_root / "build" / "python-cache"
+    )
     if step.optional_tool is not None and shutil.which(step.optional_tool) is None:
         return build_skipped_result(
             repository_root,
@@ -302,6 +308,7 @@ def run_step(
                 stderr=subprocess.STDOUT,
                 text=True,
                 timeout=step.timeout_seconds,
+                env=step_environment,
             )
             duration_seconds = time.monotonic() - start_time
             status = "passed" if completed.returncode == 0 else "failed"

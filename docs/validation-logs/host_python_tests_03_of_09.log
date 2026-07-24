@@ -1,3 +1,0 @@
-RUN tests/test_glm52_dspark_trace_quality.py
-RUN tests/test_glm52_b12x_pack_worker.py
-RUN tests/test_glm52_b12x_resident_manifest.py

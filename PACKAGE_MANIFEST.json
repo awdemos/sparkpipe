@@ -1,5 +1,5 @@
 {
-  "file_count": 5060,
+  "file_count": 5043,
   "files": [
     {
       "path": ".gitattributes",
@@ -8,8 +8,8 @@
     },
     {
       "path": ".gitignore",
-      "sha256": "5985fbd819db501eeb4c830467cd78a110008b6f3172f01b5dbf6b39520f68a2",
-      "size_bytes": 31
+      "sha256": "1a0b6b2c1dc5d7c538b951dfe53c239247b9b6d284f20a7d6a82676d4d111be5",
+      "size_bytes": 39
     },
     {
       "path": ".updaterepo-policy",
@@ -13133,8 +13133,8 @@
     },
     {
       "path": "docs/PROPOSED_CHANGE_MANIFEST.md",
-      "sha256": "70ae2e8808d63277256b6f235cc6b185f8e2e7a743ada390812ac25ca8955003",
-      "size_bytes": 35177
+      "sha256": "b71740d8b3f798522b2691ec807a96ab7089181a58cc89fafc7a0d6a0f0f1c21",
+      "size_bytes": 33146
     },
     {
       "path": "docs/SPARKPIPE_RELEASE_MANAGER_20260707.md",
@@ -13148,13 +13148,13 @@
     },
     {
       "path": "docs/VALIDATION_STATUS.json",
-      "sha256": "11debff63c8a5a1191847c23cd3b76ddfa6064832688c95a2c065c0bd521ab5c",
-      "size_bytes": 16913
+      "sha256": "cccfd57bd52acb5ca4f7cfd25290b3296c21acb81db78831dd5d204860e1ad68",
+      "size_bytes": 4759
     },
     {
       "path": "docs/VALIDATION_STATUS.md",
-      "sha256": "d08c6f4a4d720946c0cfab8a8c817f6e106b973f37874e2dc2545e487351179c",
-      "size_bytes": 10159
+      "sha256": "7a43b2fb8b12284824ac69fa7acad650594ab847ee5d2a049f15df3be7517043",
+      "size_bytes": 3472
     },
     {
       "path": "docs/mooncake_kv.md",
@@ -13163,8 +13163,8 @@
     },
     {
       "path": "docs/validation-logs/clean_build.log",
-      "sha256": "bffa8c6a07a26debcb7f38b1ce3b98855055fb09bee94eab5dd22d84aee788c6",
-      "size_bytes": 285
+      "sha256": "5bbf1ddbdd715970739b52586ae44e1c4bb850037316a0d184f620d565201aef",
+      "size_bytes": 120
     },
     {
       "path": "docs/validation-logs/core_boundary_audit.log",
@@ -13178,98 +13178,13 @@
     },
     {
       "path": "docs/validation-logs/host_build.log",
-      "sha256": "1a214a5cc015052c0d7803ffd11c58df61327f8b8b25bdc9f1cdcbc5a97dca70",
-      "size_bytes": 25075
+      "sha256": "af169cb8b33088213660e6806a60c25daf116f4a02dc85218d3a8c3cc841f4cb",
+      "size_bytes": 25001
     },
     {
-      "path": "docs/validation-logs/host_c_tests_01_of_08.log",
-      "sha256": "9745616a48daff11e1e136fcd846debc204170368628d65423e691d85934aa74",
-      "size_bytes": 2863
-    },
-    {
-      "path": "docs/validation-logs/host_c_tests_02_of_08.log",
-      "sha256": "55517368676c14570f71ada80470da4e9b991124bf0933359884d4f439ebf427",
-      "size_bytes": 2680
-    },
-    {
-      "path": "docs/validation-logs/host_c_tests_03_of_08.log",
-      "sha256": "b5bd09aa339e06fff15f61c1a0faee761707ccd3edcbf2c62323c305fc95f2a7",
-      "size_bytes": 2488
-    },
-    {
-      "path": "docs/validation-logs/host_c_tests_04_of_08.log",
-      "sha256": "b3c22b56c3383af4e6911c22fcf756706c707bfd7abc0dbd6e02ec344b6747eb",
-      "size_bytes": 2580
-    },
-    {
-      "path": "docs/validation-logs/host_c_tests_05_of_08.log",
-      "sha256": "1da0a8934c0b44fe50f1d7edd6371ad313cf4538b233b42d760a06f6073d7d50",
-      "size_bytes": 2538
-    },
-    {
-      "path": "docs/validation-logs/host_c_tests_06_of_08.log",
-      "sha256": "b1b4a980885d76bcc1cfa002105cd7df2199ee086abca2ca08de5401cb867a5b",
-      "size_bytes": 3075
-    },
-    {
-      "path": "docs/validation-logs/host_c_tests_07_of_08.log",
-      "sha256": "410bc5f08b340672c71d28fa0ef49d3f42875c2b69ab772a778d473b37e4b0ed",
-      "size_bytes": 1873
-    },
-    {
-      "path": "docs/validation-logs/host_c_tests_08_of_08.log",
-      "sha256": "75111baa77bf9a03cafee67446bba816d21d5623d3e3b43353665e5236c9b29c",
-      "size_bytes": 11543
-    },
-    {
-      "path": "docs/validation-logs/host_python_tests_01_of_09.log",
-      "sha256": "a1d61342c0a026efdc42b3085c41c9e21c8d759b5205375ed1c6d52c2ff21439",
-      "size_bytes": 64
-    },
-    {
-      "path": "docs/validation-logs/host_python_tests_02_of_09.log",
-      "sha256": "cb029e5401489d00d6713cf2d66d271d16639e687503564bdf099972314b678b",
-      "size_bytes": 230
-    },
-    {
-      "path": "docs/validation-logs/host_python_tests_03_of_09.log",
-      "sha256": "024a3c2659abb12fa0e6149659fd8746d0ef97424e9e64dfea809c2147fb5a5e",
-      "size_bytes": 133
-    },
-    {
-      "path": "docs/validation-logs/host_python_tests_04_of_09.log",
-      "sha256": "ed3f0d1f381e99a1e07a1c0b6b425fb6515f177b6a00801701790ce5fbb55946",
-      "size_bytes": 131
-    },
-    {
-      "path": "docs/validation-logs/host_python_tests_05_of_09.log",
-      "sha256": "1a3956ae7a33548fc59fc635c18eb01fed4c459679795f49dbf1391afc4ae897",
-      "size_bytes": 142
-    },
-    {
-      "path": "docs/validation-logs/host_python_tests_06_of_09.log",
-      "sha256": "bd35f072f1b2efc053d746bd65841bdc92380140bbbaafaae43c883db4a23f4c",
-      "size_bytes": 255
-    },
-    {
-      "path": "docs/validation-logs/host_python_tests_07_of_09.log",
-      "sha256": "c674f5cf9ab2bb4833c85da8a6b774889a2a74f6dee4e230b7245e599c68212c",
-      "size_bytes": 149
-    },
-    {
-      "path": "docs/validation-logs/host_python_tests_08_of_09.log",
-      "sha256": "69658854deedb7fd3fcba366c0271fc0230fc7a8b09c84bcde81267b63ac9ad6",
-      "size_bytes": 110
-    },
-    {
-      "path": "docs/validation-logs/host_python_tests_09_of_09.log",
-      "sha256": "d1c576bf6406601246c0915e7ba3fa87dd9fbf24ce79cd524706dca646105314",
-      "size_bytes": 124
-    },
-    {
-      "path": "docs/validation-logs/host_test_prerequisites.log",
-      "sha256": "bfc12e9cf0db26f97384d94d13336cdddac99b3a6f7ac2d1b57df018874fc82d",
-      "size_bytes": 881
+      "path": "docs/validation-logs/host_test_suite.log",
+      "sha256": "e8ee55b13559dc6bb8c7a458df1442cb86d71c59c95d6de0a161a531581f46fb",
+      "size_bytes": 32394
     },
     {
       "path": "docs/validation-logs/memory_contracts.log",
@@ -13278,8 +13193,8 @@
     },
     {
       "path": "docs/validation-logs/non_glm_model_driver_contracts.log",
-      "sha256": "e3096a7cfd6c2782f9e3e9954d0d6a78d55c7546bf0b69d03580ab17b3a76443",
-      "size_bytes": 1731
+      "sha256": "e34ade0f62eaf1b6b9eb5b25016f7c8f36fe5f256452b41d08cf9b9d3ebdda0c",
+      "size_bytes": 897
     },
     {
       "path": "docs/validation-logs/python_tool_syntax.log",
@@ -13288,12 +13203,12 @@
     },
     {
       "path": "docs/validation-logs/required_host_targets.log",
-      "sha256": "0ade3e3ca29ab6cb8c09d8c5cc0cff255cc13c655b36fbb3b33ec2e4d6ea24ee",
+      "sha256": "f302765dc2ebcdaf901435c43e5213a6bde2966eaeefa8286ce1212223efe5a1",
       "size_bytes": 97
     },
     {
       "path": "docs/validation-logs/source_tree_stability.log",
-      "sha256": "0bf69b6b52cbed348a9bf00830c1e3f69c050bc0a2b01ba805681af36edf59db",
+      "sha256": "c81c2c40c09df32abc9a42d1fb49f0dc7f67c010019a34c622f52b1425e2ba9f",
       "size_bytes": 178
     },
     {
@@ -13438,8 +13353,8 @@
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_stage_module_common.h",
-      "sha256": "cbef135eeb0de67774a9c1c6713f6fb909fcef28731cb5c6f91ea96a5bf1d7e1",
-      "size_bytes": 3797
+      "sha256": "05632c8f28455889e590753869a7452c7f4ac9b2478b52f3959a4902d25c3a94",
+      "size_bytes": 3641
     },
     {
       "path": "model-families/common/include/sparkpipe/spark_tokenizer.h",
@@ -13478,8 +13393,8 @@
     },
     {
       "path": "model-families/common/src/spark_stage_module_common.c",
-      "sha256": "e440cfe9385b71707ce3fde9462f3ab78fca10d19a0c6eb8ecb326bb360868d4",
-      "size_bytes": 21238
+      "sha256": "a787efc052e5c0f66379a433a0daf6170361f7c266778dd0dcc89adc0f7c92c3",
+      "size_bytes": 20379
     },
     {
       "path": "model-families/common/src/spark_tokenizer.c",
@@ -13488,8 +13403,8 @@
     },
     {
       "path": "model-families/common/src/spark_tp_collective.c",
-      "sha256": "dab8b96566b392a2bff20be7e784a6b0deed5004da47f24a6660d584b5e3f3ae",
-      "size_bytes": 37007
+      "sha256": "88f5546337a21fe852ac2d0e7682d0d951db43ef5d8c2ab61177a86dca64f6e8",
+      "size_bytes": 37006
     },
     {
       "path": "model-families/dsv4/include/sparkpipe/spark_dsv4_model.h",
@@ -13873,8 +13788,8 @@
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c",
-      "sha256": "f2cad13dc43287381d9322534154d602c8389f21b5b1a69bb1d83cfcf095fe2c",
-      "size_bytes": 105328
+      "sha256": "b731a074e84bbf312ffc749fca930d5dd25019de7280e57cc506baaa74f4b9d3",
+      "size_bytes": 105334
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_stagepack_format.h",
@@ -14233,8 +14148,8 @@
     },
     {
       "path": "modules/mimo25_resident_decode_stage/source/spark_mimo25_resident_decode_stage_module.c",
-      "sha256": "f0ae2feee27ccfb9b360fb157baed89f4c7ce8aa06f5e7e3c06034f92c38bd55",
-      "size_bytes": 91153
+      "sha256": "682f7e1909a7cd85db39df49f02de3aa1569848d0b0c280ac8c38f56102987ce",
+      "size_bytes": 91162
     },
     {
       "path": "modules/mimo25_resident_decode_stage/source/spark_mimo25_stagepack_format.h",
@@ -14423,8 +14338,8 @@
     },
     {
       "path": "tests/fixtures/module_validator.c",
-      "sha256": "06cff6cd3c5c048b1c5a2bd3d42e6765bb521372ad9378b4defa742e47bf71cc",
-      "size_bytes": 993
+      "sha256": "ff283b59553ab3bffd0ad9be725e07fa5181c0e7b0f1246d430c3b443f6d923b",
+      "size_bytes": 1111
     },
     {
       "path": "tests/fixtures/mooncake/dummy_client.cpp",
@@ -14733,13 +14648,13 @@
     },
     {
       "path": "tests/test_model_driver_contracts.py",
-      "sha256": "37a9711d80ad73ba672a91e67c6f18070fccccec3b0b50b2658108354cef33d6",
-      "size_bytes": 14443
+      "sha256": "ed2f6a182eab0fd0adf33d3365a32e12d61841464fe6df6baafc0f395980ae77",
+      "size_bytes": 14616
     },
     {
       "path": "tests/test_module_library.c",
-      "sha256": "9364c17994faa3009e5de3208d7c989df0c2ee146db0e0ea906efa1a33f9f40e",
-      "size_bytes": 15855
+      "sha256": "a082fea707214e8ec222a3c5bc4fbd7a6c334562f7e0040afa4c8c83b3e5789a",
+      "size_bytes": 16027
     },
     {
       "path": "tests/test_orchestrator.c",
@@ -14783,8 +14698,8 @@
     },
     {
       "path": "tests/test_tp_collective.c",
-      "sha256": "9fe2f4550590ad3084edab194d715227eb5431145bcd54d45fa1a486c3f498f5",
-      "size_bytes": 19894
+      "sha256": "a2d1c523b905afa6ded933aefcbd35293c6a9adb58258ece9a9af5eea55a849a",
+      "size_bytes": 21522
     },
     {
       "path": "third_party/README.md",
@@ -25028,13 +24943,13 @@
     },
     {
       "path": "tools/audit_core_boundaries.py",
-      "sha256": "64632514f816cd6d07e7af7484fae1070d1ecbd6487bf530f6e4ee7b6b2f0445",
-      "size_bytes": 8250
+      "sha256": "61efe839079e5f6d5c365e2a704a0d6d33cd66722a0d4df4dcd39c3d230e2433",
+      "size_bytes": 8376
     },
     {
       "path": "tools/generate_proposed_change_manifest.py",
-      "sha256": "288b25aaf164c9cd0dd1c4396fb780bd585a202787bc6bba813224d7684849d7",
-      "size_bytes": 5212
+      "sha256": "97443edd09549358c2abb894cab06a5ca7d08a075c3686502229016c8d7cc7ee",
+      "size_bytes": 5300
     },
     {
       "path": "tools/glm52_b12x_aot_compile.py",
@@ -25178,8 +25093,8 @@
     },
     {
       "path": "tools/run_deep_audit_validation.py",
-      "sha256": "36cc5e53f6f9d250e4e891b1dbc4bcc87be194cd8e5ed1576d9000c37df64b19",
-      "size_bytes": 16715
+      "sha256": "3040f520180c3b89cdea0ae058e8a0a861f917958d0b54d3f79596a341a06f98",
+      "size_bytes": 16949
     },
     {
       "path": "tools/sparkpipe_api_stress.py",

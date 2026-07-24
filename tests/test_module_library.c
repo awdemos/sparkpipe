@@ -329,7 +329,10 @@ int main(void)
                sizeof(error_buffer)) == SPARK_STATUS_CAPACITY_EXCEEDED);
 
     modified_request.module_id = "spark.test.validation.failure.v1";
-    modified_request.validator_path = "/bin/false";
+    validator_arguments[0] = "--fail";
+    modified_request.validator_path = "build/test_module_validator";
+    modified_request.validator_arguments = validator_arguments;
+    modified_request.validator_argument_count = 1u;
     assert(SparkPublishValidatedModule(
                &modified_request,
                &modified_report,

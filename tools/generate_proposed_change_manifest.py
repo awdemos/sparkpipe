@@ -17,6 +17,11 @@ EXCLUDED_TOP_LEVEL_DIRECTORIES = {
     ".audit",
     "build",
 }
+EXCLUDED_PATHS = {
+    "PACKAGE_MANIFEST.json",
+    "SHA256SUMS",
+    "docs/PROPOSED_CHANGE_MANIFEST.md",
+}
 
 
 @dataclass(frozen=True)
@@ -53,7 +58,7 @@ def should_include(relative_path: Path) -> bool:
     )
     if any(part in excluded_directory_names for part in relative_path.parts):
         return False
-    if relative_path.as_posix() == "docs/PROPOSED_CHANGE_MANIFEST.md":
+    if relative_path.as_posix() in EXCLUDED_PATHS:
         return False
     if relative_path.name == ".DS_Store" or relative_path.name.startswith("._"):
         return False

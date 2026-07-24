@@ -1639,10 +1639,11 @@ SparkStatus SparkMimo25ResidentDecodeStageInitialize(
         SparkStageModuleAtomicStateArrayInitialize(
             state->lane_states,
             state->max_active_sequence_count);
-        status = SparkStageModuleEnvironmentOptionalBoolean(
+        status = SparkStageModuleEnvironmentUnsigned(
             SPARK_MIMO25_MODULE_TAG,
             "SPARK_MIMO25_STAGE_GRAPHS",
             0u,
+            1u,
             &state->layer_graphs_enabled);
     }
     if (status == SPARK_STATUS_OK)

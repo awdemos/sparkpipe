@@ -1,3 +1,0 @@
-RUN tests/test_glm52_nvfp4_artifact_preflight.py
-RUN tests/test_glm52_quantized_cuda_contract.py
-RUN tests/test_glm52_w8lut_ring_preflight.py

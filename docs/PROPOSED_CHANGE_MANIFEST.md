@@ -6,8 +6,8 @@ Retained validation receipts under `docs/` are included.
 
 ## Summary
 
-- Added source/documentation files: **139**
-- Modified source/documentation files: **41**
+- Added source/documentation files: **122**
+- Modified source/documentation files: **43**
 - Deleted source/documentation files: **88**
 
 ## Added
@@ -22,35 +22,18 @@ Retained validation receipts under `docs/` are included.
 | `deployment/tools/sparkpipe_release_manager.c` | 44573 | `716e475cde2a542e69a40933b91474d3ec6da4db2f808615ec9e815783a6e593` |
 | `docs/CORE_CONTAMINATION_AUDIT.md` | 3140 | `f03c971d83707bf2c9328a5b9771f13443a9ad2fb7b8d3f202a91b23b0b28207` |
 | `docs/MODEL_DRIVER_AUDIT.md` | 8156 | `524b446a64a9bcf23bf082166cc224efd5494ecc1fc5fb0ac0038b192e393387` |
-| `docs/VALIDATION_STATUS.json` | 16913 | `11debff63c8a5a1191847c23cd3b76ddfa6064832688c95a2c065c0bd521ab5c` |
-| `docs/VALIDATION_STATUS.md` | 10159 | `d08c6f4a4d720946c0cfab8a8c817f6e106b973f37874e2dc2545e487351179c` |
-| `docs/validation-logs/clean_build.log` | 285 | `bffa8c6a07a26debcb7f38b1ce3b98855055fb09bee94eab5dd22d84aee788c6` |
+| `docs/VALIDATION_STATUS.json` | 4759 | `cccfd57bd52acb5ca4f7cfd25290b3296c21acb81db78831dd5d204860e1ad68` |
+| `docs/VALIDATION_STATUS.md` | 3472 | `7a43b2fb8b12284824ac69fa7acad650594ab847ee5d2a049f15df3be7517043` |
+| `docs/validation-logs/clean_build.log` | 120 | `5bbf1ddbdd715970739b52586ae44e1c4bb850037316a0d184f620d565201aef` |
 | `docs/validation-logs/core_boundary_audit.log` | 331 | `60bddefc63955436a687471616bbd1bb6308a153417951c06d7aa20ec7936202` |
 | `docs/validation-logs/cuda_node_context_builder.log` | 40 | `83b3dbade4fdf2607495f25dde281fbce80bdb16ef49c26a4442c6102ae0411c` |
-| `docs/validation-logs/host_build.log` | 25075 | `1a214a5cc015052c0d7803ffd11c58df61327f8b8b25bdc9f1cdcbc5a97dca70` |
-| `docs/validation-logs/host_c_tests_01_of_08.log` | 2863 | `9745616a48daff11e1e136fcd846debc204170368628d65423e691d85934aa74` |
-| `docs/validation-logs/host_c_tests_02_of_08.log` | 2680 | `55517368676c14570f71ada80470da4e9b991124bf0933359884d4f439ebf427` |
-| `docs/validation-logs/host_c_tests_03_of_08.log` | 2488 | `b5bd09aa339e06fff15f61c1a0faee761707ccd3edcbf2c62323c305fc95f2a7` |
-| `docs/validation-logs/host_c_tests_04_of_08.log` | 2580 | `b3c22b56c3383af4e6911c22fcf756706c707bfd7abc0dbd6e02ec344b6747eb` |
-| `docs/validation-logs/host_c_tests_05_of_08.log` | 2538 | `1da0a8934c0b44fe50f1d7edd6371ad313cf4538b233b42d760a06f6073d7d50` |
-| `docs/validation-logs/host_c_tests_06_of_08.log` | 3075 | `b1b4a980885d76bcc1cfa002105cd7df2199ee086abca2ca08de5401cb867a5b` |
-| `docs/validation-logs/host_c_tests_07_of_08.log` | 1873 | `410bc5f08b340672c71d28fa0ef49d3f42875c2b69ab772a778d473b37e4b0ed` |
-| `docs/validation-logs/host_c_tests_08_of_08.log` | 11543 | `75111baa77bf9a03cafee67446bba816d21d5623d3e3b43353665e5236c9b29c` |
-| `docs/validation-logs/host_python_tests_01_of_09.log` | 64 | `a1d61342c0a026efdc42b3085c41c9e21c8d759b5205375ed1c6d52c2ff21439` |
-| `docs/validation-logs/host_python_tests_02_of_09.log` | 230 | `cb029e5401489d00d6713cf2d66d271d16639e687503564bdf099972314b678b` |
-| `docs/validation-logs/host_python_tests_03_of_09.log` | 133 | `024a3c2659abb12fa0e6149659fd8746d0ef97424e9e64dfea809c2147fb5a5e` |
-| `docs/validation-logs/host_python_tests_04_of_09.log` | 131 | `ed3f0d1f381e99a1e07a1c0b6b425fb6515f177b6a00801701790ce5fbb55946` |
-| `docs/validation-logs/host_python_tests_05_of_09.log` | 142 | `1a3956ae7a33548fc59fc635c18eb01fed4c459679795f49dbf1391afc4ae897` |
-| `docs/validation-logs/host_python_tests_06_of_09.log` | 255 | `bd35f072f1b2efc053d746bd65841bdc92380140bbbaafaae43c883db4a23f4c` |
-| `docs/validation-logs/host_python_tests_07_of_09.log` | 149 | `c674f5cf9ab2bb4833c85da8a6b774889a2a74f6dee4e230b7245e599c68212c` |
-| `docs/validation-logs/host_python_tests_08_of_09.log` | 110 | `69658854deedb7fd3fcba366c0271fc0230fc7a8b09c84bcde81267b63ac9ad6` |
-| `docs/validation-logs/host_python_tests_09_of_09.log` | 124 | `d1c576bf6406601246c0915e7ba3fa87dd9fbf24ce79cd524706dca646105314` |
-| `docs/validation-logs/host_test_prerequisites.log` | 881 | `bfc12e9cf0db26f97384d94d13336cdddac99b3a6f7ac2d1b57df018874fc82d` |
+| `docs/validation-logs/host_build.log` | 25001 | `af169cb8b33088213660e6806a60c25daf116f4a02dc85218d3a8c3cc841f4cb` |
+| `docs/validation-logs/host_test_suite.log` | 32394 | `e8ee55b13559dc6bb8c7a458df1442cb86d71c59c95d6de0a161a531581f46fb` |
 | `docs/validation-logs/memory_contracts.log` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
-| `docs/validation-logs/non_glm_model_driver_contracts.log` | 1731 | `e3096a7cfd6c2782f9e3e9954d0d6a78d55c7546bf0b69d03580ab17b3a76443` |
+| `docs/validation-logs/non_glm_model_driver_contracts.log` | 897 | `e34ade0f62eaf1b6b9eb5b25016f7c8f36fe5f256452b41d08cf9b9d3ebdda0c` |
 | `docs/validation-logs/python_tool_syntax.log` | 0 | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
-| `docs/validation-logs/required_host_targets.log` | 97 | `0ade3e3ca29ab6cb8c09d8c5cc0cff255cc13c655b36fbb3b33ec2e4d6ea24ee` |
-| `docs/validation-logs/source_tree_stability.log` | 178 | `0bf69b6b52cbed348a9bf00830c1e3f69c050bc0a2b01ba805681af36edf59db` |
+| `docs/validation-logs/required_host_targets.log` | 97 | `f302765dc2ebcdaf901435c43e5213a6bde2966eaeefa8286ce1212223efe5a1` |
+| `docs/validation-logs/source_tree_stability.log` | 178 | `c81c2c40c09df32abc9a42d1fb49f0dc7f67c010019a34c622f52b1425e2ba9f` |
 | `include/sparkpipe/spark_model_driver_support.h` | 2863 | `ce7ed3a6da13e51f8a2928785a562da942f169107d72b3120e6636943547c583` |
 | `model-families/common/include/sparkpipe/spark_hidden_transport.h` | 13330 | `930d3ba6b0357a0d9915b2324e525df1b7c8546f810f2aeda4a3d6c13fb41cee` |
 | `model-families/common/include/sparkpipe/spark_kv_store.h` | 4641 | `5f0518532243eb54213bf2d773e30d97bbce9639cb7fd2ef8ac5c5a9c0da7a62` |
@@ -58,7 +41,7 @@ Retained validation receipts under `docs/` are included.
 | `model-families/common/include/sparkpipe/spark_lm_kernels.cuh` | 62238 | `d94ea7e9e80357a8acdc3c9b02db1d147646a013b4e74797304e18e77ac305b1` |
 | `model-families/common/include/sparkpipe/spark_memlink.h` | 1882 | `6bdfa2ce1d31ef92d1f6f1ebf782095526feb2866b159e354581cc49cced0306` |
 | `model-families/common/include/sparkpipe/spark_stage_kv_client.h` | 2481 | `04f7441bff9a36323131b789b1c75e0cd81d39417bda2551e28433f45b3fc343` |
-| `model-families/common/include/sparkpipe/spark_stage_module_common.h` | 3797 | `cbef135eeb0de67774a9c1c6713f6fb909fcef28731cb5c6f91ea96a5bf1d7e1` |
+| `model-families/common/include/sparkpipe/spark_stage_module_common.h` | 3641 | `05632c8f28455889e590753869a7452c7f4ac9b2478b52f3959a4902d25c3a94` |
 | `model-families/common/include/sparkpipe/spark_tokenizer.h` | 9076 | `7821a34561a24f717198928e616b9d768f6266d29a4a1410cbc066990cefc0d4` |
 | `model-families/common/include/sparkpipe/spark_tp_collective.h` | 2719 | `e1fd97d74d62b274f7f09e769e7effda0b2b30b5cb779c13a2606236a096abfc` |
 | `model-families/common/sources.mk` | 461 | `692e6fe6ee8e7c6ef6601e1f4093dc004ec8eb4b100433efc3019f4a8ae15919` |
@@ -66,9 +49,9 @@ Retained validation receipts under `docs/` are included.
 | `model-families/common/src/spark_kv_store.c` | 5543 | `f3c8bfcc1b39007241052822d40d905dfe76563cac5810b948d86ae9b65842c7` |
 | `model-families/common/src/spark_memlink.c` | 4192 | `fb86aee535dfed515f1e6d4a4faca2e91d0f1aa85bbf81ab31219a70cd1e6aac` |
 | `model-families/common/src/spark_stage_kv_client.c` | 5232 | `4b94d1b805769a10eeef157a823aff7a7addccbc0d44a40170c07c087e35c8ca` |
-| `model-families/common/src/spark_stage_module_common.c` | 21238 | `e440cfe9385b71707ce3fde9462f3ab78fca10d19a0c6eb8ecb326bb360868d4` |
+| `model-families/common/src/spark_stage_module_common.c` | 20379 | `a787efc052e5c0f66379a433a0daf6170361f7c266778dd0dcc89adc0f7c92c3` |
 | `model-families/common/src/spark_tokenizer.c` | 97875 | `698f31436d900d19bde82d4b3143ff55a8d61552f803be2c823b7a71e03b6a92` |
-| `model-families/common/src/spark_tp_collective.c` | 37007 | `dab8b96566b392a2bff20be7e784a6b0deed5004da47f24a6660d584b5e3f3ae` |
+| `model-families/common/src/spark_tp_collective.c` | 37006 | `88f5546337a21fe852ac2d0e7682d0d951db43ef5d8c2ab61177a86dca64f6e8` |
 | `model-families/dsv4/include/sparkpipe/spark_dsv4_model.h` | 9420 | `f64bf738f5e5ca99072a765755f3d13ebfc66750a7ab354b02392f2e94c32368` |
 | `model-families/dsv4/include/sparkpipe/spark_dsv4_pro_model.h` | 7140 | `e07792b74244812a9b32390590e3ba1d7d5c4720719ca79de964826e51595deb` |
 | `model-families/glm52/include/sparkpipe/spark_glm52_batch_sequence_table.h` | 3147 | `aa4cd186a8646c2c8025be485f17ac9edb4c150bb3e17ed52e4a6fb8997e060f` |
@@ -147,17 +130,18 @@ Retained validation receipts under `docs/` are included.
 | `tests/cuda_stub/cuda_runtime.h` | 115 | `d3075725d6f8a2529e0e4fca11052ad3bb14e7f5f533cafbe2b637c8056c689f` |
 | `tests/cuda_stub/cuda_runtime_api.h` | 2700 | `5192b0987d0efef6eec7bd97afde042693e000720f736924e2b7632e5973635f` |
 | `tests/cuda_stub/cuda_runtime_stub.c` | 4390 | `b1286d3b0cf4cb96514e4f06073886bec5c16fbad86185a26399668489a9ed4d` |
-| `tests/test_model_driver_contracts.py` | 14443 | `37a9711d80ad73ba672a91e67c6f18070fccccec3b0b50b2658108354cef33d6` |
+| `tests/test_model_driver_contracts.py` | 14616 | `ed2f6a182eab0fd0adf33d3365a32e12d61841464fe6df6baafc0f395980ae77` |
 | `tests/test_stage_module_common.c` | 2972 | `88bf7259387c1a2e50a879ec5bbab8024c8ddc27a6d371416c5df32d8bbfba05` |
-| `tools/audit_core_boundaries.py` | 8250 | `64632514f816cd6d07e7af7484fae1070d1ecbd6487bf530f6e4ee7b6b2f0445` |
-| `tools/generate_proposed_change_manifest.py` | 5212 | `288b25aaf164c9cd0dd1c4396fb780bd585a202787bc6bba813224d7684849d7` |
+| `tools/audit_core_boundaries.py` | 8376 | `61efe839079e5f6d5c365e2a704a0d6d33cd66722a0d4df4dcd39c3d230e2433` |
+| `tools/generate_proposed_change_manifest.py` | 5300 | `97443edd09549358c2abb894cab06a5ca7d08a075c3686502229016c8d7cc7ee` |
 | `tools/package_audited_proposal.py` | 19689 | `da359df05dbc20e095fb96da48e3cd69892ed3b45fc8e2a49793885fe1690166` |
-| `tools/run_deep_audit_validation.py` | 16715 | `36cc5e53f6f9d250e4e891b1dbc4bcc87be194cd8e5ed1576d9000c37df64b19` |
+| `tools/run_deep_audit_validation.py` | 16949 | `3040f520180c3b89cdea0ae058e8a0a861f917958d0b54d3f79596a341a06f98` |
 
 ## Modified
 
 | Path | Bytes | SHA-256 |
 |---|---:|---|
+| `.gitignore` | 39 | `1a0b6b2c1dc5d7c538b951dfe53c239247b9b6d284f20a7d6a82676d4d111be5` |
 | `Makefile` | 56906 | `c0ad5dd476a4e22ee9991bdb47a0e596dae7940328e55fbabe10ae333dcb9ff2` |
 | `docs/LLM_DEVICE_DRIVER_INTERFACE.md` | 11039 | `7da80eac059d154bcf34e89a3119e082040f150dab9f482a53e1934b6de759c0` |
 | `examples/model_descriptions/dsv4_resident_decode_stage_firmware.json` | 5046 | `d237e4ff46612fd52780b34314148b4312a25672ce6ece097abe31daf026b965` |
@@ -167,7 +151,7 @@ Retained validation receipts under `docs/` are included.
 | `examples/model_descriptions/qwen36_resident_decode_stage_firmware.json` | 4957 | `b0cea1db05cad8063bcf3a18a73d385acb8a5862681bf4655c8f54a77ef2e75e` |
 | `include/sparkpipe/spark_module_abi.h` | 2834 | `2bfeaaf4621d8a47dd4056f38a21f967ea70a15ec6d5e7eeea25941564a8de44` |
 | `include/sparkpipe/spark_module_library.h` | 3014 | `3d4758272e545193fc59b3c8800e4dfd7740f6b871ef1e9ed078f4fe79196648` |
-| `modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c` | 105328 | `f2cad13dc43287381d9322534154d602c8389f21b5b1a69bb1d83cfcf095fe2c` |
+| `modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_module.c` | 105334 | `b731a074e84bbf312ffc749fca930d5dd25019de7280e57cc506baaa74f4b9d3` |
 | `modules/dsv4_resident_decode_stage/tools/dsv4_pack_synthesize.c` | 11889 | `eec5b4fe176b62dd391883eb748969696778698132be47fcd125939d9d969a8f` |
 | `modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_module.c` | 180477 | `219a16979be7d74e5bef18863a81f4b59d70a119be9356c9dc697f0043bc2c0d` |
 | `modules/glm52_sm121_flashinfer_b12x_moe/Makefile` | 981 | `5a939615c329d1fb1d183047cdf41bc1d1b973e60148c213decdb1748bf288dc` |
@@ -176,7 +160,7 @@ Retained validation receipts under `docs/` are included.
 | `modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_cuda.cu` | 78172 | `bd9c729fc8eac4a769342d750becfb04e0b99781a017df884ac51cf96978b84f` |
 | `modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_module.c` | 101785 | `bcabcd3a88e269423e0e89094f35287122ffda567699be6dde56cd4660fa0a58` |
 | `modules/kv_mooncake/Makefile` | 2007 | `0c0e2b47769668e4db4ea03c21aff525f814760ae2df71e863f22fec32d1e155` |
-| `modules/mimo25_resident_decode_stage/source/spark_mimo25_resident_decode_stage_module.c` | 91153 | `f0ae2feee27ccfb9b360fb157baed89f4c7ce8aa06f5e7e3c06034f92c38bd55` |
+| `modules/mimo25_resident_decode_stage/source/spark_mimo25_resident_decode_stage_module.c` | 91162 | `682f7e1909a7cd85db39df49f02de3aa1569848d0b0c280ac8c38f56102987ce` |
 | `modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_module.c` | 107546 | `fefe2a051281202a8bc2b06b428862dda65e18162075baf985c48c7894e15809` |
 | `modules/qwen36_resident_decode_stage/tools/qwen36_pack_synthesize.c` | 15645 | `e3ddfe914b2c263ee67996c49ff624acefd2c2109b3ec767a25f8d30ab17728d` |
 | `schema/model_description.schema.json` | 6491 | `82aa5a7ca7dbd406e0cba6d90acd84c37093127c9087fb3db4882307a558df40` |
@@ -185,6 +169,7 @@ Retained validation receipts under `docs/` are included.
 | `src/spark_module_library.c` | 47906 | `cccc81dbfd76dfa7d427b8b9176bc21235cf716421f630f9359d8df7eb739dd4` |
 | `tests/fixtures/module_add_one.c` | 1261 | `86294eb3a7053537b3cd74ec526a7f255b3f4abee897efcda2a754fbac1db766` |
 | `tests/fixtures/module_add_two.c` | 1261 | `6aa7bfd12dcbeb18fdc5292e7dd9da5f65584e10cdc383d5edb962ec16fdf08d` |
+| `tests/fixtures/module_validator.c` | 1111 | `ff283b59553ab3bffd0ad9be725e07fa5181c0e7b0f1246d430c3b443f6d923b` |
 | `tests/test_glm52_exact_pp13_prefill_hidden.py` | 76205 | `4647581ecf6d8edbaa12b0a46c79dbd278f61487feff3bcc354a1be35cd71919` |
 | `tests/test_glm52_resident_decode_stage_firmware.c` | 190136 | `3b90dfa6e8c57e92dc049148770f844082122b043af2d37e71475db855e77397` |
 | `tests/test_glm52_shape_config.c` | 10254 | `341668436a224599ca4eff47acb0304c7a799dfb8c00e694b680562bbade7c0e` |
@@ -193,8 +178,8 @@ Retained validation receipts under `docs/` are included.
 | `tests/test_measured_status.py` | 2941 | `e796499fa9015027ffd37b475434b349e4d6fddfc4519c291463092d095c4c2d` |
 | `tests/test_memory_contracts.py` | 18056 | `b78f0785943f0bb258ea31699fcade5fadf8ba9a50fa3e80dc50a9e546c0354d` |
 | `tests/test_model_description.c` | 6283 | `5dab24ee49baaf2092fc2d0fadae03287b6c46dd94780340886896e4c10246e5` |
-| `tests/test_module_library.c` | 15855 | `9364c17994faa3009e5de3208d7c989df0c2ee146db0e0ea906efa1a33f9f40e` |
-| `tests/test_tp_collective.c` | 19894 | `9fe2f4550590ad3084edab194d715227eb5431145bcd54d45fa1a486c3f498f5` |
+| `tests/test_module_library.c` | 16027 | `a082fea707214e8ec222a3c5bc4fbd7a6c334562f7e0040afa4c8c83b3e5789a` |
+| `tests/test_tp_collective.c` | 21522 | `a2d1c523b905afa6ded933aefcbd35293c6a9adb58258ece9a9af5eea55a849a` |
 | `tools/glm52_fp8_resident_pack.py` | 20079 | `aeee72fcc8aaa10695920099375d163c886de9dea817022a8a616dfab557e326` |
 | `tools/glm52_model_contract.py` | 12117 | `b6887cef19b27585474ca500f135bf202baf9377a363b5556a3e821cbbbae4c1` |
 | `tools/glm52_w8lut_resident_pack.py` | 14799 | `4bf4b7a1fd5ab6631374ad8e31f64bd04a183275ca54e8909212cb71141e3493` |

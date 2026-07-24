@@ -1,2 +1,0 @@
-RUN tests/test_api_stress.py
-RUN tests/test_memory_contracts.py

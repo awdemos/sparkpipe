@@ -150,6 +150,9 @@ def validate_source_contract(family, contract, required_environment):
         if environment_name not in source:
             failures.append(
                 f"{family}: source does not consume declared environment {environment_name}")
+    if "SparkStageModuleEnvironmentOptionalBoolean" in source:
+        failures.append(
+            f"{family}: source silently defaults an optional runtime configuration")
     if contract["unqualified_environment"] not in source:
         failures.append(
             f"{family}: source lacks controlled bring-up guard "

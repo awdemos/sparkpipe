@@ -28,6 +28,61 @@
 #define SPARK_TEST_TPC_PORT_SEARCH_STRIDE 17u
 #define SPARK_TEST_TPC_PROCESS_LOCK_PATH "/tmp/sparkpipe-test-tp-collective.lock"
 
+typedef struct SparkTestTpcBarrier
+{
+    pthread_mutex_t mutex;
+    pthread_cond_t condition;
+    uint32_t participant_count;
+    uint32_t arrived_count;
+    uint32_t generation;
+} SparkTestTpcBarrier;
+
+static void SparkTestTpcBarrierInitialize(
+    SparkTestTpcBarrier *barrier,
+    uint32_t participant_count)
+{
+    assert(barrier != NULL);
+    assert(participant_count > 0u);
+    memset(barrier, 0, sizeof(*barrier));
+    assert(pthread_mutex_init(&barrier->mutex, NULL) == 0);
+    assert(pthread_cond_init(&barrier->condition, NULL) == 0);
+    barrier->participant_count = participant_count;
+}
+
+static void SparkTestTpcBarrierWait(SparkTestTpcBarrier *barrier)
+{
+    uint32_t generation;
+
+    assert(barrier != NULL);
+    assert(pthread_mutex_lock(&barrier->mutex) == 0);
+    generation = barrier->generation;
+    barrier->arrived_count += 1u;
+    if (barrier->arrived_count == barrier->participant_count)
+    {
+        barrier->arrived_count = 0u;
+        barrier->generation += 1u;
+        assert(pthread_cond_broadcast(&barrier->condition) == 0);
+    }
+    else
+    {
+        while (generation == barrier->generation)
+        {
+            assert(pthread_cond_wait(
+                       &barrier->condition,
+                       &barrier->mutex) == 0);
+        }
+    }
+    assert(pthread_mutex_unlock(&barrier->mutex) == 0);
+}
+
+static void SparkTestTpcBarrierDestroy(SparkTestTpcBarrier *barrier)
+{
+    assert(barrier != NULL);
+    assert(barrier->arrived_count == 0u);
+    assert(pthread_cond_destroy(&barrier->condition) == 0);
+    assert(pthread_mutex_destroy(&barrier->mutex) == 0);
+}
+
 typedef struct SparkTestTpcThread
 {
     uint32_t tp_degree;
@@ -39,7 +94,7 @@ typedef struct SparkTestTpcThread
     float *values;
     float *scratch;
     SparkStatus status;
-    pthread_barrier_t *barrier;
+    SparkTestTpcBarrier *barrier;
 } SparkTestTpcThread;
 
 static int SparkTestTpcAcquireProcessLock(void)
@@ -138,7 +193,10 @@ static int SparkTestTpcPortRangeIsAvailable(
 
         memset(&reservation_address, 0, sizeof(reservation_address));
         reservation_address.sin_family = AF_INET;
-        reservation_address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        assert(inet_pton(
+                   AF_INET,
+                   "127.0.0.1",
+                   &reservation_address.sin_addr) == 1);
         reservation_address.sin_port = htons((uint16_t)(port_base + port_index));
         if (bind(
                 reservation_sockets[port_index],
@@ -269,7 +327,7 @@ static void *SparkTestTpcMain(void *argument)
 
     thread->status = SparkTpCollectiveCreate(&config, &collective);
     collective_was_created = thread->status == SPARK_STATUS_OK;
-    pthread_barrier_wait(thread->barrier);
+    SparkTestTpcBarrierWait(thread->barrier);
 
     if (collective_was_created)
     {
@@ -295,7 +353,7 @@ static void *SparkTestTpcMain(void *argument)
         }
     }
 
-    pthread_barrier_wait(thread->barrier);
+    SparkTestTpcBarrierWait(thread->barrier);
     if (collective_was_created)
     {
         SparkTpCollectiveDestroy(&collective);
@@ -326,7 +384,7 @@ static void SparkTestTpcRun(
 {
     pthread_t threads[SPARK_TEST_TPC_MAX_DEGREE];
     SparkTestTpcThread contexts[SPARK_TEST_TPC_MAX_DEGREE];
-    pthread_barrier_t barrier;
+    SparkTestTpcBarrier barrier;
     float *storage;
     float *scratch_storage;
     uint16_t port_base;
@@ -343,7 +401,7 @@ static void SparkTestTpcRun(
 
     port_base = SparkTestTpcFindAvailablePortBase(tp_degree);
     collective_identifier = SparkTestTpcNextCollectiveIdentifier();
-    assert(pthread_barrier_init(&barrier, NULL, tp_degree) == 0);
+    SparkTestTpcBarrierInitialize(&barrier, tp_degree);
     for (rank_index = 0u; rank_index < tp_degree; ++rank_index)
     {
         memset(&contexts[rank_index], 0, sizeof(contexts[rank_index]));
@@ -370,7 +428,7 @@ static void SparkTestTpcRun(
     {
         assert(pthread_join(threads[rank_index], NULL) == 0);
     }
-    assert(pthread_barrier_destroy(&barrier) == 0);
+    SparkTestTpcBarrierDestroy(&barrier);
 
     for (rank_index = 0u; rank_index < tp_degree; ++rank_index)
     {
@@ -517,7 +575,7 @@ static void SparkTestTpcRejectsMismatchedElementCounts(void)
 {
     pthread_t threads[2];
     SparkTestTpcThread contexts[2];
-    pthread_barrier_t barrier;
+    SparkTestTpcBarrier barrier;
     float values[3];
     float scratch[3];
     uint16_t port_base;
@@ -526,7 +584,7 @@ static void SparkTestTpcRejectsMismatchedElementCounts(void)
 
     port_base = SparkTestTpcFindAvailablePortBase(2u);
     collective_identifier = SparkTestTpcNextCollectiveIdentifier();
-    assert(pthread_barrier_init(&barrier, NULL, 2u) == 0);
+    SparkTestTpcBarrierInitialize(&barrier, 2u);
     memset(values, 0, sizeof(values));
     memset(scratch, 0, sizeof(scratch));
 
@@ -554,7 +612,7 @@ static void SparkTestTpcRejectsMismatchedElementCounts(void)
     {
         assert(pthread_join(threads[rank_index], NULL) == 0);
     }
-    assert(pthread_barrier_destroy(&barrier) == 0);
+    SparkTestTpcBarrierDestroy(&barrier);
 
     for (rank_index = 0u; rank_index < 2u; ++rank_index)
     {
@@ -570,7 +628,7 @@ static void SparkTestTpcRejectsOverlappingBuffers(void)
 {
     pthread_t threads[2];
     SparkTestTpcThread contexts[2];
-    pthread_barrier_t barrier;
+    SparkTestTpcBarrier barrier;
     float values[2];
     uint16_t port_base;
     uint64_t collective_identifier;
@@ -578,7 +636,7 @@ static void SparkTestTpcRejectsOverlappingBuffers(void)
 
     port_base = SparkTestTpcFindAvailablePortBase(2u);
     collective_identifier = SparkTestTpcNextCollectiveIdentifier();
-    assert(pthread_barrier_init(&barrier, NULL, 2u) == 0);
+    SparkTestTpcBarrierInitialize(&barrier, 2u);
     memset(values, 0, sizeof(values));
 
     for (rank_index = 0u; rank_index < 2u; ++rank_index)
@@ -605,7 +663,7 @@ static void SparkTestTpcRejectsOverlappingBuffers(void)
     {
         assert(pthread_join(threads[rank_index], NULL) == 0);
     }
-    assert(pthread_barrier_destroy(&barrier) == 0);
+    SparkTestTpcBarrierDestroy(&barrier);
 
     for (rank_index = 0u; rank_index < 2u; ++rank_index)
     {

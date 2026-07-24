@@ -1,9 +1,9 @@
 {
-  "bounded_partitioned_execution": true,
-  "bounded_validation_session_schema": 1,
   "clean_build_required": true,
   "exclusive_run_lock": true,
   "fingerprint_excluded_paths": [
+    "PACKAGE_MANIFEST.json",
+    "SHA256SUMS",
     "docs/PROPOSED_CHANGE_MANIFEST.md",
     "docs/VALIDATION_STATUS.json",
     "docs/VALIDATION_STATUS.md"
@@ -11,13 +11,13 @@
   "fingerprint_excluded_prefixes": [
     "docs/validation-logs/"
   ],
-  "generated_at": "2026-07-24T09:51:42.134230+00:00",
+  "generated_at": "2026-07-24T11:38:07.212866+00:00",
   "host_validation_only": true,
   "input_source_file_count": 5030,
-  "input_source_fingerprint": "3b40fac339929ca22efd36bce35ab046c194f1c186e65860ac32d62474cc1f78",
+  "input_source_fingerprint": "e170ad72ad969fb2d6e0019ce278bdcdf555d03616c453c59f056560f611de23",
   "output_source_file_count": 5030,
-  "output_source_fingerprint": "3b40fac339929ca22efd36bce35ab046c194f1c186e65860ac32d62474cc1f78",
-  "repository_root": "/mnt/data/sparkpipe-completed-20260724",
+  "output_source_fingerprint": "e170ad72ad969fb2d6e0019ce278bdcdf555d03616c453c59f056560f611de23",
+  "repository_root": "/Users/cem/Documents/Codex/2026-06-26/i-ma/work/sparkpipe-audited-pr",
   "results": [
     {
       "category": "preflight",
@@ -25,7 +25,7 @@
         "make",
         "clean"
       ],
-      "duration_seconds": 0.032,
+      "duration_seconds": 0.127,
       "log_path": "docs/validation-logs/clean_build.log",
       "name": "clean_build",
       "note": "",
@@ -35,7 +35,7 @@
     {
       "category": "tooling",
       "command": [
-        "/opt/pyvenv/bin/python3",
+        "/Users/cem/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
         "-m",
         "py_compile",
         "tools/audit_core_boundaries.py",
@@ -44,7 +44,7 @@
         "tools/run_deep_audit_validation.py",
         "tests/test_model_driver_contracts.py"
       ],
-      "duration_seconds": 0.569,
+      "duration_seconds": 0.129,
       "log_path": "docs/validation-logs/python_tool_syntax.log",
       "name": "python_tool_syntax",
       "note": "",
@@ -58,7 +58,7 @@
         "-j2",
         "all"
       ],
-      "duration_seconds": 7.357,
+      "duration_seconds": 3.449,
       "log_path": "docs/validation-logs/host_build.log",
       "name": "host_build",
       "note": "",
@@ -71,7 +71,7 @@
         "make",
         "architecture_audit"
       ],
-      "duration_seconds": 0.568,
+      "duration_seconds": 0.132,
       "log_path": "docs/validation-logs/core_boundary_audit.log",
       "name": "core_boundary_audit",
       "note": "",
@@ -84,7 +84,7 @@
         "make",
         "model_driver_contracts"
       ],
-      "duration_seconds": 1.226,
+      "duration_seconds": 1.094,
       "log_path": "docs/validation-logs/non_glm_model_driver_contracts.log",
       "name": "non_glm_model_driver_contracts",
       "note": "",
@@ -94,10 +94,10 @@
     {
       "category": "contract",
       "command": [
-        "/opt/pyvenv/bin/python3",
+        "/Users/cem/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
         "tests/test_memory_contracts.py"
       ],
-      "duration_seconds": 4.129,
+      "duration_seconds": 1.754,
       "log_path": "docs/validation-logs/memory_contracts.log",
       "name": "memory_contracts",
       "note": "",
@@ -109,283 +109,12 @@
       "command": [
         "make",
         "-j2",
-        "build/sparkpipe_glm52_prefill_dryrun",
-        "glm52_w8lut_quality_reference"
+        "test"
       ],
-      "duration_seconds": 0.745,
-      "log_path": "docs/validation-logs/host_test_prerequisites.log",
-      "name": "host_test_prerequisites",
+      "duration_seconds": 23.992,
+      "log_path": "docs/validation-logs/host_test_suite.log",
+      "name": "host_test_suite",
       "note": "",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-c-test-group",
-        "build/test_json",
-        "build/test_hidden_transport",
-        "build/test_memlink",
-        "build/test_release",
-        "build/test_glm52_kv_cache"
-      ],
-      "duration_seconds": 0.36,
-      "log_path": "docs/validation-logs/host_c_tests_01_of_08.log",
-      "name": "host_c_tests_01_of_08",
-      "note": "binaries were built with make and then executed sequentially",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-c-test-group",
-        "build/test_kv_store",
-        "build/test_kv_mooncake",
-        "build/test_qwen36_work_control",
-        "build/test_glm52_dspark",
-        "build/test_glm52_stage_plan"
-      ],
-      "duration_seconds": 3.925,
-      "log_path": "docs/validation-logs/host_c_tests_02_of_08.log",
-      "name": "host_c_tests_02_of_08",
-      "note": "binaries were built with make and then executed sequentially",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-c-test-group",
-        "build/test_glm52_mtp_tree",
-        "build/test_glm52_tp_shard",
-        "build/test_glm52_shape_config",
-        "build/test_tp_collective",
-        "build/test_glm52_row_allocator"
-      ],
-      "duration_seconds": 0.587,
-      "log_path": "docs/validation-logs/host_c_tests_03_of_08.log",
-      "name": "host_c_tests_03_of_08",
-      "note": "binaries were built with make and then executed sequentially",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-c-test-group",
-        "build/test_glm52_stagepack",
-        "build/test_glm52_production_topology",
-        "build/test_glm52_pp13_runtime",
-        "build/test_glm52_cuda_resident_ipc",
-        "build/test_glm52_cuda_resident_gate"
-      ],
-      "duration_seconds": 0.3,
-      "log_path": "docs/validation-logs/host_c_tests_04_of_08.log",
-      "name": "host_c_tests_04_of_08",
-      "note": "binaries were built with make and then executed sequentially",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-c-test-group",
-        "build/test_glm52_pp13_work_control",
-        "build/test_glm52_scheduler",
-        "build/test_glm52_prefix_cache",
-        "build/test_glm52_request_api",
-        "build/test_glm52_long_context"
-      ],
-      "duration_seconds": 1.436,
-      "log_path": "docs/validation-logs/host_c_tests_05_of_08.log",
-      "name": "host_c_tests_05_of_08",
-      "note": "binaries were built with make and then executed sequentially",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-c-test-group",
-        "build/test_tokenizer",
-        "build/test_glm52_prompt_pipeline",
-        "build/test_glm52_serving_engine",
-        "build/test_glm52_service",
-        "build/test_glm52_service_backend"
-      ],
-      "duration_seconds": 0.834,
-      "log_path": "docs/validation-logs/host_c_tests_06_of_08.log",
-      "name": "host_c_tests_06_of_08",
-      "note": "binaries were built with make and then executed sequentially",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-c-test-group",
-        "build/test_glm52_compat_api",
-        "build/test_glm52_http_gateway",
-        "build/test_glm52_pp13_rank_daemon",
-        "build/test_model_description",
-        "build/test_stage_module_common"
-      ],
-      "duration_seconds": 1.021,
-      "log_path": "docs/validation-logs/host_c_tests_07_of_08.log",
-      "name": "host_c_tests_07_of_08",
-      "note": "binaries were built with make and then executed sequentially",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-c-test-group",
-        "build/test_module_library",
-        "build/test_driver_compiler",
-        "build/test_orchestrator",
-        "build/test_glm52_resident_decode_stage_firmware",
-        "build/test_glm52_resident_decode_stage_production_runner"
-      ],
-      "duration_seconds": 2.279,
-      "log_path": "docs/validation-logs/host_c_tests_08_of_08.log",
-      "name": "host_c_tests_08_of_08",
-      "note": "binaries were built with make and then executed sequentially",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-python-test-group",
-        "tests/test_api_stress.py",
-        "tests/test_memory_contracts.py"
-      ],
-      "duration_seconds": 4.786,
-      "log_path": "docs/validation-logs/host_python_tests_01_of_09.log",
-      "name": "host_python_tests_01_of_09",
-      "note": "Python tests were executed sequentially in Makefile order",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-python-test-group",
-        "tests/test_b12x_scale_layout.py",
-        "tests/test_glm52_dspark_manifest.py",
-        "tests/test_glm52_dspark_artifact_preflight.py"
-      ],
-      "duration_seconds": 5.611,
-      "log_path": "docs/validation-logs/host_python_tests_02_of_09.log",
-      "name": "host_python_tests_02_of_09",
-      "note": "Python tests were executed sequentially in Makefile order",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-python-test-group",
-        "tests/test_glm52_dspark_trace_quality.py",
-        "tests/test_glm52_b12x_pack_worker.py",
-        "tests/test_glm52_b12x_resident_manifest.py"
-      ],
-      "duration_seconds": 1.72,
-      "log_path": "docs/validation-logs/host_python_tests_03_of_09.log",
-      "name": "host_python_tests_03_of_09",
-      "note": "Python tests were executed sequentially in Makefile order",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-python-test-group",
-        "tests/test_glm52_fp8_pack_layout.py",
-        "tests/test_glm52_w8lut_pack_layout.py",
-        "tests/test_glm52_w8lut_artifact_preflight.py"
-      ],
-      "duration_seconds": 3.478,
-      "log_path": "docs/validation-logs/host_python_tests_04_of_09.log",
-      "name": "host_python_tests_04_of_09",
-      "note": "Python tests were executed sequentially in Makefile order",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-python-test-group",
-        "tests/test_glm52_nvfp4_artifact_preflight.py",
-        "tests/test_glm52_quantized_cuda_contract.py",
-        "tests/test_glm52_w8lut_ring_preflight.py"
-      ],
-      "duration_seconds": 4.68,
-      "log_path": "docs/validation-logs/host_python_tests_05_of_09.log",
-      "name": "host_python_tests_05_of_09",
-      "note": "Python tests were executed sequentially in Makefile order",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-python-test-group",
-        "tests/test_glm52_w8lut_validation_wiring.py",
-        "tests/test_glm52_w8lut_stage_pack_watch.py",
-        "tests/test_glm52_b12x_relocate_aot_bundle.py"
-      ],
-      "duration_seconds": 2.126,
-      "log_path": "docs/validation-logs/host_python_tests_06_of_09.log",
-      "name": "host_python_tests_06_of_09",
-      "note": "Python tests were executed sequentially in Makefile order",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-python-test-group",
-        "tests/test_glm52_b12x_deterministic_finalize.py",
-        "tests/test_glm52_final_from_hidden_mode.py",
-        "tests/test_glm52_exact_pp13_prefill_hidden.py"
-      ],
-      "duration_seconds": 1.613,
-      "log_path": "docs/validation-logs/host_python_tests_07_of_09.log",
-      "name": "host_python_tests_07_of_09",
-      "note": "Python tests were executed sequentially in Makefile order",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-python-test-group",
-        "tests/test_glm52_firmware_package.py",
-        "tests/test_measured_status.py",
-        "tests/test_release_assemble.py"
-      ],
-      "duration_seconds": 6.157,
-      "log_path": "docs/validation-logs/host_python_tests_08_of_09.log",
-      "name": "host_python_tests_08_of_09",
-      "note": "Python tests were executed sequentially in Makefile order",
-      "return_code": 0,
-      "status": "passed"
-    },
-    {
-      "category": "test",
-      "command": [
-        "bounded-python-test-group",
-        "tests/test_glm52_stage_pack.py",
-        "tests/test_glm52_stage_bucket_sweep.py",
-        "tests/test_glm52_prompt_pipeline_input.py"
-      ],
-      "duration_seconds": 5.509,
-      "log_path": "docs/validation-logs/host_python_tests_09_of_09.log",
-      "name": "host_python_tests_09_of_09",
-      "note": "Python tests were executed sequentially in Makefile order",
       "return_code": 0,
       "status": "passed"
     },
@@ -397,7 +126,7 @@
         "glm52_pp13_service_backend",
         "tools"
       ],
-      "duration_seconds": 0.016,
+      "duration_seconds": 0.036,
       "log_path": "docs/validation-logs/required_host_targets.log",
       "name": "required_host_targets",
       "note": "",
@@ -424,90 +153,14 @@
         "internal",
         "source-tree-fingerprint"
       ],
-      "duration_seconds": 0.315,
+      "duration_seconds": 0.606,
       "log_path": "docs/validation-logs/source_tree_stability.log",
       "name": "source_tree_stability",
-      "note": "input=3b40fac339929ca22efd36bce35ab046c194f1c186e65860ac32d62474cc1f78 output=3b40fac339929ca22efd36bce35ab046c194f1c186e65860ac32d62474cc1f78 input_files=5030 output_files=5030",
+      "note": "input=e170ad72ad969fb2d6e0019ce278bdcdf555d03616c453c59f056560f611de23 output=e170ad72ad969fb2d6e0019ce278bdcdf555d03616c453c59f056560f611de23 input_files=5030 output_files=5030",
       "return_code": 0,
       "status": "passed"
     }
   ],
   "schema_version": 3,
-  "source_tree_stability_required": true,
-  "test_inventory": {
-    "c_binaries": [
-      "build/test_json",
-      "build/test_hidden_transport",
-      "build/test_memlink",
-      "build/test_release",
-      "build/test_glm52_kv_cache",
-      "build/test_kv_store",
-      "build/test_kv_mooncake",
-      "build/test_qwen36_work_control",
-      "build/test_glm52_dspark",
-      "build/test_glm52_stage_plan",
-      "build/test_glm52_mtp_tree",
-      "build/test_glm52_tp_shard",
-      "build/test_glm52_shape_config",
-      "build/test_tp_collective",
-      "build/test_glm52_row_allocator",
-      "build/test_glm52_stagepack",
-      "build/test_glm52_production_topology",
-      "build/test_glm52_pp13_runtime",
-      "build/test_glm52_cuda_resident_ipc",
-      "build/test_glm52_cuda_resident_gate",
-      "build/test_glm52_pp13_work_control",
-      "build/test_glm52_scheduler",
-      "build/test_glm52_prefix_cache",
-      "build/test_glm52_request_api",
-      "build/test_glm52_long_context",
-      "build/test_tokenizer",
-      "build/test_glm52_prompt_pipeline",
-      "build/test_glm52_serving_engine",
-      "build/test_glm52_service",
-      "build/test_glm52_service_backend",
-      "build/test_glm52_compat_api",
-      "build/test_glm52_http_gateway",
-      "build/test_glm52_pp13_rank_daemon",
-      "build/test_model_description",
-      "build/test_stage_module_common",
-      "build/test_module_library",
-      "build/test_driver_compiler",
-      "build/test_orchestrator",
-      "build/test_glm52_resident_decode_stage_firmware",
-      "build/test_glm52_resident_decode_stage_production_runner"
-    ],
-    "c_binary_count": 40,
-    "c_group_count": 8,
-    "python_group_count": 9,
-    "python_test_count": 26,
-    "python_tests": [
-      "tests/test_api_stress.py",
-      "tests/test_memory_contracts.py",
-      "tests/test_b12x_scale_layout.py",
-      "tests/test_glm52_dspark_manifest.py",
-      "tests/test_glm52_dspark_artifact_preflight.py",
-      "tests/test_glm52_dspark_trace_quality.py",
-      "tests/test_glm52_b12x_pack_worker.py",
-      "tests/test_glm52_b12x_resident_manifest.py",
-      "tests/test_glm52_fp8_pack_layout.py",
-      "tests/test_glm52_w8lut_pack_layout.py",
-      "tests/test_glm52_w8lut_artifact_preflight.py",
-      "tests/test_glm52_nvfp4_artifact_preflight.py",
-      "tests/test_glm52_quantized_cuda_contract.py",
-      "tests/test_glm52_w8lut_ring_preflight.py",
-      "tests/test_glm52_w8lut_validation_wiring.py",
-      "tests/test_glm52_w8lut_stage_pack_watch.py",
-      "tests/test_glm52_b12x_relocate_aot_bundle.py",
-      "tests/test_glm52_b12x_deterministic_finalize.py",
-      "tests/test_glm52_final_from_hidden_mode.py",
-      "tests/test_glm52_exact_pp13_prefill_hidden.py",
-      "tests/test_glm52_firmware_package.py",
-      "tests/test_measured_status.py",
-      "tests/test_release_assemble.py",
-      "tests/test_glm52_stage_pack.py",
-      "tests/test_glm52_stage_bucket_sweep.py",
-      "tests/test_glm52_prompt_pipeline_input.py"
-    ]
-  }
+  "source_tree_stability_required": true
 }

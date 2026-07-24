@@ -1865,10 +1865,11 @@ SparkStatus SparkDsv4ResidentDecodeStageInitialize(
         SparkStageModuleAtomicStateArrayInitialize(
             state->lane_states,
             state->max_active_sequence_count);
-        status = SparkStageModuleEnvironmentOptionalBoolean(
+        status = SparkStageModuleEnvironmentUnsigned(
             SPARK_DSV4_MODULE_TAG,
             "SPARK_DSV4_STAGE_GRAPHS",
             0u,
+            1u,
             &requested_layer_graphs);
         state->layer_graphs_enabled = 0u;
     }
@@ -1906,7 +1907,7 @@ SparkStatus SparkDsv4ResidentDecodeStageInitialize(
     }
     if (status == SPARK_STATUS_OK)
     {
-        status = SparkDsv4ModuleBuildHeadShadow(state);
+        status = SparkDsv4ModuleFinalizeLoad(state);
     }
     for (slot_index = 0u;
          status == SPARK_STATUS_OK && slot_index < state->pipeline_slot_count;

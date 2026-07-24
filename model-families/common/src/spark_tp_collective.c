@@ -1328,4 +1328,3 @@ void SparkTpCollectiveDestroy(SparkTpCollective *collective)
     }
     SparkTpCollectiveReset(collective);
 }
-

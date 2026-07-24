@@ -244,46 +244,6 @@ SparkStatus SparkStageModuleEnvironmentUnsigned64(
         value);
 }
 
-SparkStatus SparkStageModuleEnvironmentOptionalBoolean(
-    const char *module_tag,
-    const char *name,
-    uint32_t default_value,
-    uint32_t *value)
-{
-    const char *text;
-
-    if (module_tag == 0 || name == 0 || name[0] == '\0' || value == 0 ||
-        default_value > 1u)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    text = getenv(name);
-    if (text == 0 || text[0] == '\0')
-    {
-        *value = default_value;
-        return SPARK_STATUS_OK;
-    }
-    if (strcmp(text, "0") == 0)
-    {
-        *value = 0u;
-        return SPARK_STATUS_OK;
-    }
-    if (strcmp(text, "1") == 0)
-    {
-        *value = 1u;
-        return SPARK_STATUS_OK;
-    }
-
-    fprintf(
-        stderr,
-        "%s config_invalid name=%s value=%s allowed={0,1}\n",
-        module_tag,
-        name,
-        text);
-    return SPARK_STATUS_INVALID_ARGUMENT;
-}
-
 SparkStatus SparkStageModuleDeviceAllocate(
     SparkStageModuleLedger *ledger,
     uint64_t bytes,

@@ -105,7 +105,12 @@ def audit_archive(repository, archive_path, expected_sources):
     if not archive.is_file():
         raise AuditFailure(f"archive missing: {archive_path}")
 
-    members = [line.strip() for line in run_checked(["ar", "t", str(archive)]).splitlines() if line.strip()]
+    archive_metadata_members = {"__.SYMDEF", "__.SYMDEF SORTED"}
+    members = [
+        line.strip()
+        for line in run_checked(["ar", "t", str(archive)]).splitlines()
+        if line.strip() and line.strip() not in archive_metadata_members
+    ]
     expected_members = {Path(source).with_suffix(".o").name for source in expected_sources}
     actual_members = set(members)
     failures = []
@@ -117,7 +122,7 @@ def audit_archive(repository, archive_path, expected_sources):
         if unexpected:
             failures.append(f"{archive_path}: unexpected objects: {', '.join(unexpected)}")
 
-    symbol_output = run_checked(["nm", "-g", "--defined-only", str(archive)])
+    symbol_output = run_checked(["nm", "-g", str(archive)])
     for line in symbol_output.splitlines():
         if FAMILY_MARKER.search(line):
             failures.append(f"{archive_path}: model-family symbol exported: {line.strip()}")
