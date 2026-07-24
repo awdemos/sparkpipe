@@ -74,7 +74,8 @@ static SparkStatus SparkGlm52TpShardValidate(const SparkGlm52StagePackTensorSpec
 		geometry->abi_version != SPARK_GLM52_TP_SHARD_ABI_VERSION)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (shape->tp_degree != 1u && shape->tp_degree != 2u &&
-		shape->tp_degree != 4u && shape->tp_degree != 8u)
+		shape->tp_degree != 4u && shape->tp_degree != 8u &&
+		shape->tp_degree != 16u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (shape->tp_rank >= shape->tp_degree)
 		return SPARK_STATUS_INVALID_ARGUMENT;

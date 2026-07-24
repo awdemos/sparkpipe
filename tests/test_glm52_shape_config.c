@@ -71,6 +71,12 @@ static void SparkTestShapeDerivation(void)
 	assert(config.kv_b_output_per_rank == 16u * 448u);
 	assert(config.o_proj_input_per_rank == 16u * 256u);
 	assert(config.kv_bytes_per_token == 26u * 576u);
+	SparkTestShapeDescriptor(&shape,16u,15u,1u,0u);
+	assert(SparkGlm52ShapeDeriveNodeConfig(&shape,&geometry,&inputs,&config) == SPARK_STATUS_OK);
+	assert(config.layer_count == 78u);
+	assert(config.heads_per_rank == 4u);
+	assert(config.moe_intermediate_per_rank == 128u);
+	assert(config.dense_intermediate_per_rank == 768u);
 	SparkTestShapeDescriptor(&shape,8u,7u,1u,0u);
 	assert(SparkGlm52ShapeDeriveNodeConfig(&shape,&geometry,&inputs,&config) == SPARK_STATUS_OK);
 	assert(config.first_layer_index == 0u);

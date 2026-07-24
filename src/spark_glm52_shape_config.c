@@ -33,7 +33,8 @@ SparkStatus SparkGlm52ShapeDeriveNodeConfig(
 		inputs->abi_version != SPARK_GLM52_SHAPE_CONFIG_ABI_VERSION)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (shape->tp_degree != 1u && shape->tp_degree != 2u &&
-		shape->tp_degree != 4u && shape->tp_degree != 8u)
+		shape->tp_degree != 4u && shape->tp_degree != 8u &&
+		shape->tp_degree != 16u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (shape->tp_rank >= shape->tp_degree ||
 		shape->pp_stage_count == 0u ||

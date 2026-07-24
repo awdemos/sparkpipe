@@ -78,7 +78,7 @@ typedef struct SparkGlm52TpShardView
 SparkGlm52TpShardClass SparkGlm52TpShardClassifyTensor(const char *tensor_name);
 
 // Compute this rank's slice of the tensor. Fails closed on: unsupported
-// tp_degree (only 1, 2, 4, 8 divide the model's 64 heads and both MLP
+// tp_degree (only 1, 2, 4, 8, 16 divide the model's 64 heads and both MLP
 // intermediates), tp_rank out of range, unknown class at tp_degree above one,
 // head counts or dimensions not divisible by the degree, and geometry
 // descriptors with mismatched ABI. tp_degree one returns the full tensor as a

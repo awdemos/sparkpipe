@@ -158,6 +158,15 @@ static void SparkTestTpShardFailsClosed(void)
 	// Degrees that do not divide the model are rejected outright.
 	SparkTestTpShardShape(&shape,3u,0u);
 	assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_INVALID_ARGUMENT);
+	// Degree sixteen is clean: 64 heads give four per rank.
+	SparkTestTpShardShape(&shape,16u,0u);
+	{
+		SparkGlm52StagePackTensorSpec sixteen_spec;
+		SparkGlm52TpShardView sixteen_view;
+		SparkTestTpShardSpec(&sixteen_spec,"model.layers.0.mlp.gate_proj.weight",12288u,6144u);
+		assert(SparkGlm52TpShardComputeView(&sixteen_spec,&shape,&geometry,&sixteen_view) == SPARK_STATUS_OK);
+		assert(sixteen_view.element_extent == 768u);
+	}
 	SparkTestTpShardShape(&shape,13u,0u);
 	assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_INVALID_ARGUMENT);
 	// Rank out of range.
