@@ -129,6 +129,7 @@ COMMON_SOURCES := \
     src/spark_glm52_prefix_cache.c \
     src/spark_glm52_request_api.c \
     src/spark_glm52_tp_shard.c \
+    src/spark_glm52_shape_config.c \
     src/spark_glm52_long_context.c \
     src/spark_tokenizer.c \
     src/spark_glm52_chat_template.c \
@@ -197,6 +198,7 @@ TEST_NAMES := \
     test_glm52_stage_plan \
     test_glm52_mtp_tree \
     test_glm52_tp_shard \
+    test_glm52_shape_config \
     test_glm52_stagepack \
     test_glm52_production_topology \
     test_glm52_pp13_runtime \
@@ -522,6 +524,9 @@ build/test_qwen36_work_control: tests/test_qwen36_work_control.cpp tests/fixture
 
 build/test_glm52_stage_plan: tests/test_glm52_stage_plan.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_shape_config: tests/test_glm52_shape_config.c include/sparkpipe/spark_glm52_shape_config.h $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_tp_shard: tests/test_glm52_tp_shard.c include/sparkpipe/spark_glm52_tp_shard.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
