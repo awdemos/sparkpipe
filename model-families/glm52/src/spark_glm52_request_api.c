@@ -1437,8 +1437,11 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindBestPrefillSlot(
     return best_shape.slot;
 }
 
-static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindBestDecodeSlot(
+// The decode and speculative-verify searches differed in one predicate and
+// nothing else, so the predicate is the parameter.
+static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindBestSchedulableSlot(
     SparkGlm52RequestApi *api,
+    uint32_t (*is_schedulable)(const SparkGlm52RequestApiSlot *),
     SparkGlm52RequestApiHandle *excluded_handles,
     uint32_t excluded_handle_count,
     uint32_t require_resident_kv)
@@ -1454,7 +1457,7 @@ static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindBestDecodeSlot(
         uint32_t is_excluded;
 
         slot = &api->request_slots[slot_index];
-        if (!SparkGlm52RequestApiSlotIsSchedulableDecode(slot) ||
+        if (!is_schedulable(slot) ||
             (require_resident_kv != 0u &&
              !SparkGlm52RequestApiDecodeBlocksAreResident(api, slot)))
         {
@@ -2944,121 +2947,7 @@ SparkStatus SparkGlm52RequestApiDispatchJitKvPrefetch(
 }
 
 
-static SparkStatus SparkGlm52RequestApiBuildSlotJitKvPrefetchPlan(
-    SparkGlm52RequestApi *api,
-    SparkGlm52RequestApiSlot *slot,
-    SparkGlm52KvCachePrefetchPlan *prefetch_plan)
-{
-    SparkGlm52KvCachePrefetchSourceBlock source_blocks[
-        SPARK_GLM52_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT];
-    uint32_t source_block_count;
-    SparkStatus status;
 
-    if (prefetch_plan == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    if (!SparkGlm52RequestApiJitPrefetchIsEnabled(api))
-    {
-        memset(prefetch_plan, 0, sizeof(*prefetch_plan));
-        return SPARK_STATUS_OK;
-    }
-    if (slot == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    source_block_count = 0u;
-    if (SparkGlm52RequestApiSlotIsSchedulablePrefill(slot))
-    {
-        status = SparkGlm52RequestApiCollectPrefillSlotPrefetchSources(
-            api,
-            slot,
-            source_blocks,
-            &source_block_count);
-    }
-    else if (SparkGlm52RequestApiSlotIsSchedulableDecode(slot) ||
-             SparkGlm52RequestApiSlotIsSchedulableSpeculativeVerify(slot))
-    {
-        status = SparkGlm52RequestApiCollectDecodeSlotPrefetchSources(
-            api,
-            slot,
-            source_blocks,
-            &source_block_count);
-    }
-    else
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-
-    return SparkGlm52KvCacheArenaBuildPrefetchPlanFromSourceBlocks(
-        api->scheduler->prefix_cache->kv_cache_arena,
-        source_block_count != 0u ? source_blocks : 0,
-        source_block_count,
-        api->prefetch_lane_count,
-        prefetch_plan);
-}
-
-static SparkStatus SparkGlm52RequestApiRunDispatchCriticalJitKvPrefetch(
-    SparkGlm52RequestApi *api,
-    SparkGlm52RequestApiSlot *slot,
-    SparkGlm52RequestApiDispatch *dispatch)
-{
-    uint32_t critical_physical_block_indices[
-        SPARK_GLM52_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT];
-    uint32_t critical_physical_block_count;
-    SparkStatus status;
-
-    if (!SparkGlm52RequestApiJitPrefetchIsEnabled(api))
-    {
-        return SPARK_STATUS_OK;
-    }
-
-    critical_physical_block_count = 0u;
-    status = SparkGlm52RequestApiCollectProtectedSlotBlocks(
-        api,
-        slot,
-        critical_physical_block_indices,
-        &critical_physical_block_count);
-    if (status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND)
-    {
-        return status;
-    }
-
-    status = SparkGlm52RequestApiBuildSlotJitKvPrefetchPlan(
-        api,
-        slot,
-        &dispatch->kv_prefetch_plan);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52RequestApiDispatchJitKvPrefetchWithProtectedBlocks(
-        api,
-        &dispatch->kv_prefetch_plan,
-        critical_physical_block_indices,
-        critical_physical_block_count);
-    if (status == SPARK_STATUS_BUSY)
-    {
-        dispatch->flags |=
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_JIT_PREFETCH_PENDING;
-        return SPARK_STATUS_BUSY;
-    }
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    if (dispatch->kv_prefetch_plan.prefetch_block_count != 0u)
-    {
-        dispatch->flags |=
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_JIT_PREFETCHED_KV;
-    }
-    return SPARK_STATUS_OK;
-}
 
 static SparkStatus SparkGlm52RequestApiBuildSlotArrayJitKvPrefetchPlan(
     SparkGlm52RequestApi *api,
@@ -4137,51 +4026,6 @@ static void SparkGlm52RequestApiFillDecodeSchedulerRequest(
     scheduler_request->flags = SPARK_GLM52_SCHEDULER_REQUEST_FLAG_DECODE;
 }
 
-static SparkGlm52RequestApiSlot *SparkGlm52RequestApiFindBestSpeculativeVerifySlot(
-    SparkGlm52RequestApi *api,
-    SparkGlm52RequestApiHandle *excluded_handles,
-    uint32_t excluded_handle_count,
-    uint32_t require_resident_kv)
-{
-    SparkGlm52RequestApiSlot *best_slot;
-    uint32_t slot_index;
-
-    best_slot = 0;
-    for (slot_index = 0u; slot_index < api->request_capacity; ++slot_index)
-    {
-        SparkGlm52RequestApiSlot *slot;
-        uint32_t excluded_index;
-        uint32_t is_excluded;
-
-        slot = &api->request_slots[slot_index];
-        if (!SparkGlm52RequestApiSlotIsSchedulableSpeculativeVerify(slot) ||
-            (require_resident_kv != 0u &&
-             !SparkGlm52RequestApiDecodeBlocksAreResident(api, slot)))
-        {
-            continue;
-        }
-        is_excluded = 0u;
-        for (excluded_index = 0u;
-             excluded_index < excluded_handle_count;
-             ++excluded_index)
-        {
-            if (excluded_handles[excluded_index] == slot->handle)
-            {
-                is_excluded = 1u;
-                break;
-            }
-        }
-        if (is_excluded != 0u)
-        {
-            continue;
-        }
-        if (SparkGlm52RequestApiSlotHasHigherSchedulingPriority(slot, best_slot))
-        {
-            best_slot = slot;
-        }
-    }
-    return best_slot;
-}
 
 static SparkStatus SparkGlm52RequestApiGetSlotDsparkDraft(
     SparkGlm52RequestApi *api,
@@ -5071,13 +4915,15 @@ SparkStatus SparkGlm52RequestApiScheduleNext(
         selected_shared_prefix_token_count =
             prefix_family_choice.shared_prefix_token_count;
     }
-    speculative_verify_slot = SparkGlm52RequestApiFindBestSpeculativeVerifySlot(
+    speculative_verify_slot = SparkGlm52RequestApiFindBestSchedulableSlot(
         api,
+        SparkGlm52RequestApiSlotIsSchedulableSpeculativeVerify,
         0,
         0u,
         SparkGlm52RequestApiJitPrefetchIsEnabled(api) ? 0u : 1u);
-    decode_slot = SparkGlm52RequestApiFindBestDecodeSlot(
+    decode_slot = SparkGlm52RequestApiFindBestSchedulableSlot(
         api,
+        SparkGlm52RequestApiSlotIsSchedulableDecode,
         0,
         0u,
         SparkGlm52RequestApiJitPrefetchIsEnabled(api) ? 0u : 1u);
@@ -5093,9 +4939,10 @@ SparkStatus SparkGlm52RequestApiScheduleNext(
         speculative_verify_slot,
         &chosen_is_prefill);
 
-    status = SparkGlm52RequestApiRunDispatchCriticalJitKvPrefetch(
+    status = SparkGlm52RequestApiRunSlotArrayCriticalJitKvPrefetch(
         api,
-        chosen_slot,
+        &chosen_slot,
+        1u,
         dispatch);
     if (status == SPARK_STATUS_BUSY &&
         SparkGlm52RequestApiAsyncJitPrefetchIsEnabled(api))
@@ -5108,8 +4955,10 @@ SparkStatus SparkGlm52RequestApiScheduleNext(
         selected_shared_prefix_token_count = 0u;
         prefill_slot = SparkGlm52RequestApiFindBestPrefillSlot(api, 1u);
         speculative_verify_slot =
-            SparkGlm52RequestApiFindBestSpeculativeVerifySlot(api, 0, 0u, 1u);
-        decode_slot = SparkGlm52RequestApiFindBestDecodeSlot(api, 0, 0u, 1u);
+            SparkGlm52RequestApiFindBestSchedulableSlot(
+        api,
+        SparkGlm52RequestApiSlotIsSchedulableSpeculativeVerify, 0, 0u, 1u);
+        decode_slot = SparkGlm52RequestApiFindBestSchedulableSlot(api, SparkGlm52RequestApiSlotIsSchedulableDecode, 0, 0u, 1u);
         chosen_slot = SparkGlm52RequestApiChooseReadySlot(
             api,
             prefill_slot,
@@ -5122,9 +4971,10 @@ SparkStatus SparkGlm52RequestApiScheduleNext(
         }
         SparkGlm52RequestApiInitializeDispatch(dispatch);
         dispatch->flags = pending_dispatch_flags;
-        status = SparkGlm52RequestApiRunDispatchCriticalJitKvPrefetch(
+        status = SparkGlm52RequestApiRunSlotArrayCriticalJitKvPrefetch(
             api,
-            chosen_slot,
+            &chosen_slot,
+            1u,
             dispatch);
     }
     if (status != SPARK_STATUS_OK)
