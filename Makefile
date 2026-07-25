@@ -202,6 +202,7 @@ TEST_NAMES := \
     test_glm52_cuda_resident_ipc \
     test_glm52_cuda_resident_gate \
     test_glm52_pp13_work_control \
+    test_glm52_shared_prefix_admission \
     test_glm52_scheduler \
     test_glm52_prefix_cache \
     test_glm52_request_api \
@@ -349,7 +350,6 @@ MODEL_COMMON_LINK_TARGETS := \
 GLM52_LINK_TARGETS := \
     $(filter build/sparkpipe_glm52_% build/test_glm52_%,$(TOOL_BINARIES) $(TEST_BINARIES)) \
     build/sparkpipe_glm52_batchplane_model \
-    build/sparkpipe_glm52_batchplane_sim \
     build/sparkpipe_glm52_pp13_ring_check \
     build/test_glm52_batch_plane \
     build/test_model_description \
@@ -450,9 +450,6 @@ build/sparkpipe_glm52_pipesim: tools/sparkpipe_glm52_pipesim.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_batch_plane: tests/test_glm52_batch_plane.c $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(GLM52_INCLUDE_FLAGS) $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/sparkpipe_glm52_batchplane_sim: tools/sparkpipe_glm52_batchplane_sim.c $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(GLM52_INCLUDE_FLAGS) $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_batchplane_model: tools/sparkpipe_glm52_batchplane_model.c 
@@ -665,6 +662,9 @@ build/test_glm52_pp13_runtime: tests/test_glm52_pp13_runtime.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_pp13_work_control: tests/test_glm52_pp13_work_control.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_shared_prefix_admission: tests/test_glm52_shared_prefix_admission.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_scheduler: tests/test_glm52_scheduler.c $(COMMON_LIBRARY)

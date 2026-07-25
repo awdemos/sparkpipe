@@ -24,6 +24,4 @@ SPARKPIPE_GLM52_SOURCES := \
     model-families/glm52/src/spark_glm52_compat_api.c \
     model-families/glm52/src/spark_glm52_http_gateway.c \
     model-families/glm52/src/spark_glm52_batch_sequence_table.c \
-    model-families/glm52/src/spark_glm52_expert_queue.c \
-    model-families/glm52/src/spark_glm52_jit_kv_pool.c \
-    model-families/glm52/src/spark_glm52_kv_dedup.c
+    model-families/glm52/src/spark_glm52_expert_queue.c

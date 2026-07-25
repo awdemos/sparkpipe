@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 13u
+#define SPARK_GLM52_PP13_WORK_CONTROL_ABI_VERSION 14u
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_GLM52_PP13_WORK_CONTROL_STANDALONE_GENERATION UINT64_C(1)
 #define SPARK_GLM52_PP13_WORK_CONTROL_PACKET_BYTES \
@@ -66,43 +66,56 @@ extern "C" {
 #define SPARK_GLM52_PP13_KV_ENTRY_RESIDENT 2u
 #define SPARK_GLM52_PP13_KV_ENTRY_TRANSIENT 3u
 
-#define SPARK_GLM52_PP13_KV_DIRECTORY_EMPTY 0u
-#define SPARK_GLM52_PP13_KV_DIRECTORY_OCCUPIED 1u
-#define SPARK_GLM52_PP13_KV_DIRECTORY_TOMBSTONE 2u
 
-#define SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NONE 0u
 #define SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_GPU 1u
 #define SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NVME 2u
 #define SPARK_GLM52_PP13_KV_INVALID_BLOCK_INDEX UINT32_MAX
 
+// 128-bit block identity. The low bit of `high` is the domain tag: 1 marks a
+// private key derived from (sequence_id,logical_block_index), 0 marks a content
+// key derived from the token prefix a block holds. The two domains can never
+// alias, and an all-zero key is reserved to mean "empty slot".
+typedef struct SparkGlm52Pp13KvKey
+{
+	uint64_t low;
+	uint64_t high;
+} SparkGlm52Pp13KvKey;
+
 typedef SparkStatus (*SparkGlm52Pp13WorkControlKvSwapStoreFunction)(
 	void *context,
-	uint64_t sequence_id,
-	uint32_t logical_block_index,
+	SparkGlm52Pp13KvKey key,
 	uint32_t physical_block_index,
 	uint32_t backing_block_index);
 typedef SparkStatus (*SparkGlm52Pp13WorkControlKvSwapLoadFunction)(
 	void *context,
-	uint64_t sequence_id,
-	uint32_t logical_block_index,
+	SparkGlm52Pp13KvKey key,
 	uint32_t physical_block_index,
 	uint32_t backing_block_index);
 
+// One sequence slot. Names the block record it resolves to and owns no storage,
+// so many sequence slots may name one block.
 typedef struct SparkGlm52Pp13WorkControlKvDirectoryEntry
 {
-	uint64_t sequence_id;
-	uint32_t logical_block_index;
+	SparkGlm52Pp13KvKey key;
+	SparkGlm52Pp13KvKey block_key;
+} SparkGlm52Pp13WorkControlKvDirectoryEntry;
+
+// One block. Sole owner of residency, backing storage and the share refcount,
+// so an eviction is observed by every sequence that names this block.
+typedef struct SparkGlm52Pp13WorkControlKvBlockEntry
+{
+	SparkGlm52Pp13KvKey key;
 	uint32_t physical_block_index;
 	uint32_t backing_block_index;
-	uint32_t residency_state;
-	uint32_t state;
-	uint32_t backing_valid;
-} SparkGlm52Pp13WorkControlKvDirectoryEntry;
+	uint32_t reference_count;
+	uint32_t residency_state : 2;
+	uint32_t backing_valid : 1;
+	uint32_t prefetch_mark : 29;
+} SparkGlm52Pp13WorkControlKvBlockEntry;
 
 typedef struct SparkGlm52Pp13WorkControlKvPrefetchEntry
 {
-	uint64_t sequence_id;
-	uint32_t logical_block_index;
+	SparkGlm52Pp13KvKey key;
 	uint32_t backing_block_index;
 } SparkGlm52Pp13WorkControlKvPrefetchEntry;
 
@@ -167,10 +180,13 @@ typedef struct SparkGlm52Pp13WorkControlKvState
 	uint32_t table_entry_capacity;
 	uint32_t physical_block_capacity;
 	uint32_t directory_capacity;
+	uint32_t block_entry_capacity;
+	uint32_t lane_block_key_stride;
 	uint32_t next_physical_block_index;
 	uint32_t backing_block_capacity;
 	uint32_t free_backing_block_head;
 	uint32_t directory_entry_count;
+	uint32_t block_entry_count;
 	uint32_t swapped_block_count;
 	uint32_t clean_evict_count;
 	uint64_t epoch;
@@ -179,11 +195,12 @@ typedef struct SparkGlm52Pp13WorkControlKvState
 	uint32_t *physical_block_indices;
 	uint32_t *lane_physical_block_counts;
 	uint8_t *physical_block_states;
-	uint64_t *physical_block_sequence_ids;
-	uint32_t *physical_block_logical_indices;
+	SparkGlm52Pp13KvKey *physical_block_keys;
 	uint64_t *physical_block_last_used_epochs;
 	uint32_t *physical_block_pin_counts;
 	SparkGlm52Pp13WorkControlKvDirectoryEntry *directory_entries;
+	SparkGlm52Pp13WorkControlKvBlockEntry *block_entries;
+	const SparkGlm52Pp13KvKey *lane_block_keys;
 	uint32_t *backing_block_free_next;
 	SparkGlm52Pp13WorkControlKvSwapStoreFunction swap_store_function;
 	SparkGlm52Pp13WorkControlKvSwapLoadFunction swap_load_function;
@@ -194,6 +211,9 @@ typedef struct SparkGlm52Pp13WorkControlKvState
 	uint32_t allocated_physical_block_count;
 	uint64_t swap_store_count;
 	uint64_t swap_load_count;
+	uint32_t prefetch_generation;
+	uint64_t share_hit_count;
+	uint64_t share_admit_count;
 } SparkGlm52Pp13WorkControlKvState;
 
 SparkStatus SparkGlm52Pp13WorkControlValidatePacket(
@@ -238,13 +258,37 @@ SparkStatus SparkGlm52Pp13WorkControlInitializeKvState(
 	uint32_t block_token_count,
 	uint32_t physical_block_capacity,
 	uint32_t directory_capacity,
+	uint32_t block_entry_capacity,
 	uint32_t *physical_block_indices,
 	uint32_t *lane_physical_block_counts,
 	uint8_t *physical_block_states,
-	uint64_t *physical_block_sequence_ids,
-	uint32_t *physical_block_logical_indices,
+	SparkGlm52Pp13KvKey *physical_block_keys,
 	uint64_t *physical_block_last_used_epochs,
-	SparkGlm52Pp13WorkControlKvDirectoryEntry *directory_entries);
+	SparkGlm52Pp13WorkControlKvDirectoryEntry *directory_entries,
+	SparkGlm52Pp13WorkControlKvBlockEntry *block_entries);
+
+// Supply per-lane content keys for the blocks the next packet will acquire.
+// Leaving this unset, or leaving a key zero, keeps a block private, so sharing
+// is opt-in per block and the default behaviour is unchanged.
+SparkStatus SparkGlm52Pp13WorkControlConfigureKvSharing(
+	SparkGlm52Pp13WorkControlKvState *state,
+	const SparkGlm52Pp13KvKey *lane_block_keys,
+	uint32_t lane_block_key_stride);
+
+uint32_t SparkGlm52Pp13WorkControlKvKeyEqual(
+	SparkGlm52Pp13KvKey left,
+	SparkGlm52Pp13KvKey right);
+
+SparkGlm52Pp13KvKey SparkGlm52Pp13WorkControlPrivateKey(
+	uint64_t sequence_id,
+	uint32_t logical_block_index);
+
+SparkGlm52Pp13KvKey SparkGlm52Pp13WorkControlContentKey(
+	uint64_t digest_low,
+	uint64_t digest_high);
+
+uint64_t SparkGlm52Pp13WorkControlKvCommittedFrontier(
+	const SparkGlm52Pp13WorkControlLane *lane);
 SparkStatus SparkGlm52Pp13WorkControlConfigureKvSwap(
 	SparkGlm52Pp13WorkControlKvState *state,
 	uint32_t backing_block_capacity,
@@ -276,7 +320,7 @@ uint32_t SparkGlm52Pp13WorkControlBlockCount(
 SparkStatus SparkGlm52Pp13WorkControlCollectKvPrefetchEntries(
 	const SparkGlm52Pp13WorkControlPacket *packets,
 	uint32_t packet_count,
-	const SparkGlm52Pp13WorkControlKvState *state,
+	SparkGlm52Pp13WorkControlKvState *state,
 	SparkGlm52Pp13WorkControlKvPrefetchEntry *entries,
 	uint32_t entry_capacity,
 	uint32_t *entry_count_out);
