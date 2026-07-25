@@ -730,7 +730,11 @@ static SparkStatus SparkK3ModuleAllocateSlotKdaBuffers(SparkK3ModuleState *state
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,rows * SPARK_K3_MODEL_KDA_LOW_RANK_DIMENSION * SPARK_K3_MODEL_BF16_ELEMENT_BYTES,&pointer);
 	if ( status == SPARK_STATUS_OK )
-		slot->kda_low_rank_bf16 = pointer;
+		slot->kda_decay_low_rank_bf16 = pointer;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,rows * SPARK_K3_MODEL_KDA_LOW_RANK_DIMENSION * SPARK_K3_MODEL_BF16_ELEMENT_BYTES,&pointer);
+	if ( status == SPARK_STATUS_OK )
+		slot->kda_gate_low_rank_bf16 = pointer;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,rows * SPARK_K3_MODEL_KDA_VALUE_DIMENSION * SPARK_K3_MODEL_BF16_ELEMENT_BYTES,&pointer);
 	if ( status == SPARK_STATUS_OK )
@@ -798,6 +802,22 @@ static SparkStatus SparkK3ModuleAllocateSlotMoeBuffers(SparkK3ModuleState *state
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,rows * SPARK_K3_MODULE_MAX_MOE_INTERMEDIATE_ROW_ELEMENTS * SPARK_K3_MODEL_BF16_ELEMENT_BYTES,&pointer);
 	if ( status == SPARK_STATUS_OK )
 		slot->moe_intermediate_bf16 = pointer;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,(SPARK_K3_MODEL_MOE_EXPERT_COUNT + 1u) * sizeof(uint32_t),&pointer);
+	if ( status == SPARK_STATUS_OK )
+		slot->moe_expert_offsets = (uint32_t *)pointer;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,rows * SPARK_K3_MODEL_MOE_TOP_K * sizeof(uint32_t),&pointer);
+	if ( status == SPARK_STATUS_OK )
+		slot->moe_grouped_rows = (uint32_t *)pointer;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,rows * SPARK_K3_MODEL_MOE_TOP_K * sizeof(uint32_t),&pointer);
+	if ( status == SPARK_STATUS_OK )
+		slot->moe_grouped_weight_slots = (uint32_t *)pointer;
+	if ( status == SPARK_STATUS_OK )
+		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,rows * SPARK_K3_MODEL_MOE_TOP_K * sizeof(uint32_t),&pointer);
+	if ( status == SPARK_STATUS_OK )
+		slot->moe_inverse_map = (uint32_t *)pointer;
 	if ( status == SPARK_STATUS_OK )
 		status = SparkStageModuleDeviceAllocateZeroed(&state->ledger,rows * SPARK_K3_MODEL_RESTRICTED_VOCAB_COUNT * sizeof(float),&pointer);
 	if ( status == SPARK_STATUS_OK )
@@ -1033,6 +1053,8 @@ SparkStatus SparkK3ResidentDecodeStageInitialize(const SparkFirmwareModuleConfig
 			state->lane_capacity);
 		status = SparkK3ModuleValidateSlice(state);
 	}
+	if (status == SPARK_STATUS_OK)
+		status = SparkK3ConfigureCudaKernels();
 	if ( status == SPARK_STATUS_OK )
 	{
 		SparkK3ModuleAssignLayerOrdinals(state);

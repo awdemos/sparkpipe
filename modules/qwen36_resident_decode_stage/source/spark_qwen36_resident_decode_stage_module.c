@@ -142,6 +142,7 @@ typedef struct SparkQwen36ModuleState
 	atomic_ullong tokens_emitted;
 } SparkQwen36ModuleState;
 
+extern cudaError_t SparkQwen36ConfigureCudaKernels(void);
 extern cudaError_t SparkQwen36LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkQwen36LaunchFusedResidualRmsNorm(cudaStream_t stream, void *hidden_bf16, const void *delta_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkQwen36LaunchLinear(cudaStream_t stream, const SparkQwen36LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
@@ -2004,6 +2005,13 @@ SparkStatus SparkQwen36ResidentDecodeStageInitialize(
     atomic_init(&state->tokens_emitted, 0u);
 
     status = SparkQwen36ModuleConfigure(state);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkStageModuleCudaStatus(
+            SPARK_QWEN36_MODULE_TAG,
+            SparkQwen36ConfigureCudaKernels(),
+            "configure_cuda_kernels");
+    }
     if (status == SPARK_STATUS_OK)
     {
         SparkStageModuleAtomicStateArrayInitialize(
