@@ -4346,6 +4346,96 @@ static void SparkGlm52RequestApiFillSpeculativeVerifySchedulerRequest(
     scheduler_request->flags = SPARK_GLM52_SCHEDULER_REQUEST_FLAG_DECODE;
 }
 
+static SparkStatus SparkGlm52RequestApiAdmitDecodeBatchMembers(
+    SparkGlm52RequestApi *api,
+    SparkGlm52RequestApiSlot **selected_slots,
+    SparkGlm52SchedulerRequest *scheduler_requests,
+    uint32_t *request_count_io,
+    uint32_t context_extension,
+    void (*fill_scheduler_request)(SparkGlm52SchedulerRequest *),
+    SparkGlm52RequestApiDispatch *dispatch)
+{
+    SparkGlm52SchedulerBatchRequest batch_request;
+    uint32_t request_count;
+    uint32_t request_index;
+    SparkStatus status;
+
+    request_count = *request_count_io;
+    status = SparkGlm52RequestApiApplyActiveKvBlockBudget(
+        api,
+        selected_slots,
+        &request_count,
+        context_extension);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    for (request_index = 0u; request_index < request_count; ++request_index)
+    {
+        fill_scheduler_request(
+            &scheduler_requests[request_index]);
+    }
+    if (request_count == 0u)
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+
+    for (request_index = 0u; request_index < request_count; ++request_index)
+    {
+        status = SparkGlm52RequestApiEnsureDecodeSlotKvCapacity(
+            api,
+            selected_slots[request_index],
+            context_extension,
+            0);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+
+    status = SparkGlm52RequestApiRunSlotArrayCriticalJitKvPrefetch(
+        api,
+        selected_slots,
+        request_count,
+        dispatch);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    for (request_index = 0u; request_index < request_count; ++request_index)
+    {
+        if (!SparkGlm52RequestApiDecodeBlocksAreResident(
+                api,
+                selected_slots[request_index]))
+        {
+            dispatch->flags |=
+                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_JIT_PREFETCH_PENDING;
+            return SPARK_STATUS_BUSY;
+        }
+    }
+
+    memset(&batch_request, 0, sizeof(batch_request));
+    batch_request.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    batch_request.descriptor_bytes =
+        SPARK_GLM52_SCHEDULER_BATCH_REQUEST_DESCRIPTOR_BYTES;
+    batch_request.request_count = request_count;
+    batch_request.requests = scheduler_requests;
+    status = SparkGlm52SchedulerAdmitDecodeBatch(
+        api->scheduler,
+        &batch_request,
+        &dispatch->decode_batch_decision);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    if (dispatch->decode_batch_decision.accepted == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    *request_count_io = request_count;
+    return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
     SparkGlm52RequestApi *api,
     SparkGlm52RequestApiSlot *first_slot,
@@ -4353,7 +4443,6 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
 {
     SparkGlm52SchedulerRequest scheduler_requests[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
-    SparkGlm52SchedulerBatchRequest batch_request;
     SparkGlm52RequestApiSlot *selected_slots[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     SparkGlm52DsparkDraftResult leader_draft;
@@ -4426,69 +4515,14 @@ static SparkStatus SparkGlm52RequestApiScheduleSpeculativeVerifyBatch(
         leader_source == SPARK_GLM52_REQUEST_API_SPECULATIVE_SOURCE_MTP
             ? SPARK_GLM52_MODEL_MTP_TREE_CONTEXT_EXTENSION
             : leader_draft.token_count;
-    status = SparkGlm52RequestApiApplyActiveKvBlockBudget(
+    status = SparkGlm52RequestApiAdmitDecodeBatchMembers(
         api,
         selected_slots,
+        scheduler_requests,
         &request_count,
-        speculative_context_extension);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    for (request_index = 0u; request_index < request_count; ++request_index)
-    {
-        SparkGlm52RequestApiFillSpeculativeVerifySchedulerRequest(
-            &scheduler_requests[request_index]);
-    }
-    if (request_count == 0u)
-    {
-        return SPARK_STATUS_NOT_FOUND;
-    }
-
-    for (request_index = 0u; request_index < request_count; ++request_index)
-    {
-        status = SparkGlm52RequestApiEnsureDecodeSlotKvCapacity(
-            api,
-            selected_slots[request_index],
-            speculative_context_extension,
-            0);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-    }
-
-    status = SparkGlm52RequestApiRunSlotArrayCriticalJitKvPrefetch(
-        api,
-        selected_slots,
-        request_count,
+        speculative_context_extension,
+        SparkGlm52RequestApiFillSpeculativeVerifySchedulerRequest,
         dispatch);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    for (request_index = 0u; request_index < request_count; ++request_index)
-    {
-        if (!SparkGlm52RequestApiDecodeBlocksAreResident(
-                api,
-                selected_slots[request_index]))
-        {
-            dispatch->flags |=
-                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_JIT_PREFETCH_PENDING;
-            return SPARK_STATUS_BUSY;
-        }
-    }
-
-    memset(&batch_request, 0, sizeof(batch_request));
-    batch_request.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
-    batch_request.descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_BATCH_REQUEST_DESCRIPTOR_BYTES;
-    batch_request.request_count = request_count;
-    batch_request.requests = scheduler_requests;
-    status = SparkGlm52SchedulerAdmitDecodeBatch(
-        api->scheduler,
-        &batch_request,
-        &dispatch->decode_batch_decision);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -4780,7 +4814,6 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
 {
     SparkGlm52SchedulerRequest scheduler_requests[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
-    SparkGlm52SchedulerBatchRequest batch_request;
     SparkGlm52RequestApiSlot *selected_slots[
         SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     uint32_t request_count;
@@ -4807,69 +4840,14 @@ static SparkStatus SparkGlm52RequestApiScheduleDecodeBatch(
         batch_target);
     mtp_draft_token_budget = SparkGlm52RequestApiDecodeBatchMtpBudget(
         api,selected_slots,request_count);
-    status = SparkGlm52RequestApiApplyActiveKvBlockBudget(
+    status = SparkGlm52RequestApiAdmitDecodeBatchMembers(
         api,
         selected_slots,
+        scheduler_requests,
         &request_count,
-        mtp_draft_token_budget);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    for (request_index = 0u; request_index < request_count; ++request_index)
-    {
-        SparkGlm52RequestApiFillDecodeSchedulerRequest(
-            &scheduler_requests[request_index]);
-    }
-    if (request_count == 0u)
-    {
-        return SPARK_STATUS_NOT_FOUND;
-    }
-
-    for (request_index = 0u; request_index < request_count; ++request_index)
-    {
-        status = SparkGlm52RequestApiEnsureDecodeSlotKvCapacity(
-            api,
-            selected_slots[request_index],
-            mtp_draft_token_budget,
-            0);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-    }
-
-    status = SparkGlm52RequestApiRunSlotArrayCriticalJitKvPrefetch(
-        api,
-        selected_slots,
-        request_count,
+        mtp_draft_token_budget,
+        SparkGlm52RequestApiFillDecodeSchedulerRequest,
         dispatch);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    for (request_index = 0u; request_index < request_count; ++request_index)
-    {
-        if (!SparkGlm52RequestApiDecodeBlocksAreResident(
-                api,
-                selected_slots[request_index]))
-        {
-            dispatch->flags |=
-                SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_JIT_PREFETCH_PENDING;
-            return SPARK_STATUS_BUSY;
-        }
-    }
-
-    memset(&batch_request, 0, sizeof(batch_request));
-    batch_request.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
-    batch_request.descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_BATCH_REQUEST_DESCRIPTOR_BYTES;
-    batch_request.request_count = request_count;
-    batch_request.requests = scheduler_requests;
-    status = SparkGlm52SchedulerAdmitDecodeBatch(
-        api->scheduler,
-        &batch_request,
-        &dispatch->decode_batch_decision);
     if (status != SPARK_STATUS_OK)
     {
         return status;
