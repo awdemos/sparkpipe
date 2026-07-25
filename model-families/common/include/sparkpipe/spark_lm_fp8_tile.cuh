@@ -59,6 +59,7 @@
 // (16x8x32 FP8 fragments, K accumulated deep, per-row activation scale) is
 // the durable artifact and carries unchanged to MiMo 3.1, dsv4 GA, Qwen 3.8.
 
+#include "sparkpipe/spark_lm_async_copy.cuh"
 #include <cuda_fp8.h>
 
 // -- FP8 tensor fragment shape (PTX m16n8k32 E4M3) --
@@ -178,19 +179,37 @@ static __device__ void SparkLmFp8StageInput(const void *input_bf16, const uint32
 // Stage TILE_N neurons x TILE_K weight columns, native E4M3 (no decode). The
 // weight is already E4M3 in weight_payload; weight_scale is the per-block
 // dequant applied at accumulate, not here.
+// Stage one weight tile asynchronously.
+//
+// The linear contract guarantees input_dimension is a multiple of
+// SPARK_LM_TILE_K, and fp8 storage is one byte per element, so a row segment is
+// SPARK_LM_FP8_TILE_K contiguous bytes at a 16-byte aligned offset: four
+// 16-byte transfers. That also makes the old (k_base + k_local) < input_dimension
+// test unconditionally true, so only the neuron bound survives, and a row past
+// the end is issued with a zero source size which the hardware zero-fills. The
+// per-element branch is gone.
+//
+// The source neuron is clamped for the address computation so a padding row
+// never forms an out-of-bounds pointer, even though a zero-length transfer
+// would not read it.
+//
+// The caller must SparkLmAsyncCommit and wait before reading tile_weight.
 static __device__ void SparkLmFp8StageWeight(const void *weight_payload_fp8, uint32_t neuron_base, uint32_t k_base, uint32_t input_dimension, uint32_t output_dimension, __nv_fp8_storage_t *tile_weight)
 {
 	const __nv_fp8_storage_t *payload = (const __nv_fp8_storage_t *)weight_payload_fp8;
-	uint32_t entry,neuron_local,k_local,neuron;
-	for (entry = threadIdx.x; entry < SPARK_LM_FP8_TILE_N * SPARK_LM_FP8_TILE_K; entry += blockDim.x)
+	uint32_t chunk,chunks_per_row,neuron_local,chunk_offset,neuron,source_bytes;
+	chunks_per_row = SPARK_LM_FP8_TILE_K / SPARK_LM_ASYNC_COPY_WIDEST_BYTES;
+	for (chunk = threadIdx.x; chunk < SPARK_LM_FP8_TILE_N * chunks_per_row; chunk += blockDim.x)
 	{
-		neuron_local = entry / SPARK_LM_FP8_TILE_K;
-		k_local = entry % SPARK_LM_FP8_TILE_K;
+		neuron_local = chunk / chunks_per_row;
+		chunk_offset = (chunk % chunks_per_row) * SPARK_LM_ASYNC_COPY_WIDEST_BYTES;
 		neuron = neuron_base + neuron_local;
-		if ( neuron < output_dimension && (k_base + k_local) < input_dimension )
-			tile_weight[entry] = payload[((uint64_t)neuron * input_dimension) + k_base + k_local];
-		else
-			tile_weight[entry] = 0;
+		source_bytes = neuron < output_dimension ? SPARK_LM_ASYNC_COPY_WIDEST_BYTES : 0u;
+		neuron = neuron < output_dimension ? neuron : 0u;
+		SparkLmAsyncCopyBounded<SPARK_LM_ASYNC_COPY_WIDEST_BYTES, SPARK_LM_ASYNC_COPY_CACHE_GLOBAL>(
+			tile_weight + (neuron_local * SPARK_LM_FP8_TILE_K) + chunk_offset,
+			payload + ((uint64_t)neuron * input_dimension) + k_base + chunk_offset,
+			source_bytes);
 	}
 }
 
@@ -369,9 +388,9 @@ static __device__ void SparkLmExpertTileBodyFp8(
     uint32_t slot_base,
     uint32_t neuron_base)
 {
-    __shared__ __nv_fp8_storage_t tile_input[2u][
+    __shared__ __align__(SPARK_LM_ASYNC_COPY_WIDEST_BYTES) __nv_fp8_storage_t tile_input[2u][
         SPARK_LM_FP8_MMA_M * SPARK_LM_FP8_TILE_K];
-    __shared__ __nv_fp8_storage_t tile_weight[2u][
+    __shared__ __align__(SPARK_LM_ASYNC_COPY_WIDEST_BYTES) __nv_fp8_storage_t tile_weight[2u][
         SPARK_LM_FP8_TILE_N * SPARK_LM_FP8_TILE_K];
     __shared__ float row_scale[SPARK_LM_FP8_MMA_M];
     __shared__ float row_inverse_scale[SPARK_LM_FP8_MMA_M];
@@ -453,6 +472,10 @@ static __device__ void SparkLmExpertTileBodyFp8(
             input_dimension,
             output_dimension,
             tile_weight[current_buffer]);
+        // __syncthreads does not wait on cp.async; the transfers must be
+        // retired explicitly before any warp reads the staged tile.
+        SparkLmAsyncCommit();
+        SparkLmAsyncWaitAll();
         __syncthreads();
 
         for (k_base = 0u;
