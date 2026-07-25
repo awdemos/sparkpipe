@@ -5157,10 +5157,46 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtpDraftHead(
 	return status;
 }
 
-static void SparkGlm52Pp13BuilderConfigureMtpLayer(
+static SparkStatus SparkGlm52Pp13BuilderReadOptionalBooleanEnvironment(
+	const char *environment_name,
+	uint32_t *value)
+{
+	const char *text;
+	if (environment_name == 0 || value == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	text = getenv(environment_name);
+	if (text == 0)
+	{
+		*value = 0u;
+		return SPARK_STATUS_OK;
+	}
+	if (strcmp(text,"1") == 0 ||
+		strcmp(text,"true") == 0 ||
+		strcmp(text,"on") == 0 ||
+		strcmp(text,"yes") == 0)
+	{
+		*value = 1u;
+		return SPARK_STATUS_OK;
+	}
+	if (strcmp(text,"0") == 0 ||
+		strcmp(text,"false") == 0 ||
+		strcmp(text,"off") == 0 ||
+		strcmp(text,"no") == 0)
+	{
+		*value = 0u;
+		return SPARK_STATUS_OK;
+	}
+	fprintf(stderr,
+		"invalid boolean environment value: %s=%s\n",
+		environment_name,text);
+	return SPARK_STATUS_INVALID_ARGUMENT;
+}
+
+static SparkStatus SparkGlm52Pp13BuilderConfigureMtpLayer(
 	SparkGlm52Pp13BuilderState *state)
 {
 	SparkGlm52ResidentDecodeStageNodeContext *node;
+	SparkStatus status;
 	uint32_t clear_flags;
 	node = &state->mtp_layer.node;
 	node->cache_token_capacity = state->configuration.kv_pool_token_capacity;
@@ -5178,8 +5214,11 @@ static void SparkGlm52Pp13BuilderConfigureMtpLayer(
 	node->dsa_indexshare_group_end_layer_exclusive = 0u;
 	node->dsa_indexshare_selected_token_count = 0u;
 	node->dsa_indexshare_layer_count = 0u;
-	node->enable_cuda_graph_replay =
-		getenv("SPARKPIPE_MTP_LAYER_ENABLE_GRAPH") != 0 ? 1u : 0u;
+	status = SparkGlm52Pp13BuilderReadOptionalBooleanEnvironment(
+		"SPARKPIPE_MTP_LAYER_ENABLE_GRAPH",
+		&node->enable_cuda_graph_replay);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	node->bulk_prefill_plan = 0;
 	state->mtp_layer.slot.block_table = state->device_physical_block_indices;
 	clear_flags =
@@ -5190,6 +5229,7 @@ static void SparkGlm52Pp13BuilderConfigureMtpLayer(
 	node->reserved_execution_flags &= ~clear_flags;
 	node->reserved_execution_flags |=
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_OUTPUT_HIDDEN_ONLY;
+	return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
@@ -5217,7 +5257,7 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeMtp(
 	{
 		SparkGlm52Pp13BuilderWireLayer(
 			state,&state->mtp_layer,SPARK_GLM52_MODEL_MTP_LAYER_INDEX);
-		SparkGlm52Pp13BuilderConfigureMtpLayer(state);
+		status = SparkGlm52Pp13BuilderConfigureMtpLayer(state);
 	}
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13BuilderLoadMtpWeights(state);

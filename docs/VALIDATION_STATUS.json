@@ -11,13 +11,13 @@
   "fingerprint_excluded_prefixes": [
     "docs/validation-logs/"
   ],
-  "generated_at": "2026-07-24T11:38:07.212866+00:00",
+  "generated_at": "2026-07-25T06:59:52.176382+00:00",
   "host_validation_only": true,
-  "input_source_file_count": 5030,
-  "input_source_fingerprint": "e170ad72ad969fb2d6e0019ce278bdcdf555d03616c453c59f056560f611de23",
-  "output_source_file_count": 5030,
-  "output_source_fingerprint": "e170ad72ad969fb2d6e0019ce278bdcdf555d03616c453c59f056560f611de23",
-  "repository_root": "/Users/cem/Documents/Codex/2026-06-26/i-ma/work/sparkpipe-audited-pr",
+  "input_source_file_count": 5031,
+  "input_source_fingerprint": "7e3b13ad6a9dcd6353e08e90bf5c7449e4e17589c14aae7e8ebe222d757b29cf",
+  "output_source_file_count": 5031,
+  "output_source_fingerprint": "7e3b13ad6a9dcd6353e08e90bf5c7449e4e17589c14aae7e8ebe222d757b29cf",
+  "repository_root": "/Users/cem/Documents/Codex/2026-07-24/continue-the-sparkpipe-pr-from-users/work/sparkpipe-pr505-integration",
   "results": [
     {
       "category": "preflight",
@@ -25,7 +25,7 @@
         "make",
         "clean"
       ],
-      "duration_seconds": 0.127,
+      "duration_seconds": 0.238,
       "log_path": "docs/validation-logs/clean_build.log",
       "name": "clean_build",
       "note": "",
@@ -44,7 +44,7 @@
         "tools/run_deep_audit_validation.py",
         "tests/test_model_driver_contracts.py"
       ],
-      "duration_seconds": 0.129,
+      "duration_seconds": 0.188,
       "log_path": "docs/validation-logs/python_tool_syntax.log",
       "name": "python_tool_syntax",
       "note": "",
@@ -58,7 +58,7 @@
         "-j2",
         "all"
       ],
-      "duration_seconds": 3.449,
+      "duration_seconds": 8.051,
       "log_path": "docs/validation-logs/host_build.log",
       "name": "host_build",
       "note": "",
@@ -71,7 +71,7 @@
         "make",
         "architecture_audit"
       ],
-      "duration_seconds": 0.132,
+      "duration_seconds": 0.243,
       "log_path": "docs/validation-logs/core_boundary_audit.log",
       "name": "core_boundary_audit",
       "note": "",
@@ -84,7 +84,7 @@
         "make",
         "model_driver_contracts"
       ],
-      "duration_seconds": 1.094,
+      "duration_seconds": 1.594,
       "log_path": "docs/validation-logs/non_glm_model_driver_contracts.log",
       "name": "non_glm_model_driver_contracts",
       "note": "",
@@ -97,7 +97,7 @@
         "/Users/cem/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3",
         "tests/test_memory_contracts.py"
       ],
-      "duration_seconds": 1.754,
+      "duration_seconds": 3.566,
       "log_path": "docs/validation-logs/memory_contracts.log",
       "name": "memory_contracts",
       "note": "",
@@ -111,12 +111,12 @@
         "-j2",
         "test"
       ],
-      "duration_seconds": 23.992,
+      "duration_seconds": 16.222,
       "log_path": "docs/validation-logs/host_test_suite.log",
       "name": "host_test_suite",
       "note": "",
-      "return_code": 0,
-      "status": "passed"
+      "return_code": 2,
+      "status": "failed"
     },
     {
       "category": "build",
@@ -126,7 +126,7 @@
         "glm52_pp13_service_backend",
         "tools"
       ],
-      "duration_seconds": 0.036,
+      "duration_seconds": 0.075,
       "log_path": "docs/validation-logs/required_host_targets.log",
       "name": "required_host_targets",
       "note": "",
@@ -153,10 +153,10 @@
         "internal",
         "source-tree-fingerprint"
       ],
-      "duration_seconds": 0.606,
+      "duration_seconds": 1.24,
       "log_path": "docs/validation-logs/source_tree_stability.log",
       "name": "source_tree_stability",
-      "note": "input=e170ad72ad969fb2d6e0019ce278bdcdf555d03616c453c59f056560f611de23 output=e170ad72ad969fb2d6e0019ce278bdcdf555d03616c453c59f056560f611de23 input_files=5030 output_files=5030",
+      "note": "input=7e3b13ad6a9dcd6353e08e90bf5c7449e4e17589c14aae7e8ebe222d757b29cf output=7e3b13ad6a9dcd6353e08e90bf5c7449e4e17589c14aae7e8ebe222d757b29cf input_files=5031 output_files=5031",
       "return_code": 0,
       "status": "passed"
     }

@@ -150,8 +150,13 @@ def main() -> int:
     forbid(w8_launch, "<<<1u, 1u", "W8LUT production launch")
     require(
         w8lut,
-        "__shared__ float shared_reduce_scores",
-        "parallel W8LUT and NVFP4 top-k",
+        "__shared__ uint64_t shared_ordered_keys",
+        "parallel exact W8LUT and NVFP4 top-k",
+    )
+    require(
+        w8lut,
+        "partner_index = expert_index ^ bitonic_stride",
+        "single-pass W8LUT and NVFP4 top-k sort",
     )
 
     packed_route_prefix = section(

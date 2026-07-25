@@ -1,8 +1,11 @@
 #ifndef SPARK_LM_FP8_TILE_CUH
 #define SPARK_LM_FP8_TILE_CUH
 
-// GB10 FP8 tensor tile for the shared linear/expert GEMM. OPT-IN; the bf16
-// wmma tile in spark_lm_kernels.cuh is the validated fallback.
+// GB10 FP8 tensor tile for the shared linear/expert GEMM. This path is
+// opt-in and remains NOT_MEASURED until its fragment mapping and numerical
+// output are qualified on the exact sm_121a package. The BF16 tile remains
+// the independently testable reference implementation, not an implicit
+// production fallback.
 //
 // WHY. The bf16 tile decodes the stored FP8 E4M3 weights UP into bf16, then
 // runs 16x16x16 bf16 wmma. That wastes the tensor cores twice: bf16 tensor
@@ -22,8 +25,9 @@
 // quantization is unacceptable on the ring, its caller stays on the bf16
 // tile - this path is opt-in.
 //
-// VALIDATION STATE - READ BEFORE ENABLING. The mma.sync.m16n8k32.f32.e4m3.
-// e4m3.f32 instruction assembles for sm_121a (nvcc 13.1, verified). The
+// VALIDATION STATE - READ BEFORE ENABLING. The source targets the
+// mma.sync.m16n8k32.f32.e4m3.e4m3.f32 instruction for sm_121a. This source
+// snapshot has not been compiled with CUDA 13 in the current environment. The
 // per-thread register-to-matrix-element mapping the instruction requires
 // (SparkLmFp8LoadFragA / SparkLmFp8LoadFragB) is defined below FROM THE PTX
 // ISA m16n8k32 layout and is NOT silicon-validated. The fragment mapping is
@@ -46,6 +50,13 @@
 #define SPARK_LM_FP8_TILE_K 64u                  // 2 K-steps staged per pass
 #define SPARK_LM_FP8_E4M3_MAX 448.0f
 
+static_assert(
+    128u % SPARK_LM_FP8_TILE_N == 0u,
+    "FP8 output tiles must not cross an F32B128 neuron-scale boundary");
+static_assert(
+    128u % SPARK_LM_FP8_TILE_K == 0u,
+    "FP8 K tiles must divide an F32B128 input-scale boundary");
+
 // One mma.sync.m16n8k32, E4M3 operands, F32 accumulate. The ISA contract
 // lives in exactly this one inline for review.
 static __device__ __forceinline__ void SparkLmFp8Mma16x8x32(float acc[4], const unsigned a[4], const unsigned b[2])
@@ -58,7 +69,7 @@ static __device__ __forceinline__ void SparkLmFp8Mma16x8x32(float acc[4], const 
 }
 
 // -- FRAGMENT MAPPING: ring-verification contract --
-// PTX m16n8k32 E4M3 thread layout (ISA .target sm_120a family): lane L holds,
+// PTX m16n8k32 E4M3 thread layout (ISA .target sm_121a family): lane L holds,
 // for A, the K-runs of rows {L/4, L/4+8} at K-offset (L%4)*8 as two packed
 // uint32 (8 E4M3 each = the 32-wide K); for B, the K-run of column (L%4)*? -
 // the exact column/row split is the piece requiring silicon confirmation.
@@ -162,66 +173,390 @@ static __device__ void SparkLmFp8StageWeight(const void *weight_payload_fp8, uin
 	}
 }
 
-// Accumulator write: mma.sync m16n8 lane L holds acc[0..3] for rows
-// {L/4, L/4+8} x cols {(L%4)*2, (L%4)*2+1}. Apply per-row activation scale
-// and per-neuron weight dequant on store. weight_dequant folds the block
-// scale for this warp's neuron; a single per-tile scale is used pending the
-// per-block indexing confirmation on the ring.
-static __device__ __forceinline__ void SparkLmFp8StoreAccumulator(float tile_output[SPARK_LM_FP8_MMA_M][SPARK_LM_FP8_TILE_N + 8u], const float acc[4], const float *row_scale, const void *weight_scale, uint32_t warp, uint32_t lane)
+static __device__ void SparkLmFp8StageInputProducerGroup(
+    const void *input_bf16,
+    const uint32_t *input_row_map,
+    const float *row_inv_scale,
+    uint32_t slot_base,
+    uint32_t slot_count,
+    uint32_t k_base,
+    uint32_t input_dimension,
+    uint32_t producer_warp_base,
+    __nv_fp8_storage_t *tile_input)
 {
-	float weight_dequant = weight_scale != 0 ? ((const float *)weight_scale)[0] : 1.0f;
-	uint32_t acc_row = lane >> 2u,acc_col = (warp * SPARK_LM_FP8_MMA_N) + ((lane & 3u) << 1u);
-	if ( acc_col >= SPARK_LM_FP8_TILE_N )
-		return;
-	tile_output[acc_row][acc_col] = acc[0] * row_scale[acc_row] * weight_dequant;
-	tile_output[acc_row][acc_col + 1u] = acc[1] * row_scale[acc_row] * weight_dequant;
-	tile_output[acc_row + 8u][acc_col] = acc[2] * row_scale[acc_row + 8u] * weight_dequant;
-	tile_output[acc_row + 8u][acc_col + 1u] = acc[3] * row_scale[acc_row + 8u] * weight_dequant;
+    uint32_t warp_index;
+    uint32_t lane_index;
+    uint32_t producer_thread_index;
+    uint32_t entry;
+
+    warp_index = threadIdx.x / SPARK_LM_WARP_LANES;
+    if (warp_index < producer_warp_base ||
+        warp_index >= producer_warp_base + 4u)
+    {
+        return;
+    }
+    lane_index = threadIdx.x % SPARK_LM_WARP_LANES;
+    producer_thread_index =
+        ((warp_index - producer_warp_base) * SPARK_LM_WARP_LANES) +
+        lane_index;
+    for (entry = producer_thread_index;
+         entry < (SPARK_LM_FP8_MMA_M * SPARK_LM_FP8_TILE_K) >> 1u;
+         entry += 4u * SPARK_LM_WARP_LANES)
+    {
+        uint32_t row_in_tile;
+        uint32_t k_local;
+        uint32_t slot;
+        float inverse_scale;
+
+        row_in_tile = entry / (SPARK_LM_FP8_TILE_K >> 1u);
+        k_local =
+            (entry % (SPARK_LM_FP8_TILE_K >> 1u)) << 1u;
+        slot = slot_base + row_in_tile;
+        inverse_scale = row_inv_scale[row_in_tile] > 0.0f
+            ? 1.0f / row_inv_scale[row_in_tile]
+            : 0.0f;
+        if (slot < slot_count && k_base + k_local < input_dimension)
+        {
+            uint32_t source_row;
+            float2 pair_value;
+
+            source_row = input_row_map != 0 ? input_row_map[slot] : slot;
+            pair_value = SparkLmLoadBf16Pair(
+                input_bf16,
+                (((uint64_t)source_row * input_dimension) +
+                 k_base + k_local) >> 1u);
+            tile_input[
+                (row_in_tile * SPARK_LM_FP8_TILE_K) + k_local] =
+                __nv_cvt_float_to_fp8(
+                    pair_value.x * inverse_scale,
+                    __NV_SATFINITE,
+                    __NV_E4M3);
+            tile_input[
+                (row_in_tile * SPARK_LM_FP8_TILE_K) + k_local + 1u] =
+                __nv_cvt_float_to_fp8(
+                    pair_value.y * inverse_scale,
+                    __NV_SATFINITE,
+                    __NV_E4M3);
+        }
+        else
+        {
+            tile_input[
+                (row_in_tile * SPARK_LM_FP8_TILE_K) + k_local] = 0;
+            tile_input[
+                (row_in_tile * SPARK_LM_FP8_TILE_K) + k_local + 1u] = 0;
+        }
+    }
+}
+
+static __device__ void SparkLmFp8StageWeightProducerHalf(
+    const void *weight_payload_fp8,
+    uint32_t neuron_base,
+    uint32_t k_base,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t producer_warp_base,
+    uint32_t neuron_half,
+    __nv_fp8_storage_t *tile_weight)
+{
+    const __nv_fp8_storage_t *payload;
+    uint32_t warp_index;
+    uint32_t lane_index;
+    uint32_t producer_thread_index;
+    uint32_t entry;
+
+    payload = reinterpret_cast<const __nv_fp8_storage_t *>(
+        weight_payload_fp8);
+    warp_index = threadIdx.x / SPARK_LM_WARP_LANES;
+    if (warp_index < producer_warp_base ||
+        warp_index >= producer_warp_base + 4u)
+    {
+        return;
+    }
+    lane_index = threadIdx.x % SPARK_LM_WARP_LANES;
+    producer_thread_index =
+        ((warp_index - producer_warp_base) * SPARK_LM_WARP_LANES) +
+        lane_index;
+    for (entry = producer_thread_index;
+         entry < (SPARK_LM_FP8_TILE_N / 2u) * SPARK_LM_FP8_TILE_K;
+         entry += 4u * SPARK_LM_WARP_LANES)
+    {
+        uint32_t neuron_local;
+        uint32_t k_local;
+        uint32_t neuron;
+        uint32_t destination_index;
+
+        neuron_local =
+            (neuron_half * (SPARK_LM_FP8_TILE_N / 2u)) +
+            (entry / SPARK_LM_FP8_TILE_K);
+        k_local = entry % SPARK_LM_FP8_TILE_K;
+        neuron = neuron_base + neuron_local;
+        destination_index =
+            (neuron_local * SPARK_LM_FP8_TILE_K) + k_local;
+        tile_weight[destination_index] =
+            neuron < output_dimension && k_base + k_local < input_dimension
+            ? payload[
+                ((uint64_t)neuron * input_dimension) +
+                k_base + k_local]
+            : 0;
+    }
+}
+
+// Accumulator write: mma.sync m16n8 lane L holds acc[0..3] for rows
+// {L/4, L/4+8} x cols {(L%4)*2, (L%4)*2+1}. F32B128 weight scales are folded
+// into the accumulator at every 128-wide K boundary. This final store applies
+// only the per-row activation scale.
+static __device__ __forceinline__ void SparkLmFp8StoreAccumulator(
+    float tile_output[
+        SPARK_LM_FP8_MMA_M][SPARK_LM_FP8_TILE_N + 8u],
+    const float accumulator[4],
+    const float *row_scale,
+    uint32_t warp_index,
+    uint32_t lane_index)
+{
+    uint32_t accumulator_row;
+    uint32_t accumulator_column;
+
+    accumulator_row = lane_index >> 2u;
+    accumulator_column =
+        (warp_index * SPARK_LM_FP8_MMA_N) +
+        ((lane_index & 3u) << 1u);
+    if (accumulator_column >= SPARK_LM_FP8_TILE_N)
+    {
+        return;
+    }
+    tile_output[accumulator_row][accumulator_column] =
+        accumulator[0] * row_scale[accumulator_row];
+    tile_output[accumulator_row][accumulator_column + 1u] =
+        accumulator[1] * row_scale[accumulator_row];
+    tile_output[accumulator_row + 8u][accumulator_column] =
+        accumulator[2] * row_scale[accumulator_row + 8u];
+    tile_output[accumulator_row + 8u][accumulator_column + 1u] =
+        accumulator[3] * row_scale[accumulator_row + 8u];
 }
 
 // FP8 expert/linear tile body. Same interface contract as the bf16
 // SparkLmExpertTileBody. weight_payload_fp8 is E4M3; weight_scale is the
-// per-block dequant scale (applied to the FP32 accumulator). Output bf16.
-static __device__ void SparkLmExpertTileBodyFp8(const void *weight_payload_fp8, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t slot_base, uint32_t neuron_base)
+// F32B128 dequant scales, accumulated independently for each 128-wide K
+// block before the row activation scale is applied. Output is bf16.
+static __device__ void SparkLmExpertTileBodyFp8(
+    const void *weight_payload_fp8,
+    const void *weight_scale,
+    const void *input_bf16,
+    const uint32_t *input_row_map,
+    void *output_bf16,
+    uint32_t slot_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t slot_base,
+    uint32_t neuron_base)
 {
-	__shared__ __nv_fp8_storage_t tile_input[SPARK_LM_FP8_MMA_M * SPARK_LM_FP8_TILE_K];
-	__shared__ __nv_fp8_storage_t tile_weight[SPARK_LM_FP8_TILE_N * SPARK_LM_FP8_TILE_K];
-	__shared__ float row_scale[SPARK_LM_FP8_MMA_M];
-	__shared__ float tile_output[SPARK_LM_FP8_MMA_M][SPARK_LM_FP8_TILE_N + 8u];
-	float acc[4] = {0.0f,0.0f,0.0f,0.0f};
-	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES;
-	uint32_t k_base,k_step,row_in_tile,neuron,entry;
-	unsigned frag_a[4],frag_b[2];
-	for (row_in_tile = warp; row_in_tile < SPARK_LM_FP8_MMA_M; row_in_tile += (blockDim.x / SPARK_LM_WARP_LANES))
-	{
-		float row_absmax = SparkLmFp8RowAbsmax(input_bf16,input_row_map,slot_base,slot_count,row_in_tile,input_dimension,lane);
-		if ( lane == 0u )
-			row_scale[row_in_tile] = row_absmax / SPARK_LM_FP8_E4M3_MAX;
-	}
-	__syncthreads();
-	for (k_base = 0; k_base < input_dimension; k_base += SPARK_LM_FP8_TILE_K)
-	{
-		SparkLmFp8StageInput(input_bf16,input_row_map,row_scale,slot_base,slot_count,k_base,input_dimension,tile_input);
-		SparkLmFp8StageWeight(weight_payload_fp8,neuron_base,k_base,input_dimension,output_dimension,tile_weight);
-		__syncthreads();
-		#pragma unroll
-		for (k_step = 0; k_step < SPARK_LM_FP8_TILE_K / SPARK_LM_FP8_MMA_K; k_step++)
-		{
-			SparkLmFp8LoadFragA(frag_a,tile_input,k_step,lane);
-			SparkLmFp8LoadFragB(frag_b,tile_weight,warp,k_step,lane);
-			SparkLmFp8Mma16x8x32(acc,frag_a,frag_b);
-		}
-		__syncthreads();
-	}
-	SparkLmFp8StoreAccumulator(tile_output,acc,row_scale,weight_scale,warp,lane);
-	__syncthreads();
-	for (entry = threadIdx.x; entry < SPARK_LM_FP8_MMA_M * SPARK_LM_FP8_TILE_N; entry += blockDim.x)
-	{
-		row_in_tile = entry / SPARK_LM_FP8_TILE_N;
-		neuron = neuron_base + (entry % SPARK_LM_FP8_TILE_N);
-		if ( (slot_base + row_in_tile) < slot_count && neuron < output_dimension )
-			SparkLmFloatToBf16(output_bf16,((uint64_t)(slot_base + row_in_tile) * output_dimension) + neuron,tile_output[row_in_tile][entry % SPARK_LM_FP8_TILE_N]);
-	}
+    __shared__ __nv_fp8_storage_t tile_input[2u][
+        SPARK_LM_FP8_MMA_M * SPARK_LM_FP8_TILE_K];
+    __shared__ __nv_fp8_storage_t tile_weight[2u][
+        SPARK_LM_FP8_TILE_N * SPARK_LM_FP8_TILE_K];
+    __shared__ float row_scale[SPARK_LM_FP8_MMA_M];
+    __shared__ float tile_output[
+        SPARK_LM_FP8_MMA_M][SPARK_LM_FP8_TILE_N + 8u];
+    float accumulator[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    float block_accumulator[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    uint32_t warp_index;
+    uint32_t lane_index;
+    uint32_t current_buffer;
+    uint32_t next_buffer;
+    uint32_t k_base;
+    uint32_t next_k_base;
+    uint32_t k_step;
+    uint32_t row_in_tile;
+    uint32_t neuron;
+    uint32_t entry;
+    unsigned fragment_a[4];
+    unsigned fragment_b[2];
+
+    warp_index = threadIdx.x / SPARK_LM_WARP_LANES;
+    lane_index = threadIdx.x % SPARK_LM_WARP_LANES;
+    for (row_in_tile = warp_index;
+         row_in_tile < SPARK_LM_FP8_MMA_M;
+         row_in_tile += blockDim.x / SPARK_LM_WARP_LANES)
+    {
+        float row_absmax;
+
+        row_absmax = SparkLmFp8RowAbsmax(
+            input_bf16,
+            input_row_map,
+            slot_base,
+            slot_count,
+            row_in_tile,
+            input_dimension,
+            lane_index);
+        if (lane_index == 0u)
+        {
+            row_scale[row_in_tile] =
+                row_absmax / SPARK_LM_FP8_E4M3_MAX;
+        }
+    }
+    __syncthreads();
+
+    current_buffer = 0u;
+    SparkLmFp8StageInput(
+        input_bf16,
+        input_row_map,
+        row_scale,
+        slot_base,
+        slot_count,
+        0u,
+        input_dimension,
+        tile_input[current_buffer]);
+    SparkLmFp8StageWeight(
+        weight_payload_fp8,
+        neuron_base,
+        0u,
+        input_dimension,
+        output_dimension,
+        tile_weight[current_buffer]);
+    __syncthreads();
+
+    for (k_base = 0u;
+         k_base < input_dimension;
+         k_base += SPARK_LM_FP8_TILE_K)
+    {
+        next_k_base = k_base + SPARK_LM_FP8_TILE_K;
+        next_buffer = current_buffer ^ 1u;
+        if (warp_index < 4u)
+        {
+            for (k_step = 0u;
+                 k_step < SPARK_LM_FP8_TILE_K / SPARK_LM_FP8_MMA_K;
+                 ++k_step)
+            {
+                SparkLmFp8LoadFragA(
+                    fragment_a,
+                    tile_input[current_buffer],
+                    k_step,
+                    lane_index);
+                SparkLmFp8LoadFragB(
+                    fragment_b,
+                    tile_weight[current_buffer],
+                    warp_index,
+                    k_step,
+                    lane_index);
+                SparkLmFp8Mma16x8x32(
+                    block_accumulator,
+                    fragment_a,
+                    fragment_b);
+            }
+        }
+        else if (next_k_base < input_dimension)
+        {
+            SparkLmFp8StageInputProducerGroup(
+                input_bf16,
+                input_row_map,
+                row_scale,
+                slot_base,
+                slot_count,
+                next_k_base,
+                input_dimension,
+                4u,
+                tile_input[next_buffer]);
+            SparkLmFp8StageWeightProducerHalf(
+                weight_payload_fp8,
+                neuron_base,
+                next_k_base,
+                input_dimension,
+                output_dimension,
+                4u,
+                0u,
+                tile_weight[next_buffer]);
+        }
+        __syncthreads();
+
+        if (warp_index >= 4u)
+        {
+            for (k_step = 0u;
+                 k_step < SPARK_LM_FP8_TILE_K / SPARK_LM_FP8_MMA_K;
+                 ++k_step)
+            {
+                SparkLmFp8LoadFragA(
+                    fragment_a,
+                    tile_input[current_buffer],
+                    k_step,
+                    lane_index);
+                SparkLmFp8LoadFragB(
+                    fragment_b,
+                    tile_weight[current_buffer],
+                    warp_index,
+                    k_step,
+                    lane_index);
+                SparkLmFp8Mma16x8x32(
+                    block_accumulator,
+                    fragment_a,
+                    fragment_b);
+            }
+        }
+        else if (next_k_base < input_dimension)
+        {
+            SparkLmFp8StageWeightProducerHalf(
+                weight_payload_fp8,
+                neuron_base,
+                next_k_base,
+                input_dimension,
+                output_dimension,
+                0u,
+                1u,
+                tile_weight[next_buffer]);
+        }
+        __syncthreads();
+        if ((next_k_base % 128u) == 0u ||
+            next_k_base >= input_dimension)
+        {
+            uint64_t scale_index;
+            float block_scale;
+            uint32_t accumulator_index;
+
+            scale_index =
+                ((uint64_t)(neuron_base / 128u) *
+                 (uint64_t)(input_dimension / 128u)) +
+                (uint64_t)(k_base / 128u);
+            block_scale = __ldg(
+                reinterpret_cast<const float *>(weight_scale) +
+                scale_index);
+            #pragma unroll
+            for (accumulator_index = 0u;
+                 accumulator_index < 4u;
+                 ++accumulator_index)
+            {
+                accumulator[accumulator_index] = fmaf(
+                    block_accumulator[accumulator_index],
+                    block_scale,
+                    accumulator[accumulator_index]);
+                block_accumulator[accumulator_index] = 0.0f;
+            }
+        }
+        current_buffer = next_buffer;
+    }
+
+    SparkLmFp8StoreAccumulator(
+        tile_output,
+        accumulator,
+        row_scale,
+        warp_index,
+        lane_index);
+    __syncthreads();
+    for (entry = threadIdx.x;
+         entry < SPARK_LM_FP8_MMA_M * SPARK_LM_FP8_TILE_N;
+         entry += blockDim.x)
+    {
+        row_in_tile = entry / SPARK_LM_FP8_TILE_N;
+        neuron = neuron_base + (entry % SPARK_LM_FP8_TILE_N);
+        if (slot_base + row_in_tile < slot_count &&
+            neuron < output_dimension)
+        {
+            SparkLmFloatToBf16(
+                output_bf16,
+                ((uint64_t)(slot_base + row_in_tile) * output_dimension) +
+                    neuron,
+                tile_output[
+                    row_in_tile][entry % SPARK_LM_FP8_TILE_N]);
+        }
+    }
 }
 
 #endif

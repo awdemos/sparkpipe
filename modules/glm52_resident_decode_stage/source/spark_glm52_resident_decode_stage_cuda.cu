@@ -243,18 +243,6 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         return status;
     }
 
-    if (final_token_stage == 0u)
-    {
-        cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
-        if (cuda_status != cudaSuccess)
-        {
-            fprintf(stderr,"stage_slice_sync_failed slot=%u code=%d name=%s\n",pipeline_slot_index,(int32_t)cuda_status,cudaGetErrorString(cuda_status));
-            return SPARK_STATUS_INTERNAL_ERROR;
-        }
-        completion->function(completion->context);
-        return SPARK_STATUS_OK;
-    }
-
     if (getenv("GLM52_STAGE_SLICE_DEBUG_SYNC") != 0)
     {
         cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
@@ -269,23 +257,30 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
         }
     }
 
-    status = SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
-        completion_pipeline_slot,
-        final_token_stage,
-        active_sequence_count,
-        completion,
-        (cudaStream_t)cuda_stream);
-    if (status != SPARK_STATUS_OK)
+    if (final_token_stage != 0u)
     {
-        cudaStreamSynchronize((cudaStream_t)cuda_stream);
-        return status;
+        status = SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
+            completion_pipeline_slot,
+            final_token_stage,
+            active_sequence_count,
+            completion,
+            (cudaStream_t)cuda_stream);
+        if (status != SPARK_STATUS_OK)
+        {
+            cudaStreamSynchronize((cudaStream_t)cuda_stream);
+            return status;
+        }
     }
-    cuda_status = cudaStreamSynchronize((cudaStream_t)cuda_stream);
+
+    cuda_status = cudaLaunchHostFunc(
+        (cudaStream_t)cuda_stream,
+        SparkGlm52ResidentDecodeStageCudaCompletion,
+        completion);
     if (cuda_status != cudaSuccess)
     {
+        cudaStreamSynchronize((cudaStream_t)cuda_stream);
         return SPARK_STATUS_INTERNAL_ERROR;
     }
-    completion->function(completion->context);
     return SPARK_STATUS_OK;
 }
 

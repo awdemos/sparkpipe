@@ -62,6 +62,14 @@ static uint32_t SparkHiddenTransportCapabilitiesMeetSparkHostRdma(
         SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS;
 }
 
+static uint32_t SparkHiddenTransportCapabilitiesMeetSparkGpudirectRdma(
+    uint32_t capability_flags)
+{
+    return (capability_flags &
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS) ==
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS;
+}
+
 static void SparkHiddenTransportBuildEffectiveEndpoint(
     const SparkHiddenTransportEndpoint *endpoint,
     const SparkHiddenTransportInterface *transport_interface,
@@ -73,6 +81,19 @@ static void SparkHiddenTransportBuildEffectiveEndpoint(
     }
     *effective_endpoint = *endpoint;
     if (transport_interface != 0 &&
+        SparkHiddenTransportCapabilitiesMeetSparkGpudirectRdma(
+            transport_interface->capability_flags))
+    {
+        SparkHiddenTransportInitializeSparkGpudirectRdmaEndpoint(
+            effective_endpoint,
+            endpoint->hidden_dimension,
+            endpoint->max_active_sequence_count,
+            endpoint->validated_latency_ns,
+            endpoint->route_name);
+        effective_endpoint->bytes_per_sequence = endpoint->bytes_per_sequence;
+        effective_endpoint->max_packet_bytes = endpoint->max_packet_bytes;
+    }
+    else if (transport_interface != 0 &&
         SparkHiddenTransportCapabilitiesMeetSparkHostRdma(
             transport_interface->capability_flags))
     {
@@ -975,12 +996,14 @@ SparkStatus SparkHiddenTransportPersistentRingGetStatistics(
 }
 
 
-void SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
+static void SparkHiddenTransportInitializeRdmaEndpoint(
     SparkHiddenTransportEndpoint *endpoint,
     uint32_t hidden_dimension,
     uint32_t max_active_sequence_count,
     uint64_t validated_latency_ns,
-    const char *route_name)
+    const char *route_name,
+    const char *transport_module_id,
+    uint32_t capability_flags)
 {
     if (endpoint == 0)
     {
@@ -989,8 +1012,7 @@ void SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
     memset(endpoint, 0, sizeof(*endpoint));
     endpoint->abi_version = SPARK_HIDDEN_TRANSPORT_ABI_VERSION;
     endpoint->descriptor_bytes = SPARK_HIDDEN_TRANSPORT_ENDPOINT_BYTES;
-    endpoint->capability_flags =
-        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS;
+    endpoint->capability_flags = capability_flags;
     endpoint->hidden_dimension = hidden_dimension;
     endpoint->bytes_per_sequence =
         hidden_dimension * SPARK_HIDDEN_TRANSPORT_BF16_BYTES_PER_ELEMENT;
@@ -999,13 +1021,14 @@ void SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
         (uint64_t)endpoint->bytes_per_sequence *
         (uint64_t)max_active_sequence_count;
     endpoint->validated_latency_ns = validated_latency_ns;
-    endpoint->transport_module_id =
-        SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID;
+    endpoint->transport_module_id = transport_module_id;
     endpoint->route_name = route_name;
 }
 
-SparkStatus SparkHiddenTransportValidateSparkHostRdmaEndpoint(
-    const SparkHiddenTransportEndpoint *endpoint)
+static SparkStatus SparkHiddenTransportValidateRdmaEndpoint(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const char *transport_module_id,
+    uint32_t required_capability_flags)
 {
     SparkStatus status;
 
@@ -1016,13 +1039,12 @@ SparkStatus SparkHiddenTransportValidateSparkHostRdmaEndpoint(
     }
     if (!SparkHiddenTransportStringsEqual(
             endpoint->transport_module_id,
-            SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID))
+            transport_module_id))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if ((endpoint->capability_flags &
-            SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS) !=
-        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS)
+    if ((endpoint->capability_flags & required_capability_flags) !=
+        required_capability_flags)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -1034,14 +1056,19 @@ SparkStatus SparkHiddenTransportValidateSparkHostRdmaEndpoint(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkHiddenTransportSparkHostRdmaVerbsPreflight(
+static SparkStatus SparkHiddenTransportRdmaVerbsPreflight(
     const SparkHiddenTransportEndpoint *endpoint,
-    const char *infiniband_sysfs_path)
+    const char *infiniband_sysfs_path,
+    const char *transport_module_id,
+    uint32_t required_capability_flags)
 {
     SparkStatus status;
     const char *infiniband_path;
 
-    status = SparkHiddenTransportValidateSparkHostRdmaEndpoint(endpoint);
+    status = SparkHiddenTransportValidateRdmaEndpoint(
+        endpoint,
+        transport_module_id,
+        required_capability_flags);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1057,4 +1084,78 @@ SparkStatus SparkHiddenTransportSparkHostRdmaVerbsPreflight(
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
     return SPARK_STATUS_OK;
+}
+
+void SparkHiddenTransportInitializeSparkHostRdmaEndpoint(
+    SparkHiddenTransportEndpoint *endpoint,
+    uint32_t hidden_dimension,
+    uint32_t max_active_sequence_count,
+    uint64_t validated_latency_ns,
+    const char *route_name)
+{
+    SparkHiddenTransportInitializeRdmaEndpoint(
+        endpoint,
+        hidden_dimension,
+        max_active_sequence_count,
+        validated_latency_ns,
+        route_name,
+        SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID,
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_HOST_RDMA_CAPS);
+}
+
+SparkStatus SparkHiddenTransportValidateSparkHostRdmaEndpoint(
+    const SparkHiddenTransportEndpoint *endpoint)
+{
+    return SparkHiddenTransportValidateRdmaEndpoint(
+        endpoint,
+        SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS);
+}
+
+SparkStatus SparkHiddenTransportSparkHostRdmaVerbsPreflight(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const char *infiniband_sysfs_path)
+{
+    return SparkHiddenTransportRdmaVerbsPreflight(
+        endpoint,
+        infiniband_sysfs_path,
+        SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_VERBS_MODULE_ID,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS);
+}
+
+void SparkHiddenTransportInitializeSparkGpudirectRdmaEndpoint(
+    SparkHiddenTransportEndpoint *endpoint,
+    uint32_t hidden_dimension,
+    uint32_t max_active_sequence_count,
+    uint64_t validated_latency_ns,
+    const char *route_name)
+{
+    SparkHiddenTransportInitializeRdmaEndpoint(
+        endpoint,
+        hidden_dimension,
+        max_active_sequence_count,
+        validated_latency_ns,
+        route_name,
+        SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID,
+        SPARK_HIDDEN_TRANSPORT_RECOMMENDED_SPARK_GPUDIRECT_RDMA_CAPS);
+}
+
+SparkStatus SparkHiddenTransportValidateSparkGpudirectRdmaEndpoint(
+    const SparkHiddenTransportEndpoint *endpoint)
+{
+    return SparkHiddenTransportValidateRdmaEndpoint(
+        endpoint,
+        SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS);
+}
+
+SparkStatus SparkHiddenTransportSparkGpudirectRdmaVerbsPreflight(
+    const SparkHiddenTransportEndpoint *endpoint,
+    const char *infiniband_sysfs_path)
+{
+    return SparkHiddenTransportRdmaVerbsPreflight(
+        endpoint,
+        infiniband_sysfs_path,
+        SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID,
+        SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_GPUDIRECT_RDMA_CAPS);
 }

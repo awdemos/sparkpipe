@@ -121,6 +121,7 @@ GLM52_PP13_NODE_CONTEXT_BUILDER := build/libglm52_pp13_node_context_builder.$(SH
 GLM52_FP8_SCALED_GEMM_CUDA_GATE := build/glm52_fp8_scaled_gemm_cuda_gate
 HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
+HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA := build/libhidden_transport_spark_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
 
 include core/sources.mk
 include model-families/common/sources.mk
@@ -225,6 +226,7 @@ TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
 	tests/test_api_stress.py \
 	tests/test_memory_contracts.py \
+	tests/test_cuda_performance_contracts.py \
 	tests/test_b12x_scale_layout.py \
 	tests/test_glm52_dspark_manifest.py \
 	tests/test_glm52_dspark_artifact_preflight.py \
@@ -293,6 +295,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_spark2_local_pipeline_gate \
     glm52_pp13_service_backend \
     hidden_transport_spark_host_rdma_verbs \
+    hidden_transport_spark_gpudirect_rdma_verbs \
     glm52_pp13_node_context_builder \
     kv_mooncake \
     glm52_resident_decode_stage_firmware_package \
@@ -341,7 +344,8 @@ MODEL_COMMON_LINK_TARGETS := \
     build/test_tp_collective \
     build/test_tokenizer \
     $(HIDDEN_TRANSPORT_TCP_CUDA) \
-    $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
+    $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) \
+    $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA)
 GLM52_LINK_TARGETS := \
     $(filter build/sparkpipe_glm52_% build/test_glm52_%,$(TOOL_BINARIES) $(TEST_BINARIES)) \
     build/sparkpipe_glm52_batchplane_model \
@@ -509,16 +513,29 @@ hidden_transport_tcp_cuda: $(HIDDEN_TRANSPORT_TCP_CUDA)
 
 $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): modules/hidden_transport_spark_host_rdma_verbs.cu model-families/common/include/sparkpipe/spark_hidden_transport.h model-families/common/include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "hidden_transport_spark_host_rdma_verbs skipped: nvcc unavailable"; \
+		echo "hidden_transport_spark_host_rdma_verbs failed: nvcc unavailable" >&2; exit 1; \
 	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
-		echo "hidden_transport_spark_host_rdma_verbs skipped: CUDA headers unavailable"; \
+		echo "hidden_transport_spark_host_rdma_verbs failed: CUDA headers unavailable" >&2; exit 1; \
 	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
-		echo "hidden_transport_spark_host_rdma_verbs skipped: libibverbs headers unavailable"; \
+		echo "hidden_transport_spark_host_rdma_verbs failed: libibverbs headers unavailable" >&2; exit 1; \
 	else \
-		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) modules/hidden_transport_spark_host_rdma_verbs.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
+		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=0 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) modules/hidden_transport_spark_host_rdma_verbs.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
 	fi
 
 hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
+
+$(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA): modules/hidden_transport_spark_host_rdma_verbs.cu model-families/common/include/sparkpipe/spark_hidden_transport.h model-families/common/include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
+	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
+		echo "hidden_transport_spark_gpudirect_rdma_verbs failed: nvcc unavailable" >&2; exit 1; \
+	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
+		echo "hidden_transport_spark_gpudirect_rdma_verbs failed: CUDA headers unavailable" >&2; exit 1; \
+	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
+		echo "hidden_transport_spark_gpudirect_rdma_verbs failed: libibverbs headers unavailable" >&2; exit 1; \
+	else \
+		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=1 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) modules/hidden_transport_spark_host_rdma_verbs.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
+	fi
+
+hidden_transport_spark_gpudirect_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA)
 
 FORCE:
 

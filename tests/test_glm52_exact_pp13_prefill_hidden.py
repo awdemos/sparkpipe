@@ -65,7 +65,7 @@ def test_pp13_builder_uses_direct_full_fp8_tiled_attention(root: Path) -> None:
                   encoding="utf-8")
     wire_start = source.index("static void SparkGlm52Pp13BuilderWireLayer(")
     wire_end = source.index(
-        "static void SparkGlm52Pp13BuilderConfigureMtpLayer(", wire_start)
+        "static SparkStatus SparkGlm52Pp13BuilderConfigureMtpLayer(", wire_start)
     wire_body = source[wire_start:wire_end]
     assert "node->key_nope_cache_bf16 = bf16_trunk != 0u" in wire_body
     assert "node->value_cache_bf16 = bf16_trunk != 0u" in wire_body
@@ -154,6 +154,12 @@ def test_rdma_transport_is_multilane_and_event_driven(root: Path) -> None:
         "static SparkStatus SparkHiddenSparkHostRdmaSend(",
         scalar_prepare_start)
     scalar_prepare_body = source[scalar_prepare_start:scalar_prepare_end]
+    packet_memory_start = source.index(
+        "static SparkStatus SparkHiddenSparkHostRdmaPreparePacketMemory(")
+    packet_memory_end = source.index(
+        "static uint32_t SparkHiddenSparkHostRdmaPacketUsesDoorbell(",
+        packet_memory_start)
+    packet_memory_body = source[packet_memory_start:packet_memory_end]
     assert "SparkMemlinkBuildTransferPartition(" in source
     assert "cudaEventRecord(" in send_body
     assert "cudaEventQuery(" in send_body
@@ -163,11 +169,12 @@ def test_rdma_transport_is_multilane_and_event_driven(root: Path) -> None:
     assert "ibv_poll_cq(" not in lane_post_body
     assert "IBV_SEND_SIGNALED" in lane_post_body
     assert "outstanding_send_wr_counts" in lane_post_body
-    assert "SparkHiddenSparkHostRdmaStagePacket(" in scalar_prepare_body
-    assert "SparkHiddenSparkHostRdmaGetCachedMemoryRegion(" not in scalar_prepare_body
-    assert ("return status == SPARK_STATUS_OK ? SPARK_STATUS_OK : "
-            "SPARK_STATUS_BUSY;" in scalar_prepare_body)
-    assert "cudaHostAlloc(" in source
+    assert "SparkHiddenSparkHostRdmaPreparePacketMemory(" in scalar_prepare_body
+    assert "SparkHiddenSparkHostRdmaGetCachedMemoryRegion(" in packet_memory_body
+    assert "memcpy(" not in packet_memory_body
+    assert "return SPARK_STATUS_BUSY;" in scalar_prepare_body
+    assert "SparkHiddenSparkHostRdmaInitializeStaging" not in source
+    assert "cudaHostAlloc(" not in source
     assert "ibv_reg_mr(" in source
     assert "SparkHiddenSparkHostRdmaRetireCompletedSends(state);" in source
     assert ("SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION" in
