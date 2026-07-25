@@ -174,9 +174,22 @@ tree speculation (798), three quantization backends, cublasLt integration.
 | MTP / draft / speculative | yes | - | - | - | - |
 | dspark | yes | - | - | - | - |
 
-**Top-k is implemented four times.** Sparse attention twice. MLA twice. These are
-generic primitives living in family-private files, and the pattern is spreading
-as families are added, not shrinking.
+**Correction to an earlier claim in this document: top-k is NOT implemented four
+times.** That figure came from counting keyword occurrences per family, which is
+the wrong instrument and was reported as a finding. Checked properly:
+`SparkLmOrderedTopKKey` and `SparkLmBitonicSortKeysAscending` are already in the
+shared library, and dsv4, k3 and mimo25 call them - `SparkDsv4OrderedTopKKey` is
+a one-line wrapper, not a reimplementation. Genuinely independent selection
+kernels: **two**, glm52's and `SparkDsv4TopKKernel`, whose body uses no shared
+primitive.
+
+So the shared primitives exist and are partially adopted. The remaining
+duplication is the selection kernels on top of them, which is a smaller and
+different job than promoting a primitive that does not exist yet.
+
+Sparse attention is implemented twice, MLA twice - those were counted the same
+crude way and should be re-checked against actual function bodies before anyone
+plans work around them.
 
 MTP, DSA and dspark are single-implementation today but universally applicable -
 any model can do speculative decoding or sparse attention. They are in glm52's
@@ -185,9 +198,16 @@ tree because glm52 was written first, not because they are glm52-specific.
 references exactly **one** glm52 model constant. It is already almost entirely
 generic and should live in `model-families/common/src/`.
 
-Order of work: promote top-k first, because four copies is the active bleed, then
-dspark (host C, cheap and testable), then MLA and sparse attention, then MTP with
-its tree constants turned into configuration.
+Order of work, revised after the correction above: `dspark` first, because it is
+877 lines of host C with one glm52 constant in it, it compiles and tests without
+a GPU, and its value is preventing a duplicate rather than removing one. Then
+re-measure sparse attention and MLA by comparing function bodies rather than
+keyword counts, and let that decide what follows. Do not plan around the counts
+in the table above without checking them.
+
+The general lesson, which cost four wrong conclusions in one session: a keyword
+count tells you where to look, never what is there. Every conclusion drawn from
+one and not checked against the code was reversed by checking.
 
 ## Not attempted, and why
 
