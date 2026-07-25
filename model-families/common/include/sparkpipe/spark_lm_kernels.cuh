@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdio.h>
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
@@ -2378,6 +2379,38 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 // dispatch), and every dimension is parametric so the shape carries to the
 // next model generation unchanged.
 //
+/*
+ * Hard validation of the tile's input contract. The tile does not fail on
+ * bad input, it silently produces wrong numbers, in two ways. A width that
+ * is not a multiple of the K tile leaves a partial trailing K tile whose
+ * stagers bound rows and neurons but never K, so it folds whatever follows
+ * the row into the dot product. And a weight format the decoder has no
+ * branch for - F32 and U32 - falls past the BF16 and MXFP4 early returns
+ * into the FP8 path and is read as packed E4M3 bytes.
+ *
+ * Both are latent today: every shipped projection width is K-aligned and no
+ * live view carries F32 or U32. Both would be silent wrong tokens the moment
+ * that changes, with nothing in the output to reveal it. They fail loudly
+ * here instead, naming the offending value, because a plausible wrong answer
+ * costs far more than a refused launch. The tiny-batch scalar path carries
+ * explicit tails and handles any width, so only the tile regime is bound by
+ * the K-multiple rule.
+ */
+static inline cudaError_t SparkLmValidateLinearContract(uint32_t weight_format, uint32_t row_count, uint32_t input_dimension)
+{
+	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+	{
+		fprintf(stderr,"spark_lm_kernels: linear dispatch got weight_format %u, which no decoder branch handles\n",weight_format);
+		return(cudaErrorInvalidValue);
+	}
+	if ( row_count >= SPARK_LM_TILE && (input_dimension % SPARK_LM_TILE_K) != 0u )
+	{
+		fprintf(stderr,"spark_lm_kernels: linear dispatch got input_dimension %u, not a multiple of the K tile %u\n",input_dimension,(unsigned)SPARK_LM_TILE_K);
+		return(cudaErrorInvalidValue);
+	}
+	return(cudaSuccess);
+}
+
 // The tile also REQUIRES input_dimension to be a multiple of the K tile. Its
 // stagers bound rows and neurons but never K, so a trailing partial K tile
 // stages whatever follows the row in memory and folds it into the dot
@@ -2391,11 +2424,14 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 {
 	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	uint32_t n_tiles = (output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N;
+	cudaError_t contract = SparkLmValidateLinearContract(weight_format,row_count,input_dimension);
+	if ( contract != cudaSuccess )
+		return(contract);
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
 		(weight_scale == 0 || (input_dimension % 128u) != 0u ||
 			(output_dimension % 128u) != 0u) )
 		return(cudaErrorInvalidValue);
-	if ( row_count < SPARK_LM_TILE || (input_dimension % SPARK_LM_TILE_K) != 0u )
+	if ( row_count < SPARK_LM_TILE )
 	{
 		dim3 scalar_grid(row_count,(output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
 		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);

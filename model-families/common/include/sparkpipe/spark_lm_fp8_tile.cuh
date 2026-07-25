@@ -36,6 +36,25 @@
 // SPARK_LM_FP8_TILE is explicitly defined, and one ring run must still confirm
 // its output matches the bf16 tile on identical weights before production use.
 //
+// KNOWN PERFORMANCE DEFECT - READ BEFORE ENABLING. The per-row activation
+// absmax is computed inside the tile body, which runs once per (M-tile,
+// N-tile) CTA, so every N-tile rescans the FULL K of the same rows. The
+// redundancy is the N-tile count: 212x for mimo25 qkv (K4096 N13568), 272x
+// for qwen36 ffn (K5120 N17408), 64x for mimo25 o_proj, 9x for dsv4 kv. That
+// is not a micro-inefficiency - it can make this path SLOWER than the bf16
+// tile it is meant to replace, so enabling the flag without fixing it may
+// regress rather than improve.
+//
+// The correct fix is to compute the activation quantization ONCE: either a
+// prequantized activation workspace shared by all N-tiles, or a per-K-tile
+// scale computed during staging (which also removes the full-K prescan and
+// gives finer, more accurate scale granularity, at the cost of accumulating
+// each K-tile's partial product into a float total outside the mma). Neither
+// is done here. This is left for the FP8 validation work, where the change
+// can actually be measured on silicon rather than reasoned about - changing
+// an unvalidated kernel's numerics with no way to check them only stacks
+// unverifiable risk.
+//
 // GEOMETRY IS PARAMETRIC. No model dimension is hard-coded; the tile SHAPE
 // (16x8x32 FP8 fragments, K accumulated deep, per-row activation scale) is
 // the durable artifact and carries unchanged to MiMo 3.1, dsv4 GA, Qwen 3.8.
