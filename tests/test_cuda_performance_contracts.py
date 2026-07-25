@@ -1405,20 +1405,26 @@ def validate_fp8_tile_contract() -> None:
     first_barrier = k_pipeline.find("__syncthreads();")
     second_barrier = k_pipeline.find("__syncthreads();", first_barrier + 1)
     third_barrier = k_pipeline.find("__syncthreads();", second_barrier + 1)
-    first_weight_producer = k_pipeline.find(
-        "SparkLmFp8StageWeightProducerHalf("
-    )
-    second_weight_producer = k_pipeline.find(
-        "SparkLmFp8StageWeightProducerHalf(",
-        first_weight_producer + 1,
-    )
+    # The weight pipeline must retire exactly one group per iteration, never
+    # drain. A wait_all here idles the memory system at every iteration boundary,
+    # and the weight stream is the bandwidth bound.
+    if "SparkLmAsyncWaitAll();" in k_pipeline:
+        raise AssertionError(
+            "FP8 K pipeline must retire one group, not drain the weight stream"
+        )
+    # The invariant is the ping-pong itself: the next weight tile is issued
+    # before either consumer phase, the two consumer phases alternate across
+    # exactly two barriers, and the asynchronous staging is retired before the
+    # buffers swap. How the staging is divided among warps is not the contract -
+    # it used to be two half-tile producers because the loads blocked, and is now
+    # one whole-tile issue because cp.async does not.
     k_pipeline_order = [
+        k_pipeline.find("SparkLmFp8StageWeight("),
         k_pipeline.find("if (warp_index < 4u)"),
         k_pipeline.find("SparkLmFp8StageInputProducerGroup("),
-        first_weight_producer,
         first_barrier,
         k_pipeline.find("if (warp_index >= 4u)"),
-        second_weight_producer,
+        k_pipeline.find("SparkLmAsyncWait<1u>();"),
         second_barrier,
         k_pipeline.find("if ((next_k_base % 128u) == 0u"),
         k_pipeline.find("current_buffer = next_buffer;"),

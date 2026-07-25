@@ -1064,6 +1064,68 @@ SparkStatus SparkGlm52PrefixCacheProbePrompt(
 }
 
 
+typedef struct SparkGlm52PrefixCacheWalk
+{
+    uint64_t parent_hash;
+    uint64_t block_hash;
+    uint32_t token_offset;
+    uint32_t reusable_token_count;
+    uint32_t matched_block_count;
+} SparkGlm52PrefixCacheWalk;
+
+// Step the cached prefix chain one block at a time, returning the matched entry
+// or null at the end of the chain, and touching recency as it goes. The three
+// probes below differ only in what they do per block, so the chain hashing and
+// lookup live here once rather than in each of them.
+static SparkGlm52PrefixCacheEntry *SparkGlm52PrefixCacheWalkNext(
+    SparkGlm52PrefixCache *cache,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    SparkGlm52PrefixCacheWalk *walk)
+{
+    SparkGlm52PrefixCacheEntry *entry;
+    uint64_t content_hash;
+
+    if (walk->matched_block_count == 0u && walk->token_offset == 0u)
+    {
+        walk->parent_hash = SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH;
+        walk->reusable_token_count =
+            SparkGlm52PrefixCacheMaximumReusableTokenCount(cache, token_count);
+    }
+    else
+    {
+        cache->tick += 1u;
+        walk->parent_hash = walk->block_hash;
+        walk->token_offset += cache->block_token_count;
+    }
+    if (walk->token_offset >= walk->reusable_token_count)
+    {
+        return 0;
+    }
+    walk->block_hash = SparkGlm52PrefixCacheHashBlock(
+        &token_ids[walk->token_offset],
+        cache->block_token_count,
+        walk->parent_hash);
+    content_hash = SparkGlm52PrefixCacheHashBlockContent(
+        &token_ids[walk->token_offset],
+        cache->block_token_count);
+    entry = SparkGlm52PrefixCacheFindEntry(
+        cache,
+        walk->parent_hash,
+        walk->block_hash,
+        content_hash,
+        walk->token_offset,
+        cache->block_token_count,
+        1u);
+    if (entry == 0)
+    {
+        return 0;
+    }
+    entry->last_used_tick = cache->tick + 1u;
+    walk->matched_block_count += 1u;
+    return entry;
+}
+
 SparkStatus SparkGlm52PrefixCacheProbePhysicalBlockTable(
     SparkGlm52PrefixCache *cache,
     const uint32_t *token_ids,
@@ -1073,12 +1135,9 @@ SparkStatus SparkGlm52PrefixCacheProbePhysicalBlockTable(
     uint32_t *matched_token_count_out,
     uint32_t *physical_block_count_out)
 {
-    uint64_t parent_hash;
-    uint64_t block_hash;
-    uint64_t content_hash;
-    uint32_t reusable_token_count;
-    uint32_t token_offset;
     uint32_t physical_block_count;
+    SparkGlm52PrefixCacheWalk walk;
+    SparkGlm52PrefixCacheEntry *entry;
     SparkStatus status;
 
     status = SparkGlm52PrefixCacheValidate(cache);
@@ -1095,45 +1154,18 @@ SparkStatus SparkGlm52PrefixCacheProbePhysicalBlockTable(
 
     *matched_token_count_out = 0u;
     *physical_block_count_out = 0u;
-    reusable_token_count = SparkGlm52PrefixCacheMaximumReusableTokenCount(
-        cache,
-        token_count);
-    parent_hash = SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH;
     physical_block_count = 0u;
-    for (token_offset = 0u;
-         token_offset < reusable_token_count;
-         token_offset += cache->block_token_count)
+    memset(&walk, 0, sizeof(walk));
+    while ((entry = SparkGlm52PrefixCacheWalkNext(
+        cache, token_ids, token_count, &walk)) != 0)
     {
-        SparkGlm52PrefixCacheEntry *entry;
-
-        block_hash = SparkGlm52PrefixCacheHashBlock(
-            &token_ids[token_offset],
-            cache->block_token_count,
-            parent_hash);
-        content_hash = SparkGlm52PrefixCacheHashBlockContent(
-            &token_ids[token_offset],
-            cache->block_token_count);
-        entry = SparkGlm52PrefixCacheFindEntry(
-            cache,
-            parent_hash,
-            block_hash,
-            content_hash,
-            token_offset,
-            cache->block_token_count,
-            1u);
-        if (entry == 0)
-        {
-            break;
-        }
         if (physical_block_count >= physical_block_capacity)
         {
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         }
-        physical_block_indices[physical_block_count] = entry->physical_block_index;
+        physical_block_indices[physical_block_count] =
+            entry->physical_block_index;
         physical_block_count += 1u;
-        cache->tick += 1u;
-        entry->last_used_tick = cache->tick;
-        parent_hash = block_hash;
     }
 
     *matched_token_count_out = physical_block_count * cache->block_token_count;
@@ -1150,12 +1182,9 @@ SparkStatus SparkGlm52PrefixCacheProbeReusablePrefixPrefetchSources(
     uint32_t *matched_token_count_out,
     uint32_t *source_block_count_out)
 {
-    uint64_t parent_hash;
-    uint64_t block_hash;
-    uint64_t content_hash;
-    uint32_t reusable_token_count;
-    uint32_t token_offset;
     uint32_t source_block_count;
+    SparkGlm52PrefixCacheWalk walk;
+    SparkGlm52PrefixCacheEntry *entry;
     SparkStatus status;
 
     status = SparkGlm52PrefixCacheValidate(cache);
@@ -1172,36 +1201,11 @@ SparkStatus SparkGlm52PrefixCacheProbeReusablePrefixPrefetchSources(
 
     *matched_token_count_out = 0u;
     *source_block_count_out = 0u;
-    reusable_token_count = SparkGlm52PrefixCacheMaximumReusableTokenCount(
-        cache,
-        token_count);
-    parent_hash = SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH;
     source_block_count = 0u;
-    for (token_offset = 0u;
-         token_offset < reusable_token_count;
-         token_offset += cache->block_token_count)
+    memset(&walk, 0, sizeof(walk));
+    while ((entry = SparkGlm52PrefixCacheWalkNext(
+        cache, token_ids, token_count, &walk)) != 0)
     {
-        SparkGlm52PrefixCacheEntry *entry;
-
-        block_hash = SparkGlm52PrefixCacheHashBlock(
-            &token_ids[token_offset],
-            cache->block_token_count,
-            parent_hash);
-        content_hash = SparkGlm52PrefixCacheHashBlockContent(
-            &token_ids[token_offset],
-            cache->block_token_count);
-        entry = SparkGlm52PrefixCacheFindEntry(
-            cache,
-            parent_hash,
-            block_hash,
-            content_hash,
-            token_offset,
-            cache->block_token_count,
-            1u);
-        if (entry == 0)
-        {
-            break;
-        }
         if (source_block_count >= source_block_capacity)
         {
             return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -1215,9 +1219,6 @@ SparkStatus SparkGlm52PrefixCacheProbeReusablePrefixPrefetchSources(
             return status;
         }
         source_block_count += 1u;
-        cache->tick += 1u;
-        entry->last_used_tick = cache->tick;
-        parent_hash = block_hash;
     }
 
     *matched_token_count_out = source_block_count * cache->block_token_count;
@@ -1233,13 +1234,10 @@ SparkStatus SparkGlm52PrefixCacheProbeReusablePrefixResidency(
     uint32_t *resident_block_count_out,
     uint32_t *nonresident_block_count_out)
 {
-    uint64_t parent_hash;
-    uint64_t block_hash;
-    uint64_t content_hash;
-    uint32_t reusable_token_count;
-    uint32_t token_offset;
     uint32_t resident_block_count;
     uint32_t nonresident_block_count;
+    SparkGlm52PrefixCacheWalk walk;
+    SparkGlm52PrefixCacheEntry *entry;
     SparkStatus status;
 
     status = SparkGlm52PrefixCacheValidate(cache);
@@ -1257,39 +1255,15 @@ SparkStatus SparkGlm52PrefixCacheProbeReusablePrefixResidency(
     *matched_token_count_out = 0u;
     *resident_block_count_out = 0u;
     *nonresident_block_count_out = 0u;
-    reusable_token_count = SparkGlm52PrefixCacheMaximumReusableTokenCount(
-        cache,
-        token_count);
-    parent_hash = SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH;
     resident_block_count = 0u;
     nonresident_block_count = 0u;
-    for (token_offset = 0u;
-         token_offset < reusable_token_count;
-         token_offset += cache->block_token_count)
+    memset(&walk, 0, sizeof(walk));
+    while ((entry = SparkGlm52PrefixCacheWalkNext(
+        cache, token_ids, token_count, &walk)) != 0)
     {
-        SparkGlm52PrefixCacheEntry *entry;
-
-        block_hash = SparkGlm52PrefixCacheHashBlock(
-            &token_ids[token_offset],
-            cache->block_token_count,
-            parent_hash);
-        content_hash = SparkGlm52PrefixCacheHashBlockContent(
-            &token_ids[token_offset],
-            cache->block_token_count);
-        entry = SparkGlm52PrefixCacheFindEntry(
-            cache,
-            parent_hash,
-            block_hash,
-            content_hash,
-            token_offset,
-            cache->block_token_count,
-            1u);
-        if (entry == 0)
-        {
-            break;
-        }
         if (cache->kv_cache_arena != 0 &&
-            entry->physical_block_index < cache->kv_cache_arena->physical_block_count &&
+            entry->physical_block_index <
+                cache->kv_cache_arena->physical_block_count &&
             (cache->kv_cache_arena->blocks[entry->physical_block_index].flags &
                 SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u)
         {
@@ -1299,13 +1273,11 @@ SparkStatus SparkGlm52PrefixCacheProbeReusablePrefixResidency(
         {
             resident_block_count += 1u;
         }
-        cache->tick += 1u;
-        entry->last_used_tick = cache->tick;
-        parent_hash = block_hash;
     }
 
     *matched_token_count_out =
-        (resident_block_count + nonresident_block_count) * cache->block_token_count;
+        (resident_block_count + nonresident_block_count) *
+        cache->block_token_count;
     *resident_block_count_out = resident_block_count;
     *nonresident_block_count_out = nonresident_block_count;
     return SPARK_STATUS_OK;
