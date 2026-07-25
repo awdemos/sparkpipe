@@ -76,9 +76,12 @@ over building more:
    prefetch and NVMe paging - roughly 1300 lines - are all deletable, because
    `KvCacheArena` and `PrefixCache` already do every one of those things.
 
-Both answers are subtractive. PR #509 is additive. Settle question 1 on the ring
-first: if the existing path works once validated, #509's mechanism is redundant
-and roughly 1300 lines of `WorkControlKvState` go with it.
+Both answers are subtractive. #509 was additive and has merged, so the sharing
+mechanism now exists twice: once in `PrefixCache`, once in `WorkControlKvState`.
+Settle question 1 on the ring at the first opportunity. If the existing path
+works once validated, the merged mechanism is redundant and roughly 1300 lines
+of `WorkControlKvState` go with it. That deletion is the win; the merge did not
+close this question, it enlarged it.
 
 ## Method, restated because it failed twice
 
@@ -100,18 +103,24 @@ nothing. **Search for the capability by name before you build it** - "prefix",
 - `tools/length_gate.py` enforces 50 lines per function and exits nonzero.
 - Worst offenders in `work_control.c`, both pre-existing: `ValidatePacket` 325
   lines, `BuildPrefillPacket` 124.
-- `model-families/glm52/src/spark_glm52_request_api.c` is 7350 lines and has not
-  been audited for the duplication described above.
+- `model-families/glm52/src/spark_glm52_request_api.c` was 7350 lines and is now
+  7178 after #511. Remaining known duplication in it: `CompleteDispatch` (195)
+  and `CancelDispatch` (157) share 121 lines, but the shared part is scaffolding
+  and the variation is at every leaf, so a merge would need several flags and
+  callbacks and would add more complexity than it removes. Deliberately left.
+- Not yet audited: `scheduler.c` (2463) and `serving_engine.c` (2500), which sit
+  on the same prefix cache and arena as `request_api.c`. The pair-similarity
+  scan has only been run within single files, never across them.
 
-## PR state at handoff
+## Outstanding work
 
-- **#507** rebased onto current `main`. Two kernel-dispatch conflicts resolved by
-  keeping both guards. One commit skipped: `a3a10fe`, the FP8 per-K-tile
-  activation scale, which conflicts with main's corrected `SparkLmFp8LoadFragA`
-  fragment mapping. It needs re-deriving on top of main's structure somewhere
-  with a compiler; a wrong mma fragment mapping assembles cleanly and renders
-  silently wrong.
-- **#509** block identity and prefix sharing in `work_control.c`. Compiles,
-  tested, `make -j4 test` exits 0, B8 collapses 40 sequence slots onto 12
-  physical blocks. Deletes `kv_dedup.c`, `jit_kv_pool.c` and the batch-plane
-  simulator. Net +983/-1616. **Hold it** - see question 2 above.
+- **`a3a10fe` never landed.** It was skipped when #507 was rebased: the FP8
+  per-K-tile activation scale conflicts with main's corrected
+  `SparkLmFp8LoadFragA` fragment mapping, and a wrong mma fragment mapping
+  assembles cleanly and renders silently wrong. It needs re-deriving on top of
+  main's structure somewhere with a compiler. Nothing in CI will catch a mistake
+  here, so do not merge it on review alone.
+- **The ring run described above.** One flag, one deployment, and the answer
+  decides whether ~1300 lines come out.
+- **#507, #509, #510, #511 are merged.** #512 was closed as an older draft of
+  this document.
