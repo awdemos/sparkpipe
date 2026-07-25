@@ -337,7 +337,7 @@ static __device__ void SparkLmExpertTileBodyFp8(
 {
     __shared__ __align__(SPARK_LM_ASYNC_COPY_WIDEST_BYTES) __nv_fp8_storage_t tile_input[2u][
         SPARK_LM_FP8_MMA_M * SPARK_LM_FP8_TILE_K];
-    __shared__ __align__(SPARK_LM_ASYNC_COPY_WIDEST_BYTES) __nv_fp8_storage_t tile_weight[2u][
+    __shared__ __align__(SPARK_LM_ASYNC_COPY_WIDEST_BYTES) __nv_fp8_storage_t tile_weight[3u][
         SPARK_LM_FP8_TILE_N * SPARK_LM_FP8_TILE_K];
     __shared__ float row_scale[SPARK_LM_FP8_MMA_M];
     __shared__ float row_inverse_scale[SPARK_LM_FP8_MMA_M];
@@ -350,6 +350,8 @@ static __device__ void SparkLmExpertTileBodyFp8(
     uint32_t neuron_tile_offset;
     uint32_t neuron_tile_base;
     uint32_t current_buffer;
+    uint32_t weight_stage;
+    uint32_t prefetch_k_base;
     uint32_t next_buffer;
     uint32_t k_base;
     uint32_t next_k_base;
@@ -403,6 +405,7 @@ static __device__ void SparkLmExpertTileBodyFp8(
             block_accumulator[accumulator_index] = 0.0f;
         }
         current_buffer = 0u;
+        weight_stage = 0u;
         SparkLmFp8StageInput(
             input_bf16,
             input_row_map,
@@ -412,17 +415,30 @@ static __device__ void SparkLmExpertTileBodyFp8(
             0u,
             input_dimension,
             tile_input[current_buffer]);
+        // Prime two weight tiles. Retiring only the first leaves the second in
+        // flight, so the memory system is never idle waiting to be asked - which
+        // is the whole point when the weight stream dominates bandwidth.
         SparkLmFp8StageWeight(
             weight_payload_fp8,
             neuron_tile_base,
             0u,
             input_dimension,
             output_dimension,
-            tile_weight[current_buffer]);
-        // __syncthreads does not wait on cp.async; the transfers must be
-        // retired explicitly before any warp reads the staged tile.
+            tile_weight[0u]);
         SparkLmAsyncCommit();
-        SparkLmAsyncWaitAll();
+        if (SPARK_LM_FP8_TILE_K < input_dimension)
+        {
+            SparkLmFp8StageWeight(
+                weight_payload_fp8,
+                neuron_tile_base,
+                SPARK_LM_FP8_TILE_K,
+                input_dimension,
+                output_dimension,
+                tile_weight[1u]);
+        }
+        SparkLmAsyncCommit();
+        // At most one group outstanding: stage 0 has landed, stage 1 still flies.
+        SparkLmAsyncWait<1u>();
         __syncthreads();
 
         for (k_base = 0u;
@@ -438,16 +454,20 @@ static __device__ void SparkLmExpertTileBodyFp8(
             // only delays bytes: the half that used to be issued in phase two
             // had no mma left to overlap and was retired against an idle bus.
             // Issued here, the whole tile is in flight across both phases.
-            if (next_k_base < input_dimension)
+            // Issue two tiles ahead, into the stage neither the current mma nor
+            // the already-in-flight prefetch is using.
+            prefetch_k_base = next_k_base + SPARK_LM_FP8_TILE_K;
+            if (prefetch_k_base < input_dimension)
             {
                 SparkLmFp8StageWeight(
                     weight_payload_fp8,
                     neuron_tile_base,
-                    next_k_base,
+                    prefetch_k_base,
                     input_dimension,
                     output_dimension,
-                    tile_weight[next_buffer]);
+                    tile_weight[(weight_stage + 2u) % 3u]);
             }
+            SparkLmAsyncCommit();
             if (warp_index < 4u)
             {
                 for (k_step = 0u;
@@ -461,7 +481,7 @@ static __device__ void SparkLmExpertTileBodyFp8(
                         lane_index);
                     SparkLmFp8LoadFragB(
                         fragment_b,
-                        tile_weight[current_buffer],
+                        tile_weight[weight_stage],
                         warp_index,
                         k_step,
                         lane_index);
@@ -499,7 +519,7 @@ static __device__ void SparkLmExpertTileBodyFp8(
                         lane_index);
                     SparkLmFp8LoadFragB(
                         fragment_b,
-                        tile_weight[current_buffer],
+                        tile_weight[weight_stage],
                         warp_index,
                         k_step,
                         lane_index);
@@ -509,12 +529,13 @@ static __device__ void SparkLmExpertTileBodyFp8(
                         fragment_b);
                 }
             }
-            // Both producer phases have now issued their transfers into
-            // next_buffer. Retire them here, once, before the buffers swap and
-            // the next iteration's MMA reads what was just staged. Issuing in
-            // phase one and waiting only here is what lets the copies overlap
-            // the second phase's MMA. __syncthreads does not wait on cp.async.
-            SparkLmAsyncWaitAll();
+            // Retire exactly one group rather than draining. That leaves the
+            // tile issued this iteration still in flight while the next
+            // iteration computes on the one that just landed, so the weight
+            // stream never stops. Draining here - which cp.async.wait_all does -
+            // idles the bus at every iteration boundary.
+            // __syncthreads does not wait on cp.async, hence the explicit retire.
+            SparkLmAsyncWait<1u>();
             __syncthreads();
             if ((next_k_base % 128u) == 0u ||
                 next_k_base >= input_dimension)
@@ -542,6 +563,7 @@ static __device__ void SparkLmExpertTileBodyFp8(
                 }
             }
             current_buffer = next_buffer;
+            weight_stage = (weight_stage + 1u) % 3u;
         }
 
         SparkLmFp8StoreAccumulator(
