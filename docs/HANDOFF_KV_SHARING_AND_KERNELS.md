@@ -197,10 +197,36 @@ handoff records that TMA and `__cluster_dims__` ARE available on `sm_121a`. The
 async-copy pipeline is unexploited across the entire codebase and is the clearest
 performance lever that is genuinely missing rather than merely large.
 
-It was not implemented here because this container has no CUDA compiler. Installing
-one was attempted and failed: the distribution toolkit 404s on a driver dependency,
-and `nvidia-cuda-nvcc-cu12` ships `ptxas` only, which assembles PTX and cannot
-compile CUDA C++. There is no clang either. Writing TMA descriptors that cannot be
-syntax-checked, into kernels whose own comments note that a wrong fragment mapping
-assembles cleanly and renders silently wrong, would be the least defensible change
-available. Do this work where there is a toolchain.
+It was not implemented here because this container has no CUDA compiler. The
+distribution toolkit 404s on a driver dependency, and `nvidia-cuda-nvcc-cu12`
+ships `ptxas` only, which assembles PTX and cannot compile CUDA C++. There is no
+clang. Writing TMA descriptors that cannot be syntax-checked, into kernels whose
+own comments note that a wrong fragment mapping assembles cleanly and renders
+silently wrong, would be the least defensible change available.
+
+But `ptxas` alone answers the question underneath it, and
+`tests/test_ptx_capability_gate.py` now does. The capability claims in this
+document were prose; they are now assembled against `sm_121a` on every
+`make test`:
+
+| form | sm_121a |
+| --- | --- |
+| `cp.async.ca`, `cp.async.cg` | available |
+| `cp.async.bulk` | available |
+| `cp.async.bulk.tensor` 1D / 2D / 3D | available |
+| `mbarrier.expect_tx` | available |
+| `barrier.cluster.*`, `mapa.shared::cluster` | available |
+| `mma.sync.m16n8k16.bf16` | available |
+| `tcgen05.*` | NOT available |
+| `wgmma.*` | NOT available |
+
+The gate fails if a required form stops assembling, and equally if `tcgen05` or
+`wgmma` starts, because that means the target changed and the kernel strategy
+should be revisited. Where there is no `ptxas` it skips rather than failing.
+
+So the async-copy work is now specified against a verified target rather than an
+assumed one. `cp.async.ca` is the cheapest first step - it is available, the
+codebase uses it zero times, and it needs no tensor-map descriptor. Full TMA needs
+host-side `CUtensorMap` setup and is the second step. Both still need a machine
+with a compiler to land; what has changed is that the target's capabilities are no
+longer a matter of belief.

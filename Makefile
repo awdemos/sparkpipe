@@ -228,6 +228,7 @@ PYTHON_TESTS := \
 	tests/test_api_stress.py \
 	tests/test_memory_contracts.py \
 	tests/test_cuda_performance_contracts.py \
+	tests/test_ptx_capability_gate.py \
 	tests/test_b12x_scale_layout.py \
 	tests/test_glm52_dspark_manifest.py \
 	tests/test_glm52_dspark_artifact_preflight.py \
