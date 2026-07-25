@@ -917,9 +917,12 @@ static SparkGlm52Pp13KvKey *SparkGlm52Pp13WorkControlKvIndexKeyAt(void *entries,
 	return (SparkGlm52Pp13KvKey *)((uint8_t *)entries + ((size_t)slot * (size_t)entry_bytes));
 }
 
+// Both key domains carry an avalanched low half - private keys are a splitmix
+// output, content keys a caller digest - so the home slot is a mask, not another
+// mix. This runs on every probe of every block of every lane.
 static uint32_t SparkGlm52Pp13WorkControlKvIndexHome(SparkGlm52Pp13KvKey key,uint32_t mask)
 {
-	return (uint32_t)(SparkGlm52Pp13WorkControlKvMix(key.low ^ key.high) & (uint64_t)mask);
+	return (uint32_t)(key.low & (uint64_t)mask);
 }
 
 // Linear probe over a power-of-two open-addressed table whose entries begin with
@@ -1330,30 +1333,21 @@ static void SparkGlm52Pp13WorkControlAccountReadiness(
 
 
 
-static uint32_t SparkGlm52Pp13WorkControlPrefetchEntryExists(const SparkGlm52Pp13WorkControlKvPrefetchEntry *entries,uint32_t entry_count,SparkGlm52Pp13KvKey key)
-{
-	uint32_t entry_index;
-	for (entry_index = 0u; entry_index < entry_count; ++entry_index)
-	{
-		if (SparkGlm52Pp13WorkControlKvKeyEqual(entries[entry_index].key,key) != 0u)
-			return 1u;
-	}
-	return 0u;
-}
-
 SparkStatus SparkGlm52Pp13WorkControlCollectKvPrefetchEntries(
 	const SparkGlm52Pp13WorkControlPacket *packets,
 	uint32_t packet_count,
-	const SparkGlm52Pp13WorkControlKvState *state,
+	SparkGlm52Pp13WorkControlKvState *state,
 	SparkGlm52Pp13WorkControlKvPrefetchEntry *entries,
 	uint32_t entry_capacity,
 	uint32_t *entry_count_out)
 {
-	uint32_t packet_index,lane_index,block_index,entry_count;
+	uint32_t packet_index,lane_index,block_index,entry_count,mark;
 	if (packets == 0 || packet_count == 0u || state == 0 || entries == 0 ||
 		entry_capacity == 0u || entry_count_out == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	entry_count = 0u;
+	state->prefetch_generation += 1u;
+	mark = state->prefetch_generation & 0x1FFFFFFFu;
 	for (packet_index = 0u; packet_index < packet_count; ++packet_index)
 	{
 		const SparkGlm52Pp13WorkControlPacket *packet;
@@ -1376,16 +1370,18 @@ SparkStatus SparkGlm52Pp13WorkControlCollectKvPrefetchEntries(
 				packet->block_token_count);
 			for (block_index = 0u; block_index < block_count; ++block_index)
 			{
-				const SparkGlm52Pp13WorkControlKvBlockEntry *block_entry;
+				SparkGlm52Pp13WorkControlKvBlockEntry *block_entry;
 				block_entry = SparkGlm52Pp13WorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
 				if (block_entry == 0)
 					continue;
+				// Sharers reach one record many times. Marking the record dedupes
+				// in constant time instead of rescanning what has been emitted.
 				if (block_entry->residency_state !=
 						SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NVME ||
 					block_entry->backing_valid == 0u ||
-					SparkGlm52Pp13WorkControlPrefetchEntryExists(
-						entries,entry_count,block_entry->key))
+					block_entry->prefetch_mark == mark)
 					continue;
+				block_entry->prefetch_mark = mark;
 				if (entry_count >= entry_capacity)
 				{
 					*entry_count_out = entry_count;
@@ -1856,17 +1852,25 @@ static SparkStatus SparkGlm52Pp13WorkControlKvCountAdmission(const SparkGlm52Pp1
 	return SPARK_STATUS_OK;
 }
 
-// Admission: nothing is mutated until the packet is known to fit.
+// Reject a packet that cannot fit before anything is mutated. The cheap bound
+// costs one multiply per lane and admits every packet that would fit even with
+// no sharing at all; the probing count runs only when that bound is exceeded,
+// which is exactly when sharing has to be measured to know whether it fits.
 static SparkStatus SparkGlm52Pp13WorkControlKvAdmitPacket(const SparkGlm52Pp13WorkControlPacket *packet,SparkGlm52Pp13WorkControlKvState *state)
 {
-	uint32_t new_entry_count,new_block_count;
+	uint32_t lane_index,block_count,total_block_count,new_entry_count,new_block_count;
 	SparkStatus status;
-	status = SparkGlm52Pp13WorkControlValidateKvState(packet,state);
-	if (status != SPARK_STATUS_OK)
-		return status;
-	status = SparkGlm52Pp13WorkControlSelectKvGeneration(packet,state);
-	if (status != SPARK_STATUS_OK)
-		return status;
+	total_block_count = 0u;
+	for (lane_index = 0u; lane_index < packet->active_sequence_count; ++lane_index)
+	{
+		block_count = SparkGlm52Pp13WorkControlBlockCount(packet->lanes[lane_index].context_token_count,packet->block_token_count);
+		if (block_count == 0u || block_count > packet->max_blocks_per_sequence)
+			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		total_block_count += block_count;
+	}
+	if (state->directory_entry_count + total_block_count <= state->directory_capacity / 2u &&
+		total_block_count <= state->physical_block_capacity)
+		return SPARK_STATUS_OK;
 	status = SparkGlm52Pp13WorkControlKvCountAdmission(state,packet,&new_entry_count,&new_block_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
@@ -1950,6 +1954,12 @@ SparkStatus SparkGlm52Pp13WorkControlBuildHostKvBlockTable(
 	SparkStatus status;
 	if (view == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	status = SparkGlm52Pp13WorkControlValidateKvState(packet,state);
+	if (status != SPARK_STATUS_OK)
+		return status;
+	status = SparkGlm52Pp13WorkControlSelectKvGeneration(packet,state);
+	if (status != SPARK_STATUS_OK)
+		return status;
 	status = SparkGlm52Pp13WorkControlKvAdmitPacket(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;

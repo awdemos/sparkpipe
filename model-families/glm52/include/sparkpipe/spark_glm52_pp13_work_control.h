@@ -110,6 +110,7 @@ typedef struct SparkGlm52Pp13WorkControlKvBlockEntry
 	uint32_t reference_count;
 	uint32_t residency_state : 2;
 	uint32_t backing_valid : 1;
+	uint32_t prefetch_mark : 29;
 } SparkGlm52Pp13WorkControlKvBlockEntry;
 
 typedef struct SparkGlm52Pp13WorkControlKvPrefetchEntry
@@ -210,6 +211,7 @@ typedef struct SparkGlm52Pp13WorkControlKvState
 	uint32_t allocated_physical_block_count;
 	uint64_t swap_store_count;
 	uint64_t swap_load_count;
+	uint32_t prefetch_generation;
 	uint64_t share_hit_count;
 	uint64_t share_admit_count;
 } SparkGlm52Pp13WorkControlKvState;
@@ -320,7 +322,7 @@ uint32_t SparkGlm52Pp13WorkControlBlockCount(
 SparkStatus SparkGlm52Pp13WorkControlCollectKvPrefetchEntries(
 	const SparkGlm52Pp13WorkControlPacket *packets,
 	uint32_t packet_count,
-	const SparkGlm52Pp13WorkControlKvState *state,
+	SparkGlm52Pp13WorkControlKvState *state,
 	SparkGlm52Pp13WorkControlKvPrefetchEntry *entries,
 	uint32_t entry_capacity,
 	uint32_t *entry_count_out);
