@@ -1455,6 +1455,40 @@ static cudaError_t SparkLmHostLaunchGroupedAttnDecode(
     return cudaGetLastError();
 }
 
+/*
+ * Head grouping trades KV traffic against CTA count, and the right trade
+ * depends entirely on batch. Grouping four query heads per CTA reads each KV
+ * head a quarter as often, which is what you want once rows alone fill the
+ * machine. At small batch it is backwards: mimo25 at one row yields sixteen
+ * CTAs against forty-eight SMs, so two thirds of the GPU idles while each CTA
+ * walks the whole context. One head per CTA gives sixty-four CTAs and a
+ * quarter the shared memory, and the extra KV rereads are nearly free at one
+ * row because a single row's KV slice is small.
+ *
+ * This picks the LARGEST grouping - least KV traffic - that still fills the
+ * machine, and only falls to narrower groups when it would not. Splitting the
+ * context across CTAs as well (an exact online-softmax merge over partials)
+ * would add parallelism beyond this, but needs a workspace and a second pass;
+ * it is worth doing only once this no longer fills the SMs.
+ */
+#define SPARK_LM_ATTN_TARGET_CTAS 96u
+
+static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(cudaStream_t stream, const void *q_bf16, uint64_t q_row_stride, const void *k_cache_bf16, const void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, uint64_t k_slot_stride, uint64_t v_slot_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t group_size, uint32_t head_dim, uint32_t value_dim, uint32_t window_slots)
+{
+	uint32_t kv_head_count,ctas_group_four,ctas_group_two;
+	if ( group_size == 0u || head_count % group_size != 0u )
+		return(cudaErrorInvalidValue);
+	kv_head_count = head_count / group_size;
+	ctas_group_four = row_count * kv_head_count * ((group_size + 3u) / 4u);
+	ctas_group_two = row_count * kv_head_count * ((group_size + 1u) / 2u);
+	if ( ctas_group_four >= SPARK_LM_ATTN_TARGET_CTAS )
+		return(SparkLmHostLaunchGroupedAttnDecode<4u>(stream,q_bf16,q_row_stride,k_cache_bf16,v_cache_bf16,k_lane_stride,v_lane_stride,k_slot_stride,v_slot_stride,row_lane_indices,row_positions,sink_f32,scale,out_bf16,row_count,head_count,group_size,head_dim,value_dim,window_slots));
+	if ( ctas_group_two >= SPARK_LM_ATTN_TARGET_CTAS )
+		return(SparkLmHostLaunchGroupedAttnDecode<2u>(stream,q_bf16,q_row_stride,k_cache_bf16,v_cache_bf16,k_lane_stride,v_lane_stride,k_slot_stride,v_slot_stride,row_lane_indices,row_positions,sink_f32,scale,out_bf16,row_count,head_count,group_size,head_dim,value_dim,window_slots));
+	return(SparkLmHostLaunchGroupedAttnDecode<1u>(stream,q_bf16,q_row_stride,k_cache_bf16,v_cache_bf16,k_lane_stride,v_lane_stride,k_slot_stride,v_slot_stride,row_lane_indices,row_positions,sink_f32,scale,out_bf16,row_count,head_count,group_size,head_dim,value_dim,window_slots));
+}
+
+
 #include <mma.h>
 
 #define SPARK_LM_TILE 16u

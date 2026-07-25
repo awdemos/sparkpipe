@@ -350,7 +350,7 @@ extern "C" cudaError_t SparkMimo25LaunchHeadShadowQuantize(cudaStream_t stream, 
 
 extern "C" cudaError_t SparkMimo25LaunchAttnDecode(cudaStream_t stream, const void *q_bf16, uint64_t q_row_stride, const void *k_cache_bf16, const void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, uint64_t k_slot_stride, uint64_t v_slot_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t group_size, uint32_t head_dim, uint32_t value_dim, uint32_t window_slots)
 {
-    return SparkLmHostLaunchGroupedAttnDecode<4u>(
+    return SparkLmHostLaunchAdaptiveAttnDecode(
         stream,
         q_bf16,
         q_row_stride,
