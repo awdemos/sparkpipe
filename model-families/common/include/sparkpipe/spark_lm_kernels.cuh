@@ -1505,6 +1505,11 @@ static __device__ __forceinline__ void SparkLmTileDecodeRun(uint32_t weight_form
 	}
 }
 
+// CONTRACT: k_base + SPARK_LM_TILE_K must not exceed input_dimension. Rows
+// are bounded by slot_count and zero-filled past it, but K is NOT bounded -
+// a partial trailing K tile reads past the row. Callers whose width is not a
+// multiple of SPARK_LM_TILE_K must not use the tile path; see
+// SparkLmHostLaunchBatchedLinear, which routes those to the scalar kernel.
 static __device__ __forceinline__ void SparkLmTileStageInput(const void *input_bf16, const uint32_t *input_row_map, uint32_t slot_base, uint32_t slot_count, uint32_t k_base, uint32_t input_dimension, __nv_bfloat16 *tile)
 {
 	uint32_t entry,slot,source_row;
@@ -2372,6 +2377,15 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 // All three inherit the FP8 tensor path under SPARK_LM_FP8_TILE (the tile
 // dispatch), and every dimension is parametric so the shape carries to the
 // next model generation unchanged.
+//
+// The tile also REQUIRES input_dimension to be a multiple of the K tile. Its
+// stagers bound rows and neurons but never K, so a trailing partial K tile
+// stages whatever follows the row in memory and folds it into the dot
+// product - wrong output, no crash. Expert widths are always K-aligned so
+// this never bit the expert path, but a dense projection can have any width
+// and the next model generation may well introduce one. Non-aligned widths
+// therefore take the scalar path, which carries explicit scalar tails and
+// handles arbitrary dimensions exactly.
 template <uint32_t GROUP_SIZE>
 static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
@@ -2381,7 +2395,7 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 		(weight_scale == 0 || (input_dimension % 128u) != 0u ||
 			(output_dimension % 128u) != 0u) )
 		return(cudaErrorInvalidValue);
-	if ( row_count < SPARK_LM_TILE )
+	if ( row_count < SPARK_LM_TILE || (input_dimension % SPARK_LM_TILE_K) != 0u )
 	{
 		dim3 scalar_grid(row_count,(output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
 		uint32_t shared_bytes = input_dimension * (uint32_t)sizeof(float);
