@@ -287,10 +287,8 @@ SparkGlm52Pp13KvKey SparkGlm52Pp13WorkControlContentKey(
 	uint64_t digest_low,
 	uint64_t digest_high);
 
-uint32_t SparkGlm52Pp13WorkControlKvBlockCommitted(
-	const SparkGlm52Pp13WorkControlPacket *packet,
-	uint32_t lane_index,
-	uint32_t logical_block_index);
+uint64_t SparkGlm52Pp13WorkControlKvCommittedFrontier(
+	const SparkGlm52Pp13WorkControlLane *lane);
 SparkStatus SparkGlm52Pp13WorkControlConfigureKvSwap(
 	SparkGlm52Pp13WorkControlKvState *state,
 	uint32_t backing_block_capacity,

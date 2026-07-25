@@ -171,21 +171,28 @@ static void SparkTestSharedReleaseIsRefcounted(void)
 static void SparkTestSharedFrontierExcludesDrafts(void)
 {
 	SparkGlm52Pp13WorkControlPacket packet;
+	uint64_t frontier,block_end_token;
 	uint32_t draft_count,block_index,last_committed_block;
 	SparkTestSharedInitializePacket(&packet,1u,SPARK_TEST_SHARED_BLOCKS * SPARK_TEST_BLOCK_TOKENS);
 	for (draft_count = 0u; draft_count <= SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT; ++draft_count)
 	{
 		packet.lanes[0u].mtp_draft_token_count = draft_count;
 		packet.lanes[0u].speculative_token_count = draft_count;
+		frontier = SparkGlm52Pp13WorkControlKvCommittedFrontier(&packet.lanes[0u]);
+		assert(frontier == (uint64_t)packet.lanes[0u].context_token_count - (2u * draft_count));
 		last_committed_block = draft_count == 0u ? SPARK_TEST_SHARED_BLOCKS : SPARK_TEST_SHARED_BLOCKS - 1u;
 		for (block_index = 0u; block_index < SPARK_TEST_SHARED_BLOCKS; ++block_index)
-			assert(SparkGlm52Pp13WorkControlKvBlockCommitted(&packet,0u,block_index) == (block_index < last_committed_block ? 1u : 0u));
+		{
+			block_end_token = ((uint64_t)block_index + 1u) * SPARK_TEST_BLOCK_TOKENS;
+			assert((block_end_token <= frontier ? 1u : 0u) == (block_index < last_committed_block ? 1u : 0u));
+		}
 	}
-	// A frontier below the whole context leaves nothing shareable at all.
-	packet.lanes[0u].mtp_draft_token_count = 0u;
-	packet.lanes[0u].speculative_token_count = 0u;
+	// An outstanding count above the context length must yield an empty
+	// frontier, so nothing is shareable, rather than wrapping and sharing all.
+	packet.lanes[0u].mtp_draft_token_count = SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT;
+	packet.lanes[0u].speculative_token_count = SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT;
 	packet.lanes[0u].context_token_count = 1u;
-	assert(SparkGlm52Pp13WorkControlKvBlockCommitted(&packet,0u,0u) == 0u);
+	assert(SparkGlm52Pp13WorkControlKvCommittedFrontier(&packet.lanes[0u]) == 0u);
 	printf("  committed frontier excludes every draft-bearing block\n");
 }
 

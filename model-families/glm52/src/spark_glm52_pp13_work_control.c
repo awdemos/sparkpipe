@@ -1795,35 +1795,35 @@ static SparkStatus SparkGlm52Pp13WorkControlMarkTable(
 	return SPARK_STATUS_OK;
 }
 
-// A block may carry a shared content key only when it lies entirely below the
-// committed frontier. Speculative and MTP draft tokens sit above that frontier,
-// so a block holding an unresolved draft is always private and a rejected draft
-// can never reach another sequence.
-uint32_t SparkGlm52Pp13WorkControlKvBlockCommitted(const SparkGlm52Pp13WorkControlPacket *packet,uint32_t lane_index,uint32_t logical_block_index)
+// Tokens of this lane that are committed: everything below the speculative and
+// MTP draft tail. A block ending at or below this line may be shared. A block
+// crossing it holds a draft that may yet be rejected, so it stays private and a
+// rejected draft can never reach another sequence. An outstanding count above
+// the context length yields zero, which shares nothing - the safe direction.
+uint64_t SparkGlm52Pp13WorkControlKvCommittedFrontier(const SparkGlm52Pp13WorkControlLane *lane)
 {
-	const SparkGlm52Pp13WorkControlLane *lane;
-	uint64_t outstanding_token_count,block_end_token;
-	if (packet == 0 || lane_index >= packet->active_sequence_count)
-		return 0u;
-	lane = &packet->lanes[lane_index];
+	uint64_t outstanding_token_count;
 	outstanding_token_count = (uint64_t)lane->speculative_token_count + (uint64_t)lane->mtp_draft_token_count;
-	if ((uint64_t)lane->context_token_count < outstanding_token_count)
-		return 0u;
-	block_end_token = ((uint64_t)logical_block_index + 1u) * (uint64_t)packet->block_token_count;
-	return block_end_token <= ((uint64_t)lane->context_token_count - outstanding_token_count) ? 1u : 0u;
+	return outstanding_token_count < (uint64_t)lane->context_token_count ? (uint64_t)lane->context_token_count - outstanding_token_count : 0u;
 }
 
 // Content key when the caller published one for a committed block, private key
-// otherwise. Sharing is therefore opt-in per block and the default is unchanged.
-static SparkGlm52Pp13KvKey SparkGlm52Pp13WorkControlKvSelectKey(const SparkGlm52Pp13WorkControlKvState *state,const SparkGlm52Pp13WorkControlPacket *packet,uint32_t lane_index,uint32_t logical_block_index)
+// otherwise. The lane's key row and frontier are hoisted by the caller, so the
+// per-block cost here is one compare.
+static SparkGlm52Pp13KvKey SparkGlm52Pp13WorkControlKvSelectKey(const SparkGlm52Pp13KvKey *lane_keys,uint64_t sequence_id,uint32_t logical_block_index,uint64_t block_end_token,uint64_t committed_frontier)
 {
-	uint64_t offset;
-	offset = ((uint64_t)lane_index * (uint64_t)state->lane_block_key_stride) + (uint64_t)logical_block_index;
-	if (state->lane_block_keys != 0 && logical_block_index < state->lane_block_key_stride &&
-		SparkGlm52Pp13WorkControlKvBlockCommitted(packet,lane_index,logical_block_index) != 0u &&
-		SparkGlm52Pp13WorkControlKvKeyEmpty(state->lane_block_keys[offset]) == 0u)
-		return SparkGlm52Pp13WorkControlContentKey(state->lane_block_keys[offset].low,state->lane_block_keys[offset].high);
-	return SparkGlm52Pp13WorkControlPrivateKey(packet->lanes[lane_index].sequence_id,logical_block_index);
+	if (lane_keys != 0 && block_end_token <= committed_frontier &&
+		SparkGlm52Pp13WorkControlKvKeyEmpty(lane_keys[logical_block_index]) == 0u)
+		return SparkGlm52Pp13WorkControlContentKey(lane_keys[logical_block_index].low,lane_keys[logical_block_index].high);
+	return SparkGlm52Pp13WorkControlPrivateKey(sequence_id,logical_block_index);
+}
+
+// The lane's published key row, or null when this lane cannot share.
+static const SparkGlm52Pp13KvKey *SparkGlm52Pp13WorkControlKvLaneKeys(const SparkGlm52Pp13WorkControlKvState *state,uint32_t lane_index,uint32_t block_count)
+{
+	if (state->lane_block_keys == 0 || block_count > state->lane_block_key_stride)
+		return 0;
+	return &state->lane_block_keys[(size_t)lane_index * (size_t)state->lane_block_key_stride];
 }
 
 // Count what this packet would add, before anything is mutated. Directory
@@ -1833,18 +1833,26 @@ static SparkGlm52Pp13KvKey SparkGlm52Pp13WorkControlKvSelectKey(const SparkGlm52
 // once each, which over-states the need and can only reject conservatively.
 static SparkStatus SparkGlm52Pp13WorkControlKvCountAdmission(const SparkGlm52Pp13WorkControlKvState *state,const SparkGlm52Pp13WorkControlPacket *packet,uint32_t *new_entry_count_out,uint32_t *new_block_count_out)
 {
+	const SparkGlm52Pp13WorkControlLane *lane;
+	const SparkGlm52Pp13KvKey *lane_keys;
+	uint64_t block_end_token,committed_frontier;
 	uint32_t lane_index,block_index,block_count,new_entry_count,new_block_count;
 	new_entry_count = 0u;
 	new_block_count = 0u;
 	for (lane_index = 0u; lane_index < packet->active_sequence_count; ++lane_index)
 	{
-		block_count = SparkGlm52Pp13WorkControlBlockCount(packet->lanes[lane_index].context_token_count,packet->block_token_count);
+		lane = &packet->lanes[lane_index];
+		block_count = SparkGlm52Pp13WorkControlBlockCount(lane->context_token_count,packet->block_token_count);
 		if (block_count == 0u || block_count > packet->max_blocks_per_sequence || block_count > state->physical_block_capacity)
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
+		lane_keys = SparkGlm52Pp13WorkControlKvLaneKeys(state,lane_index,block_count);
+		committed_frontier = SparkGlm52Pp13WorkControlKvCommittedFrontier(lane);
+		block_end_token = 0u;
 		for (block_index = 0u; block_index < block_count; ++block_index)
 		{
-			new_entry_count += SPARK_GLM52_KV_FIND_DIRECTORY(state,packet->lanes[lane_index].sequence_id,block_index) == UINT32_MAX ? 1u : 0u;
-			new_block_count += SPARK_GLM52_KV_FIND_BLOCK(state,SparkGlm52Pp13WorkControlKvSelectKey(state,packet,lane_index,block_index)) == UINT32_MAX ? 1u : 0u;
+			block_end_token += (uint64_t)packet->block_token_count;
+			new_entry_count += SPARK_GLM52_KV_FIND_DIRECTORY(state,lane->sequence_id,block_index) == UINT32_MAX ? 1u : 0u;
+			new_block_count += SPARK_GLM52_KV_FIND_BLOCK(state,SparkGlm52Pp13WorkControlKvSelectKey(lane_keys,lane->sequence_id,block_index,block_end_token,committed_frontier)) == UINT32_MAX ? 1u : 0u;
 		}
 	}
 	*new_entry_count_out = new_entry_count;
@@ -1903,20 +1911,27 @@ static SparkStatus SparkGlm52Pp13WorkControlKvResolveEntryState(const SparkGlm52
 
 static SparkStatus SparkGlm52Pp13WorkControlKvBuildLane(const SparkGlm52Pp13WorkControlPacket *packet,SparkGlm52Pp13WorkControlKvState *state,uint32_t lane_index)
 {
-	uint64_t base_block_index;
+	const SparkGlm52Pp13WorkControlLane *lane;
+	const SparkGlm52Pp13KvKey *lane_keys;
+	uint64_t base_block_index,block_end_token,committed_frontier;
 	uint32_t block_index,block_count,physical_block_index;
 	uint8_t entry_state;
 	SparkStatus status;
-	block_count = SparkGlm52Pp13WorkControlBlockCount(packet->lanes[lane_index].context_token_count,packet->block_token_count);
+	lane = &packet->lanes[lane_index];
+	block_count = SparkGlm52Pp13WorkControlBlockCount(lane->context_token_count,packet->block_token_count);
 	if (block_count == 0u || block_count > packet->max_blocks_per_sequence)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	base_block_index = (uint64_t)lane_index * (uint64_t)state->lane_stride;
+	if (base_block_index + block_count > state->table_entry_capacity)
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	lane_keys = SparkGlm52Pp13WorkControlKvLaneKeys(state,lane_index,block_count);
+	committed_frontier = SparkGlm52Pp13WorkControlKvCommittedFrontier(lane);
 	state->lane_physical_block_counts[lane_index] = block_count;
+	block_end_token = 0u;
 	for (block_index = 0u; block_index < block_count; ++block_index)
 	{
-		if (base_block_index + block_index >= state->table_entry_capacity)
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
-		status = SparkGlm52Pp13WorkControlKvDirectoryAcquire(state,packet->lanes[lane_index].sequence_id,block_index,SparkGlm52Pp13WorkControlKvSelectKey(state,packet,lane_index,block_index),&physical_block_index);
+		block_end_token += (uint64_t)packet->block_token_count;
+		status = SparkGlm52Pp13WorkControlKvDirectoryAcquire(state,lane->sequence_id,block_index,SparkGlm52Pp13WorkControlKvSelectKey(lane_keys,lane->sequence_id,block_index,block_end_token,committed_frontier),&physical_block_index);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		entry_state = state->physical_block_states[physical_block_index];
