@@ -1988,9 +1988,21 @@ static SparkStatus SparkGlm52SchedulerValidateAcceptedPrefillBatchDecision(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52SchedulerCompletePrefillBatch(
+// Completing and cancelling a prefill batch are the same retirement: validate
+// the decision, release its in-flight reservation, then settle every lane's
+// prefix-cache reservation. They differ in which way that reservation settles
+// and which counter records it, so those are the parameters and the retirement
+// is written once.
+typedef SparkStatus (*SparkGlm52SchedulerReservationFunction)(
+    SparkGlm52PrefixCache *prefix_cache,
+    uint64_t sequence_id,
+    uint64_t reservation_epoch);
+
+static SparkStatus SparkGlm52SchedulerRetirePrefillBatch(
     SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerPrefillBatchDecision *batch_decision)
+    const SparkGlm52SchedulerPrefillBatchDecision *batch_decision,
+    SparkGlm52SchedulerReservationFunction settle_reservation,
+    uint64_t *retire_counter)
 {
     uint32_t lane_index;
     SparkStatus status;
@@ -2020,7 +2032,7 @@ SparkStatus SparkGlm52SchedulerCompletePrefillBatch(
         {
             continue;
         }
-        status = SparkGlm52PrefixCacheCommitReservation(
+        status = settle_reservation(
             scheduler->prefix_cache,
             lane->sequence_id,
             lane->prefix_cache_reservation_epoch);
@@ -2029,54 +2041,32 @@ SparkStatus SparkGlm52SchedulerCompletePrefillBatch(
             return status;
         }
     }
-    scheduler->completed_count += 1u;
+    *retire_counter += 1u;
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkGlm52SchedulerCompletePrefillBatch(
+    SparkGlm52Scheduler *scheduler,
+    const SparkGlm52SchedulerPrefillBatchDecision *batch_decision)
+{
+    return SparkGlm52SchedulerRetirePrefillBatch(
+        scheduler,
+        batch_decision,
+        SparkGlm52PrefixCacheCommitReservation,
+        &scheduler->completed_count);
 }
 
 SparkStatus SparkGlm52SchedulerCancelPrefillBatch(
     SparkGlm52Scheduler *scheduler,
     const SparkGlm52SchedulerPrefillBatchDecision *batch_decision)
 {
-    uint32_t lane_index;
-    SparkStatus status;
-
-    status = SparkGlm52SchedulerValidateAcceptedPrefillBatchDecision(
+    return SparkGlm52SchedulerRetirePrefillBatch(
         scheduler,
-        batch_decision);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    status = SparkGlm52SchedulerReleaseDecisionInflight(
-        scheduler,
-        &batch_decision->stage_decision);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    for (lane_index = 0u;
-         lane_index < batch_decision->packed_request_count;
-         ++lane_index)
-    {
-        const SparkGlm52SchedulerPrefillBatchLane *lane;
-
-        lane = &batch_decision->lanes[lane_index];
-        if (lane->prefix_cache_reservation_epoch == 0u)
-        {
-            continue;
-        }
-        status = SparkGlm52PrefixCacheCancelReservation(
-            scheduler->prefix_cache,
-            lane->sequence_id,
-            lane->prefix_cache_reservation_epoch);
-        if (status != SPARK_STATUS_OK)
-        {
-            return status;
-        }
-        scheduler->kv_block_cancel_count += 1u;
-    }
-    return SPARK_STATUS_OK;
+        batch_decision,
+        SparkGlm52PrefixCacheCancelReservation,
+        &scheduler->kv_block_cancel_count);
 }
+
 
 SparkStatus SparkGlm52SchedulerBuildPrefillBatchKvBlockTables(
     SparkGlm52Scheduler *scheduler,
