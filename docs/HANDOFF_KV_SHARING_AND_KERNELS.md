@@ -124,3 +124,83 @@ nothing. **Search for the capability by name before you build it** - "prefix",
   decides whether ~1300 lines come out.
 - **#507, #509, #510, #511 are merged.** #512 was closed as an older draft of
   this document.
+
+## Where the code actually is, measured
+
+The first-party tree is ~197k lines. `third_party/` is not included in that and is
+the larger number: **2048 of the repo's 5045 tracked files, 41%**, vendored
+flashinfer with CUTLASS inside it.
+
+Our own code consumes exactly four headers from it:
+
+```
+flashinfer/gemm/gemm_groupwise_sm120.cuh
+flashinfer/gemm/group_gemm_fp8_groupwise_sm120.cuh
+<cutlass/bfloat16.h>
+<cutlass/float8.h>
+```
+
+Their transitive closure is 474 files, so **1574 vendored files - 77% - are
+outside the dependency closure**, and the whole tree is consumed by one Makefile
+target, `glm52_fp8_scaled_gemm_cuda_gate`, as include paths. Submodule or fetched
+dependency removes 2048 files without touching a line of logic. This is the
+largest single codesize lever in the repository and it is a packaging decision,
+not a refactor.
+
+## glm52's 27k file is not slop, and the shared library is not a toy
+
+Both were suspected; both were measured.
+
+- Shared library, 3113 lines: `mma.sync` x9, `wmma` x32, `__shared__` x33,
+  `__shfl` x11, `__ldg` x17. Real tensor-core code with an FP8 tile that does
+  proper fragment mapping and producer/consumer double buffering.
+- glm52's 27308-line stage: 1% of lines behind disabled feature flags, 10 of 300
+  static definitions unreferenced, ~7% internal duplication. Dense and live.
+- Structural overlap between the two: **zero**. glm52 is not a copy of the shared
+  library; its kernels solve the same problems differently, because MLA absorbed
+  attention is not standard attention and FP8 block-scaled MoE is not the shared
+  MoE.
+
+The 8.8x size gap is scope: DSA sparse attention (4681 lines, 70 functions), MTP
+tree speculation (798), three quantization backends, cublasLt integration.
+
+## The real duplication is algorithmic, across families
+
+| algorithm | glm52 | dsv4 | qwen36 | k3 | mimo25 |
+| --- | --- | --- | --- | --- | --- |
+| top-k | yes | yes | - | yes | yes |
+| sparse attention | yes | yes | - | - | - |
+| MLA | yes | - | - | yes | - |
+| MTP / draft / speculative | yes | - | - | - | - |
+| dspark | yes | - | - | - | - |
+
+**Top-k is implemented four times.** Sparse attention twice. MLA twice. These are
+generic primitives living in family-private files, and the pattern is spreading
+as families are added, not shrinking.
+
+MTP, DSA and dspark are single-implementation today but universally applicable -
+any model can do speculative decoding or sparse attention. They are in glm52's
+tree because glm52 was written first, not because they are glm52-specific.
+`model-families/glm52/src/spark_glm52_dspark.c` is 877 lines of host C that
+references exactly **one** glm52 model constant. It is already almost entirely
+generic and should live in `model-families/common/src/`.
+
+Order of work: promote top-k first, because four copies is the active bleed, then
+dspark (host C, cheap and testable), then MLA and sparse attention, then MTP with
+its tree constants turned into configuration.
+
+## Not attempted, and why
+
+**TMA and async copy.** Neither the shared library nor glm52 uses `cp.async`,
+`cp.async.bulk` or thread-block clusters - zero occurrences in either - while the
+handoff records that TMA and `__cluster_dims__` ARE available on `sm_121a`. The
+async-copy pipeline is unexploited across the entire codebase and is the clearest
+performance lever that is genuinely missing rather than merely large.
+
+It was not implemented here because this container has no CUDA compiler. Installing
+one was attempted and failed: the distribution toolkit 404s on a driver dependency,
+and `nvidia-cuda-nvcc-cu12` ships `ptxas` only, which assembles PTX and cannot
+compile CUDA C++. There is no clang either. Writing TMA descriptors that cannot be
+syntax-checked, into kernels whose own comments note that a wrong fragment mapping
+assembles cleanly and renders silently wrong, would be the least defensible change
+available. Do this work where there is a toolchain.
