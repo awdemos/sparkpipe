@@ -906,6 +906,21 @@ def validate_dsv4_contract() -> None:
         raise AssertionError("DSV4 sparse-attention shared layout must contain two float regions")
 
 
+# The guarantee is that a decode never rereads KV per query head. Which grouping
+# width delivers that is the dispatcher's business, so assert on the dispatcher
+# rather than pinning one template argument at a call site.
+def validate_adaptive_attn_dispatch() -> None:
+    path = ROOT / "model-families/common/include/sparkpipe/spark_lm_kernels.cuh"
+    dispatch = extract_braced_definition(
+        path.read_text(encoding="utf-8"),
+        "static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(",
+    )
+    require(dispatch, "SparkLmHostLaunchGroupedAttnDecode<4u>", "adaptive attn widest grouping")
+    forbid(dispatch, "SparkLmAttnDecodeKernel", "adaptive attn per-query-head KV reread")
+    if "SparkLmHostLaunchGroupedAttnDecode<" not in dispatch:
+        raise AssertionError("adaptive attn dispatch must reach only grouped kernels")
+
+
 def validate_mimo_contract() -> None:
     path = ROOT / (
         "modules/mimo25_resident_decode_stage/source/"
@@ -934,7 +949,8 @@ def validate_mimo_contract() -> None:
         "static SparkStatus SparkMimo25ModuleRunFfn(",
     )
     require(pair_reduce, "SparkLmHostLaunchMoePairReduceOverwrite", "MiMo overwrite reduction")
-    require(attention, "SparkLmHostLaunchGroupedAttnDecode<4u>", "MiMo grouped KV reuse")
+    require(attention, "SparkLmHostLaunchAdaptiveAttnDecode", "MiMo grouped KV reuse")
+    validate_adaptive_attn_dispatch()
     forbid(attention, "SparkLmAttnDecodeKernel<<<", "MiMo per-query-head KV reread")
     forbid(pair_reduce, "cudaMemsetAsync", "MiMo zero-then-read accumulation")
     forbid(run_ffn, "cudaMemsetAsync", "MiMo dead routed-FFN clear")
