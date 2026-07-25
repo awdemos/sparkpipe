@@ -108,9 +108,6 @@ SparkStatus SparkGlm52JitKvPoolInitialize(SparkGlm52JitKvPool *pool,const SparkG
 	pool->dram_fragment_capacity = configuration->dram_fragment_capacity;
 	pool->fragment_bytes = configuration->fragment_bytes;
 	pool->nvme_bytes_per_second = configuration->nvme_bytes_per_second;
-	pool->hash_slots = 1u;
-	while ( pool->hash_slots < (configuration->fragment_capacity << 1u) )
-		pool->hash_slots <<= 1u;
 	return(SPARK_STATUS_OK);
 }
 
@@ -129,8 +126,6 @@ SparkStatus SparkGlm52JitKvPoolAdmitFragment(SparkGlm52JitKvPool *pool,uint32_t 
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	fragment->sequence_id = sequence_id;
 	fragment->fragment_index_in_sequence = fragment_index_in_sequence;
-	fragment->content_hash = 0u;
-	fragment->reference_count = 1u;
 	fragment->state = initial_state;
 	fragment->next_need_ns = UINT64_MAX;
 	if ( initial_state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM )
@@ -298,131 +293,4 @@ uint32_t SparkGlm52JitKvPoolFragmentIsResident(const SparkGlm52JitKvPool *pool,u
 	if ( pool == 0 || fragment_id >= pool->fragment_capacity )
 		return(0u);
 	return(pool->fragments[fragment_id].state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM ? 1u : 0u);
-}
-
-// Fibonacci-style avalanche so sequential content hashes do not cluster in
-// the probe sequence.
-static uint32_t SparkGlm52JitKvPoolHashSlot(uint64_t content_hash,uint32_t slot_mask)
-{
-	uint64_t mixed = content_hash;
-	mixed ^= mixed >> 33;
-	mixed *= 0xff51afd7ed558ccdull;
-	mixed ^= mixed >> 33;
-	return((uint32_t)(mixed & (uint64_t)slot_mask));
-}
-
-static uint32_t SparkGlm52JitKvPoolHashFind(const SparkGlm52JitKvPool *pool,uint64_t content_hash)
-{
-	uint32_t mask = pool->hash_slots - 1u,slot,probe,entry;
-	slot = SparkGlm52JitKvPoolHashSlot(content_hash,mask);
-	for (probe = 0; probe < pool->hash_slots; probe++)
-	{
-		entry = pool->hash_table[(slot + probe) & mask];
-		if ( entry == 0u )
-			return(0xffffffffu);
-		if ( entry != SPARK_GLM52_JIT_KV_POOL_HASH_TOMBSTONE &&
-			pool->fragments[entry - 1u].state != SPARK_GLM52_JIT_KV_FRAGMENT_STATE_FREE &&
-			pool->fragments[entry - 1u].content_hash == content_hash )
-			return(entry - 1u);
-	}
-	return(0xffffffffu);
-}
-
-static void SparkGlm52JitKvPoolHashInsert(SparkGlm52JitKvPool *pool,uint64_t content_hash,uint32_t fragment_id)
-{
-	uint32_t mask = pool->hash_slots - 1u,slot,probe,entry;
-	slot = SparkGlm52JitKvPoolHashSlot(content_hash,mask);
-	for (probe = 0; probe < pool->hash_slots; probe++)
-	{
-		entry = pool->hash_table[(slot + probe) & mask];
-		if ( entry == 0u || entry == SPARK_GLM52_JIT_KV_POOL_HASH_TOMBSTONE )
-		{
-			pool->hash_table[(slot + probe) & mask] = fragment_id + 1u;
-			return;
-		}
-	}
-}
-
-static void SparkGlm52JitKvPoolHashErase(SparkGlm52JitKvPool *pool,uint64_t content_hash,uint32_t fragment_id)
-{
-	uint32_t mask = pool->hash_slots - 1u,slot,probe,entry;
-	slot = SparkGlm52JitKvPoolHashSlot(content_hash,mask);
-	for (probe = 0; probe < pool->hash_slots; probe++)
-	{
-		entry = pool->hash_table[(slot + probe) & mask];
-		if ( entry == 0u )
-			return;
-		if ( entry == fragment_id + 1u )
-		{
-			pool->hash_table[(slot + probe) & mask] = SPARK_GLM52_JIT_KV_POOL_HASH_TOMBSTONE;
-			return;
-		}
-	}
-}
-
-/*
- * Acquire a fragment by content. A hit takes a reference on the existing
- * fragment and reports created=0, so a shared-prefix batch admits the prefix
- * once and every later row rides the same bytes; a miss admits the caller's
- * candidate id and indexes it. A zero content hash is rejected because it is
- * the sentinel for a sequence-private fragment.
- */
-SparkStatus SparkGlm52JitKvPoolAcquireShared(SparkGlm52JitKvPool *pool,uint64_t content_hash,uint32_t candidate_fragment_id,uint32_t fragment_index_in_sequence,uint32_t initial_state,uint32_t *fragment_id_out,uint32_t *created_out)
-{
-	SparkStatus status;
-	uint32_t existing;
-	if ( pool == 0 || fragment_id_out == 0 || created_out == 0 || content_hash == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	existing = SparkGlm52JitKvPoolHashFind(pool,content_hash);
-	if ( existing != 0xffffffffu )
-	{
-		pool->fragments[existing].reference_count += 1u;
-		pool->share_hit_count += 1u;
-		*fragment_id_out = existing;
-		*created_out = 0u;
-		return(SPARK_STATUS_OK);
-	}
-	status = SparkGlm52JitKvPoolAdmitFragment(pool,candidate_fragment_id,0u,fragment_index_in_sequence,initial_state);
-	if ( status != SPARK_STATUS_OK )
-		return(status);
-	pool->fragments[candidate_fragment_id].content_hash = content_hash;
-	SparkGlm52JitKvPoolHashInsert(pool,content_hash,candidate_fragment_id);
-	pool->share_admit_count += 1u;
-	*fragment_id_out = candidate_fragment_id;
-	*created_out = 1u;
-	return(SPARK_STATUS_OK);
-}
-
-/*
- * Drop one reference. The fragment is only unindexed and freed when the last
- * holder releases it, so an evictable prefix outlives every individual
- * sequence that used it. A fragment mid-transfer is refused rather than
- * freed, because freeing it would leave the staging counters describing work
- * that no longer has a destination.
- */
-SparkStatus SparkGlm52JitKvPoolReleaseFragment(SparkGlm52JitKvPool *pool,uint32_t fragment_id)
-{
-	SparkGlm52JitKvFragment *fragment;
-	if ( pool == 0 || fragment_id >= pool->fragment_capacity )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	fragment = &pool->fragments[fragment_id];
-	if ( fragment->state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_FREE || fragment->reference_count == 0u )
-		return(SPARK_STATUS_INVALID_ARGUMENT);
-	if ( fragment->state != SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM &&
-		fragment->state != SPARK_GLM52_JIT_KV_FRAGMENT_STATE_NVME )
-		return(SPARK_STATUS_BUSY);
-	fragment->reference_count -= 1u;
-	if ( fragment->reference_count != 0u )
-		return(SPARK_STATUS_OK);
-	if ( fragment->content_hash != 0u )
-		SparkGlm52JitKvPoolHashErase(pool,fragment->content_hash,fragment_id);
-	if ( fragment->state == SPARK_GLM52_JIT_KV_FRAGMENT_STATE_DRAM )
-	{
-		SparkGlm52JitKvPoolHeapRemove(pool,fragment_id);
-		pool->dram_resident_count -= 1u;
-	}
-	fragment->state = SPARK_GLM52_JIT_KV_FRAGMENT_STATE_FREE;
-	fragment->content_hash = 0u;
-	fragment->next_need_ns = UINT64_MAX;
-	return(SPARK_STATUS_OK);
 }
