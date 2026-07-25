@@ -350,7 +350,6 @@ MODEL_COMMON_LINK_TARGETS := \
 GLM52_LINK_TARGETS := \
     $(filter build/sparkpipe_glm52_% build/test_glm52_%,$(TOOL_BINARIES) $(TEST_BINARIES)) \
     build/sparkpipe_glm52_batchplane_model \
-    build/sparkpipe_glm52_batchplane_sim \
     build/sparkpipe_glm52_pp13_ring_check \
     build/test_glm52_batch_plane \
     build/test_model_description \
@@ -451,9 +450,6 @@ build/sparkpipe_glm52_pipesim: tools/sparkpipe_glm52_pipesim.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_batch_plane: tests/test_glm52_batch_plane.c $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) $(GLM52_INCLUDE_FLAGS) $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/sparkpipe_glm52_batchplane_sim: tools/sparkpipe_glm52_batchplane_sim.c $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(GLM52_INCLUDE_FLAGS) $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_batchplane_model: tools/sparkpipe_glm52_batchplane_model.c 
