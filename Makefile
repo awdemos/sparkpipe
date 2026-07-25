@@ -202,6 +202,7 @@ TEST_NAMES := \
     test_glm52_cuda_resident_ipc \
     test_glm52_cuda_resident_gate \
     test_glm52_pp13_work_control \
+    test_glm52_shared_prefix_admission \
     test_glm52_scheduler \
     test_glm52_prefix_cache \
     test_glm52_request_api \
@@ -665,6 +666,9 @@ build/test_glm52_pp13_runtime: tests/test_glm52_pp13_runtime.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_pp13_work_control: tests/test_glm52_pp13_work_control.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_shared_prefix_admission: tests/test_glm52_shared_prefix_admission.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_scheduler: tests/test_glm52_scheduler.c $(COMMON_LIBRARY)

@@ -364,11 +364,11 @@ typedef struct SparkGlm52Pp13BuilderState
 	uint32_t *host_uploaded_lane_physical_block_counts;
 	uint8_t *host_uploaded_lane_valid;
 	uint8_t *host_physical_block_states;
-	uint64_t *host_physical_block_sequence_ids;
-	uint32_t *host_physical_block_logical_indices;
+	SparkGlm52Pp13KvKey *host_physical_block_keys;
 	uint64_t *host_physical_block_last_used_epochs;
 	uint32_t *host_physical_block_pin_counts;
 	SparkGlm52Pp13WorkControlKvDirectoryEntry *host_kv_directory_entries;
+	SparkGlm52Pp13WorkControlKvBlockEntry *host_kv_block_entries;
 	SparkGlm52Pp13BuilderMtpKvTransaction *mtp_kv_transactions;
 	uint32_t *mtp_shadow_free_indices;
 	uint32_t mtp_shadow_slot_capacity;
@@ -2746,17 +2746,20 @@ static SparkStatus SparkGlm52Pp13BuilderKvPrepareStoreRecord(
 
 static SparkStatus SparkGlm52Pp13BuilderKvNvmeStore(
 	void *context,
-	uint64_t sequence_id,
-	uint32_t logical_block_index,
+	SparkGlm52Pp13KvKey key,
 	uint32_t physical_block_index,
 	uint32_t backing_block_index)
 {
 	SparkGlm52Pp13BuilderState *state;
-	uint32_t operation_index;
+	uint64_t sequence_id;
+	uint32_t operation_index,logical_block_index;
 	SparkStatus status;
-
+	// The persisted record identity is derived from the block key rather than a
+	// sequence, so a shared block spills and reloads once for every sharer.
+	sequence_id = key.low;
+	logical_block_index = (uint32_t)key.high;
 	state = (SparkGlm52Pp13BuilderState *)context;
-	if (state == 0 || sequence_id == 0u ||
+	if (state == 0 || (key.low == 0u && key.high == 0u) ||
 		backing_block_index >= state->configuration.kv_nvme_block_capacity ||
 		state->kv_nvme_fd < 0 || state->kv_nvme_staging == 0 ||
 		state->stream == 0 || state->kv_io_stream == 0 || state->kv_io_event == 0 ||
@@ -2784,20 +2787,20 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeStore(
 
 static SparkStatus SparkGlm52Pp13BuilderKvNvmeLoad(
 	void *context,
-	uint64_t sequence_id,
-	uint32_t logical_block_index,
+	SparkGlm52Pp13KvKey key,
 	uint32_t physical_block_index,
 	uint32_t backing_block_index)
 {
 	SparkGlm52Pp13BuilderState *state;
 	SparkGlm52Pp13BuilderNvmePendingOperation *operation;
 	uint8_t *record;
-	uint64_t file_offset;
-	uint32_t operation_index;
+	uint64_t file_offset,sequence_id;
+	uint32_t operation_index,logical_block_index;
 	SparkStatus status;
-
+	sequence_id = key.low;
+	logical_block_index = (uint32_t)key.high;
 	state = (SparkGlm52Pp13BuilderState *)context;
-	if (state == 0 || sequence_id == 0u ||
+	if (state == 0 || (key.low == 0u && key.high == 0u) ||
 		backing_block_index >= state->configuration.kv_nvme_block_capacity ||
 		state->kv_nvme_fd < 0 || state->kv_nvme_staging == 0 ||
 		state->kv_nvme_batch_active == 0u)
@@ -2837,16 +2840,18 @@ static SparkStatus SparkGlm52Pp13BuilderKvNvmeLoad(
 
 static SparkStatus SparkGlm52Pp13BuilderKvMooncakeStore(
 	void *context,
-	uint64_t sequence_id,
-	uint32_t logical_block_index,
+	SparkGlm52Pp13KvKey key,
 	uint32_t physical_block_index,
 	uint32_t backing_block_index)
 {
 	SparkGlm52Pp13BuilderState *state;
-	uint32_t operation_index;
+	uint64_t sequence_id;
+	uint32_t operation_index,logical_block_index;
 	SparkStatus status;
+	sequence_id = key.low;
+	logical_block_index = (uint32_t)key.high;
 	state = (SparkGlm52Pp13BuilderState *)context;
-	if (state == 0 || sequence_id == 0u || state->kv_store_state == 0 ||
+	if (state == 0 || (key.low == 0u && key.high == 0u) || state->kv_store_state == 0 ||
 		backing_block_index >= state->configuration.kv_store_block_capacity ||
 		state->kv_nvme_batch_active == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -2877,18 +2882,19 @@ static SparkStatus SparkGlm52Pp13BuilderKvMooncakeStore(
 
 static SparkStatus SparkGlm52Pp13BuilderKvMooncakeLoad(
 	void *context,
-	uint64_t sequence_id,
-	uint32_t logical_block_index,
+	SparkGlm52Pp13KvKey key,
 	uint32_t physical_block_index,
 	uint32_t backing_block_index)
 {
 	SparkGlm52Pp13BuilderState *state;
 	SparkGlm52Pp13BuilderNvmePendingOperation *operation;
-	uint32_t operation_index;
-	uint32_t consumed_count;
+	uint64_t sequence_id;
+	uint32_t operation_index,consumed_count,logical_block_index;
 	SparkStatus status;
+	sequence_id = key.low;
+	logical_block_index = (uint32_t)key.high;
 	state = (SparkGlm52Pp13BuilderState *)context;
-	if (state == 0 || sequence_id == 0u || state->kv_store_state == 0 ||
+	if (state == 0 || (key.low == 0u && key.high == 0u) || state->kv_store_state == 0 ||
 		backing_block_index >= state->configuration.kv_store_block_capacity)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	status = SparkGlm52Pp13BuilderKvStoreProgress(state);
@@ -5746,10 +5752,9 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		(uint8_t *)calloc((size_t)max_active,sizeof(uint8_t));
 	state->host_physical_block_states =
 		(uint8_t *)malloc((size_t)(physical_block_count * sizeof(uint8_t)));
-	state->host_physical_block_sequence_ids =
-		(uint64_t *)malloc((size_t)(physical_block_count * sizeof(uint64_t)));
-	state->host_physical_block_logical_indices =
-		(uint32_t *)malloc((size_t)(physical_block_count * sizeof(uint32_t)));
+	state->host_physical_block_keys =
+		(SparkGlm52Pp13KvKey *)malloc(
+			(size_t)(physical_block_count * sizeof(SparkGlm52Pp13KvKey)));
 	state->host_physical_block_last_used_epochs =
 		(uint64_t *)malloc((size_t)(physical_block_count * sizeof(uint64_t)));
 	state->host_physical_block_pin_counts =
@@ -5758,6 +5763,10 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		(SparkGlm52Pp13WorkControlKvDirectoryEntry *)malloc(
 			(size_t)((uint64_t)directory_capacity *
 				sizeof(SparkGlm52Pp13WorkControlKvDirectoryEntry)));
+	state->host_kv_block_entries =
+		(SparkGlm52Pp13WorkControlKvBlockEntry *)malloc(
+			(size_t)((uint64_t)directory_capacity *
+				sizeof(SparkGlm52Pp13WorkControlKvBlockEntry)));
 	if ((state->configuration.flags &
 		(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_NVME_KV |
 		 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_MOONCAKE_KV)) != 0u)
@@ -5785,11 +5794,11 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		state->host_uploaded_lane_physical_block_counts == 0 ||
 		state->host_uploaded_lane_valid == 0 ||
 		state->host_physical_block_states == 0 ||
-		state->host_physical_block_sequence_ids == 0 ||
-		state->host_physical_block_logical_indices == 0 ||
+		state->host_physical_block_keys == 0 ||
 		state->host_physical_block_last_used_epochs == 0 ||
 		state->host_physical_block_pin_counts == 0 ||
 		state->host_kv_directory_entries == 0 ||
+		state->host_kv_block_entries == 0 ||
 		(((state->configuration.flags &
 			(SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_NVME_KV |
 			 SPARK_GLM52_PP13_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_MOONCAKE_KV)) != 0u) &&
@@ -5810,13 +5819,14 @@ static SparkStatus SparkGlm52Pp13BuilderInitializeSharedBuffers(
 		SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS,
 		(uint32_t)physical_block_count,
 		directory_capacity,
+		directory_capacity,
 		state->host_physical_block_indices,
 		state->host_lane_physical_block_counts,
 		state->host_physical_block_states,
-		state->host_physical_block_sequence_ids,
-		state->host_physical_block_logical_indices,
+		state->host_physical_block_keys,
 		state->host_physical_block_last_used_epochs,
-		state->host_kv_directory_entries);
+		state->host_kv_directory_entries,
+		state->host_kv_block_entries);
 	if (status == SPARK_STATUS_OK)
 		status = SparkGlm52Pp13WorkControlConfigureKvPins(
 			&state->kv_state,state->host_physical_block_pin_counts);
@@ -6331,11 +6341,11 @@ static void SparkGlm52Pp13BuilderDestroy(void *builder_state)
 	free(state->host_uploaded_lane_physical_block_counts);
 	free(state->host_uploaded_lane_valid);
 	free(state->host_physical_block_states);
-	free(state->host_physical_block_sequence_ids);
-	free(state->host_physical_block_logical_indices);
+	free(state->host_physical_block_keys);
 	free(state->host_physical_block_last_used_epochs);
 	free(state->host_physical_block_pin_counts);
 	free(state->host_kv_directory_entries);
+	free(state->host_kv_block_entries);
 	free(state->mtp_kv_transactions);
 	free(state->mtp_shadow_free_indices);
 	free(state->host_backing_block_free_next);
@@ -10520,7 +10530,7 @@ static SparkStatus SparkGlm52Pp13BuilderGetKvStats(
 	stats->logical_block_capacity = state->kv_state.backing_block_capacity != 0u
 		? state->kv_state.backing_block_capacity
 		: state->kv_state.physical_block_capacity;
-	stats->logical_block_count = state->kv_state.directory_entry_count;
+	stats->logical_block_count = state->kv_state.block_entry_count;
 	stats->resident_block_count =
 		state->kv_state.allocated_physical_block_count;
 	stats->swapped_block_count = state->kv_state.swapped_block_count;
