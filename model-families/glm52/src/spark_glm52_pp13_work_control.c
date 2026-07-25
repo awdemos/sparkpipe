@@ -975,28 +975,32 @@ static void SparkGlm52Pp13WorkControlKvIndexErase(void *entries,uint32_t entry_b
 	}
 }
 
-static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryLookup(const SparkGlm52Pp13WorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index,uint32_t *slot_out)
+// Slot of an existing key, or UINT32_MAX. Load factor is held at one half, so
+// an exhausted probe and an absent key are the same answer to every caller.
+static uint32_t SparkGlm52Pp13WorkControlKvIndexFind(void *entries,uint32_t entry_bytes,uint32_t capacity,SparkGlm52Pp13KvKey key)
 {
 	uint32_t slot,found;
-	slot = SparkGlm52Pp13WorkControlKvIndexProbe(state->directory_entries,(uint32_t)sizeof(state->directory_entries[0]),state->directory_capacity,SparkGlm52Pp13WorkControlPrivateKey(sequence_id,logical_block_index),&found);
-	if (slot == UINT32_MAX)
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	if (found == 0u)
-		return SPARK_STATUS_NOT_FOUND;
-	*slot_out = slot;
-	return SPARK_STATUS_OK;
+	slot = SparkGlm52Pp13WorkControlKvIndexProbe(entries,entry_bytes,capacity,key,&found);
+	return found != 0u ? slot : UINT32_MAX;
 }
 
-static SparkStatus SparkGlm52Pp13WorkControlKvBlockLookup(const SparkGlm52Pp13WorkControlKvState *state,SparkGlm52Pp13KvKey block_key,uint32_t *slot_out)
+#define SPARK_GLM52_KV_FIND_DIRECTORY(state,sequence_id,logical_block_index) \
+	SparkGlm52Pp13WorkControlKvIndexFind((state)->directory_entries,(uint32_t)sizeof((state)->directory_entries[0]),(state)->directory_capacity,SparkGlm52Pp13WorkControlPrivateKey((sequence_id),(logical_block_index)))
+
+// The block record a sequence slot names, or 0 when the slot is not held.
+// Every caller that walks a packet wants this, not the two lookups separately.
+static SparkGlm52Pp13WorkControlKvBlockEntry *SparkGlm52Pp13WorkControlKvSequenceBlock(const SparkGlm52Pp13WorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index);
+
+#define SPARK_GLM52_KV_FIND_BLOCK(state,block_key) \
+	SparkGlm52Pp13WorkControlKvIndexFind((state)->block_entries,(uint32_t)sizeof((state)->block_entries[0]),(state)->block_entry_capacity,(block_key))
+
+static SparkGlm52Pp13WorkControlKvBlockEntry *SparkGlm52Pp13WorkControlKvSequenceBlock(const SparkGlm52Pp13WorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index)
 {
-	uint32_t slot,found;
-	slot = SparkGlm52Pp13WorkControlKvIndexProbe(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,block_key,&found);
+	uint32_t slot;
+	slot = SPARK_GLM52_KV_FIND_DIRECTORY(state,sequence_id,logical_block_index);
 	if (slot == UINT32_MAX)
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	if (found == 0u)
-		return SPARK_STATUS_NOT_FOUND;
-	*slot_out = slot;
-	return SPARK_STATUS_OK;
+		return 0;
+	return &state->block_entries[SPARK_GLM52_KV_FIND_BLOCK(state,state->directory_entries[slot].block_key)];
 }
 
 SparkStatus SparkGlm52Pp13WorkControlInitializeKvState(
@@ -1373,18 +1377,9 @@ SparkStatus SparkGlm52Pp13WorkControlCollectKvPrefetchEntries(
 			for (block_index = 0u; block_index < block_count; ++block_index)
 			{
 				const SparkGlm52Pp13WorkControlKvBlockEntry *block_entry;
-				uint32_t directory_slot,block_slot;
-				status = SparkGlm52Pp13WorkControlKvDirectoryLookup(state,packet->lanes[lane_index].sequence_id,block_index,&directory_slot);
-				if (status == SPARK_STATUS_NOT_FOUND)
+				block_entry = SparkGlm52Pp13WorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
+				if (block_entry == 0)
 					continue;
-				if (status != SPARK_STATUS_OK)
-					return status;
-				status = SparkGlm52Pp13WorkControlKvBlockLookup(state,state->directory_entries[directory_slot].block_key,&block_slot);
-				if (status == SPARK_STATUS_NOT_FOUND)
-					continue;
-				if (status != SPARK_STATUS_OK)
-					return status;
-				block_entry = &state->block_entries[block_slot];
 				if (block_entry->residency_state !=
 						SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NVME ||
 					block_entry->backing_valid == 0u ||
@@ -1483,8 +1478,6 @@ static SparkStatus SparkGlm52Pp13WorkControlKvSpillBlock(SparkGlm52Pp13WorkContr
 	entry->physical_block_index = SPARK_GLM52_PP13_KV_INVALID_BLOCK_INDEX;
 	entry->residency_state = SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NVME;
 	SparkGlm52Pp13WorkControlKvClearPhysicalBlock(state,physical_block_index);
-	if (state->allocated_physical_block_count == 0u)
-		return SPARK_STATUS_INTERNAL_ERROR;
 	state->allocated_physical_block_count -= 1u;
 	state->swapped_block_count += 1u;
 	return SPARK_STATUS_OK;
@@ -1500,8 +1493,6 @@ static SparkStatus SparkGlm52Pp13WorkControlKvAcquirePhysicalBlock(SparkGlm52Pp1
 	SparkGlm52Pp13WorkControlKvBlockEntry *entry;
 	uint32_t physical_block_index,scan_count,slot;
 	SparkStatus status;
-	if (state == 0 || physical_block_index_out == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
 	for (scan_count = 0u; scan_count < state->physical_block_capacity; ++scan_count)
 	{
 		physical_block_index = state->next_physical_block_index;
@@ -1517,14 +1508,8 @@ static SparkStatus SparkGlm52Pp13WorkControlKvAcquirePhysicalBlock(SparkGlm52Pp1
 			state->physical_block_states[physical_block_index] != SPARK_GLM52_PP13_KV_ENTRY_RESIDENT ||
 			state->physical_block_last_used_epochs[physical_block_index] == state->epoch)
 			continue;
-		status = SparkGlm52Pp13WorkControlKvBlockLookup(state,state->physical_block_keys[physical_block_index],&slot);
-		if (status != SPARK_STATUS_OK)
-			return SPARK_STATUS_INTERNAL_ERROR;
+		slot = SPARK_GLM52_KV_FIND_BLOCK(state,state->physical_block_keys[physical_block_index]);
 		entry = &state->block_entries[slot];
-		if (entry->residency_state != SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_GPU ||
-			entry->physical_block_index != physical_block_index ||
-			entry->backing_block_index >= state->backing_block_capacity)
-			return SPARK_STATUS_INTERNAL_ERROR;
 		status = SparkGlm52Pp13WorkControlKvSpillBlock(state,entry,physical_block_index);
 		if (status != SPARK_STATUS_OK)
 			return status;
@@ -1589,8 +1574,6 @@ static SparkStatus SparkGlm52Pp13WorkControlKvBlockResolve(SparkGlm52Pp13WorkCon
 	entry = &state->block_entries[slot];
 	if (found != 0u)
 	{
-		if (entry->reference_count == UINT32_MAX)
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		entry->reference_count += 1u;
 		state->share_hit_count += 1u;
 		return SPARK_STATUS_OK;
@@ -1627,12 +1610,8 @@ static SparkStatus SparkGlm52Pp13WorkControlKvBlockDeref(SparkGlm52Pp13WorkContr
 	SparkGlm52Pp13WorkControlKvBlockEntry *entry;
 	uint32_t slot;
 	SparkStatus status;
-	status = SparkGlm52Pp13WorkControlKvBlockLookup(state,block_key,&slot);
-	if (status != SPARK_STATUS_OK)
-		return status;
+	slot = SPARK_GLM52_KV_FIND_BLOCK(state,block_key);
 	entry = &state->block_entries[slot];
-	if (entry->reference_count == 0u || state->block_entry_count == 0u)
-		return SPARK_STATUS_INTERNAL_ERROR;
 	if (entry->reference_count > 1u)
 	{
 		entry->reference_count -= 1u;
@@ -1640,16 +1619,12 @@ static SparkStatus SparkGlm52Pp13WorkControlKvBlockDeref(SparkGlm52Pp13WorkContr
 	}
 	if (entry->residency_state == SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_GPU)
 	{
-		if (entry->physical_block_index >= state->physical_block_capacity)
-			return SPARK_STATUS_INTERNAL_ERROR;
 		if (state->physical_block_pin_counts != 0 && state->physical_block_pin_counts[entry->physical_block_index] != 0u)
 			return SPARK_STATUS_BUSY;
-		if (state->allocated_physical_block_count == 0u)
-			return SPARK_STATUS_INTERNAL_ERROR;
 		SparkGlm52Pp13WorkControlKvClearPhysicalBlock(state,entry->physical_block_index);
 		state->allocated_physical_block_count -= 1u;
 	}
-	else if (state->swapped_block_count != 0u)
+	else
 		state->swapped_block_count -= 1u;
 	status = SparkGlm52Pp13WorkControlKvBackingRelease(state,entry->backing_block_index);
 	if (status != SPARK_STATUS_OK)
@@ -1663,22 +1638,17 @@ static SparkStatus SparkGlm52Pp13WorkControlKvBlockDeref(SparkGlm52Pp13WorkContr
 // Change a block record's identity in place. Used when a private block becomes
 // the first block to publish its content, so the bytes already computed are kept
 // and no other sequence has to recompute them.
-static SparkStatus SparkGlm52Pp13WorkControlKvRekeyBlock(SparkGlm52Pp13WorkControlKvState *state,uint32_t source_slot,SparkGlm52Pp13KvKey block_key)
+static void SparkGlm52Pp13WorkControlKvRekeyBlock(SparkGlm52Pp13WorkControlKvState *state,uint32_t source_slot,SparkGlm52Pp13KvKey block_key)
 {
 	SparkGlm52Pp13WorkControlKvBlockEntry record;
 	uint32_t slot,found;
 	record = state->block_entries[source_slot];
-	if (record.reference_count != 1u)
-		return SPARK_STATUS_INTERNAL_ERROR;
 	SparkGlm52Pp13WorkControlKvIndexErase(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,source_slot);
 	record.key = block_key;
 	slot = SparkGlm52Pp13WorkControlKvIndexProbe(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,block_key,&found);
-	if (slot == UINT32_MAX || found != 0u)
-		return SPARK_STATUS_INTERNAL_ERROR;
 	state->block_entries[slot] = record;
 	if (record.residency_state == SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_GPU)
 		state->physical_block_keys[record.physical_block_index] = block_key;
-	return SPARK_STATUS_OK;
 }
 
 // Move a sequence slot from its private block onto the shared block holding the
@@ -1688,24 +1658,17 @@ static SparkStatus SparkGlm52Pp13WorkControlKvRekeyBlock(SparkGlm52Pp13WorkContr
 static SparkStatus SparkGlm52Pp13WorkControlKvPromoteBlock(SparkGlm52Pp13WorkControlKvState *state,SparkGlm52Pp13WorkControlKvDirectoryEntry *entry,SparkGlm52Pp13KvKey block_key)
 {
 	SparkGlm52Pp13WorkControlKvBlockEntry *previous;
-	uint32_t source_slot,target_slot;
+	uint32_t source_slot;
 	SparkStatus status;
-	status = SparkGlm52Pp13WorkControlKvBlockLookup(state,entry->block_key,&source_slot);
-	if (status != SPARK_STATUS_OK)
-		return status;
+	source_slot = SPARK_GLM52_KV_FIND_BLOCK(state,entry->block_key);
 	previous = &state->block_entries[source_slot];
 	if (previous->residency_state == SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_GPU &&
 		state->physical_block_pin_counts != 0 &&
 		state->physical_block_pin_counts[previous->physical_block_index] != 0u)
 		return SPARK_STATUS_OK;
-	status = SparkGlm52Pp13WorkControlKvBlockLookup(state,block_key,&target_slot);
-	if (status == SPARK_STATUS_CAPACITY_EXCEEDED)
-		return status;
-	if (status == SPARK_STATUS_NOT_FOUND && previous->reference_count == 1u)
+	if (SPARK_GLM52_KV_FIND_BLOCK(state,block_key) == UINT32_MAX && previous->reference_count == 1u)
 	{
-		status = SparkGlm52Pp13WorkControlKvRekeyBlock(state,source_slot,block_key);
-		if (status != SPARK_STATUS_OK)
-			return status;
+		SparkGlm52Pp13WorkControlKvRekeyBlock(state,source_slot,block_key);
 		entry->block_key = block_key;
 		return SPARK_STATUS_OK;
 	}
@@ -1726,28 +1689,20 @@ static SparkStatus SparkGlm52Pp13WorkControlKvBlockResident(SparkGlm52Pp13WorkCo
 	SparkGlm52Pp13WorkControlKvBlockEntry *entry;
 	uint32_t slot,physical_block_index;
 	SparkStatus status;
-	status = SparkGlm52Pp13WorkControlKvBlockLookup(state,block_key,&slot);
-	if (status != SPARK_STATUS_OK)
-		return status;
+	slot = SPARK_GLM52_KV_FIND_BLOCK(state,block_key);
 	entry = &state->block_entries[slot];
 	if (entry->residency_state == SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_GPU)
 	{
-		if (entry->physical_block_index >= state->physical_block_capacity)
-			return SPARK_STATUS_INTERNAL_ERROR;
 		state->physical_block_last_used_epochs[entry->physical_block_index] = state->epoch;
 		*physical_block_index_out = entry->physical_block_index;
 		return SPARK_STATUS_OK;
 	}
-	if (entry->residency_state != SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NVME || entry->backing_valid == 0u)
-		return SPARK_STATUS_INTERNAL_ERROR;
 	status = SparkGlm52Pp13WorkControlKvAcquirePhysicalBlock(state,&physical_block_index);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	status = state->swap_load_function(state->swap_context,block_key,physical_block_index,entry->backing_block_index);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	if (state->swapped_block_count == 0u)
-		return SPARK_STATUS_INTERNAL_ERROR;
 	state->swapped_block_count -= 1u;
 	state->swap_load_count += 1u;
 	entry->physical_block_index = physical_block_index;
@@ -1757,20 +1712,17 @@ static SparkStatus SparkGlm52Pp13WorkControlKvBlockResident(SparkGlm52Pp13WorkCo
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryAcquire(SparkGlm52Pp13WorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index,SparkGlm52Pp13KvKey block_key,uint32_t *physical_block_index_out,uint32_t *allocated_out)
+static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryAcquire(SparkGlm52Pp13WorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index,SparkGlm52Pp13KvKey block_key,uint32_t *physical_block_index_out)
 {
 	SparkGlm52Pp13WorkControlKvDirectoryEntry *entry;
 	SparkGlm52Pp13KvKey directory_key;
 	uint32_t slot,found;
 	SparkStatus status;
-	if (physical_block_index_out == 0 || allocated_out == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
 	directory_key = SparkGlm52Pp13WorkControlPrivateKey(sequence_id,logical_block_index);
 	slot = SparkGlm52Pp13WorkControlKvIndexProbe(state->directory_entries,(uint32_t)sizeof(state->directory_entries[0]),state->directory_capacity,directory_key,&found);
 	if (slot == UINT32_MAX)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	entry = &state->directory_entries[slot];
-	*allocated_out = 0u;
 	if (found == 0u)
 	{
 		if (state->directory_entry_count >= state->directory_capacity / 2u)
@@ -1781,7 +1733,6 @@ static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryAcquire(SparkGlm52Pp13Wor
 		entry->key = directory_key;
 		entry->block_key = block_key;
 		state->directory_entry_count += 1u;
-		*allocated_out = 1u;
 	}
 	else if (SparkGlm52Pp13WorkControlKvKeyEqual(entry->block_key,block_key) == 0u)
 	{
@@ -1798,15 +1749,13 @@ static SparkStatus SparkGlm52Pp13WorkControlKvDirectoryRelease(SparkGlm52Pp13Wor
 	SparkGlm52Pp13KvKey block_key;
 	uint32_t slot;
 	SparkStatus status;
-	status = SparkGlm52Pp13WorkControlKvDirectoryLookup(state,sequence_id,logical_block_index,&slot);
-	if (status != SPARK_STATUS_OK)
-		return status;
+	slot = SPARK_GLM52_KV_FIND_DIRECTORY(state,sequence_id,logical_block_index);
+	if (slot == UINT32_MAX)
+		return SPARK_STATUS_NOT_FOUND;
 	block_key = state->directory_entries[slot].block_key;
 	status = SparkGlm52Pp13WorkControlKvBlockDeref(state,block_key);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	if (state->directory_entry_count == 0u)
-		return SPARK_STATUS_INTERNAL_ERROR;
 	state->directory_entry_count -= 1u;
 	SparkGlm52Pp13WorkControlKvIndexErase(state->directory_entries,(uint32_t)sizeof(state->directory_entries[0]),state->directory_capacity,slot);
 	return SPARK_STATUS_OK;
@@ -1820,9 +1769,8 @@ static SparkStatus SparkGlm52Pp13WorkControlMarkTable(
 	uint32_t lane_index;
 	uint32_t block_index;
 	uint32_t block_count;
-	uint32_t directory_slot;
-	uint32_t block_slot;
 	uint32_t physical_block_index;
+	SparkGlm52Pp13WorkControlKvBlockEntry *block_entry;
 	SparkStatus status;
 
 	status = SparkGlm52Pp13WorkControlValidateKvState(packet,state);
@@ -1839,16 +1787,10 @@ static SparkStatus SparkGlm52Pp13WorkControlMarkTable(
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		for (block_index = 0u; block_index < block_count; ++block_index)
 		{
-			status = SparkGlm52Pp13WorkControlKvDirectoryLookup(state,packet->lanes[lane_index].sequence_id,block_index,&directory_slot);
-			if (status != SPARK_STATUS_OK)
-				return status;
-			status = SparkGlm52Pp13WorkControlKvBlockLookup(state,state->directory_entries[directory_slot].block_key,&block_slot);
-			if (status != SPARK_STATUS_OK)
-				return status;
-			physical_block_index =
-				state->block_entries[block_slot].physical_block_index;
-			if (physical_block_index >= state->physical_block_capacity)
-				return SPARK_STATUS_INTERNAL_ERROR;
+			block_entry = SparkGlm52Pp13WorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
+			if (block_entry == 0)
+				return SPARK_STATUS_NOT_FOUND;
+			physical_block_index = block_entry->physical_block_index;
 			state->physical_block_states[physical_block_index] = entry_state;
 			state->physical_block_last_used_epochs[physical_block_index] =
 				state->epoch;
@@ -1880,14 +1822,12 @@ uint32_t SparkGlm52Pp13WorkControlKvBlockCommitted(const SparkGlm52Pp13WorkContr
 static SparkGlm52Pp13KvKey SparkGlm52Pp13WorkControlKvSelectKey(const SparkGlm52Pp13WorkControlKvState *state,const SparkGlm52Pp13WorkControlPacket *packet,uint32_t lane_index,uint32_t logical_block_index)
 {
 	uint64_t offset;
-	if (state->lane_block_keys == 0 || logical_block_index >= state->lane_block_key_stride)
-		return SparkGlm52Pp13WorkControlPrivateKey(packet->lanes[lane_index].sequence_id,logical_block_index);
-	if (SparkGlm52Pp13WorkControlKvBlockCommitted(packet,lane_index,logical_block_index) == 0u)
-		return SparkGlm52Pp13WorkControlPrivateKey(packet->lanes[lane_index].sequence_id,logical_block_index);
 	offset = ((uint64_t)lane_index * (uint64_t)state->lane_block_key_stride) + (uint64_t)logical_block_index;
-	if (SparkGlm52Pp13WorkControlKvKeyEmpty(state->lane_block_keys[offset]) != 0u)
-		return SparkGlm52Pp13WorkControlPrivateKey(packet->lanes[lane_index].sequence_id,logical_block_index);
-	return SparkGlm52Pp13WorkControlContentKey(state->lane_block_keys[offset].low,state->lane_block_keys[offset].high);
+	if (state->lane_block_keys != 0 && logical_block_index < state->lane_block_key_stride &&
+		SparkGlm52Pp13WorkControlKvBlockCommitted(packet,lane_index,logical_block_index) != 0u &&
+		SparkGlm52Pp13WorkControlKvKeyEmpty(state->lane_block_keys[offset]) == 0u)
+		return SparkGlm52Pp13WorkControlContentKey(state->lane_block_keys[offset].low,state->lane_block_keys[offset].high);
+	return SparkGlm52Pp13WorkControlPrivateKey(packet->lanes[lane_index].sequence_id,logical_block_index);
 }
 
 // Count what this packet would add, before anything is mutated. Directory
@@ -1897,8 +1837,7 @@ static SparkGlm52Pp13KvKey SparkGlm52Pp13WorkControlKvSelectKey(const SparkGlm52
 // once each, which over-states the need and can only reject conservatively.
 static SparkStatus SparkGlm52Pp13WorkControlKvCountAdmission(const SparkGlm52Pp13WorkControlKvState *state,const SparkGlm52Pp13WorkControlPacket *packet,uint32_t *new_entry_count_out,uint32_t *new_block_count_out)
 {
-	uint32_t lane_index,block_index,block_count,new_entry_count,new_block_count,slot;
-	SparkStatus status;
+	uint32_t lane_index,block_index,block_count,new_entry_count,new_block_count;
 	new_entry_count = 0u;
 	new_block_count = 0u;
 	for (lane_index = 0u; lane_index < packet->active_sequence_count; ++lane_index)
@@ -1908,16 +1847,8 @@ static SparkStatus SparkGlm52Pp13WorkControlKvCountAdmission(const SparkGlm52Pp1
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		for (block_index = 0u; block_index < block_count; ++block_index)
 		{
-			status = SparkGlm52Pp13WorkControlKvDirectoryLookup(state,packet->lanes[lane_index].sequence_id,block_index,&slot);
-			if (status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND)
-				return status;
-			if (status == SPARK_STATUS_NOT_FOUND)
-				new_entry_count += 1u;
-			status = SparkGlm52Pp13WorkControlKvBlockLookup(state,SparkGlm52Pp13WorkControlKvSelectKey(state,packet,lane_index,block_index),&slot);
-			if (status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND)
-				return status;
-			if (status == SPARK_STATUS_NOT_FOUND)
-				new_block_count += 1u;
+			new_entry_count += SPARK_GLM52_KV_FIND_DIRECTORY(state,packet->lanes[lane_index].sequence_id,block_index) == UINT32_MAX ? 1u : 0u;
+			new_block_count += SPARK_GLM52_KV_FIND_BLOCK(state,SparkGlm52Pp13WorkControlKvSelectKey(state,packet,lane_index,block_index)) == UINT32_MAX ? 1u : 0u;
 		}
 	}
 	*new_entry_count_out = new_entry_count;
@@ -1969,7 +1900,7 @@ static SparkStatus SparkGlm52Pp13WorkControlKvResolveEntryState(const SparkGlm52
 static SparkStatus SparkGlm52Pp13WorkControlKvBuildLane(const SparkGlm52Pp13WorkControlPacket *packet,SparkGlm52Pp13WorkControlKvState *state,uint32_t lane_index)
 {
 	uint64_t base_block_index;
-	uint32_t block_index,block_count,allocated,physical_block_index;
+	uint32_t block_index,block_count,physical_block_index;
 	uint8_t entry_state;
 	SparkStatus status;
 	block_count = SparkGlm52Pp13WorkControlBlockCount(packet->lanes[lane_index].context_token_count,packet->block_token_count);
@@ -1981,10 +1912,9 @@ static SparkStatus SparkGlm52Pp13WorkControlKvBuildLane(const SparkGlm52Pp13Work
 	{
 		if (base_block_index + block_index >= state->table_entry_capacity)
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
-		status = SparkGlm52Pp13WorkControlKvDirectoryAcquire(state,packet->lanes[lane_index].sequence_id,block_index,SparkGlm52Pp13WorkControlKvSelectKey(state,packet,lane_index,block_index),&physical_block_index,&allocated);
+		status = SparkGlm52Pp13WorkControlKvDirectoryAcquire(state,packet->lanes[lane_index].sequence_id,block_index,SparkGlm52Pp13WorkControlKvSelectKey(state,packet,lane_index,block_index),&physical_block_index);
 		if (status != SPARK_STATUS_OK)
 			return status;
-		(void)allocated;
 		entry_state = state->physical_block_states[physical_block_index];
 		status = SparkGlm52Pp13WorkControlKvResolveEntryState(packet,state,block_index,block_count,&entry_state);
 		if (status != SPARK_STATUS_OK)
@@ -2045,8 +1975,7 @@ SparkStatus SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
 	uint64_t write_end_token;
 	uint32_t first_written_block;
 	uint32_t last_written_block;
-	uint32_t directory_slot;
-	uint32_t block_slot;
+	SparkGlm52Pp13WorkControlKvBlockEntry *block_entry;
 	uint32_t lane_index;
 	uint32_t block_index;
 	uint32_t written_position_count;
@@ -2077,16 +2006,10 @@ SparkStatus SparkGlm52Pp13WorkControlCommitHostKvBlockTable(
 			 block_index <= last_written_block;
 			 ++block_index)
 		{
-			status = SparkGlm52Pp13WorkControlKvDirectoryLookup(state,packet->lanes[lane_index].sequence_id,block_index,&directory_slot);
-			if (status != SPARK_STATUS_OK)
-				return status;
-			status = SparkGlm52Pp13WorkControlKvBlockLookup(state,state->directory_entries[directory_slot].block_key,&block_slot);
-			if (status != SPARK_STATUS_OK)
-				return status;
-			if (state->block_entries[block_slot].residency_state !=
-					SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_GPU)
-				return SPARK_STATUS_INTERNAL_ERROR;
-			state->block_entries[block_slot].backing_valid = 0u;
+			block_entry = SparkGlm52Pp13WorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
+			if (block_entry == 0)
+				return SPARK_STATUS_NOT_FOUND;
+			block_entry->backing_valid = 0u;
 		}
 	}
 	return SPARK_STATUS_OK;
@@ -2099,9 +2022,8 @@ SparkStatus SparkGlm52Pp13WorkControlCancelHostKvBlockTable(
 	uint32_t lane_index;
 	uint32_t block_index;
 	uint32_t block_count;
-	uint32_t directory_slot;
-	uint32_t block_slot;
 	uint32_t physical_block_index;
+	SparkGlm52Pp13WorkControlKvBlockEntry *block_entry;
 	SparkStatus status;
 
 	status = SparkGlm52Pp13WorkControlValidateKvState(packet,state);
@@ -2118,20 +2040,10 @@ SparkStatus SparkGlm52Pp13WorkControlCancelHostKvBlockTable(
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		for (block_index = 0u; block_index < block_count; ++block_index)
 		{
-			status = SparkGlm52Pp13WorkControlKvDirectoryLookup(state,packet->lanes[lane_index].sequence_id,block_index,&directory_slot);
-			if (status == SPARK_STATUS_NOT_FOUND)
+			block_entry = SparkGlm52Pp13WorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
+			if (block_entry == 0)
 				continue;
-			if (status != SPARK_STATUS_OK)
-				return status;
-			status = SparkGlm52Pp13WorkControlKvBlockLookup(state,state->directory_entries[directory_slot].block_key,&block_slot);
-			if (status == SPARK_STATUS_NOT_FOUND)
-				continue;
-			if (status != SPARK_STATUS_OK)
-				return status;
-			physical_block_index =
-				state->block_entries[block_slot].physical_block_index;
-			if (physical_block_index >= state->physical_block_capacity)
-				return SPARK_STATUS_INTERNAL_ERROR;
+			physical_block_index = block_entry->physical_block_index;
 			if (state->physical_block_states[physical_block_index] ==
 				SPARK_GLM52_PP13_KV_ENTRY_IN_FLIGHT)
 			{

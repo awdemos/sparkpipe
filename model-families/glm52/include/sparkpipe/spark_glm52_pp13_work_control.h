@@ -66,7 +66,7 @@ extern "C" {
 #define SPARK_GLM52_PP13_KV_ENTRY_RESIDENT 2u
 #define SPARK_GLM52_PP13_KV_ENTRY_TRANSIENT 3u
 
-#define SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NONE 0u
+
 #define SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_GPU 1u
 #define SPARK_GLM52_PP13_KV_DIRECTORY_RESIDENCY_NVME 2u
 #define SPARK_GLM52_PP13_KV_INVALID_BLOCK_INDEX UINT32_MAX
@@ -110,7 +110,6 @@ typedef struct SparkGlm52Pp13WorkControlKvBlockEntry
 	uint32_t reference_count;
 	uint32_t residency_state : 2;
 	uint32_t backing_valid : 1;
-	uint32_t reserved_bits : 29;
 } SparkGlm52Pp13WorkControlKvBlockEntry;
 
 typedef struct SparkGlm52Pp13WorkControlKvPrefetchEntry
