@@ -286,6 +286,19 @@ static __device__ void SparkLmFp8StageInputProducerGroup(
     }
 }
 
+// Stage half a weight tile asynchronously with four producer warps.
+//
+// Same reasoning as SparkLmFp8StageWeight: the linear contract makes
+// input_dimension a multiple of SPARK_LM_TILE_K and fp8 is one byte per
+// element, so a row segment is SPARK_LM_FP8_TILE_K contiguous bytes at a
+// 16-byte aligned offset and the k_base + k_local bound is unconditionally
+// true. Only the neuron bound survives, and a padding row is issued with a
+// zero source size that the hardware zero-fills.
+//
+// These transfers target the buffer the other warp half is NOT reading, so
+// they fly during that half's MMA. They are retired once at the end of the
+// second phase, before the buffers swap - see the wait in the caller. Nothing
+// here waits, which is the entire point.
 static __device__ void SparkLmFp8StageWeightProducerHalf(
     const void *weight_payload_fp8,
     uint32_t neuron_base,
@@ -300,7 +313,8 @@ static __device__ void SparkLmFp8StageWeightProducerHalf(
     uint32_t warp_index;
     uint32_t lane_index;
     uint32_t producer_thread_index;
-    uint32_t entry;
+    uint32_t chunks_per_row;
+    uint32_t chunk;
 
     payload = reinterpret_cast<const __nv_fp8_storage_t *>(
         weight_payload_fp8);
@@ -314,28 +328,29 @@ static __device__ void SparkLmFp8StageWeightProducerHalf(
     producer_thread_index =
         ((warp_index - producer_warp_base) * SPARK_LM_WARP_LANES) +
         lane_index;
-    for (entry = producer_thread_index;
-         entry < (SPARK_LM_FP8_TILE_N / 2u) * SPARK_LM_FP8_TILE_K;
-         entry += 4u * SPARK_LM_WARP_LANES)
+    chunks_per_row = SPARK_LM_FP8_TILE_K / SPARK_LM_ASYNC_COPY_WIDEST_BYTES;
+    for (chunk = producer_thread_index;
+         chunk < (SPARK_LM_FP8_TILE_N / 2u) * chunks_per_row;
+         chunk += 4u * SPARK_LM_WARP_LANES)
     {
         uint32_t neuron_local;
-        uint32_t k_local;
+        uint32_t chunk_offset;
         uint32_t neuron;
-        uint32_t destination_index;
+        uint32_t source_bytes;
 
         neuron_local =
             (neuron_half * (SPARK_LM_FP8_TILE_N / 2u)) +
-            (entry / SPARK_LM_FP8_TILE_K);
-        k_local = entry % SPARK_LM_FP8_TILE_K;
+            (chunk / chunks_per_row);
+        chunk_offset =
+            (chunk % chunks_per_row) * SPARK_LM_ASYNC_COPY_WIDEST_BYTES;
         neuron = neuron_base + neuron_local;
-        destination_index =
-            (neuron_local * SPARK_LM_FP8_TILE_K) + k_local;
-        tile_weight[destination_index] =
-            neuron < output_dimension && k_base + k_local < input_dimension
-            ? payload[
-                ((uint64_t)neuron * input_dimension) +
-                k_base + k_local]
-            : 0;
+        source_bytes = neuron < output_dimension
+            ? SPARK_LM_ASYNC_COPY_WIDEST_BYTES : 0u;
+        neuron = neuron < output_dimension ? neuron : 0u;
+        SparkLmAsyncCopyBounded<SPARK_LM_ASYNC_COPY_WIDEST_BYTES, SPARK_LM_ASYNC_COPY_CACHE_GLOBAL>(
+            tile_weight + (neuron_local * SPARK_LM_FP8_TILE_K) + chunk_offset,
+            payload + ((uint64_t)neuron * input_dimension) + k_base + chunk_offset,
+            source_bytes);
     }
 }
 
@@ -566,6 +581,12 @@ static __device__ void SparkLmExpertTileBodyFp8(
                     1u,
                     tile_weight[next_buffer]);
             }
+            // Both producer phases have now issued their transfers into
+            // next_buffer. Retire them here, once, before the buffers swap and
+            // the next iteration's MMA reads what was just staged. Issuing in
+            // phase one and waiting only here is what lets the copies overlap
+            // the second phase's MMA. __syncthreads does not wait on cp.async.
+            SparkLmAsyncWaitAll();
             __syncthreads();
             if ((next_k_base % 128u) == 0u ||
                 next_k_base >= input_dimension)
