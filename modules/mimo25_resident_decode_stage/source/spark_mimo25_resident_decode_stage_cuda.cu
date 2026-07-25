@@ -66,9 +66,9 @@ static __global__ void SparkMimo25ScaleSliceKernel(void *data_bf16, uint64_t row
 static __global__ void SparkMimo25GateScoresKernel(const float *weight_f32, const void *input_bf16, float *scores_f32, uint32_t row_count, uint32_t input_dimension, uint32_t expert_count)
 {
 	extern __shared__ float gate_shared[];
-	uint32_t row = blockIdx.x,expert_base = blockIdx.y * SPARK_LM_CTA_WARPS;
+	uint32_t row = blockIdx.x,warp_count = blockDim.x / SPARK_LM_WARP_LANES;
 	uint32_t warp = threadIdx.x / SPARK_LM_WARP_LANES,lane = threadIdx.x % SPARK_LM_WARP_LANES,expert,element;
-	float accumulator = 0.0f;
+	float accumulator;
 	float2 stage_pair,weight_pair;
 	if ( row >= row_count )
 		return;
@@ -79,18 +79,19 @@ static __global__ void SparkMimo25GateScoresKernel(const float *weight_f32, cons
 		gate_shared[(element << 1u) + 1u] = stage_pair.y;
 	}
 	__syncthreads();
-	expert = expert_base + warp;
-	if ( expert >= expert_count )
-		return;
-	for (element = lane; element < (input_dimension >> 1u); element += SPARK_LM_WARP_LANES)
+	for (expert = warp; expert < expert_count; expert += warp_count)
 	{
-		weight_pair = __ldg(((const float2 *)weight_f32) + (((uint64_t)expert * input_dimension) >> 1u) + element);
-		accumulator = fmaf(gate_shared[element << 1u],weight_pair.x,accumulator);
-		accumulator = fmaf(gate_shared[(element << 1u) + 1u],weight_pair.y,accumulator);
+		accumulator = 0.0f;
+		for (element = lane; element < (input_dimension >> 1u); element += SPARK_LM_WARP_LANES)
+		{
+			weight_pair = __ldg(((const float2 *)weight_f32) + (((uint64_t)expert * input_dimension) >> 1u) + element);
+			accumulator = fmaf(gate_shared[element << 1u],weight_pair.x,accumulator);
+			accumulator = fmaf(gate_shared[(element << 1u) + 1u],weight_pair.y,accumulator);
+		}
+		accumulator = SparkLmWarpReduceSum(accumulator);
+		if ( lane == 0u )
+			scores_f32[((uint64_t)row * expert_count) + expert] = SparkLmSigmoid(accumulator);
 	}
-	accumulator = SparkLmWarpReduceSum(accumulator);
-	if ( lane == 0u )
-		scores_f32[((uint64_t)row * expert_count) + expert] = SparkLmSigmoid(accumulator);
 }
 
 /*
@@ -349,7 +350,7 @@ extern "C" cudaError_t SparkMimo25LaunchHeadShadowQuantize(cudaStream_t stream, 
 
 extern "C" cudaError_t SparkMimo25LaunchAttnDecode(cudaStream_t stream, const void *q_bf16, uint64_t q_row_stride, const void *k_cache_bf16, const void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, uint64_t k_slot_stride, uint64_t v_slot_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t group_size, uint32_t head_dim, uint32_t value_dim, uint32_t window_slots)
 {
-    return SparkLmHostLaunchGroupedAttnDecode<4u>(
+    return SparkLmHostLaunchAdaptiveAttnDecode(
         stream,
         q_bf16,
         q_row_stride,
@@ -374,8 +375,7 @@ extern "C" cudaError_t SparkMimo25LaunchAttnDecode(cudaStream_t stream, const vo
 
 extern "C" cudaError_t SparkMimo25LaunchGateScores(cudaStream_t stream, const SparkMimo25LinearView *gate, const void *input_bf16, float *scores_f32, uint32_t row_count)
 {
-	dim3 grid(row_count,(gate->rows + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);
-	SparkMimo25GateScoresKernel<<<grid,SPARK_LM_CTA_THREADS,gate->columns * (uint32_t)sizeof(float),stream>>>((const float *)gate->payload,input_bf16,scores_f32,row_count,gate->columns,gate->rows);
+	SparkMimo25GateScoresKernel<<<row_count,SPARK_LM_CTA_THREADS,gate->columns * (uint32_t)sizeof(float),stream>>>((const float *)gate->payload,input_bf16,scores_f32,row_count,gate->columns,gate->rows);
 	return(cudaGetLastError());
 }
 

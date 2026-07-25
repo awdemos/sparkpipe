@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdio.h>
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 
@@ -1454,6 +1455,40 @@ static cudaError_t SparkLmHostLaunchGroupedAttnDecode(
     return cudaGetLastError();
 }
 
+/*
+ * Head grouping trades KV traffic against CTA count, and the right trade
+ * depends entirely on batch. Grouping four query heads per CTA reads each KV
+ * head a quarter as often, which is what you want once rows alone fill the
+ * machine. At small batch it is backwards: mimo25 at one row yields sixteen
+ * CTAs against forty-eight SMs, so two thirds of the GPU idles while each CTA
+ * walks the whole context. One head per CTA gives sixty-four CTAs and a
+ * quarter the shared memory, and the extra KV rereads are nearly free at one
+ * row because a single row's KV slice is small.
+ *
+ * This picks the LARGEST grouping - least KV traffic - that still fills the
+ * machine, and only falls to narrower groups when it would not. Splitting the
+ * context across CTAs as well (an exact online-softmax merge over partials)
+ * would add parallelism beyond this, but needs a workspace and a second pass;
+ * it is worth doing only once this no longer fills the SMs.
+ */
+#define SPARK_LM_ATTN_TARGET_CTAS 96u
+
+static inline cudaError_t SparkLmHostLaunchAdaptiveAttnDecode(cudaStream_t stream, const void *q_bf16, uint64_t q_row_stride, const void *k_cache_bf16, const void *v_cache_bf16, uint64_t k_lane_stride, uint64_t v_lane_stride, uint64_t k_slot_stride, uint64_t v_slot_stride, const uint32_t *row_lane_indices, const uint64_t *row_positions, const float *sink_f32, float scale, void *out_bf16, uint32_t row_count, uint32_t head_count, uint32_t group_size, uint32_t head_dim, uint32_t value_dim, uint32_t window_slots)
+{
+	uint32_t kv_head_count,ctas_group_four,ctas_group_two;
+	if ( group_size == 0u || head_count % group_size != 0u )
+		return(cudaErrorInvalidValue);
+	kv_head_count = head_count / group_size;
+	ctas_group_four = row_count * kv_head_count * ((group_size + 3u) / 4u);
+	ctas_group_two = row_count * kv_head_count * ((group_size + 1u) / 2u);
+	if ( ctas_group_four >= SPARK_LM_ATTN_TARGET_CTAS )
+		return(SparkLmHostLaunchGroupedAttnDecode<4u>(stream,q_bf16,q_row_stride,k_cache_bf16,v_cache_bf16,k_lane_stride,v_lane_stride,k_slot_stride,v_slot_stride,row_lane_indices,row_positions,sink_f32,scale,out_bf16,row_count,head_count,group_size,head_dim,value_dim,window_slots));
+	if ( ctas_group_two >= SPARK_LM_ATTN_TARGET_CTAS )
+		return(SparkLmHostLaunchGroupedAttnDecode<2u>(stream,q_bf16,q_row_stride,k_cache_bf16,v_cache_bf16,k_lane_stride,v_lane_stride,k_slot_stride,v_slot_stride,row_lane_indices,row_positions,sink_f32,scale,out_bf16,row_count,head_count,group_size,head_dim,value_dim,window_slots));
+	return(SparkLmHostLaunchGroupedAttnDecode<1u>(stream,q_bf16,q_row_stride,k_cache_bf16,v_cache_bf16,k_lane_stride,v_lane_stride,k_slot_stride,v_slot_stride,row_lane_indices,row_positions,sink_f32,scale,out_bf16,row_count,head_count,group_size,head_dim,value_dim,window_slots));
+}
+
+
 #include <mma.h>
 
 #define SPARK_LM_TILE 16u
@@ -1505,6 +1540,11 @@ static __device__ __forceinline__ void SparkLmTileDecodeRun(uint32_t weight_form
 	}
 }
 
+// CONTRACT: k_base + SPARK_LM_TILE_K must not exceed input_dimension. Rows
+// are bounded by slot_count and zero-filled past it, but K is NOT bounded -
+// a partial trailing K tile reads past the row. Callers whose width is not a
+// multiple of SPARK_LM_TILE_K must not use the tile path; see
+// SparkLmHostLaunchBatchedLinear, which routes those to the scalar kernel.
 static __device__ __forceinline__ void SparkLmTileStageInput(const void *input_bf16, const uint32_t *input_row_map, uint32_t slot_base, uint32_t slot_count, uint32_t k_base, uint32_t input_dimension, __nv_bfloat16 *tile)
 {
 	uint32_t entry,slot,source_row;
@@ -2372,11 +2412,55 @@ static inline cudaError_t SparkLmHostLaunchMoeGroup(cudaStream_t stream, const u
 // All three inherit the FP8 tensor path under SPARK_LM_FP8_TILE (the tile
 // dispatch), and every dimension is parametric so the shape carries to the
 // next model generation unchanged.
+//
+/*
+ * Hard validation of the tile's input contract. The tile does not fail on
+ * bad input, it silently produces wrong numbers, in two ways. A width that
+ * is not a multiple of the K tile leaves a partial trailing K tile whose
+ * stagers bound rows and neurons but never K, so it folds whatever follows
+ * the row into the dot product. And a weight format the decoder has no
+ * branch for - F32 and U32 - falls past the BF16 and MXFP4 early returns
+ * into the FP8 path and is read as packed E4M3 bytes.
+ *
+ * Both are latent today: every shipped projection width is K-aligned and no
+ * live view carries F32 or U32. Both would be silent wrong tokens the moment
+ * that changes, with nothing in the output to reveal it. They fail loudly
+ * here instead, naming the offending value, because a plausible wrong answer
+ * costs far more than a refused launch. The tiny-batch scalar path carries
+ * explicit tails and handles any width, so only the tile regime is bound by
+ * the K-multiple rule.
+ */
+static inline cudaError_t SparkLmValidateLinearContract(uint32_t weight_format, uint32_t row_count, uint32_t input_dimension)
+{
+	if ( weight_format != SPARK_LM_WEIGHT_FORMAT_BF16 && weight_format != SPARK_LM_WEIGHT_FORMAT_MXFP4_E2M1 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3 && weight_format != SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 )
+	{
+		fprintf(stderr,"spark_lm_kernels: linear dispatch got weight_format %u, which no decoder branch handles\n",weight_format);
+		return(cudaErrorInvalidValue);
+	}
+	if ( row_count >= SPARK_LM_TILE && (input_dimension % SPARK_LM_TILE_K) != 0u )
+	{
+		fprintf(stderr,"spark_lm_kernels: linear dispatch got input_dimension %u, not a multiple of the K tile %u\n",input_dimension,(unsigned)SPARK_LM_TILE_K);
+		return(cudaErrorInvalidValue);
+	}
+	return(cudaSuccess);
+}
+
+// The tile also REQUIRES input_dimension to be a multiple of the K tile. Its
+// stagers bound rows and neurons but never K, so a trailing partial K tile
+// stages whatever follows the row in memory and folds it into the dot
+// product - wrong output, no crash. Expert widths are always K-aligned so
+// this never bit the expert path, but a dense projection can have any width
+// and the next model generation may well introduce one. Non-aligned widths
+// therefore take the scalar path, which carries explicit scalar tails and
+// handles arbitrary dimensions exactly.
 template <uint32_t GROUP_SIZE>
 static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, void *output_bf16, uint32_t row_count, uint32_t input_dimension, uint32_t output_dimension)
 {
 	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	uint32_t n_tiles = (output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N;
+	cudaError_t contract = SparkLmValidateLinearContract(weight_format,row_count,input_dimension);
+	if ( contract != cudaSuccess )
+		return(contract);
 	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
 		(weight_scale == 0 || (input_dimension % 128u) != 0u ||
 			(output_dimension % 128u) != 0u) )
