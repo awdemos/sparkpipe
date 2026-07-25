@@ -3010,6 +3010,10 @@ static __device__ __forceinline__ uint32_t SparkGlm52ResidentDecodeStageDsaOrder
     uint32_t value_bits;
 
     value_bits = __float_as_uint(value);
+    if ((value_bits & 0x7fffffffu) == 0u)
+    {
+        value_bits = 0u;
+    }
     if ((value_bits & 0x80000000u) != 0u)
     {
         return ~value_bits;
@@ -22651,10 +22655,31 @@ static SparkStatus SparkGlm52Sm121RequiredDecodeStageInitializeRequiredMoe(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkGlm52Sm121RequiredDecodeStageConfigureCudaKernels(void)
+{
+    cudaError_t cuda_status;
+    size_t dynamic_shared_bytes;
+
+    dynamic_shared_bytes =
+        (size_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_HIERARCHICAL_PARTITION_CANDIDATES *
+        sizeof(uint64_t);
+    cuda_status = cudaFuncSetAttribute(
+        SparkGlm52ResidentDecodeStageDsaScoreSelectHierarchicalKernel,
+        cudaFuncAttributeMaxDynamicSharedMemorySize,
+        (int)dynamic_shared_bytes);
+    if (cuda_status != cudaSuccess)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SPARK_STATUS_OK;
+}
+
 
 extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageInitialize(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context)
 {
+    SparkStatus status;
+
     if (node_context == 0 ||
         node_context->abi_version !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION ||
@@ -22662,6 +22687,11 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageInitialize(
         node_context->pipeline_slots == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkGlm52Sm121RequiredDecodeStageConfigureCudaKernels();
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
     }
     return SparkGlm52Sm121RequiredDecodeStageInitializeRequiredMoe(
         node_context);

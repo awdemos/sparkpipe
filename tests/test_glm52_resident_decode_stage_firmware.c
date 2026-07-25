@@ -2756,6 +2756,8 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFinalTokenEpilogueValidation
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
     SparkFirmwareModuleConfiguration configuration;
     SparkFirmwareModuleHostServices host_services;
+    SparkModelDriverAdmissionRequest admission_request;
+    SparkModelDriverAdmissionDecision admission_decision;
     SparkModelDriverFrame frame;
     void *module_state;
     uint32_t layer_index;
@@ -2870,6 +2872,28 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFinalTokenEpilogueValidation
     assert(completion_state.completions[0].token_ids[0] == 91016u);
     assert(completion_state.completions[0].token_ids[1] == 91017u);
     assert(completion_state.completions[0].token_ids[2] == 91018u);
+
+    memset(&admission_request, 0, sizeof(admission_request));
+    admission_request.descriptor_bytes = sizeof(admission_request);
+    admission_request.program_id = 1u;
+    admission_request.active_slot_count = 2u;
+    admission_request.new_token_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 2u;
+    assert(SparkGlm52ResidentDecodeStageAdmit(
+        module_state,
+        &admission_request,
+        &admission_decision) == SPARK_STATUS_OK);
+    assert(admission_decision.accepted == 0u);
+    assert(admission_decision.rejection_reason ==
+        SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE);
+
+    frame.request_id = 313u;
+    frame.new_token_count =
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 2u;
+    assert(SparkGlm52ResidentDecodeStageExecute(module_state, &frame) ==
+        SPARK_STATUS_INVALID_ARGUMENT);
+    assert(fake_streams[0].submit_count == 1u);
+    assert(completion_state.completion_count == 1u);
     SparkGlm52ResidentDecodeStageDestroy(module_state);
 
     exact_stage_slice_plan.workspace = 0;

@@ -1029,8 +1029,6 @@ static SparkStatus SparkMimo25ModuleRunFfn(SparkMimo25ModuleSlot *slot, const Sp
 		error = SparkMimo25LaunchGateScores(stream,&layer->moe.gate,slot->normalized_bf16,slot->moe_scores_f32,rows);
 		if ( error == cudaSuccess )
 			error = SparkMimo25LaunchGateSelect(stream,slot->moe_scores_f32,layer->moe.gate_bias_f32,rows,SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT,SPARK_MIMO25_MODEL_EXPERTS_PER_TOKEN,SPARK_MIMO25_MODEL_ROUTER_NORM_EPSILON,SPARK_MIMO25_MODEL_ROUTED_SCALING_FACTOR,slot->moe_indices_u32,slot->moe_weights_f32);
-		if ( error == cudaSuccess )
-			error = cudaMemsetAsync(slot->ffn_accum_bf16,0,(uint64_t)rows * SPARK_MIMO25_MODEL_HIDDEN_DIMENSION * SPARK_MIMO25_MODEL_BF16_ELEMENT_BYTES,stream);
 		if ( error != cudaSuccess )
 			return(SparkStageModuleCudaStatus(SPARK_MIMO25_MODULE_TAG,error,"moe_gate"));
 		status = SparkMimo25ModuleRunMoeRouted(slot,&layer->moe,rows);

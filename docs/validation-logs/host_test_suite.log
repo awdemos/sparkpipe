@@ -79,5 +79,5 @@ RUN build/test_glm52_tp_shard
 RUN build/test_glm52_shape_config
 RUN build/test_tp_collective
 Assertion failed: (!"no available TCP port range for tensor-parallel collective test"), function SparkTestTpcFindAvailablePortBase, file test_tp_collective.c, line 256.
-/bin/sh: line 1: 12827 Abort trap: 6           ./$test_binary
+/bin/sh: line 1: 68851 Abort trap: 6           ./$test_binary
 make: *** [test] Error 134

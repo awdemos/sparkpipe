@@ -118,6 +118,7 @@ typedef struct SparkHiddenSparkHostRdmaLane
 
 typedef struct SparkHiddenSparkHostRdmaCachedMemoryRegion
 {
+    const void *cuda_visible_pointer;
     const void *pointer;
     uint64_t bytes;
     uint64_t last_use_epoch;
@@ -236,6 +237,7 @@ typedef struct SparkHiddenSparkHostRdmaState
     uint64_t doorbell_send_count;
     uint64_t striped_send_count;
     uint64_t memory_region_cache_hit_count;
+    uint64_t pointer_attribute_query_count;
     uint64_t memory_region_register_count;
     uint64_t asynchronous_send_count;
     uint64_t completed_send_count;
@@ -246,49 +248,75 @@ typedef struct SparkHiddenSparkHostRdmaState
     uint64_t gpudirect_transfer_bytes;
 } SparkHiddenSparkHostRdmaState;
 
-static uint32_t SparkHiddenSparkHostRdmaParseUintEnv(
+static SparkStatus SparkHiddenSparkHostRdmaParseUintEnv(
     const char *name,
-    uint32_t fallback)
+    uint32_t default_value,
+    uint32_t *value_out)
 {
     const char *text;
     char *end;
     unsigned long value;
 
-    text = getenv(name);
-    if (text == 0 || text[0] == '\0')
+    if (name == 0 || value_out == 0)
     {
-        return fallback;
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    text = getenv(name);
+    if (text == 0)
+    {
+        *value_out = default_value;
+        return SPARK_STATUS_OK;
+    }
+    if (text[0] < '0' || text[0] > '9')
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     end = 0;
+    errno = 0;
     value = strtoul(text, &end, 10);
-    if (end == 0 || *end != '\0' || value > 0xfffffffful)
+    if (errno != 0 || end == text || *end != '\0' ||
+        value > 0xfffffffful)
     {
-        return fallback;
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    return (uint32_t)value;
+    *value_out = (uint32_t)value;
+    return SPARK_STATUS_OK;
 }
 
-static int32_t SparkHiddenSparkHostRdmaParseIntEnv(
+static SparkStatus SparkHiddenSparkHostRdmaParseIntEnv(
     const char *name,
-    int32_t fallback)
+    int32_t default_value,
+    int32_t *value_out)
 {
     const char *text;
     char *end;
     long value;
 
-    text = getenv(name);
-    if (text == 0 || text[0] == '\0')
+    if (name == 0 || value_out == 0)
     {
-        return fallback;
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    text = getenv(name);
+    if (text == 0)
+    {
+        *value_out = default_value;
+        return SPARK_STATUS_OK;
+    }
+    if (!((text[0] >= '0' && text[0] <= '9') ||
+          (text[0] == '-' && text[1] >= '0' && text[1] <= '9')))
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     end = 0;
+    errno = 0;
     value = strtol(text, &end, 10);
-    if (end == 0 || *end != '\0' || value < -2147483647l ||
-        value > 2147483647l)
+    if (errno != 0 || end == text || *end != '\0' ||
+        value < (long)INT32_MIN || value > (long)INT32_MAX)
     {
-        return fallback;
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    return (int32_t)value;
+    *value_out = (int32_t)value;
+    return SPARK_STATUS_OK;
 }
 
 static int SparkHiddenSparkHostRdmaCloseFd(int fd)
@@ -1137,27 +1165,7 @@ static SparkStatus SparkHiddenSparkHostRdmaGetCachedMemoryRegion(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkHiddenSparkHostRdmaResolveRegistrationPointer(
-        state, pointer, bytes, &registration_pointer);
-    if (status != SPARK_STATUS_OK)
-    {
-        return status;
-    }
-    *registered_pointer_out = registration_pointer;
     state->memory_region_epoch += 1u;
-    for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT; ++index)
-    {
-        if (state->cached_regions[index].memory_region != 0 &&
-            state->cached_regions[index].pointer == registration_pointer &&
-            state->cached_regions[index].bytes == bytes)
-        {
-            state->cached_regions[index].last_use_epoch =
-                state->memory_region_epoch;
-            *memory_region_out = state->cached_regions[index].memory_region;
-            state->memory_region_cache_hit_count += 1u;
-            return SPARK_STATUS_OK;
-        }
-    }
     free_index = SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT;
     for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT; ++index)
     {
@@ -1165,6 +1173,38 @@ static SparkStatus SparkHiddenSparkHostRdmaGetCachedMemoryRegion(
         {
             free_index = index;
             break;
+        }
+        if (state->cached_regions[index].cuda_visible_pointer == pointer &&
+            state->cached_regions[index].bytes == bytes)
+        {
+            state->cached_regions[index].last_use_epoch =
+                state->memory_region_epoch;
+            *memory_region_out = state->cached_regions[index].memory_region;
+            *registered_pointer_out =
+                (void *)state->cached_regions[index].pointer;
+            state->memory_region_cache_hit_count += 1u;
+            return SPARK_STATUS_OK;
+        }
+    }
+    state->pointer_attribute_query_count += 1u;
+    status = SparkHiddenSparkHostRdmaResolveRegistrationPointer(
+        state, pointer, bytes, &registration_pointer);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    *registered_pointer_out = registration_pointer;
+    for (index = 0u; index < free_index; ++index)
+    {
+        if (state->cached_regions[index].pointer == registration_pointer &&
+            state->cached_regions[index].bytes == bytes)
+        {
+            state->cached_regions[index].cuda_visible_pointer = pointer;
+            state->cached_regions[index].last_use_epoch =
+                state->memory_region_epoch;
+            *memory_region_out = state->cached_regions[index].memory_region;
+            state->memory_region_cache_hit_count += 1u;
+            return SPARK_STATUS_OK;
         }
     }
     if (free_index == SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT)
@@ -1180,6 +1220,7 @@ static SparkStatus SparkHiddenSparkHostRdmaGetCachedMemoryRegion(
     {
         return SPARK_STATUS_DRIVER_LOAD_ERROR;
     }
+    state->cached_regions[free_index].cuda_visible_pointer = pointer;
     state->cached_regions[free_index].pointer = registration_pointer;
     state->cached_regions[free_index].bytes = bytes;
     state->cached_regions[free_index].last_use_epoch =
@@ -3487,7 +3528,7 @@ static void SparkHiddenSparkHostRdmaDestroyState(SparkHiddenSparkHostRdmaState *
     if (state->debug_enabled != 0u)
     {
         fprintf(stderr,
-            "hidden_spark_rdma_stats mode=%u doorbell_sends=%llu striped_sends=%llu async_sends=%llu completed_sends=%llu control_busy=%llu mr_cache_hits=%llu mr_registrations=%llu mapped_host_zero_copy_transfers=%llu mapped_host_zero_copy_bytes=%llu gpudirect_transfers=%llu gpudirect_bytes=%llu\n",
+            "hidden_spark_rdma_stats mode=%u doorbell_sends=%llu striped_sends=%llu async_sends=%llu completed_sends=%llu control_busy=%llu mr_cache_hits=%llu pointer_attribute_queries=%llu mr_registrations=%llu mapped_host_zero_copy_transfers=%llu mapped_host_zero_copy_bytes=%llu gpudirect_transfers=%llu gpudirect_bytes=%llu\n",
             state->memory_mode,
             (unsigned long long)state->doorbell_send_count,
             (unsigned long long)state->striped_send_count,
@@ -3495,6 +3536,7 @@ static void SparkHiddenSparkHostRdmaDestroyState(SparkHiddenSparkHostRdmaState *
             (unsigned long long)state->completed_send_count,
             (unsigned long long)state->control_queue_busy_count,
             (unsigned long long)state->memory_region_cache_hit_count,
+            (unsigned long long)state->pointer_attribute_query_count,
             (unsigned long long)state->memory_region_register_count,
             (unsigned long long)state->mapped_host_zero_copy_transfer_count,
             (unsigned long long)state->mapped_host_zero_copy_transfer_bytes,
@@ -3552,7 +3594,9 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
 {
     SparkHiddenSparkHostRdmaState *state;
     SparkStatus status;
+    uint32_t config_value;
     uint32_t lane_count;
+    uint32_t local_rank;
     uint32_t receive_index;
     const char *rank_text;
 
@@ -3591,37 +3635,83 @@ static SparkStatus SparkHiddenSparkHostRdmaInitialize(
         SparkHiddenSparkHostRdmaDestroyState(state);
         return status;
     }
-    state->debug_enabled = getenv("SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DEBUG") != 0 ?
-        1u : 0u;
-    lane_count = SparkHiddenSparkHostRdmaParseUintEnv("SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_LANES",
-        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_LANE_COUNT);
-    if (lane_count == 0u)
+    status = SparkHiddenSparkHostRdmaParseUintEnv(
+        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DEBUG",
+        0u,
+        &state->debug_enabled);
+    if (status != SPARK_STATUS_OK || state->debug_enabled > 1u)
     {
-        lane_count = 1u;
+        SparkHiddenSparkHostRdmaDestroyState(state);
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (lane_count > SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT)
+    status = SparkHiddenSparkHostRdmaParseUintEnv(
+        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_LANES",
+        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_LANE_COUNT,
+        &lane_count);
+    if (status != SPARK_STATUS_OK || lane_count == 0u ||
+        lane_count > SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT)
     {
-        lane_count = SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT;
+        SparkHiddenSparkHostRdmaDestroyState(state);
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     state->lane_count = lane_count;
-    state->control_port_base = SparkHiddenSparkHostRdmaParseUintEnv(
+    status = SparkHiddenSparkHostRdmaParseUintEnv(
         "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_CONTROL_PORT_BASE",
-        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_CONTROL_PORT_BASE);
-    state->verbs_port = (uint8_t)SparkHiddenSparkHostRdmaParseUintEnv(
-        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_PORT", 1u);
-    state->gid_index = SparkHiddenSparkHostRdmaParseIntEnv(
-        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_GID_INDEX", 0);
-    state->doorbell_max_bytes = SparkHiddenSparkHostRdmaParseUintEnv(
+        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_CONTROL_PORT_BASE,
+        &state->control_port_base);
+    if (status != SPARK_STATUS_OK ||
+        state->control_port_base == 0u ||
+        state->control_port_base >
+            65535u - (SPARK_HIDDEN_SPARK_HOST_RDMA_SPARK_COUNT - 1u))
+    {
+        SparkHiddenSparkHostRdmaDestroyState(state);
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenSparkHostRdmaParseUintEnv(
+        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_IB_PORT",
+        1u,
+        &config_value);
+    if (status != SPARK_STATUS_OK || config_value == 0u ||
+        config_value > 255u)
+    {
+        SparkHiddenSparkHostRdmaDestroyState(state);
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    state->verbs_port = (uint8_t)config_value;
+    status = SparkHiddenSparkHostRdmaParseIntEnv(
+        "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_GID_INDEX",
+        0,
+        &state->gid_index);
+    if (status != SPARK_STATUS_OK || state->gid_index < 0)
+    {
+        SparkHiddenSparkHostRdmaDestroyState(state);
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkHiddenSparkHostRdmaParseUintEnv(
         "SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DOORBELL_MAX_BYTES",
-        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_DOORBELL_MAX_BYTES);
+        SPARK_HIDDEN_SPARK_HOST_RDMA_DEFAULT_DOORBELL_MAX_BYTES,
+        &state->doorbell_max_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkHiddenSparkHostRdmaDestroyState(state);
+        return status;
+    }
     rank_text = getenv("SPARKPIPE_PP13_TRANSPORT_RANK");
     if (rank_text == 0 || rank_text[0] == '\0')
     {
         SparkHiddenSparkHostRdmaDestroyState(state);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    state->local_rank = (int32_t)SparkHiddenSparkHostRdmaParseUintEnv(
-        "SPARKPIPE_PP13_TRANSPORT_RANK", 1000u);
+    status = SparkHiddenSparkHostRdmaParseUintEnv(
+        "SPARKPIPE_PP13_TRANSPORT_RANK",
+        0u,
+        &local_rank);
+    if (status != SPARK_STATUS_OK || local_rank > (uint32_t)INT32_MAX)
+    {
+        SparkHiddenSparkHostRdmaDestroyState(state);
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    state->local_rank = (int32_t)local_rank;
     status = SparkHiddenSparkHostRdmaParseRoute(endpoint->route_name,
         state->source_host, state->sink_host);
     if (status != SPARK_STATUS_OK)

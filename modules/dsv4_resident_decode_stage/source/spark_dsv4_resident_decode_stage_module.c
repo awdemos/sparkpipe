@@ -174,6 +174,7 @@ typedef struct SparkDsv4ModuleState
 	atomic_ullong tokens_emitted;
 } SparkDsv4ModuleState;
 
+extern cudaError_t SparkDsv4ConfigureCudaKernels(void);
 extern cudaError_t SparkDsv4LaunchRmsNorm(cudaStream_t stream, const void *input_bf16, const void *gain_bf16, void *output_bf16, uint32_t row_count, uint32_t dimension, float epsilon);
 extern cudaError_t SparkDsv4LaunchLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *input_bf16, void *output_bf16, uint32_t row_count);
 extern cudaError_t SparkDsv4LaunchStridedLinear(cudaStream_t stream, const SparkDsv4LinearView *view, const void *payload, const uint8_t *scale, const void *input_bf16, uint64_t input_row_stride, uint32_t input_offset, void *output_bf16, uint64_t output_row_stride, uint32_t output_offset, uint32_t row_count);
@@ -1857,14 +1858,23 @@ SparkStatus SparkDsv4ResidentDecodeStageInitialize(
     atomic_init(&state->tokens_emitted, 0u);
 
     status = SparkDsv4ModuleConfigure(state);
+    if (status != SPARK_STATUS_OK)
+    {
+        free(state);
+        return status;
+    }
+    SparkStageModuleAtomicStateArrayInitialize(
+        state->slot_states,
+        state->pipeline_slot_count);
+    SparkStageModuleAtomicStateArrayInitialize(
+        state->lane_states,
+        state->max_active_sequence_count);
+    status = SparkStageModuleCudaStatus(
+        SPARK_DSV4_MODULE_TAG,
+        SparkDsv4ConfigureCudaKernels(),
+        "configure_cuda_kernels");
     if (status == SPARK_STATUS_OK)
     {
-        SparkStageModuleAtomicStateArrayInitialize(
-            state->slot_states,
-            state->pipeline_slot_count);
-        SparkStageModuleAtomicStateArrayInitialize(
-            state->lane_states,
-            state->max_active_sequence_count);
         status = SparkStageModuleEnvironmentUnsigned(
             SPARK_DSV4_MODULE_TAG,
             "SPARK_DSV4_STAGE_GRAPHS",

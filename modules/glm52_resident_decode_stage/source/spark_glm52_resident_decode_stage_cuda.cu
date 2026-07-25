@@ -42,19 +42,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     token_count = completion->requested_token_count;
-    if (token_count == 0u)
+    if (token_count == 0u ||
+        token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY ||
+        token_count >
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
     {
-        token_count = 1u;
-    }
-    if (token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
-    {
-        token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
-    }
-    if (token_count >
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
-    {
-        token_count =
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE;
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     cuda_status = cudaMemcpyAsync(
         &completion->token_ids[0u],
@@ -68,13 +61,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(
     }
     if (token_count > 1u)
     {
-        if (pipeline_slot->mtp_draft_token_ids == 0)
+        if (pipeline_slot->mtp_committed_token_ids == 0)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
         cuda_status = cudaMemcpyAsync(
             &completion->token_ids[1u],
-            pipeline_slot->mtp_draft_token_ids,
+            pipeline_slot->mtp_committed_token_ids,
             (size_t)(token_count - 1u) * sizeof(uint32_t),
             cudaMemcpyDeviceToHost,
             cuda_stream);

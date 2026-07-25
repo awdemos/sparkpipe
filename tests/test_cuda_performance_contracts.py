@@ -518,6 +518,10 @@ def validate_qwen_contract() -> None:
         text,
         "static __global__ void SparkQwen36ChunkQkDecayKernel(",
     )
+    chunk_transform = extract_braced_definition(
+        text,
+        "static __global__ void SparkQwen36ChunkTransformKernel(",
+    )
     chunk_step = extract_braced_definition(
         text,
         "static __global__ void SparkQwen36ChunkStepKernel(",
@@ -576,6 +580,100 @@ def validate_qwen_contract() -> None:
     forbid(chunk_step, "float v_new[", "Qwen chunk register spill array")
     require(chunk_step, "v_new_shared", "Qwen chunk value staging")
     require(chunk_step, "state_shared", "Qwen chunk state staging")
+    require(
+        text,
+        "SPARK_QWEN36_CUDA_GDN_STATE_ELEMENTS +",
+        "Qwen chunk state shared layout",
+    )
+    require(
+        text,
+        "SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DV",
+        "Qwen chunk value shared layout",
+    )
+    require(
+        text,
+        "2u * SPARK_QWEN36_CUDA_CHUNK",
+        "Qwen cached chunk-decay shared layout",
+    )
+    require(
+        text,
+        "SPARK_QWEN36_CUDA_GDN_CHUNK_SHARED_BYTES == 98816u",
+        "Qwen exact chunk shared-memory assertion",
+    )
+    require(
+        configure,
+        "SPARK_QWEN36_CUDA_GDN_CHUNK_SHARED_BYTES",
+        "Qwen configured chunk shared bytes",
+    )
+    require(
+        chunk_launch,
+        "SPARK_QWEN36_CUDA_GDN_CHUNK_SHARED_BYTES",
+        "Qwen launched chunk shared bytes",
+    )
+    require(
+        chunk_transform,
+        "__shared__ float exp_cum_g[SPARK_QWEN36_CUDA_CHUNK]",
+        "Qwen transform exponent cache",
+    )
+    require(
+        chunk_transform,
+        "exp_cum_g[element]",
+        "Qwen transform exponent-cache reuse",
+    )
+    forbid(
+        chunk_transform,
+        "__expf(views.cum_g[SparkQwen36ChunkHeadOffset",
+        "Qwen repeated transform exponentials",
+    )
+    require(
+        chunk_step,
+        "exp_cum_g_shared =",
+        "Qwen step exponent-cache layout",
+    )
+    require(
+        chunk_step,
+        "carry_decay_shared =",
+        "Qwen step carry-decay cache layout",
+    )
+    require(
+        chunk_step,
+        "exp_cum_g_shared[token_count - 1u]",
+        "Qwen cached final chunk decay",
+    )
+    require(
+        chunk_step,
+        "carry_decay_shared[row]",
+        "Qwen cached state carry decay",
+    )
+    forbid(
+        chunk_step,
+        "__expf(views.cum_g[g_base + row])",
+        "Qwen repeated output decay exponentials",
+    )
+    forbid(chunk_step, "__expf(g_last)", "Qwen repeated final decay exponentials")
+    forbid(
+        chunk_step,
+        "__expf(g_last - views.cum_g[g_base + row])",
+        "Qwen repeated state-carry exponentials",
+    )
+    transform_cache_write = chunk_transform.index(
+        "exp_cum_g[threadIdx.x] = __expf("
+    )
+    transform_barrier = chunk_transform.index("__syncthreads()", transform_cache_write)
+    transform_cache_read = chunk_transform.index(
+        "exp_cum_g[element]", transform_barrier
+    )
+    if not transform_cache_write < transform_barrier < transform_cache_read:
+        raise AssertionError("Qwen transform exponent cache is not synchronized")
+    step_cache_write = chunk_step.index(
+        "exp_cum_g_shared[column] = __expf("
+    )
+    step_barrier = chunk_step.index("__syncthreads()", step_cache_write)
+    step_cache_read = chunk_step.index(
+        "exp_cum_g_shared[row]", step_barrier
+    )
+    if not step_cache_write < step_barrier < step_cache_read:
+        raise AssertionError("Qwen step exponent cache is not synchronized")
     if configure.count("cudaFuncSetAttribute(") != 3:
         raise AssertionError("Qwen must configure all three large-shared kernels once")
     required_launch_order = [
@@ -588,6 +686,8 @@ def validate_qwen_contract() -> None:
     positions = [chunk_launch.index(fragment) for fragment in required_launch_order]
     if positions != sorted(positions):
         raise AssertionError("Qwen chunk stages are not stream-ordered in dependency order")
+    if chunk_launch.count("cudaGetLastError()") != 5:
+        raise AssertionError("Qwen chunk launch must report every stage error")
     require(
         chunk_launch,
         "SPARK_QWEN36_CUDA_GDN_QK_SHARED_BYTES",
@@ -678,6 +778,27 @@ def validate_dsv4_contract() -> None:
         text,
         "static __global__ void SparkDsv4GateSelectKernel(",
     )
+    shared_bytes = extract_braced_definition(
+        text,
+        "static size_t SparkDsv4SparseAttnSharedBytes(",
+    )
+    configure_cuda = extract_braced_definition(
+        text,
+        'extern "C" cudaError_t SparkDsv4ConfigureCudaKernels(',
+    )
+    launch_sparse_attention = extract_braced_definition(
+        text,
+        'extern "C" cudaError_t SparkDsv4LaunchSparseAttn(',
+    )
+    module_path = ROOT / (
+        "modules/dsv4_resident_decode_stage/source/"
+        "spark_dsv4_resident_decode_stage_module.c"
+    )
+    module_text = module_path.read_text(encoding="utf-8")
+    initialize = extract_braced_definition(
+        module_text,
+        "SparkStatus SparkDsv4ResidentDecodeStageInitialize(",
+    )
 
     require(indexer, "extern __shared__ float q_shared[]", "DSV4 indexer Q staging")
     require(indexer, "float2 key_pair[maximum_pairs_per_lane]", "DSV4 indexer register key reuse")
@@ -700,6 +821,89 @@ def validate_dsv4_contract() -> None:
     require(route, "SparkLmOrderedTopKKey", "DSV4 canonical gate ordering")
     forbid(route, "SparkLmArgmaxReduce", "DSV4 repeated-rank gate selection")
     forbid(route, "for (rank = 0u; rank < topk", "DSV4 repeated-rank gate selection")
+    require(
+        initialize,
+        "SparkDsv4ConfigureCudaKernels()",
+        "DSV4 initialization-time large-shared kernel configuration",
+    )
+    if initialize.count("SparkDsv4ConfigureCudaKernels()") != 1:
+        raise AssertionError("DSV4 initialization must configure large-shared kernels once")
+    module_configure_offset = initialize.find("SparkDsv4ModuleConfigure(state)")
+    module_configure_failure_offset = initialize.find(
+        "if (status != SPARK_STATUS_OK)",
+        module_configure_offset,
+    )
+    atomic_init_offset = initialize.find(
+        "SparkStageModuleAtomicStateArrayInitialize("
+    )
+    if (
+        module_configure_offset < 0
+        or module_configure_failure_offset < 0
+        or atomic_init_offset < 0
+        or not (
+            module_configure_offset
+            < module_configure_failure_offset
+            < atomic_init_offset
+        )
+    ):
+        raise AssertionError(
+            "DSV4 configuration failures must return before atomic-array cleanup is possible"
+        )
+    module_configure_failure = initialize[
+        module_configure_failure_offset:atomic_init_offset
+    ]
+    require(
+        module_configure_failure,
+        "free(state)",
+        "DSV4 pre-resource configuration failure cleanup",
+    )
+    require(
+        module_configure_failure,
+        "return status",
+        "DSV4 pre-resource configuration failure return",
+    )
+    configure_offset = initialize.find("SparkDsv4ConfigureCudaKernels()")
+    if atomic_init_offset < 0 or configure_offset < 0 or atomic_init_offset > configure_offset:
+        raise AssertionError(
+            "DSV4 slot atomics must be initialized before fail-closed CUDA configuration"
+        )
+    require(
+        configure_cuda,
+        "SparkDsv4SparseAttnKernel",
+        "DSV4 configured sparse-attention kernel",
+    )
+    require(
+        configure_cuda,
+        "cudaFuncAttributeMaxDynamicSharedMemorySize",
+        "DSV4 sparse-attention dynamic-shared opt-in",
+    )
+    require(
+        configure_cuda,
+        "SparkDsv4SparseAttnSharedBytes(",
+        "DSV4 configured sparse-attention shared bytes",
+    )
+    require(
+        launch_sparse_attention,
+        "SparkDsv4SparseAttnSharedBytes(head_dim)",
+        "DSV4 launched sparse-attention shared bytes",
+    )
+    forbid(
+        shared_bytes,
+        "sizeof(__nv_bfloat16)",
+        "DSV4 stale sparse-attention shared allocation",
+    )
+    require(
+        shared_bytes,
+        "(size_t)heads_per_cta * head_dimension * sizeof(float)",
+        "DSV4 sparse-attention query staging",
+    )
+    require(
+        shared_bytes,
+        "(size_t)heads_per_cta * SPARK_LM_CTA_WARPS *",
+        "DSV4 sparse-attention reduction staging",
+    )
+    if shared_bytes.count("sizeof(float)") != 2:
+        raise AssertionError("DSV4 sparse-attention shared layout must contain two float regions")
 
 
 def validate_mimo_contract() -> None:
@@ -720,10 +924,20 @@ def validate_mimo_contract() -> None:
         text,
         "static __global__ void SparkMimo25GateSelectKernel(",
     )
+    module_path = ROOT / (
+        "modules/mimo25_resident_decode_stage/source/"
+        "spark_mimo25_resident_decode_stage_module.c"
+    )
+    module_text = module_path.read_text(encoding="utf-8")
+    run_ffn = extract_braced_definition(
+        module_text,
+        "static SparkStatus SparkMimo25ModuleRunFfn(",
+    )
     require(pair_reduce, "SparkLmHostLaunchMoePairReduceOverwrite", "MiMo overwrite reduction")
     require(attention, "SparkLmHostLaunchGroupedAttnDecode<4u>", "MiMo grouped KV reuse")
     forbid(attention, "SparkLmAttnDecodeKernel<<<", "MiMo per-query-head KV reread")
     forbid(pair_reduce, "cudaMemsetAsync", "MiMo zero-then-read accumulation")
+    forbid(run_ffn, "cudaMemsetAsync", "MiMo dead routed-FFN clear")
     require(route, "SparkLmBitonicSortKeysAscending", "MiMo one-sort gate top-k")
     require(route, "SparkLmOrderedTopKKey", "MiMo canonical gate ordering")
     forbid(route, "SparkLmArgmaxReduce", "MiMo repeated-rank gate selection")
@@ -773,8 +987,57 @@ def validate_glm_contract() -> None:
         exact_text,
         "void SparkGlm52ResidentDecodeStageDsaMergeHierarchicalTopkKernel(",
     )
+    ordered_float_key = extract_braced_definition(
+        exact_text,
+        "static __device__ __forceinline__ uint32_t "
+        "SparkGlm52ResidentDecodeStageDsaOrderedFloatKey(",
+    )
+    configure = extract_braced_definition(
+        exact_text,
+        "static SparkStatus "
+        "SparkGlm52Sm121RequiredDecodeStageConfigureCudaKernels(",
+    )
+    initialize = extract_braced_definition(
+        exact_text,
+        'extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageInitialize(',
+    )
     require(merge, "heap_keys", "GLM hierarchical max heap")
     require(merge, "partition_cursors", "GLM one-pass partition cursors")
+    require(
+        ordered_float_key,
+        "if ((value_bits & 0x7fffffffu) == 0u)",
+        "GLM signed-zero canonicalization",
+    )
+    require(
+        ordered_float_key,
+        "value_bits = 0u",
+        "GLM canonical positive-zero key bits",
+    )
+    require(
+        configure,
+        "cudaFuncAttributeMaxDynamicSharedMemorySize",
+        "GLM hierarchical DSA dynamic-shared opt-in",
+    )
+    require(
+        configure,
+        "SparkGlm52ResidentDecodeStageDsaScoreSelectHierarchicalKernel",
+        "GLM hierarchical DSA configured kernel",
+    )
+    require(
+        configure,
+        "(size_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_HIERARCHICAL_PARTITION_CANDIDATES *",
+        "GLM hierarchical DSA shared candidate count",
+    )
+    require(
+        configure,
+        "sizeof(uint64_t)",
+        "GLM hierarchical DSA key storage",
+    )
+    require(
+        initialize,
+        "SparkGlm52Sm121RequiredDecodeStageConfigureCudaKernels()",
+        "GLM initialization-time CUDA kernel configuration",
+    )
     forbid(
         merge,
         "SparkGlm52ResidentDecodeStageDsaSelectTopKeyArray",
@@ -845,10 +1108,128 @@ def validate_glm_contract() -> None:
         stage_text,
         'extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(',
     )
+    copy_final_tokens = extract_braced_definition(
+        stage_text,
+        "static SparkStatus SparkGlm52ResidentDecodeStageCudaCopyFinalTokens(",
+    )
+    fake_backend_path = ROOT / (
+        "tests/fixtures/glm52_resident_decode_stage_fake_backend.c"
+    )
+    fake_backend_text = fake_backend_path.read_text(encoding="utf-8")
+    fake_copy_final_tokens = extract_braced_definition(
+        fake_backend_text,
+        "static SparkStatus SparkGlm52ResidentDecodeStageFakeCopyFinalTokens(",
+    )
+    fake_stage_slice = extract_braced_definition(
+        fake_backend_text,
+        "SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(",
+    )
+    module_path = ROOT / (
+        "modules/glm52_resident_decode_stage/source/"
+        "spark_glm52_resident_decode_stage_module.c"
+    )
+    module_text = module_path.read_text(encoding="utf-8")
+    decode_token_count_supported = extract_braced_definition(
+        module_text,
+        "static bool SparkGlm52ResidentDecodeStageDecodeTokenCountIsSupported(",
+    )
+    frame_shape_supported = extract_braced_definition(
+        module_text,
+        "static bool SparkGlm52ResidentDecodeStageFrameShapeIsSupported(",
+    )
+    admit = extract_braced_definition(
+        module_text,
+        "SparkStatus SparkGlm52ResidentDecodeStageAdmit(",
+    )
     require(stage_slice, "cudaLaunchHostFunc", "GLM stream-ordered stage completion")
     if stage_slice.count("cudaStreamSynchronize(") != 3:
         raise AssertionError("GLM stage slice may synchronize only for debug and two error paths")
     forbid(stage_slice, "completion->function(completion->context);", "GLM submit-thread completion")
+    forbid(copy_final_tokens, "token_count = 1u", "GLM completion token count")
+    forbid(
+        copy_final_tokens,
+        "token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY",
+        "GLM completion token count",
+    )
+    require(
+        copy_final_tokens,
+        "return SPARK_STATUS_INVALID_ARGUMENT;",
+        "GLM strict completion token count",
+    )
+    require(
+        copy_final_tokens,
+        "SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u",
+        "GLM exact completion token capacity",
+    )
+    require(
+        copy_final_tokens,
+        "pipeline_slot->mtp_committed_token_ids",
+        "GLM committed speculative tokens",
+    )
+    forbid(
+        copy_final_tokens,
+        "pipeline_slot->mtp_draft_token_ids",
+        "GLM uncommitted speculative tokens",
+    )
+    require(
+        fake_copy_final_tokens,
+        "return SPARK_STATUS_INVALID_ARGUMENT;",
+        "GLM fake strict completion token count",
+    )
+    require(
+        fake_copy_final_tokens,
+        "pipeline_slot->mtp_committed_token_ids",
+        "GLM fake committed speculative tokens",
+    )
+    forbid(
+        fake_copy_final_tokens,
+        "token_count = 1u",
+        "GLM fake completion token count",
+    )
+    require(
+        fake_stage_slice,
+        "layer_node_contexts[layer_count - 1u]",
+        "GLM fake final-layer completion context",
+    )
+    require(
+        fake_stage_slice,
+        "&completion_node_context->pipeline_slots[pipeline_slot_index]",
+        "GLM fake final-layer completion buffer",
+    )
+    require(
+        fake_stage_slice,
+        "first_node_context->pipeline_slots == 0",
+        "GLM fake first-layer pipeline-slot validation",
+    )
+    require(
+        fake_stage_slice,
+        "layer_node_contexts[layer_index]->pipeline_slots == 0",
+        "GLM fake per-layer pipeline-slot validation",
+    )
+    require(
+        decode_token_count_supported,
+        "SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE",
+        "GLM internal speculative row capacity",
+    )
+    require(
+        decode_token_count_supported,
+        "state->stage_slice_final_token_stage == 0u",
+        "GLM final-token stage distinction",
+    )
+    require(
+        decode_token_count_supported,
+        "SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u",
+        "GLM final completion token capacity",
+    )
+    for caller, label in (
+        (frame_shape_supported, "GLM execution shape validation"),
+        (admit, "GLM admission shape validation"),
+    ):
+        require(
+            caller,
+            "SparkGlm52ResidentDecodeStageDecodeTokenCountIsSupported(",
+            label,
+        )
 
 
 def validate_pr505_graph_configuration_contract() -> None:
@@ -888,25 +1269,197 @@ def validate_fp8_tile_contract() -> None:
         text,
         "static __device__ void SparkLmExpertTileBodyFp8(",
     )
+    fragment_a = extract_braced_definition(
+        text,
+        "static __device__ __forceinline__ void SparkLmFp8LoadFragA(",
+    )
+    fragment_b = extract_braced_definition(
+        text,
+        "static __device__ __forceinline__ void SparkLmFp8LoadFragB(",
+    )
+    stage_input = extract_braced_definition(
+        text,
+        "static __device__ void SparkLmFp8StageInput(",
+    )
+    stage_input_producer = extract_braced_definition(
+        text,
+        "static __device__ void SparkLmFp8StageInputProducerGroup(",
+    )
     dispatch_path = ROOT / "model-families/common/include/sparkpipe/spark_lm_kernels.cuh"
     dispatch_text = dispatch_path.read_text(encoding="utf-8")
     dispatch = extract_braced_definition(
         dispatch_text,
         "static __device__ void SparkLmExpertTileDispatch(",
     )
+    batched_linear = extract_braced_definition(
+        dispatch_text,
+        "static inline cudaError_t SparkLmHostLaunchBatchedLinear(",
+    )
+    mimo_path = ROOT / (
+        "modules/mimo25_resident_decode_stage/source/"
+        "spark_mimo25_resident_decode_stage_cuda.cu"
+    )
+    mimo_text = mimo_path.read_text(encoding="utf-8")
+    mimo_expert = extract_braced_definition(
+        mimo_text,
+        'extern "C" cudaError_t SparkMimo25LaunchExpertTile(',
+    )
+    mimo_all_experts = extract_braced_definition(
+        mimo_text,
+        'extern "C" cudaError_t SparkMimo25LaunchExpertTileAll(',
+    )
 
     require(body, "block_accumulator", "FP8 per-scale-block accumulator")
     require(body, "next_k_base % 128u", "FP8 128-wide scale boundary")
-    require(body, "neuron_base / 128u", "FP8 output scale block")
+    require(body, "neuron_tile_base / 128u", "FP8 output scale block")
     require(body, "k_base / 128u", "FP8 input scale block")
+    require(
+        body,
+        "neuron_tile_offset < SPARK_LM_TILE_N",
+        "FP8 complete shared-tile output coverage",
+    )
+    require(
+        body,
+        "neuron_tile_offset += SPARK_LM_FP8_TILE_N",
+        "FP8 complete shared-tile output coverage",
+    )
+    require(body, "row_inverse_scale", "FP8 cached activation reciprocal")
+    forbid(stage_input, "1.0f /", "FP8 input-staging reciprocal reuse")
+    forbid(
+        stage_input_producer,
+        "1.0f /",
+        "FP8 producer-staging reciprocal reuse",
+    )
+    require(
+        stage_input,
+        "row_inverse_scale[row_in_tile]",
+        "FP8 input-staging reciprocal reuse",
+    )
+    require(
+        stage_input_producer,
+        "row_inverse_scale[row_in_tile]",
+        "FP8 producer-staging reciprocal reuse",
+    )
+    fragment_a_order = [
+        "a[0] = base[(row_lo * stride_words) + k_word0];",
+        "a[1] = base[((row_lo + 8u) * stride_words) + k_word0];",
+        "a[2] = base[(row_lo * stride_words) + k_word1];",
+        "a[3] = base[((row_lo + 8u) * stride_words) + k_word1];",
+    ]
+    fragment_a_positions = [
+        fragment_a.index(assignment) for assignment in fragment_a_order
+    ]
+    if fragment_a_positions != sorted(fragment_a_positions):
+        raise AssertionError("FP8 A registers do not follow the PTX m16n8k32 layout")
+    require(
+        fragment_b,
+        "b[0] = base[(col * stride_words) + k_word0];",
+        "FP8 PTX B-register layout",
+    )
+    require(
+        fragment_b,
+        "b[1] = base[(col * stride_words) + k_word0 + 4u];",
+        "FP8 PTX B-register layout",
+    )
+    covered_neurons: list[int] = []
+    for neuron_tile_offset in range(0, 128, 64):
+        covered_neurons.extend(
+            range(neuron_tile_offset, neuron_tile_offset + 64)
+        )
+    if covered_neurons != list(range(128)):
+        raise AssertionError("FP8 subtiles do not cover each shared output column once")
+    if body.count("__syncthreads();") != 6:
+        raise AssertionError("FP8 tile must retain all six CTA synchronization points")
+
+    neuron_loop = body.index("for (neuron_tile_offset = 0u;")
+    k_loop = body.index("for (k_base = 0u;", neuron_loop)
+    initial_stage = body[neuron_loop:k_loop]
+    initial_stage_order = [
+        initial_stage.find("SparkLmFp8StageInput("),
+        initial_stage.find("SparkLmFp8StageWeight("),
+        initial_stage.find("__syncthreads();"),
+    ]
+    if -1 in initial_stage_order or initial_stage_order != sorted(initial_stage_order):
+        raise AssertionError(
+            "FP8 initial shared staging must complete before current-buffer consumers"
+        )
+
+    store_start = body.index("SparkLmFp8StoreAccumulator(", k_loop)
+    k_pipeline = body[k_loop:store_start]
+    first_barrier = k_pipeline.find("__syncthreads();")
+    second_barrier = k_pipeline.find("__syncthreads();", first_barrier + 1)
+    third_barrier = k_pipeline.find("__syncthreads();", second_barrier + 1)
+    first_weight_producer = k_pipeline.find(
+        "SparkLmFp8StageWeightProducerHalf("
+    )
+    second_weight_producer = k_pipeline.find(
+        "SparkLmFp8StageWeightProducerHalf(",
+        first_weight_producer + 1,
+    )
+    k_pipeline_order = [
+        k_pipeline.find("if (warp_index < 4u)"),
+        k_pipeline.find("SparkLmFp8StageInputProducerGroup("),
+        first_weight_producer,
+        first_barrier,
+        k_pipeline.find("if (warp_index >= 4u)"),
+        second_weight_producer,
+        second_barrier,
+        k_pipeline.find("if ((next_k_base % 128u) == 0u"),
+        k_pipeline.find("current_buffer = next_buffer;"),
+    ]
+    if (
+        -1 in k_pipeline_order
+        or k_pipeline_order != sorted(k_pipeline_order)
+        or third_barrier != -1
+    ):
+        raise AssertionError(
+            "FP8 ping-pong producers and consumers must remain CTA-synchronized"
+        )
+
+    output_stage = body[store_start:]
+    output_first_barrier = output_stage.find("__syncthreads();")
+    output_second_barrier = output_stage.find(
+        "__syncthreads();",
+        output_first_barrier + 1,
+    )
+    output_third_barrier = output_stage.find(
+        "__syncthreads();",
+        output_second_barrier + 1,
+    )
+    output_stage_order = [
+        output_stage.find("SparkLmFp8StoreAccumulator("),
+        output_first_barrier,
+        output_stage.find("for (entry = threadIdx.x;"),
+        output_stage.find("SparkLmFloatToBf16("),
+        output_second_barrier,
+    ]
+    if (
+        -1 in output_stage_order
+        or output_stage_order != sorted(output_stage_order)
+        or output_third_barrier != -1
+    ):
+        raise AssertionError(
+            "FP8 output staging must be fenced before copy and shared-tile reuse"
+        )
     forbid(text, "weight_scale[0]", "FP8 single-scale GEMM")
     require(
         dispatch,
         "SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128",
         "FP8 exact format dispatch",
     )
-    require(dispatch, "weight_scale != 0", "FP8 scale pointer contract")
-    require(dispatch, "input_dimension % 128u", "FP8 scale geometry contract")
+    forbid(dispatch, "weight_scale != 0", "FP8 silent BF16 fallback")
+    forbid(dispatch, "input_dimension % 128u", "FP8 silent BF16 fallback")
+    for launcher, label in (
+        (batched_linear, "shared batched linear"),
+        (mimo_expert, "MiMo expert tile"),
+        (mimo_all_experts, "MiMo all-expert tile"),
+    ):
+        require(
+            launcher,
+            "SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128",
+            f"{label} FP8 validation",
+        )
+        require(launcher, "cudaErrorInvalidValue", f"{label} FP8 validation")
     forbid(text, "nvcc 13.1, verified", "unretained CUDA qualification claim")
 
 
@@ -932,6 +1485,18 @@ def validate_gpudirect_transport_contract() -> None:
     start_batch = extract_braced_definition(
         text,
         "static SparkStatus SparkHiddenSparkHostRdmaStartSendBatch(",
+    )
+    region_cache = extract_braced_definition(
+        text,
+        "static SparkStatus SparkHiddenSparkHostRdmaGetCachedMemoryRegion(",
+    )
+    parse_uint = extract_braced_definition(
+        text,
+        "static SparkStatus SparkHiddenSparkHostRdmaParseUintEnv(",
+    )
+    initialize = extract_braced_definition(
+        text,
+        "static SparkStatus SparkHiddenSparkHostRdmaInitialize(",
     )
 
     require(text, "SPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT", "separate GPUDirect build mode")
@@ -979,6 +1544,44 @@ def validate_gpudirect_transport_contract() -> None:
         "GPUDirect host flush support",
     )
     require(text, "state->gpudirect_transfer_bytes", "GPUDirect traffic receipt")
+    fast_cache_lookup = region_cache.index(
+        "state->cached_regions[index].cuda_visible_pointer == pointer"
+    )
+    pointer_query = region_cache.index(
+        "SparkHiddenSparkHostRdmaResolveRegistrationPointer("
+    )
+    if fast_cache_lookup >= pointer_query:
+        raise AssertionError(
+            "RDMA MR cache must bypass CUDA pointer attributes on exact cache hits"
+        )
+    require(
+        region_cache,
+        "state->pointer_attribute_query_count += 1u",
+        "RDMA CUDA pointer-query receipt",
+    )
+    require(parse_uint, "errno = 0", "strict RDMA integer parsing")
+    require(
+        parse_uint,
+        "return SPARK_STATUS_INVALID_ARGUMENT;",
+        "strict RDMA integer parsing",
+    )
+    forbid(parse_uint, "return fallback", "strict RDMA integer parsing")
+    forbid(initialize, "lane_count = 1u", "RDMA lane configuration")
+    forbid(
+        initialize,
+        "lane_count = SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_LANE_COUNT",
+        "RDMA lane configuration",
+    )
+    require(
+        initialize,
+        "config_value > 255u",
+        "RDMA verbs-port range validation",
+    )
+    require(
+        initialize,
+        "state->control_port_base == 0u",
+        "RDMA control-port zero rejection",
+    )
 
     header = (ROOT / "model-families/common/include/sparkpipe/spark_hidden_transport.h").read_text(encoding="utf-8")
     host_caps_start = header.index("#define SPARK_HIDDEN_TRANSPORT_REQUIRED_SPARK_HOST_RDMA_CAPS")
