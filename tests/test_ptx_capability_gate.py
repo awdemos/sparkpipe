@@ -38,6 +38,26 @@ PROBES = {
     "cp.async.bulk.tensor.3d": (
         "\tcp.async.bulk.tensor.3d.shared::cluster.global.tile"
         ".mbarrier::complete_tx::bytes [tile], [%rd2, {%r1, %r2, %r1}], [bar];", True),
+    # The exact forms spark_lm_async_copy.cuh embeds. If one stops assembling,
+    # that header is broken and this fails before anyone reaches a GPU.
+    "async_copy.ca.4": (
+        "\tcp.async.ca.shared.global [tile], [%rd2], 4;", True),
+    "async_copy.ca.8": (
+        "\tcp.async.ca.shared.global [tile], [%rd2], 8;", True),
+    "async_copy.bounded": (
+        "\tcp.async.ca.shared.global [tile], [%rd2], 16, %r1;", True),
+    "async_copy.cg.bounded": (
+        "\tcp.async.cg.shared.global [tile], [%rd2], 16, %r1;", True),
+    "async_copy.commit": (
+        "\tcp.async.commit_group;", True),
+    "async_copy.wait_group": (
+        "\tcp.async.wait_group 1;", True),
+    "async_copy.wait_all": (
+        "\tcp.async.wait_all;", True),
+    # .cg exists only at 16 bytes. The header's static_assert enforces this;
+    # if the hardware ever relaxes it, that assert is over-strict.
+    "async_copy.cg.4.rejected": (
+        "\tcp.async.cg.shared.global [tile], [%rd2], 4;", False),
     "mbarrier.expect_tx": (
         "\tmbarrier.expect_tx.shared::cta.b64 [bar], 1024;", True),
     "cluster.barrier": (
