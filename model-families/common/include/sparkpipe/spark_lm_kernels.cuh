@@ -2003,16 +2003,15 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
 #endif
 
 // Body dispatch keeps independently selectable all-warp and software-pipelined
-// BF16 schedules. The direct FP8 MMA tile is selected only for F32B128 weights
-// whose scale tensor and 128-wide K geometry satisfy its exact contract. All
-// variants remain package-qualified choices; none is a silent runtime fallback.
+// BF16 schedules. When direct FP8 is compiled, F32B128 always selects it;
+// host launchers reject an invalid scale tensor or K geometry before launch.
+// All variants remain package-qualified choices; none is a silent runtime
+// fallback.
 template <uint32_t GROUP_SIZE>
 static __device__ void SparkLmExpertTileDispatch(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t slot_base, uint32_t neuron_base)
 {
 #if defined(SPARK_LM_FP8_TILE)
-    if (weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
-        weight_scale != 0 &&
-        (input_dimension % 128u) == 0u)
+    if (weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128)
     {
         SparkLmExpertTileBodyFp8(
             weight_payload,
@@ -2378,6 +2377,10 @@ static inline cudaError_t SparkLmHostLaunchBatchedLinear(cudaStream_t stream, ui
 {
 	uint32_t m_blocks = (row_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE;
 	uint32_t n_tiles = (output_dimension + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N;
+	if ( weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
+		(weight_scale == 0 || (input_dimension % 128u) != 0u ||
+			(output_dimension % 128u) != 0u) )
+		return(cudaErrorInvalidValue);
 	if ( row_count < SPARK_LM_TILE )
 	{
 		dim3 scalar_grid(row_count,(output_dimension + SPARK_LM_CTA_WARPS - 1u) / SPARK_LM_CTA_WARPS);

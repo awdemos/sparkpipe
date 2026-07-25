@@ -311,6 +311,11 @@ extern "C" cudaError_t SparkMimo25LaunchExpertTileAll(cudaStream_t stream, const
 	uint64_t payload_stride = rows_per_expert * columns;
 	uint64_t scale_stride = (rows_per_expert / SPARK_MIMO25_MODEL_FP8_SCALE_BLOCK) * (columns / SPARK_MIMO25_MODEL_FP8_SCALE_BLOCK) * sizeof(float);
 	dim3 grid((max_group_slots + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,((uint32_t)rows_per_expert + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N,SPARK_MIMO25_MODEL_ROUTED_EXPERT_COUNT);
+	if ( stacked == 0 ||
+		(stacked->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
+			(stacked->scale == 0 || (columns % 128u) != 0u ||
+				(rows_per_expert % 128u) != 0u)) )
+		return(cudaErrorInvalidValue);
 	(void)unused_payload;
 	(void)unused_scale;
 	SparkLmExpertTileAllKernel<128u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(stacked->weight_format,stacked->payload,stacked->scale,payload_stride,scale_stride,input_bf16,grouped_rows,expert_offsets,output_bf16,(uint32_t)columns,(uint32_t)rows_per_expert);
@@ -419,7 +424,12 @@ extern "C" cudaError_t SparkMimo25LaunchGatherLinear(cudaStream_t stream, const 
 extern "C" cudaError_t SparkMimo25LaunchExpertTile(cudaStream_t stream, const SparkMimo25LinearView *view, const void *payload, const void *scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count)
 {
 	dim3 grid((slot_count + SPARK_LM_TILE - 1u) / SPARK_LM_TILE,(view->rows + SPARK_LM_TILE_N - 1u) / SPARK_LM_TILE_N);
-	SparkLmExpertTileKernel<128u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(view->weight_format,payload != 0 ? payload : view->payload,scale != 0 ? scale : view->scale,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
+	const void *effective_scale = scale != 0 ? scale : view->scale;
+	if ( view->weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128 &&
+		(effective_scale == 0 || (view->columns % 128u) != 0u ||
+			(view->rows % 128u) != 0u) )
+		return(cudaErrorInvalidValue);
+	SparkLmExpertTileKernel<128u><<<grid,SPARK_LM_CTA_THREADS,0,stream>>>(view->weight_format,payload != 0 ? payload : view->payload,effective_scale,input_bf16,input_row_map,output_bf16,slot_count,view->columns,view->rows);
 	return(cudaGetLastError());
 }
 

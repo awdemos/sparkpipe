@@ -761,7 +761,11 @@ static __global__ void SparkQwen36EmbeddingGatherKernel(const uint32_t *token_id
     (2u * SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DK * sizeof(float))
 #define SPARK_QWEN36_CUDA_GDN_CHUNK_SHARED_BYTES \
     ((SPARK_QWEN36_CUDA_GDN_STATE_ELEMENTS + \
-      (SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DV)) * sizeof(float))
+      (SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DV) + \
+      (2u * SPARK_QWEN36_CUDA_CHUNK)) * sizeof(float))
+static_assert(
+    SPARK_QWEN36_CUDA_GDN_CHUNK_SHARED_BYTES == 98816u,
+    "Qwen GDN chunk shared layout must fit the SM 12.x 99-KB block limit");
 
 typedef struct SparkQwen36ChunkWorkspaceView
 {
@@ -857,12 +861,21 @@ static __global__ void SparkQwen36ChunkSolveKernel(SparkQwen36ChunkWorkspaceView
 // token row), thread per output column striped over dv then dk.
 static __global__ void SparkQwen36ChunkTransformKernel(const void *conv_out_bf16, const float *beta_f32, SparkQwen36ChunkWorkspaceView views, uint32_t token_count)
 {
+	__shared__ float exp_cum_g[SPARK_QWEN36_CUDA_CHUNK];
 	uint32_t head = blockIdx.x,row = blockIdx.y,column = threadIdx.x,element;
 	uint64_t mat_base = SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_CHUNK);
 	uint64_t vec_base = SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DK);
 	float accumulator,transform;
 	if ( row >= token_count )
 		return;
+	if ( threadIdx.x < token_count )
+		exp_cum_g[threadIdx.x] = __expf(
+			views.cum_g[
+				SparkQwen36ChunkHeadOffset(
+					head,
+					SPARK_QWEN36_CUDA_CHUNK) +
+				threadIdx.x]);
+	__syncthreads();
 	accumulator = 0.0f;
 	for (element = 0; element < token_count; element++)
 	{
@@ -873,7 +886,7 @@ static __global__ void SparkQwen36ChunkTransformKernel(const void *conv_out_bf16
 	accumulator = 0.0f;
 	for (element = 0; element < token_count; element++)
 	{
-		transform = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN36_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT) + head] * __expf(views.cum_g[SparkQwen36ChunkHeadOffset(head,SPARK_QWEN36_CUDA_CHUNK) + element]);
+		transform = views.attn[mat_base + ((uint64_t)row * SPARK_QWEN36_CUDA_CHUNK) + element] * beta_f32[((uint64_t)element * SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT) + head] * exp_cum_g[element];
 		accumulator += (transform * views.kn[vec_base + ((uint64_t)element * SPARK_QWEN36_CUDA_DK) + column]);
 	}
 	views.kg[vec_base + ((uint64_t)row * SPARK_QWEN36_CUDA_DK) + column] = accumulator;
@@ -953,6 +966,8 @@ static __global__ void SparkQwen36ChunkStepKernel(const float *log_decay_f32, Sp
     extern __shared__ float chunk_shared[];
     float *state_shared;
     float *v_new_shared;
+    float *exp_cum_g_shared;
+    float *carry_decay_shared;
     uint32_t head;
     uint32_t column;
     uint32_t row;
@@ -970,6 +985,10 @@ static __global__ void SparkQwen36ChunkStepKernel(const float *log_decay_f32, Sp
     column = threadIdx.x;
     state_shared = chunk_shared;
     v_new_shared = state_shared + SPARK_QWEN36_CUDA_GDN_STATE_ELEMENTS;
+    exp_cum_g_shared =
+        v_new_shared + (SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DV);
+    carry_decay_shared =
+        exp_cum_g_shared + SPARK_QWEN36_CUDA_CHUNK;
     vector_base = SparkQwen36ChunkHeadOffset(
         head,
         SPARK_QWEN36_CUDA_CHUNK * SPARK_QWEN36_CUDA_DK);
@@ -985,6 +1004,15 @@ static __global__ void SparkQwen36ChunkStepKernel(const float *log_decay_f32, Sp
         ((uint64_t)head * SPARK_QWEN36_CUDA_GDN_STATE_ELEMENTS);
     g_last = views.cum_g[g_base + token_count - 1u];
     (void)log_decay_f32;
+
+    if (column < token_count)
+    {
+        exp_cum_g_shared[column] = __expf(
+            views.cum_g[g_base + column]);
+        carry_decay_shared[column] = __expf(
+            g_last - views.cum_g[g_base + column]);
+    }
+    __syncthreads();
 
     for (element = 0u; element < SPARK_QWEN36_CUDA_DK; ++element)
     {
@@ -1022,7 +1050,7 @@ static __global__ void SparkQwen36ChunkStepKernel(const float *log_decay_f32, Sp
                 state_shared[(element * SPARK_QWEN36_CUDA_DV) + column],
                 accumulator);
         }
-        accumulator *= __expf(views.cum_g[g_base + row]);
+        accumulator *= exp_cum_g_shared[row];
         for (element = 0u; element <= row; ++element)
         {
             accumulator = fmaf(
@@ -1042,14 +1070,15 @@ static __global__ void SparkQwen36ChunkStepKernel(const float *log_decay_f32, Sp
     for (element = 0u; element < SPARK_QWEN36_CUDA_DK; ++element)
     {
         state_index = (element * SPARK_QWEN36_CUDA_DV) + column;
-        carry = state_shared[state_index] * __expf(g_last);
+        carry = state_shared[state_index] *
+            exp_cum_g_shared[token_count - 1u];
         for (row = 0u; row < token_count; ++row)
         {
             carry = fmaf(
                 views.kn[
                     vector_base +
                     ((uint64_t)row * SPARK_QWEN36_CUDA_DK) + element] *
-                    __expf(g_last - views.cum_g[g_base + row]),
+                    carry_decay_shared[row],
                 v_new_shared[(row * SPARK_QWEN36_CUDA_DV) + column],
                 carry);
         }
@@ -1272,6 +1301,7 @@ extern "C" cudaError_t SparkQwen36LaunchChunkConv(cudaStream_t stream, const voi
 extern "C" cudaError_t SparkQwen36LaunchGdnChunk(cudaStream_t stream, const void *conv_out_bf16, const float *log_decay_f32, const float *beta_f32, float *workspace_qn, float *workspace_kn, float *workspace_cum_g, float *workspace_decay, float *workspace_attn, float *workspace_w, float *workspace_kg, const SparkQwen36GdnStatePool *pool, void *core_out_bf16, uint32_t lane_index, uint32_t token_count, uint32_t gdn_layer_ordinal)
 {
     SparkQwen36ChunkWorkspaceView views;
+    cudaError_t status;
     dim3 transform_grid(
         SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT,
         token_count,
@@ -1294,21 +1324,41 @@ extern "C" cudaError_t SparkQwen36LaunchGdnChunk(cudaStream_t stream, const void
         SPARK_QWEN36_CUDA_CHUNK,
         0u,
         stream>>>(conv_out_bf16, log_decay_f32, beta_f32, views, token_count);
+    status = cudaGetLastError();
+    if (status != cudaSuccess)
+    {
+        return status;
+    }
     SparkQwen36ChunkSolveKernel<<<
         SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT,
         SPARK_QWEN36_CUDA_CHUNK,
         0u,
         stream>>>(views, token_count);
+    status = cudaGetLastError();
+    if (status != cudaSuccess)
+    {
+        return status;
+    }
     SparkQwen36ChunkTransformKernel<<<
         transform_grid,
         SPARK_QWEN36_CUDA_DV,
         0u,
         stream>>>(conv_out_bf16, beta_f32, views, token_count);
+    status = cudaGetLastError();
+    if (status != cudaSuccess)
+    {
+        return status;
+    }
     SparkQwen36ChunkQkDecayKernel<<<
         SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT,
         SPARK_LM_CTA_THREADS,
         SPARK_QWEN36_CUDA_GDN_QK_SHARED_BYTES,
         stream>>>(views, token_count);
+    status = cudaGetLastError();
+    if (status != cudaSuccess)
+    {
+        return status;
+    }
     SparkQwen36ChunkStepKernel<<<
         SPARK_QWEN36_MODEL_GDN_VALUE_HEAD_COUNT,
         SPARK_QWEN36_CUDA_DV,

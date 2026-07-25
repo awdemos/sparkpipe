@@ -1352,22 +1352,23 @@ extern "C" cudaError_t SparkDsv4LaunchHadamard(cudaStream_t stream, void *data_b
     return cudaGetLastError();
 }
 
-extern "C" cudaError_t SparkDsv4ConfigureCudaKernels(void)
+static size_t SparkDsv4SparseAttnSharedBytes(uint32_t head_dimension)
 {
     static const uint32_t heads_per_cta = 4u;
-    size_t maximum_shared_bytes;
 
-    maximum_shared_bytes =
-        (size_t)heads_per_cta *
-            SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION * sizeof(float) +
-        (size_t)SPARK_LM_CTA_WARPS *
-            SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION * sizeof(__nv_bfloat16) +
+    return
+        (size_t)heads_per_cta * head_dimension * sizeof(float) +
         (size_t)heads_per_cta * SPARK_LM_CTA_WARPS *
-            SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION * sizeof(float);
+            head_dimension * sizeof(float);
+}
+
+extern "C" cudaError_t SparkDsv4ConfigureCudaKernels(void)
+{
     return cudaFuncSetAttribute(
         SparkDsv4SparseAttnKernel,
         cudaFuncAttributeMaxDynamicSharedMemorySize,
-        (int)maximum_shared_bytes);
+        (int)SparkDsv4SparseAttnSharedBytes(
+            SPARK_DSV4_MODEL_ATTN_HEAD_DIMENSION));
 }
 
 extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
@@ -1400,10 +1401,7 @@ extern "C" cudaError_t SparkDsv4LaunchSparseAttn(
     grid = dim3(
         row_count,
         (head_count + heads_per_cta - 1u) / heads_per_cta);
-    shared_bytes =
-        (size_t)heads_per_cta * head_dim * sizeof(float) +
-        (size_t)heads_per_cta * SPARK_LM_CTA_WARPS *
-            head_dim * sizeof(float);
+    shared_bytes = SparkDsv4SparseAttnSharedBytes(head_dim);
     SparkDsv4SparseAttnKernel<<<
         grid,
         SPARK_LM_CTA_THREADS,

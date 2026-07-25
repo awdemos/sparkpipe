@@ -3333,6 +3333,21 @@ static uint32_t SparkGlm52ResidentDecodeStageFindAvailableSlot(
     return SPARK_MODEL_DRIVER_INVALID_DISPATCH_SLOT;
 }
 
+static bool SparkGlm52ResidentDecodeStageDecodeTokenCountIsSupported(
+    const SparkGlm52ResidentDecodeStageState *state,
+    uint32_t token_count)
+{
+    if (state == 0 ||
+        token_count >
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
+    {
+        return false;
+    }
+    return state->stage_slice_final_token_stage == 0u ||
+        token_count <=
+            (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u);
+}
+
 static bool SparkGlm52ResidentDecodeStageFrameShapeIsSupported(
     const SparkGlm52ResidentDecodeStageState *state,
     const SparkModelDriverFrame *frame)
@@ -3369,8 +3384,9 @@ static bool SparkGlm52ResidentDecodeStageFrameShapeIsSupported(
         return true;
     }
 
-    if (frame->new_token_count >
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
+    if (!SparkGlm52ResidentDecodeStageDecodeTokenCountIsSupported(
+            state,
+            frame->new_token_count))
     {
         return false;
     }
@@ -4353,8 +4369,9 @@ SparkStatus SparkGlm52ResidentDecodeStageAdmit(
             return SPARK_STATUS_OK;
         }
     }
-    else if (request->new_token_count >
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE)
+    else if (!SparkGlm52ResidentDecodeStageDecodeTokenCountIsSupported(
+        state,
+        request->new_token_count))
     {
         decision->rejection_reason =
             SPARK_MODEL_DRIVER_ADMISSION_REJECTED_UNSUPPORTED_SHAPE;
