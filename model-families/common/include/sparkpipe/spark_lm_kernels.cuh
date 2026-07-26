@@ -2038,35 +2038,19 @@ static __device__ void SparkLmExpertTileBodySoftwarePipelined(
     }
 }
 
-#if defined(SPARK_LM_FP8_TILE)
-#include "sparkpipe/spark_lm_fp8_tile.cuh"
-#endif
-
 // Body dispatch keeps independently selectable all-warp and software-pipelined
-// BF16 schedules. When direct FP8 is compiled, F32B128 always selects it;
-// host launchers reject an invalid scale tensor or K geometry before launch.
-// All variants remain package-qualified choices; none is a silent runtime
-// fallback.
+// BF16 schedules, chosen by SPARK_LM_EXPERT_TILE_POLICY. Both are live: the
+// AUTOMATIC default selects between them at runtime on input_dimension, so
+// neither can be removed without a measurement showing one dominates.
+//
+// The direct-FP8 branch that used to sit here selected spark_lm_fp8_tile.cuh
+// under SPARK_LM_FP8_TILE. That macro was defined nowhere in the tree, so the
+// branch was unreachable and the header it included was never compiled. Both
+// are removed; spark_lm_group_gemm.cuh is the FP8 path, with its fragment
+// mapping verified against CUTLASS rather than hand-derived.
 template <uint32_t GROUP_SIZE>
 static __device__ void SparkLmExpertTileDispatch(uint32_t weight_format, const void *weight_payload, const void *weight_scale, const void *input_bf16, const uint32_t *input_row_map, void *output_bf16, uint32_t slot_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t slot_base, uint32_t neuron_base)
 {
-#if defined(SPARK_LM_FP8_TILE)
-    if (weight_format == SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128)
-    {
-        SparkLmExpertTileBodyFp8(
-            weight_payload,
-            weight_scale,
-            input_bf16,
-            input_row_map,
-            output_bf16,
-            slot_count,
-            input_dimension,
-            output_dimension,
-            slot_base,
-            neuron_base);
-        return;
-    }
-#endif
 #if SPARK_LM_EXPERT_TILE_POLICY == SPARK_LM_EXPERT_TILE_POLICY_ALL_WARPS
     SparkLmExpertTileBodyAllWarps<GROUP_SIZE>(
         weight_format,

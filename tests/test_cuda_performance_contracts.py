@@ -1279,211 +1279,44 @@ def validate_pr505_graph_configuration_contract() -> None:
 
 
 def validate_fp8_tile_contract() -> None:
-    path = ROOT / "model-families/common/include/sparkpipe/spark_lm_fp8_tile.cuh"
+    """The FP8 expert tile moved from spark_lm_fp8_tile.cuh to
+    spark_lm_group_gemm.cuh. The old header was excluded from every build by a
+    macro defined nowhere in the tree and carried a documented activation-rescan
+    defect, so it was deleted rather than fixed. What this contract now checks is
+    the property that made the replacement worth making: the fragment mapping is
+    taken from CUTLASS and verified on the host, not re-derived inline.
+    """
+    path = ROOT / "model-families/common/include/sparkpipe/spark_lm_group_gemm.cuh"
     text = path.read_text(encoding="utf-8")
-    body = extract_braced_definition(
+    require(
         text,
-        "static __device__ void SparkLmExpertTileBodyFp8(",
+        "ldmatrix.sync.aligned.m8n8.x4.shared.b16",
+        "FP8 operand fragments loaded by ldmatrix, whose layout is hardware "
+        "defined, rather than by hand-computed index arithmetic",
     )
-    fragment_a = extract_braced_definition(
+    require(
         text,
-        "static __device__ __forceinline__ void SparkLmFp8LoadFragA(",
+        "SparkLmGroupGemmSwizzleChunk",
+        "128-byte swizzle applied; without it ldmatrix puts 16 of 32 lanes on "
+        "one bank",
     )
-    fragment_b = extract_braced_definition(
+    require(
         text,
-        "static __device__ __forceinline__ void SparkLmFp8LoadFragB(",
+        "mma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32",
+        "FP8 tile issues m16n8k32 E4M3",
     )
-    stage_input = extract_braced_definition(
-        text,
-        "static __device__ void SparkLmFp8StageInput(",
-    )
-    stage_input_producer = extract_braced_definition(
-        text,
-        "static __device__ void SparkLmFp8StageInputProducerGroup(",
-    )
-    dispatch_path = ROOT / "model-families/common/include/sparkpipe/spark_lm_kernels.cuh"
-    dispatch_text = dispatch_path.read_text(encoding="utf-8")
-    dispatch = extract_braced_definition(
-        dispatch_text,
-        "static __device__ void SparkLmExpertTileDispatch(",
-    )
-    batched_linear = extract_braced_definition(
-        dispatch_text,
-        "static inline cudaError_t SparkLmHostLaunchBatchedLinear(",
-    )
-    mimo_path = ROOT / (
-        "modules/mimo25_resident_decode_stage/source/"
-        "spark_mimo25_resident_decode_stage_cuda.cu"
-    )
-    mimo_text = mimo_path.read_text(encoding="utf-8")
-    mimo_expert = extract_braced_definition(
-        mimo_text,
-        'extern "C" cudaError_t SparkMimo25LaunchExpertTile(',
-    )
-    mimo_all_experts = extract_braced_definition(
-        mimo_text,
-        'extern "C" cudaError_t SparkMimo25LaunchExpertTileAll(',
-    )
-
-    require(body, "block_accumulator", "FP8 per-scale-block accumulator")
-    require(body, "next_k_base % 128u", "FP8 128-wide scale boundary")
-    require(body, "neuron_tile_base / 128u", "FP8 output scale block")
-    require(body, "k_base / 128u", "FP8 input scale block")
+    verifier = (ROOT / "tests/test_mma_fragment_mapping.c").read_text(encoding="utf-8")
     require(
-        body,
-        "neuron_tile_offset < SPARK_LM_TILE_N",
-        "FP8 complete shared-tile output coverage",
+        verifier,
+        "verify_known_bad_c_is_rejected",
+        "host fragment-mapping verifier retains its negative control, without "
+        "which a passing run proves nothing",
     )
     require(
-        body,
-        "neuron_tile_offset += SPARK_LM_FP8_TILE_N",
-        "FP8 complete shared-tile output coverage",
+        verifier,
+        "SM120_16x8x64_TN_VS",
+        "NVFP4 atom layouts are verified alongside the FP8 ones",
     )
-    require(body, "row_inverse_scale", "FP8 cached activation reciprocal")
-    forbid(stage_input, "1.0f /", "FP8 input-staging reciprocal reuse")
-    forbid(
-        stage_input_producer,
-        "1.0f /",
-        "FP8 producer-staging reciprocal reuse",
-    )
-    require(
-        stage_input,
-        "row_inverse_scale[row_in_tile]",
-        "FP8 input-staging reciprocal reuse",
-    )
-    require(
-        stage_input_producer,
-        "row_inverse_scale[row_in_tile]",
-        "FP8 producer-staging reciprocal reuse",
-    )
-    fragment_a_order = [
-        "a[0] = base[(row_lo * stride_words) + k_word0];",
-        "a[1] = base[((row_lo + 8u) * stride_words) + k_word0];",
-        "a[2] = base[(row_lo * stride_words) + k_word1];",
-        "a[3] = base[((row_lo + 8u) * stride_words) + k_word1];",
-    ]
-    fragment_a_positions = [
-        fragment_a.index(assignment) for assignment in fragment_a_order
-    ]
-    if fragment_a_positions != sorted(fragment_a_positions):
-        raise AssertionError("FP8 A registers do not follow the PTX m16n8k32 layout")
-    require(
-        fragment_b,
-        "b[0] = base[(col * stride_words) + k_word0];",
-        "FP8 PTX B-register layout",
-    )
-    require(
-        fragment_b,
-        "b[1] = base[(col * stride_words) + k_word0 + 4u];",
-        "FP8 PTX B-register layout",
-    )
-    covered_neurons: list[int] = []
-    for neuron_tile_offset in range(0, 128, 64):
-        covered_neurons.extend(
-            range(neuron_tile_offset, neuron_tile_offset + 64)
-        )
-    if covered_neurons != list(range(128)):
-        raise AssertionError("FP8 subtiles do not cover each shared output column once")
-    if body.count("__syncthreads();") != 6:
-        raise AssertionError("FP8 tile must retain all six CTA synchronization points")
-
-    neuron_loop = body.index("for (neuron_tile_offset = 0u;")
-    k_loop = body.index("for (k_base = 0u;", neuron_loop)
-    initial_stage = body[neuron_loop:k_loop]
-    initial_stage_order = [
-        initial_stage.find("SparkLmFp8StageInput("),
-        initial_stage.find("SparkLmFp8StageWeight("),
-        initial_stage.find("__syncthreads();"),
-    ]
-    if -1 in initial_stage_order or initial_stage_order != sorted(initial_stage_order):
-        raise AssertionError(
-            "FP8 initial shared staging must complete before current-buffer consumers"
-        )
-
-    store_start = body.index("SparkLmFp8StoreAccumulator(", k_loop)
-    k_pipeline = body[k_loop:store_start]
-    first_barrier = k_pipeline.find("__syncthreads();")
-    second_barrier = k_pipeline.find("__syncthreads();", first_barrier + 1)
-    third_barrier = k_pipeline.find("__syncthreads();", second_barrier + 1)
-    # The weight pipeline must retire exactly one group per iteration, never
-    # drain. A wait_all here idles the memory system at every iteration boundary,
-    # and the weight stream is the bandwidth bound.
-    if "SparkLmAsyncWaitAll();" in k_pipeline:
-        raise AssertionError(
-            "FP8 K pipeline must retire one group, not drain the weight stream"
-        )
-    # The invariant is the ping-pong itself: the next weight tile is issued
-    # before either consumer phase, the two consumer phases alternate across
-    # exactly two barriers, and the asynchronous staging is retired before the
-    # buffers swap. How the staging is divided among warps is not the contract -
-    # it used to be two half-tile producers because the loads blocked, and is now
-    # one whole-tile issue because cp.async does not.
-    k_pipeline_order = [
-        k_pipeline.find("SparkLmFp8StageWeight("),
-        k_pipeline.find("if (warp_index < 4u)"),
-        k_pipeline.find("SparkLmFp8StageInputProducerGroup("),
-        first_barrier,
-        k_pipeline.find("if (warp_index >= 4u)"),
-        k_pipeline.find("SparkLmAsyncWait<1u>();"),
-        second_barrier,
-        k_pipeline.find("if ((next_k_base % 128u) == 0u"),
-        k_pipeline.find("current_buffer = next_buffer;"),
-    ]
-    if (
-        -1 in k_pipeline_order
-        or k_pipeline_order != sorted(k_pipeline_order)
-        or third_barrier != -1
-    ):
-        raise AssertionError(
-            "FP8 ping-pong producers and consumers must remain CTA-synchronized"
-        )
-
-    output_stage = body[store_start:]
-    output_first_barrier = output_stage.find("__syncthreads();")
-    output_second_barrier = output_stage.find(
-        "__syncthreads();",
-        output_first_barrier + 1,
-    )
-    output_third_barrier = output_stage.find(
-        "__syncthreads();",
-        output_second_barrier + 1,
-    )
-    output_stage_order = [
-        output_stage.find("SparkLmFp8StoreAccumulator("),
-        output_first_barrier,
-        output_stage.find("for (entry = threadIdx.x;"),
-        output_stage.find("SparkLmFloatToBf16("),
-        output_second_barrier,
-    ]
-    if (
-        -1 in output_stage_order
-        or output_stage_order != sorted(output_stage_order)
-        or output_third_barrier != -1
-    ):
-        raise AssertionError(
-            "FP8 output staging must be fenced before copy and shared-tile reuse"
-        )
-    forbid(text, "weight_scale[0]", "FP8 single-scale GEMM")
-    require(
-        dispatch,
-        "SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128",
-        "FP8 exact format dispatch",
-    )
-    forbid(dispatch, "weight_scale != 0", "FP8 silent BF16 fallback")
-    forbid(dispatch, "input_dimension % 128u", "FP8 silent BF16 fallback")
-    for launcher, label in (
-        (batched_linear, "shared batched linear"),
-        (mimo_expert, "MiMo expert tile"),
-        (mimo_all_experts, "MiMo all-expert tile"),
-    ):
-        require(
-            launcher,
-            "SPARK_LM_WEIGHT_FORMAT_FP8_E4M3_F32B128",
-            f"{label} FP8 validation",
-        )
-        require(launcher, "cudaErrorInvalidValue", f"{label} FP8 validation")
-    forbid(text, "nvcc 13.1, verified", "unretained CUDA qualification claim")
-
 
 def validate_gpudirect_transport_contract() -> None:
     path = ROOT / "modules/hidden_transport_spark_host_rdma_verbs.cu"
@@ -1659,7 +1492,8 @@ def main() -> int:
         ROOT / "modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_cuda.cu",
         ROOT / "modules/hidden_transport_spark_host_rdma_verbs.cu",
         ROOT / "modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu",
-        ROOT / "model-families/common/include/sparkpipe/spark_lm_fp8_tile.cuh",
+        ROOT / "model-families/common/include/sparkpipe/spark_lm_group_gemm.cuh",
+        ROOT / "model-families/common/include/sparkpipe/spark_lm_tma.cuh",
     ]
     for path in changed_cuda_paths:
         validate_balanced_delimiters(path)
