@@ -28,8 +28,8 @@
 // tile consumed after it was produced, no stage refilled before consumption,
 // phase parity matching the round counter.
 
-#include "sparkpipe/lm/lm_mma.cuh"
-#include "sparkpipe/lm/lm_tma.cuh"
+#include "kernels/mma.cuh"
+#include "kernels/tma.cuh"
 #include <stdint.h>
 
 #define LM_PIPELINE_STAGES 2u

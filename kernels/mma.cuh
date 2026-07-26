@@ -24,7 +24,7 @@
 // the SM120 collective's NVFP4 emission cannot be copied here; on this target
 // NVFP4 is scale_vec::4X with ue4m3.
 
-#include "sparkpipe/lm/lm_dtype.cuh"
+#include "kernels/dtype.cuh"
 #include <stdint.h>
 
 #define LM_WARP_LANES 32u
