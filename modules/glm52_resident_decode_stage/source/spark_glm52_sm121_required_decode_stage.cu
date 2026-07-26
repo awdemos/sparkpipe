@@ -9863,6 +9863,13 @@ void SparkGlm52ResidentDecodeStageNvfp4PackedHiddenQuantizeKernel(
     const uint32_t *__restrict__ packed_source_token_indices,
     uint8_t *__restrict__ packed_hidden_e2m1,
     uint8_t *__restrict__ packed_hidden_scale_ue4m3,
+    const uint32_t *__restrict__ expert_route_offsets,
+    const uint32_t *__restrict__ expert_route_counts,
+    uint32_t *__restrict__ group_row_offset,
+    uint32_t *__restrict__ group_tile_prefix,
+    uint32_t expert_count,
+    uint32_t tile_m,
+    uint32_t neuron_tiles,
     uint32_t packed_row_count,
     uint32_t hidden_dimension,
     uint32_t group_size)
@@ -9883,6 +9890,21 @@ void SparkGlm52ResidentDecodeStageNvfp4PackedHiddenQuantizeKernel(
 
     packed_row = blockIdx.x;
     group_index = blockIdx.y;
+    // One thread of one block builds the tile prefix the GEMM will binary
+    // search. It is written here and read by a later kernel in the same stream,
+    // so the ordering is the stream's and needs no barrier. Nothing in this
+    // kernel reads it, so there is no race with the quantise work below.
+    if (blockIdx.x == 0u && blockIdx.y == 0u && threadIdx.x == 0u)
+    {
+        SparkGlm52ResidentDecodeStageNvfp4BuildGroupTilePrefix(
+            expert_route_offsets,
+            expert_route_counts,
+            group_row_offset,
+            group_tile_prefix,
+            expert_count,
+            tile_m,
+            neuron_tiles);
+    }
     if (packed_row >= packed_row_count || group_size == 0u ||
         (group_size & 1u) != 0u)
     {
@@ -9952,11 +9974,16 @@ void SparkGlm52ResidentDecodeStageNvfp4PackedHiddenQuantizeKernel(
 
 // The route view exposes per-expert offsets and counts; the grouped GEMM wants a
 // terminated row indptr and a running tile total so a CTA can find its group by
-// binary search. One block converts both. expert_count is 256, so a serial scan
-// in a single thread is 256 iterations - a parallel scan here would be more code
-// for no measurable gain, and the O(N) is over experts, not tokens.
-static __global__ __launch_bounds__(1, 1)
-void SparkGlm52ResidentDecodeStageNvfp4GroupTilePrefixKernel(
+// binary search. A serial scan by one thread over 256 experts; a parallel scan
+// would be more code for no measurable gain, and the O(N) is over experts, not
+// tokens.
+//
+// This is a device function rather than a kernel because it no longer earns a
+// launch of its own - it rides along in the first block of the quantise pass,
+// which runs before the GEMM in the same stream. One thread doing 256 iterations
+// does not justify 5 microseconds of launch latency, and at the verifier batch
+// sizes that overhead is a measurable fraction of the step.
+static __device__ void SparkGlm52ResidentDecodeStageNvfp4BuildGroupTilePrefix(
     const uint32_t *__restrict__ expert_route_offsets,
     const uint32_t *__restrict__ expert_route_counts,
     uint32_t *__restrict__ group_row_offset,
@@ -9970,7 +9997,7 @@ void SparkGlm52ResidentDecodeStageNvfp4GroupTilePrefixKernel(
     uint32_t rows;
     uint32_t m_tiles;
 
-    if (threadIdx.x != 0u || blockIdx.x != 0u || tile_m == 0u)
+    if (tile_m == 0u || expert_count == 0u)
     {
         return;
     }
@@ -11118,14 +11145,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchMoeRouterForB12x(
 // stage, and a stage that fails names itself in the status it returns. The
 // orchestrator is the sequence and nothing else.
 static SparkStatus SparkGlm52ResidentDecodeStageNvfp4PrepareRoute(
-    const SparkGlm52ResidentDecodeStageB12xMoePlan *b12x_plan,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
     SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView *route_view,
-    const spark_lm_workspace_layout_t *layout,
-    uint8_t *workspace,
     uint32_t active_sequence_count,
-    uint32_t neuron_tiles,
-    uint32_t tile_m,
     cudaStream_t cuda_stream)
 {
     SparkStatus status;
@@ -11140,17 +11162,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4PrepareRoute(
     {
         return status;
     }
-    SparkGlm52ResidentDecodeStageNvfp4GroupTilePrefixKernel<<<1, 1, 0, cuda_stream>>>(
-        route_view->expert_route_offsets,
-        route_view->expert_route_counts,
-        (uint32_t *)(workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_ROUTE_INDPTR]),
-        (uint32_t *)(workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_GROUP_TILE_PREFIX]),
-        b12x_plan->expert_count,
-        tile_m,
-        neuron_tiles);
-    return cudaPeekAtLastError() == cudaSuccess
-        ? SPARK_STATUS_OK
-        : SPARK_STATUS_INTERNAL_ERROR;
+    // No launch here. The tile prefix rides in the first block of the quantise
+    // pass, which runs next in the same stream.
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageNvfp4QuantizeRoutedHidden(
@@ -11159,6 +11173,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4QuantizeRoutedHidden(
     const SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView *route_view,
     const spark_lm_workspace_layout_t *layout,
     uint8_t *workspace,
+    uint32_t neuron_tiles,
     cudaStream_t cuda_stream)
 {
     dim3 grid;
@@ -11176,6 +11191,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4QuantizeRoutedHidden(
         route_view->packed_source_token_indices,
         workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN],
         workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN_SCALE],
+        route_view->expert_route_offsets,
+        route_view->expert_route_counts,
+        (uint32_t *)(workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_ROUTE_INDPTR]),
+        (uint32_t *)(workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_GROUP_TILE_PREFIX]),
+        b12x_plan->expert_count,
+        (uint32_t)layout->tile_m,
+        neuron_tiles,
         (uint32_t)layout->packed_rows,
         b12x_plan->hidden_dimension,
         SPARK_LM_WORKSPACE_NVFP4_GROUP);
@@ -12071,14 +12093,14 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchNvfp4ExpertTensorCoreMoe(
         return status;
     }
     status = SparkGlm52ResidentDecodeStageNvfp4PrepareRoute(
-        b12x_plan, pipeline_slot, &route_view, &layout, workspace,
-        active_sequence_count, neuron_tiles, (uint32_t)layout.tile_m, cuda_stream);
+        pipeline_slot, &route_view, active_sequence_count, cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
     status = SparkGlm52ResidentDecodeStageNvfp4QuantizeRoutedHidden(
-        b12x_plan, pipeline_slot, &route_view, &layout, workspace, cuda_stream);
+        b12x_plan, pipeline_slot, &route_view, &layout, workspace, neuron_tiles,
+        cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
         return status;
