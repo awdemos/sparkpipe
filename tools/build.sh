@@ -46,6 +46,20 @@ then
 		-c "$LEGACY" -o /tmp/lm_legacy.o 2>/tmp/lm_legacy.log
 	then
 		printf "  %-14s compiled  %s bytes\n" "legacy glm52" "$(wc -c < /tmp/lm_legacy.o)"
+		# And with the first-party layer selected. Both must build, because the
+		# two get compared on real weights before either is deleted.
+		if "$NVCC" -std=c++17 $ARCH -O1 -DSPARK_GLM52_FIRST_PARTY_LAYER -I. \
+			-Imodules/glm52_resident_decode_stage/include \
+			-Imodules/glm52_dspark_draft_backend/include \
+			-Iinclude -Ideployment/include -Imodel-families/glm52/include \
+			-c "$LEGACY" -o /tmp/lm_fp.o 2>/tmp/lm_fp.log
+		then
+			printf "  %-14s compiled  %s bytes\n" "first-party" "$(wc -c < /tmp/lm_fp.o)"
+		else
+			printf "  %-14s FAILED\n" "first-party"
+			grep -E "error" /tmp/lm_fp.log | head -3
+			status=1
+		fi
 	else
 		printf "  %-14s FAILED\n" "legacy glm52"
 		grep -E "error" /tmp/lm_legacy.log | head -3

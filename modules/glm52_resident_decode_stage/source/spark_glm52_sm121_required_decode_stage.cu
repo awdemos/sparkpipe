@@ -20818,6 +20818,44 @@ static bool SparkGlm52ResidentDecodeStageFrameShouldLaunchMtpDraft(
         !SparkGlm52ResidentDecodeStageFrameIsMtpTreeVerify(frame_context);
 }
 
+// The first-party decode layer. llms/glm5_2/layer.cuh expresses one layer as a
+// sequence of launches into kernels/ and defines no kernels of its own; the
+// function below is 736 lines dispatching thirteen launches and six kernels
+// defined in this file.
+//
+// Behind a flag rather than replacing it outright, because the two must be
+// compared on real weights before one of them is deleted and the comparison
+// needs both present. SPARK_GLM52_FIRST_PARTY_LAYER selects it at build time -
+// not a runtime mode, because a runtime mode is how the old stage ended up with
+// six execution paths of which four did not work.
+#if defined(SPARK_GLM52_FIRST_PARTY_LAYER)
+#include "kernels/formats/fp8.cuh"
+#include "kernels/formats/int7.cuh"
+#include "llms/glm5_2/layer.cuh"
+
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchFirstPartyLayer(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t context_length,
+    uint32_t multiprocessors,
+    cudaStream_t cuda_stream)
+{
+    int32_t status;
+
+    status = Glm52LayerAttention<LmFp8>(
+        buffers, rows, context_length, multiprocessors, cuda_stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    status = Glm52LayerMoe<LmFp8>(
+        buffers, rows, packed_rows, multiprocessors, cuda_stream);
+    return status == LM_LAUNCH_OK ? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
+}
+#endif
+
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchLayerBody(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,

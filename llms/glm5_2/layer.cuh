@@ -2,6 +2,26 @@
 
 // One decode layer, as a sequence of calls into kernels/.
 //
+// WHAT THIS REPLACES, CONCRETELY. The old stage's LaunchLayerBody is 736 lines
+// dispatching thirteen launches and six kernels defined in the same file. Read
+// against the sequence below, the correspondence is one to one:
+//
+//     LaunchRmsNormDimension + ResidualKernel   -> LmFusedResidualRmsNormKernel
+//     LaunchRawLinear / LaunchLoweredProjection -> LmGemmKernel
+//     LaunchSparseIndexSelection                -> LmSparseScoreKernel + topk
+//     LaunchAbsorbedLatentAttention             -> LmAttentionDecodeKernel
+//     AttentionKernel + AttentionFp8KvKernel    -> the same, cache format is a
+//                                                  trait rather than a kernel
+//     LaunchPostAttentionMlp                    -> LmSiluMul + two LmGemmKernel
+//     LaunchRestrictedArgmax / Logits           -> LmTopk*
+//     LaunchMtpDraft                            -> LmSpeculativeVerify*
+//
+// Two of those pairs are the interesting ones. AttentionKernel and
+// AttentionFp8KvKernel are one kernel here because the cache element width is a
+// template parameter, not a separate implementation. And LaunchRawLinear versus
+// LaunchLoweredProjection were a dense GEMM and a grouped one; here a dense
+// linear is a grouped GEMM with one group.
+//
 // This is the file that makes the old 27,268-line decode stage deletable. That
 // file defines 74 kernels; this one defines none. Every step below is a launch
 // of something in kernels/, and what remains here is the order they go in and
