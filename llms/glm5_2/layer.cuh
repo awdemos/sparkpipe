@@ -44,6 +44,7 @@
 #include "kernels/norm.cuh"
 #include "kernels/attn.cuh"
 #include "kernels/topk.cuh"
+#include "kernels/project.cuh"
 #include "kernels/formats/bf16.cuh"
 #include "llms/glm5_2/config.h"
 
@@ -70,8 +71,19 @@ struct Glm52LayerBuffers
 	const uint32_t *dense_tile_prefix;     /* {0, tiles} */
 	// weights, bound once by the host
 	const void *attn_norm_weight;
-	const void *qkv_weight;
-	const void *qkv_scale;
+	// The attention projection is FOUR linears in absorbed form, not one. An
+	// earlier version of this file had a single qkv_weight and did a single
+	// GEMM, which computes a different function - the four go to different
+	// widths and only two of them feed RoPE.
+	//
+	// The raw form is a two-stage low-rank pair instead: down, norm, up, once
+	// per side. kernels/project.cuh has both; which one a model uses is decided
+	// by which weights its checkpoint carries, not at runtime.
+	LmAbsorbedWeights absorbed;
+	LmLowRankWeights raw_query;
+	LmLowRankWeights raw_kv;
+	LmLowRankScratch raw_scratch;
+	bool use_absorbed;
 	const void *output_weight;
 	const void *output_scale;
 	const void *mlp_norm_weight;
@@ -84,7 +96,9 @@ struct Glm52LayerBuffers
 	uint16_t *hidden_bf16;
 	uint16_t *residual_bf16;
 	uint16_t *normed_bf16;
-	uint16_t *qkv_bf16;
+	LmAbsorbedOutputs projected;
+	uint16_t *raw_query_bf16;
+	uint16_t *raw_kv_bf16;
 	uint16_t *attention_out_bf16;
 	uint8_t *packed_activation;
 	uint8_t *packed_scale;
@@ -126,15 +140,20 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 		<<<dim3(rows,GLM52_HIDDEN / Format::kScaleGroup),GLM52_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
 		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,GLM52_HIDDEN);
-	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->qkv_scale;
-	gemm.group_row_offset = b->dense_row_offset;
-	gemm.group_tile_prefix = b->dense_tile_prefix;
-	gemm.output_bf16 = b->qkv_bf16;
-	status = LmGemmLaunch<Format,GLM52_LAYER_TILE_N,Format::kTileK,GLM52_LAYER_STAGES,GLM52_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->qkv_weight,rows,rows,GLM52_TOP_K,1u,
-		GLM52_HIDDEN,GLM52_LATENT_ROW,sms,false,stream);
+	if ( b->use_absorbed )
+	{
+		status = LmAbsorbedProject<Format>(&b->absorbed,&b->projected,b->normed_bf16,
+			b->packed_activation,(const float *)b->packed_scale,
+			b->dense_row_offset,b->dense_tile_prefix,rows,sms,stream);
+	}
+	else
+	{
+		status = LmLowRankProject<Format>(&b->raw_query,&b->raw_scratch,b->normed_bf16,
+			b->raw_query_bf16,rows,GLM52_LAYER_THREADS,sms,stream);
+		if ( status == LM_LAUNCH_OK )
+			status = LmLowRankProject<Format>(&b->raw_kv,&b->raw_scratch,b->normed_bf16,
+				b->raw_kv_bf16,rows,GLM52_LAYER_THREADS,sms,stream);
+	}
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// RoPE applies to the trailing GLM52_ROPE_DIM elements of each row, so the
@@ -145,15 +164,20 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 	// If the projection ever emits them the other way the rotation lands on the
 	// latent half, and the result is fluent text with the wrong positions, which
 	// is among the hardest failures to attribute. The assert is cheap.
-	static_assert(GLM52_LATENT_ROW == GLM52_LATENT + GLM52_ROPE_DIM,
-		"the QKV row is latent followed by rope; RoPE's offset assumes that order");
+	// RoPE applies to the two rope projections, which are their own buffers of
+	// exactly GLM52_ROPE_DIM elements - so the stride is the rope width and the
+	// offset is zero. An earlier version rotated a slice of a fused row at
+	// offset GLM52_LATENT, which was the right arithmetic for a layout that does
+	// not exist.
 	LmRopeKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
-		b->qkv_bf16,b->positions,GLM52_LATENT_ROW,GLM52_LATENT,GLM52_ROPE_DIM,GLM52_ROPE_THETA);
+		b->projected.query_rope_bf16,b->positions,GLM52_ROPE_DIM,0u,GLM52_ROPE_DIM,GLM52_ROPE_THETA);
+	LmRopeKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
+		b->projected.key_rope_bf16,b->positions,GLM52_ROPE_DIM,0u,GLM52_ROPE_DIM,GLM52_ROPE_THETA);
 	if ( sparse )
 	{
 		LmSparseScoreKernel<Glm52Kv,GLM52_LAYER_THREADS,GLM52_DSA_INDEX_DIM>
 			<<<dim3(rows,context),GLM52_LAYER_THREADS,0,stream>>>(
-			b->qkv_bf16,b->cache,b->sequence_of_row,b->context_length,
+			b->projected.query_latent_bf16,b->cache,b->sequence_of_row,b->context_length,
 			GLM52_DSA_INDEX_HEADS,b->selection_scores);
 		LmTopkHistogramKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
 			b->selection_scores,context,GLM52_DSA_SELECTED,b->group_tile_prefix);
@@ -163,7 +187,7 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 	}
 	LmAttentionDecodeKernel<Glm52Kv,GLM52_LAYER_THREADS,GLM52_LATENT,GLM52_ROPE_DIM>
 		<<<dim3(rows,GLM52_ATTN_HEADS),GLM52_LAYER_THREADS,0,stream>>>(
-		b->qkv_bf16,b->qkv_bf16,b->cache,b->sequence_of_row,b->context_length,
+		b->projected.query_latent_bf16,b->projected.query_rope_bf16,b->cache,b->sequence_of_row,b->context_length,
 		sparse ? b->selected_positions : 0,GLM52_DSA_SELECTED,GLM52_ATTN_HEADS,
 		rsqrtf((float)GLM52_LATENT),b->attention_out_bf16);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
