@@ -31,4 +31,26 @@ do
 		*) printf "  %-14s WRONG TARGET: %s\n" "" "$target"; status=1 ;;
 	esac
 done
+# The production decode stage, which is not in llms/ yet and is exactly what a
+# gate that only covers the new tree cannot see. Two deletions have broken it
+# already - a header removed as superseded, and a transport removed alongside
+# the kernel library it shared a directory with - and both times every gate was
+# green.
+LEGACY=modules/glm52_resident_decode_stage/source/spark_glm52_sm121_required_decode_stage.cu
+if [ -f "$LEGACY" ]
+then
+	if "$NVCC" -std=c++17 $ARCH -O1 -I. \
+		-Imodules/glm52_resident_decode_stage/include \
+		-Imodules/glm52_dspark_draft_backend/include \
+		-Iinclude -Ideployment/include -Imodel-families/glm52/include \
+		-c "$LEGACY" -o /tmp/lm_legacy.o 2>/tmp/lm_legacy.log
+	then
+		printf "  %-14s compiled  %s bytes\n" "legacy glm52" "$(wc -c < /tmp/lm_legacy.o)"
+	else
+		printf "  %-14s FAILED\n" "legacy glm52"
+		grep -E "error" /tmp/lm_legacy.log | head -3
+		status=1
+	fi
+fi
+
 exit $status
