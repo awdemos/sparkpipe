@@ -22,6 +22,7 @@
 #include "kernels/formats/fp8.cuh"
 #include "kernels/formats/int7.cuh"
 #include "kernels/formats/int6.cuh"
+#include "kernels/formats/int8.cuh"
 #include "kernels/formats/nvfp4.cuh"
 #include "kernels/formats/bf16.cuh"
 #include "kernels/kv.cuh"
@@ -94,6 +95,9 @@ template __global__ void LmGemmKernel<LmInt7, 64u, GLM52_TILE_N, 256u, GLM52_STA
 template __global__ void LmGemmKernel<LmInt6, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmInt6, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmInt6, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt8, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt8, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt8, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmNvfp4, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmNvfp4, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmNvfp4, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
@@ -161,6 +165,14 @@ extern "C" int32_t Glm52GemmInt6(LmGemmArguments *args, const void *a, const voi
 	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
 {
 	return(LmGemmLaunch<LmInt6,GLM52_TILE_N,128u,GLM52_STAGES,GLM52_WARPS>(
+		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+}
+
+extern "C" int32_t Glm52GemmInt8(LmGemmArguments *args, const void *a, const void *b,
+	uint32_t packed_rows, uint32_t tokens, uint32_t groups,
+	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
+{
+	return(LmGemmLaunch<LmInt8,GLM52_TILE_N,128u,GLM52_STAGES,GLM52_WARPS>(
 		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
 }
 
