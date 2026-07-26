@@ -620,21 +620,7 @@ typedef enum SparkGlm52ResidentDecodeStageMlpExecutionMode
     SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE = 2,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE = 3,
     SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE = 4,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE = 5,
-    /* First-party NVFP4 grouped expert GEMM. FP8 and W8LUT each had an expert
-       tensor-core mode; NVFP4 had only FLASHINFER_B12X_MOE, which is the sole
-       reason the vendored tree is load-bearing for the shipped recipe. The
-       kernel is SparkLmGroupGemmConsumeStageNvfp4, whose fragment and scale
-       mappings are verified against CUTLASS by
-       tests/test_mma_fragment_mapping.c.
-
-       It binds the SAME weight pack the B12x path uses. w1_alpha, w2_alpha and
-       fc2_input_scale are not read: the packer sets all three to 1.0 by expert
-       to satisfy the FlashInfer/vLLM interface convention (see
-       docs/GLM52_B12X_RESIDENT_MOE_PACK.md), and the quantisation is carried
-       entirely by the UE4M3 block scales. Three of the seven pack regions
-       therefore become unnecessary when B12x goes. */
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_NVFP4_EXPERT_TENSOR_CORE = 6
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE = 5
 } SparkGlm52ResidentDecodeStageMlpExecutionMode;
 
 typedef enum SparkGlm52ResidentDecodeStageAttentionExecutionMode
