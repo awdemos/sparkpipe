@@ -17979,9 +17979,33 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinFusedStageMoeLayer(
     if (node_context->layer_progression_mode ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK)
     {
+        if (node_context->b12x_moe_dispatch_plan == 0)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        if (node_context->mlp_execution_mode ==
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_NVFP4_EXPERT_TENSOR_CORE)
+        {
+            /* First-party path. Same validated plan, same weight pack; only the
+               kernel differs. Not a fallback - the mode is selected in the
+               recipe and an unbound plan still fails closed above. */
+            status = SparkGlm52ResidentDecodeStageValidateB12xMoePlan(
+                node_context,
+                node_context->b12x_moe_dispatch_plan,
+                &b12x_plan);
+            if (status != SPARK_STATUS_OK)
+            {
+                return status;
+            }
+            return SparkGlm52ResidentDecodeStageLaunchNvfp4ExpertTensorCoreMoe(
+                node_context->b12x_moe_dispatch_plan,
+                b12x_plan,
+                node_context,
+                pipeline_slot,
+                active_sequence_count);
+        }
         if (node_context->mlp_execution_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE ||
-            node_context->b12x_moe_dispatch_plan == 0)
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }

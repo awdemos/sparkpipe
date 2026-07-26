@@ -47,6 +47,7 @@
 // autotuner's candidate ordering survives measurement.
 
 #include "sparkpipe/spark_lm_tma.cuh"
+#include "sparkpipe/spark_lm_group_gemm_swizzle_contract.h"
 #include <cuda_fp8.h>
 #include <stdint.h>
 
@@ -56,6 +57,11 @@
 #define SPARK_LM_GROUP_GEMM_WARP_LANES 32u
 #define SPARK_LM_GROUP_GEMM_SWIZZLE_CHUNKS 8u
 #define SPARK_LM_GROUP_GEMM_CHUNK_BYTES 16u
+
+// The descriptor and the kernel must apply the same swizzle or the kernel reads
+// real data from the wrong place with no error anywhere.
+static_assert(SPARK_LM_GROUP_GEMM_SWIZZLE_CHUNKS == SPARK_LM_GROUP_GEMM_SWIZZLE_CHUNKS_CONTRACT,
+	"kernel swizzle chunk count must match the tensor-map descriptor contract");
 
 // Tensor maps are CUtensorMap objects encoded host-side by cuTensorMapEncodeTiled
 // with CU_TENSOR_MAP_SWIZZLE_128B, passed by value in __grid_constant__ storage.
@@ -361,6 +367,14 @@ void SparkLmGroupGemmFp8Kernel(__grid_constant__ const SparkLmGroupGemmArguments
 
 #define SPARK_LM_GROUP_GEMM_NVFP4_MMA_K 64u
 #define SPARK_LM_GROUP_GEMM_NVFP4_GROUP 16u
+// TILE_K for NVFP4 is in ELEMENTS and must be 256, not the 128 the FP8 path
+// uses. At 4 bits a 128-element K tile is 64 bytes wide, narrower than the
+// 128-byte swizzle span, so it cannot be permuted at that granularity and
+// cuTensorMapEncodeTiled would describe a box the kernel cannot address
+// consistently. tests/test_tensor_map_geometry.c rejects the 128 case
+// explicitly. The constraint does not exist for FP8, where 128 elements are
+// already 128 bytes, which is exactly why it is easy to miss.
+#define SPARK_LM_GROUP_GEMM_NVFP4_TILE_K 256u
 
 // scale_vec::4X with ue4m3 scales is one scale per 16 elements, which matches
 // SPARK_GLM52_MODEL_NVFP4_GROUP_SIZE. The scale operands are a b32 register
