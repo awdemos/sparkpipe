@@ -45,6 +45,25 @@
 #define SPARK_LM_WORKSPACE_ERR_OVERFLOW (-34)
 #define SPARK_LM_WORKSPACE_ERR_SHARED (-35)
 
+// Regions that exist only because the pipeline is not fused. B12x materialises
+// none of them - it declares FUSED_EXPERTS, IN_KERNEL_INPUT_QUANT and
+// ZERO_DEVICE_MEMCPY, so its entire workspace is top_k route ids, top_k weights
+// and one output buffer: about 96 KB, independent of batch. The unfused path
+// needs 196 MB at B1024. That is a factor of two thousand, and it is the real
+// cost of not fusing - not the 0.9 percent of bandwidth the round trips consume.
+//
+// The two largest are route_output at 96 MB and gate_up at 64 MB. Folding the
+// finalize reduction into the second GEMM's epilogue removes the first; keeping
+// the SiLU-mul in registers between the two GEMMs removes the second. Both are
+// real work, and this constant is what justifies doing it.
+#define SPARK_LM_WORKSPACE_UNFUSED_REGION_MASK ( \
+	(1u << SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN) | \
+	(1u << SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN_SCALE) | \
+	(1u << SPARK_LM_WORKSPACE_REGION_GATE_UP_BF16) | \
+	(1u << SPARK_LM_WORKSPACE_REGION_INTERMEDIATE) | \
+	(1u << SPARK_LM_WORKSPACE_REGION_INTERMEDIATE_SCALE) | \
+	(1u << SPARK_LM_WORKSPACE_REGION_ROUTE_OUTPUT_BF16))
+
 typedef struct spark_lm_workspace_shape
 {
 	uint32_t tokens,top_k,expert_count,hidden_dimension,intermediate_dimension,tile_m,tile_n;
@@ -77,6 +96,14 @@ static uint64_t spark_lm_workspace_packed_rows(const spark_lm_workspace_shape_t 
 {
 	return((uint64_t)shape->tokens * (uint64_t)shape->top_k);
 }
+
+// Bytes this path needs at its maximum supported batch. Callers size a
+// dedicated allocation from this rather than borrowing the B12x plan's
+// workspace, which is sized for a fused kernel and is three orders of magnitude
+// too small. Getting that wrong is not a corruption - the launcher compares and
+// fails closed - but it is a hard stop at run time for a number that is known
+// at plan time.
+static uint64_t spark_lm_workspace_bytes_for_max_batch(uint32_t max_tokens, uint32_t top_k, uint32_t expert_count, uint32_t hidden_dimension, uint32_t intermediate_dimension);
 
 // Choose TILE_M for a token bucket.
 //
@@ -247,6 +274,24 @@ static int32_t spark_lm_workspace_layout_build(const spark_lm_workspace_shape_t 
 	layout->total_tiles = spark_lm_workspace_total_tiles_for_tile_m(shape,effective,
 		shape->intermediate_dimension * 2u);
 	return(SPARK_LM_WORKSPACE_OK);
+}
+
+static uint64_t spark_lm_workspace_bytes_for_max_batch(uint32_t max_tokens, uint32_t top_k, uint32_t expert_count, uint32_t hidden_dimension, uint32_t intermediate_dimension)
+{
+	spark_lm_workspace_shape_t shape;
+	spark_lm_workspace_layout_t layout;
+	uint32_t index;
+	for (index = 0u; index < sizeof(shape); ++index)
+		((uint8_t *)&shape)[index] = 0u;
+	shape.tokens = max_tokens;
+	shape.top_k = top_k;
+	shape.expert_count = expert_count;
+	shape.hidden_dimension = hidden_dimension;
+	shape.intermediate_dimension = intermediate_dimension;
+	shape.tile_n = 128u;
+	if ( spark_lm_workspace_layout_build(&shape,&layout) != SPARK_LM_WORKSPACE_OK )
+		return(0u);
+	return(layout.total_bytes);
 }
 
 #endif

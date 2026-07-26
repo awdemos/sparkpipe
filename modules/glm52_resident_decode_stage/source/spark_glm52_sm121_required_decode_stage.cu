@@ -12039,7 +12039,20 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchNvfp4ExpertTensorCoreMoe(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (layout.total_bytes > b12x_plan->workspace_bytes)
+    // The B12x plan's workspace cannot serve this path and never could. B12x
+    // declares FUSED_EXPERTS, IN_KERNEL_INPUT_QUANT and ZERO_DEVICE_MEMCPY, so
+    // it materialises nothing: its workspace is top_k route ids, top_k weights
+    // and one output buffer, about 96 KB and independent of batch. This path
+    // materialises packed activations, gate_up, the intermediate and the routed
+    // output, which is 196 MB at B1024 - a factor of two thousand.
+    //
+    // The check stays and the failure is explicit rather than a generic
+    // resource error, because the number is known at plan time and discovering
+    // it as a run-time stop is the wrong place. Sizing a dedicated allocation
+    // from spark_lm_workspace_bytes_for_max_batch is what the plan binding
+    // should do; until it does, this path refuses to run rather than reading
+    // past a buffer that is three orders of magnitude too small.
+    if (b12x_plan->workspace_bytes < layout.total_bytes)
     {
         return SPARK_STATUS_INSUFFICIENT_RESOURCES;
     }

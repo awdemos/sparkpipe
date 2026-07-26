@@ -116,6 +116,20 @@ int main(void){
 		ck(layout.stages==2,"B1024 runs at lookahead 1");
 		ck(layout.ctas_per_sm>=2,"B1024 fits at least two CTAs per SM");
 	}
+	printf("\nworkspace requirement versus what B12x reserves\n");
+	{
+		uint64_t need = spark_lm_workspace_bytes_for_max_batch(1024u,8u,256u,6144u,2048u);
+		/* B12x: top_k ids + top_k weights + top_k*hidden output bf16, batch
+		   independent, because the kernel is fused and materialises nothing. */
+		uint64_t b12x = 8u*4u + 8u*4u + (uint64_t)8u*6144u*2u;
+		printf("    first-party unfused, B1024 max : %8.2f MB\n", need/1048576.0);
+		printf("    B12x fused                     : %8.2f KB\n", b12x/1024.0);
+		printf("    ratio                          : %8.0fx\n", (double)need/(double)b12x);
+		ck(need > 0, "max-batch requirement resolves");
+		ck(need > b12x * 1000u,
+		   "the unfused path needs three orders of magnitude more workspace, so it "
+		   "must own its allocation and cannot borrow the B12x plan's");
+	}
 	printf("\nrejections\n");
 	memset(&shape,0,sizeof shape);
 	shape.tokens=128; shape.top_k=8; shape.expert_count=256;
