@@ -11344,11 +11344,10 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4LaunchRoutedGemm(
     // because TILE_M sizes the shared buffers and the accumulator array, both of
     // which are compile-time. Anything not in this table is a caller error, not
     // a case to approximate.
-    // One instantiation per (tile height, stage depth) pair. Both size shared
-    // memory and the accumulator array, so both are compile-time. The pairing is
-    // not free choice: spark_lm_workspace_select_stages picks the deepest
-    // pipeline that fits 128 KB at the chosen tile, and a 128-row tile at four
-    // stages needs 131136 bytes and does not launch at all.
+    // Three instantiations, one per tile height, all at a lookahead of one.
+    // B1024 is the supported maximum, which caps the tile at 64 rows, so the
+    // 128-row arm that used to be here was unreachable. Both parameters size
+    // shared memory and the accumulator array, so both stay compile-time.
     #define SPARK_GLM52_NVFP4_LAUNCH(TILE, STAGES) \
         SparkLmGroupGemmNvfp4Kernel< \
             TILE, \
@@ -11356,21 +11355,17 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4LaunchRoutedGemm(
             SPARK_LM_GROUP_GEMM_NVFP4_TILE_K, \
             STAGES, \
             8u><<<grid_blocks, 8u * 32u, 0, cuda_stream>>>(arguments)
-    if (tile_m == 16u && stages == 6u)
+    if (tile_m == 16u && stages == 2u)
     {
-        SPARK_GLM52_NVFP4_LAUNCH(16u, 6u);
+        SPARK_GLM52_NVFP4_LAUNCH(16u, 2u);
     }
-    else if (tile_m == 32u && stages == 6u)
+    else if (tile_m == 32u && stages == 2u)
     {
-        SPARK_GLM52_NVFP4_LAUNCH(32u, 6u);
+        SPARK_GLM52_NVFP4_LAUNCH(32u, 2u);
     }
-    else if (tile_m == 64u && stages == 4u)
+    else if (tile_m == 64u && stages == 2u)
     {
-        SPARK_GLM52_NVFP4_LAUNCH(64u, 4u);
-    }
-    else if (tile_m == 128u && stages == 3u)
-    {
-        SPARK_GLM52_NVFP4_LAUNCH(128u, 3u);
+        SPARK_GLM52_NVFP4_LAUNCH(64u, 2u);
     }
     else
     {

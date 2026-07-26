@@ -61,6 +61,7 @@ typedef struct spark_lm_workspace_layout
 	uint64_t shared_bytes;
 	uint32_t tile_m;
 	uint32_t stages;
+	uint32_t ctas_per_sm;
 }
 spark_lm_workspace_layout_t;
 
@@ -96,9 +97,11 @@ static uint32_t spark_lm_workspace_select_tile_m(uint64_t rows_per_expert)
 		return(16u);
 	if ( rows_per_expert <= 32u )
 		return(32u);
-	if ( rows_per_expert <= 64u )
-		return(64u);
-	return(128u);
+	// 64 is the ceiling. B1024 is the supported maximum, which at 256 experts
+	// and top-8 is 32 mean rows per expert and 64 at the 2x peak headroom, so a
+	// 128-row tile is unreachable. Instantiating one would be dead code that
+	// still costs compile time and a dispatch arm.
+	return(64u);
 }
 
 // Shared memory one CTA needs. NVFP4 payloads are 4-bit, so both tile buffers
@@ -127,12 +130,33 @@ static uint64_t spark_lm_workspace_shared_bytes(uint32_t tile_m, uint32_t tile_n
 // because more would help.
 static uint32_t spark_lm_workspace_select_stages(uint32_t tile_m, uint32_t tile_n, uint32_t tile_k, uint32_t element_bits, uint64_t shared_limit)
 {
-	static const uint32_t candidates[] = { 6u, 4u, 3u, 2u };
-	uint32_t index;
-	for (index = 0u; index < 4u; ++index)
-		if ( spark_lm_workspace_shared_bytes(tile_m,tile_n,tile_k,candidates[index],element_bits) <= shared_limit )
-			return(candidates[index]);
+	// Two stages, which is a lookahead of one: one tile in flight while the
+	// other is consumed. Deeper was tried and is not what the shared memory
+	// should buy.
+	//
+	// Little's Law against 218 GB/s effective and 400-600 ns latency wants about
+	// 2.3 KB in flight per SM. A single 24 KB tile per CTA already clears that
+	// by twenty times, so stages three and beyond satisfy a requirement that was
+	// met at two. What they cost is occupancy: six stages of a 16-row tile is
+	// 110 KB and admits one CTA per SM, where two stages is 37 KB and admits
+	// three. Depth past the requirement buys nothing; the CTAs might.
+	//
+	// This is a trade, not a free win - more CTAs do not create bandwidth on a
+	// bandwidth-bound kernel, and the gain is only in tolerating tail effects
+	// and uneven expert loads. It is the measurement the memory-latency
+	// microbenchmark should settle.
+	if ( spark_lm_workspace_shared_bytes(tile_m,tile_n,tile_k,2u,element_bits) <= shared_limit )
+		return(2u);
 	return(0u);
+}
+
+// CTAs that fit per SM at the selected geometry. Reported so a profile has
+// something to compare against rather than being inferred after the fact.
+static uint32_t spark_lm_workspace_ctas_per_sm(uint64_t shared_bytes, uint64_t shared_limit)
+{
+	if ( shared_bytes == 0u )
+		return(0u);
+	return((uint32_t)(shared_limit / shared_bytes));
 }
 
 // Rows the busiest expert is expected to hold. Routing is not uniform, so the
@@ -193,6 +217,8 @@ static int32_t spark_lm_workspace_layout_build(const spark_lm_workspace_shape_t 
 	layout->shared_bytes = spark_lm_workspace_shared_bytes(effective,shape->tile_n,
 		SPARK_LM_WORKSPACE_NVFP4_TILE_K,layout->stages,
 		SPARK_LM_TENSOR_MAP_BITS_NVFP4_LOCAL);
+	layout->ctas_per_sm = spark_lm_workspace_ctas_per_sm(layout->shared_bytes,
+		SPARK_LM_WORKSPACE_SHARED_LIMIT);
 	rows = spark_lm_workspace_packed_rows(shape);
 	if ( rows == 0u || rows > 0xffffffffu )
 		return(SPARK_LM_WORKSPACE_ERR_OVERFLOW);

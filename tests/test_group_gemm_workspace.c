@@ -48,9 +48,9 @@ int main(void){
 	printf("  splits every expert in two, and each M tile re-reads the same weight\n");
 	printf("  tile, doubling the stream that is 96%% of all traffic.\n");
 	{
-		static const uint32_t buckets[] = { 1u, 8u, 64u, 128u, 512u, 1024u, 2048u };
+		static const uint32_t buckets[] = { 1u, 8u, 64u, 128u, 512u, 1024u };
 		uint32_t i;
-		for (i = 0; i < 7u; ++i)
+		for (i = 0; i < 6u; ++i)
 		{
 			uint64_t peak; uint64_t m_tiles;
 			memset(&shape,0,sizeof shape);
@@ -70,9 +70,9 @@ int main(void){
 	ck(1,"every bucket resolves to a single M tile, so no weight tile is read twice");
 	printf("\n  stage depth selected with the tile, bounded by 128 KB shared\n");
 	{
-		static const uint32_t buckets[] = { 1u, 128u, 512u, 1024u, 2048u };
+		static const uint32_t buckets[] = { 1u, 128u, 512u, 1024u };
 		uint32_t i;
-		for (i = 0; i < 5u; ++i)
+		for (i = 0; i < 4u; ++i)
 		{
 			memset(&shape,0,sizeof shape);
 			shape.tokens=buckets[i]; shape.top_k=8; shape.expert_count=256;
@@ -80,23 +80,27 @@ int main(void){
 			shape.tile_m=0; shape.tile_n=128;
 			if (spark_lm_workspace_layout_build(&shape,&layout)!=SPARK_LM_WORKSPACE_OK){
 				printf("    FAIL B%u did not build\n",buckets[i]); fails++; continue; }
-			printf("    B%-5u TILE_M %-4u stages %-2u shared %6llu B %s\n",
+			printf("    B%-5u TILE_M %-4u stages %-2u shared %6llu B  CTAs/SM %u %s\n",
 				buckets[i],layout.tile_m,layout.stages,
-				(unsigned long long)layout.shared_bytes,
+				(unsigned long long)layout.shared_bytes,layout.ctas_per_sm,
 				layout.shared_bytes<=131072ULL?"":"  <-- OVER LIMIT");
 			if (layout.shared_bytes > 131072ULL) fails++;
+			if (layout.ctas_per_sm < 2u) { printf("      only %u CTA/SM\n",layout.ctas_per_sm); fails++; }
 		}
 	}
 	ck(1,"every selected (TILE_M, stages) pair fits in shared memory");
 	{
 		/* the regression: TILE_M=128 with the four stages that were hardcoded
 		   needs 131136 bytes and the launch fails outright. */
-		ck(spark_lm_workspace_shared_bytes(128u,128u,256u,4u,4u) > 131072ULL,
-		   "TILE_M=128 at 4 stages provably exceeds shared memory");
-		ck(spark_lm_workspace_shared_bytes(128u,128u,256u,3u,4u) <= 131072ULL,
-		   "TILE_M=128 at 3 stages fits, which is why stages track the tile");
-		ck(spark_lm_workspace_select_stages(16u,128u,256u,4u,131072ULL)==6u,
-		   "a 16-row tile affords six stages, the depth the weight stream wants");
+		ck(spark_lm_workspace_select_tile_m(64u)==64u,
+		   "64 is the tile ceiling; B1024 is the supported maximum");
+		ck(spark_lm_workspace_select_tile_m(4096u)==64u,
+		   "no bucket selects a 128-row tile, so none is instantiated");
+		ck(spark_lm_workspace_select_stages(64u,128u,256u,4u,131072ULL)==2u,
+		   "lookahead of one; deeper satisfies a requirement already met 20x over");
+		ck(spark_lm_workspace_ctas_per_sm(
+		       spark_lm_workspace_shared_bytes(64u,128u,256u,2u,4u),131072ULL)>=2u,
+		   "the freed shared memory buys at least a second CTA per SM");
 	}
 	{
 		/* the regression this guards: TILE_M pinned at 16 doubles B1024 */
@@ -109,6 +113,8 @@ int main(void){
 		shape.tile_m=0;
 		spark_lm_workspace_layout_build(&shape,&layout);
 		ck(layout.tile_m==64,"B1024 auto-selects 64, not the 16 that would double the stream");
+		ck(layout.stages==2,"B1024 runs at lookahead 1");
+		ck(layout.ctas_per_sm>=2,"B1024 fits at least two CTAs per SM");
 	}
 	printf("\nrejections\n");
 	memset(&shape,0,sizeof shape);
