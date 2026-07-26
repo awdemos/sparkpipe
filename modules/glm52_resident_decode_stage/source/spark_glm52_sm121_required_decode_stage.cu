@@ -20,16 +20,38 @@
 #include <cublasLt.h>
 #endif
 
-#if !__has_include("flashinfer/gemm/group_gemm_fp8_groupwise_sm120.cuh")
-#error "FlashInfer SM120 grouped FP8 GEMM headers are required for production FP8 MoE"
-#endif
-#if !__has_include("flashinfer/gemm/gemm_groupwise_sm120.cuh")
-#error "FlashInfer SM120 dense FP8 GEMM headers are required for production FP8 linear plans"
-#endif
-#include <cutlass/bfloat16.h>
-#include <cutlass/float8.h>
-#include "flashinfer/gemm/gemm_groupwise_sm120.cuh"
-#include "flashinfer/gemm/group_gemm_fp8_groupwise_sm120.cuh"
+// The vendored GEMM is gone. Its two call sites now use the first-party kernel
+// in kernels/gemm.cuh through llms/glm5_2/unity.cu, which is one kernel for the
+// dense case and the grouped case both - a dense linear is a grouped GEMM with
+// one group.
+//
+// SM count is queried once rather than assumed. 48 is GB10's, and a literal
+// would silently under- or over-subscribe anything else.
+static uint32_t SparkGlm52ResidentDecodeStageMultiprocessorCount(void)
+{
+    static uint32_t cached = 0u;
+    int count = 0;
+    int device = 0;
+
+    if (cached != 0u)
+    {
+        return cached;
+    }
+    if (cudaGetDevice(&device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&count, cudaDevAttrMultiProcessorCount, device) !=
+            cudaSuccess ||
+        count <= 0)
+    {
+        return 0u;
+    }
+    cached = (uint32_t)count;
+    return cached;
+}
+
+// uint8_t and uint16_t are gone with the GEMM that
+// needed them; kernels/dtype.cuh has both conversions and neither is a type.
+#include "kernels/gemm.cuh"
+#include "llms/glm5_2/api.h"
 
 #include <float.h>
 #include <stdint.h>
@@ -1613,6 +1635,8 @@ extern "C" uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateBuiltinFp8ScaledG
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinFp8ScaledGemm(
     const SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmArguments *arguments)
 {
+    LmGemmArguments gemm_arguments;
+    int32_t launch_status;
     const SparkGlm52Sm121RequiredDecodeStageBuiltinFp8ScaledGemmState *state;
     cudaStream_t cuda_stream;
     cudaError_t cuda_status;
@@ -1639,22 +1663,30 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinFp8ScaledGemm(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
+    // First-party GEMM. A dense linear is a grouped GEMM with one group and
+    // grouped=false, which is why there is one kernel here rather than the
+    // separate dense and grouped entry points the vendored library needed.
     cuda_stream = (cudaStream_t)arguments->cuda_stream;
-    cuda_status =
-        flashinfer::gemm::CutlassGroupwiseScaledGEMMSM120<
-            1, 128, 128, true, cutlass::float_e4m3_t, cutlass::bfloat16_t>(
-            state->workspace,
-            (size_t)state->workspace_bytes,
-            (cutlass::float_e4m3_t *)arguments->activation_fp8_e4m3,
-            (cutlass::float_e4m3_t *)arguments->weight_fp8_e4m3,
-            (float *)arguments->activation_scale_f32,
-            (float *)arguments->weight_scale_inv_f32,
-            (cutlass::bfloat16_t *)arguments->output,
-            (int)arguments->active_sequence_count,
-            (int)arguments->output_dimension,
-            (int)arguments->input_dimension,
-            1,
-            cuda_stream);
+    memset(&gemm_arguments, 0, sizeof(gemm_arguments));
+    gemm_arguments.scale_a = (const float *)arguments->activation_scale_f32;
+    gemm_arguments.scale_b = (const float *)arguments->weight_scale_inv_f32;
+    gemm_arguments.group_row_offset = (const uint32_t *)state->workspace;
+    gemm_arguments.group_tile_prefix =
+        ((const uint32_t *)state->workspace) + 2u;
+    gemm_arguments.output_bf16 = arguments->output;
+    launch_status = Glm52GemmFp8(
+        &gemm_arguments,
+        arguments->activation_fp8_e4m3,
+        arguments->weight_fp8_e4m3,
+        arguments->active_sequence_count,
+        arguments->active_sequence_count,
+        1u,
+        arguments->input_dimension,
+        arguments->output_dimension,
+        SparkGlm52ResidentDecodeStageMultiprocessorCount(),
+        false,
+        (void *)cuda_stream);
+    cuda_status = launch_status == 0 ? cudaSuccess : cudaErrorInvalidValue;
     if (cuda_status != cudaSuccess)
     {
         fprintf(
@@ -12424,7 +12456,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFlashInferFp8GroupGemm(
     uint32_t expert_count,
     cudaStream_t cuda_stream)
 {
+    LmGemmArguments gemm_arguments;
     cudaError_t cuda_status;
+    int32_t launch_status;
 
     if (activation_fp8_e4m3 == 0 || activation_scale_f32 == 0 ||
         packed_expert_ids == 0 || weight_fp8_e4m3 == 0 ||
@@ -12435,24 +12469,33 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFlashInferFp8GroupGemm(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    cuda_status =
-        flashinfer::group_gemm::CutlassFP8GroupwiseScaledGroupGEMMSM120<
-            1, 128, 128, true, cutlass::float_e4m3_t, cutlass::bfloat16_t>(
-            int_workspace,
-            (size_t)int_workspace_bytes,
-            float_workspace,
-            (size_t)float_workspace_bytes,
-            (cutlass::float_e4m3_t *)activation_fp8_e4m3,
-            (cutlass::float_e4m3_t *)weight_fp8_e4m3,
-            (float *)activation_scale_f32,
-            (float *)weight_scale_inv_f32,
-            (cutlass::bfloat16_t *)output_bf16,
-            (int *)m_indptr,
-            (int)maximum_route_count,
-            (int)output_dimension,
-            (int)input_dimension,
-            (int)expert_count,
-            cuda_stream);
+    // First-party grouped GEMM. m_indptr is already the per-expert row prefix
+    // the kernel binary-searches; the tile prefix follows it in the integer
+    // workspace, written by the route build.
+    memset(&gemm_arguments, 0, sizeof(gemm_arguments));
+    gemm_arguments.scale_a = (const float *)activation_scale_f32;
+    gemm_arguments.scale_b = (const float *)weight_scale_inv_f32;
+    gemm_arguments.group_row_offset = (const uint32_t *)m_indptr;
+    gemm_arguments.group_tile_prefix =
+        ((const uint32_t *)int_workspace) + expert_count + 1u;
+    gemm_arguments.output_bf16 = output_bf16;
+    launch_status = Glm52GemmFp8(
+        &gemm_arguments,
+        activation_fp8_e4m3,
+        weight_fp8_e4m3,
+        maximum_route_count,
+        maximum_route_count / (expert_count ? expert_count : 1u),
+        expert_count,
+        input_dimension,
+        output_dimension,
+        SparkGlm52ResidentDecodeStageMultiprocessorCount(),
+        true,
+        cuda_stream);
+    (void)float_workspace;
+    (void)float_workspace_bytes;
+    (void)int_workspace_bytes;
+    (void)packed_expert_ids;
+    cuda_status = launch_status == 0 ? cudaSuccess : cudaErrorInvalidValue;
     return cuda_status == cudaSuccess
         ? SPARK_STATUS_OK
         : SPARK_STATUS_INTERNAL_ERROR;

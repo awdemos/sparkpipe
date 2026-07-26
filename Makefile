@@ -782,9 +782,6 @@ glm52_fp8_scaled_gemm_cuda_gate: cuda_glm52_resident_decode_stage $(B12X_ADAPTER
 	$(NVCC) -std=c++17 $(NVCCFLAGS) \
 		-Iinclude \
 		-Imodules/glm52_resident_decode_stage/include \
-		-Ithird_party/flashinfer/include \
-		-Ithird_party/flashinfer/3rdparty/cutlass/include \
-		-Ithird_party/flashinfer/3rdparty/cutlass/tools/util/include \
 		tools/glm52_fp8_scaled_gemm_cuda_gate.cu \
 		$(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) \
 		$(GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS) \
