@@ -27,6 +27,7 @@
 #include "kernels/formats/bf16.cuh"
 #include "kernels/kv.cuh"
 #include "llms/glm5_2/config.h"
+#include "llms/glm5_2/layer.cuh"
 
 // -- geometries --------------------------------------------------------------
 
@@ -182,4 +183,34 @@ extern "C" int32_t Glm52GemmNvfp4(LmGemmArguments *args, const void *a, const vo
 {
 	return(LmGemmLaunch<LmNvfp4,GLM52_TILE_N,128u,GLM52_STAGES,GLM52_WARPS>(
 		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+}
+
+// -- the layer -----------------------------------------------------------------
+//
+// One call per layer half. The host binds buffers once and steps; the sequence
+// is in llms/glm5_2/layer.cuh because the sequence is what makes this GLM 5.2
+// rather than another model with the same kernels.
+//
+// Instantiated per weight format because the format is a template parameter all
+// the way down - the quantiser, the GEMM and the fragment decode all take it,
+// and a runtime format would put a branch in every one of them.
+
+extern "C" int32_t Glm52LayerAttentionFp8(const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+{
+	return(Glm52LayerAttention<LmFp8>(b,rows,context,sms,stream));
+}
+
+extern "C" int32_t Glm52LayerAttentionInt7(const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+{
+	return(Glm52LayerAttention<LmInt7>(b,rows,context,sms,stream));
+}
+
+extern "C" int32_t Glm52LayerMoeFp8(const Glm52LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
+{
+	return(Glm52LayerMoe<LmFp8>(b,rows,packed_rows,sms,stream));
+}
+
+extern "C" int32_t Glm52LayerMoeInt7(const Glm52LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
+{
+	return(Glm52LayerMoe<LmInt7>(b,rows,packed_rows,sms,stream));
 }

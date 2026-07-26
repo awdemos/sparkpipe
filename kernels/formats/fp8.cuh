@@ -25,6 +25,11 @@ struct LmFp8
 {
 	// What memory holds, and therefore what crosses the bus.
 	static constexpr uint32_t kStoredBits = 8u;
+	// The K tile this format needs, in ELEMENTS. It is a property of the
+	// stored width, not a free choice: the row pitch must be a whole swizzle
+	// span in BYTES, so 8 bits needs 128 elements and 7 needs 256. Hardcoding
+	// it at a call site is a static_assert away from being caught, and was.
+	static constexpr uint32_t kTileK = 128u;
 	// What the mma register holds after decode. One path for every format.
 	static constexpr uint32_t kBits = 16u;
 	static constexpr uint32_t kMmaM = LM_MMA16_M;

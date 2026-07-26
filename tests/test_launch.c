@@ -80,6 +80,24 @@ int main(void)
 	expect(plan.shared_bytes > 49152u, "and needs more than the static limit allows");
 	expect(plan.shared_bytes <= LM_SMEM_SM_TOTAL, "while fitting what the SM has");
 
+	printf("\neach format's declared TILE_K must be swizzleable at its stored width\n");
+	{
+		struct { const char *name; uint32_t bits; uint32_t tile_k; } table[] = {
+			{ "bf16", 16u, 128u }, { "fp8", 8u, 128u }, { "int8", 8u, 128u },
+			{ "int7", 7u, 256u }, { "int6", 6u, 128u }, { "nvfp4", 4u, 128u },
+		};
+		uint32_t i;
+		for (i = 0; i < 6u; ++i)
+		{
+			uint32_t pitch = (table[i].tile_k * table[i].bits) / 8u;
+			uint32_t span = LmSwizzleSpanFor(pitch);
+			printf("    %-6s %2u bits, TILE_K %3u -> pitch %3u, span %uB\n",
+				table[i].name, table[i].bits, table[i].tile_k, pitch, span);
+			if (span == 0u) { printf("      no span divides it\n"); ++failures; }
+		}
+	}
+	expect(1, "every format declares a TILE_K its stored width can swizzle");
+
 	printf("\nrejections\n");
 	shape_for(&shape, 128u, 8u, 128u);
 	shape.stages = 1u;
