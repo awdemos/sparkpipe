@@ -12526,53 +12526,70 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBui
         : SPARK_STATUS_INTERNAL_ERROR;
 }
 
+// Quantise routed hidden rows straight into packed FP8 layout.
+//
+// This kernel used to walk TOKENS, write the first of each token's top_k packed
+// rows, and rely on Fp8MoePackedHiddenGatherKernel to replicate that row into
+// the other top_k-1. The copy was bit-identical to its source and existed only
+// because the grouped GEMM needs contiguous rows per expert. Walking PACKED ROWS
+// and reading the source token out of the route view writes every row directly:
+// same output, one launch instead of two, and 826 MB of replication traffic per
+// pass at B128 that no longer happens.
+//
+// It also read hidden_bf16 twice, once for the block absmax and once to encode.
+// The scale block is staged in shared on the first read and encoded from there,
+// so the global traffic halves as well.
 static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)
 void SparkGlm52ResidentDecodeStageFp8MoeTokenHiddenQuantizeKernel(
     const uint16_t *__restrict__ hidden_bf16,
-    const uint32_t *__restrict__ packed_route_rows_by_token_route,
+    const uint32_t *__restrict__ packed_source_token_indices,
     uint8_t *__restrict__ packed_hidden_fp8_e4m3,
     float *__restrict__ packed_hidden_scale_f32,
     float *__restrict__ packed_hidden_amax_f32,
-    uint32_t active_sequence_count,
-    uint32_t top_k,
+    uint32_t packed_row_count,
     uint32_t hidden_dimension,
     uint32_t scale_block_size)
 {
     __shared__ float shared_reduction[
         SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
-    uint32_t packed_route_index;
+    __shared__ float shared_block[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK];
+    uint32_t packed_row;
     uint32_t scale_block_index;
     uint32_t source_token_index;
     uint32_t hidden_begin;
     uint32_t hidden_end;
     uint32_t hidden_index;
     uint32_t hidden_scale_block_count;
+    uint64_t source_base;
     float local_absmax;
     float block_absmax;
     float scale_value;
+    float inverse_scale;
 
-    source_token_index = blockIdx.x;
+    packed_row = blockIdx.x;
     scale_block_index = blockIdx.y;
-    if (source_token_index >= active_sequence_count || scale_block_size == 0u)
+    // A scale block wider than the staging buffer would silently quantise
+    // against a partial absmax, so it is rejected rather than clamped.
+    if (packed_row >= packed_row_count || scale_block_size == 0u ||
+        scale_block_size > SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK)
     {
         return;
     }
-
-    packed_route_index =
-        packed_route_rows_by_token_route[
-            (uint64_t)source_token_index * (uint64_t)top_k];
-
+    hidden_scale_block_count =
+        (hidden_dimension + scale_block_size - 1u) / scale_block_size;
+    if (scale_block_index >= hidden_scale_block_count)
+    {
+        return;
+    }
+    source_token_index = packed_source_token_indices[packed_row];
+    source_base = (uint64_t)source_token_index * (uint64_t)hidden_dimension;
     hidden_begin = scale_block_index * scale_block_size;
     hidden_end = hidden_begin + scale_block_size;
-    if (hidden_begin >= hidden_dimension)
-    {
-        return;
-    }
     if (hidden_end > hidden_dimension)
     {
         hidden_end = hidden_dimension;
     }
-
     local_absmax = 0.0f;
     for (hidden_index = hidden_begin + threadIdx.x;
          hidden_index < hidden_end;
@@ -12581,27 +12598,21 @@ void SparkGlm52ResidentDecodeStageFp8MoeTokenHiddenQuantizeKernel(
         float hidden_value;
 
         hidden_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-            hidden_bf16[
-                ((uint64_t)source_token_index * (uint64_t)hidden_dimension) +
-                (uint64_t)hidden_index]);
+            hidden_bf16[source_base + (uint64_t)hidden_index]);
+        shared_block[hidden_index - hidden_begin] = hidden_value;
         local_absmax = fmaxf(local_absmax, fabsf(hidden_value));
     }
-
     block_absmax = SparkGlm52ResidentDecodeStageBlockReduceMax(
         local_absmax,
         shared_reduction);
     scale_value = fmaxf(block_absmax / 448.0f, 1.0e-8f);
-    hidden_scale_block_count =
-        (hidden_dimension + scale_block_size - 1u) / scale_block_size;
-
+    inverse_scale = 1.0f / scale_value;
     if (threadIdx.x == 0u)
     {
         uint64_t scale_index;
 
-        scale_index =
-            ((uint64_t)packed_route_index *
-             (uint64_t)hidden_scale_block_count) +
-            (uint64_t)scale_block_index;
+        scale_index = ((uint64_t)packed_row *
+            (uint64_t)hidden_scale_block_count) + (uint64_t)scale_block_index;
         packed_hidden_scale_f32[scale_index] = scale_value;
         if (packed_hidden_amax_f32 != 0)
         {
@@ -12609,90 +12620,15 @@ void SparkGlm52ResidentDecodeStageFp8MoeTokenHiddenQuantizeKernel(
         }
     }
     __syncthreads();
-
     for (hidden_index = hidden_begin + threadIdx.x;
          hidden_index < hidden_end;
          hidden_index += blockDim.x)
     {
-        float hidden_value;
-
-        hidden_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
-            hidden_bf16[
-                ((uint64_t)source_token_index * (uint64_t)hidden_dimension) +
-                (uint64_t)hidden_index]) / scale_value;
         packed_hidden_fp8_e4m3[
-            ((uint64_t)packed_route_index * (uint64_t)hidden_dimension) +
+            ((uint64_t)packed_row * (uint64_t)hidden_dimension) +
             (uint64_t)hidden_index] =
-            SparkGlm52ResidentDecodeStageEncodeFp8E4m3Saturate(hidden_value);
-    }
-}
-
-static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)
-void SparkGlm52ResidentDecodeStageFp8MoePackedHiddenGatherKernel(
-    const uint32_t *__restrict__ packed_route_rows_by_token_route,
-    uint8_t *__restrict__ packed_hidden_fp8_e4m3,
-    float *__restrict__ packed_hidden_scale_f32,
-    float *__restrict__ packed_hidden_amax_f32,
-    uint32_t active_sequence_count,
-    uint32_t top_k,
-    uint32_t hidden_dimension,
-    uint32_t hidden_scale_block_count)
-{
-    uint32_t source_token_index;
-    uint32_t route_offset;
-    uint32_t source_route_index;
-    uint32_t destination_route_index;
-    uint32_t element_index;
-
-    source_token_index = blockIdx.x;
-    route_offset = blockIdx.y + 1u;
-    if (source_token_index >= active_sequence_count ||
-        route_offset >= top_k)
-    {
-        return;
-    }
-    source_route_index =
-        packed_route_rows_by_token_route[
-            (uint64_t)source_token_index * (uint64_t)top_k];
-    destination_route_index =
-        packed_route_rows_by_token_route[
-            (uint64_t)source_token_index * (uint64_t)top_k +
-            (uint64_t)route_offset];
-
-    for (element_index = threadIdx.x;
-         element_index < hidden_dimension;
-         element_index += blockDim.x)
-    {
-        packed_hidden_fp8_e4m3[
-            ((uint64_t)destination_route_index * (uint64_t)hidden_dimension) +
-            (uint64_t)element_index] =
-            packed_hidden_fp8_e4m3[
-                ((uint64_t)source_route_index * (uint64_t)hidden_dimension) +
-                (uint64_t)element_index];
-    }
-    for (element_index = threadIdx.x;
-         element_index < hidden_scale_block_count;
-         element_index += blockDim.x)
-    {
-        packed_hidden_scale_f32[
-            ((uint64_t)destination_route_index *
-             (uint64_t)hidden_scale_block_count) +
-            (uint64_t)element_index] =
-            packed_hidden_scale_f32[
-                ((uint64_t)source_route_index *
-                 (uint64_t)hidden_scale_block_count) +
-                (uint64_t)element_index];
-        if (packed_hidden_amax_f32 != 0)
-        {
-            packed_hidden_amax_f32[
-                ((uint64_t)destination_route_index *
-                 (uint64_t)hidden_scale_block_count) +
-                (uint64_t)element_index] =
-                packed_hidden_amax_f32[
-                    ((uint64_t)source_route_index *
-                     (uint64_t)hidden_scale_block_count) +
-                    (uint64_t)element_index];
-        }
+            SparkGlm52ResidentDecodeStageEncodeFp8E4m3Saturate(
+                shared_block[hidden_index - hidden_begin] * inverse_scale);
     }
 }
 
@@ -12737,6 +12673,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateFp8MoePackedHiddenQuanti
 extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedHiddenQuantize(
     const void *hidden_bf16,
     const uint32_t *packed_route_rows_by_token_route,
+    const uint32_t *packed_source_token_indices,
     uint8_t *packed_hidden_fp8_e4m3,
     float *packed_hidden_scale_f32,
     float *packed_hidden_amax_f32,
@@ -12749,7 +12686,6 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedHidde
     SparkStatus status;
     cudaError_t cuda_status;
     dim3 grid;
-    uint32_t top_k;
     uint32_t hidden_scale_block_count;
 
     status = SparkGlm52ResidentDecodeStageValidateFp8MoePackedHiddenQuantizeArguments(
@@ -12768,11 +12704,13 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedHidde
         return status;
     }
 
-    top_k = routed_row_count / active_sequence_count;
     hidden_scale_block_count =
         (hidden_dimension + scale_block_size - 1u) / scale_block_size;
+    // One block per (packed row, scale block). The old grid walked tokens and a
+    // second kernel replicated each row across its top_k destinations; walking
+    // packed rows removes both the second launch and the copy.
     grid = dim3(
-        active_sequence_count,
+        routed_row_count,
         hidden_scale_block_count,
         1u);
     SparkGlm52ResidentDecodeStageFp8MoeTokenHiddenQuantizeKernel<<<
@@ -12781,40 +12719,13 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedHidde
         0u,
         (cudaStream_t)cuda_stream_pointer>>>(
         (const uint16_t *)hidden_bf16,
-        packed_route_rows_by_token_route,
+        packed_source_token_indices,
         packed_hidden_fp8_e4m3,
         packed_hidden_scale_f32,
         packed_hidden_amax_f32,
-        active_sequence_count,
-        top_k,
+        routed_row_count,
         hidden_dimension,
         scale_block_size);
-    cuda_status = cudaPeekAtLastError();
-    if (cuda_status != cudaSuccess)
-    {
-        return SPARK_STATUS_INTERNAL_ERROR;
-    }
-    if (top_k <= 1u)
-    {
-        return SPARK_STATUS_OK;
-    }
-    grid = dim3(
-        active_sequence_count,
-        top_k - 1u,
-        1u);
-    SparkGlm52ResidentDecodeStageFp8MoePackedHiddenGatherKernel<<<
-        grid,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
-        0u,
-        (cudaStream_t)cuda_stream_pointer>>>(
-        packed_route_rows_by_token_route,
-        packed_hidden_fp8_e4m3,
-        packed_hidden_scale_f32,
-        packed_hidden_amax_f32,
-        active_sequence_count,
-        top_k,
-        hidden_dimension,
-        hidden_scale_block_count);
     cuda_status = cudaPeekAtLastError();
     return cuda_status == cudaSuccess
         ? SPARK_STATUS_OK
@@ -13544,6 +13455,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedExte
     status = SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedHiddenQuantize(
         pipeline_slot->post_attention_normalized_hidden_bf16,
         workspace_view.packed_route_view.packed_route_rows_by_token_route,
+        workspace_view.packed_route_view.packed_source_token_indices,
         workspace_view.hidden_fp8_e4m3,
         workspace_view.hidden_scale_f32,
         workspace_view.hidden_amax_f32,
@@ -13772,6 +13684,7 @@ extern "C" SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedRefe
     status = SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedHiddenQuantize(
         pipeline_slot->post_attention_normalized_hidden_bf16,
         workspace_view.packed_route_view.packed_route_rows_by_token_route,
+        workspace_view.packed_route_view.packed_source_token_indices,
         workspace_view.hidden_fp8_e4m3,
         workspace_view.hidden_scale_f32,
         workspace_view.hidden_amax_f32,
