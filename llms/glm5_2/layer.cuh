@@ -99,6 +99,7 @@ struct Glm52LayerBuffers
 	LmAbsorbedOutputs projected;
 	uint16_t *raw_query_bf16;
 	uint16_t *raw_kv_bf16;
+	uint16_t *attention_latent_bf16;
 	uint16_t *attention_out_bf16;
 	uint8_t *packed_activation;
 	uint8_t *packed_scale;
@@ -109,6 +110,7 @@ struct Glm52LayerBuffers
 	uint32_t *route_expert;
 	float *route_weight;
 	uint32_t *route_source_token;
+	uint32_t *route_packed_row;
 	uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix;
 	// cache
@@ -189,8 +191,30 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 		<<<dim3(rows,GLM52_ATTN_HEADS),GLM52_LAYER_THREADS,0,stream>>>(
 		b->projected.query_latent_bf16,b->projected.query_rope_bf16,b->cache,b->sequence_of_row,b->context_length,
 		sparse ? b->selected_positions : 0,GLM52_DSA_SELECTED,GLM52_ATTN_HEADS,
-		rsqrtf((float)GLM52_LATENT),b->attention_out_bf16);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		rsqrtf((float)GLM52_LATENT),b->attention_latent_bf16);
+	// THE OUTPUT PROJECTION, which an earlier version of this file declared and
+	// never called. Attention produces heads x latent; the layer's output is
+	// hidden. Without this the residual add receives a tensor of the wrong width
+	// and the layer contributes attention's raw latent rows to the stream.
+	//
+	// In absorbed form this weight already carries the folded value
+	// up-projection, which is why its input is the latent width rather than
+	// heads x v_head_dim.
+	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
+		<<<dim3(rows,(GLM52_ATTN_HEADS * GLM52_LATENT) / Format::kScaleGroup),GLM52_LAYER_THREADS,
+		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+		b->attention_latent_bf16,0,b->packed_activation,b->packed_scale,
+		rows,GLM52_ATTN_HEADS * GLM52_LATENT);
+	memset(&gemm,0,sizeof(gemm));
+	gemm.scale_a = (const float *)b->packed_scale;
+	gemm.scale_b = (const float *)b->output_scale;
+	gemm.group_row_offset = b->dense_row_offset;
+	gemm.group_tile_prefix = b->dense_tile_prefix;
+	gemm.output_bf16 = b->attention_out_bf16;
+	status = LmGemmLaunch<Format,GLM52_LAYER_TILE_N,Format::kTileK,GLM52_LAYER_STAGES,GLM52_LAYER_WARPS>(
+		&gemm,b->packed_activation,b->output_weight,rows,rows,GLM52_TOP_K,1u,
+		GLM52_ATTN_HEADS * GLM52_LATENT,GLM52_HIDDEN,sms,false,stream);
+	return(status);
 }
 
 // Routed MoE half of a layer.
@@ -259,5 +283,22 @@ static int32_t Glm52LayerMoe(const Glm52LayerBuffers *b, uint32_t rows, uint32_t
 	status = LmGemmLaunch<Format,GLM52_LAYER_TILE_N,Format::kTileK,GLM52_LAYER_STAGES,GLM52_LAYER_WARPS>(
 		&gemm,b->packed_activation,b->expert_w2_weight,packed_rows,rows,GLM52_TOP_K,
 		GLM52_EXPERTS,GLM52_EXPERT_INTERMEDIATE,GLM52_HIDDEN,sms,true,stream);
-	return(status);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	// THE FINALIZE, also missing before. Every token was expanded into top_k
+	// packed rows and each produced its own output; this folds them back with the
+	// router's gate values as weights. Omitting it leaves each token holding
+	// whichever expert landed first, which is fluent and looks like a routing bug
+	// rather than a missing sum.
+	//
+	// The routed scaling factor multiplies the gate values, not the result -
+	// GLM 5.2 scales the router output rather than the expert output, and
+	// applying it after the sum is the same number only when the gates already
+	// sum to one, which top-k renormalisation does not guarantee.
+	LmMoeFinalizeKernel<GLM52_LAYER_THREADS>
+		<<<dim3((GLM52_HIDDEN + GLM52_LAYER_THREADS - 1u) / GLM52_LAYER_THREADS,rows),
+		   GLM52_LAYER_THREADS,0,stream>>>(
+		b->expert_out_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16,
+		rows,GLM52_TOP_K,GLM52_HIDDEN);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }

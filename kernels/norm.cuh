@@ -169,3 +169,34 @@ void LmQuantiseRowsKernel(const uint16_t *__restrict__ input_bf16, const uint32_
 		LmStoreCodePair<Format>(output_codes,bit,row[index] * inverse,row[index + 1u] * inverse);
 	}
 }
+
+// Reduce a routed MoE's packed rows back to token-major, weighted.
+//
+// Every token was expanded into top_k packed rows, one per expert it routed to,
+// and each produced its own output. This folds them back: a token's result is
+// the weighted sum of its routes, with the router's gate values as weights.
+//
+// The step is easy to omit because the shapes almost work without it - the
+// packed output is the right width and the wrong number of rows - and omitting
+// it gives every token whichever expert happened to land first, which is fluent
+// and wrong in a way that looks like a routing bug rather than a missing sum.
+//
+// The route row map is the same one the quantiser used to expand, read backwards.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmMoeFinalizeKernel(const uint16_t *__restrict__ packed_bf16, const uint32_t *__restrict__ packed_row_of_token_route, const float *__restrict__ route_weight, uint16_t *__restrict__ output_bf16, uint32_t tokens, uint32_t top_k, uint32_t dimension)
+{
+	uint32_t token = blockIdx.y;
+	uint32_t element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint32_t route;
+	float total = 0.0f;
+	if ( token >= tokens || element >= dimension )
+		return;
+	for (route = 0u; route < top_k; ++route)
+	{
+		uint32_t packed_row = packed_row_of_token_route[(token * top_k) + route];
+		total += LmBf16ToFloat(packed_bf16[((uint64_t)packed_row * dimension) + element])
+			* route_weight[(token * top_k) + route];
+	}
+	output_bf16[((uint64_t)token * dimension) + element] = LmFloatToBf16(total);
+}
