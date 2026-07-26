@@ -41,7 +41,6 @@ if [ -f "$LEGACY" ]
 then
 	if "$NVCC" -std=c++17 $ARCH -O1 -I. \
 		-Imodules/glm52_resident_decode_stage/include \
-		-Imodules/glm52_dspark_draft_backend/include \
 		-Iinclude -Ideployment/include -Imodel-families/glm52/include \
 		-c "$LEGACY" -o /tmp/lm_legacy.o 2>/tmp/lm_legacy.log
 	then
@@ -50,7 +49,6 @@ then
 		# two get compared on real weights before either is deleted.
 		if "$NVCC" -std=c++17 $ARCH -O1 -DSPARK_GLM52_FIRST_PARTY_LAYER -I. \
 			-Imodules/glm52_resident_decode_stage/include \
-			-Imodules/glm52_dspark_draft_backend/include \
 			-Iinclude -Ideployment/include -Imodel-families/glm52/include \
 			-c "$LEGACY" -o /tmp/lm_fp.o 2>/tmp/lm_fp.log
 		then
