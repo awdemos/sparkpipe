@@ -236,6 +236,47 @@ static __device__ __forceinline__ void LmMmaE2m3(float accumulator[4], const uin
 #define LM_MMA16_N 8u
 #define LM_MMA16_K 16u
 
+// A: ((4,8),(2,2,2)) : ((32,1),(16,8,128)) over M16 x K16
+//    register r, half h -> row lane/4 + 8*(r%2), k 2*(lane%4) + h + 8*(r/2)
+// B: ((4,8),(2,2))     : ((16,1),(8,64))    over N8 x K16
+//    register r, half h -> row lane/4,        k 2*(lane%4) + h + 8*r
+//
+// Each register holds TWO CONSECUTIVE k values. That is the property the whole
+// decode path rests on: a native BF16 tile serves a register with one aligned
+// 32-bit read, and a packed format serves the same register by extracting two
+// adjacent codes. Neither needs a gather, and the fragment layout is identical
+// either way.
+
+static __device__ __forceinline__ uint32_t LmMma16OperandARow(uint32_t lane, uint32_t reg)
+{
+	return((lane / 4u) + (8u * (reg % 2u)));
+}
+
+// First of the two k values this register covers.
+static __device__ __forceinline__ uint32_t LmMma16OperandAK(uint32_t lane, uint32_t reg)
+{
+	return((2u * (lane % 4u)) + (8u * (reg / 2u)));
+}
+
+static __device__ __forceinline__ uint32_t LmMma16OperandBRow(uint32_t lane)
+{
+	return(lane / 4u);
+}
+
+static __device__ __forceinline__ uint32_t LmMma16OperandBK(uint32_t lane, uint32_t reg)
+{
+	return((2u * (lane % 4u)) + (8u * reg));
+}
+
+// Two floats into one register as a bf16 pair, low half first. The scale is
+// applied here because a decoded code is a fixed-point integer and becomes a
+// value only once multiplied - doing it later would mean carrying an integer
+// through a float fragment.
+static __device__ __forceinline__ uint32_t LmPackBf16Pair(float low, float high)
+{
+	return((uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u));
+}
+
 static __device__ __forceinline__ void LmMmaBf16(float accumulator[4], const uint32_t a[4], const uint32_t b[2])
 {
 	asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "

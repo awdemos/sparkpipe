@@ -19,6 +19,9 @@ struct LmNvfp4
 {
 	typedef float Accumulator;
 	static constexpr uint32_t kBits = 4u;
+	// Stored width equals compute width: this format is native, so what TMA
+	// moves is what the mma register holds and staging is a copy.
+	static constexpr uint32_t kStoredBits = 4u;
 	static constexpr uint32_t kMmaM = LM_MMA4_M;
 	static constexpr uint32_t kMmaN = LM_MMA4_N;
 	static constexpr uint32_t kMmaK = LM_MMA4_K;

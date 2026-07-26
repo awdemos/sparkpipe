@@ -517,6 +517,71 @@ static int32_t verify_lm_mma_formulas(void)
 	return(bad == 0 ? 0 : -1);
 }
 
+
+// BF16 m16n8k16. Every packed format decodes into this layout, so it is the one
+// mapping the whole library depends on rather than one of several.
+static void lm_mma16_a(uint32_t lane, uint32_t reg, uint32_t half, uint32_t *m, uint32_t *k)
+{
+	*m = (lane / 4u) + (8u * (reg % 2u));
+	*k = (2u * (lane % 4u)) + half + (8u * (reg / 2u));
+}
+static void lm_mma16_b(uint32_t lane, uint32_t reg, uint32_t half, uint32_t *n, uint32_t *k)
+{
+	*n = lane / 4u;
+	*k = (2u * (lane % 4u)) + half + (8u * reg);
+}
+static int32_t verify_bf16_atom(void)
+{
+	layout_mode_t at = { { 4u, 8u, 0u, 0u }, { 32u, 1u, 0u, 0u }, 2u };
+	layout_mode_t av = { { 2u, 2u, 2u, 0u }, { 16u, 8u, 128u, 0u }, 3u };
+	layout_mode_t bt = { { 4u, 8u, 0u, 0u }, { 16u, 1u, 0u, 0u }, 2u };
+	layout_mode_t bv = { { 2u, 2u, 0u, 0u }, { 8u, 64u, 0u, 0u }, 2u };
+	uint8_t seen_a[256],seen_b[128];
+	uint32_t lane,value,m,n,k,bad = 0,gap = 0;
+	memset(seen_a,0,sizeof(seen_a));
+	memset(seen_b,0,sizeof(seen_b));
+	for (lane = 0; lane < VERIFY_LANES; ++lane)
+	{
+		for (value = 0; value < 8u; ++value)
+		{
+			lm_mma16_a(lane,value / 2u,value % 2u,&m,&k);
+			if ( m + (16u * k) != cute_index(&at,&av,lane,value) )
+				bad++;
+			seen_a[cute_index(&at,&av,lane,value) & 255u]++;
+		}
+		for (value = 0; value < 4u; ++value)
+		{
+			lm_mma16_b(lane,value / 2u,value % 2u,&n,&k);
+			if ( n + (8u * k) != cute_index(&bt,&bv,lane,value) )
+				bad++;
+			seen_b[cute_index(&bt,&bv,lane,value) & 127u]++;
+		}
+	}
+	for (value = 0; value < 256u; ++value)
+		if ( seen_a[value] != 1 )
+			gap++;
+	for (value = 0; value < 128u; ++value)
+		if ( seen_b[value] != 1 )
+			gap++;
+	printf("  BF16 m16n8k16 A/B: mismatches=%u/384  covered exactly once=%u/384\n",
+		bad,384u - gap);
+	// The property the decode path rests on: the two halves of a register are
+	// adjacent in k, so one 32-bit read or one pair-extract serves it.
+	for (lane = 0; lane < VERIFY_LANES; ++lane)
+	{
+		uint32_t reg,k0,k1,dummy;
+		for (reg = 0; reg < 4u; ++reg)
+		{
+			lm_mma16_a(lane,reg,0u,&dummy,&k0);
+			lm_mma16_a(lane,reg,1u,&dummy,&k1);
+			if ( k1 != k0 + 1u )
+				bad++;
+		}
+	}
+	printf("  register halves adjacent in k: %s\n",bad == 0 ? "yes" : "NO");
+	return((bad == 0 && gap == 0) ? 0 : -1);
+}
+
 int32_t main(void)
 {
 	int32_t failures = 0;
@@ -540,6 +605,7 @@ int32_t main(void)
 	failures += verify_nvfp4_scale_layouts() != 0;
 	printf("\nrewrite: lm/ kernel library\n");
 	failures += verify_lm_mma_formulas() != 0;
+	failures += verify_bf16_atom() != 0;
 	failures += verify_pipeline_matrix() != 0;
 	printf("\n%s (%d failing checks)\n",failures == 0 ? "PASS" : "FAIL",failures);
 	return(failures == 0 ? 0 : 1);

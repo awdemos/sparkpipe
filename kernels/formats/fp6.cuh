@@ -37,6 +37,9 @@ struct LmE3m2
 {
 	typedef float Accumulator;
 	static constexpr uint32_t kBits = 6u;
+	// Stored width equals compute width: this format is native, so what TMA
+	// moves is what the mma register holds and staging is a copy.
+	static constexpr uint32_t kStoredBits = 6u;
 	static constexpr uint32_t kMmaM = LM_MMA8_M;
 	static constexpr uint32_t kMmaN = LM_MMA8_N;
 	static constexpr uint32_t kMmaK = LM_MMA8_K;
