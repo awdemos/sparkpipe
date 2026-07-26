@@ -135,11 +135,12 @@ struct Glm52LayerBuffers
 // the dense path is the same kernel with a null index. That check is here rather
 // than in the kernel because it is a scheduling decision, not an arithmetic one.
 template<class Format>
-static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t layer_in_group, uint32_t sms, cudaStream_t stream)
 {
 	LmGemmArguments gemm;
 	int32_t status;
 	bool sparse = context > GLM52_DSA_SELECTED;
+	bool selects = sparse && layer_in_group == 0u;
 	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
 		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
@@ -192,7 +193,7 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 		b->projected.key_rope_bf16,b->positions,GLM52_ROPE_DIM,0u,GLM52_ROPE_DIM,GLM52_ROPE_THETA);
 	LmKvStoreKernel<Glm52Kv,GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
 		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows,GLM52_LATENT_ROW);
-	if ( sparse )
+	if ( selects )
 	{
 		LmSparseScoreKernel<Glm52Kv,GLM52_LAYER_THREADS,GLM52_DSA_INDEX_DIM>
 			<<<dim3(rows,context),GLM52_LAYER_THREADS,0,stream>>>(

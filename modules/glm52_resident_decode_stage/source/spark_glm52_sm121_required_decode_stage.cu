@@ -20838,13 +20838,14 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchFirstPartyLayer(
     uint32_t rows,
     uint32_t packed_rows,
     uint32_t context_length,
+    uint32_t layer_in_group,
     uint32_t multiprocessors,
     cudaStream_t cuda_stream)
 {
     int32_t status;
 
     status = Glm52LayerAttention<LmFp8>(
-        buffers, rows, context_length, multiprocessors, cuda_stream);
+        buffers, rows, context_length, layer_in_group, multiprocessors, cuda_stream);
     if (status != LM_LAUNCH_OK)
     {
         return SPARK_STATUS_INTERNAL_ERROR;

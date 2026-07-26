@@ -28,6 +28,7 @@ run "tensor map encode"    "gcc -O2 -Wall -Wextra -I. -Itests/cuda_driver_stub -
 # A proxy for the compiler is worth having only while the compiler is
 # unavailable, and tools/get_cuda.sh means it is not.
 run "launch planning"      "g++ -std=c++17 -O2 -Wall -Wextra -I. -D__host__= -D__device__= -o /tmp/g_l tests/test_launch.c && /tmp/g_l"
+run "config coverage"      "python3 tests/test_config_coverage.py"
 run "kernel algorithms"    "python3 tests/test_kernel_algorithms.py"
 run "model contracts"      "python3 tests/test_model_driver_contracts.py"
 run "nvcc: sm_121a build"  "sh tools/build.sh"

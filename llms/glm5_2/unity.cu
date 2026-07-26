@@ -195,14 +195,17 @@ extern "C" int32_t Glm52GemmNvfp4(LmGemmArguments *args, const void *a, const vo
 // the way down - the quantiser, the GEMM and the fragment decode all take it,
 // and a runtime format would put a branch in every one of them.
 
-extern "C" int32_t Glm52LayerAttentionFp8(const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+// layer_in_group selects: 0 recomputes the DSA index, the rest reuse it. GLM 5.2
+// shares a selection across GLM52_DSA_SHARE_GROUP_LAYERS layers, so a 78-layer
+// model runs the index pass about 19 times rather than 75.
+extern "C" int32_t Glm52LayerAttentionFp8(const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t layer_in_group, uint32_t sms, cudaStream_t stream)
 {
-	return(Glm52LayerAttention<LmFp8>(b,rows,context,sms,stream));
+	return(Glm52LayerAttention<LmFp8>(b,rows,context,layer_in_group,sms,stream));
 }
 
-extern "C" int32_t Glm52LayerAttentionInt7(const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+extern "C" int32_t Glm52LayerAttentionInt7(const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t layer_in_group, uint32_t sms, cudaStream_t stream)
 {
-	return(Glm52LayerAttention<LmInt7>(b,rows,context,sms,stream));
+	return(Glm52LayerAttention<LmInt7>(b,rows,context,layer_in_group,sms,stream));
 }
 
 // Layers before GLM52_FIRST_ROUTED_LAYER have no router and no experts. A caller
