@@ -92,8 +92,14 @@
 // large enough that the page table is not itself a significant read and small
 // enough that a short sequence does not waste one.
 
+// The cache format is chosen independently of the weight format. A slot is read
+// once per (sequence, position) and shared with nothing, where a weight tile is
+// read once and shared across every row in it - so the two sit at different
+// points on the precision-versus-bytes curve. BF16 here is the conservative
+// choice; FP8 halves it and is a one-line change.
+#define GLM52_KV_BITS 16u
 #define GLM52_KV_PAGE_SLOTS 64u
-#define GLM52_KV_SLOT_BYTES (GLM52_LATENT_ROW * 2u)
+#define GLM52_KV_SLOT_BYTES ((GLM52_LATENT_ROW * GLM52_KV_BITS) / 8u)
 
 // -- derived -----------------------------------------------------------------
 //

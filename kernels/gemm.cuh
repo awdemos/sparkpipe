@@ -36,6 +36,9 @@
 #include "kernels/formats/fp8.cuh"
 #include "kernels/formats/nvfp4.cuh"
 #include "kernels/formats/mxfp4.cuh"
+#include "kernels/formats/int8.cuh"
+#include "kernels/formats/int4.cuh"
+#include "kernels/formats/fp6.cuh"
 #include <stdint.h>
 
 // Grid-independent arguments. Descriptors are CUtensorMap values encoded host
@@ -70,7 +73,7 @@ static __device__ __forceinline__ uint32_t LmGemmLoadOperand(const uint8_t *tile
 // partial the caller folds. The branch is on a compile-time constant, so only
 // one of the two exists in any instantiation.
 template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARPS>
-static __device__ void LmGemmConsume(float (*accumulate)[4], const uint8_t *stage_a, const uint8_t *stage_b, const uint32_t *scale_a_tile, const uint32_t *scale_b_tile, uint32_t warp, uint32_t lane)
+static __device__ void LmGemmConsume(typename Format::Accumulator (*accumulate)[4], const uint8_t *stage_a, const uint8_t *stage_b, const uint32_t *scale_a_tile, const uint32_t *scale_b_tile, uint32_t warp, uint32_t lane)
 {
 	const uint32_t m_frags = TILE_M / Format::kMmaM;
 	const uint32_t n_frags = TILE_N / WARPS / Format::kMmaN;
@@ -110,7 +113,7 @@ static __device__ void LmGemmConsume(float (*accumulate)[4], const uint8_t *stag
 // two A rows per accumulator pair and one B value per fragment, so staging them
 // would cost a barrier interaction to save loads that are L2 resident.
 template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t WARPS>
-static __device__ void LmGemmApplyScale(float (*total)[4], float (*partial)[4], const LmGemmArguments &args, uint32_t count, uint32_t row_base, uint32_t neuron_base, uint32_t k_block, uint32_t group, uint32_t warp, uint32_t lane)
+static __device__ void LmGemmApplyScale(float (*total)[4], typename Format::Accumulator (*partial)[4], const LmGemmArguments &args, uint32_t count, uint32_t row_base, uint32_t neuron_base, uint32_t k_block, uint32_t group, uint32_t warp, uint32_t lane)
 {
 	const uint32_t n_frags = TILE_N / WARPS / Format::kMmaN;
 	const uint32_t k_blocks = args.input_dimension / 128u;
@@ -133,8 +136,11 @@ static __device__ void LmGemmApplyScale(float (*total)[4], float (*partial)[4], 
 		{
 			row = row_base + (mi * Format::kMmaM) + LmMmaAccumulatorRow(lane,e);
 			combined = __ldg(scale_a + ((uint64_t)row * k_blocks) + k_block) * b_value;
-			total[i][e] = fmaf(partial[i][e],combined,total[i][e]);
-			partial[i][e] = 0.0f;
+			// An integer accumulator is an exact fixed-point sum and becomes a
+			// value only here, through the scale. A float accumulator already
+			// holds the value and the same expression is correct for both.
+			total[i][e] = fmaf((float)partial[i][e],combined,total[i][e]);
+			partial[i][e] = (typename Format::Accumulator)0;
 		}
 	}
 }
@@ -167,12 +173,13 @@ static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4
 	}
 }
 
-static __device__ __forceinline__ void LmGemmZero(float (*acc)[4], uint32_t count)
+template<class T>
+static __device__ __forceinline__ void LmGemmZero(T (*acc)[4], uint32_t count)
 {
 	uint32_t i,e;
 	for (i = 0u; i < count; ++i)
 		for (e = 0u; e < 4u; ++e)
-			acc[i][e] = 0.0f;
+			acc[i][e] = (T)0;
 }
 
 
@@ -208,7 +215,7 @@ void LmGemmKernel(__grid_constant__ const LmGemmArguments args, LmTileSource sou
 	const uint32_t tile_bytes = LmTileBytes(1u,TILE_K,Format::kBits);
 	const uint32_t scales_per_tile = Format::kScaleGroup != 0u ? TILE_K / Format::kScaleGroup : 0u;
 	float total[(TILE_M / Format::kMmaM) * (TILE_N / WARPS / Format::kMmaN)][4];
-	float partial[(TILE_M / Format::kMmaM) * (TILE_N / WARPS / Format::kMmaN)][4];
+	typename Format::Accumulator partial[(TILE_M / Format::kMmaM) * (TILE_N / WARPS / Format::kMmaN)][4];
 	uint32_t warp = threadIdx.x / LM_WARP_LANES,lane = threadIdx.x % LM_WARP_LANES;
 	uint32_t tile,group,in_group,row_base,row_limit,neuron_base,k,stage,ahead,total_tiles;
 	LmPipelineInitialise<STAGES>(barrier,WARPS * LM_WARP_LANES);
@@ -233,7 +240,7 @@ void LmGemmKernel(__grid_constant__ const LmGemmArguments args, LmTileSource sou
 				LmPipelineProduce(&source_a,&source_b,stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier[ahead % STAGES],row_base,neuron_base,ahead * tile_bytes,group,grouped);
 			LmMbarrierWait(&barrier[stage],LmPipelinePhase(k,STAGES));
 			if constexpr ( Format::kScaleInMma )
-				LmGemmConsume<Format,TILE_M,TILE_N,TILE_K,WARPS>(total,stage_a[stage],stage_b[stage],
+				LmGemmConsume<Format,TILE_M,TILE_N,TILE_K,WARPS>((typename Format::Accumulator (*)[4])total,stage_a[stage],stage_b[stage],
 					(const uint32_t *)args.scale_a + (k * scales_per_tile),
 					(const uint32_t *)args.scale_b + (k * scales_per_tile),warp,lane);
 			else

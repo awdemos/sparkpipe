@@ -20,7 +20,7 @@
 
 // -- geometries --------------------------------------------------------------
 
-using Glm52Kv = LmKvLatent<GLM52_LATENT, GLM52_ROPE_DIM, GLM52_KV_PAGE_SLOTS>;
+using Glm52Kv = LmKvLatent<GLM52_KV_BITS, GLM52_LATENT, GLM52_ROPE_DIM, GLM52_KV_PAGE_SLOTS>;
 
 static_assert(Glm52Kv::kSlotBytes == GLM52_KV_SLOT_BYTES,
 	"config.h and kernels/kv.cuh disagree about the slot size");

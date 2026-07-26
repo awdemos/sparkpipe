@@ -104,6 +104,22 @@ PROBES = {
         "\tmma.sync.aligned.kind::mxf4nvf4.block_scale.scale_vec::4X.m16n8k64.row.col"
         ".f32.e2m1.e2m1.f32.ue8m0 {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6},"
         " {%f1,%f2,%f3,%f4}, %r7, {0, 0}, %r8, {0, 0};", False),
+    # Integer atoms. INT8 and INT4 are native; there is no s6 and no s7 mma of
+    # any shape, which is why kernels/formats/ has fp6 and not int6 - six bits
+    # exists here as E3M2/E2M3, and a 7-bit scheme would have to unpack to 8 and
+    # spend exactly the storage saving it was chosen for.
+    "mma.m16n8k32.s8": (
+        "\tmma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32"
+        " {%r1,%r2,%r3,%r4}, {%r1,%r2,%r3,%r4}, {%r5,%r6}, {%r1,%r2,%r3,%r4};", True),
+    "mma.m16n8k64.s4": (
+        "\tmma.sync.aligned.m16n8k64.row.col.s32.s4.s4.s32"
+        " {%r1,%r2,%r3,%r4}, {%r1,%r2,%r3,%r4}, {%r5,%r6}, {%r1,%r2,%r3,%r4};", True),
+    "mma.f8f6f4.e3m2": (
+        "\tmma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e3m2.e3m2.f32"
+        " {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6}, {%f1,%f2,%f3,%f4};", True),
+    "mma.f8f6f4.e2m3": (
+        "\tmma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e2m3.e2m3.f32"
+        " {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6}, {%f1,%f2,%f3,%f4};", True),
     "cvt.e2m1x2.f32": (
         "\tcvt.rn.satfinite.e2m1x2.f32 %rb1, %f1, %f2;", True),
     "cvt.ue8m0x2.f32": (

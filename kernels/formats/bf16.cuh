@@ -10,6 +10,7 @@
 
 struct LmBf16Format
 {
+	typedef float Accumulator;
 	static constexpr uint32_t kBits = 16u;
 	static constexpr uint32_t kMmaM = LM_MMA16_M;
 	static constexpr uint32_t kMmaN = LM_MMA16_N;

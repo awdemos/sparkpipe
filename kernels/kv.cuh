@@ -127,15 +127,30 @@ static __host__ __device__ __forceinline__ uint64_t LmKvBytesForSequence(uint32_
 // Named here rather than in each model header so two models with the same shape
 // provably share one instantiation. A model header supplies the numbers; this
 // file supplies the type.
+//
+// THE CACHE FORMAT IS INDEPENDENT OF THE WEIGHT FORMAT, and both come from
+// kernels/formats/. NVFP4 weights with an FP8 cache is a normal combination:
+// weights are read once per tile and shared across every row in it, while the
+// cache is read once per (sequence, slot) and shared with nothing, so the two
+// sit at different points on the precision-versus-bytes curve and should be
+// chosen separately.
+//
+// The cache itself still stores opaque bytes and knows nothing about the format.
+// It appears here only to compute the slot size; the attention kernel that reads
+// a slot is what decodes it, and it takes the same trait.
+//
+// BITS is passed rather than the trait so this header keeps its stdint-only
+// dependency - a host tool sizing a pool should not need a CUDA toolchain. A
+// model writes LmKvLatent<LmFp8::kBits, ...> and the two stay tied.
 
 // Latent attention: one shared row per slot regardless of head count. The whole
 // reason a 64-head model is tractable at decode.
-template<uint32_t LATENT_ELEMENTS, uint32_t ROPE_ELEMENTS, uint32_t PAGE_SLOTS>
-using LmKvLatent = LmKvGeometry<((LATENT_ELEMENTS + ROPE_ELEMENTS) * 2u), PAGE_SLOTS, true>;
+template<uint32_t ELEMENT_BITS, uint32_t LATENT_ELEMENTS, uint32_t ROPE_ELEMENTS, uint32_t PAGE_SLOTS>
+using LmKvLatent = LmKvGeometry<(((LATENT_ELEMENTS + ROPE_ELEMENTS) * ELEMENT_BITS) / 8u), PAGE_SLOTS, true>;
 
 // Per-head key and value rows, for models without latent compression.
-template<uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t PAGE_SLOTS>
-using LmKvHeads = LmKvGeometry<(KV_HEADS * HEAD_DIM * 2u * 2u), PAGE_SLOTS, true>;
+template<uint32_t ELEMENT_BITS, uint32_t KV_HEADS, uint32_t HEAD_DIM, uint32_t PAGE_SLOTS>
+using LmKvHeads = LmKvGeometry<((KV_HEADS * HEAD_DIM * 2u * ELEMENT_BITS) / 8u), PAGE_SLOTS, true>;
 
 // Recurrent state: one slot per sequence, never grows, no paging.
 template<uint32_t STATE_BYTES>

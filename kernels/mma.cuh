@@ -172,6 +172,60 @@ static __device__ __forceinline__ void LmMmaMxfp4(float accumulator[4], const ui
 		  "r"(scale_a), "r"(scale_b));
 }
 
+// -- integer atoms -----------------------------------------------------------
+//
+// Integer mma accumulates in S32, not F32. That is a real difference and the
+// reason Format carries an accumulator type: an integer GEMM's epilogue converts
+// a fixed-point sum through a scale, where a float GEMM's already holds the
+// value. Treating them alike gives output that is wrong by whatever the scale
+// was.
+//
+// Operand layouts are the same as the corresponding float atoms at the same
+// width - S8 shares SM80_16x8x32_S32S8S8S32_TN with the FP8 path, which is the
+// layout tests/test_mma_fragment_mapping.c already verifies, and S4 at
+// m16n8k64 shares the 4-bit layout with NVFP4.
+
+static __device__ __forceinline__ void LmMmaS8(int32_t accumulator[4], const uint32_t a[4], const uint32_t b[2])
+{
+	asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 "
+		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+		: "+r"(accumulator[0]), "+r"(accumulator[1]), "+r"(accumulator[2]), "+r"(accumulator[3])
+		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
+static __device__ __forceinline__ void LmMmaS4(int32_t accumulator[4], const uint32_t a[4], const uint32_t b[2])
+{
+	asm volatile("mma.sync.aligned.m16n8k64.row.col.s32.s4.s4.s32 "
+		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+		: "+r"(accumulator[0]), "+r"(accumulator[1]), "+r"(accumulator[2]), "+r"(accumulator[3])
+		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
+// -- 6-bit atoms -------------------------------------------------------------
+//
+// Six bits exists on this target as FLOAT, not integer: e3m2 and e2m3 through
+// kind::f8f6f4. There is no s6 mma and no s7 mma of any shape - a 7-bit scheme
+// would have to unpack to 8, which spends the storage saving it was for.
+//
+// Operands occupy a byte each in registers regardless, so the layout is the
+// 8-bit one; only the stored form is narrower.
+
+static __device__ __forceinline__ void LmMmaE3m2(float accumulator[4], const uint32_t a[4], const uint32_t b[2])
+{
+	asm volatile("mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e3m2.e3m2.f32 "
+		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+		: "+f"(accumulator[0]), "+f"(accumulator[1]), "+f"(accumulator[2]), "+f"(accumulator[3])
+		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
+static __device__ __forceinline__ void LmMmaE2m3(float accumulator[4], const uint32_t a[4], const uint32_t b[2])
+{
+	asm volatile("mma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e2m3.e2m3.f32 "
+		"{%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, {%0,%1,%2,%3};\n"
+		: "+f"(accumulator[0]), "+f"(accumulator[1]), "+f"(accumulator[2]), "+f"(accumulator[3])
+		: "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b[0]), "r"(b[1]));
+}
+
 // -- bf16 atom: m16n8k16 -----------------------------------------------------
 //
 // Kept because prefill and the non-quantised families use it, and because a

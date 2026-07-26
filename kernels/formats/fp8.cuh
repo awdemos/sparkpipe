@@ -15,6 +15,7 @@
 
 struct LmFp8
 {
+	typedef float Accumulator;
 	static constexpr uint32_t kBits = 8u;
 	static constexpr uint32_t kMmaM = LM_MMA8_M;
 	static constexpr uint32_t kMmaN = LM_MMA8_N;
