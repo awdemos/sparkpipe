@@ -68,6 +68,78 @@ PROBES = {
     "mma.m16n8k16.bf16": (
         "\tmma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32"
         " {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6}, {%f1,%f2,%f3,%f4};", True),
+    # -- Narrow-precision MMA. The quantization ladder rests on these being
+    # native rather than emulated by a dequant pass. The .kind:: modifier is
+    # mandatory on this family; without it ptxas reports
+    # ".kind::f8f6f4 modifier required", which reads like absence and is not.
+    "mma.m16n8k32.e4m3": (
+        "\tmma.sync.aligned.m16n8k32.row.col.f32.e4m3.e4m3.f32"
+        " {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6}, {%f1,%f2,%f3,%f4};", True),
+    "mma.f8f6f4.e2m1": (
+        "\tmma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e2m1.e2m1.f32"
+        " {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6}, {%f1,%f2,%f3,%f4};", True),
+    # Mixed operand widths: fp8 activations against fp4 weights in one mma.
+    "mma.f8f6f4.e4m3xe2m1": (
+        "\tmma.sync.aligned.kind::f8f6f4.m16n8k32.row.col.f32.e4m3.e2m1.f32"
+        " {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6}, {%f1,%f2,%f3,%f4};", True),
+    # NVFP4: e2m1 data, ue4m3 scale, one scale per 16 elements (scale_vec::4X at
+    # k64). Matches SPARK_GLM52_MODEL_NVFP4_GROUP_SIZE.
+    "mma.mxf4nvf4.ue4m3.4X": (
+        "\tmma.sync.aligned.kind::mxf4nvf4.block_scale.scale_vec::4X.m16n8k64.row.col"
+        ".f32.e2m1.e2m1.f32.ue4m3 {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6},"
+        " {%f1,%f2,%f3,%f4}, %r7, {0, 0}, %r8, {0, 0};", True),
+    # MXFP4: e2m1 data, ue8m0 scale, one scale per 32 elements (scale_vec::2X).
+    # Matches SPARK_GLM52_MODEL_MXFP4_GROUP_SIZE.
+    "mma.mxf4.ue8m0.2X": (
+        "\tmma.sync.aligned.kind::mxf4.block_scale.scale_vec::2X.m16n8k64.row.col"
+        ".f32.e2m1.e2m1.f32.ue8m0 {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6},"
+        " {%f1,%f2,%f3,%f4}, %r7, {0, 0}, %r8, {0, 0};", True),
+    # CUTLASS emits scale_vec::4X with ue8m0 for VS=16 under
+    # CUTE_ARCH_MXF4NVF4_4X_UE8M0_MMA_ENABLED. That is an sm_100 capability and
+    # ptxas rejects it here, so the SM120 collective's VS=16 emission cannot be
+    # copied onto this target. On sm_121a NVFP4 is 4X with ue4m3. If this ever
+    # starts assembling the target gained a capability and the NVFP4 kernel
+    # should be revisited.
+    "mma.mxf4nvf4.ue8m0.4X.rejected": (
+        "\tmma.sync.aligned.kind::mxf4nvf4.block_scale.scale_vec::4X.m16n8k64.row.col"
+        ".f32.e2m1.e2m1.f32.ue8m0 {%f1,%f2,%f3,%f4}, {%r1,%r2,%r3,%r4}, {%r5,%r6},"
+        " {%f1,%f2,%f3,%f4}, %r7, {0, 0}, %r8, {0, 0};", False),
+    "cvt.e2m1x2.f32": (
+        "\tcvt.rn.satfinite.e2m1x2.f32 %rb1, %f1, %f2;", True),
+    "cvt.ue8m0x2.f32": (
+        "\tcvt.rz.satfinite.ue8m0x2.f32 %rs1, %f1, %f2;", True),
+    # -- The forms spark_lm_tma.cuh embeds. TMA plus mbarrier is the structure
+    # CUTLASS's SM120 collective uses; if one stops assembling that header is
+    # broken and this fails before anyone reaches a GPU.
+    "tma.load.2d": (
+        "\tcp.async.bulk.tensor.2d.shared::cluster.global.tile"
+        ".mbarrier::complete_tx::bytes [tile], [%rd2, {%r1, %r2}], [bar];", True),
+    "tma.load.3d": (
+        "\tcp.async.bulk.tensor.3d.shared::cluster.global.tile"
+        ".mbarrier::complete_tx::bytes [tile], [%rd2, {%r1, %r2, %r3}], [bar];", True),
+    "tma.store.2d": (
+        "\tcp.async.bulk.tensor.2d.global.shared::cta.tile.bulk_group"
+        " [%rd2, {%r1, %r2}], [tile];", True),
+    "tma.store.commit": ("\tcp.async.bulk.commit_group;", True),
+    "tma.store.wait_read": ("\tcp.async.bulk.wait_group.read 0;", True),
+    "mbarrier.init": ("\tmbarrier.init.shared::cta.b64 [bar], 128;", True),
+    "mbarrier.inval": ("\tmbarrier.inval.shared::cta.b64 [bar];", True),
+    "mbarrier.arrive.expect_tx": (
+        "\tmbarrier.arrive.expect_tx.shared::cta.b64 %rd3, [bar], 16384;", True),
+    "mbarrier.try_wait.parity": (
+        "\tmbarrier.try_wait.parity.shared::cta.b64 %p1, [bar], %r1;", True),
+    "fence.proxy.async": ("\tfence.proxy.async.shared::cta;", True),
+    "elect.sync": ("\telect.sync %r4|%p1, 0xffffffff;", True),
+    # ldmatrix produces the exact register layout mma.sync consumes, which is
+    # why operand fragments are loaded with it rather than by hand-derived index
+    # arithmetic - the one part of an mma kernel a wrong implementation renders
+    # silently incorrect while still assembling.
+    "ldmatrix.x4": (
+        "\tldmatrix.sync.aligned.m8n8.x4.shared.b16 {%r4,%r5,%r6,%r7}, [tile];", True),
+    "ldmatrix.x2": (
+        "\tldmatrix.sync.aligned.m8n8.x2.shared.b16 {%r4,%r5}, [tile];", True),
+    "stmatrix.x4": (
+        "\tstmatrix.sync.aligned.m8n8.x4.shared.b16 [tile], {%r4,%r5,%r6,%r7};", True),
     # Documented as unavailable. If one of these starts assembling the target
     # has changed and the kernel strategy should be revisited.
     "tcgen05.alloc": (
@@ -82,9 +154,11 @@ MODULE = """.version {version}
 
 .visible .entry spark_probe(.param .u64 a)
 {{
-\t.reg .b32 %r<8>;
+\t.reg .b32 %r<16>;
 \t.reg .b64 %rd<8>;
 \t.reg .f32 %f<8>;
+\t.reg .b16 %rs<8>;
+\t.reg .b8  %rb<8>;
 \t.reg .pred %p<2>;
 \t.shared .align 128 .b8 tile[16384];
 \t.shared .align 8 .b64 bar[1];
