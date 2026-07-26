@@ -79,6 +79,9 @@ typedef struct SparkLmGroupGemmArguments
 	uint32_t group_count;
 	uint32_t input_dimension;
 	uint32_t output_dimension;
+	// Grid-sizing hint only. The kernel bounds its loop on
+	// group_tile_prefix[group_count], which is the count the route actually
+	// produced. An over-estimate here costs an idle block, never a phantom tile.
 	uint32_t total_tiles;
 }
 SparkLmGroupGemmArguments;
@@ -318,9 +321,17 @@ void SparkLmGroupGemmFp8Kernel(__grid_constant__ const SparkLmGroupGemmArguments
 	float partial[(TILE_M / SPARK_LM_GROUP_GEMM_MMA_M) * (TILE_N / WARPS / SPARK_LM_GROUP_GEMM_MMA_N)][4];
 	uint32_t warp_index = threadIdx.x / SPARK_LM_GROUP_GEMM_WARP_LANES;
 	uint32_t lane_index = threadIdx.x % SPARK_LM_GROUP_GEMM_WARP_LANES;
-	uint32_t tile_index,group_index,tile_in_group,row_base,row_limit,neuron_base,k_tile,stage,ahead;
+	uint32_t tile_index,group_index,tile_in_group,row_base,row_limit,neuron_base,k_tile,stage,ahead,total_tiles;
 	SparkLmGroupGemmInitialiseBarriers<STAGES>(barrier_full,WARPS * SPARK_LM_GROUP_GEMM_WARP_LANES);
-	for (tile_index = blockIdx.x; tile_index < arguments.total_tiles; tile_index += gridDim.x)
+	// The tile total is whatever the route actually produced, read from the end
+	// of the prefix the route-build wrote. A host-side estimate cannot know it:
+	// it is a function of per-expert row counts, which only exist on device.
+	// Bounding on an estimate computed from AVERAGE rows per expert launches
+	// tiles for groups that received none, and each phantom tile still streams
+	// a full weight tile through the K loop - at B1, where a handful of experts
+	// are touched out of 256, that is tens of times the necessary weight traffic.
+	total_tiles = arguments.group_tile_prefix[arguments.group_count];
+	for (tile_index = blockIdx.x; tile_index < total_tiles; tile_index += gridDim.x)
 	{
 		group_index = SparkLmGroupGemmFindGroup(arguments.group_tile_prefix,arguments.group_count,tile_index);
 		tile_in_group = tile_index - arguments.group_tile_prefix[group_index];
@@ -475,9 +486,17 @@ void SparkLmGroupGemmNvfp4Kernel(__grid_constant__ const SparkLmGroupGemmArgumen
 	float total[(TILE_M / SPARK_LM_GROUP_GEMM_MMA_M) * (TILE_N / WARPS / SPARK_LM_GROUP_GEMM_MMA_N)][4];
 	uint32_t warp_index = threadIdx.x / SPARK_LM_GROUP_GEMM_WARP_LANES;
 	uint32_t lane_index = threadIdx.x % SPARK_LM_GROUP_GEMM_WARP_LANES;
-	uint32_t tile_index,group_index,tile_in_group,row_base,row_limit,neuron_base,k_tile,stage,ahead;
+	uint32_t tile_index,group_index,tile_in_group,row_base,row_limit,neuron_base,k_tile,stage,ahead,total_tiles;
 	SparkLmGroupGemmInitialiseBarriers<STAGES>(barrier_full,WARPS * SPARK_LM_GROUP_GEMM_WARP_LANES);
-	for (tile_index = blockIdx.x; tile_index < arguments.total_tiles; tile_index += gridDim.x)
+	// The tile total is whatever the route actually produced, read from the end
+	// of the prefix the route-build wrote. A host-side estimate cannot know it:
+	// it is a function of per-expert row counts, which only exist on device.
+	// Bounding on an estimate computed from AVERAGE rows per expert launches
+	// tiles for groups that received none, and each phantom tile still streams
+	// a full weight tile through the K loop - at B1, where a handful of experts
+	// are touched out of 256, that is tens of times the necessary weight traffic.
+	total_tiles = arguments.group_tile_prefix[arguments.group_count];
+	for (tile_index = blockIdx.x; tile_index < total_tiles; tile_index += gridDim.x)
 	{
 		group_index = SparkLmGroupGemmFindGroup(arguments.group_tile_prefix,arguments.group_count,tile_index);
 		tile_in_group = tile_index - arguments.group_tile_prefix[group_index];
