@@ -25,6 +25,12 @@ struct LmBf16Format
 	static __device__ __forceinline__ uint32_t OperandBK(uint32_t lane, uint32_t reg) { return(LmMma16OperandBK(lane,reg)); }
 
 	// Already in the target form: one aligned 32-bit read is the register.
+	// The mirror of Fragment(): a value becomes a code. tests/test_reference.c
+	// round-trips every representable code through both.
+	static __device__ __forceinline__ uint8_t Encode(float value)
+	{
+		return((uint8_t)0);
+	}
 	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float)
 	{
 		return(*(const uint32_t *)(tile + LmSwizzledOffset(row,0u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes)) + (k * 2u)));

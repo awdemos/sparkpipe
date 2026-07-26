@@ -43,6 +43,12 @@ struct LmNvfp4
 	static __device__ __forceinline__ uint32_t OperandBRow(uint32_t lane) { return(LmMma16OperandBRow(lane)); }
 	static __device__ __forceinline__ uint32_t OperandBK(uint32_t lane, uint32_t reg) { return(LmMma16OperandBK(lane,reg)); }
 
+	// The mirror of Fragment(): a value becomes a code. tests/test_reference.c
+	// round-trips every representable code through both.
+	static __device__ __forceinline__ uint8_t Encode(float value)
+	{
+		return((uint8_t)(LmFloatPairToE2m1(value,0.0f) & 15u));
+	}
 	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float scale)
 	{
 		float2 pair = LmNvfp4Pair(tile + LmSwizzledOffset(row,0u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes)),k);

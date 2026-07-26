@@ -94,6 +94,12 @@ struct LmInt7
 	// Free dequantisation: the codes become BF16 bit patterns by an OR, with no
 	// conversion instruction anywhere. The scale and the bias correction are
 	// applied by the caller in the fma it already performs.
+	// The mirror of Fragment(): a value becomes a code. tests/test_reference.c
+	// round-trips every representable code through both.
+	static __device__ __forceinline__ uint8_t Encode(float value)
+	{
+		return((uint8_t)(int8_t)__float2int_rn(fminf(fmaxf(value,-64.0f),63.0f)));
+	}
 	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float)
 	{
 		const uint8_t *base = tile + LmSwizzledOffset(row,0u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes));

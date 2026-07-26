@@ -26,6 +26,7 @@
 
 #include "kernels/dtype.cuh"
 #include "kernels/layout.cuh"
+#include <string.h>
 #include <stdint.h>
 
 #define LM_WARP_LANES 32u
@@ -317,6 +318,29 @@ template<uint32_t BITS>
 static __device__ __forceinline__ uint32_t LmPackCodePairBf16(uint32_t low, uint32_t high)
 {
 	return(LmCodeToBf16Bits<BITS>(low) | (LmCodeToBf16Bits<BITS>(high) << 16u));
+}
+
+// Store a scaled pair into a format's packed layout at a bit offset. The
+// mirror of Fragment(): Fragment decodes storage into a register, this encodes a
+// value into storage, and a format that gets one right and the other wrong is
+// wrong in a way only a round trip catches.
+template<class Format>
+static __device__ __forceinline__ void LmStoreCodePair(uint8_t *base, uint64_t bit, float low, float high)
+{
+	uint32_t width = Format::kStoredBits;
+	uint32_t mask = (1u << width) - 1u;
+	uint32_t packed = ((uint32_t)Format::Encode(low) & mask)
+		| (((uint32_t)Format::Encode(high) & mask) << width);
+	uint32_t shift = (uint32_t)(bit & 7u);
+	uint64_t byte = bit >> 3u;
+	uint32_t word;
+	// Two codes are at most 16 bits and the shift at most 7, so a 32-bit
+	// read-modify-write always covers them. Adjacent pairs never share a word
+	// because the loop steps two codes at a time.
+	memcpy(&word,base + byte,4);
+	word &= ~(((1u << (width * 2u)) - 1u) << shift);
+	word |= packed << shift;
+	memcpy(base + byte,&word,4);
 }
 
 static __device__ __forceinline__ uint32_t LmPackBf16Pair(float low, float high)

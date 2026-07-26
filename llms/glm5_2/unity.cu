@@ -15,6 +15,7 @@
 // own file in this directory with a comment saying why. That should be rare.
 
 #include "runtime/gemm.cuh"
+#include "kernels/norm.cuh"
 #include "kernels/formats/fp8.cuh"
 #include "kernels/formats/int7.cuh"
 #include "kernels/formats/int6.cuh"
@@ -93,6 +94,19 @@ template __global__ void LmGemmKernel<LmInt6, 64u, GLM52_TILE_N, 128u, GLM52_STA
 template __global__ void LmGemmKernel<LmNvfp4, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmNvfp4, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmNvfp4, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+
+#define GLM52_NORM_THREADS 256u
+
+// Norm, activation and quantise. Generic kernels with this model's dimensions
+// passed at the call, not baked in: the old decode stage's RmsNormKernel was 62
+// lines carrying seven SPARK_GLM52_MODEL_* references, none of which changed
+// what it computed.
+template __global__ void LmFusedResidualRmsNormKernel<GLM52_NORM_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
+template __global__ void LmSiluMulKernel<GLM52_NORM_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
+template __global__ void LmQuantiseRowsKernel<LmFp8, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
+template __global__ void LmQuantiseRowsKernel<LmInt7, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
+template __global__ void LmQuantiseRowsKernel<LmInt6, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
+template __global__ void LmQuantiseRowsKernel<LmNvfp4, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 
 // -- entry points ------------------------------------------------------------
 //

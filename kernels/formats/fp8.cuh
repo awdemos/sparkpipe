@@ -40,6 +40,12 @@ struct LmFp8
 
 	// The two adjacent codes a BF16 register covers, scaled and packed. One
 	// aligned 16-bit load, two hardware conversions, one pack.
+	// The mirror of Fragment(): a value becomes a code. tests/test_reference.c
+	// round-trips every representable code through both.
+	static __device__ __forceinline__ uint8_t Encode(float value)
+	{
+		return(LmFloatToE4m3(value));
+	}
 	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float scale)
 	{
 		const uint8_t *base = tile + LmSwizzledOffset(row,0u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes)) + k;
