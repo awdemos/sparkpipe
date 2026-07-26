@@ -2,11 +2,15 @@
 
 // GLM 5.2. Shapes and constants only.
 //
-// A model in this tree is a header. The driver lives beside it in
-// models/moe_dsa/driver.cu and is shared with every other model of the same
-// architecture; adding GLM 5.3 means adding a header, not a tree. The old
-// layout had glm52 spread across five directories and 109 files, none of which
-// named itself a driver.
+// A model in this tree is a config header plus a unity build file. Everything
+// else comes from kernels/, parameterised on the constants below. Adding GLM 5.3
+// means adding a directory with two files, not a tree - the old layout had
+// glm52 spread across five directories and 109 files, none of which named
+// itself a driver.
+//
+// Anything in this directory beyond config.h and unity.cu is a claim that
+// something about this model genuinely cannot be expressed as a parameter. That
+// claim should be rare and should say why in the file that makes it.
 //
 // Values marked CONFIG come from the published model config. Nothing here is
 // derived from a measurement, and nothing here is a guess - a guessed constant
@@ -76,6 +80,20 @@
 
 #define GLM52_MTP_DRAFT_TOKENS 6u
 #define GLM52_MTP_LAYER_INDEX GLM52_LAYERS
+
+// -- KV geometry -------------------------------------------------------------
+//
+// The cache stores opaque bytes; this is the only place the model's slot layout
+// is stated. kernels/kv.cuh turns it into a type, and every allocator, page
+// table and eviction path is shared with every other model regardless of what a
+// slot means to it.
+//
+// A page is the unit of prefix sharing between sequences, so it is sized to be
+// large enough that the page table is not itself a significant read and small
+// enough that a short sequence does not waste one.
+
+#define GLM52_KV_PAGE_SLOTS 64u
+#define GLM52_KV_SLOT_BYTES (GLM52_LATENT_ROW * 2u)
 
 // -- derived -----------------------------------------------------------------
 //
