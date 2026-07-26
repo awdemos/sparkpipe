@@ -9655,6 +9655,191 @@ void SparkGlm52ResidentDecodeStageSiluMulFp8E4m3QuantizeKernel(
 }
 
 
+// SiLU(gate) * up for one element. Shared by the absmax pass and the store pass
+// so the two cannot drift; a scale computed from a different expression than the
+// values it divides is a silent precision bug.
+static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageSiluMulValue(
+    const uint16_t *__restrict__ gate_bf16,
+    const uint16_t *__restrict__ up_bf16,
+    uint64_t row_base,
+    uint32_t element_index)
+{
+    float gate_value;
+    float up_value;
+
+    gate_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+        gate_bf16[row_base + (uint64_t)element_index]);
+    up_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+        up_bf16[row_base + (uint64_t)element_index]);
+    return (gate_value / (1.0f + __expf(-gate_value))) * up_value;
+}
+
+static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageSiluMulAbsmaxPair(
+    const uint16_t *__restrict__ gate_bf16,
+    const uint16_t *__restrict__ up_bf16,
+    uint64_t row_base,
+    uint32_t pair_index,
+    uint32_t element_limit)
+{
+    float first_value;
+    float second_value;
+
+    first_value = SparkGlm52ResidentDecodeStageSiluMulValue(
+        gate_bf16, up_bf16, row_base, pair_index);
+    if (pair_index + 1u >= element_limit)
+    {
+        return fabsf(first_value);
+    }
+    second_value = SparkGlm52ResidentDecodeStageSiluMulValue(
+        gate_bf16, up_bf16, row_base, pair_index + 1u);
+    return fmaxf(fabsf(first_value), fabsf(second_value));
+}
+
+// Both nibbles written by the one thread that owns the pair. Even element is the
+// low nibble, matching the convention BlackwellNativeQuantizeActivationKernel
+// and the weight packer already use.
+static __device__ __forceinline__ void SparkGlm52ResidentDecodeStageSiluMulStorePair(
+    const uint16_t *__restrict__ gate_bf16,
+    const uint16_t *__restrict__ up_bf16,
+    uint16_t *__restrict__ output_bf16,
+    uint8_t *__restrict__ output_e2m1,
+    uint64_t input_row_base,
+    uint64_t output_row_base,
+    uint32_t pair_index,
+    uint32_t element_limit,
+    float scale_value)
+{
+    float first_value;
+    float second_value;
+    uint8_t packed_value;
+
+    first_value = SparkGlm52ResidentDecodeStageSiluMulValue(
+        gate_bf16, up_bf16, input_row_base, pair_index);
+    second_value = 0.0f;
+    if (pair_index + 1u < element_limit)
+    {
+        second_value = SparkGlm52ResidentDecodeStageSiluMulValue(
+            gate_bf16, up_bf16, input_row_base, pair_index + 1u);
+    }
+    if (output_bf16 != 0)
+    {
+        output_bf16[output_row_base + (uint64_t)pair_index] =
+            SparkGlm52ResidentDecodeStageFloatToBf16(first_value);
+        if (pair_index + 1u < element_limit)
+        {
+            output_bf16[output_row_base + (uint64_t)pair_index + 1u] =
+                SparkGlm52ResidentDecodeStageFloatToBf16(second_value);
+        }
+    }
+    packed_value = (uint8_t)(
+        (SparkGlm52ResidentDecodeStageEncodeE2m1Saturate(
+            first_value / scale_value) & 15u) |
+        ((SparkGlm52ResidentDecodeStageEncodeE2m1Saturate(
+            second_value / scale_value) & 15u) << 4u));
+    output_e2m1[(output_row_base + (uint64_t)pair_index) >> 1u] = packed_value;
+}
+
+
+// SiLU-mul with NVFP4 requantisation, the stage between the two routed-MoE
+// GEMMs. The FP8 path has SiluMulFp8E4m3QuantizeKernel; NVFP4 had no equivalent,
+// which is the one thing that stopped the routed MoE running on first-party
+// kernels end to end. Emitting E4M3 here instead would compile, run, and quietly
+// collapse the intermediate to 8-bit in the middle of an NVFP4 MoE.
+//
+// One thread owns an adjacent PAIR of output elements and writes the packed byte
+// once. BlackwellNativeQuantizeActivationKernel packs by read-modify-write of a
+// shared byte from two different threads, which races; that kernel is unreachable
+// so the race has never fired, but the pattern is not repeated here.
+//
+// Scale granularity is NVFP4_GROUP_SIZE (16) and the scale is UE4M3, matching
+// what SparkLmGroupGemmConsumeStageNvfp4 consumes and what the weight pack
+// already stores. E2M1 saturates at 6.0, so the scale is absmax/6.
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)
+void SparkGlm52ResidentDecodeStageSiluMulNvfp4QuantizeKernel(
+    const uint16_t *__restrict__ gate_bf16,
+    const uint16_t *__restrict__ up_bf16,
+    uint16_t *__restrict__ output_bf16,
+    uint8_t *__restrict__ output_e2m1,
+    uint8_t *__restrict__ output_scale_ue4m3,
+    uint32_t row_count,
+    uint32_t element_count,
+    uint32_t input_row_stride,
+    uint32_t group_size)
+{
+    __shared__ float shared_reduction[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    uint32_t row_index;
+    uint32_t group_index;
+    uint32_t group_count;
+    uint32_t pair_index;
+
+    row_index = blockIdx.x;
+    if (row_index >= row_count || group_size == 0u || (group_size & 1u) != 0u)
+    {
+        return;
+    }
+    group_count = (element_count + group_size - 1u) / group_size;
+    for (group_index = 0u; group_index < group_count; ++group_index)
+    {
+        uint32_t group_begin;
+        uint32_t group_end;
+        float local_absmax;
+        float group_absmax;
+        float scale_value;
+
+        group_begin = group_index * group_size;
+        group_end = group_begin + group_size;
+        if (group_end > element_count)
+        {
+            group_end = element_count;
+        }
+        local_absmax = 0.0f;
+        for (pair_index = group_begin + (threadIdx.x * 2u);
+             pair_index < group_end;
+             pair_index += blockDim.x * 2u)
+        {
+            local_absmax = fmaxf(
+                local_absmax,
+                SparkGlm52ResidentDecodeStageSiluMulAbsmaxPair(
+                    gate_bf16,
+                    up_bf16,
+                    ((uint64_t)row_index * (uint64_t)input_row_stride),
+                    pair_index,
+                    group_end));
+        }
+        group_absmax = SparkGlm52ResidentDecodeStageBlockReduceMax(
+            local_absmax,
+            shared_reduction);
+        scale_value = fmaxf(group_absmax / 6.0f, 1.0e-8f);
+        if (threadIdx.x == 0u)
+        {
+            output_scale_ue4m3[
+                ((uint64_t)row_index *
+                    (uint64_t)((element_count + group_size - 1u) / group_size)) +
+                group_index] =
+                SparkGlm52ResidentDecodeStageEncodeUe4m3Saturate(scale_value);
+        }
+        __syncthreads();
+        for (pair_index = group_begin + (threadIdx.x * 2u);
+             pair_index < group_end;
+             pair_index += blockDim.x * 2u)
+        {
+            SparkGlm52ResidentDecodeStageSiluMulStorePair(
+                gate_bf16,
+                up_bf16,
+                output_bf16,
+                output_e2m1,
+                ((uint64_t)row_index * (uint64_t)input_row_stride),
+                ((uint64_t)row_index * (uint64_t)element_count),
+                pair_index,
+                group_end,
+                scale_value);
+        }
+        __syncthreads();
+    }
+}
+
+
 static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageWarpDotProductFp8Kv(
     const float *shared_query,
     const uint8_t *key_nope_cache_fp8_e4m3,
