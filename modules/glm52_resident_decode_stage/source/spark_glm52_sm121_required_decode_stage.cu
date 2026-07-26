@@ -18002,7 +18002,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchBuiltinFusedStageMoeLayer(
                 b12x_plan,
                 node_context,
                 pipeline_slot,
-                active_sequence_count);
+                active_sequence_count,
+                cuda_stream);
         }
         if (node_context->mlp_execution_mode !=
             SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE)
