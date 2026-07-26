@@ -23,6 +23,10 @@
 #define SPARK_LM_WORKSPACE_ALIGNMENT 256u
 #define SPARK_LM_WORKSPACE_NVFP4_GROUP 16u
 #define SPARK_LM_WORKSPACE_REGION_COUNT 9u
+#define SPARK_LM_WORKSPACE_NVFP4_TILE_K 256u
+#define SPARK_LM_TENSOR_MAP_BITS_NVFP4_LOCAL 4u
+// 128 KB of L1/shared per SM on GB10, per GB10_CUDA_COST_MODEL_CALIBRATION.md.
+#define SPARK_LM_WORKSPACE_SHARED_LIMIT 131072u
 
 #define SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN 0u
 #define SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN_SCALE 1u
@@ -39,6 +43,7 @@
 #define SPARK_LM_WORKSPACE_ERR_SHAPE (-32)
 #define SPARK_LM_WORKSPACE_ERR_GROUP (-33)
 #define SPARK_LM_WORKSPACE_ERR_OVERFLOW (-34)
+#define SPARK_LM_WORKSPACE_ERR_SHARED (-35)
 
 typedef struct spark_lm_workspace_shape
 {
@@ -53,7 +58,9 @@ typedef struct spark_lm_workspace_layout
 	uint64_t total_bytes;
 	uint64_t packed_rows;
 	uint64_t total_tiles;
+	uint64_t shared_bytes;
 	uint32_t tile_m;
+	uint32_t stages;
 }
 spark_lm_workspace_layout_t;
 
@@ -92,6 +99,40 @@ static uint32_t spark_lm_workspace_select_tile_m(uint64_t rows_per_expert)
 	if ( rows_per_expert <= 64u )
 		return(64u);
 	return(128u);
+}
+
+// Shared memory one CTA needs. NVFP4 payloads are 4-bit, so both tile buffers
+// halve; the barriers are two 8-byte mbarriers per stage.
+static uint64_t spark_lm_workspace_shared_bytes(uint32_t tile_m, uint32_t tile_n, uint32_t tile_k, uint32_t stages, uint32_t element_bits)
+{
+	uint64_t per_stage;
+	per_stage = ((uint64_t)tile_m + (uint64_t)tile_n) * (uint64_t)tile_k
+		* (uint64_t)element_bits / 8u;
+	return((uint64_t)stages * (per_stage + 16u));
+}
+
+// Deepest pipeline that fits, given the tile height already chosen.
+//
+// This is not a tuning knob dressed up as a constraint: at TILE_M=128 with the
+// four stages that were hardcoded, an NVFP4 tile needs 131,136 bytes against a
+// 131,072 limit and the launch fails outright. Selecting stages jointly with the
+// tile height also turns a constraint into a gain at the small end - a 16-row
+// tile leaves room for six stages where a 128-row tile leaves room for three,
+// and the weight stream is what the extra depth covers.
+//
+// Depth beyond what Little's Law needs buys nothing. At 218 GB/s effective and
+// an estimated 400-600 ns latency the requirement is about 2.7 KB in flight per
+// SM, and even two stages of an 18 KB tile clear that by an order of magnitude.
+// The cap therefore exists to stop shared memory being spent for no reason, not
+// because more would help.
+static uint32_t spark_lm_workspace_select_stages(uint32_t tile_m, uint32_t tile_n, uint32_t tile_k, uint32_t element_bits, uint64_t shared_limit)
+{
+	static const uint32_t candidates[] = { 6u, 4u, 3u, 2u };
+	uint32_t index;
+	for (index = 0u; index < 4u; ++index)
+		if ( spark_lm_workspace_shared_bytes(tile_m,tile_n,tile_k,candidates[index],element_bits) <= shared_limit )
+			return(candidates[index]);
+	return(0u);
 }
 
 // Rows the busiest expert is expected to hold. Routing is not uniform, so the
@@ -144,6 +185,14 @@ static int32_t spark_lm_workspace_layout_build(const spark_lm_workspace_shape_t 
 		? shape->tile_m
 		: spark_lm_workspace_select_tile_m(spark_lm_workspace_peak_rows_per_expert(shape));
 	layout->tile_m = effective;
+	layout->stages = spark_lm_workspace_select_stages(effective,shape->tile_n,
+		SPARK_LM_WORKSPACE_NVFP4_TILE_K,SPARK_LM_TENSOR_MAP_BITS_NVFP4_LOCAL,
+		SPARK_LM_WORKSPACE_SHARED_LIMIT);
+	if ( layout->stages == 0u )
+		return(SPARK_LM_WORKSPACE_ERR_SHARED);
+	layout->shared_bytes = spark_lm_workspace_shared_bytes(effective,shape->tile_n,
+		SPARK_LM_WORKSPACE_NVFP4_TILE_K,layout->stages,
+		SPARK_LM_TENSOR_MAP_BITS_NVFP4_LOCAL);
 	rows = spark_lm_workspace_packed_rows(shape);
 	if ( rows == 0u || rows > 0xffffffffu )
 		return(SPARK_LM_WORKSPACE_ERR_OVERFLOW);

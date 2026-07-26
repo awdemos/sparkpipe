@@ -68,6 +68,36 @@ int main(void){
 		}
 	}
 	ck(1,"every bucket resolves to a single M tile, so no weight tile is read twice");
+	printf("\n  stage depth selected with the tile, bounded by 128 KB shared\n");
+	{
+		static const uint32_t buckets[] = { 1u, 128u, 512u, 1024u, 2048u };
+		uint32_t i;
+		for (i = 0; i < 5u; ++i)
+		{
+			memset(&shape,0,sizeof shape);
+			shape.tokens=buckets[i]; shape.top_k=8; shape.expert_count=256;
+			shape.hidden_dimension=6144; shape.intermediate_dimension=2048;
+			shape.tile_m=0; shape.tile_n=128;
+			if (spark_lm_workspace_layout_build(&shape,&layout)!=SPARK_LM_WORKSPACE_OK){
+				printf("    FAIL B%u did not build\n",buckets[i]); fails++; continue; }
+			printf("    B%-5u TILE_M %-4u stages %-2u shared %6llu B %s\n",
+				buckets[i],layout.tile_m,layout.stages,
+				(unsigned long long)layout.shared_bytes,
+				layout.shared_bytes<=131072ULL?"":"  <-- OVER LIMIT");
+			if (layout.shared_bytes > 131072ULL) fails++;
+		}
+	}
+	ck(1,"every selected (TILE_M, stages) pair fits in shared memory");
+	{
+		/* the regression: TILE_M=128 with the four stages that were hardcoded
+		   needs 131136 bytes and the launch fails outright. */
+		ck(spark_lm_workspace_shared_bytes(128u,128u,256u,4u,4u) > 131072ULL,
+		   "TILE_M=128 at 4 stages provably exceeds shared memory");
+		ck(spark_lm_workspace_shared_bytes(128u,128u,256u,3u,4u) <= 131072ULL,
+		   "TILE_M=128 at 3 stages fits, which is why stages track the tile");
+		ck(spark_lm_workspace_select_stages(16u,128u,256u,4u,131072ULL)==6u,
+		   "a 16-row tile affords six stages, the depth the weight stream wants");
+	}
 	{
 		/* the regression this guards: TILE_M pinned at 16 doubles B1024 */
 		memset(&shape,0,sizeof shape);

@@ -44,7 +44,9 @@
 // Persistent grid for the first-party routed GEMM: 48 SMs on GB10, one CTA each.
 // Sized to the machine rather than the problem so a short expert group never
 // leaves an SM idle behind a long one.
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_PERSISTENT_BLOCKS 48u
+// Persistent grid width, resolved from the device on first use rather than
+// assumed. GB10 has 48 SMs; a literal would be wrong on anything else.
+static uint32_t spark_glm52_persistent_blocks = 0u;
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES 32u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_WMMA_TILE 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_CANDIDATE_TILES 4u
@@ -11278,6 +11280,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4LaunchRoutedGemm(
     uint32_t expert_count,
     uint32_t total_tiles,
     uint32_t tile_m,
+    uint32_t stages,
     cudaStream_t cuda_stream)
 {
     SparkLmGroupGemmArguments arguments;
@@ -11312,47 +11315,66 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4LaunchRoutedGemm(
     arguments.input_dimension = input_dimension;
     arguments.output_dimension = output_dimension;
     arguments.total_tiles = total_tiles;
-    grid_blocks = total_tiles <
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_PERSISTENT_BLOCKS
+    // Persistent grid sized to the machine. Queried rather than hardcoded: 48
+    // is GB10's SM count and a constant would silently under- or over-subscribe
+    // any other part. The device is queried once and cached because
+    // cudaDeviceGetAttribute on a hot path is itself a cost.
+    if (spark_glm52_persistent_blocks == 0)
+    {
+        int multiprocessor_count;
+        int device_ordinal;
+
+        multiprocessor_count = 0;
+        device_ordinal = 0;
+        if (cudaGetDevice(&device_ordinal) != cudaSuccess ||
+            cudaDeviceGetAttribute(
+                &multiprocessor_count,
+                cudaDevAttrMultiProcessorCount,
+                device_ordinal) != cudaSuccess ||
+            multiprocessor_count <= 0)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+        spark_glm52_persistent_blocks = (uint32_t)multiprocessor_count;
+    }
+    grid_blocks = total_tiles < spark_glm52_persistent_blocks
         ? total_tiles
-        : SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_PERSISTENT_BLOCKS;
+        : spark_glm52_persistent_blocks;
     // One instantiation per tile height. A switch rather than a runtime tile
     // because TILE_M sizes the shared buffers and the accumulator array, both of
     // which are compile-time. Anything not in this table is a caller error, not
     // a case to approximate.
-    #define SPARK_GLM52_NVFP4_LAUNCH(TILE) \
+    // One instantiation per (tile height, stage depth) pair. Both size shared
+    // memory and the accumulator array, so both are compile-time. The pairing is
+    // not free choice: spark_lm_workspace_select_stages picks the deepest
+    // pipeline that fits 128 KB at the chosen tile, and a 128-row tile at four
+    // stages needs 131136 bytes and does not launch at all.
+    #define SPARK_GLM52_NVFP4_LAUNCH(TILE, STAGES) \
         SparkLmGroupGemmNvfp4Kernel< \
             TILE, \
             SPARK_LM_GROUP_GEMM_DEFAULT_TILE_N, \
             SPARK_LM_GROUP_GEMM_NVFP4_TILE_K, \
-            4u, \
+            STAGES, \
             8u><<<grid_blocks, 8u * 32u, 0, cuda_stream>>>(arguments)
-    switch (tile_m)
+    if (tile_m == 16u && stages == 6u)
     {
-        case 16u:
-        {
-            SPARK_GLM52_NVFP4_LAUNCH(16u);
-            break;
-        }
-        case 32u:
-        {
-            SPARK_GLM52_NVFP4_LAUNCH(32u);
-            break;
-        }
-        case 64u:
-        {
-            SPARK_GLM52_NVFP4_LAUNCH(64u);
-            break;
-        }
-        case 128u:
-        {
-            SPARK_GLM52_NVFP4_LAUNCH(128u);
-            break;
-        }
-        default:
-        {
-            return SPARK_STATUS_INVALID_ARGUMENT;
-        }
+        SPARK_GLM52_NVFP4_LAUNCH(16u, 6u);
+    }
+    else if (tile_m == 32u && stages == 6u)
+    {
+        SPARK_GLM52_NVFP4_LAUNCH(32u, 6u);
+    }
+    else if (tile_m == 64u && stages == 4u)
+    {
+        SPARK_GLM52_NVFP4_LAUNCH(64u, 4u);
+    }
+    else if (tile_m == 128u && stages == 3u)
+    {
+        SPARK_GLM52_NVFP4_LAUNCH(128u, 3u);
+    }
+    else
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
     }
     #undef SPARK_GLM52_NVFP4_LAUNCH
     return cudaPeekAtLastError() == cudaSuccess
@@ -12067,6 +12089,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchNvfp4ExpertTensorCoreMoe(
         b12x_plan->expert_count,
         (uint32_t)layout.total_tiles,
         (uint32_t)layout.tile_m,
+        (uint32_t)layout.stages,
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
@@ -12092,6 +12115,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchNvfp4ExpertTensorCoreMoe(
         b12x_plan->expert_count,
         (uint32_t)layout.total_tiles,
         (uint32_t)layout.tile_m,
+        (uint32_t)layout.stages,
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
