@@ -27,6 +27,7 @@ run "tensor map encode"    "gcc -O2 -Wall -Wextra -I. -Itests/cuda_driver_stub -
 # -arch=sm_121a dropping its own suffix, and broke outright on extern __shared__.
 # A proxy for the compiler is worth having only while the compiler is
 # unavailable, and tools/get_cuda.sh means it is not.
+run "launch planning"      "g++ -std=c++17 -O2 -Wall -Wextra -I. -D__host__= -D__device__= -o /tmp/g_l tests/test_launch.c && /tmp/g_l"
 run "nvcc: sm_121a build"  "sh tools/build.sh"
 printf "  ---- %d pass, %d fail\n" "$ok" "$bad"
 [ "$bad" -eq 0 ]

@@ -25,6 +25,7 @@
 // NVFP4 is scale_vec::4X with ue4m3.
 
 #include "kernels/dtype.cuh"
+#include "kernels/layout.cuh"
 #include <stdint.h>
 
 #define LM_WARP_LANES 32u
@@ -350,15 +351,6 @@ static __device__ __forceinline__ void LmMmaBf16(float accumulator[4], const uin
 //
 // A 32-byte span still permutes two chunks and still removes most of the
 // conflict; it is a smaller win, not the absence of one.
-#define LM_SWIZZLE_CHUNK_BYTES 16u
-
-static __host__ __device__ constexpr uint32_t LmSwizzleSpanFor(uint32_t row_pitch_bytes)
-{
-	return((row_pitch_bytes % 128u) == 0u ? 128u
-		: (row_pitch_bytes % 64u) == 0u ? 64u
-		: (row_pitch_bytes % 32u) == 0u ? 32u : 0u);
-}
-
 static __device__ __forceinline__ uint32_t LmSwizzleChunk(uint32_t chunk, uint32_t row, uint32_t span_bytes)
 {
 	return(chunk ^ (row % (span_bytes / LM_SWIZZLE_CHUNK_BYTES)));

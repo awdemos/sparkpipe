@@ -28,6 +28,7 @@
 // tile consumed after it was produced, no stage refilled before consumption,
 // phase parity matching the round counter.
 
+#include "kernels/layout.cuh"
 #include "kernels/mma.cuh"
 #include "kernels/tma.cuh"
 #include <stdint.h>
@@ -41,8 +42,6 @@
 // cudaFuncSetAttribute(cudaFuncAttributeMaxDynamicSharedMemorySize). That is
 // what CUTLASS and Marlin do and what the launcher must do here; the constant
 // below is the static ceiling a __shared__ declaration must respect.
-#define LM_SMEM_STATIC_LIMIT 49152u
-#define LM_SMEM_SM_TOTAL 131072u
 
 #define LM_PIPELINE_STAGES 2u
 #define LM_PIPELINE_LOOKAHEAD (LM_PIPELINE_STAGES - 1u)
@@ -101,16 +100,7 @@ static __device__ void LmPipelineRelease(uint64_t *barrier)
 // static_assert at the instantiation rather than a launch failure on the ring -
 // the sparkdev should not be debugging a configuration the compiler could have
 // rejected.
-static __host__ __device__ constexpr uint32_t LmTileBytes(uint32_t rows, uint32_t depth, uint32_t element_bits)
-{
-	return((rows * depth * element_bits) / 8u);
-}
 
-static __host__ __device__ constexpr uint32_t LmPipelineSharedBytes(uint32_t tile_m, uint32_t tile_n, uint32_t tile_k, uint32_t stages, uint32_t element_bits)
-{
-	return(stages * (LmTileBytes(tile_m,tile_k,element_bits)
-		+ LmTileBytes(tile_n,tile_k,element_bits) + 16u));
-}
 
 // A row pitch no span divides cannot be permuted at all, which is a real
 // rejection rather than a hypothetical: the compiler produced it for INT7 at a
@@ -123,18 +113,9 @@ static __host__ __device__ constexpr uint32_t LmPipelineSharedBytes(uint32_t til
 //        7      256     224    32B          64,544          no, needs dynamic
 //        6      128      96    32B          27,680          yes
 //        4      128      64    64B          18,464          yes
-static __host__ __device__ constexpr bool LmTileKIsSwizzleable(uint32_t tile_k, uint32_t element_bits)
-{
-	return(((tile_k * element_bits) % 8u) == 0u
-		&& LmSwizzleSpanFor(LmTileBytes(1u,tile_k,element_bits)) != 0u);
-}
 
 // The span this tile will actually use. 128 where the pitch allows it, 32 for
 // the sub-byte widths that no larger span divides.
-static __host__ __device__ constexpr uint32_t LmTileSwizzleSpan(uint32_t tile_k, uint32_t element_bits)
-{
-	return(LmSwizzleSpanFor(LmTileBytes(1u,tile_k,element_bits)));
-}
 
 // -- staging -----------------------------------------------------------------
 //
