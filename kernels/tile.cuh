@@ -100,13 +100,28 @@ static __host__ __device__ constexpr uint32_t LmPipelineSharedBytes(uint32_t til
 		+ LmTileBytes(tile_n,tile_k,element_bits) + 16u));
 }
 
-// A tile narrower than the swizzle span cannot be permuted at that granularity.
-// This is not hypothetical: an NVFP4 K tile of 128 elements is 64 bytes, and
-// selecting it produces a descriptor that encodes cleanly and addresses
-// inconsistently. NVFP4 needs 256 elements where FP8 needs 128.
+// A row pitch no span divides cannot be permuted at all, which is a real
+// rejection rather than a hypothetical: the compiler produced it for INT7 at a
+// 128-element tile during this file's own development. What each stored width
+// can do:
+//
+//     bits   TILE_K   pitch   span   shared at M16, 2 stages
+//       16      128     256   128B          73,760
+//        8      128     128   128B          36,896
+//        7      256     224    32B          64,544
+//        6      128      96    32B          27,680
+//        4      128      64    64B          18,464
 static __host__ __device__ constexpr bool LmTileKIsSwizzleable(uint32_t tile_k, uint32_t element_bits)
 {
-	return(LmTileBytes(1u,tile_k,element_bits) % LM_SWIZZLE_SPAN_BYTES == 0u);
+	return(((tile_k * element_bits) % 8u) == 0u
+		&& LmSwizzleSpanFor(LmTileBytes(1u,tile_k,element_bits)) != 0u);
+}
+
+// The span this tile will actually use. 128 where the pitch allows it, 32 for
+// the sub-byte widths that no larger span divides.
+static __host__ __device__ constexpr uint32_t LmTileSwizzleSpan(uint32_t tile_k, uint32_t element_bits)
+{
+	return(LmSwizzleSpanFor(LmTileBytes(1u,tile_k,element_bits)));
 }
 
 // -- staging -----------------------------------------------------------------

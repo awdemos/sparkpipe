@@ -295,21 +295,35 @@ static __device__ __forceinline__ void LmMmaBf16(float accumulator[4], const uin
 // Justified by a count rather than by assertion: without it a 32-lane fragment
 // load puts 16 lanes on one bank; with it, 4.
 
-#define LM_SWIZZLE_CHUNKS 8u
+// The span is a property of the STORED width, not a global constant, because a
+// sub-byte code that is not a power of two gives a row pitch that no large span
+// divides. Seven bits over a 256-element tile is 224 bytes: 128 does not divide
+// it, 64 does not, 32 does. Forcing a 128-byte span there would need a
+// 1024-element tile and 252 KB of shared memory, which is how a good format gets
+// rejected for a reason that has nothing to do with the format.
+//
+// A 32-byte span still permutes two chunks and still removes most of the
+// conflict; it is a smaller win, not the absence of one.
 #define LM_SWIZZLE_CHUNK_BYTES 16u
-#define LM_SWIZZLE_SPAN_BYTES (LM_SWIZZLE_CHUNKS * LM_SWIZZLE_CHUNK_BYTES)
 
-static __device__ __forceinline__ uint32_t LmSwizzleChunk(uint32_t chunk, uint32_t row)
+static __host__ __device__ constexpr uint32_t LmSwizzleSpanFor(uint32_t row_pitch_bytes)
 {
-	return(chunk ^ (row % LM_SWIZZLE_CHUNKS));
+	return((row_pitch_bytes % 128u) == 0u ? 128u
+		: (row_pitch_bytes % 64u) == 0u ? 64u
+		: (row_pitch_bytes % 32u) == 0u ? 32u : 0u);
+}
+
+static __device__ __forceinline__ uint32_t LmSwizzleChunk(uint32_t chunk, uint32_t row, uint32_t span_bytes)
+{
+	return(chunk ^ (row % (span_bytes / LM_SWIZZLE_CHUNK_BYTES)));
 }
 
 // Byte offset of one operand register inside a swizzled row-major tile. Every
 // operand load in every GEMM goes through this, so the swizzle is applied in
 // exactly one place.
-static __device__ __forceinline__ uint32_t LmSwizzledOffset(uint32_t row, uint32_t byte_in_row, uint32_t row_pitch_bytes)
+static __device__ __forceinline__ uint32_t LmSwizzledOffset(uint32_t row, uint32_t byte_in_row, uint32_t row_pitch_bytes, uint32_t span_bytes)
 {
-	uint32_t chunk = LmSwizzleChunk(byte_in_row / LM_SWIZZLE_CHUNK_BYTES,row);
+	uint32_t chunk = LmSwizzleChunk(byte_in_row / LM_SWIZZLE_CHUNK_BYTES,row,span_bytes);
 	return((row * row_pitch_bytes) + (chunk * LM_SWIZZLE_CHUNK_BYTES)
 		+ (byte_in_row % LM_SWIZZLE_CHUNK_BYTES));
 }

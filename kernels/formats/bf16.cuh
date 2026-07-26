@@ -1,28 +1,32 @@
 #pragma once
 
-// BF16: no quantisation, no scales.
+// BF16. The format every other format decodes into, and therefore the one whose
+// fragment path is exercised by all of them.
 //
-// Kept because prefill and the unquantised families use it, and because a path
-// that avoids quantisation entirely is the cheapest way to isolate a numerics
-// bug to the quantiser rather than the GEMM.
+// The scale is accepted and ignored rather than absent from the signature: a
+// caller that passes one to an unquantised tensor has made a mistake it should
+// not be able to express differently for different formats.
 
 #include "kernels/mma.cuh"
 
 struct LmBf16Format
 {
-	typedef float Accumulator;
-	static constexpr uint32_t kBits = 16u;
-	// Stored width equals compute width: this format is native, so what TMA
-	// moves is what the mma register holds and staging is a copy.
 	static constexpr uint32_t kStoredBits = 16u;
+	static constexpr uint32_t kBits = 16u;
 	static constexpr uint32_t kMmaM = LM_MMA16_M;
 	static constexpr uint32_t kMmaN = LM_MMA16_N;
 	static constexpr uint32_t kMmaK = LM_MMA16_K;
-	static constexpr bool kScaleInMma = false;
-	static constexpr uint32_t kScaleGroup = 0u;   // no scales at all
+	static constexpr uint32_t kScaleGroup = 0u;
+	static constexpr float kMax = 0.0f;
 
-	static __device__ __forceinline__ void Mma(float acc[4], const uint32_t a[4], const uint32_t b[2], uint32_t, uint32_t)
+	static __device__ __forceinline__ uint32_t OperandARow(uint32_t lane, uint32_t reg) { return(LmMma16OperandARow(lane,reg)); }
+	static __device__ __forceinline__ uint32_t OperandAK(uint32_t lane, uint32_t reg) { return(LmMma16OperandAK(lane,reg)); }
+	static __device__ __forceinline__ uint32_t OperandBRow(uint32_t lane) { return(LmMma16OperandBRow(lane)); }
+	static __device__ __forceinline__ uint32_t OperandBK(uint32_t lane, uint32_t reg) { return(LmMma16OperandBK(lane,reg)); }
+
+	// Already in the target form: one aligned 32-bit read is the register.
+	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float)
 	{
-		LmMmaBf16(acc,a,b);
+		return(*(const uint32_t *)(tile + LmSwizzledOffset(row,0u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes)) + (k * 2u)));
 	}
 };

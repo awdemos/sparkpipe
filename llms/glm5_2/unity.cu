@@ -15,6 +15,11 @@
 // own file in this directory with a comment saying why. That should be rare.
 
 #include "kernels/gemm.cuh"
+#include "kernels/formats/fp8.cuh"
+#include "kernels/formats/int7.cuh"
+#include "kernels/formats/int6.cuh"
+#include "kernels/formats/nvfp4.cuh"
+#include "kernels/formats/bf16.cuh"
 #include "kernels/kv.cuh"
 #include "llms/glm5_2/config.h"
 
@@ -40,10 +45,16 @@ static_assert(Glm52Kv::kSlotBytes == GLM52_KV_SLOT_BYTES,
 #define GLM52_STAGES 2u
 #define GLM52_WARPS 8u
 
-template __global__ void LmGemmKernel<LmFp8, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+// Weight formats this model can be served with. Each is a decoder into the same
+// BF16 fragment, so these six instantiations differ only in how many bits cross
+// the bus and how a code becomes a number - not in what the kernel does.
+//
+// TILE_K is in ELEMENTS and must make a whole 128-byte swizzle span of the
+// STORED width, which kernels/tile.cuh asserts: 128 at 8 bits, 256 at 4.
 
-template __global__ void LmGemmKernel<LmNvfp4, 16u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmNvfp4, 32u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmNvfp4, 64u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmFp8,   16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmFp8,   64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt7,  16u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt6,  16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmNvfp4, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmBf16Format, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);

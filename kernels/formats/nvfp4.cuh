@@ -1,56 +1,51 @@
 #pragma once
 
-// NVFP4: E2M1 data, UE4M3 scale, one scale per 16 elements.
+// NVFP4: E2M1 data, UE4M3 scale, one scale per 16 elements. Decoded to BF16.
 //
-// The scale is consumed BY the mma rather than applied after it, which removes
-// the per-K-tile partial accumulator and the whole rescale pass that FP8 needs.
-// That difference is real and is why kScaleInMma exists; everything else about
-// the GEMM is identical and is written once.
+// sm_121a has a block-scaled FP4 mma that consumes the scales directly, and this
+// file does not use it. That is deliberate and worth defending: it is native,
+// it is verified present, and it would do twice the FLOP per instruction.
 //
-// CUTLASS emits scale_vec::4X with ue8m0 for its VS=16 path, guarded by
-// CUTE_ARCH_MXF4NVF4_4X_UE8M0_MMA_ENABLED. ptxas rejects that combination for
-// sm_121a - it is an sm_100 capability - so the collective's emission cannot be
-// transplanted here. tests/test_ptx_capability_gate.py keeps a negative probe on
-// it so a toolkit change fails the build rather than changing behaviour.
+// It is not used because the decode path needs sixty times less compute than the
+// machine has, and because using it would fork the library. The block-scaled mma
+// forces a different fragment layout, a different K depth, a scale-operand
+// selection with a stride-0 mode, and an epilogue that differs from every other
+// format - four divergences bought with headroom that is already spare. One mma
+// and one fragment mapping is worth more than an instruction that saves time the
+// kernel does not spend.
+//
+// kernels/mma.cuh still declares LmMmaNvfp4 and the capability gate still probes
+// it, so the option remains open and measurable if a profile ever says the
+// decode is the constraint.
 
 #include "kernels/mma.cuh"
 
+// Two adjacent E2M1 nibbles share a byte when the index is even, which is the
+// common case for a register pair: k is always even for the low half because
+// LmMma16OperandBK returns 2*(lane%4) + 8*reg.
+static __device__ __forceinline__ float2 LmNvfp4Pair(const uint8_t *base, uint32_t k)
+{
+	return(LmE2m1PairToFloat(base[k >> 1u]));
+}
+
 struct LmNvfp4
 {
-	typedef float Accumulator;
-	static constexpr uint32_t kBits = 4u;
-	// Stored width equals compute width: this format is native, so what TMA
-	// moves is what the mma register holds and staging is a copy.
 	static constexpr uint32_t kStoredBits = 4u;
-	static constexpr uint32_t kMmaM = LM_MMA4_M;
-	static constexpr uint32_t kMmaN = LM_MMA4_N;
-	static constexpr uint32_t kMmaK = LM_MMA4_K;
-	static constexpr bool kScaleInMma = true;
+	static constexpr uint32_t kBits = 16u;
+	static constexpr uint32_t kMmaM = LM_MMA16_M;
+	static constexpr uint32_t kMmaN = LM_MMA16_N;
+	static constexpr uint32_t kMmaK = LM_MMA16_K;
 	static constexpr uint32_t kScaleGroup = LM_MMA4_NVFP4_GROUP;
 	static constexpr float kMax = LM_E2M1_MAX;
 
-	static __device__ __forceinline__ uint32_t OperandARow(uint32_t lane, uint32_t reg)
+	static __device__ __forceinline__ uint32_t OperandARow(uint32_t lane, uint32_t reg) { return(LmMma16OperandARow(lane,reg)); }
+	static __device__ __forceinline__ uint32_t OperandAK(uint32_t lane, uint32_t reg) { return(LmMma16OperandAK(lane,reg)); }
+	static __device__ __forceinline__ uint32_t OperandBRow(uint32_t lane) { return(LmMma16OperandBRow(lane)); }
+	static __device__ __forceinline__ uint32_t OperandBK(uint32_t lane, uint32_t reg) { return(LmMma16OperandBK(lane,reg)); }
+
+	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float scale)
 	{
-		return(LmMma4OperandARow(lane,reg));
-	}
-	static __device__ __forceinline__ uint32_t OperandAByte(uint32_t lane, uint32_t reg)
-	{
-		return(LmMma4OperandAByte(lane,reg));
-	}
-	static __device__ __forceinline__ uint32_t OperandBRow(uint32_t lane)
-	{
-		return(LmMma4OperandBRow(lane));
-	}
-	static __device__ __forceinline__ uint32_t OperandBByte(uint32_t lane, uint32_t reg)
-	{
-		return(LmMma4OperandBByte(lane,reg));
-	}
-	static __device__ __forceinline__ void Mma(float acc[4], const uint32_t a[4], const uint32_t b[2], uint32_t scale_a, uint32_t scale_b)
-	{
-		LmMmaNvfp4(acc,a,b,scale_a,scale_b);
-	}
-	static __device__ __forceinline__ uint8_t EncodePair(float low, float high, float inverse_scale)
-	{
-		return(LmFloatPairToE2m1(low * inverse_scale,high * inverse_scale));
+		float2 pair = LmNvfp4Pair(tile + LmSwizzledOffset(row,0u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes)),k);
+		return(LmPackBf16Pair(pair.x * scale,pair.y * scale));
 	}
 };

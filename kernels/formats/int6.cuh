@@ -76,7 +76,7 @@ struct LmInt6
 	// saving is paid on the bus and never given back in shared memory.
 	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float scale)
 	{
-		const uint8_t *base = tile + (row * row_pitch_bytes);
+		const uint8_t *base = tile + LmSwizzledOffset(row,0u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes));
 		return(LmPackBf16Pair((float)LmInt6Extract(base,k) * scale,
 			(float)LmInt6Extract(base,k + 1u) * scale));
 	}
