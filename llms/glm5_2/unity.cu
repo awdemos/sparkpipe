@@ -40,10 +40,10 @@ static_assert(Glm52Kv::kSlotBytes == GLM52_KV_SLOT_BYTES,
 #define GLM52_STAGES 2u
 #define GLM52_WARPS 8u
 
-template __global__ void LmGemmFp8Kernel<16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmFp8Kernel<32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmFp8Kernel<64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmFp8, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmFp8, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmFp8, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
 
-template __global__ void LmGemmFp4Kernel<16u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS, true>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmFp4Kernel<32u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS, true>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmFp4Kernel<64u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS, true>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmNvfp4, 16u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmNvfp4, 32u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmNvfp4, 64u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(const LmGemmArguments, LmTileSource, LmTileSource, bool);

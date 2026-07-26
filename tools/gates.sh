@@ -19,5 +19,11 @@ run "workspace layout"     "gcc -O2 -Wall -Wextra -I model-families/common/inclu
 run "tensor map geometry"  "gcc -O2 -Wall -Wextra -I model-families/common/include -o /tmp/g_t tests/test_tensor_map_geometry.c && /tmp/g_t"
 run "tensor map encode"    "gcc -O2 -Wall -Wextra -I model-families/common/include -I tests/cuda_driver_stub -o /tmp/g_e tests/test_tensor_map_encode.c tests/cuda_driver_stub/stub.c && /tmp/g_e"
 run "autotune builds"      "gcc -O2 -Wall -Wextra -o /tmp/g_a tools/spark_lm_autotune.c"
+# The tree is first on the include path so nothing in tools/shim can shadow it.
+for model in llms/*/
+do
+	name=$(basename "$model")
+	run "unity: $name" "g++ -std=c++17 -fsyntax-only -I. -Itools/shim -DLM_UNITY='\"$model/unity.cu\"' -x c++ tools/shim/unity_check.cpp"
+done
 printf "  ---- %d pass, %d fail\n" "$ok" "$bad"
 [ "$bad" -eq 0 ]
