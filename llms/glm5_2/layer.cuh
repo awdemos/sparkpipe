@@ -45,6 +45,7 @@
 #include "kernels/attn.cuh"
 #include "kernels/topk.cuh"
 #include "kernels/project.cuh"
+#include "kernels/head.cuh"
 #include "kernels/formats/bf16.cuh"
 #include "llms/glm5_2/config.h"
 
@@ -117,6 +118,10 @@ struct Glm52LayerBuffers
 	float *route_weight;
 	uint32_t *route_source_token;
 	uint32_t *route_packed_row;
+	float *head_candidate_score;
+	uint32_t *head_candidate_token;
+	uint32_t *output_token;
+	float *output_score;
 	uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix;
 	// cache
@@ -369,5 +374,38 @@ static int32_t Glm52LayerMoe(const Glm52LayerBuffers *b, uint32_t rows, uint32_t
 		   GLM52_LAYER_THREADS,0,stream>>>(
 		b->expert_out_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16,
 		rows,GLM52_TOP_K,GLM52_HIDDEN);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+// The sampling head. Once per step, after the last layer.
+//
+// Split from the layer because it runs once where a layer runs 78 times, and
+// because its cost is a different shape: the head reads 1.9 GB of embedding at
+// full vocabulary against a layer's 5.3 GB of experts, so at one token per step
+// it is a third of the work and at 128 it is a thirtieth.
+//
+// GLM52_RESTRICTED_VOCAB is the constrained path. A caller that knows its
+// continuation set - a grammar, a tool schema - passes the token ids and pays
+// the subset's size instead of the vocabulary's: 256 tokens is 1.6 MB against
+// 1.9 GB, and it is exact rather than approximate because the excluded tokens
+// were going to be rejected anyway.
+#define GLM52_HEAD_TILE 1024u
+
+static int32_t Glm52Head(const Glm52LayerBuffers *b, const void *head_norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, cudaStream_t stream)
+{
+	uint32_t tiles = (vocabulary + GLM52_HEAD_TILE - 1u) / GLM52_HEAD_TILE;
+	// The final norm has no residual to add and no residual to write: this is
+	// the end of the stream, not a layer boundary.
+	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
+		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
+		b->hidden_bf16,0,(const uint16_t *)head_norm_weight,
+		0,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+	LmHeadCandidateKernel<GLM52_LAYER_THREADS,GLM52_HEAD_TILE>
+		<<<dim3(tiles,rows),GLM52_LAYER_THREADS,0,stream>>>(
+		b->normed_bf16,(const uint16_t *)head_weight,token_ids,
+		b->head_candidate_score,b->head_candidate_token,rows,GLM52_HIDDEN,vocabulary);
+	LmHeadCommitKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
+		b->head_candidate_score,b->head_candidate_token,tiles,
+		b->output_token,b->output_score,rows);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }

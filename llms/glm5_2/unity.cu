@@ -136,6 +136,10 @@ template __global__ void LmTopkGatherKernel<GLM52_NORM_THREADS>(const float *, u
 template __global__ void LmSpeculativeVerifyGreedyKernel<GLM52_NORM_THREADS>(const uint32_t *, const uint32_t *, uint32_t, uint32_t *, uint32_t *, uint32_t *);
 template __global__ void LmSpeculativeVerifySampledKernel<GLM52_NORM_THREADS>(const uint32_t *, const float *, const float *, const float *, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *);
 
+template __global__ void LmHeadCandidateKernel<GLM52_NORM_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
+template __global__ void LmHeadCommitKernel<GLM52_NORM_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
+template __global__ void LmHeadSoftmaxKernel<GLM52_NORM_THREADS>(float *, uint32_t, uint32_t, float);
+
 // -- entry points ------------------------------------------------------------
 //
 // What runtime/ calls. One per weight format; the tile height is chosen inside
@@ -229,4 +233,16 @@ extern "C" int32_t Glm52LayerMoeFp8(const Glm52LayerBuffers *b, uint32_t rows, u
 extern "C" int32_t Glm52LayerMoeInt7(const Glm52LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
 {
 	return(Glm52LayerMoe<LmInt7>(b,rows,packed_rows,sms,stream));
+}
+
+// The head. Full vocabulary and restricted; the second is the same kernels with
+// a token id list and costs the subset's size.
+extern "C" int32_t Glm52HeadFullVocab(const Glm52LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t stream)
+{
+	return(Glm52Head(b,norm_weight,head_weight,0,GLM52_VOCAB,rows,stream));
+}
+
+extern "C" int32_t Glm52HeadRestricted(const Glm52LayerBuffers *b, const void *norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t count, uint32_t rows, cudaStream_t stream)
+{
+	return(Glm52Head(b,norm_weight,head_weight,token_ids,count,rows,stream));
 }

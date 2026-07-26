@@ -21,7 +21,11 @@
 #define GLM52_HIDDEN 6144u                     /* CONFIG hidden_size */
 #define GLM52_LAYERS 78u                       /* CONFIG num_hidden_layers */
 #define GLM52_FIRST_ROUTED_LAYER 3u            /* CONFIG first_k_dense_replace */
-#define GLM52_VOCAB 154880u                    /* CONFIG vocab_size */
+#define GLM52_VOCAB 154880u                   /* CONFIG vocab_size */
+// The constrained-decoding subset. A caller with a grammar or a tool schema pays
+// this instead of the vocabulary: 256 tokens is 1.6 MB of embedding against
+// 1.9 GB, and it is exact rather than approximate.
+#define GLM52_RESTRICTED_VOCAB 256u                    /* CONFIG vocab_size */
 #define GLM52_RMS_EPSILON 1e-05f               /* CONFIG rms_norm_eps */
 #define GLM52_ROPE_THETA 8000000.0f            /* CONFIG rope_theta */
 
