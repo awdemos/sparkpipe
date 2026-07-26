@@ -205,6 +205,19 @@ extern "C" int32_t Glm52LayerAttentionInt7(const Glm52LayerBuffers *b, uint32_t 
 	return(Glm52LayerAttention<LmInt7>(b,rows,context,sms,stream));
 }
 
+// Layers before GLM52_FIRST_ROUTED_LAYER have no router and no experts. A caller
+// that sends a dense layer to the MoE entry point selects among experts the
+// checkpoint does not carry for it.
+extern "C" int32_t Glm52LayerDenseMlpFp8(const Glm52LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
+{
+	return(Glm52LayerDenseMlp<LmFp8>(b,rows,sms,stream));
+}
+
+extern "C" int32_t Glm52LayerDenseMlpInt7(const Glm52LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
+{
+	return(Glm52LayerDenseMlp<LmInt7>(b,rows,sms,stream));
+}
+
 extern "C" int32_t Glm52LayerMoeFp8(const Glm52LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
 {
 	return(Glm52LayerMoe<LmFp8>(b,rows,packed_rows,sms,stream));

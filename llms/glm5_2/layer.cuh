@@ -88,6 +88,10 @@ struct Glm52LayerBuffers
 	const void *output_scale;
 	const void *mlp_norm_weight;
 	const void *router_weight;
+	const void *dense_gate_up_weight;
+	const void *dense_gate_up_scale;
+	const void *dense_down_weight;
+	const void *dense_down_scale;
 	const void *expert_w1_weight;
 	const void *expert_w1_scale;
 	const void *expert_w2_weight;
@@ -99,6 +103,8 @@ struct Glm52LayerBuffers
 	LmAbsorbedOutputs projected;
 	uint16_t *raw_query_bf16;
 	uint16_t *raw_kv_bf16;
+	// latent followed by rotated key rope, exactly one cache slot wide
+	uint16_t *kv_slot_bf16;
 	uint16_t *attention_latent_bf16;
 	uint16_t *attention_out_bf16;
 	uint8_t *packed_activation;
@@ -166,6 +172,15 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 	// If the projection ever emits them the other way the rotation lands on the
 	// latent half, and the result is fluent text with the wrong positions, which
 	// is among the hardest failures to attribute. The assert is cheap.
+	// THE CACHE WRITE, which an earlier version of this file omitted entirely -
+	// attention read slots that nothing had filled. The latent and the rotated
+	// key rope are what a slot holds, so the write happens after RoPE and before
+	// attention reads it.
+	//
+	// Ordering matters and is not obvious: the current token's own key must be in
+	// the cache before attention runs, because a token attends to itself. Writing
+	// after would make every token's last position read the previous step's row.
+	//
 	// RoPE applies to the two rope projections, which are their own buffers of
 	// exactly GLM52_ROPE_DIM elements - so the stride is the rope width and the
 	// offset is zero. An earlier version rotated a slice of a fused row at
@@ -175,6 +190,8 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 		b->projected.query_rope_bf16,b->positions,GLM52_ROPE_DIM,0u,GLM52_ROPE_DIM,GLM52_ROPE_THETA);
 	LmRopeKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
 		b->projected.key_rope_bf16,b->positions,GLM52_ROPE_DIM,0u,GLM52_ROPE_DIM,GLM52_ROPE_THETA);
+	LmKvStoreKernel<Glm52Kv,GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
+		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows,GLM52_LATENT_ROW);
 	if ( sparse )
 	{
 		LmSparseScoreKernel<Glm52Kv,GLM52_LAYER_THREADS,GLM52_DSA_INDEX_DIM>
@@ -215,6 +232,57 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 		&gemm,b->packed_activation,b->output_weight,rows,rows,GLM52_TOP_K,1u,
 		GLM52_ATTN_HEADS * GLM52_LATENT,GLM52_HIDDEN,sms,false,stream);
 	return(status);
+}
+
+// Dense MLP half of a layer.
+//
+// The first GLM52_FIRST_ROUTED_LAYER layers have no router and no experts - they
+// are a plain gated MLP at the dense intermediate width. An earlier version of
+// this file routed every layer, which for layers 0 through 2 means selecting
+// among experts that the checkpoint does not carry for them.
+//
+// Structurally it is the routed half with the routing removed: one group, no
+// top-k, no expansion, no finalize. That it collapses to the same three GEMMs
+// with group_count 1 is the same property that makes a dense linear a grouped
+// GEMM - and is why this shares the routed half's kernels rather than having
+// its own.
+template<class Format>
+static int32_t Glm52LayerDenseMlp(const Glm52LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
+{
+	LmGemmArguments gemm;
+	int32_t status;
+	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
+		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
+		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
+		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
+		<<<dim3(rows,GLM52_HIDDEN / Format::kScaleGroup),GLM52_LAYER_THREADS,
+		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,GLM52_HIDDEN);
+	memset(&gemm,0,sizeof(gemm));
+	gemm.scale_a = (const float *)b->packed_scale;
+	gemm.scale_b = (const float *)b->dense_gate_up_scale;
+	gemm.group_row_offset = b->dense_row_offset;
+	gemm.group_tile_prefix = b->dense_tile_prefix;
+	gemm.output_bf16 = b->gate_up_bf16;
+	status = LmGemmLaunch<Format,GLM52_LAYER_TILE_N,Format::kTileK,GLM52_LAYER_STAGES,GLM52_LAYER_WARPS>(
+		&gemm,b->packed_activation,b->dense_gate_up_weight,rows,rows,GLM52_TOP_K,1u,
+		GLM52_HIDDEN,GLM52_DENSE_INTERMEDIATE * 2u,sms,false,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LmSiluMulKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
+		b->gate_up_bf16,b->intermediate_bf16,GLM52_DENSE_INTERMEDIATE,true);
+	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
+		<<<dim3(rows,GLM52_DENSE_INTERMEDIATE / Format::kScaleGroup),GLM52_LAYER_THREADS,
+		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+		b->intermediate_bf16,0,b->packed_activation,b->packed_scale,
+		rows,GLM52_DENSE_INTERMEDIATE);
+	gemm.scale_a = (const float *)b->packed_scale;
+	gemm.scale_b = (const float *)b->dense_down_scale;
+	gemm.output_bf16 = b->hidden_bf16;
+	return(LmGemmLaunch<Format,GLM52_LAYER_TILE_N,Format::kTileK,GLM52_LAYER_STAGES,GLM52_LAYER_WARPS>(
+		&gemm,b->packed_activation,b->dense_down_weight,rows,rows,GLM52_TOP_K,1u,
+		GLM52_DENSE_INTERMEDIATE,GLM52_HIDDEN,sms,false,stream));
 }
 
 // Routed MoE half of a layer.

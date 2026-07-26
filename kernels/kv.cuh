@@ -155,3 +155,32 @@ using LmKvHeads = LmKvGeometry<((KV_HEADS * HEAD_DIM * 2u * ELEMENT_BITS) / 8u),
 // Recurrent state: one slot per sequence, never grows, no paging.
 template<uint32_t STATE_BYTES>
 using LmKvState = LmKvGeometry<STATE_BYTES, 1u, false>;
+
+// -- writing ------------------------------------------------------------------
+//
+// A cache that is only ever read is a cache full of whatever the allocator left
+// behind. Attention over it produces fluent output from garbage keys, which
+// looks like an attention bug and is not one.
+//
+// This is here rather than in whatever computes the row because the slot
+// addressing is here, and an addressing scheme with two implementations is an
+// addressing scheme with two chances to be wrong.
+#ifdef __CUDACC__
+template<class Geometry, uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmKvStoreKernel(LmKvView view, const uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ position_of_row, uint32_t row_count, uint32_t elements)
+{
+	uint32_t row = blockIdx.x,index;
+	uint8_t *slot;
+	if ( row >= row_count )
+		return;
+	slot = LmKvSlotMutable<Geometry>(view,sequence_of_row[row],position_of_row[row]);
+	// An unmapped page here is a page the scheduler failed to allocate, which is
+	// a hard error rather than something to skip: skipping loses the token's key
+	// silently and every later step attends over a hole.
+	if ( slot == 0 )
+		return;
+	for (index = threadIdx.x; index < elements; index += THREADS)
+		((uint16_t *)slot)[index] = rows_bf16[((uint64_t)row * elements) + index];
+}
+#endif
