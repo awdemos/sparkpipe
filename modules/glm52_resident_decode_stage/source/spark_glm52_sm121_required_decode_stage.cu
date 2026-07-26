@@ -30,6 +30,9 @@
 #include <cutlass/float8.h>
 #include "flashinfer/gemm/gemm_groupwise_sm120.cuh"
 #include "flashinfer/gemm/group_gemm_fp8_groupwise_sm120.cuh"
+#include "sparkpipe/spark_lm_group_gemm.cuh"
+#include "sparkpipe/spark_lm_group_gemm_workspace.h"
+#include "sparkpipe/spark_lm_tensor_map_encode.h"
 
 #include <float.h>
 #include <stdint.h>
@@ -38,6 +41,10 @@
 #include <string.h>
 
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS 256u
+// Persistent grid for the first-party routed GEMM: 48 SMs on GB10, one CTA each.
+// Sized to the machine rather than the problem so a short expert group never
+// leaves an SM idle behind a long one.
+#define SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_PERSISTENT_BLOCKS 48u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_WARP_LANES 32u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_WMMA_TILE 16u
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DSA_SCORE_CANDIDATE_TILES 4u
@@ -9840,6 +9847,150 @@ void SparkGlm52ResidentDecodeStageSiluMulNvfp4QuantizeKernel(
 }
 
 
+// Quantise the routed hidden rows straight into packed NVFP4 layout.
+//
+// The FP8 path quantises once per token and then replicates the row top_k-1
+// times with Fp8MoePackedHiddenGatherKernel. That copy is bit-identical to its
+// source and exists only because the grouped GEMM needs contiguous rows per
+// expert. Reading the source token index out of the route view instead lets one
+// kernel write every packed row directly: same output, no replication pass, one
+// launch instead of two.
+static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)
+void SparkGlm52ResidentDecodeStageNvfp4PackedHiddenQuantizeKernel(
+    const uint16_t *__restrict__ hidden_bf16,
+    const uint32_t *__restrict__ packed_source_token_indices,
+    uint8_t *__restrict__ packed_hidden_e2m1,
+    uint8_t *__restrict__ packed_hidden_scale_ue4m3,
+    uint32_t packed_row_count,
+    uint32_t hidden_dimension,
+    uint32_t group_size)
+{
+    __shared__ float shared_reduction[
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS];
+    uint32_t packed_row;
+    uint32_t group_index;
+    uint32_t source_token;
+    uint32_t group_begin;
+    uint32_t group_end;
+    uint32_t pair_index;
+    uint32_t group_count;
+    uint64_t source_base;
+    float local_absmax;
+    float group_absmax;
+    float scale_value;
+
+    packed_row = blockIdx.x;
+    group_index = blockIdx.y;
+    if (packed_row >= packed_row_count || group_size == 0u ||
+        (group_size & 1u) != 0u)
+    {
+        return;
+    }
+    group_count = (hidden_dimension + group_size - 1u) / group_size;
+    if (group_index >= group_count)
+    {
+        return;
+    }
+    source_token = packed_source_token_indices[packed_row];
+    source_base = (uint64_t)source_token * (uint64_t)hidden_dimension;
+    group_begin = group_index * group_size;
+    group_end = group_begin + group_size;
+    if (group_end > hidden_dimension)
+    {
+        group_end = hidden_dimension;
+    }
+    local_absmax = 0.0f;
+    for (pair_index = group_begin + threadIdx.x;
+         pair_index < group_end;
+         pair_index += blockDim.x)
+    {
+        local_absmax = fmaxf(
+            local_absmax,
+            fabsf(SparkGlm52ResidentDecodeStageBf16ToFloat(
+                hidden_bf16[source_base + (uint64_t)pair_index])));
+    }
+    group_absmax = SparkGlm52ResidentDecodeStageBlockReduceMax(
+        local_absmax,
+        shared_reduction);
+    scale_value = fmaxf(group_absmax / 6.0f, 1.0e-8f);
+    if (threadIdx.x == 0u)
+    {
+        packed_hidden_scale_ue4m3[
+            ((uint64_t)packed_row * (uint64_t)group_count) + group_index] =
+            SparkGlm52ResidentDecodeStageEncodeUe4m3Saturate(scale_value);
+    }
+    __syncthreads();
+    for (pair_index = group_begin + (threadIdx.x * 2u);
+         pair_index < group_end;
+         pair_index += blockDim.x * 2u)
+    {
+        float first_value;
+        float second_value;
+        uint8_t packed_value;
+
+        first_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+            hidden_bf16[source_base + (uint64_t)pair_index]) / scale_value;
+        second_value = 0.0f;
+        if (pair_index + 1u < group_end)
+        {
+            second_value = SparkGlm52ResidentDecodeStageBf16ToFloat(
+                hidden_bf16[source_base + (uint64_t)pair_index + 1u]) /
+                scale_value;
+        }
+        packed_value = (uint8_t)(
+            (SparkGlm52ResidentDecodeStageEncodeE2m1Saturate(first_value) & 15u) |
+            ((SparkGlm52ResidentDecodeStageEncodeE2m1Saturate(second_value) & 15u)
+                << 4u));
+        packed_hidden_e2m1[
+            (((uint64_t)packed_row * (uint64_t)hidden_dimension) +
+                (uint64_t)pair_index) >> 1u] = packed_value;
+    }
+}
+
+
+// The route view exposes per-expert offsets and counts; the grouped GEMM wants a
+// terminated row indptr and a running tile total so a CTA can find its group by
+// binary search. One block converts both. expert_count is 256, so a serial scan
+// in a single thread is 256 iterations - a parallel scan here would be more code
+// for no measurable gain, and the O(N) is over experts, not tokens.
+static __global__ __launch_bounds__(1, 1)
+void SparkGlm52ResidentDecodeStageNvfp4GroupTilePrefixKernel(
+    const uint32_t *__restrict__ expert_route_offsets,
+    const uint32_t *__restrict__ expert_route_counts,
+    uint32_t *__restrict__ group_row_offset,
+    uint32_t *__restrict__ group_tile_prefix,
+    uint32_t expert_count,
+    uint32_t tile_m,
+    uint32_t neuron_tiles)
+{
+    uint32_t expert_index;
+    uint32_t running_tiles;
+    uint32_t rows;
+    uint32_t m_tiles;
+
+    if (threadIdx.x != 0u || blockIdx.x != 0u || tile_m == 0u)
+    {
+        return;
+    }
+    running_tiles = 0u;
+    for (expert_index = 0u; expert_index < expert_count; ++expert_index)
+    {
+        rows = expert_route_counts[expert_index];
+        group_row_offset[expert_index] = expert_route_offsets[expert_index];
+        group_tile_prefix[expert_index] = running_tiles;
+        m_tiles = (rows + tile_m - 1u) / tile_m;
+        running_tiles += m_tiles * neuron_tiles;
+    }
+    // Terminating entries. The GEMM reads group_row_offset[g + 1] as the row
+    // limit for group g, so the array must have expert_count + 1 entries or the
+    // last expert reads past its own rows.
+    group_row_offset[expert_count] =
+        expert_route_offsets[expert_count - 1u] +
+        expert_route_counts[expert_count - 1u];
+    group_tile_prefix[expert_count] = running_tiles;
+}
+
+
 static __device__ __forceinline__ float SparkGlm52ResidentDecodeStageWarpDotProductFp8Kv(
     const float *shared_query,
     const uint8_t *key_nope_cache_fp8_e4m3,
@@ -10959,6 +11110,219 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchMoeRouterForB12x(
     return SPARK_STATUS_OK;
 }
 
+// Routed MoE on first-party kernels end to end. Seven stages, no vendored code.
+//
+// Decomposed rather than written as one function: each helper below is one
+// stage, and a stage that fails names itself in the status it returns. The
+// orchestrator is the sequence and nothing else.
+static SparkStatus SparkGlm52ResidentDecodeStageNvfp4PrepareRoute(
+    const SparkGlm52ResidentDecodeStageB12xMoePlan *b12x_plan,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView *route_view,
+    const spark_lm_workspace_layout_t *layout,
+    uint8_t *workspace,
+    uint32_t active_sequence_count,
+    uint32_t neuron_tiles,
+    cudaStream_t cuda_stream)
+{
+    SparkStatus status;
+
+    status = SparkGlm52Sm121RequiredDecodeStageLaunchMoePackedRouteBuild(
+        pipeline_slot->moe_topk_expert_ids,
+        pipeline_slot->moe_topk_weights,
+        route_view,
+        active_sequence_count,
+        (void *)cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    SparkGlm52ResidentDecodeStageNvfp4GroupTilePrefixKernel<<<1, 1, 0, cuda_stream>>>(
+        route_view->expert_route_offsets,
+        route_view->expert_route_counts,
+        (uint32_t *)(workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_ROUTE_INDPTR]),
+        (uint32_t *)(workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_GROUP_TILE_PREFIX]),
+        b12x_plan->expert_count,
+        SPARK_LM_GROUP_GEMM_DEFAULT_TILE_M,
+        neuron_tiles);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageNvfp4QuantizeRoutedHidden(
+    const SparkGlm52ResidentDecodeStageB12xMoePlan *b12x_plan,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView *route_view,
+    const spark_lm_workspace_layout_t *layout,
+    uint8_t *workspace,
+    cudaStream_t cuda_stream)
+{
+    dim3 grid;
+
+    grid = dim3(
+        (uint32_t)layout->packed_rows,
+        b12x_plan->hidden_dimension / SPARK_LM_WORKSPACE_NVFP4_GROUP,
+        1u);
+    SparkGlm52ResidentDecodeStageNvfp4PackedHiddenQuantizeKernel<<<
+        grid,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0,
+        cuda_stream>>>(
+        (const uint16_t *)pipeline_slot->post_attention_normalized_hidden_bf16,
+        route_view->packed_source_token_indices,
+        workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN],
+        workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN_SCALE],
+        (uint32_t)layout->packed_rows,
+        b12x_plan->hidden_dimension,
+        SPARK_LM_WORKSPACE_NVFP4_GROUP);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+static SparkStatus SparkGlm52ResidentDecodeStageNvfp4SiluMulRequantize(
+    const SparkGlm52ResidentDecodeStageB12xMoePlan *b12x_plan,
+    const spark_lm_workspace_layout_t *layout,
+    uint8_t *workspace,
+    cudaStream_t cuda_stream)
+{
+    const uint16_t *gate_bf16;
+    const uint16_t *up_bf16;
+
+    gate_bf16 = (const uint16_t *)(workspace +
+        layout->offset[SPARK_LM_WORKSPACE_REGION_GATE_UP_BF16]);
+    // w1 emits gate and up contiguously per row, gate first, so up starts one
+    // intermediate_dimension in. gate_up_order on the plan records which
+    // ordering the pack used and a mismatch swaps SiLU's argument silently.
+    up_bf16 = gate_bf16 + b12x_plan->intermediate_dimension;
+    SparkGlm52ResidentDecodeStageSiluMulNvfp4QuantizeKernel<<<
+        (uint32_t)layout->packed_rows,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0,
+        cuda_stream>>>(
+        gate_bf16,
+        up_bf16,
+        0,
+        workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_INTERMEDIATE],
+        workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_INTERMEDIATE_SCALE],
+        (uint32_t)layout->packed_rows,
+        b12x_plan->intermediate_dimension,
+        b12x_plan->intermediate_dimension * 2u,
+        SPARK_LM_WORKSPACE_NVFP4_GROUP);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
+}
+
+// Encode the two descriptors one routed GEMM needs. Weights are expert-major so
+// a single rank-3 map covers all 256 experts; activations are a rank-2 packed
+// slab. Both are NVFP4, so every K extent halves into bytes inside
+// spark_lm_tensor_map_plan_build rather than at any call site.
+static SparkStatus SparkGlm52ResidentDecodeStageNvfp4EncodeGemmMaps(
+    CUtensorMap *activation_map,
+    CUtensorMap *weight_map,
+    const void *activation_payload,
+    const void *weight_payload,
+    uint32_t packed_rows,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t expert_count)
+{
+    spark_lm_tensor_map_request_t request;
+
+    memset(&request, 0, sizeof(request));
+    request.global_address = activation_payload;
+    request.rows = packed_rows;
+    request.columns = input_dimension;
+    request.groups = 1u;
+    request.box_rows = SPARK_LM_GROUP_GEMM_DEFAULT_TILE_M;
+    request.box_columns = SPARK_LM_GROUP_GEMM_NVFP4_TILE_K;
+    request.element_bits = SPARK_LM_TENSOR_MAP_BITS_NVFP4;
+    if (spark_lm_tensor_map_prepare(activation_map, &request) !=
+        SPARK_LM_TENSOR_MAP_ENCODE_OK)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(&request, 0, sizeof(request));
+    request.global_address = weight_payload;
+    request.rows = output_dimension;
+    request.columns = input_dimension;
+    request.groups = expert_count;
+    request.box_rows = SPARK_LM_GROUP_GEMM_DEFAULT_TILE_N;
+    request.box_columns = SPARK_LM_GROUP_GEMM_NVFP4_TILE_K;
+    request.element_bits = SPARK_LM_TENSOR_MAP_BITS_NVFP4;
+    if (spark_lm_tensor_map_prepare(weight_map, &request) !=
+        SPARK_LM_TENSOR_MAP_ENCODE_OK)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SPARK_STATUS_OK;
+}
+
+// One routed GEMM: encode, fill arguments, launch. Persistent grid, so the
+// launch is sized to the machine and the tile scheduler walks the work.
+static SparkStatus SparkGlm52ResidentDecodeStageNvfp4LaunchRoutedGemm(
+    const void *activation_payload,
+    const void *activation_scale,
+    const void *weight_payload,
+    const void *weight_scale,
+    void *output_bf16,
+    const uint32_t *group_row_offset,
+    const uint32_t *group_tile_prefix,
+    uint32_t packed_rows,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t expert_count,
+    uint32_t total_tiles,
+    cudaStream_t cuda_stream)
+{
+    SparkLmGroupGemmArguments arguments;
+    CUtensorMap activation_map;
+    CUtensorMap weight_map;
+    SparkStatus status;
+    uint32_t grid_blocks;
+
+    status = SparkGlm52ResidentDecodeStageNvfp4EncodeGemmMaps(
+        &activation_map,
+        &weight_map,
+        activation_payload,
+        weight_payload,
+        packed_rows,
+        input_dimension,
+        output_dimension,
+        expert_count);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    memset(&arguments, 0, sizeof(arguments));
+    arguments.tensor_map_a = &activation_map;
+    arguments.tensor_map_b = &weight_map;
+    arguments.scale_a = (const float *)activation_scale;
+    arguments.scale_b = (const float *)weight_scale;
+    arguments.group_row_offset = group_row_offset;
+    arguments.group_tile_prefix = group_tile_prefix;
+    arguments.output_bf16 = output_bf16;
+    arguments.group_count = expert_count;
+    arguments.input_dimension = input_dimension;
+    arguments.output_dimension = output_dimension;
+    arguments.total_tiles = total_tiles;
+    grid_blocks = total_tiles <
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_PERSISTENT_BLOCKS
+        ? total_tiles
+        : SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_PERSISTENT_BLOCKS;
+    SparkLmGroupGemmNvfp4Kernel<
+        SPARK_LM_GROUP_GEMM_DEFAULT_TILE_M,
+        SPARK_LM_GROUP_GEMM_DEFAULT_TILE_N,
+        SPARK_LM_GROUP_GEMM_NVFP4_TILE_K,
+        4u,
+        8u><<<grid_blocks, 8u * 32u, 0, cuda_stream>>>(arguments);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
+}
+
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchValidatedFlashInferB12xMoe(
     const SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan *b12x_moe_dispatch_plan,
     const SparkGlm52ResidentDecodeStageB12xMoePlan *b12x_plan,
@@ -11556,6 +11920,160 @@ void SparkGlm52ResidentDecodeStageMoePackedFinalizeKernel(
         ((uint64_t)token_index * (uint64_t)hidden_dimension) +
         (uint64_t)hidden_index] =
         SparkGlm52ResidentDecodeStageFloatToBf16(accumulated_value);
+}
+
+// The routed MoE, first-party end to end. Seven stages, no vendored kernel.
+//
+// This is an orchestrator and nothing else: every stage is one call, each stage
+// returns its own status, and the only logic here is the order. The weight pack,
+// the route view and the finalize kernel are shared with the B12x path
+// unchanged - what differs is which kernel multiplies.
+//
+// w1_alpha, w2_alpha and fc2_input_scale are deliberately not read. The packer
+// sets all three to 1.0 by expert to satisfy the FlashInfer interface
+// convention; the quantisation is carried entirely by the UE4M3 block scales.
+static SparkStatus SparkGlm52ResidentDecodeStageLaunchNvfp4ExpertTensorCoreMoe(
+    const SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan *dispatch_plan,
+    const SparkGlm52ResidentDecodeStageB12xMoePlan *b12x_plan,
+    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    uint32_t active_sequence_count,
+    cudaStream_t cuda_stream)
+{
+    SparkGlm52Sm121RequiredDecodeStageMoePackedRouteView route_view;
+    spark_lm_workspace_shape_t shape;
+    spark_lm_workspace_layout_t layout;
+    uint8_t *workspace;
+    uint32_t neuron_tiles;
+    uint32_t gate_up_dimension;
+    dim3 finalize_grid;
+    SparkStatus status;
+
+    if (dispatch_plan == 0 || b12x_plan == 0 || node_context == 0 ||
+        pipeline_slot == 0 || cuda_stream == 0 || active_sequence_count == 0u ||
+        b12x_plan->workspace == 0 ||
+        b12x_plan->w1_weight_fp4_static_view == 0 ||
+        b12x_plan->w1_scale_static_storage_ue4m3 == 0 ||
+        b12x_plan->w2_weight_fp4_static_view == 0 ||
+        b12x_plan->w2_scale_static_storage_ue4m3 == 0 ||
+        pipeline_slot->post_attention_normalized_hidden_bf16 == 0 ||
+        pipeline_slot->moe_topk_expert_ids == 0 ||
+        pipeline_slot->moe_topk_weights == 0 ||
+        pipeline_slot->moe_route_output_bf16 == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (active_sequence_count > b12x_plan->maximum_active_sequence_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(&shape, 0, sizeof(shape));
+    shape.tokens = active_sequence_count;
+    shape.top_k = b12x_plan->top_k;
+    shape.expert_count = b12x_plan->expert_count;
+    shape.hidden_dimension = b12x_plan->hidden_dimension;
+    shape.intermediate_dimension = b12x_plan->intermediate_dimension;
+    shape.tile_m = SPARK_LM_GROUP_GEMM_DEFAULT_TILE_M;
+    shape.tile_n = SPARK_LM_GROUP_GEMM_DEFAULT_TILE_N;
+    if (spark_lm_workspace_layout_build(&shape, &layout) != SPARK_LM_WORKSPACE_OK)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (layout.total_bytes > b12x_plan->workspace_bytes)
+    {
+        return SPARK_STATUS_INSUFFICIENT_RESOURCES;
+    }
+    workspace = (uint8_t *)b12x_plan->workspace;
+    gate_up_dimension = b12x_plan->intermediate_dimension * 2u;
+    neuron_tiles = (gate_up_dimension + SPARK_LM_GROUP_GEMM_DEFAULT_TILE_N - 1u) /
+        SPARK_LM_GROUP_GEMM_DEFAULT_TILE_N;
+    memset(&route_view, 0, sizeof(route_view));
+    status = SparkGlm52Sm121RequiredDecodeStageResolveMoePackedRouteWorkspace(
+        node_context,
+        pipeline_slot,
+        active_sequence_count,
+        &route_view);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageNvfp4PrepareRoute(
+        b12x_plan, pipeline_slot, &route_view, &layout, workspace,
+        active_sequence_count, neuron_tiles, cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageNvfp4QuantizeRoutedHidden(
+        b12x_plan, pipeline_slot, &route_view, &layout, workspace, cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageNvfp4LaunchRoutedGemm(
+        workspace + layout.offset[SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN],
+        workspace + layout.offset[SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN_SCALE],
+        b12x_plan->w1_weight_fp4_static_view,
+        b12x_plan->w1_scale_static_storage_ue4m3,
+        workspace + layout.offset[SPARK_LM_WORKSPACE_REGION_GATE_UP_BF16],
+        (const uint32_t *)(workspace + layout.offset[SPARK_LM_WORKSPACE_REGION_ROUTE_INDPTR]),
+        (const uint32_t *)(workspace + layout.offset[SPARK_LM_WORKSPACE_REGION_GROUP_TILE_PREFIX]),
+        (uint32_t)layout.packed_rows,
+        b12x_plan->hidden_dimension,
+        gate_up_dimension,
+        b12x_plan->expert_count,
+        (uint32_t)layout.total_tiles,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageNvfp4SiluMulRequantize(
+        b12x_plan, &layout, workspace, cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkGlm52ResidentDecodeStageNvfp4LaunchRoutedGemm(
+        workspace + layout.offset[SPARK_LM_WORKSPACE_REGION_INTERMEDIATE],
+        workspace + layout.offset[SPARK_LM_WORKSPACE_REGION_INTERMEDIATE_SCALE],
+        b12x_plan->w2_weight_fp4_static_view,
+        b12x_plan->w2_scale_static_storage_ue4m3,
+        workspace + layout.offset[SPARK_LM_WORKSPACE_REGION_ROUTE_OUTPUT_BF16],
+        (const uint32_t *)(workspace + layout.offset[SPARK_LM_WORKSPACE_REGION_ROUTE_INDPTR]),
+        (const uint32_t *)(workspace + layout.offset[SPARK_LM_WORKSPACE_REGION_GROUP_TILE_PREFIX]),
+        (uint32_t)layout.packed_rows,
+        b12x_plan->intermediate_dimension,
+        b12x_plan->hidden_dimension,
+        b12x_plan->expert_count,
+        (uint32_t)layout.total_tiles,
+        cuda_stream);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    finalize_grid = dim3(
+        (b12x_plan->hidden_dimension +
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS - 1u) /
+            SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        active_sequence_count,
+        1u);
+    SparkGlm52ResidentDecodeStageMoePackedFinalizeKernel<<<
+        finalize_grid,
+        SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS,
+        0u,
+        cuda_stream>>>(
+        (const uint16_t *)(workspace +
+            layout.offset[SPARK_LM_WORKSPACE_REGION_ROUTE_OUTPUT_BF16]),
+        route_view.packed_route_rows_by_token_route,
+        pipeline_slot->moe_topk_weights,
+        (uint16_t *)pipeline_slot->moe_route_output_bf16,
+        active_sequence_count,
+        b12x_plan->top_k,
+        b12x_plan->hidden_dimension);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? SPARK_STATUS_OK
+        : SPARK_STATUS_INTERNAL_ERROR;
 }
 
 static __global__ __launch_bounds__(SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 4)

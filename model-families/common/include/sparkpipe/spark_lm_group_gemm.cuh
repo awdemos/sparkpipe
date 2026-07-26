@@ -375,6 +375,8 @@ void SparkLmGroupGemmFp8Kernel(__grid_constant__ const SparkLmGroupGemmArguments
 // explicitly. The constraint does not exist for FP8, where 128 elements are
 // already 128 bytes, which is exactly why it is easy to miss.
 #define SPARK_LM_GROUP_GEMM_NVFP4_TILE_K 256u
+#define SPARK_LM_GROUP_GEMM_DEFAULT_TILE_M 16u
+#define SPARK_LM_GROUP_GEMM_DEFAULT_TILE_N 128u
 
 // scale_vec::4X with ue4m3 scales is one scale per 16 elements, which matches
 // SPARK_GLM52_MODEL_NVFP4_GROUP_SIZE. The scale operands are a b32 register
@@ -449,4 +451,57 @@ static __device__ void SparkLmGroupGemmConsumeStageNvfp4(float (*total)[4], cons
 			}
 		}
 	}
+}
+
+
+// NVFP4 grouped GEMM entry point. Same pipeline, same tile scheduler and same
+// TMA staging as the FP8 kernel; the differences are the tile body and the
+// absence of a rescale pass, because the block-scaled MMA consumes the UE4M3
+// scales directly and there is no per-K-tile partial to fold.
+template<uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS>
+static __global__ __launch_bounds__(WARPS * SPARK_LM_GROUP_GEMM_WARP_LANES, 1)
+void SparkLmGroupGemmNvfp4Kernel(__grid_constant__ const SparkLmGroupGemmArguments arguments)
+{
+	static_assert(TILE_K == SPARK_LM_GROUP_GEMM_NVFP4_TILE_K,
+		"NVFP4 TILE_K must be 256 elements; at 4 bits a 128-element tile is 64 bytes "
+		"and is narrower than the 128-byte swizzle span");
+	__shared__ __align__(SPARK_LM_TMA_ALIGNMENT_BYTES) uint8_t stage_a[STAGES][TILE_M * TILE_K / 2u];
+	__shared__ __align__(SPARK_LM_TMA_ALIGNMENT_BYTES) uint8_t stage_b[STAGES][TILE_N * TILE_K / 2u];
+	__shared__ __align__(8) uint64_t barrier_full[STAGES];
+	const uint32_t count = (TILE_M / SPARK_LM_GROUP_GEMM_MMA_M) * (TILE_N / WARPS / SPARK_LM_GROUP_GEMM_MMA_N);
+	const uint32_t neuron_tiles = (arguments.output_dimension + TILE_N - 1u) / TILE_N;
+	const uint32_t k_tiles = arguments.input_dimension / TILE_K;
+	const uint32_t scales_per_row = TILE_K / SPARK_LM_GROUP_GEMM_NVFP4_GROUP;
+	float total[(TILE_M / SPARK_LM_GROUP_GEMM_MMA_M) * (TILE_N / WARPS / SPARK_LM_GROUP_GEMM_MMA_N)][4];
+	uint32_t warp_index = threadIdx.x / SPARK_LM_GROUP_GEMM_WARP_LANES;
+	uint32_t lane_index = threadIdx.x % SPARK_LM_GROUP_GEMM_WARP_LANES;
+	uint32_t tile_index,group_index,tile_in_group,row_base,row_limit,neuron_base,k_tile,stage,ahead;
+	SparkLmGroupGemmInitialiseBarriers<STAGES>(barrier_full,WARPS * SPARK_LM_GROUP_GEMM_WARP_LANES);
+	for (tile_index = blockIdx.x; tile_index < arguments.total_tiles; tile_index += gridDim.x)
+	{
+		group_index = SparkLmGroupGemmFindGroup(arguments.group_tile_prefix,arguments.group_count,tile_index);
+		tile_in_group = tile_index - arguments.group_tile_prefix[group_index];
+		row_base = arguments.group_row_offset[group_index] + ((tile_in_group / neuron_tiles) * TILE_M);
+		row_limit = arguments.group_row_offset[group_index + 1u];
+		neuron_base = (tile_in_group % neuron_tiles) * TILE_N;
+		SparkLmGroupGemmZeroAccumulators(total,count);
+		for (stage = 0u; stage + 1u < STAGES && stage < k_tiles; ++stage)
+			SparkLmGroupGemmProduceStage<TILE_M,TILE_N,TILE_K / 2u>(arguments,stage_a[stage],stage_b[stage],&barrier_full[stage],row_base,neuron_base,stage * (TILE_K / 2u),group_index);
+		for (k_tile = 0u; k_tile < k_tiles; ++k_tile)
+		{
+			stage = k_tile % STAGES;
+			ahead = k_tile + STAGES - 1u;
+			if ( ahead < k_tiles )
+				SparkLmGroupGemmProduceStage<TILE_M,TILE_N,TILE_K / 2u>(arguments,stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier_full[ahead % STAGES],row_base,neuron_base,ahead * (TILE_K / 2u),group_index);
+			SparkLmMbarrierWait(&barrier_full[stage],(k_tile / STAGES) & 1u);
+			SparkLmGroupGemmConsumeStageNvfp4<TILE_M,TILE_N,TILE_K,WARPS>(total,stage_a[stage],stage_b[stage],
+				(const uint32_t *)(arguments.scale_a) + (k_tile * scales_per_row),
+				(const uint32_t *)(arguments.scale_b) + (k_tile * scales_per_row),
+				warp_index,lane_index);
+			__syncthreads();
+		}
+		SparkLmGroupGemmStoreAccumulators<TILE_M,TILE_N,WARPS>(arguments,total,count,row_base,row_limit,neuron_base,warp_index,lane_index);
+		__syncthreads();
+	}
+	SparkLmGroupGemmReleaseBarriers<STAGES>(barrier_full);
 }
