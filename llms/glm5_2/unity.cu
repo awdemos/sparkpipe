@@ -17,6 +17,8 @@
 #include "runtime/gemm.cuh"
 #include "kernels/norm.cuh"
 #include "kernels/attn.cuh"
+#include "kernels/topk.cuh"
+#include "kernels/speculate.cuh"
 #include "kernels/formats/fp8.cuh"
 #include "kernels/formats/int7.cuh"
 #include "kernels/formats/int6.cuh"
@@ -119,6 +121,15 @@ template __global__ void LmQuantiseRowsKernel<LmNvfp4, GLM52_NORM_THREADS>(const
 template __global__ void LmRopeKernel<GLM52_NORM_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
 template __global__ void LmAttentionDecodeKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_LATENT, GLM52_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *);
 template __global__ void LmSparseScoreKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_DSA_INDEX_DIM>(const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, uint32_t, float *);
+
+// Top-k and speculation. The router picks 8 of 256 with the small path; DSA
+// picks its positions with the radix path. Both were separate kernels before and
+// the algorithm was the same.
+template __global__ void LmTopkSmallKernel<GLM52_NORM_THREADS, GLM52_TOP_K>(const float *, uint32_t, uint32_t *, float *, float);
+template __global__ void LmTopkHistogramKernel<GLM52_NORM_THREADS>(const float *, uint32_t, uint32_t, uint32_t *);
+template __global__ void LmTopkGatherKernel<GLM52_NORM_THREADS>(const float *, uint32_t, uint32_t, const uint32_t *, uint32_t *, uint32_t *);
+template __global__ void LmSpeculativeVerifyGreedyKernel<GLM52_NORM_THREADS>(const uint32_t *, const uint32_t *, uint32_t, uint32_t *, uint32_t *, uint32_t *);
+template __global__ void LmSpeculativeVerifySampledKernel<GLM52_NORM_THREADS>(const uint32_t *, const float *, const float *, const float *, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *);
 
 // -- entry points ------------------------------------------------------------
 //
