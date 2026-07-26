@@ -8,7 +8,11 @@
 #
 # So: three buckets, reported separately and never summed.
 #
-#   CODE          what someone maintains. This is the denominator.
+#   CODE          what ships. This is the denominator.
+#   TESTS         what proves it. Tracked apart because the two trade off: a
+#                 kernel whose contract is a static_assert needs no test, so
+#                 test lines falling can mean the code got safer, not thinner.
+#                 Counting them together hides that.
 #   DOCS          prose and measurements. Grows with understanding, not debt.
 #   DIAGNOSTICS   captured tensors and logs. Evidence for measured claims.
 #                 Should live outside git, but the claims need it until it does.
@@ -24,6 +28,7 @@ classify() {
 		diagnostics/*|*/validation-logs/*) echo diagnostics ;;
 		*.bin|*.bf16|*.f32|*.i32|*.u32|*.npz|*.safetensors|*.log) echo diagnostics ;;
 		SHA256SUMS|*/SHA256SUMS) echo diagnostics ;;
+		tests/*) echo tests ;;
 		docs/*|*.md|*.txt) echo docs ;;
 		*.c|*.cu|*.cuh|*.h|*.hpp|*.cc|*.cpp|*.py|*.sh|*.mk|Makefile|*/Makefile) echo code ;;
 		*) echo other ;;
@@ -43,9 +48,14 @@ report() {
 
 echo "REPOSITORY"
 report code
+report tests
 report docs
 report diagnostics
 report other
+
+echo
+printf "  %-12s %5s   test lines per code line\n" "ratio" \
+	"$(awk 'BEGIN{printf "%.2f", '"$(grep '^tests ' /tmp/lm_metric.txt | cut -d' ' -f2- | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}')"' / '"$(grep '^code ' /tmp/lm_metric.txt | cut -d' ' -f2- | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}')"'}')"
 
 echo
 echo "CODE ONLY, by tree"
