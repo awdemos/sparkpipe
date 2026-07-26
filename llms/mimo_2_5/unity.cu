@@ -17,6 +17,7 @@
 #include "kernels/formats/bf16.cuh"
 #include "kernels/formats/fp8.cuh"
 #include "kernels/formats/int7.cuh"
+#include "kernels/formats/bf16.cuh"
 #include "llms/mimo_2_5/config.h"
 #include "llms/mimo_2_5/layer.cuh"
 
@@ -115,4 +116,19 @@ extern "C" int32_t Mimo25LayerAttentionSwaInt7(const Mimo25LayerBuffers *b, uint
 {
 	return(Mimo25LayerAttention<LmInt7,Mimo25SwaKv,MIMO25_SWA_KV_HEADS,MIMO25_SWA_QKV_DIM>(
 		b,rows,context,MIMO25_SLIDING_WINDOW,MIMO25_SWA_ROPE_THETA,sms,stream));
+}
+
+extern "C" int32_t Mimo25LayerMoeFp8(const Mimo25LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
+{
+	return(Mimo25LayerMoe<LmFp8>(b,rows,packed_rows,sms,stream));
+}
+
+extern "C" int32_t Mimo25LayerMoeInt7(const Mimo25LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
+{
+	return(Mimo25LayerMoe<LmInt7>(b,rows,packed_rows,sms,stream));
+}
+
+extern "C" int32_t Mimo25LayerDenseMlpFp8(const Mimo25LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
+{
+	return(Mimo25LayerDenseMlp<LmFp8>(b,rows,sms,stream));
 }

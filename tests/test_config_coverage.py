@@ -42,6 +42,7 @@ EXEMPT = {
                               "compared against - Mimo25LayerAttentionFull* vs "
                               "*Swa*, chosen by the host from the layer index",
     "MIMO25_LAYER_KIND_SWA": "same",
+    "MIMO25_ROPE_HALF": "derived; LmRopePerHeadKernel computes the half internally",
     "GLM52_MXFP4_GROUP": "MXFP4 is a supported format with no checkpoint using it",
     "GLM52_FP8_SCALE_BLOCK": "the format trait carries its own group size",
     "GLM52_NVFP4_GROUP": "same",

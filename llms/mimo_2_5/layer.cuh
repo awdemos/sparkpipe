@@ -154,3 +154,107 @@ static int32_t Mimo25LayerAttention(const Mimo25LayerBuffers *b, uint32_t rows, 
 		&gemm,b->packed_activation,b->output_weight,rows,rows,MIMO25_TOP_K,1u,
 		MIMO25_O_INPUT_DIM,MIMO25_HIDDEN,sms,false,stream));
 }
+
+// The MLP half. Routed and dense, the same pair GLM 5.2 has, at MiMo 2.5's
+// widths - 2048 per expert against a dense 16384.
+//
+// Identical in shape to glm5_2's because the MoE really is the same computation:
+// route, expand, two GEMMs with a gated activation between, fold back. The
+// models differ in attention and agree here, which is why both call the same
+// kernels with different constants rather than sharing a function that takes
+// both models' constants as arguments.
+template<class Format>
+static int32_t Mimo25LayerMoe(const Mimo25LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
+{
+	LmGemmArguments gemm;
+	int32_t status;
+	LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>
+		<<<rows,MIMO25_LAYER_THREADS,(MIMO25_HIDDEN + 8u) * sizeof(float),stream>>>(
+		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
+		b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
+	memset(&gemm,0,sizeof(gemm));
+	gemm.group_row_offset = b->dense_row_offset;
+	gemm.group_tile_prefix = b->dense_tile_prefix;
+	gemm.output_bf16 = b->router_logits;
+	status = LmGemmLaunch<LmBf16Format,MIMO25_LAYER_TILE_N,LmBf16Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
+		&gemm,b->normed_bf16,b->router_weight,rows,rows,MIMO25_TOP_K,1u,
+		MIMO25_HIDDEN,MIMO25_EXPERTS,sms,false,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LmTopkSmallKernel<MIMO25_LAYER_THREADS,MIMO25_TOP_K>
+		<<<rows,MIMO25_LAYER_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream>>>(
+		(const float *)b->router_logits,MIMO25_EXPERTS,b->route_expert,b->route_weight,0.0f);
+	LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>
+		<<<dim3(packed_rows,MIMO25_HIDDEN / Format::kScaleGroup),MIMO25_LAYER_THREADS,
+		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+		b->normed_bf16,b->route_source_token,b->packed_activation,b->packed_scale,
+		packed_rows,MIMO25_HIDDEN);
+	gemm.scale_a = (const float *)b->packed_scale;
+	gemm.scale_b = (const float *)b->expert_w1_scale;
+	gemm.group_row_offset = b->group_row_offset;
+	gemm.group_tile_prefix = b->group_tile_prefix;
+	gemm.output_bf16 = b->gate_up_bf16;
+	status = LmGemmLaunch<Format,MIMO25_LAYER_TILE_N,Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
+		&gemm,b->packed_activation,b->expert_w1_weight,packed_rows,rows,MIMO25_TOP_K,
+		MIMO25_EXPERTS,MIMO25_HIDDEN,MIMO25_GATE_UP_DIM,sms,true,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LmSiluMulKernel<MIMO25_LAYER_THREADS><<<packed_rows,MIMO25_LAYER_THREADS,0,stream>>>(
+		b->gate_up_bf16,b->intermediate_bf16,MIMO25_EXPERT_INTERMEDIATE,true);
+	LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>
+		<<<dim3(packed_rows,MIMO25_EXPERT_INTERMEDIATE / Format::kScaleGroup),MIMO25_LAYER_THREADS,
+		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+		b->intermediate_bf16,0,b->packed_activation,b->packed_scale,
+		packed_rows,MIMO25_EXPERT_INTERMEDIATE);
+	gemm.scale_b = (const float *)b->expert_w2_scale;
+	gemm.output_bf16 = b->expert_out_bf16;
+	status = LmGemmLaunch<Format,MIMO25_LAYER_TILE_N,Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
+		&gemm,b->packed_activation,b->expert_w2_weight,packed_rows,rows,MIMO25_TOP_K,
+		MIMO25_EXPERTS,MIMO25_EXPERT_INTERMEDIATE,MIMO25_HIDDEN,sms,true,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LmMoeFinalizeKernel<MIMO25_LAYER_THREADS>
+		<<<dim3((MIMO25_HIDDEN + MIMO25_LAYER_THREADS - 1u) / MIMO25_LAYER_THREADS,rows),
+		   MIMO25_LAYER_THREADS,0,stream>>>(
+		b->expert_out_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16,
+		rows,MIMO25_TOP_K,MIMO25_HIDDEN);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+template<class Format>
+static int32_t Mimo25LayerDenseMlp(const Mimo25LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
+{
+	LmGemmArguments gemm;
+	int32_t status;
+	LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>
+		<<<rows,MIMO25_LAYER_THREADS,(MIMO25_HIDDEN + 8u) * sizeof(float),stream>>>(
+		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
+		b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
+	LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>
+		<<<dim3(rows,MIMO25_HIDDEN / Format::kScaleGroup),MIMO25_LAYER_THREADS,
+		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,MIMO25_HIDDEN);
+	memset(&gemm,0,sizeof(gemm));
+	gemm.scale_a = (const float *)b->packed_scale;
+	gemm.scale_b = (const float *)b->dense_gate_up_scale;
+	gemm.group_row_offset = b->dense_row_offset;
+	gemm.group_tile_prefix = b->dense_tile_prefix;
+	gemm.output_bf16 = b->gate_up_bf16;
+	status = LmGemmLaunch<Format,MIMO25_LAYER_TILE_N,Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
+		&gemm,b->packed_activation,b->dense_gate_up_weight,rows,rows,MIMO25_TOP_K,1u,
+		MIMO25_HIDDEN,MIMO25_DENSE_INTERMEDIATE * 2u,sms,false,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LmSiluMulKernel<MIMO25_LAYER_THREADS><<<rows,MIMO25_LAYER_THREADS,0,stream>>>(
+		b->gate_up_bf16,b->intermediate_bf16,MIMO25_DENSE_INTERMEDIATE,true);
+	LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>
+		<<<dim3(rows,MIMO25_DENSE_INTERMEDIATE / Format::kScaleGroup),MIMO25_LAYER_THREADS,
+		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+		b->intermediate_bf16,0,b->packed_activation,b->packed_scale,
+		rows,MIMO25_DENSE_INTERMEDIATE);
+	gemm.scale_b = (const float *)b->dense_down_scale;
+	gemm.output_bf16 = b->hidden_bf16;
+	return(LmGemmLaunch<Format,MIMO25_LAYER_TILE_N,Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
+		&gemm,b->packed_activation,b->dense_down_weight,rows,rows,MIMO25_TOP_K,1u,
+		MIMO25_DENSE_INTERMEDIATE,MIMO25_HIDDEN,sms,false,stream));
+}
