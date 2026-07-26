@@ -1,0 +1,216 @@
+#pragma once
+
+// Element formats and their conversions. One definition per format, used by
+// every kernel and every model family.
+//
+// This file exists because the old tree had the same conversion written four
+// times: SparkGlm52ResidentDecodeStageEncodeFp8E4m3Saturate, SparkLmEncodeE2m1,
+// a lambda inside the W8LUT builder, and a fourth in the dspark draft backend.
+// Four copies of a rounding rule is four chances for the quantiser and the
+// dequantiser to disagree, and that disagreement is invisible in output that
+// still looks like text.
+//
+// Every conversion here is exact and total. No clamping that hides a range
+// error, no default case that silently produces zero. A value that cannot be
+// represented saturates to the format maximum, which is the documented IEEE
+// behaviour for these types and what the tensor cores assume.
+
+#include <stdint.h>
+
+// -- format tags -------------------------------------------------------------
+//
+// Tags rather than an enum because they select template specialisations at
+// compile time. A runtime format switch inside a kernel would put a branch in
+// the inner loop and defeat the point.
+
+struct LmBf16 { static constexpr uint32_t kBits = 16u; };
+struct LmE4m3 { static constexpr uint32_t kBits = 8u; };
+struct LmE5m2 { static constexpr uint32_t kBits = 8u; };
+struct LmE2m1 { static constexpr uint32_t kBits = 4u; };
+struct LmUe8m0 { static constexpr uint32_t kBits = 8u; };
+struct LmUe4m3 { static constexpr uint32_t kBits = 8u; };
+struct LmF32 { static constexpr uint32_t kBits = 32u; };
+
+// Largest finite magnitude each format represents. These are the divisors that
+// turn an absmax into a scale, and getting one wrong shifts every value in the
+// block. They are stated once, here, rather than as literals at each call site.
+#define LM_E4M3_MAX 448.0f
+#define LM_E5M2_MAX 57344.0f
+#define LM_E2M1_MAX 6.0f
+
+// Elements packed per byte. E2M1 is the only sub-byte format, and it is the
+// reason every K extent in this codebase has to go through a bit width rather
+// than assuming one byte per element.
+template<class T> struct LmPacking { static constexpr uint32_t kPerByte = 8u / T::kBits; };
+
+template<class T>
+static __host__ __device__ __forceinline__ uint64_t LmBytesForElements(uint64_t elements)
+{
+	return((elements * (uint64_t)T::kBits) / 8u);
+}
+
+// -- bf16 --------------------------------------------------------------------
+
+static __device__ __forceinline__ float LmBf16ToFloat(uint16_t value)
+{
+	return(__uint_as_float((uint32_t)value << 16u));
+}
+
+// Round to nearest even. A plain 16-bit truncation biases every value toward
+// zero by up to one ulp; across 78 layers that accumulates and is invisible in
+// any single-layer comparison.
+static __device__ __forceinline__ uint16_t LmFloatToBf16(float value)
+{
+	uint32_t bits = __float_as_uint(value);
+	return((uint16_t)((bits + 0x7fffu + ((bits >> 16u) & 1u)) >> 16u));
+}
+
+// Two bf16 from one aligned 32-bit load. The single-element accessor exists for
+// ragged tails; every steady-state path should use this one.
+static __device__ __forceinline__ float2 LmLoadBf16Pair(const void *base, uint64_t pair_index)
+{
+	uint32_t packed = ((const uint32_t *)base)[pair_index];
+	float2 result;
+	result.x = __uint_as_float(packed << 16u);
+	result.y = __uint_as_float(packed & 0xffff0000u);
+	return(result);
+}
+
+// -- e4m3 --------------------------------------------------------------------
+
+// The x2 form packs two values; encoding one puts it in the high byte because
+// the second source operand becomes the low half. Callers that have a pair
+// should use LmFloatPairToE4m3 and halve the instruction count.
+static __device__ __forceinline__ uint8_t LmFloatToE4m3(float value)
+{
+	uint16_t encoded;
+	asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
+		: "=h"(encoded) : "f"(0.0f), "f"(value));
+	return((uint8_t)(encoded >> 8u));
+}
+
+static __device__ __forceinline__ uint16_t LmFloatPairToE4m3(float low, float high)
+{
+	uint16_t encoded;
+	asm volatile("cvt.rn.satfinite.e4m3x2.f32 %0, %1, %2;\n"
+		: "=h"(encoded) : "f"(high), "f"(low));
+	return(encoded);
+}
+
+static __device__ __forceinline__ float LmE4m3ToFloat(uint8_t value)
+{
+	uint32_t widened;
+	asm volatile("cvt.rn.f16x2.e4m3x2 %0, %1;\n"
+		: "=r"(widened) : "h"((uint16_t)value));
+	return(__half2float(__ushort_as_half((uint16_t)(widened & 0xffffu))));
+}
+
+// -- e2m1 --------------------------------------------------------------------
+//
+// Four bits: sign, two exponent, one mantissa. The representable magnitudes are
+// 0, 0.5, 1, 1.5, 2, 3, 4, 6. Hardware conversion is used rather than a lookup
+// table so the rounding matches exactly what the tensor core decodes.
+
+// E2M1 packs two values into eight bits, so the instruction wants a .b8
+// operand - and inline asm has no b8 constraint. The byte is therefore produced
+// into a block-local .b8 and widened before it leaves the asm. Passing a .b16
+// directly assembles nowhere: ptxas reports an argument mismatch, which reads
+// like the instruction is unavailable and is not.
+static __device__ __forceinline__ uint8_t LmFloatPairToE2m1(float low, float high)
+{
+	uint16_t encoded;
+	asm volatile("{\n\t.reg .b8 packed;\n"
+		"\tcvt.rn.satfinite.e2m1x2.f32 packed, %1, %2;\n"
+		"\tcvt.u16.u8 %0, packed;\n\t}\n"
+		: "=h"(encoded) : "f"(high), "f"(low));
+	return((uint8_t)(encoded & 0xffu));
+}
+
+static __device__ __forceinline__ float2 LmE2m1PairToFloat(uint8_t packed)
+{
+	uint32_t widened;
+	float2 result;
+	asm volatile("{\n\t.reg .b8 narrow;\n"
+		"\tcvt.u8.u16 narrow, %1;\n"
+		"\tcvt.rn.f16x2.e2m1x2 %0, narrow;\n\t}\n"
+		: "=r"(widened) : "h"((uint16_t)packed));
+	result.x = __half2float(__ushort_as_half((uint16_t)(widened & 0xffffu)));
+	result.y = __half2float(__ushort_as_half((uint16_t)(widened >> 16u)));
+	return(result);
+}
+
+// -- block scales ------------------------------------------------------------
+//
+// UE8M0 is a bare power of two, used by MXFP4 over 32-element groups. UE4M3 has
+// a mantissa, used by NVFP4 over 16-element groups. Both are unsigned: a scale
+// is a magnitude, and the sign lives in the data.
+
+static __device__ __forceinline__ uint8_t LmFloatToUe8m0(float value)
+{
+	uint16_t encoded;
+	asm volatile("cvt.rz.satfinite.ue8m0x2.f32 %0, %1, %2;\n"
+		: "=h"(encoded) : "f"(0.0f), "f"(value));
+	return((uint8_t)(encoded >> 8u));
+}
+
+static __device__ __forceinline__ float LmUe8m0ToFloat(uint8_t value)
+{
+	uint32_t widened;
+	asm volatile("cvt.rn.bf16x2.ue8m0x2 %0, %1;\n"
+		: "=r"(widened) : "h"((uint16_t)value));
+	return(LmBf16ToFloat((uint16_t)(widened & 0xffffu)));
+}
+
+// UE4M3 has no hardware conversion instruction, so it is built from the bit
+// layout directly: four exponent bits biased by 7, three mantissa bits, no
+// sign. Saturating at both ends rather than wrapping, because a wrapped scale
+// turns a large activation into a small one and the error is unbounded.
+static __device__ __forceinline__ uint8_t LmFloatToUe4m3(float value)
+{
+	int32_t exponent;
+	float normalized;
+	uint32_t biased,mantissa;
+	if ( !(value > 0.0f) )
+		return(0u);
+	normalized = frexpf(value,&exponent) * 2.0f;
+	exponent = exponent - 1;
+	biased = (uint32_t)(exponent + 7);
+	if ( (int32_t)biased <= 0 )
+		return(1u);
+	if ( biased > 15u )
+		return(0x7fu);
+	mantissa = (uint32_t)((normalized - 1.0f) * 8.0f + 0.5f);
+	if ( mantissa > 7u )
+	{
+		mantissa = 0u;
+		biased = biased + 1u;
+		if ( biased > 15u )
+			return(0x7fu);
+	}
+	return((uint8_t)((biased << 3u) | mantissa));
+}
+
+static __device__ __forceinline__ float LmUe4m3ToFloat(uint8_t value)
+{
+	uint32_t biased = (uint32_t)(value >> 3u),mantissa = (uint32_t)(value & 7u);
+	if ( biased == 0u )
+		return(0.0f);
+	return(ldexpf(1.0f + ((float)mantissa / 8.0f),(int32_t)biased - 7));
+}
+
+// -- scale derivation --------------------------------------------------------
+//
+// One place where an absmax becomes a scale. Every quantising kernel calls this
+// rather than writing absmax/MAX itself, because the floor matters: a block of
+// exact zeros yields a zero scale, and dividing by it produces NaN that
+// propagates through the whole layer.
+template<class T>
+static __device__ __forceinline__ float LmScaleFromAbsmax(float absmax)
+{
+	float maximum = 0.0f;
+	if constexpr ( T::kBits == 4u )
+		maximum = LM_E2M1_MAX;
+	else
+		maximum = LM_E4M3_MAX;
+	return(fmaxf(absmax / maximum,1.0e-8f));
+}

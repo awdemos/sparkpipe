@@ -449,6 +449,74 @@ static int32_t verify_nvfp4_scale_layouts(void)
 	return((a_bad == 0 && b_bad == 0) ? 0 : -1);
 }
 
+
+// -- lm_mma.cuh formulas ------------------------------------------------------
+// The rewrite's operand loaders index by REGISTER and byte-within-register
+// rather than by (register, byte-in-K). These are the exact formulas in
+// lm_mma.cuh; the check is that they reproduce the same CuTe layouts already
+// verified above, so the new library cannot drift from the old verification.
+static void lm_mma8_a(uint32_t lane, uint32_t reg, uint32_t byte, uint32_t *m, uint32_t *k)
+{
+	*m = (lane / 4u) + (8u * (reg % 2u));
+	*k = (4u * (lane % 4u)) + (16u * (reg / 2u)) + byte;
+}
+static void lm_mma8_b(uint32_t lane, uint32_t reg, uint32_t byte, uint32_t *n, uint32_t *k)
+{
+	*n = lane / 4u;
+	*k = (4u * (lane % 4u)) + (16u * reg) + byte;
+}
+static void lm_mma4_a(uint32_t lane, uint32_t reg, uint32_t nibble, uint32_t *m, uint32_t *k)
+{
+	*m = (lane / 4u) + (8u * (reg % 2u));
+	*k = (8u * (lane % 4u)) + (32u * (reg / 2u)) + nibble;
+}
+static void lm_mma4_b(uint32_t lane, uint32_t reg, uint32_t nibble, uint32_t *n, uint32_t *k)
+{
+	*n = lane / 4u;
+	*k = (8u * (lane % 4u)) + (32u * reg) + nibble;
+}
+static int32_t verify_lm_mma_formulas(void)
+{
+	layout_mode_t a8t = { { 4u, 8u, 0u, 0u }, { 64u, 1u, 0u, 0u }, 2u };
+	layout_mode_t a8v = { { 4u, 2u, 2u, 0u }, { 16u, 8u, 256u, 0u }, 3u };
+	layout_mode_t b8t = { { 4u, 8u, 0u, 0u }, { 32u, 1u, 0u, 0u }, 2u };
+	layout_mode_t b8v = { { 4u, 2u, 0u, 0u }, { 8u, 128u, 0u, 0u }, 2u };
+	layout_mode_t a4t = { { 4u, 8u, 0u, 0u }, { 128u, 1u, 0u, 0u }, 2u };
+	layout_mode_t a4v = { { 8u, 2u, 2u, 0u }, { 16u, 8u, 512u, 0u }, 3u };
+	layout_mode_t b4t = { { 4u, 8u, 0u, 0u }, { 64u, 1u, 0u, 0u }, 2u };
+	layout_mode_t b4v = { { 8u, 2u, 0u, 0u }, { 8u, 256u, 0u, 0u }, 2u };
+	uint32_t lane,value,m,n,k,bad = 0;
+	for (lane = 0; lane < VERIFY_LANES; ++lane)
+	{
+		for (value = 0; value < 16u; ++value)
+		{
+			lm_mma8_a(lane,value / 4u,value % 4u,&m,&k);
+			if ( m + (16u * k) != cute_index(&a8t,&a8v,lane,value) )
+				bad++;
+		}
+		for (value = 0; value < 8u; ++value)
+		{
+			lm_mma8_b(lane,value / 4u,value % 4u,&n,&k);
+			if ( n + (8u * k) != cute_index(&b8t,&b8v,lane,value) )
+				bad++;
+		}
+		for (value = 0; value < 32u; ++value)
+		{
+			lm_mma4_a(lane,value / 8u,value % 8u,&m,&k);
+			if ( m + (16u * k) != cute_index(&a4t,&a4v,lane,value) )
+				bad++;
+		}
+		for (value = 0; value < 16u; ++value)
+		{
+			lm_mma4_b(lane,value / 8u,value % 8u,&n,&k);
+			if ( n + (8u * k) != cute_index(&b4t,&b4v,lane,value) )
+				bad++;
+		}
+	}
+	printf("  lm_mma.cuh operand formulas vs CUTLASS layouts: mismatches=%u/2304\n",bad);
+	return(bad == 0 ? 0 : -1);
+}
+
 int32_t main(void)
 {
 	int32_t failures = 0;
@@ -470,6 +538,8 @@ int32_t main(void)
 	printf("\nNVFP4 atom SM120::BLOCKSCALED::SM120_16x8x64_TN_VS\n");
 	failures += verify_nvfp4_operands() != 0;
 	failures += verify_nvfp4_scale_layouts() != 0;
+	printf("\nrewrite: lm/ kernel library\n");
+	failures += verify_lm_mma_formulas() != 0;
 	failures += verify_pipeline_matrix() != 0;
 	printf("\n%s (%d failing checks)\n",failures == 0 ? "PASS" : "FAIL",failures);
 	return(failures == 0 ? 0 : 1);
