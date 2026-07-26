@@ -54,6 +54,12 @@ struct LmGemmArguments
 // The scale is fetched once per fragment rather than once per element: a
 // fragment spans two adjacent k, and the scale group is at least 16, so both
 // halves always share it. That is asserted rather than assumed.
+//
+// Formats that dequantise for free hand back raw BF16 bit patterns holding
+// code + bias, and the correction is applied here with the multiply that had to
+// happen anyway - (v - bias) * scale becomes one fma against a precomputed
+// -bias*scale. Formats already in a real numeric form skip it. Both branches are
+// on a compile-time constant, so only one exists in any instantiation.
 template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARPS>
 static __device__ void LmGemmConsume(float (*total)[4], const uint8_t *stage_a, const uint8_t *stage_b, const float *scale_a, const float *scale_b, uint32_t warp, uint32_t lane)
 {

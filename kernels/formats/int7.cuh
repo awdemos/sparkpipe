@@ -55,11 +55,10 @@ static __device__ __forceinline__ void LmInt7UnpackGroup(const uint8_t *packed, 
 // contains it because 7 < 25. Sign extension is a shift to the top of a word
 // and an arithmetic shift back - branchless and exact for every code, which
 // tests/test_pack.c checks exhaustively.
-static __device__ __forceinline__ int32_t LmInt7Extract(const uint8_t *base, uint32_t index)
+static __device__ __forceinline__ uint32_t LmInt7Raw(const uint8_t *base, uint32_t index)
 {
 	uint32_t bit = index * 7u;
-	uint32_t word = *(const uint32_t *)(base + (bit >> 3u));
-	return(((int32_t)(word << (32u - 7u - (bit & 7u)))) >> (32 - 7));
+	return(*(const uint32_t *)(base + (bit >> 3u)) >> (bit & 7u));
 }
 
 struct LmInt7
@@ -92,10 +91,13 @@ struct LmInt7
 	// shared memory into the register the mma consumes. No intermediate buffer
 	// and no extra barrier: shared holds only the packed form, so the 7-bit
 	// saving is paid on the bus and never given back in shared memory.
-	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float scale)
+	// Free dequantisation: the codes become BF16 bit patterns by an OR, with no
+	// conversion instruction anywhere. The scale and the bias correction are
+	// applied by the caller in the fma it already performs.
+	static __device__ __forceinline__ uint32_t Fragment(const uint8_t *tile, uint32_t row, uint32_t k, uint32_t row_pitch_bytes, float)
 	{
 		const uint8_t *base = tile + LmSwizzledOffset(row,0u,row_pitch_bytes,LmSwizzleSpanFor(row_pitch_bytes));
-		return(LmPackBf16Pair((float)LmInt7Extract(base,k) * scale,
-			(float)LmInt7Extract(base,k + 1u) * scale));
+		return(LmPackCodePairBf16<7u>(LmInt7Raw(base,k),LmInt7Raw(base,k + 1u)));
 	}
+	static constexpr float kBias = LmCodeBias<7u>();
 	};

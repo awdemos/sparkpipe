@@ -272,6 +272,52 @@ static __device__ __forceinline__ uint32_t LmMma16OperandBK(uint32_t lane, uint3
 // applied here because a decoded code is a fixed-point integer and becomes a
 // value only once multiplied - doing it later would mean carrying an integer
 // through a float fragment.
+// Dequantise a signed n-bit code to BF16 with no conversion instruction.
+//
+// BF16 is sign(1) exp(8) mantissa(7). 0x4300 is exponent 134, mantissa 0, value
+// 2^7 = 128. OR-ing an m in [0,128) into the mantissa gives exactly 128 + m,
+// because 128 * (1 + m/128) = 128 + m and the mantissa has precisely the bits
+// the code needs. Flipping the sign bit of the code biases it into range, so a
+// signed c becomes 128 + 2^(n-1) + c and one subtraction recovers it.
+//
+// That subtraction is free: it folds into the scale multiply that has to happen
+// anyway, as v*scale - bias*scale, a single fma with a precomputed second term.
+// The net saving against the arithmetic path is two conversion instructions per
+// value, eight per register pair.
+//
+// This is the technique Marlin uses and cites to Kim et al. - "doing naive
+// type-casts from INT4 to FP16 is slow" - adapted to BF16.
+//
+// BITS MUST BE 7 OR FEWER. BF16 has seven mantissa bits, so an eight-bit code
+// overflows into the exponent and the value comes out doubled. The static_assert
+// says so, and tests/test_dequant.c confirms 8 bits is rejected rather than
+// silently wrong. That is an independent reason INT7 is the sweet spot: it is
+// the widest code that dequantises into BF16 for free.
+template<uint32_t BITS>
+static __device__ __forceinline__ uint32_t LmCodeToBf16Bits(uint32_t code)
+{
+	static_assert(BITS >= 2u && BITS <= 7u,
+		"BF16 has 7 mantissa bits; a wider code lands in the exponent and doubles the value");
+	return(0x4300u | ((code & ((1u << BITS) - 1u)) ^ (1u << (BITS - 1u))));
+}
+
+// The constant that undoes the bias, to be multiplied by the block scale once
+// per fragment rather than once per value.
+template<uint32_t BITS>
+static __host__ __device__ constexpr float LmCodeBias(void)
+{
+	return((float)(128 + (1 << (BITS - 1))));
+}
+
+// Two codes into one register as a BF16 pair. No conversion, no rounding: the
+// bit patterns are exact and the caller applies scale and bias with one fma per
+// half afterwards.
+template<uint32_t BITS>
+static __device__ __forceinline__ uint32_t LmPackCodePairBf16(uint32_t low, uint32_t high)
+{
+	return(LmCodeToBf16Bits<BITS>(low) | (LmCodeToBf16Bits<BITS>(high) << 16u));
+}
+
 static __device__ __forceinline__ uint32_t LmPackBf16Pair(float low, float high)
 {
 	return((uint32_t)LmFloatToBf16(low) | ((uint32_t)LmFloatToBf16(high) << 16u));
