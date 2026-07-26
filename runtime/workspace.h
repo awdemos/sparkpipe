@@ -20,30 +20,30 @@
 
 #include <stdint.h>
 
-#define SPARK_LM_WORKSPACE_ALIGNMENT 256u
-#define SPARK_LM_WORKSPACE_NVFP4_GROUP 16u
-#define SPARK_LM_WORKSPACE_REGION_COUNT 9u
-#define SPARK_LM_WORKSPACE_NVFP4_TILE_K 256u
+#define LM_WS_ALIGNMENT 256u
+#define LM_WS_NVFP4_GROUP 16u
+#define LM_WS_REGION_COUNT 9u
+#define LM_WS_NVFP4_TILE_K 256u
 #define SPARK_LM_TENSOR_MAP_BITS_NVFP4_LOCAL 4u
 // 128 KB of L1/shared per SM on GB10, per GB10_CUDA_COST_MODEL_CALIBRATION.md.
-#define SPARK_LM_WORKSPACE_SHARED_LIMIT 131072u
+#define LM_WS_SHARED_LIMIT 131072u
 
-#define SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN 0u
-#define SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN_SCALE 1u
-#define SPARK_LM_WORKSPACE_REGION_ROUTE_ROWS 2u
-#define SPARK_LM_WORKSPACE_REGION_ROUTE_INDPTR 3u
-#define SPARK_LM_WORKSPACE_REGION_GROUP_TILE_PREFIX 4u
-#define SPARK_LM_WORKSPACE_REGION_GATE_UP_BF16 5u
-#define SPARK_LM_WORKSPACE_REGION_INTERMEDIATE 6u
-#define SPARK_LM_WORKSPACE_REGION_INTERMEDIATE_SCALE 7u
-#define SPARK_LM_WORKSPACE_REGION_ROUTE_OUTPUT_BF16 8u
+#define LM_WS_REGION_PACKED_HIDDEN 0u
+#define LM_WS_REGION_PACKED_HIDDEN_SCALE 1u
+#define LM_WS_REGION_ROUTE_ROWS 2u
+#define LM_WS_REGION_ROUTE_INDPTR 3u
+#define LM_WS_REGION_GROUP_TILE_PREFIX 4u
+#define LM_WS_REGION_GATE_UP_BF16 5u
+#define LM_WS_REGION_INTERMEDIATE 6u
+#define LM_WS_REGION_INTERMEDIATE_SCALE 7u
+#define LM_WS_REGION_ROUTE_OUTPUT_BF16 8u
 
-#define SPARK_LM_WORKSPACE_OK 0
-#define SPARK_LM_WORKSPACE_ERR_NULL (-31)
-#define SPARK_LM_WORKSPACE_ERR_SHAPE (-32)
-#define SPARK_LM_WORKSPACE_ERR_GROUP (-33)
-#define SPARK_LM_WORKSPACE_ERR_OVERFLOW (-34)
-#define SPARK_LM_WORKSPACE_ERR_SHARED (-35)
+#define LM_WS_OK 0
+#define LM_WS_ERR_NULL (-31)
+#define LM_WS_ERR_SHAPE (-32)
+#define LM_WS_ERR_GROUP (-33)
+#define LM_WS_ERR_OVERFLOW (-34)
+#define LM_WS_ERR_SHARED (-35)
 
 // Regions that exist only because the pipeline is not fused. B12x materialises
 // none of them - it declares FUSED_EXPERTS, IN_KERNEL_INPUT_QUANT and
@@ -56,24 +56,24 @@
 // finalize reduction into the second GEMM's epilogue removes the first; keeping
 // the SiLU-mul in registers between the two GEMMs removes the second. Both are
 // real work, and this constant is what justifies doing it.
-#define SPARK_LM_WORKSPACE_UNFUSED_REGION_MASK ( \
-	(1u << SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN) | \
-	(1u << SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN_SCALE) | \
-	(1u << SPARK_LM_WORKSPACE_REGION_GATE_UP_BF16) | \
-	(1u << SPARK_LM_WORKSPACE_REGION_INTERMEDIATE) | \
-	(1u << SPARK_LM_WORKSPACE_REGION_INTERMEDIATE_SCALE) | \
-	(1u << SPARK_LM_WORKSPACE_REGION_ROUTE_OUTPUT_BF16))
+#define LM_WS_UNFUSED_REGION_MASK ( \
+	(1u << LM_WS_REGION_PACKED_HIDDEN) | \
+	(1u << LM_WS_REGION_PACKED_HIDDEN_SCALE) | \
+	(1u << LM_WS_REGION_GATE_UP_BF16) | \
+	(1u << LM_WS_REGION_INTERMEDIATE) | \
+	(1u << LM_WS_REGION_INTERMEDIATE_SCALE) | \
+	(1u << LM_WS_REGION_ROUTE_OUTPUT_BF16))
 
-typedef struct spark_lm_workspace_shape
+typedef struct LmWorkspaceshape
 {
 	uint32_t tokens,top_k,expert_count,hidden_dimension,intermediate_dimension,tile_m,tile_n;
 }
-spark_lm_workspace_shape_t;
+LmWorkspaceshape_t;
 
-typedef struct spark_lm_workspace_layout
+typedef struct LmWorkspacelayout
 {
-	uint64_t offset[SPARK_LM_WORKSPACE_REGION_COUNT];
-	uint64_t bytes[SPARK_LM_WORKSPACE_REGION_COUNT];
+	uint64_t offset[LM_WS_REGION_COUNT];
+	uint64_t bytes[LM_WS_REGION_COUNT];
 	uint64_t total_bytes;
 	uint64_t packed_rows;
 	uint64_t total_tiles;
@@ -82,17 +82,17 @@ typedef struct spark_lm_workspace_layout
 	uint32_t stages;
 	uint32_t ctas_per_sm;
 }
-spark_lm_workspace_layout_t;
+LmWorkspacelayout_t;
 
-static uint64_t spark_lm_workspace_align_up(uint64_t value)
+static uint64_t LmWorkspacealign_up(uint64_t value)
 {
-	return((value + (uint64_t)SPARK_LM_WORKSPACE_ALIGNMENT - 1u)
-		& ~((uint64_t)SPARK_LM_WORKSPACE_ALIGNMENT - 1u));
+	return((value + (uint64_t)LM_WS_ALIGNMENT - 1u)
+		& ~((uint64_t)LM_WS_ALIGNMENT - 1u));
 }
 
 // Rows in the packed layout: one per (token, route). Every downstream extent is
 // a multiple of this, so it exists once.
-static uint64_t spark_lm_workspace_packed_rows(const spark_lm_workspace_shape_t *shape)
+static uint64_t LmWorkspacepacked_rows(const LmWorkspaceshape_t *shape)
 {
 	return((uint64_t)shape->tokens * (uint64_t)shape->top_k);
 }
@@ -103,7 +103,7 @@ static uint64_t spark_lm_workspace_packed_rows(const spark_lm_workspace_shape_t 
 // too small. Getting that wrong is not a corruption - the launcher compares and
 // fails closed - but it is a hard stop at run time for a number that is known
 // at plan time.
-static uint64_t spark_lm_workspace_bytes_for_max_batch(uint32_t max_tokens, uint32_t top_k, uint32_t expert_count, uint32_t hidden_dimension, uint32_t intermediate_dimension);
+static uint64_t LmWorkspacebytes_for_max_batch(uint32_t max_tokens, uint32_t top_k, uint32_t expert_count, uint32_t hidden_dimension, uint32_t intermediate_dimension);
 
 // Choose TILE_M for a token bucket.
 //
@@ -118,7 +118,7 @@ static uint64_t spark_lm_workspace_bytes_for_max_batch(uint32_t max_tokens, uint
 // Rounding UP to the next tile height wastes MMA throughput on padded rows,
 // which is free on a bandwidth-bound path. Rounding down would cost bandwidth,
 // which is not. The asymmetry is why this only ever grows the tile.
-static uint32_t spark_lm_workspace_select_tile_m(uint64_t rows_per_expert)
+static uint32_t LmWorkspaceselect_tile_m(uint64_t rows_per_expert)
 {
 	if ( rows_per_expert <= 16u )
 		return(16u);
@@ -133,7 +133,7 @@ static uint32_t spark_lm_workspace_select_tile_m(uint64_t rows_per_expert)
 
 // Shared memory one CTA needs. NVFP4 payloads are 4-bit, so both tile buffers
 // halve; the barriers are two 8-byte mbarriers per stage.
-static uint64_t spark_lm_workspace_shared_bytes(uint32_t tile_m, uint32_t tile_n, uint32_t tile_k, uint32_t stages, uint32_t element_bits)
+static uint64_t LmWorkspaceshared_bytes(uint32_t tile_m, uint32_t tile_n, uint32_t tile_k, uint32_t stages, uint32_t element_bits)
 {
 	uint64_t per_stage;
 	per_stage = ((uint64_t)tile_m + (uint64_t)tile_n) * (uint64_t)tile_k
@@ -155,7 +155,7 @@ static uint64_t spark_lm_workspace_shared_bytes(uint32_t tile_m, uint32_t tile_n
 // SM, and even two stages of an 18 KB tile clear that by an order of magnitude.
 // The cap therefore exists to stop shared memory being spent for no reason, not
 // because more would help.
-static uint32_t spark_lm_workspace_select_stages(uint32_t tile_m, uint32_t tile_n, uint32_t tile_k, uint32_t element_bits, uint64_t shared_limit)
+static uint32_t LmWorkspaceselect_stages(uint32_t tile_m, uint32_t tile_n, uint32_t tile_k, uint32_t element_bits, uint64_t shared_limit)
 {
 	// Two stages, which is a lookahead of one: one tile in flight while the
 	// other is consumed. Deeper was tried and is not what the shared memory
@@ -172,14 +172,14 @@ static uint32_t spark_lm_workspace_select_stages(uint32_t tile_m, uint32_t tile_
 	// bandwidth-bound kernel, and the gain is only in tolerating tail effects
 	// and uneven expert loads. It is the measurement the memory-latency
 	// microbenchmark should settle.
-	if ( spark_lm_workspace_shared_bytes(tile_m,tile_n,tile_k,2u,element_bits) <= shared_limit )
+	if ( LmWorkspaceshared_bytes(tile_m,tile_n,tile_k,2u,element_bits) <= shared_limit )
 		return(2u);
 	return(0u);
 }
 
 // CTAs that fit per SM at the selected geometry. Reported so a profile has
 // something to compare against rather than being inferred after the fact.
-static uint32_t spark_lm_workspace_ctas_per_sm(uint64_t shared_bytes, uint64_t shared_limit)
+static uint32_t LmWorkspacectas_per_sm(uint64_t shared_bytes, uint64_t shared_limit)
 {
 	if ( shared_bytes == 0u )
 		return(0u);
@@ -191,10 +191,10 @@ static uint32_t spark_lm_workspace_ctas_per_sm(uint64_t shared_bytes, uint64_t s
 // group is what sets step time under a grouped launch. A 2x headroom factor is a
 // heuristic and is the one number here that wants a measured route distribution
 // behind it - the route-log collection already planned is what would supply it.
-static uint64_t spark_lm_workspace_peak_rows_per_expert(const spark_lm_workspace_shape_t *shape)
+static uint64_t LmWorkspacepeak_rows_per_expert(const LmWorkspaceshape_t *shape)
 {
 	uint64_t mean_rows;
-	mean_rows = (spark_lm_workspace_packed_rows(shape) + (uint64_t)shape->expert_count - 1u)
+	mean_rows = (LmWorkspacepacked_rows(shape) + (uint64_t)shape->expert_count - 1u)
 		/ (uint64_t)shape->expert_count;
 	return(mean_rows * 2u);
 }
@@ -202,10 +202,10 @@ static uint64_t spark_lm_workspace_peak_rows_per_expert(const spark_lm_workspace
 // Grid tiles for the grouped GEMM: each expert contributes ceil(rows/TILE_M)
 // M tiles times the N tile count. At decode most experts hold fewer rows than
 // TILE_M, so this is dominated by the expert count, not the token count.
-static uint64_t spark_lm_workspace_total_tiles_for_tile_m(const spark_lm_workspace_shape_t *shape, uint32_t tile_m, uint32_t output_dimension)
+static uint64_t LmWorkspacetotal_tiles_for_tile_m(const LmWorkspaceshape_t *shape, uint32_t tile_m, uint32_t output_dimension)
 {
 	uint64_t rows_per_expert,m_tiles,n_tiles;
-	rows_per_expert = (spark_lm_workspace_packed_rows(shape) + shape->expert_count - 1u)
+	rows_per_expert = (LmWorkspacepacked_rows(shape) + shape->expert_count - 1u)
 		/ (uint64_t)shape->expert_count;
 	m_tiles = (rows_per_expert + (uint64_t)tile_m - 1u) / (uint64_t)tile_m;
 	if ( m_tiles == 0u )
@@ -214,72 +214,72 @@ static uint64_t spark_lm_workspace_total_tiles_for_tile_m(const spark_lm_workspa
 	return((uint64_t)shape->expert_count * m_tiles * n_tiles);
 }
 
-static int32_t spark_lm_workspace_layout_build(const spark_lm_workspace_shape_t *shape, spark_lm_workspace_layout_t *layout)
+static int32_t LmWorkspacelayout_build(const LmWorkspaceshape_t *shape, LmWorkspacelayout_t *layout)
 {
 	uint64_t rows,hidden_bytes,hidden_scales,intermediate_bytes,intermediate_scales,cursor;
 	uint32_t region,effective;
 	if ( shape == 0 || layout == 0 )
-		return(SPARK_LM_WORKSPACE_ERR_NULL);
+		return(LM_WS_ERR_NULL);
 	if ( shape->tokens == 0 || shape->top_k == 0 || shape->expert_count == 0
 		|| shape->hidden_dimension == 0 || shape->intermediate_dimension == 0
 		|| shape->tile_n == 0 )
-		return(SPARK_LM_WORKSPACE_ERR_SHAPE);
+		return(LM_WS_ERR_SHAPE);
 	// A 4-bit payload needs an even element count, and a UE4M3 scale needs the
 	// group to divide the row, or the last group is partial and the GEMM reads
 	// a scale that was never written.
-	if ( (shape->hidden_dimension % SPARK_LM_WORKSPACE_NVFP4_GROUP) != 0u
-		|| (shape->intermediate_dimension % SPARK_LM_WORKSPACE_NVFP4_GROUP) != 0u )
-		return(SPARK_LM_WORKSPACE_ERR_GROUP);
+	if ( (shape->hidden_dimension % LM_WS_NVFP4_GROUP) != 0u
+		|| (shape->intermediate_dimension % LM_WS_NVFP4_GROUP) != 0u )
+		return(LM_WS_ERR_GROUP);
 	// tile_m == 0 means "choose for this bucket", which is what the launcher
 	// passes. An explicit value is honoured so a sweep can pin it.
 	effective = shape->tile_m != 0u
 		? shape->tile_m
-		: spark_lm_workspace_select_tile_m(spark_lm_workspace_peak_rows_per_expert(shape));
+		: LmWorkspaceselect_tile_m(LmWorkspacepeak_rows_per_expert(shape));
 	layout->tile_m = effective;
-	layout->stages = spark_lm_workspace_select_stages(effective,shape->tile_n,
-		SPARK_LM_WORKSPACE_NVFP4_TILE_K,SPARK_LM_TENSOR_MAP_BITS_NVFP4_LOCAL,
-		SPARK_LM_WORKSPACE_SHARED_LIMIT);
+	layout->stages = LmWorkspaceselect_stages(effective,shape->tile_n,
+		LM_WS_NVFP4_TILE_K,SPARK_LM_TENSOR_MAP_BITS_NVFP4_LOCAL,
+		LM_WS_SHARED_LIMIT);
 	if ( layout->stages == 0u )
-		return(SPARK_LM_WORKSPACE_ERR_SHARED);
-	layout->shared_bytes = spark_lm_workspace_shared_bytes(effective,shape->tile_n,
-		SPARK_LM_WORKSPACE_NVFP4_TILE_K,layout->stages,
+		return(LM_WS_ERR_SHARED);
+	layout->shared_bytes = LmWorkspaceshared_bytes(effective,shape->tile_n,
+		LM_WS_NVFP4_TILE_K,layout->stages,
 		SPARK_LM_TENSOR_MAP_BITS_NVFP4_LOCAL);
-	layout->ctas_per_sm = spark_lm_workspace_ctas_per_sm(layout->shared_bytes,
-		SPARK_LM_WORKSPACE_SHARED_LIMIT);
-	rows = spark_lm_workspace_packed_rows(shape);
+	layout->ctas_per_sm = LmWorkspacectas_per_sm(layout->shared_bytes,
+		LM_WS_SHARED_LIMIT);
+	rows = LmWorkspacepacked_rows(shape);
 	if ( rows == 0u || rows > 0xffffffffu )
-		return(SPARK_LM_WORKSPACE_ERR_OVERFLOW);
+		return(LM_WS_ERR_OVERFLOW);
 	hidden_bytes = rows * ((uint64_t)shape->hidden_dimension / 2u);
-	hidden_scales = rows * ((uint64_t)shape->hidden_dimension / SPARK_LM_WORKSPACE_NVFP4_GROUP);
+	hidden_scales = rows * ((uint64_t)shape->hidden_dimension / LM_WS_NVFP4_GROUP);
 	intermediate_bytes = rows * ((uint64_t)shape->intermediate_dimension / 2u);
-	intermediate_scales = rows * ((uint64_t)shape->intermediate_dimension / SPARK_LM_WORKSPACE_NVFP4_GROUP);
-	layout->bytes[SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN] = hidden_bytes;
-	layout->bytes[SPARK_LM_WORKSPACE_REGION_PACKED_HIDDEN_SCALE] = hidden_scales;
-	layout->bytes[SPARK_LM_WORKSPACE_REGION_ROUTE_ROWS] = rows * sizeof(uint32_t);
-	layout->bytes[SPARK_LM_WORKSPACE_REGION_ROUTE_INDPTR] = ((uint64_t)shape->expert_count + 1u) * sizeof(uint32_t);
-	layout->bytes[SPARK_LM_WORKSPACE_REGION_GROUP_TILE_PREFIX] = ((uint64_t)shape->expert_count + 1u) * sizeof(uint32_t);
+	intermediate_scales = rows * ((uint64_t)shape->intermediate_dimension / LM_WS_NVFP4_GROUP);
+	layout->bytes[LM_WS_REGION_PACKED_HIDDEN] = hidden_bytes;
+	layout->bytes[LM_WS_REGION_PACKED_HIDDEN_SCALE] = hidden_scales;
+	layout->bytes[LM_WS_REGION_ROUTE_ROWS] = rows * sizeof(uint32_t);
+	layout->bytes[LM_WS_REGION_ROUTE_INDPTR] = ((uint64_t)shape->expert_count + 1u) * sizeof(uint32_t);
+	layout->bytes[LM_WS_REGION_GROUP_TILE_PREFIX] = ((uint64_t)shape->expert_count + 1u) * sizeof(uint32_t);
 	// w1 emits gate and up together, bf16, hence the factor of two on each.
-	layout->bytes[SPARK_LM_WORKSPACE_REGION_GATE_UP_BF16] = rows * (uint64_t)shape->intermediate_dimension * 2u * 2u;
-	layout->bytes[SPARK_LM_WORKSPACE_REGION_INTERMEDIATE] = intermediate_bytes;
-	layout->bytes[SPARK_LM_WORKSPACE_REGION_INTERMEDIATE_SCALE] = intermediate_scales;
-	layout->bytes[SPARK_LM_WORKSPACE_REGION_ROUTE_OUTPUT_BF16] = rows * (uint64_t)shape->hidden_dimension * 2u;
+	layout->bytes[LM_WS_REGION_GATE_UP_BF16] = rows * (uint64_t)shape->intermediate_dimension * 2u * 2u;
+	layout->bytes[LM_WS_REGION_INTERMEDIATE] = intermediate_bytes;
+	layout->bytes[LM_WS_REGION_INTERMEDIATE_SCALE] = intermediate_scales;
+	layout->bytes[LM_WS_REGION_ROUTE_OUTPUT_BF16] = rows * (uint64_t)shape->hidden_dimension * 2u;
 	cursor = 0u;
-	for (region = 0u; region < SPARK_LM_WORKSPACE_REGION_COUNT; ++region)
+	for (region = 0u; region < LM_WS_REGION_COUNT; ++region)
 	{
 		layout->offset[region] = cursor;
-		cursor = spark_lm_workspace_align_up(cursor + layout->bytes[region]);
+		cursor = LmWorkspacealign_up(cursor + layout->bytes[region]);
 	}
 	layout->total_bytes = cursor;
 	layout->packed_rows = rows;
-	layout->total_tiles = spark_lm_workspace_total_tiles_for_tile_m(shape,effective,
+	layout->total_tiles = LmWorkspacetotal_tiles_for_tile_m(shape,effective,
 		shape->intermediate_dimension * 2u);
-	return(SPARK_LM_WORKSPACE_OK);
+	return(LM_WS_OK);
 }
 
-static uint64_t spark_lm_workspace_bytes_for_max_batch(uint32_t max_tokens, uint32_t top_k, uint32_t expert_count, uint32_t hidden_dimension, uint32_t intermediate_dimension)
+static uint64_t LmWorkspacebytes_for_max_batch(uint32_t max_tokens, uint32_t top_k, uint32_t expert_count, uint32_t hidden_dimension, uint32_t intermediate_dimension)
 {
-	spark_lm_workspace_shape_t shape;
-	spark_lm_workspace_layout_t layout;
+	LmWorkspaceshape_t shape;
+	LmWorkspacelayout_t layout;
 	uint32_t index;
 	for (index = 0u; index < sizeof(shape); ++index)
 		((uint8_t *)&shape)[index] = 0u;
@@ -289,7 +289,7 @@ static uint64_t spark_lm_workspace_bytes_for_max_batch(uint32_t max_tokens, uint
 	shape.hidden_dimension = hidden_dimension;
 	shape.intermediate_dimension = intermediate_dimension;
 	shape.tile_n = 128u;
-	if ( spark_lm_workspace_layout_build(&shape,&layout) != SPARK_LM_WORKSPACE_OK )
+	if ( LmWorkspacelayout_build(&shape,&layout) != LM_WS_OK )
 		return(0u);
 	return(layout.total_bytes);
 }

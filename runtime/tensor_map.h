@@ -1,53 +1,52 @@
-// The cuTensorMapEncodeTiled call for the first-party grouped GEMM.
+#pragma once
+
+// cuTensorMapEncodeTiled. The host half of the TMA descriptor.
 //
-// spark_lm_tensor_map.h computes the geometry and is testable with no CUDA
-// runtime; this file is the thin driver call over it. The split is deliberate:
-// the arithmetic is where the silent errors live (NVFP4 K-extents halving, the
-// swizzle span, the rank-1 stride convention) and it should be checkable on any
-// host. What is left here is a translation of an already-validated plan.
+// kernels/tensor_map.cuh computes the geometry with stdint alone; this is the
+// driver translation over an already-validated plan. The split is deliberate:
+// the arithmetic is where the silent errors live - NVFP4 K extents halving, the
+// swizzle span varying with the stored width, the rank-1 stride convention - and
+// it should be checkable on any host with no CUDA at all.
 //
 // cuTensorMapEncodeTiled is a DRIVER API entry point. It needs cuda.h and a
-// current context, not just the runtime API. Modules that only ever called
-// cudaMemcpy have not needed the driver API before, so the link line gains
-// -lcuda alongside -lcudart.
+// current context, not just the runtime API, so the link line gains -lcuda.
 
-#include "sparkpipe/spark_lm_tensor_map.h"
-
+#include "kernels/tensor_map.cuh"
 #include <cuda.h>
 #include <stdint.h>
 #include <string.h>
 
-#define SPARK_LM_TENSOR_MAP_ENCODE_OK 0
-#define SPARK_LM_TENSOR_MAP_ENCODE_ERR_PLAN (-21)
-#define SPARK_LM_TENSOR_MAP_ENCODE_ERR_NULL (-22)
-#define SPARK_LM_TENSOR_MAP_ENCODE_ERR_DRIVER (-23)
-#define SPARK_LM_TENSOR_MAP_ENCODE_ERR_SWIZZLE (-24)
+#define LM_TM_ENCODE_OK 0
+#define LM_TM_ENCODE_ERR_PLAN (-21)
+#define LM_TM_ENCODE_ERR_NULL (-22)
+#define LM_TM_ENCODE_ERR_DRIVER (-23)
+#define LM_TM_ENCODE_ERR_SWIZZLE (-24)
 
 // The descriptor swizzle must be the one the kernel's chunk xor implements.
 // spark_lm_tensor_map.h fixes the span at 128 bytes and the kernel
 // static_asserts its chunk count against the shared contract header, so this
 // only has to reject a plan that arrived with a different span rather than
 // choose one.
-static int32_t spark_lm_tensor_map_swizzle_enum(uint32_t swizzle_bytes, CUtensorMapSwizzle *out)
+static int32_t LmTensorMapSwizzleEnum(uint32_t swizzle_bytes, CUtensorMapSwizzle *out)
 {
 	if ( out == 0 )
-		return(SPARK_LM_TENSOR_MAP_ENCODE_ERR_NULL);
+		return(LM_TM_ENCODE_ERR_NULL);
 	if ( swizzle_bytes == 128u )
 	{
 		*out = CU_TENSOR_MAP_SWIZZLE_128B;
-		return(SPARK_LM_TENSOR_MAP_ENCODE_OK);
+		return(LM_TM_ENCODE_OK);
 	}
 	if ( swizzle_bytes == 64u )
 	{
 		*out = CU_TENSOR_MAP_SWIZZLE_64B;
-		return(SPARK_LM_TENSOR_MAP_ENCODE_OK);
+		return(LM_TM_ENCODE_OK);
 	}
 	if ( swizzle_bytes == 32u )
 	{
 		*out = CU_TENSOR_MAP_SWIZZLE_32B;
-		return(SPARK_LM_TENSOR_MAP_ENCODE_OK);
+		return(LM_TM_ENCODE_OK);
 	}
-	return(SPARK_LM_TENSOR_MAP_ENCODE_ERR_SWIZZLE);
+	return(LM_TM_ENCODE_ERR_SWIZZLE);
 }
 
 // Encode one descriptor from a built plan.
@@ -61,17 +60,17 @@ static int32_t spark_lm_tensor_map_swizzle_enum(uint32_t swizzle_bytes, CUtensor
 // globalStrides carries rank-1 entries and excludes the innermost axis, so
 // plan->global_stride_bytes[0] is the row pitch and [1] is the expert stride.
 // The driver reads exactly rank-1 of them.
-static int32_t spark_lm_tensor_map_encode(CUtensorMap *tensor_map, const spark_lm_tensor_map_plan_t *plan, void *global_address)
+static int32_t LmTensorMapEncode(CUtensorMap *tensor_map, const LmTensorMapPlan *plan, void *global_address)
 {
 	CUtensorMapSwizzle swizzle;
 	CUresult driver_status;
 	int32_t status;
 	if ( tensor_map == 0 || plan == 0 || global_address == 0 )
-		return(SPARK_LM_TENSOR_MAP_ENCODE_ERR_NULL);
-	if ( plan->rank < 2u || plan->rank > SPARK_LM_TENSOR_MAP_MAX_RANK )
-		return(SPARK_LM_TENSOR_MAP_ENCODE_ERR_PLAN);
-	status = spark_lm_tensor_map_swizzle_enum(plan->swizzle_bytes,&swizzle);
-	if ( status != SPARK_LM_TENSOR_MAP_ENCODE_OK )
+		return(LM_TM_ENCODE_ERR_NULL);
+	if ( plan->rank < 2u || plan->rank > LM_TM_MAX_RANK )
+		return(LM_TM_ENCODE_ERR_PLAN);
+	status = LmTensorMapSwizzleEnum(plan->swizzle_bytes,&swizzle);
+	if ( status != LM_TM_ENCODE_OK )
 		return(status);
 	memset(tensor_map,0,sizeof(*tensor_map));
 	driver_status = cuTensorMapEncodeTiled(
@@ -92,18 +91,18 @@ static int32_t spark_lm_tensor_map_encode(CUtensorMap *tensor_map, const spark_l
 		// padded rows contribute zero to the accumulator.
 		CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE);
 	if ( driver_status != CUDA_SUCCESS )
-		return(SPARK_LM_TENSOR_MAP_ENCODE_ERR_DRIVER);
-	return(SPARK_LM_TENSOR_MAP_ENCODE_OK);
+		return(LM_TM_ENCODE_ERR_DRIVER);
+	return(LM_TM_ENCODE_OK);
 }
 
 // Build and encode in one step, which is how callers should use it - there is
 // no legitimate reason to encode a plan that was not just built and checked.
-static int32_t spark_lm_tensor_map_prepare(CUtensorMap *tensor_map, const spark_lm_tensor_map_request_t *request)
+static int32_t LmTensorMapPrepare(CUtensorMap *tensor_map, const LmTensorMapRequest *request)
 {
-	spark_lm_tensor_map_plan_t plan;
+	LmTensorMapPlan plan;
 	int32_t status;
-	status = spark_lm_tensor_map_plan_build(request,&plan);
-	if ( status != SPARK_LM_TENSOR_MAP_OK )
+	status = LmTensorMapPlanBuild(request,&plan);
+	if ( status != LM_TM_OK )
 		return(status);
-	return(spark_lm_tensor_map_encode(tensor_map,&plan,(void *)request->global_address));
+	return(LmTensorMapEncode(tensor_map,&plan,(void *)request->global_address));
 }

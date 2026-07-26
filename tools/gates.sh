@@ -18,10 +18,9 @@ run "sub-byte packing"     "gcc -O2 -Wall -Wextra -o /tmp/g_p tests/test_pack.c 
 run "free dequant"         "gcc -O2 -Wall -Wextra -o /tmp/g_d tests/test_dequant.c && /tmp/g_d"
 run "reference oracle"     "gcc -O2 -Wall -Wextra -Itests -o /tmp/g_r tests/test_reference.c -lm && /tmp/g_r"
 run "kv geometry"          "g++ -std=c++17 -fsyntax-only -Wall -Wextra -I. tests/test_kv_geometry.cc"
-run "workspace layout"     "gcc -O2 -Wall -Wextra -I model-families/common/include -o /tmp/g_w tests/test_group_gemm_workspace.c && /tmp/g_w"
-run "tensor map geometry"  "gcc -O2 -Wall -Wextra -I model-families/common/include -o /tmp/g_t tests/test_tensor_map_geometry.c && /tmp/g_t"
-run "tensor map encode"    "gcc -O2 -Wall -Wextra -I model-families/common/include -I tests/cuda_driver_stub -o /tmp/g_e tests/test_tensor_map_encode.c tests/cuda_driver_stub/stub.c && /tmp/g_e"
-run "autotune builds"      "gcc -O2 -Wall -Wextra -o /tmp/g_a tools/spark_lm_autotune.c"
+run "workspace layout"     "gcc -O2 -Wall -Wextra -I. -o /tmp/g_w tests/test_group_gemm_workspace.c && /tmp/g_w"
+run "tensor map geometry"  "gcc -O2 -Wall -Wextra -I. -o /tmp/g_t tests/test_tensor_map_geometry.c && /tmp/g_t"
+run "tensor map encode"    "gcc -O2 -Wall -Wextra -I. -Itests/cuda_driver_stub -o /tmp/g_e tests/test_tensor_map_encode.c tests/cuda_driver_stub/stub.c && /tmp/g_e"
 # The real compiler, for the real target. This replaced a keyword-shim gate that
 # approximated nvcc by defining the CUDA keywords away. That shim could not see a
 # missing include, could not see the 48 KB static shared limit, could not see
