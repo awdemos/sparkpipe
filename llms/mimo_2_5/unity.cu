@@ -18,15 +18,13 @@
 #include "kernels/formats/fp8.cuh"
 #include "kernels/formats/int7.cuh"
 #include "llms/mimo_2_5/config.h"
+#include "llms/mimo_2_5/layer.cuh"
 
 // -- geometries ----------------------------------------------------------------
 //
 // No latent compression, so LmKvHeads rather than LmKvLatent. Same allocator,
 // same page table, same eviction - only the slot size differs, which is exactly
 // the parameterisation kernels/kv.cuh exists for.
-
-using Mimo25FullKv = LmKvHeads<MIMO25_KV_BITS, MIMO25_FULL_KV_HEADS, MIMO25_HEAD_DIM, MIMO25_KV_PAGE_SLOTS>;
-using Mimo25SwaKv  = LmKvHeads<MIMO25_KV_BITS, MIMO25_SWA_KV_HEADS, MIMO25_HEAD_DIM, MIMO25_KV_PAGE_SLOTS>;
 
 static_assert(Mimo25FullKv::kSlotBytes == 3072u, "4 heads x 192 dim x (k+v) x bf16");
 static_assert(Mimo25SwaKv::kSlotBytes == 6144u, "8 heads, twice the slot");
@@ -63,6 +61,12 @@ template __global__ void LmAttentionDecodeKernel<Mimo25FullKv, MIMO25_THREADS, M
 template __global__ void LmAttentionDecodeKernel<Mimo25SwaKv, MIMO25_THREADS, MIMO25_HEAD_DIM, MIMO25_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *);
 
 template __global__ void LmTopkSmallKernel<MIMO25_THREADS, MIMO25_TOP_K>(const float *, uint32_t, uint32_t *, float *, float);
+template __global__ void LmSplitQkvKernel<MIMO25_THREADS>(const uint16_t *, LmQkvLayout, uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
+template __global__ void LmRopePerHeadKernel<MIMO25_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
+template __global__ void LmKvStoreKernel<Mimo25FullKv, MIMO25_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
+template __global__ void LmKvStoreKernel<Mimo25SwaKv, MIMO25_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
+template __global__ void LmHeadCandidateKernel<MIMO25_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
+template __global__ void LmHeadCommitKernel<MIMO25_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
 
 // -- entry points --------------------------------------------------------------
 
@@ -80,4 +84,35 @@ extern "C" int32_t Mimo25GemmInt7(LmGemmArguments *args, const void *a, const vo
 {
 	return(LmGemmLaunch<LmInt7,MIMO25_TILE_N,256u,MIMO25_STAGES,MIMO25_WARPS>(
 		args,a,b,packed_rows,tokens,MIMO25_TOP_K,groups,k,n,sms,grouped,stream));
+}
+
+// -- entry points, one per layer kind ------------------------------------------
+//
+// The kind selects four things at once - projection width, rope theta, KV
+// geometry, whether the window applies - which is why it is two entry points
+// rather than one with a flag. A flag would put a branch on all four inside the
+// kernel and make the slot size a runtime value, which sizes the pool.
+
+extern "C" int32_t Mimo25LayerAttentionFullFp8(const Mimo25LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+{
+	return(Mimo25LayerAttention<LmFp8,Mimo25FullKv,MIMO25_FULL_KV_HEADS,MIMO25_FULL_QKV_DIM>(
+		b,rows,context,0u,MIMO25_FULL_ROPE_THETA,sms,stream));
+}
+
+extern "C" int32_t Mimo25LayerAttentionSwaFp8(const Mimo25LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+{
+	return(Mimo25LayerAttention<LmFp8,Mimo25SwaKv,MIMO25_SWA_KV_HEADS,MIMO25_SWA_QKV_DIM>(
+		b,rows,context,MIMO25_SLIDING_WINDOW,MIMO25_SWA_ROPE_THETA,sms,stream));
+}
+
+extern "C" int32_t Mimo25LayerAttentionFullInt7(const Mimo25LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+{
+	return(Mimo25LayerAttention<LmInt7,Mimo25FullKv,MIMO25_FULL_KV_HEADS,MIMO25_FULL_QKV_DIM>(
+		b,rows,context,0u,MIMO25_FULL_ROPE_THETA,sms,stream));
+}
+
+extern "C" int32_t Mimo25LayerAttentionSwaInt7(const Mimo25LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
+{
+	return(Mimo25LayerAttention<LmInt7,Mimo25SwaKv,MIMO25_SWA_KV_HEADS,MIMO25_SWA_QKV_DIM>(
+		b,rows,context,MIMO25_SLIDING_WINDOW,MIMO25_SWA_ROPE_THETA,sms,stream));
 }

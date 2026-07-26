@@ -36,6 +36,20 @@
 #define MIMO25_SWA_ROPE_THETA 10000.0f
 #define MIMO25_VALUE_SCALE 0.707f
 
+// The QKV projection is FUSED - one GEMM producing query, key and value
+// concatenated - where GLM 5.2 uses four separate projections. The widths
+// confirm it: 12288 query plus 4 KV heads of (192 key + 128 value) is 13568 on a
+// full layer, and 8 KV heads gives 14848 on a sliding-window one.
+//
+// Layers are one kind or the other, not both, so the projection width and the
+// rope theta are per-layer rather than per-model.
+#define MIMO25_Q_DIM 12288u                    /* CONFIG heads * head_dim */
+#define MIMO25_FULL_QKV_DIM 13568u             /* Q + 4 * (192 + 128) */
+#define MIMO25_SWA_QKV_DIM 14848u              /* Q + 8 * (192 + 128) */
+#define MIMO25_O_INPUT_DIM 8192u               /* heads * v_head_dim */
+#define MIMO25_LAYER_KIND_FULL 0u
+#define MIMO25_LAYER_KIND_SWA 1u
+
 // -- MoE -----------------------------------------------------------------------
 //
 // Same 256 experts at top-8 as GLM 5.2, so rows per expert is batch/32 and the

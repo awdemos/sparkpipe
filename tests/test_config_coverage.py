@@ -36,6 +36,12 @@ EXEMPT = {
     "QWEN36_VOCAB": "same",
     "K3_VOCAB": "same",
     "DSV4_VOCAB": "same",
+    "MIMO25_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
+    "MIMO25_LAYER_KIND_FULL": "the kind is a template parameter, so the enum "
+                              "value names an entry point rather than being "
+                              "compared against - Mimo25LayerAttentionFull* vs "
+                              "*Swa*, chosen by the host from the layer index",
+    "MIMO25_LAYER_KIND_SWA": "same",
     "GLM52_MXFP4_GROUP": "MXFP4 is a supported format with no checkpoint using it",
     "GLM52_FP8_SCALE_BLOCK": "the format trait carries its own group size",
     "GLM52_NVFP4_GROUP": "same",

@@ -31,6 +31,7 @@
 
 #include "runtime/gemm.cuh"
 #include "kernels/norm.cuh"
+#include "kernels/attn.cuh"
 #include <stdint.h>
 
 // One side of a low-rank projection: the two weights and the norm between them.
@@ -172,4 +173,83 @@ static int32_t LmAbsorbedProject(const LmAbsorbedWeights *weights, const LmAbsor
 			return(status);
 	}
 	return(LM_LAUNCH_OK);
+}
+
+// -- fused QKV ------------------------------------------------------------------
+//
+// The other shape a model's attention projection takes: one GEMM producing
+// query, key and value concatenated per row, split afterwards.
+//
+// MiMo 2.5 does this where GLM 5.2 does four separate projections, and neither
+// is a variant of the other. A fused projection is one large GEMM with better
+// arithmetic intensity; four separate ones let each output have its own
+// quantisation and let a latent-absorbed model skip materialising K and V at
+// all. Which a model uses is in its checkpoint, not a choice at run time.
+//
+// The split is a copy rather than a view because the three parts go to different
+// places - query to RoPE and then attention, key and value into a cache slot -
+// and a view would make every consumer carry the row stride and the offset. One
+// copy of a decode row is 27 KB at MiMo 2.5's widths, which is nothing against
+// the projection that produced it.
+struct LmQkvLayout
+{
+	uint32_t query_dimension;      /* heads * qk_head_dim */
+	uint32_t key_dimension;        /* kv_heads * qk_head_dim */
+	uint32_t value_dimension;      /* kv_heads * v_head_dim */
+	uint32_t rope_dimension;       /* rotated suffix of each qk head */
+	uint32_t head_dimension;       /* qk dim per head, for locating the rope part */
+};
+
+// Query, key and value out of a fused row.
+//
+// The value scale is applied here rather than after attention because it belongs
+// to the value tensor: MiMo 2.5 carries a 0.707 factor on V, and folding it into
+// the attention output instead is the same number only when the softmax weights
+// sum to one - which they do, but the equality stops holding the moment anything
+// masks a position after the softmax. Scaling the tensor it belongs to survives
+// that.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layout, uint16_t *__restrict__ query_bf16, uint16_t *__restrict__ key_bf16, uint16_t *__restrict__ value_bf16, uint32_t rows, float value_scale)
+{
+	uint32_t row = blockIdx.x,index;
+	uint32_t total = layout.query_dimension + layout.key_dimension + layout.value_dimension;
+	uint64_t base = (uint64_t)row * total;
+	if ( row >= rows )
+		return;
+	for (index = threadIdx.x; index < layout.query_dimension; index += THREADS)
+		query_bf16[((uint64_t)row * layout.query_dimension) + index] = fused_bf16[base + index];
+	for (index = threadIdx.x; index < layout.key_dimension; index += THREADS)
+		key_bf16[((uint64_t)row * layout.key_dimension) + index] =
+			fused_bf16[base + layout.query_dimension + index];
+	for (index = threadIdx.x; index < layout.value_dimension; index += THREADS)
+		value_bf16[((uint64_t)row * layout.value_dimension) + index] =
+			LmFloatToBf16(LmBf16ToFloat(
+				fused_bf16[base + layout.query_dimension + layout.key_dimension + index])
+				* value_scale);
+}
+
+// RoPE over the rotated suffix of every head in a packed multi-head row.
+//
+// A fused query row is heads x head_dimension with the rope part at the end of
+// each head, not at the end of the row. Rotating the row's tail would rotate the
+// last head only and leave the other sixty-three unrotated - which produces
+// fluent text whose attention ignores position for all but one head.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t heads, uint32_t head_dimension, uint32_t rope_dimension, float theta)
+{
+	uint32_t row = blockIdx.x,head = blockIdx.y,index;
+	uint32_t half = rope_dimension / 2u;
+	uint64_t base = (((uint64_t)row * heads) + head) * head_dimension
+		+ (head_dimension - rope_dimension);
+	float position = (float)positions[row];
+	for (index = threadIdx.x; index < half; index += THREADS)
+	{
+		float low = LmBf16ToFloat(rows_bf16[base + index]);
+		float high = LmBf16ToFloat(rows_bf16[base + half + index]);
+		LmRopePair(&low,&high,position * __powf(theta,-2.0f * (float)index / (float)rope_dimension));
+		rows_bf16[base + index] = LmFloatToBf16(low);
+		rows_bf16[base + half + index] = LmFloatToBf16(high);
+	}
 }
