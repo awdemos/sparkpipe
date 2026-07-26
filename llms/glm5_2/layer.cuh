@@ -44,6 +44,7 @@
 #include "kernels/norm.cuh"
 #include "kernels/attn.cuh"
 #include "kernels/topk.cuh"
+#include "kernels/formats/bf16.cuh"
 #include "llms/glm5_2/config.h"
 
 using Glm52Kv = LmKvLatent<GLM52_KV_BITS, GLM52_LATENT, GLM52_ROPE_DIM, GLM52_KV_PAGE_SLOTS>;
@@ -55,8 +56,18 @@ using Glm52Kv = LmKvLatent<GLM52_KV_BITS, GLM52_LATENT, GLM52_ROPE_DIM, GLM52_KV
 
 // Everything a layer reads or writes. One struct rather than forty arguments,
 // because a forty-argument call is where a swapped pair of pointers hides.
+// A dense GEMM is a grouped GEMM with one group, which means it still needs a
+// row offset table of two entries - {0, rows} - and a tile prefix of two. An
+// earlier draft passed the MoE's tables for the dense calls, which would have
+// bounded a dense linear by the routed row counts and silently dropped most of
+// its output rows.
+//
+// The host fills these once per step, not per layer, because they depend only on
+// the row count.
 struct Glm52LayerBuffers
 {
+	const uint32_t *dense_row_offset;      /* {0, rows} */
+	const uint32_t *dense_tile_prefix;     /* {0, tiles} */
 	// weights, bound once by the host
 	const void *attn_norm_weight;
 	const void *qkv_weight;
@@ -118,14 +129,24 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->qkv_scale;
-	gemm.group_row_offset = b->group_row_offset;
-	gemm.group_tile_prefix = b->group_tile_prefix;
+	gemm.group_row_offset = b->dense_row_offset;
+	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->qkv_bf16;
 	status = LmGemmLaunch<Format,GLM52_LAYER_TILE_N,Format::kTileK,GLM52_LAYER_STAGES,GLM52_LAYER_WARPS>(
 		&gemm,b->packed_activation,b->qkv_weight,rows,rows,GLM52_TOP_K,1u,
 		GLM52_HIDDEN,GLM52_LATENT_ROW,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	// RoPE applies to the trailing GLM52_ROPE_DIM elements of each row, so the
+	// stride is the whole row and the offset is where the rope part starts. The
+	// QKV projection above emits GLM52_LATENT_ROW elements per row - latent
+	// first, rope last - which is what makes the offset GLM52_LATENT.
+	//
+	// If the projection ever emits them the other way the rotation lands on the
+	// latent half, and the result is fluent text with the wrong positions, which
+	// is among the hardest failures to attribute. The assert is cheap.
+	static_assert(GLM52_LATENT_ROW == GLM52_LATENT + GLM52_ROPE_DIM,
+		"the QKV row is latent followed by rope; RoPE's offset assumes that order");
 	LmRopeKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
 		b->qkv_bf16,b->positions,GLM52_LATENT_ROW,GLM52_LATENT,GLM52_ROPE_DIM,GLM52_ROPE_THETA);
 	if ( sparse )
@@ -163,9 +184,29 @@ static int32_t Glm52LayerMoe(const Glm52LayerBuffers *b, uint32_t rows, uint32_t
 		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
 		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+	// The router logits have to be computed before they are selected from. An
+	// earlier draft of this file read b->router_logits without anything filling
+	// it, which would have selected experts from uninitialised memory - routing
+	// every token to whatever the allocator left behind, and producing output
+	// that is fluent because the experts themselves are fine.
+	//
+	// It is a dense GEMM: hidden by expert count, one group, BF16 in and out. No
+	// quantisation, because the router is 6144x256 and rounding it costs
+	// accuracy on the one tensor whose errors compound across every expert.
+	memset(&gemm,0,sizeof(gemm));
+	gemm.scale_a = 0;
+	gemm.scale_b = 0;
+	gemm.group_row_offset = b->dense_row_offset;
+	gemm.group_tile_prefix = b->dense_tile_prefix;
+	gemm.output_bf16 = b->router_logits;
+	status = LmGemmLaunch<LmBf16Format,GLM52_LAYER_TILE_N,LmBf16Format::kTileK,GLM52_LAYER_STAGES,GLM52_LAYER_WARPS>(
+		&gemm,b->normed_bf16,b->router_weight,rows,rows,GLM52_TOP_K,1u,
+		GLM52_HIDDEN,GLM52_EXPERTS,sms,false,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	LmTopkSmallKernel<GLM52_LAYER_THREADS,GLM52_TOP_K>
 		<<<rows,GLM52_LAYER_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream>>>(
-		b->router_logits,GLM52_EXPERTS,b->route_expert,b->route_weight,0.0f);
+		(const float *)b->router_logits,GLM52_EXPERTS,b->route_expert,b->route_weight,0.0f);
 	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
 		<<<dim3(packed_rows,GLM52_HIDDEN / Format::kScaleGroup),GLM52_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
