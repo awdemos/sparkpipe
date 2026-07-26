@@ -43,7 +43,47 @@ int main(void){
 	   (unsigned long long)layout.total_tiles);
 	ck(layout.total_tiles==256ULL*1ULL*32ULL,
 	   "4 rows/expert fits one M tile; 4096 N over TILE_N=128 is 32");
+	printf("\nTILE_M selection across token buckets\n");
+	printf("  the failure this prevents: a tile shorter than an expert's row count\n");
+	printf("  splits every expert in two, and each M tile re-reads the same weight\n");
+	printf("  tile, doubling the stream that is 96%% of all traffic.\n");
+	{
+		static const uint32_t buckets[] = { 1u, 8u, 64u, 128u, 512u, 1024u, 2048u };
+		uint32_t i;
+		for (i = 0; i < 7u; ++i)
+		{
+			uint64_t peak; uint64_t m_tiles;
+			memset(&shape,0,sizeof shape);
+			shape.tokens=buckets[i]; shape.top_k=8; shape.expert_count=256;
+			shape.hidden_dimension=6144; shape.intermediate_dimension=2048;
+			shape.tile_m=0; shape.tile_n=128;
+			if (spark_lm_workspace_layout_build(&shape,&layout)!=SPARK_LM_WORKSPACE_OK){
+				printf("  FAIL bucket %u did not build\n",buckets[i]); fails++; continue; }
+			peak = spark_lm_workspace_peak_rows_per_expert(&shape);
+			m_tiles = (peak + layout.tile_m - 1u) / layout.tile_m;
+			printf("    B%-5u peak rows/expert %-4llu -> TILE_M %-4u  M tiles %llu %s\n",
+				buckets[i],(unsigned long long)peak,layout.tile_m,
+				(unsigned long long)m_tiles, m_tiles<=1?"":"  <-- WEIGHT RE-READ");
+			if (m_tiles > 1u){ fails++; }
+		}
+	}
+	ck(1,"every bucket resolves to a single M tile, so no weight tile is read twice");
+	{
+		/* the regression this guards: TILE_M pinned at 16 doubles B1024 */
+		memset(&shape,0,sizeof shape);
+		shape.tokens=1024; shape.top_k=8; shape.expert_count=256;
+		shape.hidden_dimension=6144; shape.intermediate_dimension=2048;
+		shape.tile_m=16; shape.tile_n=128;
+		spark_lm_workspace_layout_build(&shape,&layout);
+		ck(layout.tile_m==16,"an explicit TILE_M is honoured, so a sweep can pin it");
+		shape.tile_m=0;
+		spark_lm_workspace_layout_build(&shape,&layout);
+		ck(layout.tile_m==64,"B1024 auto-selects 64, not the 16 that would double the stream");
+	}
 	printf("\nrejections\n");
+	memset(&shape,0,sizeof shape);
+	shape.tokens=128; shape.top_k=8; shape.expert_count=256;
+	shape.intermediate_dimension=2048; shape.tile_m=16; shape.tile_n=128;
 	shape.hidden_dimension=6150;
 	ck(spark_lm_workspace_layout_build(&shape,&layout)==SPARK_LM_WORKSPACE_ERR_GROUP,
 	   "hidden not divisible by the NVFP4 group is rejected");

@@ -11123,6 +11123,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4PrepareRoute(
     uint8_t *workspace,
     uint32_t active_sequence_count,
     uint32_t neuron_tiles,
+    uint32_t tile_m,
     cudaStream_t cuda_stream)
 {
     SparkStatus status;
@@ -11143,7 +11144,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4PrepareRoute(
         (uint32_t *)(workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_ROUTE_INDPTR]),
         (uint32_t *)(workspace + layout->offset[SPARK_LM_WORKSPACE_REGION_GROUP_TILE_PREFIX]),
         b12x_plan->expert_count,
-        SPARK_LM_GROUP_GEMM_DEFAULT_TILE_M,
+        tile_m,
         neuron_tiles);
     return cudaPeekAtLastError() == cudaSuccess
         ? SPARK_STATUS_OK
@@ -11227,7 +11228,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4EncodeGemmMaps(
     uint32_t packed_rows,
     uint32_t input_dimension,
     uint32_t output_dimension,
-    uint32_t expert_count)
+    uint32_t expert_count,
+    uint32_t tile_m)
 {
     spark_lm_tensor_map_request_t request;
 
@@ -11236,7 +11238,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4EncodeGemmMaps(
     request.rows = packed_rows;
     request.columns = input_dimension;
     request.groups = 1u;
-    request.box_rows = SPARK_LM_GROUP_GEMM_DEFAULT_TILE_M;
+    request.box_rows = tile_m;
     request.box_columns = SPARK_LM_GROUP_GEMM_NVFP4_TILE_K;
     request.element_bits = SPARK_LM_TENSOR_MAP_BITS_NVFP4;
     if (spark_lm_tensor_map_prepare(activation_map, &request) !=
@@ -11275,6 +11277,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4LaunchRoutedGemm(
     uint32_t output_dimension,
     uint32_t expert_count,
     uint32_t total_tiles,
+    uint32_t tile_m,
     cudaStream_t cuda_stream)
 {
     SparkLmGroupGemmArguments arguments;
@@ -11291,7 +11294,8 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4LaunchRoutedGemm(
         packed_rows,
         input_dimension,
         output_dimension,
-        expert_count);
+        expert_count,
+        tile_m);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -11312,12 +11316,45 @@ static SparkStatus SparkGlm52ResidentDecodeStageNvfp4LaunchRoutedGemm(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_PERSISTENT_BLOCKS
         ? total_tiles
         : SPARK_GLM52_RESIDENT_DECODE_STAGE_NVFP4_PERSISTENT_BLOCKS;
-    SparkLmGroupGemmNvfp4Kernel<
-        SPARK_LM_GROUP_GEMM_DEFAULT_TILE_M,
-        SPARK_LM_GROUP_GEMM_DEFAULT_TILE_N,
-        SPARK_LM_GROUP_GEMM_NVFP4_TILE_K,
-        4u,
-        8u><<<grid_blocks, 8u * 32u, 0, cuda_stream>>>(arguments);
+    // One instantiation per tile height. A switch rather than a runtime tile
+    // because TILE_M sizes the shared buffers and the accumulator array, both of
+    // which are compile-time. Anything not in this table is a caller error, not
+    // a case to approximate.
+    #define SPARK_GLM52_NVFP4_LAUNCH(TILE) \
+        SparkLmGroupGemmNvfp4Kernel< \
+            TILE, \
+            SPARK_LM_GROUP_GEMM_DEFAULT_TILE_N, \
+            SPARK_LM_GROUP_GEMM_NVFP4_TILE_K, \
+            4u, \
+            8u><<<grid_blocks, 8u * 32u, 0, cuda_stream>>>(arguments)
+    switch (tile_m)
+    {
+        case 16u:
+        {
+            SPARK_GLM52_NVFP4_LAUNCH(16u);
+            break;
+        }
+        case 32u:
+        {
+            SPARK_GLM52_NVFP4_LAUNCH(32u);
+            break;
+        }
+        case 64u:
+        {
+            SPARK_GLM52_NVFP4_LAUNCH(64u);
+            break;
+        }
+        case 128u:
+        {
+            SPARK_GLM52_NVFP4_LAUNCH(128u);
+            break;
+        }
+        default:
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    #undef SPARK_GLM52_NVFP4_LAUNCH
     return cudaPeekAtLastError() == cudaSuccess
         ? SPARK_STATUS_OK
         : SPARK_STATUS_INTERNAL_ERROR;
@@ -11973,7 +12010,13 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchNvfp4ExpertTensorCoreMoe(
     shape.expert_count = b12x_plan->expert_count;
     shape.hidden_dimension = b12x_plan->hidden_dimension;
     shape.intermediate_dimension = b12x_plan->intermediate_dimension;
-    shape.tile_m = SPARK_LM_GROUP_GEMM_DEFAULT_TILE_M;
+    // Zero means select for this bucket. A tile shorter than the busiest
+    // expert's row count splits that expert in two, and each M tile re-reads
+    // the same weight tile - doubling the stream that is 96 percent of all
+    // traffic. At 256 experts and top-8 a pinned TILE_M=16 lands there at
+    // B1024. spark_lm_workspace_select_tile_m grows the tile instead: padded
+    // MMA rows are free on a bandwidth-bound path, re-read weights are not.
+    shape.tile_m = 0u;
     shape.tile_n = SPARK_LM_GROUP_GEMM_DEFAULT_TILE_N;
     if (spark_lm_workspace_layout_build(&shape, &layout) != SPARK_LM_WORKSPACE_OK)
     {
@@ -11999,7 +12042,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchNvfp4ExpertTensorCoreMoe(
     }
     status = SparkGlm52ResidentDecodeStageNvfp4PrepareRoute(
         b12x_plan, pipeline_slot, &route_view, &layout, workspace,
-        active_sequence_count, neuron_tiles, cuda_stream);
+        active_sequence_count, neuron_tiles, (uint32_t)layout.tile_m, cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -12023,6 +12066,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchNvfp4ExpertTensorCoreMoe(
         gate_up_dimension,
         b12x_plan->expert_count,
         (uint32_t)layout.total_tiles,
+        (uint32_t)layout.tile_m,
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {
@@ -12047,6 +12091,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageLaunchNvfp4ExpertTensorCoreMoe(
         b12x_plan->hidden_dimension,
         b12x_plan->expert_count,
         (uint32_t)layout.total_tiles,
+        (uint32_t)layout.tile_m,
         cuda_stream);
     if (status != SPARK_STATUS_OK)
     {

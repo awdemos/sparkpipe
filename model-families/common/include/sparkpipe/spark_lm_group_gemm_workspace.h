@@ -53,6 +53,7 @@ typedef struct spark_lm_workspace_layout
 	uint64_t total_bytes;
 	uint64_t packed_rows;
 	uint64_t total_tiles;
+	uint32_t tile_m;
 }
 spark_lm_workspace_layout_t;
 
@@ -69,15 +70,52 @@ static uint64_t spark_lm_workspace_packed_rows(const spark_lm_workspace_shape_t 
 	return((uint64_t)shape->tokens * (uint64_t)shape->top_k);
 }
 
+// Choose TILE_M for a token bucket.
+//
+// Rows per expert is tokens*top_k/experts, so it grows with the batch while
+// TILE_M is a compile-time tile height. A fixed TILE_M=16 is exact through the
+// point where rows reach 16 and then splits every expert into two M tiles - and
+// because each M tile re-reads the expert's weight tile, that split doubles the
+// weight stream, which is 96 percent of all traffic on this path. At GLM 5.2's
+// 256 experts and top-8 that lands at B1024: rows/expert 32, two tiles, 2x the
+// bytes. Selecting TILE_M per bucket is what keeps it at one.
+//
+// Rounding UP to the next tile height wastes MMA throughput on padded rows,
+// which is free on a bandwidth-bound path. Rounding down would cost bandwidth,
+// which is not. The asymmetry is why this only ever grows the tile.
+static uint32_t spark_lm_workspace_select_tile_m(uint64_t rows_per_expert)
+{
+	if ( rows_per_expert <= 16u )
+		return(16u);
+	if ( rows_per_expert <= 32u )
+		return(32u);
+	if ( rows_per_expert <= 64u )
+		return(64u);
+	return(128u);
+}
+
+// Rows the busiest expert is expected to hold. Routing is not uniform, so the
+// mean understates the tile height a heavily loaded expert needs; the max-loaded
+// group is what sets step time under a grouped launch. A 2x headroom factor is a
+// heuristic and is the one number here that wants a measured route distribution
+// behind it - the route-log collection already planned is what would supply it.
+static uint64_t spark_lm_workspace_peak_rows_per_expert(const spark_lm_workspace_shape_t *shape)
+{
+	uint64_t mean_rows;
+	mean_rows = (spark_lm_workspace_packed_rows(shape) + (uint64_t)shape->expert_count - 1u)
+		/ (uint64_t)shape->expert_count;
+	return(mean_rows * 2u);
+}
+
 // Grid tiles for the grouped GEMM: each expert contributes ceil(rows/TILE_M)
 // M tiles times the N tile count. At decode most experts hold fewer rows than
 // TILE_M, so this is dominated by the expert count, not the token count.
-static uint64_t spark_lm_workspace_total_tiles(const spark_lm_workspace_shape_t *shape, uint32_t output_dimension)
+static uint64_t spark_lm_workspace_total_tiles_for_tile_m(const spark_lm_workspace_shape_t *shape, uint32_t tile_m, uint32_t output_dimension)
 {
 	uint64_t rows_per_expert,m_tiles,n_tiles;
 	rows_per_expert = (spark_lm_workspace_packed_rows(shape) + shape->expert_count - 1u)
 		/ (uint64_t)shape->expert_count;
-	m_tiles = (rows_per_expert + (uint64_t)shape->tile_m - 1u) / (uint64_t)shape->tile_m;
+	m_tiles = (rows_per_expert + (uint64_t)tile_m - 1u) / (uint64_t)tile_m;
 	if ( m_tiles == 0u )
 		m_tiles = 1u;
 	n_tiles = ((uint64_t)output_dimension + (uint64_t)shape->tile_n - 1u) / (uint64_t)shape->tile_n;
@@ -87,12 +125,12 @@ static uint64_t spark_lm_workspace_total_tiles(const spark_lm_workspace_shape_t 
 static int32_t spark_lm_workspace_layout_build(const spark_lm_workspace_shape_t *shape, spark_lm_workspace_layout_t *layout)
 {
 	uint64_t rows,hidden_bytes,hidden_scales,intermediate_bytes,intermediate_scales,cursor;
-	uint32_t region;
+	uint32_t region,effective;
 	if ( shape == 0 || layout == 0 )
 		return(SPARK_LM_WORKSPACE_ERR_NULL);
 	if ( shape->tokens == 0 || shape->top_k == 0 || shape->expert_count == 0
 		|| shape->hidden_dimension == 0 || shape->intermediate_dimension == 0
-		|| shape->tile_m == 0 || shape->tile_n == 0 )
+		|| shape->tile_n == 0 )
 		return(SPARK_LM_WORKSPACE_ERR_SHAPE);
 	// A 4-bit payload needs an even element count, and a UE4M3 scale needs the
 	// group to divide the row, or the last group is partial and the GEMM reads
@@ -100,6 +138,12 @@ static int32_t spark_lm_workspace_layout_build(const spark_lm_workspace_shape_t 
 	if ( (shape->hidden_dimension % SPARK_LM_WORKSPACE_NVFP4_GROUP) != 0u
 		|| (shape->intermediate_dimension % SPARK_LM_WORKSPACE_NVFP4_GROUP) != 0u )
 		return(SPARK_LM_WORKSPACE_ERR_GROUP);
+	// tile_m == 0 means "choose for this bucket", which is what the launcher
+	// passes. An explicit value is honoured so a sweep can pin it.
+	effective = shape->tile_m != 0u
+		? shape->tile_m
+		: spark_lm_workspace_select_tile_m(spark_lm_workspace_peak_rows_per_expert(shape));
+	layout->tile_m = effective;
 	rows = spark_lm_workspace_packed_rows(shape);
 	if ( rows == 0u || rows > 0xffffffffu )
 		return(SPARK_LM_WORKSPACE_ERR_OVERFLOW);
@@ -125,7 +169,8 @@ static int32_t spark_lm_workspace_layout_build(const spark_lm_workspace_shape_t 
 	}
 	layout->total_bytes = cursor;
 	layout->packed_rows = rows;
-	layout->total_tiles = spark_lm_workspace_total_tiles(shape,shape->intermediate_dimension * 2u);
+	layout->total_tiles = spark_lm_workspace_total_tiles_for_tile_m(shape,effective,
+		shape->intermediate_dimension * 2u);
 	return(SPARK_LM_WORKSPACE_OK);
 }
 
