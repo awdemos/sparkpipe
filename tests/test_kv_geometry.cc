@@ -4,6 +4,7 @@
 #include <stdint.h>
 #define __host__
 #define __device__
+#define __forceinline__ inline
 #include "kernels/kv.cuh"
 #include "llms/glm5_2/config.h"
 
