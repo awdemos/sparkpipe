@@ -2,6 +2,8 @@
 // Compile-only - every check below is a static_assert, so a wrong geometry is a
 // build failure on the sparkdev's laptop rather than a launch failure on the ring.
 #include <stdint.h>
+// kv.cuh needs nothing but stdint, which is the point: a host tool can reason
+// about cache capacity without a CUDA toolchain.
 #define __host__
 #define __device__
 #define __forceinline__ inline

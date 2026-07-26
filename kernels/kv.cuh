@@ -33,7 +33,9 @@
 // by the bytes all versions share. Nothing belongs in that address computation
 // that a constant can answer.
 
-#include "kernels/dtype.cuh"
+// stdint only. A cache that stores opaque bytes has no business knowing about
+// element formats, and depending on dtype.cuh would drag CUDA intrinsics into
+// every host tool that wants to reason about capacity.
 #include <stdint.h>
 
 // A page table entry is a page index. UINT32_MAX means unmapped, which is
