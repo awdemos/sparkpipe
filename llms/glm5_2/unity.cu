@@ -14,7 +14,7 @@
 // If something cannot be expressed as a parameter to kernels/, it goes in its
 // own file in this directory with a comment saying why. That should be rare.
 
-#include "kernels/gemm.cuh"
+#include "runtime/gemm.cuh"
 #include "kernels/formats/fp8.cuh"
 #include "kernels/formats/int7.cuh"
 #include "kernels/formats/int6.cuh"
@@ -59,9 +59,78 @@ static_assert(Glm52Kv::kSlotBytes == GLM52_KV_SLOT_BYTES,
 // explicit instantiation to match the primary template. Omitting it is an error,
 // not a silent difference, which is the good outcome.
 
-template __global__ void LmGemmKernel<LmFp8,   16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt6,  16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+
+
+
+
+
+
+
+
+
+
+
+
+// Every (format, tile height) the dispatch in runtime/gemm.cuh can select.
+//
+// The switch there and this list must agree. Omitting a height here is a LINK
+// error and omitting it there is a runtime error - both loud, neither silent,
+// which is the property worth having when the alternative is a kernel that
+// launches with the wrong shared-memory size.
+//
+// TILE_K differs by stored width because the swizzle span is in BYTES: 128
+// elements at 8 bits, 256 at 7. kernels/layout.cuh asserts it.
+
+template __global__ void LmGemmKernel<LmFp8, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmFp8, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmFp8, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt7, 16u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt7, 32u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt7, 64u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt6, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt6, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmInt6, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmNvfp4, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8,   64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt7,  16u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmBf16Format, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmNvfp4, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmNvfp4, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+
+// -- entry points ------------------------------------------------------------
+//
+// What runtime/ calls. One per weight format; the tile height is chosen inside
+// from the token count, so a caller never picks one.
+//
+// extern "C" because the scheduler is C. This is the whole ABI surface of the
+// model - four functions and a plan struct - against the old tree's extern "C"
+// seams, dlopen plugin, generated kernel table and AOT object pack.
+
+extern "C" int32_t Glm52GemmFp8(LmGemmArguments *args, const void *a, const void *b,
+	uint32_t packed_rows, uint32_t tokens, uint32_t groups,
+	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
+{
+	return(LmGemmLaunch<LmFp8,GLM52_TILE_N,128u,GLM52_STAGES,GLM52_WARPS>(
+		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+}
+
+extern "C" int32_t Glm52GemmInt7(LmGemmArguments *args, const void *a, const void *b,
+	uint32_t packed_rows, uint32_t tokens, uint32_t groups,
+	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
+{
+	return(LmGemmLaunch<LmInt7,GLM52_TILE_N,256u,GLM52_STAGES,GLM52_WARPS>(
+		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+}
+
+extern "C" int32_t Glm52GemmInt6(LmGemmArguments *args, const void *a, const void *b,
+	uint32_t packed_rows, uint32_t tokens, uint32_t groups,
+	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
+{
+	return(LmGemmLaunch<LmInt6,GLM52_TILE_N,128u,GLM52_STAGES,GLM52_WARPS>(
+		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+}
+
+extern "C" int32_t Glm52GemmNvfp4(LmGemmArguments *args, const void *a, const void *b,
+	uint32_t packed_rows, uint32_t tokens, uint32_t groups,
+	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
+{
+	return(LmGemmLaunch<LmNvfp4,GLM52_TILE_N,128u,GLM52_STAGES,GLM52_WARPS>(
+		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+}
