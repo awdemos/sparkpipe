@@ -32,6 +32,18 @@
 #include "kernels/tma.cuh"
 #include <stdint.h>
 
+// The static __shared__ limit is 48 KB per block, not the 128 KB of L1/shared
+// the SM has. ptxas enforces it as "uses too much shared data (0xc000 max)" and
+// nothing before nvcc could see it - every geometry in this file was checked
+// against 131072 and was wrong by 2.7x.
+//
+// Exceeding it needs DYNAMIC shared memory plus a runtime opt-in through
+// cudaFuncSetAttribute(cudaFuncAttributeMaxDynamicSharedMemorySize). That is
+// what CUTLASS and Marlin do and what the launcher must do here; the constant
+// below is the static ceiling a __shared__ declaration must respect.
+#define LM_SMEM_STATIC_LIMIT 49152u
+#define LM_SMEM_SM_TOTAL 131072u
+
 #define LM_PIPELINE_STAGES 2u
 #define LM_PIPELINE_LOOKAHEAD (LM_PIPELINE_STAGES - 1u)
 
@@ -105,12 +117,12 @@ static __host__ __device__ constexpr uint32_t LmPipelineSharedBytes(uint32_t til
 // 128-element tile during this file's own development. What each stored width
 // can do:
 //
-//     bits   TILE_K   pitch   span   shared at M16, 2 stages
-//       16      128     256   128B          73,760
-//        8      128     128   128B          36,896
-//        7      256     224    32B          64,544
-//        6      128      96    32B          27,680
-//        4      128      64    64B          18,464
+//     bits   TILE_K   pitch   span   shared M16 x2   fits 48 KB static
+//       16      128     256   128B          73,760          no, needs dynamic
+//        8      128     128   128B          36,896          yes
+//        7      256     224    32B          64,544          no, needs dynamic
+//        6      128      96    32B          27,680          yes
+//        4      128      64    64B          18,464          yes
 static __host__ __device__ constexpr bool LmTileKIsSwizzleable(uint32_t tile_k, uint32_t element_bits)
 {
 	return(((tile_k * element_bits) % 8u) == 0u

@@ -35,6 +35,16 @@
 #include "kernels/tile.cuh"
 #include <stdint.h>
 
+// Bytes the launcher must request and pass. Constexpr so a host can compute it
+// without a device query and so it cannot drift from what the kernel carves.
+template<class Format, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES>
+static __host__ __device__ constexpr uint32_t LmGemmSharedBytes(void)
+{
+	return((STAGES * LmTileBytes(TILE_M,TILE_K,Format::kStoredBits))
+		+ (STAGES * LmTileBytes(TILE_N,TILE_K,Format::kStoredBits))
+		+ (STAGES * 8u));
+}
+
 struct LmGemmArguments
 {
 	const void *tensor_map_a;
@@ -143,12 +153,24 @@ __global__ __launch_bounds__(WARPS * LM_WARP_LANES, 1)
 void LmGemmKernel(__grid_constant__ const LmGemmArguments args, LmTileSource source_a, LmTileSource source_b, bool grouped)
 {
 	static_assert(LmTileKIsSwizzleable(TILE_K,Format::kStoredBits),"no swizzle span divides this row pitch; see the table in kernels/tile.cuh");
-	static_assert(LmPipelineSharedBytes(TILE_M,TILE_N,TILE_K,STAGES,Format::kStoredBits) <= 131072u,"tile does not fit shared memory");
+	// Dynamic rather than static shared memory. ptxas caps a static __shared__
+	// declaration at 48 KB - "uses too much shared data (0xc000 max)" - which
+	// excludes BF16 and INT7 at any useful tile. Dynamic shared has no compile
+	// time cap; the launcher opts in with
+	// cudaFuncSetAttribute(cudaFuncAttributeMaxDynamicSharedMemorySize) and
+	// passes the size at launch. LmGemmSharedBytes below is what it must pass,
+	// and the assert here is against the SM total rather than the static limit.
+	static_assert(LmPipelineSharedBytes(TILE_M,TILE_N,TILE_K,STAGES,Format::kStoredBits) <= LM_SMEM_SM_TOTAL,"tile exceeds the shared memory an SM has");
 	static_assert(TILE_M % Format::kMmaM == 0u && TILE_N % (WARPS * Format::kMmaN) == 0u,"tile is not a whole number of mma fragments");
 	static_assert(TILE_K % Format::kMmaK == 0u,"tile depth is not a whole number of mma steps");
-	__shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t stage_a[STAGES][LmTileBytes(TILE_M,TILE_K,Format::kStoredBits)];
-	__shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t stage_b[STAGES][LmTileBytes(TILE_N,TILE_K,Format::kStoredBits)];
-	__shared__ __align__(8) uint64_t barrier[STAGES];
+	extern __shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t lm_shared[];
+	const uint32_t a_bytes = LmTileBytes(TILE_M,TILE_K,Format::kStoredBits);
+	const uint32_t b_bytes = LmTileBytes(TILE_N,TILE_K,Format::kStoredBits);
+	uint8_t (*stage_a)[LmTileBytes(TILE_M,TILE_K,Format::kStoredBits)] =
+		(uint8_t (*)[LmTileBytes(TILE_M,TILE_K,Format::kStoredBits)])lm_shared;
+	uint8_t (*stage_b)[LmTileBytes(TILE_N,TILE_K,Format::kStoredBits)] =
+		(uint8_t (*)[LmTileBytes(TILE_N,TILE_K,Format::kStoredBits)])(lm_shared + (STAGES * a_bytes));
+	uint64_t *barrier = (uint64_t *)(lm_shared + (STAGES * (a_bytes + b_bytes)));
 	const uint32_t count = (TILE_M / Format::kMmaM) * (TILE_N / WARPS / Format::kMmaN);
 	const uint32_t neuron_tiles = (args.output_dimension + TILE_N - 1u) / TILE_N;
 	const uint32_t k_tiles = args.input_dimension / TILE_K;

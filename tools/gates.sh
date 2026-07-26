@@ -23,6 +23,7 @@ run "tensor map geometry"  "gcc -O2 -Wall -Wextra -I model-families/common/inclu
 run "tensor map encode"    "gcc -O2 -Wall -Wextra -I model-families/common/include -I tests/cuda_driver_stub -o /tmp/g_e tests/test_tensor_map_encode.c tests/cuda_driver_stub/stub.c && /tmp/g_e"
 run "autotune builds"      "gcc -O2 -Wall -Wextra -o /tmp/g_a tools/spark_lm_autotune.c"
 # The tree is first on the include path so nothing in tools/shim can shadow it.
+run "nvcc: real target"    "sh tools/build.sh"
 for model in llms/*/
 do
 	name=$(basename "$model")

@@ -15,6 +15,10 @@
 // represented saturates to the format maximum, which is the documented IEEE
 // behaviour for these types and what the tensor cores assume.
 
+// cuda_fp16.h for __half2float and __ushort_as_half: the E4M3 and E2M1 decode
+// instructions produce a packed f16x2, and reading half of it back needs the
+// half intrinsics. Found by nvcc; the keyword shim cannot see a missing include.
+#include <cuda_fp16.h>
 #include <stdint.h>
 
 // -- format tags -------------------------------------------------------------
