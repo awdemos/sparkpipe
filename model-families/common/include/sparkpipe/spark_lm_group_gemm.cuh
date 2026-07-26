@@ -46,7 +46,7 @@
 // tensor-map encoding agreeing with the swizzle assumed here, and whether the
 // autotuner's candidate ordering survives measurement.
 
-#include "sparkpipe/spark_lm_tma.cuh"
+#include "sparkpipe/lm/lm_tma.cuh"
 #include "sparkpipe/spark_lm_group_gemm_swizzle_contract.h"
 #include <cuda_fp8.h>
 #include <stdint.h>
@@ -118,7 +118,7 @@ static __device__ __forceinline__ void SparkLmGroupGemmLoadFragmentA(uint32_t fr
 	chunk = SparkLmGroupGemmSwizzleChunk(k_chunk_base + (lane / 16u),row);
 	asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
 		: "=r"(fragment[0]), "=r"(fragment[1]), "=r"(fragment[2]), "=r"(fragment[3])
-		: "r"(SparkLmTmaSharedAddress(tile + (row * tile_k) + (chunk * SPARK_LM_GROUP_GEMM_CHUNK_BYTES))));
+		: "r"(LmTmaSharedAddress(tile + (row * tile_k) + (chunk * SPARK_LM_GROUP_GEMM_CHUNK_BYTES))));
 }
 
 // B needs 8 rows, not 16, so x2 with lanes 0-15 supplying rows and 16-31 the
@@ -130,7 +130,7 @@ static __device__ __forceinline__ void SparkLmGroupGemmLoadFragmentB(uint32_t fr
 	chunk = SparkLmGroupGemmSwizzleChunk(k_chunk_base + ((lane / 8u) % 2u),row);
 	asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];\n"
 		: "=r"(fragment[0]), "=r"(fragment[1])
-		: "r"(SparkLmTmaSharedAddress(tile + (row * tile_k) + (chunk * SPARK_LM_GROUP_GEMM_CHUNK_BYTES))));
+		: "r"(LmTmaSharedAddress(tile + (row * tile_k) + (chunk * SPARK_LM_GROUP_GEMM_CHUNK_BYTES))));
 }
 
 // Verified accumulator mapping: SM80_16x8_Row gives entry e of lane l the
@@ -167,8 +167,8 @@ static __device__ void SparkLmGroupGemmInitialiseBarriers(uint64_t *barrier_full
 	uint32_t stage;
 	if ( threadIdx.x == 0u )
 		for (stage = 0u; stage < STAGES; ++stage)
-			SparkLmMbarrierInit(&barrier_full[stage],arrive_count);
-	SparkLmMbarrierInitFence();
+			LmMbarrierInit(&barrier_full[stage],arrive_count);
+	LmMbarrierInitFence();
 	__syncthreads();
 }
 
@@ -179,7 +179,7 @@ static __device__ void SparkLmGroupGemmReleaseBarriers(uint64_t *barrier_full)
 	__syncthreads();
 	if ( threadIdx.x == 0u )
 		for (stage = 0u; stage < STAGES; ++stage)
-			SparkLmMbarrierInvalidate(&barrier_full[stage]);
+			LmMbarrierInvalidate(&barrier_full[stage]);
 }
 
 static __device__ __forceinline__ void SparkLmGroupGemmZeroAccumulators(float (*accumulator)[4], uint32_t count)
@@ -196,12 +196,12 @@ static __device__ __forceinline__ void SparkLmGroupGemmZeroAccumulators(float (*
 template<uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K>
 static __device__ __forceinline__ void SparkLmGroupGemmProduceStage(const SparkLmGroupGemmArguments &arguments, void *stage_a, void *stage_b, uint64_t *barrier, uint32_t row_base, uint32_t neuron_base, uint32_t k_base, uint32_t group_index)
 {
-	if ( SparkLmTmaElectOne() == false )
+	if ( LmTmaElectOne() == false )
 		return;
-	SparkLmMbarrierArriveExpect(barrier,
-		SparkLmTmaBoxBytes(TILE_M,TILE_K,1u) + SparkLmTmaBoxBytes(TILE_N,TILE_K,1u));
-	SparkLmTmaLoad2d(stage_a,arguments.tensor_map_a,barrier,(int32_t)k_base,(int32_t)row_base);
-	SparkLmTmaLoad3d(stage_b,arguments.tensor_map_b,barrier,(int32_t)k_base,(int32_t)neuron_base,(int32_t)group_index);
+	LmMbarrierArriveExpect(barrier,
+		LmTmaBoxBytes(TILE_M,TILE_K,1u) + LmTmaBoxBytes(TILE_N,TILE_K,1u));
+	LmTmaLoad2d(stage_a,arguments.tensor_map_a,barrier,(int32_t)k_base,(int32_t)row_base);
+	LmTmaLoad3d(stage_b,arguments.tensor_map_b,barrier,(int32_t)k_base,(int32_t)neuron_base,(int32_t)group_index);
 }
 
 // Accumulate one staged K tile into the per-tile partial. The block scale is
@@ -311,8 +311,8 @@ template<uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uin
 static __global__ __launch_bounds__(WARPS * SPARK_LM_GROUP_GEMM_WARP_LANES, 1)
 void SparkLmGroupGemmFp8Kernel(__grid_constant__ const SparkLmGroupGemmArguments arguments)
 {
-	__shared__ __align__(SPARK_LM_TMA_ALIGNMENT_BYTES) uint8_t stage_a[STAGES][TILE_M * TILE_K];
-	__shared__ __align__(SPARK_LM_TMA_ALIGNMENT_BYTES) uint8_t stage_b[STAGES][TILE_N * TILE_K];
+	__shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t stage_a[STAGES][TILE_M * TILE_K];
+	__shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t stage_b[STAGES][TILE_N * TILE_K];
 	__shared__ __align__(8) uint64_t barrier_full[STAGES];
 	const uint32_t count = (TILE_M / SPARK_LM_GROUP_GEMM_MMA_M) * (TILE_N / WARPS / SPARK_LM_GROUP_GEMM_MMA_N);
 	const uint32_t neuron_tiles = (arguments.output_dimension + TILE_N - 1u) / TILE_N;
@@ -348,7 +348,7 @@ void SparkLmGroupGemmFp8Kernel(__grid_constant__ const SparkLmGroupGemmArguments
 			ahead = k_tile + STAGES - 1u;
 			if ( ahead < k_tiles )
 				SparkLmGroupGemmProduceStage<TILE_M,TILE_N,TILE_K>(arguments,stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier_full[ahead % STAGES],row_base,neuron_base,ahead * TILE_K,group_index);
-			SparkLmMbarrierWait(&barrier_full[stage],(k_tile / STAGES) & 1u);
+			LmMbarrierWait(&barrier_full[stage],(k_tile / STAGES) & 1u);
 			SparkLmGroupGemmConsumeStage<TILE_M,TILE_N,TILE_K,WARPS>(partial,stage_a[stage],stage_b[stage],warp_index,lane_index);
 			SparkLmGroupGemmApplyBlockScale<TILE_M,TILE_N,WARPS>(total,partial,arguments,count,row_base,neuron_base,k_tile,group_index,warp_index,lane_index);
 			__syncthreads();
@@ -476,8 +476,8 @@ void SparkLmGroupGemmNvfp4Kernel(__grid_constant__ const SparkLmGroupGemmArgumen
 	static_assert(TILE_K == SPARK_LM_GROUP_GEMM_NVFP4_TILE_K,
 		"NVFP4 TILE_K must be 256 elements; at 4 bits a 128-element tile is 64 bytes "
 		"and is narrower than the 128-byte swizzle span");
-	__shared__ __align__(SPARK_LM_TMA_ALIGNMENT_BYTES) uint8_t stage_a[STAGES][TILE_M * TILE_K / 2u];
-	__shared__ __align__(SPARK_LM_TMA_ALIGNMENT_BYTES) uint8_t stage_b[STAGES][TILE_N * TILE_K / 2u];
+	__shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t stage_a[STAGES][TILE_M * TILE_K / 2u];
+	__shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t stage_b[STAGES][TILE_N * TILE_K / 2u];
 	__shared__ __align__(8) uint64_t barrier_full[STAGES];
 	const uint32_t count = (TILE_M / SPARK_LM_GROUP_GEMM_MMA_M) * (TILE_N / WARPS / SPARK_LM_GROUP_GEMM_MMA_N);
 	const uint32_t neuron_tiles = (arguments.output_dimension + TILE_N - 1u) / TILE_N;
@@ -512,7 +512,7 @@ void SparkLmGroupGemmNvfp4Kernel(__grid_constant__ const SparkLmGroupGemmArgumen
 			ahead = k_tile + STAGES - 1u;
 			if ( ahead < k_tiles )
 				SparkLmGroupGemmProduceStage<TILE_M,TILE_N,TILE_K / 2u>(arguments,stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier_full[ahead % STAGES],row_base,neuron_base,ahead * (TILE_K / 2u),group_index);
-			SparkLmMbarrierWait(&barrier_full[stage],(k_tile / STAGES) & 1u);
+			LmMbarrierWait(&barrier_full[stage],(k_tile / STAGES) & 1u);
 			SparkLmGroupGemmConsumeStageNvfp4<TILE_M,TILE_N,TILE_K,WARPS>(total,stage_a[stage],stage_b[stage],
 				(const uint32_t *)(arguments.scale_a) + (k_tile * scales_per_row),
 				(const uint32_t *)(arguments.scale_b) + (k_tile * scales_per_row),

@@ -1,0 +1,174 @@
+#pragma once
+
+// The staged tile pipeline. One implementation, shared by every GEMM.
+//
+// The old tree had this written four times with four different schedules: two
+// BF16 bodies selected by a policy macro, an FP8 body in a header excluded from
+// every build, and a fourth inside the glm52 decode stage. Each had its own
+// prologue, its own phase arithmetic and its own idea of when a stage was free.
+// Three of the four never ran.
+//
+// SCHEDULE. Stage s holds K tile s, s+STAGES, s+2*STAGES and so on. Before
+// consuming tile t the loop issues tile t+STAGES-1, so a transfer is always in
+// flight across the wait. The CTA-wide __syncthreads every stage already needs -
+// all warps read the same staged tile - is also what establishes that the stage
+// being refilled was consumed, so there is no second "empty" barrier. One
+// mbarrier per stage, nothing else.
+//
+// DEPTH. Two stages, a lookahead of one. Little's Law against 218 GB/s
+// effective and 400-600 ns latency wants about 2.3 KB in flight per SM; a single
+// tile per CTA clears that twenty times over. Depth past that satisfies a
+// requirement already met and costs occupancy - six stages of a 16-row NVFP4
+// tile is 110 KB and admits one CTA per SM, where two stages is 37 KB and
+// admits three. The latency figure has never been measured in this repo, which
+// is the one thing that could move this number.
+//
+// The stage and phase arithmetic below is checked exhaustively by
+// tests/test_mma_fragment_mapping.c across stages 2..6 and k_tiles 1..48: every
+// tile consumed after it was produced, no stage refilled before consumption,
+// phase parity matching the round counter.
+
+#include "sparkpipe/lm/lm_mma.cuh"
+#include "sparkpipe/lm/lm_tma.cuh"
+#include <stdint.h>
+
+#define LM_PIPELINE_STAGES 2u
+#define LM_PIPELINE_LOOKAHEAD (LM_PIPELINE_STAGES - 1u)
+
+// Ring position of a K tile.
+static __device__ __forceinline__ uint32_t LmPipelineStage(uint32_t k_tile, uint32_t stages)
+{
+	return(k_tile % stages);
+}
+
+// An mbarrier flips phase on each completion, so waiting for tile t on its
+// stage means waiting for parity equal to the number of times that stage has
+// already completed, which is the round counter.
+static __device__ __forceinline__ uint32_t LmPipelinePhase(uint32_t k_tile, uint32_t stages)
+{
+	return((k_tile / stages) & 1u);
+}
+
+// The tile to issue while tile k_tile is being consumed.
+static __device__ __forceinline__ uint32_t LmPipelineAhead(uint32_t k_tile, uint32_t stages)
+{
+	return(k_tile + stages - 1u);
+}
+
+template<uint32_t STAGES>
+static __device__ void LmPipelineInitialise(uint64_t *barrier, uint32_t arrive_count)
+{
+	uint32_t stage;
+	if ( threadIdx.x == 0u )
+		for (stage = 0u; stage < STAGES; ++stage)
+			LmMbarrierInit(&barrier[stage],arrive_count);
+	LmMbarrierInitFence();
+	__syncthreads();
+}
+
+template<uint32_t STAGES>
+static __device__ void LmPipelineRelease(uint64_t *barrier)
+{
+	uint32_t stage;
+	__syncthreads();
+	if ( threadIdx.x == 0u )
+		for (stage = 0u; stage < STAGES; ++stage)
+			LmMbarrierInvalidate(&barrier[stage]);
+}
+
+// Geometry of one staged tile pair, in bytes. Separate from the kernel so the
+// host can compute the same numbers when it sizes shared memory and chooses a
+// tile height, and so a mismatch between the two is a test failure rather than
+// a launch failure.
+//
+// Element width is in BITS because E2M1 is four, and a tile extent that assumes
+// one byte per element is wrong by a factor of two in a way that still runs.
+//
+// constexpr so a kernel's geometry is a compile-time contract. A tile that does
+// not fit shared memory, or a K extent too narrow to swizzle, should be a
+// static_assert at the instantiation rather than a launch failure on the ring -
+// the sparkdev should not be debugging a configuration the compiler could have
+// rejected.
+static __host__ __device__ constexpr uint32_t LmTileBytes(uint32_t rows, uint32_t depth, uint32_t element_bits)
+{
+	return((rows * depth * element_bits) / 8u);
+}
+
+static __host__ __device__ constexpr uint32_t LmPipelineSharedBytes(uint32_t tile_m, uint32_t tile_n, uint32_t tile_k, uint32_t stages, uint32_t element_bits)
+{
+	return(stages * (LmTileBytes(tile_m,tile_k,element_bits)
+		+ LmTileBytes(tile_n,tile_k,element_bits) + 16u));
+}
+
+// A tile narrower than the swizzle span cannot be permuted at that granularity.
+// This is not hypothetical: an NVFP4 K tile of 128 elements is 64 bytes, and
+// selecting it produces a descriptor that encodes cleanly and addresses
+// inconsistently. NVFP4 needs 256 elements where FP8 needs 128.
+static __host__ __device__ constexpr bool LmTileKIsSwizzleable(uint32_t tile_k, uint32_t element_bits)
+{
+	return(LmTileBytes(1u,tile_k,element_bits) % LM_SWIZZLE_SPAN_BYTES == 0u);
+}
+
+// -- staging -----------------------------------------------------------------
+//
+// One elected thread issues both boxes and declares their total. The expected
+// byte count must equal the sum of everything issued into the stage or the
+// barrier never flips, so it is derived here from the same LmTileBytes the host
+// sizes shared memory with rather than passed in.
+
+struct LmTileSource
+{
+	const void *tensor_map;
+	uint32_t rows;
+	uint32_t depth;
+	uint32_t element_bits;
+};
+
+static __device__ __forceinline__ void LmPipelineProduce(const LmTileSource *a, const LmTileSource *b, void *stage_a, void *stage_b, uint64_t *barrier, uint32_t row_base, uint32_t neuron_base, uint32_t k_byte_base, uint32_t group_index, bool grouped)
+{
+	if ( LmTmaElectOne() == false )
+		return;
+	LmMbarrierArriveExpect(barrier,
+		LmTileBytes(a->rows,a->depth,a->element_bits)
+		+ LmTileBytes(b->rows,b->depth,b->element_bits));
+	LmTmaLoad2d(stage_a,a->tensor_map,barrier,(int32_t)k_byte_base,(int32_t)row_base);
+	// Weights are expert-major, so one rank-3 descriptor covers every expert and
+	// the third coordinate selects. A dense GEMM is the same tensor with one
+	// group, which is why there is no separate dense staging path.
+	if ( grouped )
+		LmTmaLoad3d(stage_b,b->tensor_map,barrier,(int32_t)k_byte_base,(int32_t)neuron_base,(int32_t)group_index);
+	else
+		LmTmaLoad2d(stage_b,b->tensor_map,barrier,(int32_t)k_byte_base,(int32_t)neuron_base);
+}
+
+// -- grouped tile scheduling -------------------------------------------------
+//
+// Tile index to group, by binary search over a prefix the route build wrote.
+// O(log G); a scan would be O(G) per tile and O(G * tiles) overall, which is the
+// shape this codebase forbids.
+//
+// The prefix is also where the true tile count lives. A host-side estimate
+// cannot know it - it is a function of per-expert row counts, which only exist
+// on device - and bounding the grid loop on an estimate computed from average
+// rows launches tiles for groups that received none. Each of those still streams
+// a full weight tile before its stores are rejected, which at low batch is tens
+// of times the necessary DRAM traffic on the term that is 96 percent of all of
+// it.
+static __device__ __forceinline__ uint32_t LmGroupOfTile(const uint32_t *group_tile_prefix, uint32_t group_count, uint32_t tile_index)
+{
+	uint32_t low = 0u,high = group_count,middle;
+	while ( low + 1u < high )
+	{
+		middle = (low + high) >> 1u;
+		if ( group_tile_prefix[middle] <= tile_index )
+			low = middle;
+		else
+			high = middle;
+	}
+	return(low);
+}
+
+static __device__ __forceinline__ uint32_t LmTotalTiles(const uint32_t *group_tile_prefix, uint32_t group_count)
+{
+	return(group_tile_prefix[group_count]);
+}
