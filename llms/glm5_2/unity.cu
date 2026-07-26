@@ -16,6 +16,7 @@
 
 #include "runtime/gemm.cuh"
 #include "kernels/norm.cuh"
+#include "kernels/attn.cuh"
 #include "kernels/formats/fp8.cuh"
 #include "kernels/formats/int7.cuh"
 #include "kernels/formats/int6.cuh"
@@ -107,6 +108,17 @@ template __global__ void LmQuantiseRowsKernel<LmFp8, GLM52_NORM_THREADS>(const u
 template __global__ void LmQuantiseRowsKernel<LmInt7, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmQuantiseRowsKernel<LmInt6, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmQuantiseRowsKernel<LmNvfp4, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
+
+// Attention. Generic over the cache geometry, so the same three kernels serve
+// any model whose cache is a paged pool of opaque slots - which after
+// kernels/kv.cuh is all of them.
+//
+// The sparse path is the dense path with a selected-position array. Passing null
+// makes it dense; the old tree had them as separate kernels and the difference
+// was which positions the loop visited.
+template __global__ void LmRopeKernel<GLM52_NORM_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
+template __global__ void LmAttentionDecodeKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_LATENT, GLM52_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *);
+template __global__ void LmSparseScoreKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_DSA_INDEX_DIM>(const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, uint32_t, float *);
 
 // -- entry points ------------------------------------------------------------
 //
