@@ -11,7 +11,7 @@
 // cuTensorMapEncodeTiled is a DRIVER API entry point. It needs cuda.h and a
 // current context, not just the runtime API, so the link line gains -lcuda.
 
-#include "kernels/tensor_map.cuh"
+#include "inference/kernels/tensor_map.cuh"
 #include <cuda.h>
 #include <stdint.h>
 #include <string.h>

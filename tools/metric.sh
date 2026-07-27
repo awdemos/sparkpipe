@@ -68,7 +68,7 @@ done | sort -k4 -rn
 
 echo
 echo "THE REWRITE, against what it replaces"
-new=$(wc -l kernels/*.cuh kernels/formats/*.cuh llms/*/* runtime/* 2>/dev/null | tail -1 | awk '{print $1}')
+new=$(wc -l kernels/*.cuh kernels/formats/*.cuh inference/llms/*/* runtime/* 2>/dev/null | tail -1 | awk '{print $1}')
 old=$(git ls-files modules model-families | grep -E '\.(c|cu|cuh|h)$' | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}')
 printf "  %-18s %8s lines\n" "kernels+llms+runtime" "$new"
 printf "  %-18s %8s lines\n" "modules+families" "$old"

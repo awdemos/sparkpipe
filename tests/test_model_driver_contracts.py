@@ -17,7 +17,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 def main() -> int:
     failures = 0
-    models = sorted(p for p in (ROOT / "llms").iterdir() if p.is_dir())
+    models = sorted(p for p in (ROOT / "inference/llms").iterdir() if p.is_dir())
     if not models:
         print("  FAIL no models in llms/")
         return 1

@@ -13,7 +13,7 @@ ARCH="-gencode arch=compute_121a,code=sm_121a"
 NVCC="$CUDA/bin/nvcc"
 [ -x "$NVCC" ] || { echo "no nvcc at $NVCC; run tools/get_cuda.sh"; exit 2; }
 status=0
-for unity in llms/*/unity.cu
+for unity in inference/llms/*/unity.cu
 do
 	name=$(basename "$(dirname "$unity")")
 	if "$NVCC" -std=c++17 $ARCH -O3 --use_fast_math -I. -c "$unity" -o "/tmp/lm_$name.o" 2>"/tmp/lm_$name.log"

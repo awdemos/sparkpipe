@@ -14,7 +14,7 @@
 // approximate - approximating it would mean silently splitting groups and
 // doubling the weight stream.
 
-#include "kernels/gemm.cuh"
+#include "inference/kernels/gemm.cuh"
 #include "runtime/launch.h"
 #include "runtime/tensor_map.h"
 #include <cuda_runtime.h>

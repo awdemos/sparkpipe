@@ -50,8 +50,8 @@ static uint32_t SparkGlm52ResidentDecodeStageMultiprocessorCount(void)
 
 // uint8_t and uint16_t are gone with the GEMM that
 // needed them; kernels/dtype.cuh has both conversions and neither is a type.
-#include "kernels/gemm.cuh"
-#include "llms/glm5_2/api.h"
+#include "inference/kernels/gemm.cuh"
+#include "inference/llms/glm5_2/api.h"
 
 #include <float.h>
 #include <stdint.h>
@@ -20829,9 +20829,9 @@ static bool SparkGlm52ResidentDecodeStageFrameShouldLaunchMtpDraft(
 // not a runtime mode, because a runtime mode is how the old stage ended up with
 // six execution paths of which four did not work.
 #if defined(SPARK_GLM52_FIRST_PARTY_LAYER)
-#include "kernels/formats/fp8.cuh"
-#include "kernels/formats/int7.cuh"
-#include "llms/glm5_2/layer.cuh"
+#include "inference/kernels/formats/fp8.cuh"
+#include "inference/kernels/formats/int7.cuh"
+#include "inference/llms/glm5_2/layer.cuh"
 
 static SparkStatus SparkGlm52ResidentDecodeStageLaunchFirstPartyLayer(
     const Glm52LayerBuffers *buffers,

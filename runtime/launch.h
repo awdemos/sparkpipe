@@ -30,7 +30,7 @@
 // Geometry only. The launch itself needs the kernel, but the PLAN is arithmetic
 // and a host must be able to compute it without a CUDA toolchain - which is why
 // kernels/layout.cuh exists separately from kernels/mma.cuh.
-#include "kernels/layout.cuh"
+#include "inference/kernels/layout.cuh"
 #include <stdint.h>
 
 #define LM_LAUNCH_OK 0

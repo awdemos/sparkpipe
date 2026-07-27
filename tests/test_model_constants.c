@@ -1,4 +1,4 @@
-#include "llms/glm5_2/config.h"
+#include "inference/llms/glm5_2/config.h"
 #include <stdio.h>
 int main(void){
   /* every derived value cross-checked against the old header's constants */

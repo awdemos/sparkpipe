@@ -73,14 +73,14 @@ EXEMPT = {
 
 def main() -> int:
     failures = 0
-    for model in sorted(p for p in (ROOT / "llms").iterdir() if p.is_dir()):
+    for model in sorted(p for p in (ROOT / "inference/llms").iterdir() if p.is_dir()):
         config = model / "config.h"
         if not config.exists():
             continue
         declared = re.findall(r"^#define ([A-Z][A-Z0-9_]*)", config.read_text(encoding="utf-8"), re.M)
         # everything the model and the library could reference it from
         corpus = ""
-        for path in list(model.glob("*")) + list((ROOT / "kernels").rglob("*.cuh")) + list((ROOT / "runtime").rglob("*")):
+        for path in list(model.glob("*")) + list((ROOT / "inference/kernels").rglob("*.cuh")) + list((ROOT / "runtime").rglob("*")):
             if path.is_file() and path.name != "config.h":
                 corpus += path.read_text(encoding="utf-8", errors="ignore")
         unused = [d for d in declared

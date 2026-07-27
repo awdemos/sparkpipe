@@ -3,7 +3,7 @@
 // The failure this guards against: a descriptor that encodes cleanly and moves
 // the wrong bytes. Every case below is one that cuTensorMapEncodeTiled would
 // accept.
-#include "kernels/tensor_map.cuh"
+#include "inference/kernels/tensor_map.cuh"
 
 #include <stdio.h>
 #include <string.h>
