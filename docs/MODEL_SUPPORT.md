@@ -182,6 +182,41 @@ designed for both models at once, before either is called supported.
 | dsv4 | hash routing, hyper-connections absent | `config.h` |
 | mimo_2_5 | sink bias not audited into config | this file |
 
+## kimi_k3, after reading the modelling file
+
+Three of the four blockers are settled and one is code.
+
+| | state |
+|---|---|
+| SiTU | DONE. `LmSituMulKernel`, checked numerically against the reference |
+| MLA output gate | kernel DONE and correct; `g_proj` is separate, sigmoid, before `o_proj` |
+| LatentMoE | SPECIFIED. Router on the FULL hidden, experts at 3584, shared experts outside the latent |
+| AttnRes | SPECIFIED. A softmax attention over 9 candidates. **9× transport** |
+| KDA | SPECIFIED except the decay arithmetic, which is in `fla`, not the released file |
+
+### The one that changes a shared kernel
+
+`linear_attn.cuh` reads `forget_gate[(row * key_heads) + head]` — one scalar per
+head. KDA's forget gate is `f_b_proj(f_a_proj(hidden))`, a low-rank projection
+to `heads * head_dim`, so it is **per head per channel**. The kernel cannot
+express this model's decay.
+
+Everything else K3 needs is additive. This one widens an argument that
+`qwen_3_6` also passes, so the two models have to agree on it. That makes it the
+first piece of K3 work with a blast radius outside `inference/llms/kimi_k3/`.
+
+Also: KDA runs three separate short convolutions, one each for q, k and v, every
+one with a SiLU. `LmCausalConvDecodeKernel` applies no activation and the qwen
+path calls it once.
+
+### Still unread
+
+The decay itself. `g`, `A_log` and `dt_bias` are combined inside `fla`'s
+`fused_recurrent_kda` with `use_qk_l2norm_in_kernel`, `use_beta_sigmoid_in_kernel`
+and a `-5.0` lower bound. The released modelling file calls that function and
+does not define it, so the last piece of KDA needs the `fla` source rather than
+the checkpoint.
+
 ## Order
 
 1. per-layer kind dispatch — unblocks dsv4 ×2 and cleans qwen, mimo, k3

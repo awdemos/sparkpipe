@@ -93,6 +93,45 @@
 #define K3_MLA_USE_NOPE 1u
 #define K3_MLA_OUTPUT_GATE 1u
 
+// -- what the modelling file says KDA and the MoE actually are ------------------
+//
+// LATENT MoE. The router runs on the FULL hidden, not the latent, which is the
+// part a shape-only reading gets backwards:
+//
+//     topk, weights = gate(hidden)                 router at 7168
+//     latent        = down_proj(hidden)            7168 -> 3584
+//     y             = experts(latent, topk)        experts at 3584, inter 3072
+//     y             = rms_norm(y)                  latent_moe_use_norm is true
+//     y             = up_proj(y)                   3584 -> 7168
+//     out           = y + shared_experts(hidden)   shared run on the ORIGINAL
+//
+// The shared experts are NOT in the latent space and take the pre-projection
+// hidden at intermediate moe_intermediate * num_shared = 3072 * 2 = 6144.
+//
+// KDA DOES NOT FIT LmDeltaRuleDecodeKernel AS IT STANDS. The projections:
+//
+//     q_proj, k_proj, v_proj   hidden -> heads * head_dim = 12288, each with its
+//                              OWN short convolution, each with a SiLU
+//     g (forget)               f_b_proj(f_a_proj(hidden)): 7168 -> 128 -> 12288,
+//                              so PER HEAD PER CHANNEL
+//     beta (write)             b_proj(hidden): 7168 -> 96, per head scalar,
+//                              sigmoid applied inside the kernel
+//     output gate              g_proj(hidden) -> 12288, full rank, per channel
+//     o_norm                   gated RMS norm with a sigmoid, at head_dim
+//     A_log                    per head, log-uniform over [1,16]
+//     dt_bias                  per channel
+//     lower bound              -5.0 clamp on the gate
+//
+// linear_attn.cuh reads forget_gate[(row * key_heads) + head] - ONE SCALAR PER
+// HEAD. KDA's forget gate is head_dim wide per head. The kernel cannot express
+// this model's decay, and widening that argument is the first piece of K3 work
+// that changes a shared kernel rather than adding one.
+//
+// Three separate convolutions with SiLU, not one; LmCausalConvDecodeKernel has
+// no activation. The final decay arithmetic combining g, A_log and dt_bias lives
+// in fla's fused_recurrent_kda and is NOT in the released modelling file, so it
+// is the one piece still unread.
+
 // KDA, on the other three in four. 96 heads at 128, a 4-wide causal convolution,
 // a full-rank gate floored at -5.
 #define K3_KDA_HEADS 96u
