@@ -23,22 +23,8 @@
 
 cd "$(dirname "$0")/.." || exit 1
 
-classify() {
-	case "$1" in
-		diagnostics/*|*/validation-logs/*) echo diagnostics ;;
-		*.bin|*.bf16|*.f32|*.i32|*.u32|*.npz|*.safetensors|*.log) echo diagnostics ;;
-		SHA256SUMS|*/SHA256SUMS) echo diagnostics ;;
-		tests/*) echo tests ;;
-		docs/*|*.md|*.txt) echo docs ;;
-		*.c|*.cu|*.cuh|*.h|*.hpp|*.cc|*.cpp|*.py|*.sh|*.mk|Makefile|*/Makefile) echo code ;;
-		*) echo other ;;
-	esac
-}
-
-git ls-files | while read -r f
-do
-	printf "%s %s\n" "$(classify "$f")" "$f"
-done > /tmp/lm_metric.txt
+. "$(dirname "$0")/classify.sh"
+spark_classified /tmp/lm_metric.txt
 
 report() {
 	n=$(grep -c "^$1 " /tmp/lm_metric.txt)

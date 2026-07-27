@@ -1,6 +1,0 @@
-dsa_topk_parity_pass active_sequences=1 candidate_count=1048576 selected_token_count=2048 elapsed_ms=63.041 context0=1048576 context_last=1048576
-dsa_score_topk_parity_pass active_sequences=1 candidate_count=1048576 row_capacity=16 elapsed_ms=88.255
-dsa_topk_parity_pass active_sequences=16 candidate_count=1048576 selected_token_count=2048 elapsed_ms=137.952 context0=1048576 context_last=1046521
-dsa_score_topk_parity_pass active_sequences=16 candidate_count=1048576 row_capacity=16 elapsed_ms=542.863
-dsa_topk_parity_pass active_sequences=17 candidate_count=4096 selected_token_count=2048 elapsed_ms=11.824 context0=4096 context_last=1904
-dsa_score_topk_parity_pass active_sequences=17 candidate_count=4096 row_capacity=16 elapsed_ms=13.663
