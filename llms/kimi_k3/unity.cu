@@ -13,6 +13,8 @@
 #include "kernels/norm.cuh"
 #include "kernels/attn.cuh"
 #include "kernels/topk.cuh"
+#include "kernels/linear_attn.cuh"
+#include "kernels/head.cuh"
 #include "kernels/formats/fp8.cuh"
 #include "kernels/formats/int7.cuh"
 #include "llms/kimi_k3/config.h"
@@ -39,6 +41,15 @@ template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS>(const uint16_t
 template __global__ void LmSiluMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmInt7, K3_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmRopeKernel<K3_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
+// KDA on three of every four layers, gated MLA on the fourth. The same delta
+// rule Qwen 3.6 uses, at K3's widths - which is the argument that this is an
+// architecture class and not one vendor's design.
+template __global__ void LmDeltaRuleDecodeKernel<K3_THREADS, K3_KDA_KEY_DIM, K3_KDA_KEY_DIM>(uint8_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
+template __global__ void LmKvStoreKernel<K3GlobalKv, K3_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
+template __global__ void LmHeadCandidateKernel<K3_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
+template __global__ void LmHeadCommitKernel<K3_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
+template __global__ void LmMoeFinalizeKernel<K3_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
+
 template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KDA_KEY_DIM, 64u>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *);
 template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K>(const float *, uint32_t, uint32_t *, float *, float);
 

@@ -12,6 +12,8 @@
 #include "kernels/norm.cuh"
 #include "kernels/attn.cuh"
 #include "kernels/topk.cuh"
+#include "kernels/linear_attn.cuh"
+#include "kernels/head.cuh"
 #include "kernels/formats/fp8.cuh"
 #include "kernels/formats/int7.cuh"
 #include "llms/qwen_3_6/config.h"
@@ -35,6 +37,17 @@ template __global__ void LmFusedResidualRmsNormKernel<QWEN36_THREADS>(const uint
 template __global__ void LmSiluMulKernel<QWEN36_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, QWEN36_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmRopeKernel<QWEN36_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
+// The linear layers. 48 of 64, with a fixed state instead of a growing cache.
+//
+// The state and the convolution window share one non-growing slot, which is why
+// QWEN36_GDN_STATE_BYTES is their sum and kernels/kv.cuh sizes the pool from it.
+template __global__ void LmDeltaRuleDecodeKernel<QWEN36_THREADS, QWEN36_GDN_KEY_DIM, QWEN36_GDN_VALUE_DIM>(uint8_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
+template __global__ void LmCausalConvDecodeKernel<QWEN36_THREADS, QWEN36_GDN_CONV_KERNEL>(uint16_t *, const uint32_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t);
+template __global__ void LmKvStoreKernel<Qwen36FullKv, QWEN36_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
+template __global__ void LmHeadCandidateKernel<QWEN36_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
+template __global__ void LmHeadCommitKernel<QWEN36_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
+template __global__ void LmMoeFinalizeKernel<QWEN36_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
+
 template __global__ void LmAttentionDecodeKernel<Qwen36FullKv, QWEN36_THREADS, 128u, 64u>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *);
 
 extern "C" int32_t Qwen36GemmFp8(LmGemmArguments *a, const void *x, const void *w,
