@@ -259,3 +259,30 @@ static int32_t Mimo25LayerDenseMlp(const Mimo25LayerBuffers *b, uint32_t rows, u
 		&gemm,b->packed_activation,b->dense_down_weight,rows,rows,MIMO25_TOP_K,1u,
 		MIMO25_DENSE_INTERMEDIATE,MIMO25_HIDDEN,sms,false,stream));
 }
+
+// -- output head ----------------------------------------------------------------
+//
+// A layer stack that never reaches a vocabulary produces no token. This model
+// had every layer kind and no head, so MIMO25_VOCAB was declared, carried through
+// the config gate as an exemption reading "no layer sequence yet, so no head
+// call", and never read by anything. The sequence is the same three kernels
+// glm5_2 uses; only the widths differ.
+#define MIMO25_HEAD_TILE 1024u
+
+static int32_t Mimo25Head(const Mimo25LayerBuffers *b, const void *head_norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, cudaStream_t stream)
+{
+	uint32_t tiles = (vocabulary + MIMO25_HEAD_TILE - 1u) / MIMO25_HEAD_TILE;
+	// End of the stream, so no residual in and no residual out.
+	LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>
+		<<<rows,MIMO25_LAYER_THREADS,(MIMO25_HIDDEN + 8u) * sizeof(float),stream>>>(
+		b->hidden_bf16,0,(const uint16_t *)head_norm_weight,
+		0,b->normed_bf16,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
+	LmHeadCandidateKernel<MIMO25_LAYER_THREADS,MIMO25_HEAD_TILE>
+		<<<dim3(tiles,rows),MIMO25_LAYER_THREADS,0,stream>>>(
+		b->normed_bf16,(const uint16_t *)head_weight,token_ids,
+		b->head_candidate_score,b->head_candidate_token,rows,MIMO25_HIDDEN,vocabulary);
+	LmHeadCommitKernel<MIMO25_LAYER_THREADS><<<rows,MIMO25_LAYER_THREADS,0,stream>>>(
+		b->head_candidate_score,b->head_candidate_token,tiles,
+		b->output_token,b->output_score,rows);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}

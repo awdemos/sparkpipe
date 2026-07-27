@@ -32,10 +32,8 @@ EXEMPT = {
     "GLM52_MTP_DRAFT_TOKENS": "speculation is wired in kernels/speculate.cuh but no model drives it yet",
     "GLM52_MTP_LAYER_INDEX": "same",
     "GLM52_WEIGHT_LAYERS": "used by the host packer, not by kernels",
-    "MIMO25_VOCAB": "no layer sequence yet, so no head call",
     "QWEN36_VOCAB": "same",
     "K3_VOCAB": "same",
-    "DSV4_VOCAB": "same",
     "MIMO25_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
     "MIMO25_LAYER_KIND_FULL": "the kind is a template parameter, so the enum "
                               "value names an entry point rather than being "

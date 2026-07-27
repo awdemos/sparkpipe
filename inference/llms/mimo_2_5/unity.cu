@@ -132,3 +132,14 @@ extern "C" int32_t Mimo25LayerDenseMlpFp8(const Mimo25LayerBuffers *b, uint32_t 
 {
 	return(Mimo25LayerDenseMlp<LmFp8>(b,rows,sms,stream));
 }
+
+extern "C" int32_t Mimo25HeadFullVocab(const Mimo25LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t stream)
+{
+	return(Mimo25Head(b,norm_weight,head_weight,0,MIMO25_VOCAB,rows,stream));
+}
+
+extern "C" int32_t Mimo25HeadRestricted(const Mimo25LayerBuffers *b, const void *norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t count, uint32_t rows, cudaStream_t stream)
+{
+	return(Mimo25Head(b,norm_weight,head_weight,token_ids,count,rows,stream));
+}
+

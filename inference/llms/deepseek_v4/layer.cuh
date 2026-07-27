@@ -282,3 +282,30 @@ static int32_t Dsv4LayerMoe(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t p
 		b->hidden_bf16,b->shared_out_bf16,b->hidden_bf16,rows,DSV4_HIDDEN);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
+
+// -- output head ----------------------------------------------------------------
+//
+// A layer stack that never reaches a vocabulary produces no token. This model
+// had every layer kind and no head, so DSV4_VOCAB was declared, carried through
+// the config gate as an exemption reading "no layer sequence yet, so no head
+// call", and never read by anything. The sequence is the same three kernels
+// glm5_2 uses; only the widths differ.
+#define DSV4_HEAD_TILE 1024u
+
+static int32_t Dsv4Head(const Dsv4LayerBuffers *b, const void *head_norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, cudaStream_t stream)
+{
+	uint32_t tiles = (vocabulary + DSV4_HEAD_TILE - 1u) / DSV4_HEAD_TILE;
+	// End of the stream, so no residual in and no residual out.
+	LmFusedResidualRmsNormKernel<DSV4_LAYER_THREADS>
+		<<<rows,DSV4_LAYER_THREADS,(DSV4_HIDDEN + 8u) * sizeof(float),stream>>>(
+		b->hidden_bf16,0,(const uint16_t *)head_norm_weight,
+		0,b->normed_bf16,DSV4_HIDDEN,DSV4_RMS_EPSILON);
+	LmHeadCandidateKernel<DSV4_LAYER_THREADS,DSV4_HEAD_TILE>
+		<<<dim3(tiles,rows),DSV4_LAYER_THREADS,0,stream>>>(
+		b->normed_bf16,(const uint16_t *)head_weight,token_ids,
+		b->head_candidate_score,b->head_candidate_token,rows,DSV4_HIDDEN,vocabulary);
+	LmHeadCommitKernel<DSV4_LAYER_THREADS><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
+		b->head_candidate_score,b->head_candidate_token,tiles,
+		b->output_token,b->output_score,rows);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}

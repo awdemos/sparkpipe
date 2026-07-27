@@ -56,3 +56,14 @@ extern "C" int32_t Dsv4LayerMoeFp8(const Dsv4LayerBuffers *b, uint32_t rows, uin
 {
 	return(Dsv4LayerMoe<LmFp8>(b,rows,packed_rows,sms,stream));
 }
+
+extern "C" int32_t Dsv4HeadFullVocab(const Dsv4LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t stream)
+{
+	return(Dsv4Head(b,norm_weight,head_weight,0,DSV4_VOCAB,rows,stream));
+}
+
+extern "C" int32_t Dsv4HeadRestricted(const Dsv4LayerBuffers *b, const void *norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t count, uint32_t rows, cudaStream_t stream)
+{
+	return(Dsv4Head(b,norm_weight,head_weight,token_ids,count,rows,stream));
+}
+
