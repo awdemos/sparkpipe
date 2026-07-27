@@ -28,7 +28,7 @@ template __global__ void LmFusedResidualRmsNormKernel<DSV4_THREADS>(const uint16
 template __global__ void LmSiluMulKernel<DSV4_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, DSV4_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmRopeKernel<DSV4_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
-template __global__ void LmAttentionDecodeKernel<Dsv4Kv, DSV4_THREADS, DSV4_HEAD_DIM, DSV4_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *);
+template __global__ void LmAttentionDecodeKernel<Dsv4Kv, DSV4_THREADS, DSV4_HEAD_DIM, DSV4_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 template __global__ void LmSparseScoreKernel<Dsv4Kv, DSV4_THREADS, DSV4_INDEX_DIM>(const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, uint32_t, float *);
 template __global__ void LmRopeYarnKernel<DSV4_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float, float, float, float, float);
 template __global__ void LmKvStoreKernel<Dsv4Kv, DSV4_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);

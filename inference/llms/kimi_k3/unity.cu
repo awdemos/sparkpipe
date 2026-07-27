@@ -50,7 +50,7 @@ template __global__ void LmHeadCandidateKernel<K3_THREADS, 1024u>(const uint16_t
 template __global__ void LmHeadCommitKernel<K3_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
 template __global__ void LmMoeFinalizeKernel<K3_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
 
-template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KDA_KEY_DIM, 64u>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *);
+template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KDA_KEY_DIM, 64u>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K>(const float *, uint32_t, uint32_t *, float *, float);
 
 extern "C" int32_t K3GemmInt7(LmGemmArguments *a, const void *x, const void *w,

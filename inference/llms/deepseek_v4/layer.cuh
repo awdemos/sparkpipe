@@ -163,7 +163,8 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 		<<<dim3(rows,DSV4_ATTN_HEADS),DSV4_LAYER_THREADS,0,stream>>>(
 		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length,
 		sparse ? b->selected_positions : 0,sparse ? DSV4_INDEX_TOP_K : budget,
-		DSV4_ATTN_HEADS,rsqrtf((float)DSV4_HEAD_DIM),b->attention_latent_bf16);
+		DSV4_ATTN_HEADS,rsqrtf((float)DSV4_HEAD_DIM),b->attention_latent_bf16,
+		0);
 	LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>
 		<<<dim3(rows,(DSV4_ATTN_HEADS * DSV4_HEAD_DIM) / Format::kScaleGroup),DSV4_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(

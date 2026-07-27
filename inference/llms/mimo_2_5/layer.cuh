@@ -141,7 +141,8 @@ static int32_t Mimo25LayerAttention(const Mimo25LayerBuffers *b, uint32_t rows, 
 		<<<dim3(rows,MIMO25_ATTN_HEADS),MIMO25_LAYER_THREADS,0,stream>>>(
 		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length,
 		window != 0u ? b->window_positions : 0,window,MIMO25_ATTN_HEADS,
-		rsqrtf((float)MIMO25_HEAD_DIM),b->attention_out_bf16);
+		rsqrtf((float)MIMO25_HEAD_DIM),b->attention_out_bf16,
+		0);
 	LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>
 		<<<dim3(rows,MIMO25_O_INPUT_DIM / Format::kScaleGroup),MIMO25_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(

@@ -214,7 +214,8 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 		<<<dim3(rows,GLM52_ATTN_HEADS),GLM52_LAYER_THREADS,0,stream>>>(
 		b->projected.query_latent_bf16,b->projected.query_rope_bf16,b->cache,b->sequence_of_row,b->context_length,
 		sparse ? b->selected_positions : 0,GLM52_DSA_SELECTED,GLM52_ATTN_HEADS,
-		rsqrtf((float)GLM52_LATENT),b->attention_latent_bf16);
+		rsqrtf((float)GLM52_LATENT),b->attention_latent_bf16,
+		0);
 	// THE OUTPUT PROJECTION, which an earlier version of this file declared and
 	// never called. Attention produces heads x latent; the layer's output is
 	// hidden. Without this the residual add receives a tensor of the wrong width

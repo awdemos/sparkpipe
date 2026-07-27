@@ -76,9 +76,26 @@ void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__
 // selected positions makes this the sparse path; passing null makes it dense.
 // The old tree had these as different kernels, and the difference was which
 // positions the loop visited.
+// PREFILL IS THIS KERNEL WITH MORE ROWS AND A MASK.
+//
+// The old tree had DsaPrefillRowSetupKernel, DsaSparsePrefillAttentionKernel,
+// DsaPrefillIndexerPass and PagedChunkPrefill as separate implementations. They
+// compute the same thing decode does: a row attends over cached positions. What
+// differs is that a prefill row is not the last position, so it must not see
+// positions after its own, and that there are many rows rather than one.
+//
+// Both are one argument. row_position, when non-null, gives each row its own
+// position and the loop stops there; when null every row attends to everything
+// cached, which is decode. That is the whole difference, and it is a comparison
+// rather than a kernel.
+//
+// Chunking is the caller's business and stays there. A prefill of 8,000 tokens
+// runs as chunks of a few hundred rows because the intermediate buffers are
+// sized for that, and which chunk size is a scheduling decision that depends on
+// what else is resident - not something a kernel should decide.
 template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
 __global__ __launch_bounds__(THREADS, 1)
-void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, const uint16_t *__restrict__ query_rope_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16)
+void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, const uint16_t *__restrict__ query_rope_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float shared_query[LATENT + ROPE];
@@ -97,6 +114,12 @@ void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, con
 	{
 		uint32_t position = selected_positions != 0
 			? selected_positions[(row * selected_count) + step] : step;
+		// Causal: a prefill row must not see past itself. Skipping rather than
+		// masking the score keeps the online softmax's running maximum honest -
+		// a masked-to-negative-infinity score still participates in the rescale
+		// and costs the cache read that made it worthless.
+		if ( row_position != 0 && position > row_position[row] )
+			continue;
 		const uint8_t *slot = LmKvSlot<Geometry>(cache,sequence,position);
 		float score = 0.0f,scaled,previous;
 		// An unmapped page is not page zero. Reading it as page zero returns

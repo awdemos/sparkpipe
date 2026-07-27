@@ -28,6 +28,7 @@
 #include "inference/kernels/kv.cuh"
 #include "inference/llms/glm5_2/config.h"
 #include "inference/llms/glm5_2/layer.cuh"
+#include "inference/kernels/graph.cuh"
 
 // -- geometries --------------------------------------------------------------
 
@@ -124,7 +125,7 @@ template __global__ void LmQuantiseRowsKernel<LmNvfp4, GLM52_NORM_THREADS>(const
 // makes it dense; the old tree had them as separate kernels and the difference
 // was which positions the loop visited.
 template __global__ void LmRopeKernel<GLM52_NORM_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
-template __global__ void LmAttentionDecodeKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_LATENT, GLM52_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *);
+template __global__ void LmAttentionDecodeKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_LATENT, GLM52_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 template __global__ void LmSparseScoreKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_DSA_INDEX_DIM>(const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, uint32_t, float *);
 
 // Top-k and speculation. The router picks 8 of 256 with the small path; DSA
@@ -245,4 +246,31 @@ extern "C" int32_t Glm52HeadFullVocab(const Glm52LayerBuffers *b, const void *no
 extern "C" int32_t Glm52HeadRestricted(const Glm52LayerBuffers *b, const void *norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t count, uint32_t rows, cudaStream_t stream)
 {
 	return(Glm52Head(b,norm_weight,head_weight,token_ids,count,rows,stream));
+}
+
+// -- graph capture --------------------------------------------------------------
+//
+// One layer half, captured per shape and replayed. The sequence is a function
+// call, so this file needs to know nothing about which kernels it records - which
+// is why it is thirty lines where the old capture was 1,501.
+
+extern "C" int32_t Glm52LayerAttentionFp8Graphed(LmGraphCache *graphs, const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t layer_in_group, uint32_t sms, cudaStream_t stream)
+{
+	LmGraphKey key;
+	int32_t status;
+	key.rows = rows;
+	key.layer_kind = 0u;
+	key.format = 0u;
+	key.sparse = context > GLM52_DSA_SELECTED ? 1u : 0u;
+	key.context_bucket = LmGraphContextBucket(context,GLM52_DSA_SELECTED);
+	if ( LmGraphReplay(graphs,&key,stream) == LM_GRAPH_OK )
+		return(LM_LAUNCH_OK);
+	if ( LmGraphBeginCapture(stream) != LM_GRAPH_OK )
+		return(Glm52LayerAttention<LmFp8>(b,rows,context,layer_in_group,sms,stream));
+	status = Glm52LayerAttention<LmFp8>(b,rows,context,layer_in_group,sms,stream);
+	// A capture that ends without a slot leaves the work queued and unrecorded,
+	// which is correct and merely uncaptured. Failing the step instead would
+	// turn a cache-full condition into a dropped request.
+	LmGraphEndCapture(graphs,&key,stream);
+	return(status);
 }
