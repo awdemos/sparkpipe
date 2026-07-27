@@ -19,7 +19,7 @@ run "free dequant"         "gcc -O2 -Wall -Wextra -o /tmp/g_d tests/test_dequant
 run "reference oracle"     "gcc -O2 -Wall -Wextra -Itests -o /tmp/g_r tests/test_reference.c -lm && /tmp/g_r"
 run "weight binding"       "gcc -O2 -Wall -Wextra -I. -Imodules/glm52_resident_decode_stage/include -Iinclude -Ideployment/include -Imodel-families/glm52/include -o /tmp/g_b tests/test_pack_bind.c && /tmp/g_b"
 run "sidebands"            "gcc -O2 -Wall -Wextra -I. -o /tmp/g_s tests/test_sideband.c && /tmp/g_s"
-run "kv cache"             "gcc -O2 -Wall -Wextra -I. -o /tmp/g_c tests/test_cache.c && /tmp/g_c"
+run "kv cache"             "gcc -O2 -Wall -Wextra -I. -o /tmp/g_kv tests/test_cache.c && /tmp/g_kv"
 run "kv geometry"          "g++ -std=c++17 -fsyntax-only -Wall -Wextra -I. tests/test_kv_geometry.cc"
 run "workspace layout"     "gcc -O2 -Wall -Wextra -I. -o /tmp/g_w tests/test_group_gemm_workspace.c && /tmp/g_w"
 run "tensor map geometry"  "gcc -O2 -Wall -Wextra -I. -o /tmp/g_t tests/test_tensor_map_geometry.c && /tmp/g_t"
@@ -35,5 +35,15 @@ run "config coverage"      "python3 tests/test_config_coverage.py"
 run "kernel algorithms"    "python3 tests/test_kernel_algorithms.py"
 run "model contracts"      "python3 tests/test_model_driver_contracts.py"
 run "nvcc: sm_121a build"  "sh tools/build.sh"
+# The Makefile, which no gate covered. It did not parse: the reorganisation moved
+# twelve sources and $(patsubst src/%.c,...) returned the non-matching paths
+# UNCHANGED, so runtime/filesystem.c reached -include and make read a C file as a
+# makefile. Every other gate was green throughout. .updaterepo-policy names four
+# make targets as its validation and none of them could run.
+run "makefile parses"      "make -n all"
+run "makefile: test"       "make -n test"
+run "makefile: tools"      "make -n tools"
+run "makefile: backend"    "make -n glm52_pp13_service_backend"
+run "every source exists"  "python3 tests/test_sources_exist.py"
 printf "  ---- %d pass, %d fail\n" "$ok" "$bad"
 [ "$bad" -eq 0 ]

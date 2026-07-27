@@ -6,7 +6,10 @@ CUDA_HOME ?= /usr/local/cuda
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3 -g -pthread
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Werror -O3 -g -pthread
 CORE_INCLUDE_FLAGS := -Iinclude -Isrc
-MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Imodel-families/common/include
+# stage_module_common.c reaches <cuda_runtime.h> through spark_stage_module_common.h.
+# Nothing in this group supplied that path, so the archive could not have built;
+# the tests hid it behind -Itests/cuda_stub.
+MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include
 GLM52_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm52/include
 QWEN36_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen36/include
 DSV4_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/include
@@ -121,27 +124,43 @@ HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY
 HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA := build/libhidden_transport_spark_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
 
-include core/sources.mk
-include model-families/common/sources.mk
-include model-families/glm52/sources.mk
-include model-families/qwen36/sources.mk
-include deployment/sources.mk
+include sources.mk
 
-CORE_SOURCES := $(SPARKPIPE_CORE_SUPPORT_SOURCES)
+CORE_SOURCES := $(SPARKPIPE_CORE_SOURCES)
 MODEL_COMMON_SOURCES := $(SPARKPIPE_MODEL_COMMON_SOURCES)
 DEPLOYMENT_SOURCES := $(SPARKPIPE_DEPLOYMENT_SOURCES)
 GLM52_HOST_SOURCES := $(SPARKPIPE_GLM52_SOURCES)
 QWEN36_HOST_SOURCES := $(SPARKPIPE_QWEN36_SOURCES)
-COMPILER_SOURCES := $(SPARKPIPE_CORE_COMPILER_SOURCES)
-RUNTIME_SOURCES := $(SPARKPIPE_CORE_RUNTIME_SOURCES)
+COMPILER_SOURCES := $(SPARKPIPE_COMPILER_SOURCES)
+RUNTIME_SOURCES := $(SPARKPIPE_RUNTIME_SOURCES)
 
-CORE_OBJECTS := $(patsubst src/%.c,build/core/%.o,$(CORE_SOURCES))
-MODEL_COMMON_OBJECTS := $(patsubst model-families/common/src/%.c,build/model-families/common/%.o,$(MODEL_COMMON_SOURCES))
-DEPLOYMENT_OBJECTS := $(patsubst deployment/src/%.c,build/deployment/%.o,$(DEPLOYMENT_SOURCES))
-GLM52_HOST_OBJECTS := $(patsubst model-families/glm52/src/%.c,build/model-families/glm52/%.o,$(GLM52_HOST_SOURCES))
-QWEN36_HOST_OBJECTS := $(patsubst model-families/qwen36/src/%.c,build/model-families/qwen36/%.o,$(QWEN36_HOST_SOURCES))
-COMPILER_OBJECTS := $(patsubst src/%.c,build/compiler/%.o,$(COMPILER_SOURCES))
-RUNTIME_OBJECTS := $(patsubst src/%.c,build/runtime/%.o,$(RUNTIME_SOURCES))
+# Source path to object path, for any source under any directory. The full
+# source path is preserved under build/obj so two files with the same basename
+# in different directories cannot collide. A prefix-stripping patsubst cannot
+# do this: it returns a non-matching entry unchanged, which is how seven .c
+# paths came to sit in *_OBJECTS and abort the parse via -include.
+sp_objects = $(patsubst %.c,build/obj/%.o,$(1))
+
+CORE_OBJECTS := $(call sp_objects,$(CORE_SOURCES))
+MODEL_COMMON_OBJECTS := $(call sp_objects,$(MODEL_COMMON_SOURCES))
+DEPLOYMENT_OBJECTS := $(call sp_objects,$(DEPLOYMENT_SOURCES))
+GLM52_HOST_OBJECTS := $(call sp_objects,$(GLM52_HOST_SOURCES))
+QWEN36_HOST_OBJECTS := $(call sp_objects,$(QWEN36_HOST_SOURCES))
+COMPILER_OBJECTS := $(call sp_objects,$(COMPILER_SOURCES))
+RUNTIME_OBJECTS := $(call sp_objects,$(RUNTIME_SOURCES))
+ALL_HOST_OBJECTS := $(CORE_OBJECTS) $(MODEL_COMMON_OBJECTS) $(DEPLOYMENT_OBJECTS) \
+    $(GLM52_HOST_OBJECTS) $(QWEN36_HOST_OBJECTS) $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS)
+
+# Every object is built by the one rule below. Include flags are attached per
+# object list rather than per directory, so moving a source does not change how
+# it is compiled.
+$(CORE_OBJECTS): SP_INCLUDE_FLAGS = $(CORE_INCLUDE_FLAGS)
+$(COMPILER_OBJECTS): SP_INCLUDE_FLAGS = $(CORE_INCLUDE_FLAGS)
+$(RUNTIME_OBJECTS): SP_INCLUDE_FLAGS = $(CORE_INCLUDE_FLAGS)
+$(MODEL_COMMON_OBJECTS): SP_INCLUDE_FLAGS = $(MODEL_COMMON_INCLUDE_FLAGS)
+$(DEPLOYMENT_OBJECTS): SP_INCLUDE_FLAGS = $(DEPLOYMENT_INCLUDE_FLAGS)
+$(GLM52_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(GLM52_INCLUDE_FLAGS)
+$(QWEN36_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(QWEN36_INCLUDE_FLAGS)
 CORE_LIBRARY := build/libsparkpipe_core.a
 MODEL_COMMON_LIBRARY := build/libsparkpipe_model_common.a
 DEPLOYMENT_LIBRARY := build/libsparkpipe_deployment.a
@@ -158,14 +177,9 @@ TOOL_NAMES := \
     sparkpipe_module_publish \
     sparkpipe_model_compile \
     sparkpipe_driver_inspect \
-    sparkpipe_glm52_prefill_dryrun \
-    sparkpipe_hidden_transport_preflight \
-    sparkpipe_glm52_pp13_rank_gate \
-    sparkpipe_glm52_pp13_loopback_probe \
     sparkpipe_glm52_pipesim \
     sparkpipe_glm52_pp13_rank_daemon \
     sparkpipe_glm52_cuda_residentd \
-    sparkpipe_glm52_cuda_resident_gate \
     sparkpipe_glm52_kv_jit_budget \
     sparkpipe_glm52_tokenize \
     sparkpipe_tokenize_prompt \
@@ -326,7 +340,6 @@ model_driver_contracts: build/test_model_description build/test_stage_module_com
 	python3 tests/test_model_driver_contracts.py
 
 MODEL_COMMON_LINK_TARGETS := \
-    build/sparkpipe_hidden_transport_preflight \
     build/sparkpipe_tokenize_prompt \
     build/sparkpipe_tokenizer_benchmark \
     build/sparkpipe_memlink \
@@ -344,7 +357,6 @@ MODEL_COMMON_LINK_TARGETS := \
 GLM52_LINK_TARGETS := \
     $(filter build/sparkpipe_glm52_% build/test_glm52_%,$(TOOL_BINARIES) $(TEST_BINARIES)) \
     build/sparkpipe_glm52_batchplane_model \
-    build/sparkpipe_glm52_pp13_ring_check \
     build/test_glm52_batch_plane \
     build/test_model_description \
     $(GLM52_PP13_SERVICE_BACKEND) \
@@ -370,33 +382,9 @@ build/test_modules:
 $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY):
 	mkdir -p $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
 
-build/core/%.o: src/%.c | build
+build/obj/%.o: %.c | build
 	mkdir -p $(dir $@)
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
-
-build/compiler/%.o: src/%.c | build
-	mkdir -p $(dir $@)
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
-
-build/runtime/%.o: src/%.c | build
-	mkdir -p $(dir $@)
-	$(CC) $(CORE_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
-
-build/model-families/common/%.o: model-families/common/src/%.c | build
-	mkdir -p $(dir $@)
-	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
-
-build/deployment/%.o: deployment/src/%.c | build
-	mkdir -p $(dir $@)
-	$(CC) $(DEPLOYMENT_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
-
-build/model-families/glm52/%.o: model-families/glm52/src/%.c | build
-	mkdir -p $(dir $@)
-	$(CC) $(GLM52_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
-
-build/model-families/qwen36/%.o: model-families/qwen36/src/%.c | build
-	mkdir -p $(dir $@)
-	$(CC) $(QWEN36_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
+	$(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 $(CORE_LIBRARY): $(CORE_OBJECTS)
 	$(AR) rcs $@ $^
@@ -427,18 +415,6 @@ build/sparkpipe_model_compile: tools/sparkpipe_model_compile.c $(COMPILER_LIBRAR
 
 build/sparkpipe_driver_inspect: tools/sparkpipe_driver_inspect.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/sparkpipe_glm52_prefill_dryrun: tools/sparkpipe_glm52_prefill_dryrun.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/sparkpipe_hidden_transport_preflight: tools/sparkpipe_hidden_transport_preflight.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/sparkpipe_glm52_pp13_rank_gate: tools/sparkpipe_glm52_pp13_rank_gate.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-build/sparkpipe_glm52_pp13_loopback_probe: tools/sparkpipe_glm52_pp13_loopback_probe.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_pipesim: tools/sparkpipe_glm52_pipesim.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -473,36 +449,30 @@ build/sparkpipe_nextcp: node/memlink_tool.c $(COMMON_LIBRARY)
 build/sparkpipe_release_manager: deployment/tools/sparkpipe_release_manager.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_glm52_pp13_ring_check: tools/sparkpipe_glm52_pp13_ring_check.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -I$(CUDA_HOME)/include $(CFLAGS) tools/sparkpipe_glm52_pp13_ring_check.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 $(LDLIBS) -lcudart -o $@
-
 build/sparkpipe_glm52_pp13_rank_daemon: node/rank_daemon.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) node/rank_daemon.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_cuda_residentd: node/residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) node/residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_glm52_cuda_resident_gate: tools/sparkpipe_glm52_cuda_resident_gate.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tools/sparkpipe_glm52_cuda_resident_gate.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
 build/sparkpipe_glm52_kv_jit_budget: tools/sparkpipe_glm52_kv_jit_budget.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tools/sparkpipe_glm52_kv_jit_budget.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-$(GLM52_PP13_SERVICE_BACKEND): model-families/glm52/src/spark_glm52_pp13_service_backend.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) model-families/glm52/src/spark_glm52_pp13_service_backend.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+$(GLM52_PP13_SERVICE_BACKEND): api/backend.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) api/backend.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 glm52_pp13_service_backend: $(GLM52_PP13_SERVICE_BACKEND)
 
-$(HIDDEN_TRANSPORT_TCP_CUDA): modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBRARY)
+$(HIDDEN_TRANSPORT_TCP_CUDA): ring/transport/tcp.cu $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "hidden_transport_tcp_cuda skipped: nvcc unavailable"; \
 	else \
-		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) modules/hidden_transport_tcp_cuda.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@; \
+		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/tcp.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@; \
 	fi
 
 hidden_transport_tcp_cuda: $(HIDDEN_TRANSPORT_TCP_CUDA)
 
-$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): modules/hidden_transport_spark_host_rdma_verbs.cu model-families/common/include/sparkpipe/spark_hidden_transport.h model-families/common/include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
+$(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "hidden_transport_spark_host_rdma_verbs failed: nvcc unavailable" >&2; exit 1; \
 	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
@@ -510,12 +480,12 @@ $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): modules/hidden_transport_spark_host_rdma_ve
 	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
 		echo "hidden_transport_spark_host_rdma_verbs failed: libibverbs headers unavailable" >&2; exit 1; \
 	else \
-		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=0 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) modules/hidden_transport_spark_host_rdma_verbs.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
+		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=0 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
 	fi
 
 hidden_transport_spark_host_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA)
 
-$(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA): modules/hidden_transport_spark_host_rdma_verbs.cu model-families/common/include/sparkpipe/spark_hidden_transport.h model-families/common/include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
+$(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA): ring/transport/rdma.cu include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "hidden_transport_spark_gpudirect_rdma_verbs failed: nvcc unavailable" >&2; exit 1; \
 	elif [ ! -f "$(CUDA_HOME)/include/cuda_runtime_api.h" ]; then \
@@ -523,7 +493,7 @@ $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA): modules/hidden_transport_spark_host_rd
 	elif [ ! -f "/usr/include/infiniband/verbs.h" ]; then \
 		echo "hidden_transport_spark_gpudirect_rdma_verbs failed: libibverbs headers unavailable" >&2; exit 1; \
 	else \
-		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=1 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) modules/hidden_transport_spark_host_rdma_verbs.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
+		$(NVCC) $(NVCCFLAGS) -DSPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=1 $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/rdma.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -libverbs -ldl -lpthread -o $@; \
 	fi
 
 hidden_transport_spark_gpudirect_rdma_verbs: $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA)
@@ -544,7 +514,14 @@ $(DSPARK_DRAFT_BACKEND_ARCHIVE): FORCE
 		$(MAKE) -C modules/glm52_dspark_draft_backend archive NVCC=$(NVCC) CUDA_ARCH=sm_121a; \
 	fi
 
-$(GLM52_PP13_NODE_CONTEXT_BUILDER): modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h model-families/glm52/include/sparkpipe/spark_glm52_kv_cache.h model-families/glm52/include/sparkpipe/spark_glm52_pp13_work_control.h $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(DSPARK_DRAFT_BACKEND_ARCHIVE) $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY)
+# UNRESOLVED. The CUDA translation unit this shared library was built from,
+# modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu,
+# was deleted with the 10,628-line node context builder. Its replacement in
+# inference/stage/ is not wired to a link line yet, so this target names the gap
+# instead of failing on a missing prerequisite. .updaterepo-policy runs it when
+# nvcc is present; it will stop here until an owner supplies the source.
+$(GLM52_PP13_NODE_CONTEXT_BUILDER): inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h model-families/glm52/include/sparkpipe/spark_glm52_kv_cache.h model-families/glm52/include/sparkpipe/spark_glm52_pp13_work_control.h $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(DSPARK_DRAFT_BACKEND_ARCHIVE) $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY)
+	@echo "glm52_pp13_node_context_builder: source deleted, replacement not wired; see HANDOFF.md" >&2; exit 2
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "glm52_pp13_node_context_builder skipped: nvcc unavailable"; \
 	else \
@@ -552,7 +529,6 @@ $(GLM52_PP13_NODE_CONTEXT_BUILDER): modules/glm52_resident_decode_stage/source/s
 			echo "missing $(B12X_RUNTIME_LINK_ARGS_FILE); run make glm52_b12x_aot_compile first (GLM52_MOE_BACKEND=nvfp4)" >&2; \
 			exit 2; \
 		fi; \
-		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(GLM52_INCLUDE_FLAGS) -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source -Imodules/glm52_dspark_draft_backend/include modules/glm52_resident_decode_stage/source/spark_glm52_pp13_node_context_builder_cuda.cu inference/stage/runner.c $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(DSPARK_DRAFT_BACKEND_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -lcublasLt -lcublas -lm -ldl $(GLM52_PP13_NODE_CONTEXT_BUILDER_RPATH) $(GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS) -o $@; \
 	fi
 
 glm52_pp13_node_context_builder: $(GLM52_PP13_NODE_CONTEXT_BUILDER)
@@ -631,7 +607,7 @@ build/test_glm52_stage_plan: tests/test_glm52_stage_plan.c $(COMMON_LIBRARY)
 build/test_glm52_shape_config: tests/test_glm52_shape_config.c model-families/glm52/include/sparkpipe/spark_glm52_shape_config.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_tp_collective: tests/test_tp_collective.c model-families/common/include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
+build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_collective.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -lpthread -o $@
 
 build/test_glm52_tp_shard: tests/test_glm52_tp_shard.c model-families/glm52/include/sparkpipe/spark_glm52_tp_shard.h $(COMMON_LIBRARY)
@@ -710,7 +686,7 @@ build/test_glm52_pp13_rank_daemon: tests/test_glm52_pp13_rank_daemon.c inference
 build/test_model_description: tests/test_model_description.c $(COMPILER_LIBRARY) $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(GLM52_INCLUDE_FLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_stage_module_common: tests/test_stage_module_common.c model-families/common/src/spark_stage_module_common.c tests/cuda_stub/cuda_runtime_stub.c | build
+build/test_stage_module_common: tests/test_stage_module_common.c runtime/stage_module_common.c tests/cuda_stub/cuda_runtime_stub.c | build
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) -Itests/cuda_stub -Itests $(CFLAGS) $^ $(LDFLAGS) -o $@
 
 build/test_module_library: tests/test_module_library.c $(TEST_SUPPORT_OBJECT) $(TEST_MODULE_LINK_UNITS) $(TEST_VALIDATOR) $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
@@ -739,7 +715,7 @@ glm52_quantized_readiness_test: build/test_glm52_pp13_runtime build/test_glm52_s
 	python3 tests/test_glm52_b12x_resident_manifest.py
 	python3 tests/test_release_assemble.py
 
-test: $(TEST_BINARIES) build/sparkpipe_glm52_prefill_dryrun glm52_w8lut_quality_reference
+test: $(TEST_BINARIES)
 	@set -e; \
 	for test_binary in $(TEST_BINARIES); do \
 		echo "RUN $$test_binary"; \
@@ -779,11 +755,13 @@ cuda_glm52_resident_decode_stage:
 		-o $(GLM52_FP8_SCALED_GEMM_CUDA_GATE)
 
 glm52_w8lut_quality_reference:
+	@test -d modules/glm52_w8lut_quality_weights || { echo "modules/glm52_w8lut_quality_weights is not in this tree; target unavailable" >&2; exit 2; }
 	$(MAKE) -C modules/glm52_w8lut_quality_weights test_ref crosscheck
 
 glm52_w8lut_quality_cuda_gate:
 	@command -v $(NVCC) >/dev/null 2>&1 || \
 		{ echo "glm52_w8lut_quality_cuda_gate requires nvcc" >&2; exit 2; }
+	@test -d modules/glm52_w8lut_quality_weights || { echo "modules/glm52_w8lut_quality_weights is not in this tree; target unavailable" >&2; exit 2; }
 	$(MAKE) -C modules/glm52_w8lut_quality_weights test_gpu NVCC=$(NVCC) CUDA_ARCH=sm_121a
 
 glm52_w8lut_resident_pack:
@@ -838,6 +816,7 @@ cuda_glm52_resident_decode_stage_publish: $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILE
 	fi
 
 $(B12X_ADAPTER_ARCHIVE):
+	@test -d modules/glm52_sm121_flashinfer_b12x_moe || { echo "modules/glm52_sm121_flashinfer_b12x_moe is not in this tree; target unavailable" >&2; exit 2; }
 	$(MAKE) -C modules/glm52_sm121_flashinfer_b12x_moe archive
 
 glm52_flashinfer_b12x_moe_adapter: $(B12X_ADAPTER_ARCHIVE)
@@ -877,12 +856,15 @@ glm52_dspark_draft_backend:
 	$(MAKE) -C modules/glm52_dspark_draft_backend archive NVCC=$(NVCC) CUDA_ARCH=sm_121a
 
 $(B12X_COMPILED_BACKEND_ARCHIVE):
+	@test -d modules/glm52_sm121_b12x_compiled_backend || { echo "modules/glm52_sm121_b12x_compiled_backend is not in this tree; target unavailable" >&2; exit 2; }
 	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend archive NVCC=$(NVCC) CUDA_ARCH=sm_121a
 
 $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE):
 ifeq ($(GLM52_MOE_BACKEND),nvfp4)
+	@test -d modules/glm52_sm121_b12x_compiled_backend || { echo "modules/glm52_sm121_b12x_compiled_backend is not in this tree; target unavailable" >&2; exit 2; }
 	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend generated_archive NVCC=$(NVCC) CUDA_ARCH=sm_121a GENERATED_DIRECTORY=$(abspath $(B12X_AOT_OUTPUT_DIR)/generated)
 else
+	@test -d modules/glm52_sm121_b12x_compiled_backend || { echo "modules/glm52_sm121_b12x_compiled_backend is not in this tree; target unavailable" >&2; exit 2; }
 	$(MAKE) -C modules/glm52_sm121_b12x_compiled_backend unavailable_archive
 endif
 
@@ -963,12 +945,10 @@ tree_summary:
 	@printf "test_executables="; printf '%s\n' $(TEST_NAMES) | wc -l
 
 clean:
+	@test -d modules/glm52_w8lut_quality_weights || { echo "modules/glm52_w8lut_quality_weights is not in this tree; target unavailable" >&2; exit 2; }
 	$(MAKE) -C modules/glm52_w8lut_quality_weights clean
 	rm -rf build
 
--include $(CORE_OBJECTS:.o=.d) $(MODEL_COMMON_OBJECTS:.o=.d) \
-    $(DEPLOYMENT_OBJECTS:.o=.d) $(GLM52_HOST_OBJECTS:.o=.d) \
-    $(QWEN36_HOST_OBJECTS:.o=.d) $(COMPILER_OBJECTS:.o=.d) \
-    $(RUNTIME_OBJECTS:.o=.d) $(TEST_SUPPORT_OBJECT:.o=.d) \
+-include $(ALL_HOST_OBJECTS:.o=.d) $(TEST_SUPPORT_OBJECT:.o=.d) \
     $(TEST_MODULE_DEPENDENCIES) \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DEPENDENCIES)
