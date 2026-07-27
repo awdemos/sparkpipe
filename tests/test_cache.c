@@ -1,0 +1,146 @@
+// The KV cache: sharing, eviction, copy-on-write, JIT reservation.
+//
+// All of it is arithmetic and a block table, so all of it is checkable on a
+// host. The properties below are the ones that make a cache good rather than
+// merely correct, and each has a failure mode that is quiet rather than loud.
+#include "cache/cache.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static int32_t failures = 0;
+
+static void expect(int condition, const char *label)
+{
+	printf(condition ? "  ok   %s\n" : "  FAIL %s\n", label);
+	if (!condition)
+		++failures;
+}
+
+static LmCache *make_cache(uint32_t blocks, uint32_t reserve)
+{
+	static LmCache cache;
+	static LmCacheBlock block_table[4096];
+	static LmCacheIndexEntry index_table[4096];
+	static uint32_t buckets[4096];
+	LmCachePartition partition;
+	memset(&partition, 0, sizeof(partition));
+	partition.block_tokens = 64u;
+	partition.slot_bytes = 1152u;                    /* GLM 5.2 latent */
+	partition.index_entries = blocks;
+	partition.jit_reserve_blocks = reserve;
+	/* size total_bytes so exactly `blocks` blocks fit */
+	partition.total_bytes = ((uint64_t)blocks * (64u * 1152u + sizeof(LmCacheBlock)))
+		+ ((uint64_t)blocks * (sizeof(LmCacheIndexEntry) + sizeof(uint32_t)));
+	if (LmCacheInitialise(&cache, &partition, block_table, index_table, buckets) != LM_CACHE_OK)
+		return NULL;
+	return &cache;
+}
+
+int main(void)
+{
+	printf("kv cache\n\npartitioning\n");
+	{
+		LmCachePartition partition;
+		memset(&partition, 0, sizeof(partition));
+		partition.total_bytes = 1024ULL * 1024ULL * 1024ULL * 1024ULL;   /* 1 TB */
+		partition.block_tokens = 64u;
+		partition.slot_bytes = 1152u;
+		partition.index_entries = 1u << 20;
+		uint64_t blocks = LmCacheBlocksAvailable(&partition);
+		printf("    1 TB, 64-token blocks, GLM 5.2 latent slots\n");
+		printf("      %llu blocks = %llu tokens = %llu sequences at 8k context\n",
+			(unsigned long long)blocks,
+			(unsigned long long)(blocks * 64u),
+			(unsigned long long)(blocks * 64u / 8192u));
+		expect(blocks > 14000000ULL, "1 TB holds over 14 million blocks");
+		partition.slot_bytes = 6144u;                /* MiMo 2.5 SWA, no latent */
+		printf("      the same TB at MiMo 2.5's 6144-byte slot: %llu blocks\n",
+			(unsigned long long)LmCacheBlocksAvailable(&partition));
+	}
+
+	printf("\nsharing is a reference count, not a copy\n");
+	{
+		LmCache *cache = make_cache(64u, 8u);
+		uint32_t first, second;
+		int32_t hit;
+		uint64_t hash = LmCacheHashBlock(0u, (const uint32_t[]){ 1u, 2u, 3u }, 3u);
+		LmCacheAcquire(cache, hash, 0u, &first, &hit);
+		expect(hit == 0, "first acquire of a hash misses");
+		LmCachePublish(cache, first, hash);
+		LmCacheAcquire(cache, hash, 1u, &second, &hit);
+		expect(hit == 1 && second == first, "second acquire hits the same block");
+		expect(cache->blocks[first].reference_count == 2u, "two references, one block");
+		expect(cache->live_blocks == 1u, "and one live block, not two");
+	}
+
+	printf("\nthe hash chains, so a block matches only when the whole prefix does\n");
+	{
+		uint32_t a[] = { 10u, 11u };
+		uint32_t b[] = { 99u, 11u };
+		uint64_t chain_a = LmCacheHashBlock(LmCacheHashBlock(0u, a, 2u), a, 2u);
+		uint64_t chain_b = LmCacheHashBlock(LmCacheHashBlock(0u, b, 2u), a, 2u);
+		expect(chain_a != chain_b,
+			"same block, different preceding context, different hash");
+	}
+
+	printf("\neviction keeps what is reused\n");
+	{
+		LmCache *cache = make_cache(4u, 0u);
+		uint32_t block[4], fresh;
+		int32_t hit, index;
+		for (index = 0; index < 4; ++index)
+		{
+			uint64_t hash = LmCacheHashBlock(0u, (const uint32_t *)&index, 1u);
+			LmCacheAcquire(cache, hash, (uint32_t)index, &block[index], &hit);
+			LmCachePublish(cache, block[index], hash);
+			LmCacheRelease(cache, block[index]);
+		}
+		/* touch block 0 repeatedly: oldest, but most reused */
+		{
+			uint64_t hash = cache->blocks[block[0]].content_hash;
+			uint32_t got;
+			for (index = 0; index < 20; ++index)
+			{
+				LmCacheAcquire(cache, hash, 0u, &got, &hit);
+				LmCacheRelease(cache, got);
+			}
+		}
+		LmCacheAcquire(cache, 0u, 9u, &fresh, &hit);
+		expect(fresh != block[0], "a heavily reused block survives eviction despite age");
+	}
+
+	printf("\ncopy-on-write forks only the diverging block\n");
+	{
+		LmCache *cache = make_cache(64u, 0u);
+		uint32_t shared, second, forked;
+		int32_t hit;
+		uint64_t hash = LmCacheHashBlock(0u, (const uint32_t[]){ 7u }, 1u);
+		LmCacheAcquire(cache, hash, 0u, &shared, &hit);
+		LmCachePublish(cache, shared, hash);
+		LmCacheAcquire(cache, hash, 1u, &second, &hit);
+		LmCacheFork(cache, second, 1u, &forked);
+		expect(forked != shared, "the writer gets its own block");
+		expect(cache->blocks[shared].reference_count == 1u, "the reader keeps the original");
+	}
+
+	printf("\nthe JIT reserve protects admitted requests\n");
+	{
+		LmCache *cache = make_cache(16u, 4u);
+		uint32_t block;
+		int32_t hit, index, status;
+		expect(LmCacheReserve(cache, 4u) == LM_CACHE_OK, "reserve the whole allowance");
+		expect(LmCacheReserve(cache, 1u) == LM_CACHE_ERR_BUSY, "and no more than that");
+		for (index = 0; index < 12; ++index)
+			LmCacheAcquire(cache, 0u, (uint32_t)index, &block, &hit);
+		status = LmCacheAcquire(cache, 0u, 99u, &block, &hit);
+		expect(status == LM_CACHE_ERR_FULL,
+			"a fresh miss cannot consume what an admitted request reserved");
+		LmCacheReleaseReservation(cache, 4u);
+		expect(LmCacheAcquire(cache, 0u, 99u, &block, &hit) == LM_CACHE_OK,
+			"and can once the reservation is released");
+	}
+
+	printf("\n%s (%d failing)\n", failures ? "FAIL" : "PASS", failures);
+	return failures ? 1 : 0;
+}
