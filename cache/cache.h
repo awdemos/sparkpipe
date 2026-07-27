@@ -67,12 +67,14 @@
 // small reserve; one with many short unique prompts wants the opposite.
 
 #include <stdint.h>
+#include <string.h>
 
 #define LM_CACHE_OK 0
 #define LM_CACHE_ERR_SHAPE (-61)
 #define LM_CACHE_ERR_FULL (-62)
 #define LM_CACHE_ERR_NOT_FOUND (-63)
 #define LM_CACHE_ERR_BUSY (-64)
+#define LM_CACHE_ERR_CAPACITY (-65)
 
 #define LM_CACHE_NO_BLOCK 0xffffffffu
 #define LM_CACHE_NO_ENTRY 0xffffffffu
@@ -566,4 +568,156 @@ static uint32_t LmCacheResidentPercent(const LmCache *cache)
 {
 	return(cache->block_count == 0u ? 0u
 		: (cache->resident_blocks * 100u) / cache->block_count);
+}
+
+// -- just-in-time prefetch ---------------------------------------------------------
+//
+// The last piece, and the one that makes a terabyte useful rather than merely
+// large. Harvested from the old arena's AsyncPrefetchBackend, which was the only
+// part of it I had not accounted for and the only part that turns "this block is
+// cold" into "this block is arriving".
+//
+// THE SEQUENCE THE WHOLE DESIGN EXISTS FOR:
+//
+//   1. the scheduler admits a request whose prefix is a cache hit
+//   2. LmCachePlanPrefetch says which of those blocks are not resident
+//   3. the blocks are PROTECTED so nothing evicts them while they land
+//   4. the fetches are issued and the request waits in a queue, not on a stall
+//   5. when they land the request moves to ready-to-issue
+//
+// Without step 3 the blocks fetched in step 4 can be evicted before step 5, and
+// the request pays the fetch twice. Without step 2 every admitted request stalls
+// at its first layer. The old code had all five; my version had one.
+//
+// LANES. Fetches are spread across lanes so several can be in flight, and a
+// lane is a queue rather than a thread - what services it is the caller's
+// business. The plan assigns blocks round-robin because the cost of a fetch does
+// not depend on which block it is, so there is nothing to balance beyond count.
+//
+// A PLAN IS A REQUEST, NOT A PROMISE. It reports what it could not include -
+// blocks already resident, duplicates within the request, and blocks with no
+// source - rather than silently shortening. A caller that admits on
+// prefetch_count without checking missing_count admits a request whose prefix is
+// partly unfetchable.
+
+#define LM_CACHE_PREFETCH_LANES 8u
+#define LM_CACHE_PREFETCH_CAPACITY 256u
+
+typedef enum LmCacheSource
+{
+	LM_CACHE_SOURCE_NONE = 0,
+	LM_CACHE_SOURCE_MEMORY = 1,     /* host memory, mapped */
+	LM_CACHE_SOURCE_FILE = 2,       /* a descriptor and an offset */
+	LM_CACHE_SOURCE_PEER = 3        /* another rank's resident copy */
+}
+LmCacheSource;
+
+typedef struct LmCachePrefetchBlock
+{
+	uint32_t block;
+	uint32_t lane;
+	uint32_t source;
+	uint64_t source_offset;
+}
+LmCachePrefetchBlock;
+
+typedef struct LmCachePrefetchPlan
+{
+	LmCachePrefetchBlock blocks[LM_CACHE_PREFETCH_CAPACITY];
+	uint32_t lane_counts[LM_CACHE_PREFETCH_LANES];
+	uint32_t prefetch_count;        /* what will be fetched */
+	uint32_t resident_count;        /* already readable, nothing to do */
+	uint32_t duplicate_count;       /* named twice in the request */
+	uint32_t missing_count;         /* no source; the caller must handle this */
+}
+LmCachePrefetchPlan;
+
+// Which of these blocks need fetching, and on which lane.
+//
+// Resolving a source is the caller's - this file does not know where a cold
+// block lives - so the resolver is a callback and a block it cannot place is
+// counted as missing rather than dropped.
+typedef int32_t (*LmCacheResolveSource)(void *context, uint32_t block, uint32_t *source_out, uint64_t *offset_out);
+
+static int32_t LmCachePlanPrefetch(const LmCache *cache, const uint32_t *blocks, uint32_t count, LmCacheResolveSource resolve, void *resolve_context, LmCachePrefetchPlan *plan)
+{
+	uint32_t index,scan,lane = 0u;
+	if ( cache == 0 || blocks == 0 || plan == 0 )
+		return(LM_CACHE_ERR_SHAPE);
+	memset(plan,0,sizeof(*plan));
+	for (index = 0u; index < count; ++index)
+	{
+		uint32_t block = blocks[index],source = LM_CACHE_SOURCE_NONE;
+		uint64_t offset = 0u;
+		int32_t duplicate = 0;
+		if ( block >= cache->block_count )
+			return(LM_CACHE_ERR_SHAPE);
+		if ( cache->blocks[block].resident )
+		{
+			plan->resident_count++;
+			continue;
+		}
+		// A block named twice costs one fetch, not two. The old plan checked
+		// this and it is the difference between a shared prefix costing its
+		// length and costing its length times the number of sequences on it.
+		for (scan = 0u; scan < plan->prefetch_count; ++scan)
+			if ( plan->blocks[scan].block == block )
+				duplicate = 1;
+		if ( duplicate )
+		{
+			plan->duplicate_count++;
+			continue;
+		}
+		if ( resolve == 0 || resolve(resolve_context,block,&source,&offset) != LM_CACHE_OK
+			|| source == LM_CACHE_SOURCE_NONE )
+		{
+			plan->missing_count++;
+			continue;
+		}
+		if ( plan->prefetch_count >= LM_CACHE_PREFETCH_CAPACITY )
+			return(LM_CACHE_ERR_CAPACITY);
+		plan->blocks[plan->prefetch_count].block = block;
+		plan->blocks[plan->prefetch_count].lane = lane;
+		plan->blocks[plan->prefetch_count].source = source;
+		plan->blocks[plan->prefetch_count].source_offset = offset;
+		plan->lane_counts[lane]++;
+		lane = (lane + 1u) % LM_CACHE_PREFETCH_LANES;
+		plan->prefetch_count++;
+	}
+	return(LM_CACHE_OK);
+}
+
+// Protect everything a plan will fetch, before any of it is issued.
+//
+// Step three, and the one whose absence is invisible until load: a fetch that
+// completes into a block already evicted has done nothing, and the request that
+// waited for it stalls anyway. Under light load it never happens.
+static int32_t LmCacheProtectPlan(LmCache *cache, const LmCachePrefetchPlan *plan, int32_t protect)
+{
+	uint32_t index;
+	for (index = 0u; index < plan->prefetch_count; ++index)
+	{
+		int32_t status = LmCacheProtect(cache,plan->blocks[index].block,protect);
+		if ( status != LM_CACHE_OK )
+			return(status);
+	}
+	return(LM_CACHE_OK);
+}
+
+// Mark a plan's blocks readable once the fetches have landed.
+//
+// Separate from issuing, because between the two the request is queued rather
+// than running - which is the whole point of doing this before it is ready to
+// issue rather than when it starts.
+static int32_t LmCacheCompletePlan(LmCache *cache, const LmCachePrefetchPlan *plan)
+{
+	uint32_t index;
+	for (index = 0u; index < plan->prefetch_count; ++index)
+	{
+		int32_t fetch;
+		int32_t status = LmCacheMakeResident(cache,plan->blocks[index].block,&fetch);
+		if ( status != LM_CACHE_OK )
+			return(status);
+	}
+	return(LM_CACHE_OK);
 }

@@ -17,6 +17,19 @@ static void expect(int condition, const char *label)
 		++failures;
 }
 
+/* A resolver that places every block except the last acquired one, so the plan
+   has something to report as missing. */
+static uint32_t g_unresolvable = 0xffffffffu;
+static int32_t resolve_source(void *context, uint32_t block, uint32_t *source, uint64_t *offset)
+{
+	(void)context;
+	if (block == g_unresolvable)
+		return LM_CACHE_ERR_NOT_FOUND;
+	*source = LM_CACHE_SOURCE_MEMORY;
+	*offset = (uint64_t)block * 4096u;
+	return LM_CACHE_OK;
+}
+
 static LmCache *make_cache(uint32_t blocks, uint32_t reserve)
 {
 	static LmCache cache;
@@ -194,6 +207,49 @@ int main(void)
 		expect(resident * 20u < pool,
 			"the resident set is a small fraction, so which blocks are resident "
 			"is the decision that matters");
+	}
+
+	printf("\nthe JIT sequence: plan, protect, fetch, complete\n");
+	{
+		LmCache *cache = make_cache(64u, 8u);
+		LmCachePrefetchPlan plan;
+		uint32_t want[6], index;
+		int32_t hit, fetch;
+		/* six blocks: two already resident, one named twice, one unresolvable */
+		for (index = 0; index < 4u; ++index)
+			LmCacheAcquire(cache, 0u, index, &want[index], &hit);
+		LmCacheMakeResident(cache, want[0], &fetch);
+		LmCacheMakeResident(cache, want[1], &fetch);
+		want[4] = want[2];                       /* duplicate */
+		want[5] = want[3];
+		g_unresolvable = want[3];               /* no source for this one */
+		expect(LmCachePlanPrefetch(cache, want, 6u, resolve_source, cache, &plan) == LM_CACHE_OK,
+			"a plan is built");
+		printf("      %u to fetch, %u resident, %u duplicate, %u missing\n",
+			plan.prefetch_count, plan.resident_count, plan.duplicate_count,
+			plan.missing_count);
+		expect(plan.resident_count == 2u, "resident blocks are not fetched again");
+		expect(plan.duplicate_count == 1u,
+			"a block named twice costs one fetch, not two - which is what makes "
+			"a shared prefix cost its length rather than its length times the "
+			"number of sequences on it");
+		expect(plan.prefetch_count > 0u && plan.blocks[0].lane < LM_CACHE_PREFETCH_LANES,
+			"and fetches are spread across lanes");
+
+		LmCacheProtectPlan(cache, &plan, 1);
+		expect(cache->blocks[plan.blocks[0].block].protected_from_eviction == 1u,
+			"the plan's blocks are protected BEFORE the fetches are issued");
+		/* pressure that would otherwise evict them */
+		for (index = 0; index < 40u; ++index)
+		{
+			uint32_t other;
+			LmCacheAcquire(cache, 0u, 100u + index, &other, &hit);
+			LmCacheMakeResident(cache, other, &fetch);
+		}
+		LmCacheCompletePlan(cache, &plan);
+		expect(cache->blocks[plan.blocks[0].block].resident == 1u,
+			"so a fetch that lands after 40 competing ones still finds its block");
+		LmCacheProtectPlan(cache, &plan, 0);
 	}
 
 	printf("\n%s (%d failing)\n", failures ? "FAIL" : "PASS", failures);
