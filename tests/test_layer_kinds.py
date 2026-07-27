@@ -44,8 +44,6 @@ KIND_VALUE = {
 # them. glm5_2 has one (bind.cu); the rest do not, so their entry points have no
 # caller and their LAYER_KIND selector is read by nothing.
 NO_DRIVER = {
-    "mimo_2_5": "two kinds, no bind.cu - Mimo25LayerAttentionFull and *Swa are "
-                "exported and nothing chooses between them per layer",
     "deepseek_v4": "three kinds and one entry point; a driver would have "
                    "nothing to dispatch to",
     "kimi_k3": "no layer.cuh either",

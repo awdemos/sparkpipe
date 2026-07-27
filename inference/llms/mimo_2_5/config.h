@@ -66,8 +66,17 @@
 #define MIMO25_FULL_QKV_DIM 13568u             /* Q + 4 * (192 + 128) */
 #define MIMO25_SWA_QKV_DIM 14848u              /* Q + 8 * (192 + 128) */
 #define MIMO25_O_INPUT_DIM 8192u               /* heads * v_head_dim */
-#define MIMO25_LAYER_KIND_FULL 0u
-#define MIMO25_LAYER_KIND_SWA 1u
+// INFERRED, NOT READ FROM A CONFIG. Every model in this tree with both a dense
+// and a routed MLP puts the dense layers first, and MiMo's family card says one
+// dense layer then the rest MoE. This constant is that pattern, and it is a
+// GUESS in the sense kimi_k3's header uses the word: a number inferred from a
+// lineage is not the same kind of fact as one read from a published config, and
+// losing that distinction is how an inferred number becomes load-bearing.
+//
+// It is load-bearing now - bind.cu branches on it - so it needs confirming
+// against whichever checkpoint these 48 layers came from.
+#define MIMO25_FIRST_ROUTED_LAYER 1u           /* GUESS (family pattern) */
+
 
 // -- MoE -----------------------------------------------------------------------
 //

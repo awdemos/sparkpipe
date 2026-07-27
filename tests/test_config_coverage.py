@@ -29,9 +29,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Each needs a reason. "Not implemented yet" is a valid reason and should be
 # stated, because then this list is the list of what is missing.
 EXEMPT = {
-    "MIMO25_LAYER_KIND": "same, and mimo has no host dispatcher either",
-    "MIMO25_ATTENTION_PERIOD": "read by MIMO25_LAYER_KIND, which the host "
-                               "evaluates; the kernel side never sees a period",
     "K3_LAYER_KIND": "no layer.cuh to dispatch to yet",
     "GLM52_LAYER_KIND": "uniform model - the selector returns one kind, so "
                         "there is nothing for a dispatcher to choose",
@@ -53,12 +50,6 @@ EXEMPT = {
     "GLM52_WEIGHT_LAYERS": "used by the host packer, not by kernels",
     "QWEN36_VOCAB": "same",
     "K3_VOCAB": "same",
-    "MIMO25_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
-    "MIMO25_LAYER_KIND_FULL": "the kind is a template parameter, so the enum "
-                              "value names an entry point rather than being "
-                              "compared against - Mimo25LayerAttentionFull* vs "
-                              "*Swa*, chosen by the host from the layer index",
-    "MIMO25_LAYER_KIND_SWA": "same",
     "MIMO25_ROPE_HALF": "derived; LmRopePerHeadKernel computes the half internally",
     "DSV4_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
     "DSV4_KV_HEADS": "one KV head is what makes the cache a latent; the geometry "
@@ -100,6 +91,16 @@ def main() -> int:
         for path in list(model.glob("*")) + list((ROOT / "inference/kernels").rglob("*.cuh")) + list((ROOT / "runtime").rglob("*")):
             if path.is_file() and path.name != "config.h":
                 corpus += path.read_text(encoding="utf-8", errors="ignore")
+        # A constant consumed by a sibling macro in the same header IS used, once
+        # something calls that macro. MIMO25_ATTENTION_PERIOD is read only by
+        # MIMO25_LAYER_KIND, which bind.cu evaluates; excluding config.h from the
+        # corpus made it look dead and would have bought an exemption for a
+        # constant that is genuinely load-bearing. Only the bodies count - the
+        # left-hand side of a #define is a declaration, not a use.
+        joined = config.read_text(encoding="utf-8").replace("\\\n", " ")
+        for body in re.findall(r"^#define\s+[A-Z][A-Z0-9_]*(?:\([^)]*\))?\s+(.*)$",
+                               joined, re.M):
+            corpus += body + "\n"
         unused = [d for d in declared
                   if corpus.count(d) == 0 and d not in EXEMPT and not d.endswith("_H")]
         # A model with no layer sequence has every constant unused, which is one
