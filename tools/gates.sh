@@ -17,6 +17,7 @@ run "model constants"      "gcc -O2 -Wall -Wextra -I. -o /tmp/g_c tests/test_mod
 run "sub-byte packing"     "gcc -O2 -Wall -Wextra -o /tmp/g_p tests/test_pack.c && /tmp/g_p"
 run "free dequant"         "gcc -O2 -Wall -Wextra -o /tmp/g_d tests/test_dequant.c && /tmp/g_d"
 run "reference oracle"     "gcc -O2 -Wall -Wextra -Itests -o /tmp/g_r tests/test_reference.c -lm && /tmp/g_r"
+run "sidebands"            "gcc -O2 -Wall -Wextra -I. -o /tmp/g_s tests/test_sideband.c && /tmp/g_s"
 run "kv cache"             "gcc -O2 -Wall -Wextra -I. -o /tmp/g_c tests/test_cache.c && /tmp/g_c"
 run "kv geometry"          "g++ -std=c++17 -fsyntax-only -Wall -Wextra -I. tests/test_kv_geometry.cc"
 run "workspace layout"     "gcc -O2 -Wall -Wextra -I. -o /tmp/g_w tests/test_group_gemm_workspace.c && /tmp/g_w"
