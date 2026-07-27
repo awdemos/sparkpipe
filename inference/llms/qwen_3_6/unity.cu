@@ -18,8 +18,6 @@
 #include "inference/kernels/formats/int7.cuh"
 #include "inference/llms/qwen_3_6/layer.cuh"
 
-using Qwen36FullKv = LmKvHeads<QWEN36_KV_BITS, QWEN36_KV_HEADS, QWEN36_HEAD_DIM, QWEN36_KV_PAGE_SLOTS>;
-using Qwen36GdnState = LmKvState<QWEN36_GDN_STATE_BYTES>;
 
 static_assert(Qwen36GdnState::kGrows == false, "GDN state is fixed per sequence");
 static_assert(QWEN36_NOPE_DIM + QWEN36_ROPE_DIM == QWEN36_HEAD_DIM,

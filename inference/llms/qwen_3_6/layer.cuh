@@ -20,6 +20,13 @@
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/head.cuh"
 #include "inference/llms/qwen_3_6/config.h"
+#include "inference/kernels/kv.cuh"
+
+// The two pools this model needs. Declared here rather than in unity.cu because
+// Qwen36LayerAttention takes the geometry as a template argument, so any file
+// that calls a layer needs the alias - bind.cu did, and could not see it.
+using Qwen36FullKv = LmKvHeads<QWEN36_KV_BITS, QWEN36_KV_HEADS, QWEN36_HEAD_DIM, QWEN36_KV_PAGE_SLOTS>;
+using Qwen36GdnState = LmKvState<QWEN36_GDN_STATE_BYTES>;
 
 #define QWEN36_LAYER_THREADS 256u
 #define QWEN36_LAYER_TILE_N 128u

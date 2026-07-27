@@ -40,6 +40,17 @@ KIND_VALUE = {
     "LM_LAYER_COMPRESSED": 3, "LM_LAYER_LATENT": 4, "LM_LAYER_RECURRENT": 5,
 }
 
+# A model with more than one layer kind needs a driver that chooses between
+# them. glm5_2 has one (bind.cu); the rest do not, so their entry points have no
+# caller and their LAYER_KIND selector is read by nothing.
+NO_DRIVER = {
+    "mimo_2_5": "two kinds, no bind.cu - Mimo25LayerAttentionFull and *Swa are "
+                "exported and nothing chooses between them per layer",
+    "deepseek_v4": "three kinds and one entry point; a driver would have "
+                   "nothing to dispatch to",
+    "kimi_k3": "no layer.cuh either",
+}
+
 KNOWN_INCOMPLETE = {
     ("deepseek_v4", "LM_LAYER_WINDOW"):
         "first two layers are pure sliding window; no windowed entry point "
@@ -100,6 +111,16 @@ def entry_points(model):
     return set(re.findall(r'extern "C" int32_t (\w+)', unity.read_text()))
 
 
+def driver_dispatches(model):
+    """A driver exists and reads the layer kind. Compiling is not enough: a
+    driver that ignores LAYER_KIND and runs one path for every layer is exactly
+    what deepseek_v4 would look like if someone wrote it a bind.cu today."""
+    bind = LLMS / model / "bind.cu"
+    if not bind.exists():
+        return None
+    return "LAYER_KIND" in bind.read_text()
+
+
 def main():
     failures = 0
     for model in sorted(p.name for p in LLMS.iterdir() if p.is_dir()):
@@ -119,15 +140,28 @@ def main():
             else:
                 missing.append(kind)
         summary = ", ".join(k.replace("LM_LAYER_", "").lower() for k in sorted(kinds))
+        dispatches = driver_dispatches(model)
+        no_driver_note = ""
+        if dispatches is None and len(kinds) > 1 and model in NO_DRIVER:
+            no_driver_note = ", NO DRIVER"
+        if dispatches is None and len(kinds) > 1 and model not in NO_DRIVER:
+            failures += 1
+            print(f"  FAIL {model}: {len(kinds)} layer kinds and no bind.cu to choose between them")
+            continue
+        if dispatches is False and len(kinds) > 1:
+            failures += 1
+            print(f"  FAIL {model}: bind.cu does not read {model.upper()}_LAYER_KIND; "
+                  "it runs one path for every layer")
+            continue
         if missing:
             failures += 1
             print(f"  FAIL {model}: {count} layers, kinds [{summary}]")
             for kind in missing:
                 print(f"         no entry point for {kind}")
         else:
-            mark = "--" if excused else "ok"
-            note = f", {len(excused)} not implemented" if excused else ""
-            print(f"  {mark}   {model}: {count} layers, kinds [{summary}]{note}")
+            mark = "--" if (excused or no_driver_note) else "ok"
+            note = f", {len(excused)} kind(s) not implemented" if excused else ""
+            print(f"  {mark}   {model}: {count} layers, kinds [{summary}]{note}{no_driver_note}")
     print()
     stale = [k for k in KNOWN_INCOMPLETE if k[0] not in
              {p.name for p in LLMS.iterdir() if p.is_dir()}]
