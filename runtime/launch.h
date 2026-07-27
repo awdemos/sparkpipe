@@ -110,6 +110,20 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 	plan->tile_m = LmLaunchSelectTile(LmLaunchPeakRowsPerGroup(shape));
 	if ( plan->tile_m < LM_LAUNCH_TILE_MIN || plan->tile_m > LM_LAUNCH_TILE_MAX )
 		return(LM_LAUNCH_ERR_TILE);
+	// K MUST BE A WHOLE NUMBER OF TILES. LmGemmKernel computes
+	// k_tiles = input_dimension / TILE_K, an integer division, and the stagers
+	// bound rows and neurons but never K. A trailing partial tile is therefore
+	// dropped from the dot product: wrong output, no crash, nothing to catch it.
+	//
+	// Nothing else can catch this. The tile geometry static_asserts are
+	// compile-time and input_dimension is a runtime argument, so the only place
+	// the two meet is here. Every K extent in the three drivers today is a
+	// multiple of 256, which is why it has never bitten, but INT7 tiles at 256
+	// rather than 128 and the two models without a layer.cuh are unwritten.
+	// GLM52_QK_NOPE_DIM and MIMO25_HEAD_DIM are already 192 and would silently
+	// compute nothing at all under INT7: 192 / 256 == 0 tiles.
+	if ( (shape->input_dimension % shape->tile_k) != 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
 	plan->shared_bytes = LmLaunchSharedBytes(shape,plan->tile_m);
 	if ( plan->shared_bytes > LM_SMEM_SM_TOTAL )
 		return(LM_LAUNCH_ERR_SHARED);
