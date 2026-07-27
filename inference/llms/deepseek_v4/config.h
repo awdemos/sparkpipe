@@ -1,5 +1,44 @@
 #pragma once
-// DeepSeek V4. Shapes and constants only.
+// DeepSeek V4 Flash. Shapes and constants only.
+//
+// AUDITED against deepseek-ai/DeepSeek-V4-Flash, 2026-07-27. The shapes below
+// match. What does NOT match is the amount of the architecture that is
+// implemented, and the list is here rather than in a tracker because the next
+// person to read this file is the one who needs it.
+//
+// FIVE GAPS BETWEEN THIS CONFIG AND A MODEL THAT DECODES CORRECTLY:
+//
+// 1. THE LAYER-KIND TABLE IS NOT HERE AT ALL. The reference carries
+//    compress_ratios, 44 entries reading [0,0,4,128,4,128,...,4,0]: ratio 0 is
+//    sliding-window attention, 4 is compressed sparse attention with the
+//    indexer, 128 is high-compression. unity.cu exports ONE
+//    Dsv4LayerAttentionFp8. Three kinds, one entry point, and nothing selects.
+//
+// 2. DUAL ROPE IS DECLARED AND UNREACHABLE. DSV4_ROPE_THETA and
+//    DSV4_COMPRESS_ROPE_THETA are both below and correct - 10000 for the
+//    ratio-0 layers, 160000 with YaRN for the rest - but one entry point
+//    cannot choose between them, so the second is dead.
+//
+// 3. ROPE PAIRING IS WRONG FOR THIS CHECKPOINT. LmRopePerHeadKernel pairs
+//    index with index + rope_dim/2, the half-split convention. The reference
+//    encodes INTERLEAVED pairs, view_as_complex style, pairing 2i with 2i+1.
+//    These are different rotations. Half-split is right for GLM 5.2, which is
+//    presumably why it is what the kernel does; DSV4 needs either a pairing
+//    mode on the kernel or a permutation at pack time.
+//
+// 4. HASH ROUTING ON THE FIRST LAYERS IS MISSING. num_hash_layers defaults to
+//    3: those blocks route through a hash gate with a token-id to expert-id
+//    table, not through the router. The MoE path here has no such branch.
+//
+// 5. HYPER-CONNECTIONS ARE MISSING ENTIRELY. Every block carries hc_mult=4
+//    streams of the hidden state across the stage boundary, mixed by a
+//    Sinkhorn-normalised doubly-stochastic matrix. Nothing in the buffers
+//    carries four streams, so this is not a kernel gap but a shape gap - the
+//    residual is a different object than the one the layer assumes.
+//
+// The reference bringup was validated at 0.998 final-logits cosine against the
+// official implementation. That is the bar, and none of it is reachable until
+// at least 1, 2 and 3 exist.
 //
 // Closest to GLM 5.2 of the five: one KV head at 512 dims is a latent in all but
 // name, and the sparse index is the same mechanism at a different top-k. What
