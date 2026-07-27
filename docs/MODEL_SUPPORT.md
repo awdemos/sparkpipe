@@ -17,7 +17,7 @@ layer-kind table, which is the thing least likely to be noticed.
 | mimo_2_5 | 70 | — | SWA:GA 6:1, window 128, learnable sink | 1 dense + 69 MoE, 384 experts top-8 |
 | dsv4 Flash | 43 | 4096 | 2 × SWA, then CSA/HCA interleaved | all-MoE, 256+1 experts top-6 |
 | dsv4 Pro | 61 | 7168 | 2 × HCA, then CSA/HCA interleaved | all-MoE |
-| kimi_k3 | 93 | 7168? | 3 × KDA → 1 × gated MLA, AttnRes | LatentMoE 896 top-16 |
+| kimi_k3 | 93 | 7168 | 3 × KDA → 1 × gated MLA (+ last layer), AttnRes | LatentMoE 896 top-16, 2 shared |
 
 Pro is not Flash with more layers. The first two layers are HCA rather than
 SWA, so a layer-kind table written for one is wrong for the other in exactly
@@ -104,15 +104,22 @@ mimo keeps long-context quality at a 7× smaller cache. `LmAttentionDecodeKernel
 has no sink term. Small change, one extra pointer and one term in the running
 sum, but it changes a kernel every model calls.
 
-### 5. Attention output gate — qwen AND kimi_k3
+### 5. Attention output gate — qwen AND kimi_k3, now confirmed by config
 
 Two models, not one. Qwen's reference calls its full-attention path *gated*
 attention. K3's fused KDA decode kernel performs "the short convolution, KDA
 state update, output gate, and normalization" together, so the recurrent path
 needs the same gate plus a post-normalisation.
 
-One kernel serves both, which is the argument for building it before either
-model needs it separately.
+K3's config settles it: `mla_use_output_gate: true`. One kernel serves both,
+which is the argument for building it before either model needs it separately.
+
+### 5b. SiTU activation — kimi_k3, and it blocks every layer
+
+`hidden_act: "situ"` with two betas, 4.0 gated and 25.0 linear. `norm.cuh` has
+`LmSiluMulKernel` and nothing else, so the MLP on all 93 layers is
+unimplemented - not a variant of SwiGLU but a different function. This was
+invisible until the config landed and is the largest single gap for K3.
 
 Sigmoid gate on the attention output before the output projection. The
 reference calls that path *gated* attention; it is not optional. Currently

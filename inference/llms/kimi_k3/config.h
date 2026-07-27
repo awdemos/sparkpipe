@@ -48,45 +48,96 @@
 #include <stdint.h>
 #include "inference/kernels/layer_kind.cuh"
 
-#define K3_HIDDEN 7168u                        /* GUESS (K2 lineage) */
-#define K3_LAYERS 93u                          /* vLLM K3 preview: "93-layer network" */
-#define K3_FIRST_ROUTED_LAYER 1u               /* GUESS */
-#define K3_VOCAB 163840u                       /* GUESS (K2 tokenizer family) */
-#define K3_RMS_EPSILON 1e-05f                  /* GUESS (K2 value) */
+// Read from moonshotai/Kimi-K3 config.json, 2026-07-27. Everything below is
+// DISCLOSED unless marked otherwise, and the guesses this replaced are recorded
+// where they were wrong, because which ones failed is the useful information.
+//
+//   right:  hidden 7168, vocab 163840, rms eps 1e-5, experts 896, top-k 16,
+//           first dense layer count 1, KDA head dim 128, the 3:1 period
+//   WRONG:  shared experts 1 -> 2
+//           expert intermediate 2048 -> 3072
+//           dense intermediate 18432 -> 33792
+//           routed scale 2.5 -> 1.0
+//           KDA heads 64 -> 96
+//
+// Five of thirteen. Every wrong one was a K2-lineage inference, and every one
+// of those would have produced a model that built, ran, and was wrong.
 
-#define K3_EXPERTS 896u                        /* DISCLOSED */
-#define K3_TOP_K 16u                           /* DISCLOSED */
-#define K3_SHARED_EXPERTS 1u                   /* GUESS */
-#define K3_EXPERT_INTERMEDIATE 2048u           /* GUESS (K2 value) */
-#define K3_DENSE_INTERMEDIATE 18432u           /* GUESS (K2 value) */
-#define K3_ROUTED_SCALE 2.5f                   /* GUESS (K2 value) */
+#define K3_HIDDEN 7168u
+#define K3_LAYERS 93u
+#define K3_VOCAB 163840u
+#define K3_RMS_EPSILON 1e-05f
+#define K3_MAX_CONTEXT 1048576u
 
-// 3:1 linear to full. The period and phase decide which pool a layer uses.
-#define K3_ATTENTION_PERIOD 4u                 /* GUESS (Kimi Linear 3:1) */
-#define K3_GLOBAL_PHASE 3u                     /* GUESS (MLA last in the period) */
-#define K3_LAYER_IS_LINEAR(layer) (((layer) % K3_ATTENTION_PERIOD) != K3_GLOBAL_PHASE)
+// MoE. Stable LatentMoE: the routed experts run at their own hidden width and
+// are projected, which is what routed_expert_hidden_size is and why it is not
+// K3_HIDDEN. Router is sigmoid with noaux_tc grouping, renormalised.
+#define K3_FIRST_ROUTED_LAYER 1u
+#define K3_EXPERTS 896u
+#define K3_TOP_K 16u
+#define K3_SHARED_EXPERTS 2u
+#define K3_EXPERT_INTERMEDIATE 3072u
+#define K3_ROUTED_EXPERT_HIDDEN 3584u
+#define K3_DENSE_INTERMEDIATE 33792u
+#define K3_ROUTED_SCALE 1.0f
 
-#define K3_KDA_HEADS 64u                       /* GUESS */
-#define K3_KDA_KEY_DIM 128u                    /* GUESS (Kimi Linear head dim) */
+// MLA, on the full-attention layers. mla_use_nope and mla_use_output_gate are
+// both true: the nope half carries no rotation, and the attention output is
+// gated - the same gate qwen_3_6 needs, so one kernel serves both.
+#define K3_MLA_HEADS 96u
+#define K3_KV_LORA_RANK 512u
+#define K3_Q_LORA_RANK 1536u
+#define K3_QK_NOPE_DIM 128u
+#define K3_QK_ROPE_DIM 64u
+#define K3_V_HEAD_DIM 128u
+#define K3_MLA_USE_NOPE 1u
+#define K3_MLA_OUTPUT_GATE 1u
+
+// KDA, on the other three in four. 96 heads at 128, a 4-wide causal convolution,
+// a full-rank gate floored at -5.
+#define K3_KDA_HEADS 96u
+#define K3_KDA_KEY_DIM 128u
+#define K3_KDA_VALUE_DIM 128u
+#define K3_KDA_CONV_KERNEL 4u
+#define K3_KDA_GATE_LOWER_BOUND -5.0f
+#define K3_KDA_FULL_RANK_GATE 1u
+
+// AttnRes: layers retrieve from earlier layer BLOCKS, twelve layers to a block.
+// Not modelled - see docs/MODEL_SUPPORT.md item 7, which deepseek_v4's mHC
+// shares.
+#define K3_ATTNRES_BLOCK_SIZE 12u
+
+// SiTU activation, not SwiGLU. Two betas, one for the gated branch and one for
+// the linear branch. kernels/norm.cuh has LmSiluMulKernel and nothing else, so
+// the MLP on every layer of this model is unimplemented.
+#define K3_SITU_BETA 4.0f
+#define K3_SITU_LINEAR_BETA 25.0f
+
+// MXFP4 at group 32, and the ignore list matters: attention, shared experts,
+// the dense MLP, lm_head and the vision tower are NOT quantised. Only the
+// routed experts are 4-bit.
+#define K3_MXFP4_GROUP 32u
+
+// num_nextn_predict_layers is 0. This model has no MTP head, unlike glm5_2.
+#define K3_MTP_LAYERS 0u
+
 #define K3_KV_BITS 16u
 #define K3_KV_PAGE_SLOTS 64u
 
-// A recurrent state is a fixed allocation per sequence: heads * key_dim *
-// value_dim would be the full outer product, but the delta rule keeps a
-// key-by-value matrix per head. That is the whole resident cost, and it does not
-// grow with context - which is the property the scheduler needs to know about
-// and the only one it needs.
-#define K3_KDA_STATE_BYTES (K3_KDA_HEADS * K3_KDA_KEY_DIM * 2u)
+// The delta rule carries a key-by-value outer product per head, so the state is
+// heads * key_dim * value_dim, not heads * key_dim. The old expression here was
+// the latter and understated the pool by 128x: 3 MiB per sequence in bf16, and
+// it does not grow with context, which is the whole point of the mechanism.
+#define K3_KDA_STATE_BYTES \
+	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * (K3_KV_BITS / 8u))
 
-// 896 experts at top-16 is 16 rows per expert at B1024, half GLM 5.2's - more
-// experts touched, fewer rows each, so the tile selector lands lower.
-static inline uint32_t K3RowsPerExpert(uint32_t tokens)
-{
-	return(((tokens * K3_TOP_K) + K3_EXPERTS - 1u) / K3_EXPERTS);
-}
+// 1-INDEXED IN THE CONFIG, 0-INDEXED HERE. full_attn_layers is
+// {4,8,...,92} plus 93; subtract one and that is {3,7,...,91} plus 92. So the
+// period-4 rule holds and THE LAST LAYER IS AN EXCEPTION - 92 % 4 is 0, which
+// the formula alone would call KDA. 24 full and 69 KDA, which is what the two
+// lists in the config contain.
+#define K3_LAYER_IS_LINEAR(layer) \
+	((((layer) % 4u) != 3u) && ((layer) != (K3_LAYERS - 1u)))
 
-// -- layer kinds --
-// 3 x Kimi Delta Attention -> 1 x gated MLA. Provisional with the rest of this
-// file until the release lands.
 #define K3_LAYER_KIND(layer) \
 	(K3_LAYER_IS_LINEAR(layer) ? LM_LAYER_RECURRENT : LM_LAYER_LATENT)
