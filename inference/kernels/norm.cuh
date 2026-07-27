@@ -214,3 +214,71 @@ void LmAddRowsKernel(const uint16_t *__restrict__ a_bf16, const uint16_t *__rest
 	index = ((uint64_t)row * dimension) + element;
 	out_bf16[index] = LmFloatToBf16(LmBf16ToFloat(a_bf16[index]) + LmBf16ToFloat(b_bf16[index]));
 }
+
+// Norm and quantise, fused.
+//
+// Harvested from the old decode stage's RmsNormFp8E4m3QuantizeKernel, which had
+// this and my first version did not. The norm already holds the row in registers
+// and the quantiser needs exactly that row; running them as two kernels writes
+// the normed hidden to global and reads it straight back.
+//
+// At 6144 hidden and B128 that is 1.5 MB written and 1.5 MB read per layer, 225
+// MB per token across 75 routed layers - on a path where the entire weight
+// stream is 5.3 GB. Three percent, for a fusion that costs nothing but saying so.
+//
+// The absmax needs the whole group before any code can be written, so the row is
+// staged in shared rather than kept in registers: a thread cannot know its own
+// scale until every thread's maximum is in. That is why this is one block per
+// (row, group) rather than one per row.
+template<class Format, uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmFusedNormQuantiseKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ residual_bf16, const uint16_t *__restrict__ weight_bf16, const uint32_t *__restrict__ source_row_map, uint16_t *__restrict__ residual_out_bf16, uint8_t *__restrict__ output_codes, uint8_t *__restrict__ output_scales, uint32_t rows, uint32_t dimension, float epsilon)
+{
+	extern __shared__ float lm_fused_shared[];
+	float *row = lm_fused_shared;
+	float *reduction = lm_fused_shared + dimension;
+	const uint32_t groups = dimension / Format::kScaleGroup;
+	uint32_t destination = blockIdx.x,index,group;
+	uint64_t source;
+	float total = 0.0f,scale;
+	if ( destination >= rows )
+		return;
+	source = (uint64_t)(source_row_map != 0 ? source_row_map[destination] : destination) * dimension;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float value = LmBf16ToFloat(input_bf16[source + index]);
+		if ( residual_bf16 != 0 )
+			value += LmBf16ToFloat(residual_bf16[source + index]);
+		row[index] = value;
+		total += value * value;
+		if ( residual_out_bf16 != 0 )
+			residual_out_bf16[source + index] = LmFloatToBf16(value);
+	}
+	total = LmBlockSum<THREADS>(total,reduction);
+	scale = rsqrtf((total / (float)dimension) + epsilon);
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+		row[index] = row[index] * scale * LmBf16ToFloat(weight_bf16[index]);
+	__syncthreads();
+	// One group at a time: the absmax is per group and every thread needs it
+	// before any of them can encode.
+	for (group = 0u; group < groups; ++group)
+	{
+		float absmax = 0.0f,inverse;
+		for (index = threadIdx.x; index < Format::kScaleGroup; index += THREADS)
+			absmax = fmaxf(absmax,fabsf(row[(group * Format::kScaleGroup) + index]));
+		absmax = LmBlockMax<THREADS>(absmax,reduction);
+		inverse = 1.0f / fmaxf(absmax / Format::kMax,1.0e-8f);
+		if ( threadIdx.x == 0u )
+			output_scales[((uint64_t)destination * groups) + group] =
+				LmFloatToUe4m3(fmaxf(absmax / Format::kMax,1.0e-8f));
+		for (index = threadIdx.x * 2u; index < Format::kScaleGroup; index += THREADS * 2u)
+		{
+			uint64_t bit = (((uint64_t)destination * dimension)
+				+ (group * Format::kScaleGroup) + index) * Format::kStoredBits;
+			LmStoreCodePair<Format>(output_codes,bit,
+				row[(group * Format::kScaleGroup) + index] * inverse,
+				row[(group * Format::kScaleGroup) + index + 1u] * inverse);
+		}
+		__syncthreads();
+	}
+}

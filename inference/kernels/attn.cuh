@@ -224,3 +224,132 @@ void LmRopeYarnKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restri
 		rows_bf16[base + half + index] = LmFloatToBf16(high);
 	}
 }
+
+// -- hierarchical sparse selection ------------------------------------------------
+//
+// Harvested from the old decode stage's DsaKeyIndexBlockSummaryBuildKernel and
+// DsaScoreSelectHierarchicalKernel, which my first version did not have and
+// badly needed.
+//
+// LmSparseScoreKernel above scores every cached position, so the selection pass
+// is linear in context - which defeats the point of sparse attention, whose
+// whole job is to make attention constant. The hierarchical form scores one
+// SUMMARY per block first, keeps the promising blocks, and scores positions only
+// inside those:
+//
+//     context    flat dots   hierarchical   speedup
+//        8,192       8,192          2,176      3.8x
+//      131,072     131,072          4,096     32.0x
+//    1,048,576   1,048,576         18,432     56.9x
+//
+// At a million tokens the flat version spends more on deciding what to attend to
+// than on attending.
+//
+// THE SUMMARY IS A MAX, NOT A MEAN. A block is worth visiting if it contains ANY
+// position that scores well, and a mean over 64 positions buries one high score
+// under sixty-three low ones. Max over the element-wise absolute value bounds
+// the best possible dot product in the block, so a block the summary rejects
+// cannot contain a winner - which is what makes the pruning safe rather than
+// heuristic.
+//
+// Summaries are maintained incrementally: only the block a new token lands in is
+// dirty, so a decode step rebuilds one summary rather than all of them.
+template<class Geometry, uint32_t THREADS, uint32_t INDEX_DIM>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSparseSummaryBuildKernel(LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ dirty_block, uint32_t block_positions, uint16_t *__restrict__ summary_bf16, uint32_t blocks_per_sequence)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint32_t row = blockIdx.x,block = dirty_block != 0 ? dirty_block[row] : blockIdx.y;
+	uint32_t sequence = sequence_of_row[row],position,index;
+	for (index = threadIdx.x; index < INDEX_DIM; index += THREADS)
+	{
+		float best = 0.0f;
+		for (position = 0u; position < block_positions; ++position)
+		{
+			const uint8_t *slot = LmKvSlot<Geometry>(cache,sequence,(block * block_positions) + position);
+			if ( slot == 0 )
+				continue;
+			best = fmaxf(best,fabsf(LmBf16ToFloat(((const uint16_t *)slot)[index])));
+		}
+		summary_bf16[(((uint64_t)sequence * blocks_per_sequence) + block) * INDEX_DIM + index] =
+			LmFloatToBf16(best);
+	}
+	(void)reduction;
+}
+
+// Score block summaries. One block per (row, summary block), so the grid is the
+// context divided by the block size rather than the context.
+//
+// The score is an upper bound on any position's score within the block, because
+// the summary is an element-wise max of absolute values and the query is dotted
+// against it with absolute values too. A block whose bound is below the current
+// threshold cannot contain a better position than one already selected.
+template<uint32_t THREADS, uint32_t INDEX_DIM>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSparseSummaryScoreKernel(const uint16_t *__restrict__ index_query_bf16, const uint16_t *__restrict__ summary_bf16, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ block_count, uint32_t index_heads, uint32_t blocks_per_sequence, float *__restrict__ block_score)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint32_t row = blockIdx.x,block = blockIdx.y;
+	uint32_t sequence = sequence_of_row[row],head,index;
+	float total = 0.0f;
+	if ( block >= block_count[sequence] )
+	{
+		if ( threadIdx.x == 0u )
+			block_score[(row * blocks_per_sequence) + block] = -INFINITY;
+		return;
+	}
+	for (head = 0u; head < index_heads; ++head)
+	{
+		float partial = 0.0f;
+		for (index = threadIdx.x; index < INDEX_DIM; index += THREADS)
+			partial += fabsf(LmBf16ToFloat(index_query_bf16[
+				(((uint64_t)row * index_heads) + head) * INDEX_DIM + index]))
+				* LmBf16ToFloat(summary_bf16[
+				(((uint64_t)sequence * blocks_per_sequence) + block) * INDEX_DIM + index]);
+		total += LmBlockSum<THREADS>(partial,reduction);
+	}
+	if ( threadIdx.x == 0u )
+		block_score[(row * blocks_per_sequence) + block] = total;
+}
+
+// Score positions inside the selected blocks only.
+//
+// The grid is (row, selected block, position-in-block), so its size is the
+// selection budget rather than the context. This is where the speedup lands: the
+// expensive per-position dot runs on a fixed number of positions no matter how
+// long the conversation is.
+template<class Geometry, uint32_t THREADS, uint32_t INDEX_DIM>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSparseRefineKernel(const uint16_t *__restrict__ index_query_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ selected_block, uint32_t block_positions, uint32_t index_heads, float *__restrict__ scores, uint32_t *__restrict__ positions_out)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint32_t row = blockIdx.x,slot_index = blockIdx.y;
+	uint32_t block = selected_block[(row * gridDim.y) + (slot_index / block_positions)];
+	uint32_t position = (block * block_positions) + (slot_index % block_positions);
+	uint32_t sequence = sequence_of_row[row],head,index;
+	const uint8_t *slot = LmKvSlot<Geometry>(cache,sequence,position);
+	float total = 0.0f;
+	if ( slot == 0 )
+	{
+		if ( threadIdx.x == 0u )
+		{
+			scores[(row * gridDim.y) + slot_index] = -INFINITY;
+			positions_out[(row * gridDim.y) + slot_index] = position;
+		}
+		return;
+	}
+	for (head = 0u; head < index_heads; ++head)
+	{
+		float partial = 0.0f;
+		for (index = threadIdx.x; index < INDEX_DIM; index += THREADS)
+			partial += LmBf16ToFloat(index_query_bf16[
+				(((uint64_t)row * index_heads) + head) * INDEX_DIM + index])
+				* LmBf16ToFloat(((const uint16_t *)slot)[index]);
+		total += LmBlockSum<THREADS>(partial,reduction);
+	}
+	if ( threadIdx.x == 0u )
+	{
+		scores[(row * gridDim.y) + slot_index] = total;
+		positions_out[(row * gridDim.y) + slot_index] = position;
+	}
+}
