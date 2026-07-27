@@ -13,6 +13,7 @@ Checked here:
   * every directory the Makefile runs a sub-make into either exists or is
     guarded by a `test -d` in the same recipe
 """
+import glob
 import os
 import re
 import sys
@@ -42,21 +43,62 @@ def check_sources_mk():
     return count
 
 
-def check_makefile_paths():
-    lines = open(os.path.join(ROOT, "Makefile")).read().split("\n")
-    text = "\n".join(l for l in lines if not l.lstrip().startswith("#"))
-    seen = set()
-    for path in re.findall(r"(?<![\w/.$)])((?:[\w.-]+/)+[\w.-]+\.(?:cuh|cu|c|h))(?![\w.])", text):
-        if path in seen or path.startswith(("/", "$")):
+def build_files():
+    files = ["Makefile", "sources.mk", "tools/build.sh"]
+    for pattern in ("modules/*/Makefile", "modules/*.mk", "modules/*/*.mk"):
+        files.extend(sorted(glob.glob(os.path.join(ROOT, pattern))))
+    return [f if os.path.isabs(f) else os.path.join(ROOT, f) for f in files]
+
+
+def build_text(path):
+    """Lines that are build inputs. A comment is documentation and an echo is
+    output; neither is a path make will look for, and both legitimately name
+    files that were deleted on purpose."""
+    kept = []
+    for line in open(path, errors="replace").read().split("\n"):
+        stripped = line.lstrip()
+        if stripped.startswith("#") or "echo " in line:
             continue
-        seen.add(path)
-        if not os.path.exists(os.path.join(ROOT, path)):
-            report("Makefile missing", path)
+        kept.append(line)
+    return "\n".join(kept)
+
+
+PATH_RE = re.compile(
+    r"(?<![\w/.$)])((?:\.\./)*(?:[\w.@-]+/)*[\w.@-]+\.(?:cuh|cu|c|h))(?![\w.])")
+
+
+def check_makefile_paths():
+    seen = set()
+    for makefile in build_files():
+        if not os.path.exists(makefile):
+            continue
+        base = os.path.dirname(makefile)
+        rel = os.path.relpath(makefile, ROOT)
+        for path in PATH_RE.findall(build_text(makefile)):
+            key = (rel, path)
+            if key in seen:
+                continue
+            seen.add(key)
+            here = os.path.normpath(os.path.join(base, path))
+            there = os.path.normpath(os.path.join(ROOT, path))
+            if not os.path.exists(here) and not os.path.exists(there):
+                report("build path missing", path, f"({rel})")
     return len(seen)
 
 
 def check_sub_makes():
-    lines = open(os.path.join(ROOT, "Makefile")).read().split("\n")
+    count = 0
+    for makefile in build_files():
+        if not os.path.exists(makefile):
+            continue
+        count += _sub_makes_in(makefile)
+    return count
+
+
+def _sub_makes_in(makefile):
+    lines = open(makefile, errors="replace").read().split("\n")
+    rel = os.path.relpath(makefile, ROOT)
+    base = os.path.dirname(makefile)
     count = 0
     for index, line in enumerate(lines):
         match = re.search(r"\$\(MAKE\)\s+-C\s+([\w/.-]+)", line)
@@ -66,11 +108,11 @@ def check_sub_makes():
         if "$" in directory:
             continue
         count += 1
-        if os.path.isdir(os.path.join(ROOT, directory)):
+        if os.path.isdir(os.path.join(base, directory)) or os.path.isdir(os.path.join(ROOT, directory)):
             continue
         window = "\n".join(lines[max(0, index - 3):index + 1])
         if f"test -d {directory}" not in window:
-            report("sub-make unguarded", directory, f"(Makefile:{index + 1})")
+            report("sub-make unguarded", directory, f"({rel}:{index + 1})")
     return count
 
 
@@ -79,7 +121,7 @@ def main():
     paths = check_makefile_paths()
     submakes = check_sub_makes()
     print(f"sources.mk entries   {sources}")
-    print(f"Makefile paths       {paths}")
+    print(f"build paths          {paths}")
     print(f"sub-make directories {submakes}")
     if FAILURES:
         print(f"\n{len(FAILURES)} path(s) named by the build do not exist:")

@@ -137,42 +137,40 @@ prepare_validation_output:
 $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
 
-$(HOST_OBJECT): source/spark_glm52_resident_decode_stage_module.c | $(BUILD_DIRECTORY)
+$(HOST_OBJECT): $(REPOSITORY_ROOT)/inference/stage/module.c | $(BUILD_DIRECTORY)
 	$(CC) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource $(CFLAGS) \
 		-DNDEBUG -DSPARK_GLM52_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
 		-fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(CUDA_OBJECT): source/spark_glm52_resident_decode_stage_cuda.cu | $(BUILD_DIRECTORY)
+$(CUDA_OBJECT): $(REPOSITORY_ROOT)/inference/stage/dispatch.cu | $(BUILD_DIRECTORY)
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
-		-I$(REPOSITORY_ROOT)/third_party/flashinfer/include \
-		-I$(REPOSITORY_ROOT)/third_party/flashinfer/3rdparty/cutlass/include \
-		-I$(REPOSITORY_ROOT)/third_party/flashinfer/3rdparty/cutlass/tools/util/include \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(REQUIRED_STAGE_OBJECT): source/spark_glm52_sm121_required_decode_stage.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
-		-I$(REPOSITORY_ROOT)/third_party/flashinfer/include \
-		-I$(REPOSITORY_ROOT)/third_party/flashinfer/3rdparty/cutlass/include \
-		-I$(REPOSITORY_ROOT)/third_party/flashinfer/3rdparty/cutlass/tools/util/include \
-		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
+# source/spark_glm52_sm121_required_decode_stage.cu was deleted. STATUS.md requires the B12x AOT path, so this cannot be
+# quietly dropped from the archive; it names the gap instead of dangling.
+$(REQUIRED_STAGE_OBJECT): | $(BUILD_DIRECTORY)
+	@echo "source/spark_glm52_sm121_required_decode_stage.cu is not in this tree; the decode stage archive cannot be built" >&2; exit 2
 
-$(B12X_MOE_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_b12x_moe_plan.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
-		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
+# source/spark_glm52_resident_decode_stage_b12x_moe_plan.cu was deleted. STATUS.md requires the B12x AOT path, so this cannot be
+# quietly dropped from the archive; it names the gap instead of dangling.
+$(B12X_MOE_PLAN_OBJECT): | $(BUILD_DIRECTORY)
+	@echo "source/spark_glm52_resident_decode_stage_b12x_moe_plan.cu is not in this tree; the decode stage archive cannot be built" >&2; exit 2
 
 $(FP8_MOE_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_fp8_moe_plan.cu | $(BUILD_DIRECTORY)
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(W8LUT_MOE_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_w8lut_moe_plan.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
-		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
+# source/spark_glm52_resident_decode_stage_w8lut_moe_plan.cu was deleted. STATUS.md requires the B12x AOT path, so this cannot be
+# quietly dropped from the archive; it names the gap instead of dangling.
+$(W8LUT_MOE_PLAN_OBJECT): | $(BUILD_DIRECTORY)
+	@echo "source/spark_glm52_resident_decode_stage_w8lut_moe_plan.cu is not in this tree; the decode stage archive cannot be built" >&2; exit 2
 
-$(LINEAR_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_linear_plan.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
-		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
+# source/spark_glm52_resident_decode_stage_linear_plan.cu was deleted. STATUS.md requires the B12x AOT path, so this cannot be
+# quietly dropped from the archive; it names the gap instead of dangling.
+$(LINEAR_PLAN_OBJECT): | $(BUILD_DIRECTORY)
+	@echo "source/spark_glm52_resident_decode_stage_linear_plan.cu is not in this tree; the decode stage archive cannot be built" >&2; exit 2
 
-$(SERVING_ADAPTER_OBJECT): source/spark_glm52_resident_decode_stage_serving_adapter.cu | $(BUILD_DIRECTORY)
+$(SERVING_ADAPTER_OBJECT): $(REPOSITORY_ROOT)/inference/stage/serving_adapter.cu | $(BUILD_DIRECTORY)
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
@@ -180,9 +178,9 @@ $(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT) $(REQUIRED_STAGE_OBJECT) $(B12X
 	rm -f $@
 	$(AR) rcs $@ $^
 
-$(ARTIFACT_CHECK_TOOL): tools/glm52_artifact_check.c | $(BUILD_DIRECTORY)
+$(ARTIFACT_CHECK_TOOL): $(REPOSITORY_ROOT)/runtime/pack/artifact_check.c | $(BUILD_DIRECTORY)
 	$(CC) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource $(CFLAGS) \
-		$< $(REPOSITORY_ROOT)/build/libsparkpipe_compiler.a $(REPOSITORY_ROOT)/build/libsparkpipe_common.a \
+		$< $(REPOSITORY_ROOT)/build/libsparkpipe_compiler.a $(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
 		-ldl -o $@
 
 artifact_check: require_model_dir $(ARTIFACT_CHECK_TOOL)

@@ -20,7 +20,7 @@ archive: $(BACKEND_ARCHIVE)
 $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
 
-$(BACKEND_OBJECT): source/spark_glm52_dspark_draft_backend.cu include/sparkpipe/spark_glm52_dspark_draft_backend.h | $(BUILD_DIRECTORY)
+$(BACKEND_OBJECT): $(REPOSITORY_ROOT)/inference/stage/draft_backend.cu include/sparkpipe/spark_glm52_dspark_draft_backend.h | $(BUILD_DIRECTORY)
 	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -c $< -o $@
 
 $(BACKEND_ARCHIVE): $(BACKEND_OBJECT)
@@ -28,9 +28,9 @@ $(BACKEND_ARCHIVE): $(BACKEND_OBJECT)
 	$(AR) rcs $@ $^
 
 $(VALIDATOR): validation/validate_glm52_dspark_epoch3_cuda.cu $(BACKEND_ARCHIVE)
-	$(MAKE) -C $(REPOSITORY_ROOT) build/libsparkpipe_common.a
+	$(MAKE) -C $(REPOSITORY_ROOT) build/libsparkpipe_model_common.a
 	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude \
-		$< $(BACKEND_ARCHIVE) $(REPOSITORY_ROOT)/build/libsparkpipe_common.a \
+		$< $(BACKEND_ARCHIVE) $(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
 		-lcublas -o $@
 
 validate_epoch3: $(VALIDATOR)
