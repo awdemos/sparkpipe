@@ -136,6 +136,25 @@ static int32_t Glm52LaunchSlice(const SparkGlm52ResidentDecodeStageNodeContext *
 	return(LM_LAUNCH_OK);
 }
 
+// Prefill: the same slice with row positions.
+//
+// A prefill row is not the last position and must not see past itself; a decode
+// row is and may see everything. That is one argument to the attention kernel,
+// which is why there is no prefill slice - only this entry point, which passes
+// the positions the decode one leaves null.
+//
+// Chunking is the caller's: a prompt longer than the intermediate buffers runs
+// as several calls, and how long that is depends on what else is resident.
+extern "C" int32_t Glm52StageSlicePrefill(const void *node_context, void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, const uint32_t *row_positions, void *stream)
+{
+	Glm52LayerBuffers *buffers = (Glm52LayerBuffers *)layer_buffers;
+	buffers->row_positions = row_positions;
+	return(Glm52LaunchSlice(
+		(const SparkGlm52ResidentDecodeStageNodeContext *)node_context,
+		buffers,first_layer,layer_count,rows,packed_rows,context,
+		multiprocessors,(cudaStream_t)stream));
+}
+
 extern "C" int32_t Glm52StageSlice(const void *node_context, void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, void *stream)
 {
 	return(Glm52LaunchSlice(

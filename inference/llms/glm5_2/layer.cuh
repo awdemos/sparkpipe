@@ -129,6 +129,9 @@ struct Glm52LayerBuffers
 	const uint32_t *sequence_of_row;
 	const uint32_t *context_length;
 	const uint32_t *positions;
+	// Non-null makes every attention call causal against each row's own
+	// position, which is what distinguishes prefill from decode. Null is decode.
+	const uint32_t *row_positions;
 	uint32_t *selected_positions;
 	float *selection_scores;
 };
@@ -215,7 +218,7 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 		b->projected.query_latent_bf16,b->projected.query_rope_bf16,b->cache,b->sequence_of_row,b->context_length,
 		sparse ? b->selected_positions : 0,GLM52_DSA_SELECTED,GLM52_ATTN_HEADS,
 		rsqrtf((float)GLM52_LATENT),b->attention_latent_bf16,
-		0);
+		b->row_positions);
 	// THE OUTPUT PROJECTION, which an earlier version of this file declared and
 	// never called. Attention produces heads x latent; the layer's output is
 	// hidden. Without this the residual add receives a tensor of the wrong width

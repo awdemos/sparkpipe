@@ -55,49 +55,18 @@ done
 # The serving adapter, both ways. It is the seam: legacy calls
 # LaunchStageSlice, first-party calls Glm52StageSlice, and both must compile
 # because a build that only checks one lets the other rot silently.
+# The serving adapter: the seam between the scheduler's frames and the kernels.
 ADAPTER=inference/stage/serving_adapter.cu
-for cfg in "" "-DSPARK_GLM52_FIRST_PARTY_LAYER"
-do
-	if "$NVCC" -std=c++17 $ARCH -O1 $cfg -I. \
-		-Imodules/glm52_resident_decode_stage/include -Iinclude \
-		-Ideployment/include -Imodel-families/glm52/include \
-		-c "$ADAPTER" -o /tmp/lm_adapter.o 2>/tmp/lm_adapter.log
-	then
-		printf "  %-14s adapter %-26s %s bytes\n" "" "${cfg:-legacy}" "$(wc -c < /tmp/lm_adapter.o)"
-	else
-		printf "  %-14s ADAPTER FAILED %s\n" "" "${cfg:-legacy}"
-		grep -E "error" /tmp/lm_adapter.log | head -3
-		status=1
-	fi
-done
-
-LEGACY=modules/glm52_resident_decode_stage/source/spark_glm52_sm121_required_decode_stage.cu
-if [ -f "$LEGACY" ]
+if "$NVCC" -std=c++17 $ARCH -O1 -I. \
+	-Imodules/glm52_resident_decode_stage/include -Iinclude \
+	-Ideployment/include -Imodel-families/glm52/include \
+	-c "$ADAPTER" -o /tmp/lm_adapter.o 2>/tmp/lm_adapter.log
 then
-	if "$NVCC" -std=c++17 $ARCH -O1 -I. \
-		-Imodules/glm52_resident_decode_stage/include \
-		-Iinclude -Ideployment/include -Imodel-families/glm52/include \
-		-c "$LEGACY" -o /tmp/lm_legacy.o 2>/tmp/lm_legacy.log
-	then
-		printf "  %-14s compiled  %s bytes\n" "legacy glm52" "$(wc -c < /tmp/lm_legacy.o)"
-		# And with the first-party layer selected. Both must build, because the
-		# two get compared on real weights before either is deleted.
-		if "$NVCC" -std=c++17 $ARCH -O1 -DSPARK_GLM52_FIRST_PARTY_LAYER -I. \
-			-Imodules/glm52_resident_decode_stage/include \
-			-Iinclude -Ideployment/include -Imodel-families/glm52/include \
-			-c "$LEGACY" -o /tmp/lm_fp.o 2>/tmp/lm_fp.log
-		then
-			printf "  %-14s compiled  %s bytes\n" "first-party" "$(wc -c < /tmp/lm_fp.o)"
-		else
-			printf "  %-14s FAILED\n" "first-party"
-			grep -E "error" /tmp/lm_fp.log | head -3
-			status=1
-		fi
-	else
-		printf "  %-14s FAILED\n" "legacy glm52"
-		grep -E "error" /tmp/lm_legacy.log | head -3
-		status=1
-	fi
+	printf "  %-14s compiled  %s bytes\n" "adapter" "$(wc -c < /tmp/lm_adapter.o)"
+else
+	printf "  %-14s FAILED\n" "adapter"
+	grep -E "error" /tmp/lm_adapter.log | head -3
+	status=1
 fi
 
 exit $status

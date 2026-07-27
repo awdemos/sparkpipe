@@ -9,11 +9,14 @@
 #define SPARK_GLM52_SERVING_ADAPTER_THREADS 256u
 #define SPARK_GLM52_SERVING_ADAPTER_INVALID_SLOT UINT32_MAX
 
-#if defined(SPARK_GLM52_FIRST_PARTY_LAYER)
 /* Defined in inference/llms/glm5_2/bind.cu. Declared rather than included
    because bind.cu pulls the whole kernel library and this file needs two
    symbols from it - an include here would make every edit to a kernel recompile
    the serving adapter. */
+extern "C" int32_t Glm52StageSlicePrefill(const void *node_context, void *layer_buffers,
+    uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows,
+    uint32_t context, uint32_t multiprocessors, const uint32_t *row_positions, void *stream);
+
 extern "C" int32_t Glm52StageSlice(const void *node_context, void *layer_buffers,
     uint32_t first_layer, uint32_t layer_count, uint32_t rows,
     uint32_t packed_rows, uint32_t context, uint32_t multiprocessors,
@@ -40,7 +43,6 @@ static uint32_t SparkGlm52ResidentDecodeStageMultiprocessorCount(void)
     cached = (uint32_t)count;
     return cached;
 }
-#endif
 
 static SparkStatus SparkGlm52ServingAdapterCudaStatus(cudaError_t status)
 {
@@ -864,7 +866,6 @@ static SparkStatus SparkGlm52ServingAdapterLaunchDecodeStep(
         return status;
     }
 
-#if defined(SPARK_GLM52_FIRST_PARTY_LAYER)
     /* The first-party slice: inference/llms/glm5_2/bind.cu maps the node context
        to layer buffers and loops. Behind the same build flag as the layer body
        it calls, because the two must be selected together - a first-party slice
@@ -891,19 +892,6 @@ static SparkStatus SparkGlm52ServingAdapterLaunchDecodeStep(
                stream) == 0
            ? SPARK_STATUS_OK
            : SPARK_STATUS_INTERNAL_ERROR;
-#else
-    return SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
-        adapter->stage_slice_plan,
-        adapter->layer_node_contexts,
-        adapter->layer_count,
-        adapter->pipeline_slot_index,
-        decode_dispatch->active_sequence_count,
-        adapter->final_token_stage,
-        decode_dispatch->kv_block_table_view,
-        frame_context,
-        stream,
-        0);
-#endif
 }
 
 static SparkStatus SparkGlm52ServingAdapterDecodeMtpVerify(
