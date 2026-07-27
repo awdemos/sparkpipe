@@ -6,6 +6,13 @@
 // implemented, and the list is here rather than in a tracker because the next
 // person to read this file is the one who needs it.
 //
+// THERE ARE TWO TARGETS UNDER THIS NAME, and they differ where it is least
+// visible. Flash is 43 layers at hidden 4096 and its first two layers are pure
+// sliding window. Pro is 61 layers at hidden 7168 and its first two layers are
+// HIGH-COMPRESSION, not sliding window. Everything after is CSA and HCA
+// interleaved in both. A layer-kind table written for one is wrong for the
+// other in exactly the two positions nobody checks. This config is Flash.
+//
 // FIVE GAPS BETWEEN THIS CONFIG AND A MODEL THAT DECODES CORRECTLY:
 //
 // 1. THE LAYER-KIND TABLE IS NOT HERE AT ALL. The reference carries

@@ -2,6 +2,17 @@
 
 // MiMo 2.5. Shapes and constants only.
 //
+// AUDITED against XiaomiMiMo/MiMo-V2.5-Pro, 2026-07-27. 70 layers, 1 dense and
+// 69 MoE, 384 routed experts at top-8, sliding window 128 interleaved with
+// global attention at 6:1, native FP8 block-wise e4m3, three MTP modules.
+//
+// ONE GAP THE SHAPES DO NOT SHOW: the reference keeps long-context quality at a
+// ~7x smaller KV cache "via learnable attention sink bias". That is a per-head
+// bias admitted into the softmax denominator, and LmAttentionDecodeKernel has
+// no sink term. Without it the 6:1 window ratio is a cache saving with nothing
+// compensating for what the window drops - the shape is right and the numbers
+// will not be. See docs/MODEL_SUPPORT.md.
+//
 // The second model in this tree, and the test of whether kernels/ is actually
 // model-agnostic or merely glm52 with the names filed off. Nothing in kernels/
 // changed to accommodate it.
