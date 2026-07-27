@@ -102,12 +102,45 @@
 #define K3_KDA_GATE_LOWER_BOUND -5.0f
 #define K3_KDA_FULL_RANK_GATE 1u
 
-// AttnRes: layers retrieve from earlier layer BLOCKS, twelve layers to a block.
-// Not modelled - see docs/MODEL_SUPPORT.md item 7, which deepseek_v4's mHC
-// shares.
+// AttnRes, now read from the modelling file. It is an ATTENTION over residuals,
+// not a weighted sum with learned scalars:
+//
+//     v       = [saved block residuals ..., current prefix sum]
+//     k       = v * rsqrt(mean(v^2) + eps)          RMS-normalise each candidate
+//     scores  = sum(k * (norm.weight * proj.weight))
+//     out     = softmax(scores) @ v
+//
+// Applied TWICE per layer - once before attention with self_attention_res_proj,
+// once before the MLP with mlp_res_proj. A new block residual is appended every
+// attn_res_block_size layers, so 93 layers at block size 12 accumulate 8 blocks
+// and the candidate set reaches 9.
+//
+// THIS IS THE SHAPE CHANGE, AND THE NUMBER IS 9x. Every buffer in this tree
+// carries hidden_bf16 as one tensor. Under AttnRes a token carries up to nine,
+// and the ring moves hidden state between ranks, so the stage payload per row
+// goes from 14 KiB to 126 KiB at hidden 7168. That is a transport and pool
+// question before it is a kernel question. deepseek_v4's hyper-connections are
+// the same class at n_hc=4 - see docs/MODEL_SUPPORT.md item 7.
 #define K3_ATTNRES_BLOCK_SIZE 12u
 
-// SiTU - "Sigmoid Tanh Unit" - replaces SwiGLU on every layer. THE FORMULA IS
+// SiTU, from the released modeling_kimi_linear.py. IMPLEMENTED as
+// LmSituMulKernel, checked numerically by tests/test_situ_activation.py:
+//
+//     situ_a = beta * tanh(gate / beta) * sigmoid(gate)
+//     up     = linear_beta * tanh(up / linear_beta)
+//     out    = situ_a * up
+//
+// It is SiLU-mul with both arms soft-clamped to their own beta - gate to 4,
+// linear to 25 - which is what "activation control" meant. Gate is the FIRST
+// half of the fused projection.
+//
+// The two betas are not interchangeable: swapping them clamps the gate at 25
+// and the linear arm at 4, which runs and is wrong, so the gate checks the
+// saturation points rather than only the values near zero.
+//
+// (Historical note, kept because the reasoning still applies to AttnRes below:
+// before the modelling file arrived this was the one gap where a plausible
+// guess was worse than an empty space. THE FORMULA WAS
 // NOT PUBLISHED anywhere I can reach. Moonshot's tech blog names it and says it
 // improves "activation control"; the GGUF conversion effort records it as a new
 // activation and does not implement it either. The name and the two betas are
@@ -120,8 +153,8 @@
 // plausible guess is worse than an empty space, because nothing downstream
 // would contradict it.
 //
-// UNBLOCKED BY: modeling_kimi_linear.py from the released repository, which
-// contains the implementation. The config.json alone cannot settle it.
+// NOT PUBLISHED and the name admitted several readings. It came from the
+// modelling file, not from reasoning about the name.)
 #define K3_SITU_BETA 4.0f
 #define K3_SITU_LINEAR_BETA 25.0f
 

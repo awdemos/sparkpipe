@@ -126,6 +126,46 @@ void LmSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 	}
 }
 
+// SiTU, the activation Kimi K3 runs on all 93 layers. From the released
+// modeling_kimi_linear.py:
+//
+//     situ_a = beta * tanh(gate / beta) * sigmoid(gate)
+//     up     = linear_beta * tanh(up / linear_beta)      when linear_beta is set
+//     out    = situ_a * up
+//
+// Compare LmSiluMulKernel directly above: SiLU-mul is gate * sigmoid(gate) * up.
+// SiTU replaces the bare gate with beta * tanh(gate / beta) and does the same to
+// up with its own beta. Both branches are soft-clamped to +/- their beta, which
+// is what Moonshot means by "activation control" - the function is SiLU with
+// both arms bounded, not a new shape.
+//
+// The betas are 4.0 and 25.0 and they are NOT interchangeable: swapping them
+// clamps the gate at 25 and the linear arm at 4, which runs and is wrong. They
+// are separate arguments rather than an array for that reason.
+//
+// GATE IS THE FIRST HALF. The reference splits x at d = width/2 and takes
+// gate = x[..., :d]. LmSiluMulKernel carries a gate_first flag because that
+// convention varies between checkpoints; this one does not vary, so it is fixed
+// here rather than made a parameter nobody can set correctly.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float beta, float linear_beta)
+{
+	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
+	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float gate = LmBf16ToFloat(gate_up_bf16[base + index]);
+		float up = LmBf16ToFloat(gate_up_bf16[base + dimension + index]);
+		float activated = beta * tanhf(gate / beta) *
+			(1.0f / (1.0f + __expf(-gate)));
+		if (linear_beta > 0.0f)
+			up = linear_beta * tanhf(up / linear_beta);
+		output_bf16[out_base + index] = LmFloatToBf16(activated * up);
+	}
+}
+
 // Gate an attention output elementwise by a sigmoid of its own projection.
 //
 // TWO MODELS NEED THIS AND NEITHER COULD HAVE IT. Qwen 3.6's reference calls its
