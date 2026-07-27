@@ -24,6 +24,22 @@ do
 		grep -E "error" "/tmp/lm_$name.log" | head -5
 		status=1
 	fi
+	# The binder, where a model has one: it maps the host's weight struct to the
+	# layer's buffers and is where a wrong field name produces fluent output.
+	if [ -f "$(dirname "$unity")/bind.cu" ]
+	then
+		if "$NVCC" -std=c++17 $ARCH -O1 -I. \
+			-Imodules/glm52_resident_decode_stage/include -Iinclude \
+			-Ideployment/include -Imodel-families/glm52/include \
+			-c "$(dirname "$unity")/bind.cu" -o "/tmp/lm_${name}_bind.o" 2>"/tmp/lm_${name}_bind.log"
+		then
+			printf "  %-14s bind      %s bytes\n" "" "$(wc -c < "/tmp/lm_${name}_bind.o")"
+		else
+			printf "  %-14s BIND FAILED\n" ""
+			grep -E "error" "/tmp/lm_${name}_bind.log" | head -3
+			status=1
+		fi
+	fi
 	"$NVCC" -std=c++17 $ARCH -O3 -I. -ptx "$unity" -o "/tmp/lm_$name.ptx" 2>/dev/null || true
 	target=$(grep '^.target' "/tmp/lm_$name.ptx" 2>/dev/null || echo "?")
 	case "$target" in
