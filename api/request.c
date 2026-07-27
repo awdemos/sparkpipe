@@ -1,3 +1,29 @@
+// The request surface: session and slot lifecycle, stop conditions, validation,
+// and the speculative dispatch policy.
+//
+// 7,178 lines carrying 34 model constants, which sounds model-specific and is
+// not. Measured by concern:
+//
+//     4,176 lines   6 model constants   session and request plumbing
+//     1,603         5                   slot lifecycle
+//     1,040        20                   SPECULATIVE DISPATCH POLICY
+//       309         2                   stop conditions
+//       198         0                   validation
+//       137         0                   cost model
+//
+// Twenty of the thirty-four are in the speculative dispatch policy, and that is
+// where they belong: whether drafting beats plain decode depends on the model's
+// draft token count, its layer count, and how fast its first layers are. This
+// file's own comments record the measurement - plain 3.89 tok/s against MTP 3.47
+// at B1, so MTP was LOSING - and note that without hysteresis the scheduler
+// oscillates around the break-even point.
+//
+// WHICH RANK DRAFTS IS A MODEL PROPERTY, NOT A CONSTANT. The policy here assumes
+// the last rank, which is where the logits are. For GLM 5.2 that is the wrong
+// choice: its first three layers are dense and fast, so the rank holding them
+// has slack the last rank does not, and drafting there costs less. A model whose
+// early layers are not cheap would want the opposite. That belongs in the model
+// description as a list of drafting ranks, and it is not there yet.
 #include "sparkpipe/spark_glm52_request_api.h"
 #include "sparkpipe/spark_glm52_mtp_tree.h"
 #include "sparkpipe/spark_glm52_row_allocator.h"

@@ -1,5 +1,14 @@
 #define _POSIX_C_SOURCE 200112L
 
+// The per-rank serving backend: sockets, event loop, decode lanes, driver
+// completion. Named pp13_service_backend and containing no dlopen, no plugin
+// loading and nothing about thirteen - it is the thing that connects a socket to
+// a driver, for however many ranks there are.
+//
+// Two model values reach it and both are configuration rather than architecture:
+// the prefill dispatch ceiling and the EOS token set. They arrive through the
+// model description rather than a header, so a second model needs no second
+// backend.
 #include "sparkpipe/spark_glm52_service_backend.h"
 
 #include <arpa/inet.h>
