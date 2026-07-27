@@ -42,7 +42,7 @@ GPU_VALIDATOR_ARGUMENTS ?=
 BUILD_DIRECTORY ?= $(REPOSITORY_ROOT)/build/modules/$(MODULE_FAMILY)_resident_decode_stage
 MODULE_ARCHIVE ?= $(BUILD_DIRECTORY)/lib$(MODULE_FAMILY)_resident_decode_stage.a
 MODULE_COMMON_HOST_SOURCES := \
-	$(REPOSITORY_ROOT)/model-families/common/src/spark_stage_module_common.c
+	$(REPOSITORY_ROOT)/runtime/stage_module_common.c
 MODULE_HOST_SOURCES := \
 	$(MODULE_HOST_SOURCE) \
 	$(MODULE_COMMON_HOST_SOURCES) \
