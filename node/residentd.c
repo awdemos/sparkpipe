@@ -26,6 +26,7 @@
 #include "sparkpipe/spark_glm52_request_api.h"
 #include "sparkpipe/spark_glm52_serving_engine.h"
 #include "sparkpipe/spark_hidden_transport.h"
+#include "runtime/net.h"
 
 #define SPARK_GLM52_CUDA_RESIDENTD_DEFAULT_MAX_ACTIVE 1024u
 #define SPARK_GLM52_CUDA_RESIDENTD_DEFAULT_PROGRAM "glm52.ring.rank.production"
@@ -280,28 +281,6 @@ static void SparkGlm52CudaResidentdInitializeConfiguration(
     configuration->dspark_maximum_context_token_count = 2048u;
 }
 
-static int32_t SparkGlm52CudaResidentdParseU32(
-    const char *text,
-    uint32_t *value_out)
-{
-    uint64_t value;
-    uint32_t index;
-
-    if (text == 0 || text[0] == '\0' || value_out == 0)
-        return -1;
-    value = 0u;
-    for (index = 0u; text[index] != '\0'; ++index)
-    {
-        if (text[index] < '0' || text[index] > '9')
-            return -2;
-        value = (value * 10u) + (uint32_t)(text[index] - '0');
-        if (value > 0xffffffffull)
-            return -3;
-    }
-    *value_out = (uint32_t)value;
-    return 0;
-}
-
 static int32_t SparkGlm52CudaResidentdParseU64(
     const char *text,
     uint64_t *value_out)
@@ -342,7 +321,7 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
     if (strcmp(argv[*index], "--rank") == 0)
     {
         if ((*index + 1) >= argc ||
-            SparkGlm52CudaResidentdParseU32(argv[*index + 1], &parsed_u32) < 0)
+            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
             return -2;
         configuration->rank_index = parsed_u32;
         configuration->rank_is_set = 1u;
@@ -352,7 +331,7 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
     if (strcmp(argv[*index], "--max-active") == 0)
     {
         if ((*index + 1) >= argc ||
-            SparkGlm52CudaResidentdParseU32(argv[*index + 1], &parsed_u32) < 0)
+            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
             return -3;
         configuration->max_active_sequence_count = parsed_u32;
         *index += 1;
@@ -361,7 +340,7 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
 	if (strcmp(argv[*index], "--kv-pool-tokens") == 0)
 	{
 		if ((*index + 1) >= argc ||
-			SparkGlm52CudaResidentdParseU32(argv[*index + 1], &parsed_u32) < 0)
+			SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
 			return -17;
 		configuration->kv_pool_token_capacity = parsed_u32;
 		*index += 1;
@@ -378,7 +357,7 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
     if (strcmp(argv[*index], "--kv-nvme-blocks") == 0)
     {
         if ((*index + 1) >= argc ||
-            SparkGlm52CudaResidentdParseU32(argv[*index + 1], &parsed_u32) < 0)
+            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
             return -19;
         configuration->kv_nvme_block_capacity = parsed_u32;
         *index += 1;
@@ -387,7 +366,7 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
     if (strcmp(argv[*index], "--kv-nvme-batch-blocks") == 0)
     {
         if ((*index + 1) >= argc ||
-            SparkGlm52CudaResidentdParseU32(argv[*index + 1], &parsed_u32) < 0)
+            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
             return -20;
         configuration->kv_nvme_batch_block_count = parsed_u32;
         *index += 1;
@@ -414,7 +393,7 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
         strcmp(argv[*index], "--kv-store-lookahead") == 0)
     {
         if ((*index + 1) >= argc ||
-            SparkGlm52CudaResidentdParseU32(argv[*index + 1],&parsed_u32) < 0)
+            SparkNetParseU32(argv[*index + 1],&parsed_u32) < 0)
             return -22;
         if (strcmp(argv[*index], "--kv-store-blocks") == 0)
             configuration->kv_store_block_capacity = parsed_u32;
@@ -449,7 +428,7 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
     if (strcmp(argv[*index], "--port-base") == 0)
     {
         if ((*index + 1) >= argc ||
-            SparkGlm52CudaResidentdParseU32(argv[*index + 1], &parsed_u32) < 0)
+            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
             return -4;
         configuration->port_base = parsed_u32;
         *index += 1;
@@ -568,7 +547,7 @@ static int32_t SparkGlm52CudaResidentdApplyArgument(
     if (strcmp(argv[*index], "--dspark-max-context") == 0)
     {
         if ((*index + 1) >= argc ||
-            SparkGlm52CudaResidentdParseU32(argv[*index + 1], &parsed_u32) < 0)
+            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
             return -16;
         configuration->dspark_maximum_context_token_count = parsed_u32;
         *index += 1;
@@ -665,16 +644,6 @@ static SparkStatus SparkGlm52CudaResidentdValidateConfiguration(
     return SPARK_STATUS_OK;
 }
 
-static int32_t SparkGlm52CudaResidentdSetNonblocking(int32_t fd)
-{
-    int flags;
-
-    flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0)
-        return -1;
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-}
-
 static SparkStatus SparkGlm52CudaResidentdOpenWakePipe(
     SparkGlm52CudaResidentdRuntime *runtime)
 {
@@ -684,8 +653,8 @@ static SparkStatus SparkGlm52CudaResidentdOpenWakePipe(
         return SPARK_STATUS_INVALID_ARGUMENT;
     if (pipe(pipe_fds) < 0)
         return SPARK_STATUS_INTERNAL_ERROR;
-    if (SparkGlm52CudaResidentdSetNonblocking(pipe_fds[0]) < 0 ||
-        SparkGlm52CudaResidentdSetNonblocking(pipe_fds[1]) < 0)
+    if (SparkNetSetNonblocking(pipe_fds[0]) < 0 ||
+        SparkNetSetNonblocking(pipe_fds[1]) < 0)
     {
         close(pipe_fds[0]);
         close(pipe_fds[1]);
@@ -997,7 +966,7 @@ static SparkStatus SparkGlm52CudaResidentdOpenListenSocket(
         unlink(socket_path);
         return SPARK_STATUS_IO_ERROR;
     }
-    if (SparkGlm52CudaResidentdSetNonblocking(fd) != 0)
+    if (SparkNetSetNonblocking(fd) != 0)
     {
         close(fd);
         unlink(socket_path);
@@ -1473,7 +1442,7 @@ static uint32_t SparkGlm52CudaResidentdAcceptClient(
     fd = accept(runtime->listen_fd, 0, 0);
     if (fd < 0)
         return 0u;
-    if (SparkGlm52CudaResidentdSetNonblocking(fd) < 0)
+    if (SparkNetSetNonblocking(fd) < 0)
     {
         close(fd);
         return 0u;

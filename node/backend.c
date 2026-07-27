@@ -48,6 +48,7 @@
 #define SPARK_GLM52_RING_SERVICE_BACKEND_REQUEST_MAP_CAPACITY \
 	SPARK_GLM52_RING_SERVICE_BACKEND_REQUEST_CAPACITY
 #include "sparkpipe/spark_glm52_kv_cache.h"
+#include "runtime/net.h"
 #define SPARK_GLM52_RING_SERVICE_BACKEND_CONTEXT_TOKENS SPARK_GLM52_KV_CONTEXT_TOKENS
 #define SPARK_GLM52_RING_SERVICE_BACKEND_PREFILL_TOKENS \
 	SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS
@@ -358,14 +359,6 @@ static SparkStatus SparkGlm52RingServiceBackendResidentWriteMessage(SparkGlm52Ri
 	return status;
 }
 
-static uint64_t SparkGlm52RingServiceBackendMonotonicNs(void)
-{
-	struct timespec timestamp;
-	if (clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0)
-		return 0u;
-	return ((uint64_t)timestamp.tv_sec * 1000000000ull) + (uint64_t)timestamp.tv_nsec;
-}
-
 static SparkStatus SparkGlm52RingServiceBackendResidentReadBounded(int32_t fd, void *buffer, uint32_t buffer_bytes, uint32_t timeout_ms)
 {
 	struct pollfd descriptor;
@@ -546,7 +539,7 @@ static SparkStatus SparkGlm52RingServiceBackendEnsureCudaResident(SparkGlm52Ring
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (state->cuda_resident_fd >= 0)
 		return SPARK_STATUS_OK;
-	now_ns = SparkGlm52RingServiceBackendMonotonicNs();
+	now_ns = SparkNetMonotonicNs();
 	if (now_ns < state->cuda_resident_retry_after_ns)
 		return SPARK_STATUS_BUSY;
 	state->cuda_resident_retry_after_ns = now_ns + 250000000ull;
@@ -1487,18 +1480,6 @@ static SparkStatus SparkGlm52RingServiceBackendPrefillInner(
 	return SPARK_STATUS_OK;
 }
 
-static int32_t SparkGlm52RingServiceBackendSetNonblocking(int32_t fd)
-{
-	int32_t flags;
-
-	flags = fcntl(fd,F_GETFL,0);
-	if (flags < 0)
-		return -1;
-	if (fcntl(fd,F_SETFL,(flags | O_NONBLOCK)) < 0)
-		return -2;
-	return 0;
-}
-
 static int32_t SparkGlm52RingServiceBackendStartConnectToAddress(
 	const struct addrinfo *entry,
 	uint32_t *connecting_out)
@@ -1511,7 +1492,7 @@ static int32_t SparkGlm52RingServiceBackendStartConnectToAddress(
 	fd = socket(entry->ai_family,entry->ai_socktype,entry->ai_protocol);
 	if (fd < 0)
 		return -2;
-	if (SparkGlm52RingServiceBackendSetNonblocking(fd) < 0)
+	if (SparkNetSetNonblocking(fd) < 0)
 	{
 		close(fd);
 		return -3;
@@ -1989,12 +1970,12 @@ static SparkStatus SparkGlm52RingServiceBackendPrefill(
 	SparkStatus status;
 	uint64_t trace_begin_ns;
 	trace_state = (SparkGlm52RingServiceBackendState *)context;
-	trace_begin_ns = trace_state != 0 && trace_state->trace_enabled != 0u ? SparkGlm52RingServiceBackendMonotonicNs() : 0u;
+	trace_begin_ns = trace_state != 0 && trace_state->trace_enabled != 0u ? SparkNetMonotonicNs() : 0u;
 	if (trace_begin_ns != 0u)
 		fprintf(stderr,"ring_trace prefill_begin request=%llu offset=%u count=%u\n",(unsigned long long)(prefill_dispatch != 0 && prefill_dispatch->request_dispatch != 0 ? prefill_dispatch->request_dispatch->request_ids[0u] : 0u),prefill_dispatch != 0 ? prefill_dispatch->prompt_token_offset : 0u,prefill_dispatch != 0 ? prefill_dispatch->prompt_token_count : 0u);
 	status = SparkGlm52RingServiceBackendPrefillInner(context, prefill_dispatch);
 	if (trace_begin_ns != 0u)
-		fprintf(stderr,"ring_trace prefill_end status=%u dur_us=%llu\n",(uint32_t)status,(unsigned long long)((SparkGlm52RingServiceBackendMonotonicNs() - trace_begin_ns) / 1000ull));
+		fprintf(stderr,"ring_trace prefill_end status=%u dur_us=%llu\n",(uint32_t)status,(unsigned long long)((SparkNetMonotonicNs() - trace_begin_ns) / 1000ull));
 	return status;
 }
 
@@ -2009,7 +1990,7 @@ static uint64_t SparkGlm52RingServiceBackendTraceDecodeSubmit(
 	request_id = decode_dispatch->request_dispatch != 0 &&
 		decode_dispatch->request_dispatch->request_count != 0u ?
 		decode_dispatch->request_dispatch->request_ids[0u] : 0u;
-	submit_ns = SparkGlm52RingServiceBackendMonotonicNs();
+	submit_ns = SparkNetMonotonicNs();
 	fprintf(stderr,
 		"ring_decode kind=%u requests=%u active=%u request=%llu\n",
 		decode_dispatch->dispatch_kind,decode_dispatch->request_count,
@@ -2167,12 +2148,12 @@ static SparkStatus SparkGlm52RingServiceBackendDecode(
 	SparkStatus status;
 	uint64_t trace_begin_ns;
 	trace_state = (SparkGlm52RingServiceBackendState *)context;
-	trace_begin_ns = trace_state != 0 && trace_state->trace_enabled != 0u ? SparkGlm52RingServiceBackendMonotonicNs() : 0u;
+	trace_begin_ns = trace_state != 0 && trace_state->trace_enabled != 0u ? SparkNetMonotonicNs() : 0u;
 	if (trace_begin_ns != 0u)
 		fprintf(stderr,"ring_trace decode_begin request=%llu\n",(unsigned long long)(decode_dispatch != 0 && decode_dispatch->request_dispatch != 0 ? decode_dispatch->request_dispatch->request_ids[0u] : 0u));
 	status = SparkGlm52RingServiceBackendDecodeInner(context, decode_dispatch, decode_result);
 	if (trace_begin_ns != 0u)
-		fprintf(stderr,"ring_trace decode_end status=%u dur_us=%llu\n",(uint32_t)status,(unsigned long long)((SparkGlm52RingServiceBackendMonotonicNs() - trace_begin_ns) / 1000ull));
+		fprintf(stderr,"ring_trace decode_end status=%u dur_us=%llu\n",(uint32_t)status,(unsigned long long)((SparkNetMonotonicNs() - trace_begin_ns) / 1000ull));
 	return status;
 }
 
@@ -2626,44 +2607,6 @@ static SparkStatus SparkGlm52RingServiceBackendInitializeServiceRuntime(
 	return status;
 }
 
-static int32_t SparkGlm52RingServiceBackendCreateListenSocket(
-	const char *bind_address,
-	uint32_t port)
-{
-	struct sockaddr_in address;
-	int32_t fd;
-	int32_t option;
-
-	fd = socket(AF_INET,SOCK_STREAM,0);
-	if (fd < 0)
-		return -1;
-	option = 1;
-	if (setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&option,sizeof(option)) < 0)
-	{
-		close(fd);
-		return -2;
-	}
-	memset(&address,0,sizeof(address));
-	address.sin_family = AF_INET;
-	address.sin_port = htons((uint16_t)port);
-	if (inet_pton(AF_INET,bind_address,&address.sin_addr) != 1)
-	{
-		close(fd);
-		return -3;
-	}
-	if (bind(fd,(struct sockaddr *)&address,sizeof(address)) < 0)
-	{
-		close(fd);
-		return -4;
-	}
-	if (listen(fd,64) < 0)
-	{
-		close(fd);
-		return -5;
-	}
-	return fd;
-}
-
 static void SparkGlm52RingServiceBackendDriverCompletion(
 	void *completion_context,
 	const SparkModelDriverCompletion *completion)
@@ -2926,7 +2869,7 @@ static SparkStatus SparkGlm52RingServiceBackendOpenFinalEventListener(
 	char *error_buffer)
 {
 	state->final_event_listen_fd =
-		SparkGlm52RingServiceBackendCreateListenSocket(
+		SparkNetCreateListenSocket(
 			configuration->final_event_bind_address,
 			state->final_event_route.listen_port);
 	if (state->final_event_listen_fd < 0)
@@ -2935,7 +2878,7 @@ static SparkStatus SparkGlm52RingServiceBackendOpenFinalEventListener(
 			SPARK_STATUS_ROUTE_NOT_FOUND,
 			error_buffer,
 			"failed to open rank0 final-event listener");
-	if (SparkGlm52RingServiceBackendSetNonblocking(
+	if (SparkNetSetNonblocking(
 			state->final_event_listen_fd) < 0)
 		return SparkGlm52RingServiceBackendRank0Fail(
 			state,
@@ -3053,7 +2996,7 @@ static SparkStatus SparkGlm52RingServiceBackendInitialize(
 	SparkTokenizerReset(&state->tokenizer);
 	state->initialized = 1u;
 	*backend_state = state;
-	state->session_id_base = SparkGlm52RingServiceBackendMonotonicNs();
+	state->session_id_base = SparkNetMonotonicNs();
 	if (state->session_id_base == 0u)
 	{
 		SparkGlm52RingServiceBackendSetBlocker(
@@ -3231,7 +3174,7 @@ static void SparkGlm52RingServiceBackendAcceptFinalEventSocket(
 			state->final_event_receive_error_count += 1u;
 		return;
 	}
-	if (SparkGlm52RingServiceBackendSetNonblocking(fd) < 0)
+	if (SparkNetSetNonblocking(fd) < 0)
 	{
 		close(fd);
 		state->final_event_receive_error_count += 1u;
@@ -3508,7 +3451,7 @@ static SparkStatus SparkGlm52RingServiceBackendCompletePendingDecode(
 		uint64_t completion_ns;
 		uint64_t request_id;
 
-		completion_ns = SparkGlm52RingServiceBackendMonotonicNs();
+		completion_ns = SparkNetMonotonicNs();
 		request_id = pending->dispatch.request_count != 0u ?
 			pending->dispatch.request_ids[0u] : 0u;
 		if (completion_ns != 0u &&

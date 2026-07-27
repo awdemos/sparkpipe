@@ -5,7 +5,7 @@ NVCC ?= nvcc
 CUDA_HOME ?= /usr/local/cuda
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3 -g -pthread
 CXXFLAGS ?= -std=c++20 -Wall -Wextra -Werror -O3 -g -pthread
-CORE_INCLUDE_FLAGS := -Iinclude -Isrc
+CORE_INCLUDE_FLAGS := -I. -Iinclude -Isrc
 # stage_module_common.c reaches <cuda_runtime.h> through spark_stage_module_common.h.
 # Nothing in this group supplied that path, so the archive could not have built;
 # the tests hid it behind -Itests/cuda_stub.
@@ -16,7 +16,7 @@ DSV4_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/includ
 K3_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/k3/include
 MIMO25_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/mimo25/include
 MODEL_FAMILY_INCLUDE_FLAGS := \
-    -Imodel-families/common/include \
+    \
     -Imodel-families/glm52/include \
     -Imodel-families/qwen36/include \
     -Imodel-families/dsv4/include \

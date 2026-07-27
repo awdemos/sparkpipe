@@ -24,6 +24,7 @@
 #include "sparkpipe/spark_glm52_ring_runtime.h"
 #include "sparkpipe/spark_glm52_ring_work_control.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
+#include "runtime/net.h"
 
 #define SPARK_GLM52_RING_DAEMON_DEFAULT_MAX_ACTIVE 1024u
 #define SPARK_GLM52_RING_DAEMON_DEFAULT_PROGRAM "glm52.ring.rank.production"
@@ -183,28 +184,6 @@ static void SparkGlm52RingDaemonInitializeConfig(
         SPARK_GLM52_RING_RUNTIME_DEFAULT_QUANTIZATION_MODE;
 }
 
-static int32_t SparkGlm52RingDaemonParseU32(
-    const char *text,
-    uint32_t *value_out)
-{
-    uint64_t value;
-    uint32_t index;
-
-    if (text == 0 || text[0] == '\0' || value_out == 0)
-        return -1;
-    value = 0u;
-    for (index = 0u; text[index] != '\0'; ++index)
-    {
-        if (text[index] < '0' || text[index] > '9')
-            return -2;
-        value = ((value * 10u) + (uint32_t)(text[index] - '0'));
-        if (value > 0xffffffffull)
-            return -3;
-    }
-    *value_out = (uint32_t)value;
-    return 0;
-}
-
 static void SparkGlm52RingDaemonSetDefaultError(
     char *error_buffer,
     uint32_t error_buffer_bytes,
@@ -240,7 +219,7 @@ static int32_t SparkGlm52RingDaemonApplyArgument(
     if (strcmp(argv[*index],"--rank") == 0)
     {
         if ((*index + 1) >= argc ||
-            SparkGlm52RingDaemonParseU32(argv[*index + 1],&parsed) < 0)
+            SparkNetParseU32(argv[*index + 1],&parsed) < 0)
             return -1;
         configuration->rank_index = parsed;
         configuration->rank_is_set = 1u;
@@ -333,7 +312,7 @@ static int32_t SparkGlm52RingDaemonApplyArgument(
     if (strcmp(argv[*index],"--max-active") == 0)
     {
         if ((*index + 1) >= argc ||
-            SparkGlm52RingDaemonParseU32(argv[*index + 1],&parsed) < 0)
+            SparkNetParseU32(argv[*index + 1],&parsed) < 0)
             return -9;
         configuration->max_active_sequence_count = parsed;
         *index += 1;
@@ -342,7 +321,7 @@ static int32_t SparkGlm52RingDaemonApplyArgument(
     if (strcmp(argv[*index],"--port-base") == 0)
     {
         if ((*index + 1) >= argc ||
-            SparkGlm52RingDaemonParseU32(argv[*index + 1],&parsed) < 0)
+            SparkNetParseU32(argv[*index + 1],&parsed) < 0)
             return -10;
         configuration->port_base = parsed;
         *index += 1;
@@ -407,66 +386,6 @@ static int32_t SparkGlm52RingDaemonParseArguments(
     return 0;
 }
 
-static int32_t SparkGlm52RingDaemonCreateListenSocket(
-    const char *bind_address,
-    uint32_t port)
-{
-    struct sockaddr_in address;
-    int32_t fd;
-    int32_t option;
-
-    fd = socket(AF_INET,SOCK_STREAM,0);
-    if (fd < 0)
-        return -1;
-    option = 1;
-    if (setsockopt(fd,SOL_SOCKET,SO_REUSEADDR,&option,sizeof(option)) < 0)
-    {
-        close(fd);
-        return -2;
-    }
-    memset(&address,0,sizeof(address));
-    address.sin_family = AF_INET;
-    address.sin_port = htons((uint16_t)port);
-    if (inet_pton(AF_INET,bind_address,&address.sin_addr) != 1)
-    {
-        close(fd);
-        return -3;
-    }
-    if (bind(fd,(struct sockaddr *)&address,sizeof(address)) < 0)
-    {
-        close(fd);
-        return -4;
-    }
-    if (listen(fd,64) < 0)
-    {
-        close(fd);
-        return -5;
-    }
-    return fd;
-}
-
-static int32_t SparkGlm52RingDaemonSetNonblocking(int32_t fd)
-{
-    int32_t flags;
-
-    flags = fcntl(fd,F_GETFL,0);
-    if (flags < 0)
-        return -1;
-    if (fcntl(fd,F_SETFL,(flags | O_NONBLOCK)) < 0)
-        return -2;
-    return 0;
-}
-
-static uint64_t SparkGlm52RingDaemonMonotonicNs(void)
-{
-    struct timespec timestamp;
-
-    if (clock_gettime(CLOCK_MONOTONIC,&timestamp) != 0)
-        return 0u;
-    return ((uint64_t)timestamp.tv_sec * 1000000000ull) +
-        (uint64_t)timestamp.tv_nsec;
-}
-
 static void SparkGlm52RingDaemonConfigureTcpSocket(int32_t fd)
 {
     int32_t option;
@@ -519,7 +438,7 @@ static uint64_t SparkGlm52RingDaemonNextTimerNs(
 
     if (runtime == 0)
         return 0u;
-    now_ns = SparkGlm52RingDaemonMonotonicNs();
+    now_ns = SparkNetMonotonicNs();
     next_ns = 0u;
     if (runtime->driver_inflight_count != 0u)
         next_ns = now_ns + SPARK_GLM52_RING_DAEMON_RUNNER_PROGRESS_NS;
@@ -812,7 +731,7 @@ static int32_t SparkGlm52RingDaemonStartConnect(
         fd = socket(entry->ai_family,entry->ai_socktype,entry->ai_protocol);
         if (fd < 0)
             continue;
-        if (SparkGlm52RingDaemonSetNonblocking(fd) < 0)
+        if (SparkNetSetNonblocking(fd) < 0)
         {
             close(fd);
             fd = -1;
@@ -1186,7 +1105,7 @@ static SparkStatus SparkGlm52RingDaemonConnectCudaResident(
         status = SPARK_STATUS_MODULE_NOT_VALIDATED;
     }
     if (status == SPARK_STATUS_OK &&
-        SparkGlm52RingDaemonSetNonblocking(fd) < 0)
+        SparkNetSetNonblocking(fd) < 0)
         status = SPARK_STATUS_INTERNAL_ERROR;
     if (status != SPARK_STATUS_OK)
     {
@@ -1221,7 +1140,7 @@ static SparkStatus SparkGlm52RingDaemonEnsureCudaResident(
         return SPARK_STATUS_INVALID_ARGUMENT;
     if (runtime->cuda_resident_fd >= 0)
         return SPARK_STATUS_OK;
-    now_ns = SparkGlm52RingDaemonMonotonicNs();
+    now_ns = SparkNetMonotonicNs();
     if (now_ns < runtime->cuda_resident_retry_after_ns)
         return SPARK_STATUS_BUSY;
     runtime->cuda_resident_retry_after_ns = now_ns + 250000000ull;
@@ -1325,7 +1244,7 @@ static void SparkGlm52RingDaemonCheckInflightOverdue(
     if (runtime == 0 || runtime->driver_inflight_count == 0u ||
         runtime->driver_inflight_warned != 0u)
         return;
-    now_ns = SparkGlm52RingDaemonMonotonicNs();
+    now_ns = SparkNetMonotonicNs();
     if (now_ns - runtime->driver_inflight_open_ns <= 30000000000ull)
         return;
     runtime->driver_inflight_warned = 1u;
@@ -1364,8 +1283,8 @@ static SparkStatus SparkGlm52RingDaemonOpenWakePipe(
         return SPARK_STATUS_INVALID_ARGUMENT;
     if (pipe(pipe_fds) < 0)
         return SPARK_STATUS_INTERNAL_ERROR;
-    if (SparkGlm52RingDaemonSetNonblocking(pipe_fds[0]) < 0 ||
-        SparkGlm52RingDaemonSetNonblocking(pipe_fds[1]) < 0)
+    if (SparkNetSetNonblocking(pipe_fds[0]) < 0 ||
+        SparkNetSetNonblocking(pipe_fds[1]) < 0)
     {
         close(pipe_fds[0]);
         close(pipe_fds[1]);
@@ -1467,7 +1386,7 @@ static void SparkGlm52RingDaemonCompletion(
     if (runtime->driver_inflight_count == 0u)
         runtime->driver_inflight_warned = 0u;
     else
-        runtime->driver_inflight_open_ns = SparkGlm52RingDaemonMonotonicNs();
+        runtime->driver_inflight_open_ns = SparkNetMonotonicNs();
     runtime->driver_completion_count += 1u;
     SparkGlm52RingDaemonSignalWake(runtime);
     if (runtime->trace_enabled != 0u)
@@ -1747,12 +1666,12 @@ static SparkStatus SparkGlm52RingDaemonOpenWorkControlPath(
         SPARK_GLM52_RING_RUNTIME_RANK_FLAG_HAS_PREVIOUS) == 0u)
         return SPARK_STATUS_OK;
     runtime->work_listen_fd =
-        SparkGlm52RingDaemonCreateListenSocket(
+        SparkNetCreateListenSocket(
             "0.0.0.0",
             runtime->rank_plan.listen_port);
     if (runtime->work_listen_fd < 0)
         return SPARK_STATUS_ROUTE_NOT_FOUND;
-    if (SparkGlm52RingDaemonSetNonblocking(runtime->work_listen_fd) < 0)
+    if (SparkNetSetNonblocking(runtime->work_listen_fd) < 0)
         return SPARK_STATUS_INTERNAL_ERROR;
     return SPARK_STATUS_OK;
 }
@@ -1771,7 +1690,7 @@ static uint32_t SparkGlm52RingDaemonAcceptWorkSocket(
             runtime->work_error_count += 1u;
         return 0u;
     }
-    if (SparkGlm52RingDaemonSetNonblocking(fd) < 0)
+    if (SparkNetSetNonblocking(fd) < 0)
     {
         close(fd);
         runtime->work_error_count += 1u;
@@ -1800,11 +1719,11 @@ static SparkStatus SparkGlm52RingDaemonEnsureWorkOutputSocket(
             runtime->work_output_retry_mono_ns = 0u;
         else if (runtime->work_output_socket_fd < 0)
             runtime->work_output_retry_mono_ns =
-                SparkGlm52RingDaemonMonotonicNs() +
+                SparkNetMonotonicNs() +
                 SPARK_GLM52_RING_DAEMON_CONNECT_RETRY_NS;
         return status;
     }
-    now_ns = SparkGlm52RingDaemonMonotonicNs();
+    now_ns = SparkNetMonotonicNs();
     if (runtime->work_output_retry_mono_ns != 0u &&
         now_ns < runtime->work_output_retry_mono_ns)
         return SPARK_STATUS_BUSY;
@@ -1916,7 +1835,7 @@ static SparkStatus SparkGlm52RingDaemonSubmitWork(
 
     if (runtime == 0 || packet == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
-    trace_begin_ns = runtime->trace_enabled != 0u ? SparkGlm52RingDaemonMonotonicNs() : 0u;
+    trace_begin_ns = runtime->trace_enabled != 0u ? SparkNetMonotonicNs() : 0u;
     if (runtime->cuda_resident_socket_path != 0)
     {
         status = SparkGlm52RingDaemonEnsureCudaResident(runtime);
@@ -1940,7 +1859,7 @@ static SparkStatus SparkGlm52RingDaemonSubmitWork(
         runtime->cuda_resident_submit_count += 1u;
         status = SparkGlm52RingDaemonAwaitResidentSubmitResult(runtime);
         if (runtime->trace_enabled != 0u)
-            fprintf(stderr,"ring_trace rank=%u work_submit request=%llu position=%llu status=%u dur_us=%llu\n",runtime->rank_plan.rank_index,(unsigned long long)packet->request_id,(unsigned long long)packet->sequence_position,(uint32_t)status,(unsigned long long)((SparkGlm52RingDaemonMonotonicNs() - trace_begin_ns) / 1000ull));
+            fprintf(stderr,"ring_trace rank=%u work_submit request=%llu position=%llu status=%u dur_us=%llu\n",runtime->rank_plan.rank_index,(unsigned long long)packet->request_id,(unsigned long long)packet->sequence_position,(uint32_t)status,(unsigned long long)((SparkNetMonotonicNs() - trace_begin_ns) / 1000ull));
         return status;
     }
     if (runtime->builder_state == 0 ||
@@ -2394,7 +2313,7 @@ static uint32_t SparkGlm52RingDaemonPumpQueuedWork(
             if (runtime->driver_inflight_count == 0u)
             {
                 runtime->driver_inflight_open_ns =
-                    SparkGlm52RingDaemonMonotonicNs();
+                    SparkNetMonotonicNs();
                 runtime->driver_inflight_warned = 0u;
             }
             runtime->driver_inflight_count += 1u;
@@ -2542,12 +2461,12 @@ static SparkStatus SparkGlm52RingDaemonOpenFinalEventPath(
         configuration->own_final_event != 0u)
     {
         runtime->final_event_listen_fd =
-            SparkGlm52RingDaemonCreateListenSocket(
+            SparkNetCreateListenSocket(
                 configuration->final_event_bind_address,
                 runtime->final_event_route.listen_port);
         if (runtime->final_event_listen_fd < 0)
             return SPARK_STATUS_ROUTE_NOT_FOUND;
-        if (SparkGlm52RingDaemonSetNonblocking(
+        if (SparkNetSetNonblocking(
                 runtime->final_event_listen_fd) < 0)
             return SPARK_STATUS_INTERNAL_ERROR;
     }
@@ -2577,11 +2496,11 @@ static SparkStatus SparkGlm52RingDaemonEnsureFinalEventSocket(
             runtime->final_event_retry_mono_ns = 0u;
         else if (runtime->final_event_socket_fd < 0)
             runtime->final_event_retry_mono_ns =
-                SparkGlm52RingDaemonMonotonicNs() +
+                SparkNetMonotonicNs() +
                 SPARK_GLM52_RING_DAEMON_CONNECT_RETRY_NS;
         return status;
     }
-    now_ns = SparkGlm52RingDaemonMonotonicNs();
+    now_ns = SparkNetMonotonicNs();
     if (runtime->final_event_retry_mono_ns != 0u &&
         now_ns < runtime->final_event_retry_mono_ns)
         return SPARK_STATUS_BUSY;
@@ -2662,7 +2581,7 @@ static uint32_t SparkGlm52RingDaemonAcceptFinalEventSocket(
             runtime->final_event_receive_error_count += 1u;
         return 0u;
     }
-    if (SparkGlm52RingDaemonSetNonblocking(fd) < 0)
+    if (SparkNetSetNonblocking(fd) < 0)
     {
         close(fd);
         runtime->final_event_receive_error_count += 1u;
@@ -3139,7 +3058,7 @@ int main(int argc,char **argv)
             next_timer_ns = SparkGlm52RingDaemonNextTimerNs(&runtime);
             if (next_timer_ns != 0u)
             {
-                now_ns = SparkGlm52RingDaemonMonotonicNs();
+                now_ns = SparkNetMonotonicNs();
 				next_timer_ns = next_timer_ns > now_ns ?
 					next_timer_ns - now_ns : 1u;
 				if (timeout_ns == 0u || next_timer_ns < timeout_ns)

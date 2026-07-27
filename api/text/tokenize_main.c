@@ -7,40 +7,13 @@
 #include "sparkpipe/spark_tokenizer.h"
 
 #include "sparkpipe/spark_glm52_model.h"
-#include "sparkpipe_tool_file.h"
+#include "tools/sparkpipe_tool_file.h"
+#include "runtime/net.h"
 
 #define SPARK_GLM52_TOKENIZE_DEFAULT_TOKEN_CAPACITY \
     SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS
 
 static const char SparkGlm52TokenizerFileName[] = "tokenizer.json";
-
-static int32_t SparkGlm52TokenizeParseU32(
-    const char *text,
-    uint32_t *value_out)
-{
-    uint64_t value;
-    uint32_t index;
-
-    if (text == 0 || text[0] == '\0' || value_out == 0)
-    {
-        return -1;
-    }
-    value = 0u;
-    for (index = 0u; text[index] != '\0'; ++index)
-    {
-        if (text[index] < '0' || text[index] > '9')
-        {
-            return -2;
-        }
-        value = value * 10u + (uint32_t)(text[index] - '0');
-        if (value > 0xffffffffull)
-        {
-            return -3;
-        }
-    }
-    *value_out = (uint32_t)value;
-    return 0;
-}
 
 static uint32_t SparkGlm52TokenizeStringLengthU32(
     const char *text)
@@ -286,7 +259,7 @@ int main(
         }
         if (strcmp(argv[arg_index], "--capacity") == 0 && arg_index + 1 < argc)
         {
-            parse_status = SparkGlm52TokenizeParseU32(argv[++arg_index], &token_capacity);
+            parse_status = SparkNetParseU32(argv[++arg_index], &token_capacity);
             if (parse_status != 0 || token_capacity == 0u)
             {
                 return SparkGlm52TokenizeUsage(argv[0]);
