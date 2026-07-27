@@ -16,7 +16,7 @@
 #include "inference/kernels/head.cuh"
 #include "inference/kernels/formats/fp8.cuh"
 #include "inference/kernels/formats/int7.cuh"
-#include "inference/llms/qwen_3_6/config.h"
+#include "inference/llms/qwen_3_6/layer.cuh"
 
 using Qwen36FullKv = LmKvHeads<QWEN36_KV_BITS, QWEN36_KV_HEADS, QWEN36_HEAD_DIM, QWEN36_KV_PAGE_SLOTS>;
 using Qwen36GdnState = LmKvState<QWEN36_GDN_STATE_BYTES>;
@@ -38,7 +38,8 @@ template __global__ void LmGemmKernel<LmFp8, 64u, QWEN36_TILE_N, 128u, QWEN36_ST
 template __global__ void LmFusedResidualRmsNormKernel<QWEN36_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
 template __global__ void LmSiluMulKernel<QWEN36_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, QWEN36_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
-template __global__ void LmRopeKernel<QWEN36_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
+template __global__ void LmRopePerHeadKernel<QWEN36_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
+template __global__ void LmSplitQkvKernel<QWEN36_THREADS>(const uint16_t *, LmQkvLayout, uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
 // The linear layers. 48 of 64, with a fixed state instead of a growing cache.
 //
 // The state and the convolution window share one non-growing slot, which is why
@@ -58,3 +59,35 @@ extern "C" int32_t Qwen36GemmFp8(LmGemmArguments *a, const void *x, const void *
 {
 	return(LmGemmLaunch<LmFp8,QWEN36_TILE_N,128u,QWEN36_STAGES,QWEN36_WARPS>(a,x,w,rows,tokens,8u,groups,k,n,sms,grouped,s));
 }
+
+// -- entry points ---------------------------------------------------------------
+//
+// Two layer kinds, chosen by the host from the layer index through
+// QWEN36_LAYER_IS_LINEAR. Separate entry points rather than a flag: the state
+// pool and the KV pool are different geometries, and that belongs in the type.
+
+extern "C" int32_t Qwen36LayerLinearFp8(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t s)
+{
+	return(Qwen36LayerLinear<LmFp8>(b,rows,sms,s));
+}
+
+extern "C" int32_t Qwen36LayerAttentionFp8(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t s)
+{
+	return(Qwen36LayerAttention<LmFp8,Qwen36FullKv>(b,rows,context,sms,s));
+}
+
+extern "C" int32_t Qwen36LayerDenseMlpFp8(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t s)
+{
+	return(Qwen36LayerDenseMlp<LmFp8>(b,rows,sms,s));
+}
+
+extern "C" int32_t Qwen36HeadFullVocab(const Qwen36LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t s)
+{
+	return(Qwen36Head(b,norm_weight,head_weight,0,QWEN36_VOCAB,rows,s));
+}
+
+extern "C" int32_t Qwen36HeadRestricted(const Qwen36LayerBuffers *b, const void *norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t count, uint32_t rows, cudaStream_t s)
+{
+	return(Qwen36Head(b,norm_weight,head_weight,token_ids,count,rows,s));
+}
+

@@ -29,6 +29,18 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Each needs a reason. "Not implemented yet" is a valid reason and should be
 # stated, because then this list is the list of what is missing.
 EXEMPT = {
+    "QWEN36_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
+    "QWEN36_ATTENTION_PERIOD": "read by QWEN36_LAYER_IS_LINEAR, which the host "
+                               "evaluates to pick the entry point - the kernel "
+                               "side never sees the period",
+    "QWEN36_FULL_PHASE": "same",
+    "QWEN36_ATTN_OUTPUT_GATE": "NOT IMPLEMENTED. The checkpoint sets "
+                               "attn_output_gate true and Qwen36LayerAttention "
+                               "does not apply it, so the full-attention path is "
+                               "missing a sigmoid gate on the attention output "
+                               "before the output projection. Three layers in "
+                               "four do not reach this path; the fourth is wrong "
+                               "until a gate kernel exists",
     "GLM52_MTP_DRAFT_TOKENS": "speculation is wired in kernels/speculate.cuh but no model drives it yet",
     "GLM52_MTP_LAYER_INDEX": "same",
     "GLM52_WEIGHT_LAYERS": "used by the host packer, not by kernels",
