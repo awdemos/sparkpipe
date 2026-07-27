@@ -1,3 +1,14 @@
+// The stage module interface: Initialize, Execute, Admit, Snapshot, Destroy,
+// Complete. Slot lifecycle, frame validation, admission, completion posting.
+//
+// 4,509 lines carrying FOUR model constants. Everything here is about running a
+// pipeline stage - counting slots in a state, deciding whether a decode token
+// count is supported, checking a plan is usable - and none of it is about GLM
+// 5.2 beyond those four. A second model needs this file, not a copy of it.
+//
+// It lives in inference/stage/ rather than api/ because it is the boundary
+// between the scheduler's frames and the driver's launches: it does not serve
+// requests and it does not compute, it sequences.
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 
 #include <math.h>
