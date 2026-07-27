@@ -1,6 +1,26 @@
 #pragma once
 // Qwen 3.6. Shapes and constants only.
 //
+// AUDITED against Qwen/Qwen3.6-27B, 2026-07-27. Every constant below matches the
+// published card: hidden 5120, 64 layers, vocab 248320 padded, FFN 17408, gated
+// DeltaNet 48 value heads over 16 QK at head dim 128, gated attention 24 query
+// over 4 KV at head dim 256, rope dimension 64, rope theta 1e7, rms eps 1e-6.
+// The layer layout is 16 x (3 x DeltaNet -> 1 x Attention), which is what
+// QWEN36_LAYER_IS_LINEAR computes: layers 0,1,2 linear and 3 full, repeating.
+//
+// WHICH CHECKPOINT: the 27B, which has a dense FFN. The 35B-A3B is a different
+// model with the same name prefix - hidden 2048, 40 layers, 256 experts at
+// intermediate 512, 16 query heads over 2 KV, 32 value heads. layer.cuh
+// implements the dense path and would be wrong for A3B, so the variant is named
+// here rather than left to whoever reads the weights.
+//
+// TWO KNOWN GAPS, both real and neither implemented:
+//   the reference calls the full-attention path GATED attention. config sets
+//   attn_output_gate true. Qwen36LayerAttention does not apply the gate.
+//   the reference sets mrope_interleaved with sections [11,11,10]. LmRopePerHead
+//   applies plain rope. For text-only decode the sections degenerate to the
+//   standard rotation, so this is correct until an image or video enters.
+//
 // Gated DeltaNet on 48 of 64 layers, full attention on the other 16, in a fixed
 // period. Same shape as K3 - a recurrent state for most layers and a KV cache
 // for a few - reached from a different direction, which is the argument that
