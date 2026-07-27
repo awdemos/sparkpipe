@@ -17,7 +17,7 @@ layer-kind table, which is the thing least likely to be noticed.
 | mimo_2_5 | 70 | — | SWA:GA 6:1, window 128, learnable sink | 1 dense + 69 MoE, 384 experts top-8 |
 | dsv4 Flash | 43 | 4096 | 2 × SWA, then CSA/HCA interleaved | all-MoE, 256+1 experts top-6 |
 | dsv4 Pro | 61 | 7168 | 2 × HCA, then CSA/HCA interleaved | all-MoE |
-| kimi_k3 | 72 | 7168 | 3 × KDA → 1 × gated MLA | MoE 896 experts top-16 |
+| kimi_k3 | 93 | 7168? | 3 × KDA → 1 × gated MLA, AttnRes | LatentMoE 896 top-16 |
 
 Pro is not Flash with more layers. The first two layers are HCA rather than
 SWA, so a layer-kind table written for one is wrong for the other in exactly
@@ -104,7 +104,15 @@ mimo keeps long-context quality at a 7× smaller cache. `LmAttentionDecodeKernel
 has no sink term. Small change, one extra pointer and one term in the running
 sum, but it changes a kernel every model calls.
 
-### 5. Attention output gate — qwen
+### 5. Attention output gate — qwen AND kimi_k3
+
+Two models, not one. Qwen's reference calls its full-attention path *gated*
+attention. K3's fused KDA decode kernel performs "the short convolution, KDA
+state update, output gate, and normalization" together, so the recurrent path
+needs the same gate plus a post-normalisation.
+
+One kernel serves both, which is the argument for building it before either
+model needs it separately.
 
 Sigmoid gate on the attention output before the output projection. The
 reference calls that path *gated* attention; it is not optional. Currently
@@ -115,7 +123,7 @@ recorded as an exemption in `test_config_coverage.py` reading NOT IMPLEMENTED.
 The first three MoE layers route through a token-id → expert-id table rather
 than the router. A different gate, not a different expert kernel.
 
-### 7. Hyper-connections — dsv4 both, and this one is not a kernel
+### 7. Non-uniform residuals — dsv4 (mHC) and kimi_k3 (AttnRes), not kernels
 
 Every block carries `n_hc = 4` streams of the hidden state across the boundary,
 mixed by a Sinkhorn-Knopp normalised doubly-stochastic matrix, 20 iterations.
@@ -126,8 +134,14 @@ different object under mHC. It touches the KV pool sizing, the transport
 payload per row, and the stage boundary — the ring moves hidden state between
 ranks and would move four times as much.
 
+K3's AttnRes is the same class: layers retrieve from earlier layer BLOCKS
+rather than one accumulated stream. Two of six models now want a residual that
+is not a single tensor, from two vendors independently, which is the same
+signal that made `linear_attn.cuh` parameterise growth rather than special-case
+it.
+
 Everything else on this list is additive. This one is not, and it should be
-designed before `deepseek_v4` is called supported rather than after.
+designed for both models at once, before either is called supported.
 
 ## Known-wrong, recorded
 
