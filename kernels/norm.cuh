@@ -200,3 +200,17 @@ void LmMoeFinalizeKernel(const uint16_t *__restrict__ packed_bf16, const uint32_
 	}
 	output_bf16[((uint64_t)token * dimension) + element] = LmFloatToBf16(total);
 }
+
+// a + b, elementwise, BF16. For a shared expert's contribution, which is added
+// rather than weighted because it has no gate.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmAddRowsKernel(const uint16_t *__restrict__ a_bf16, const uint16_t *__restrict__ b_bf16, uint16_t *__restrict__ out_bf16, uint32_t rows, uint32_t dimension)
+{
+	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint64_t index;
+	if ( row >= rows || element >= dimension )
+		return;
+	index = ((uint64_t)row * dimension) + element;
+	out_bf16[index] = LmFloatToBf16(LmBf16ToFloat(a_bf16[index]) + LmBf16ToFloat(b_bf16[index]));
+}

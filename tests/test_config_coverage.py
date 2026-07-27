@@ -43,6 +43,14 @@ EXEMPT = {
                               "*Swa*, chosen by the host from the layer index",
     "MIMO25_LAYER_KIND_SWA": "same",
     "MIMO25_ROPE_HALF": "derived; LmRopePerHeadKernel computes the half internally",
+    "DSV4_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
+    "DSV4_KV_HEADS": "one KV head is what makes the cache a latent; the geometry "
+                     "carries it, not the sequence",
+    "DSV4_SHARED_EXPERTS": "derived into DSV4_SHARED_INTERMEDIATE, which is used",
+    "DSV4_QUERY_LORA_RANK": "the rank the host puts in LmLowRankWeights",
+    "DSV4_KV_QUANT_BLOCK": "the KV cache is stored BF16; quantising it at block "
+                           "64 on the nope dimensions is not implemented, and "
+                           "would halve the cache read that dominates decode",
     "GLM52_MXFP4_GROUP": "MXFP4 is a supported format with no checkpoint using it",
     "GLM52_FP8_SCALE_BLOCK": "the format trait carries its own group size",
     "GLM52_NVFP4_GROUP": "same",

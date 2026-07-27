@@ -172,3 +172,55 @@ void LmSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, LmKvView
 	if ( threadIdx.x == 0u )
 		scores[((uint64_t)row * gridDim.y) + position] = total;
 }
+
+// -- YaRN rope ------------------------------------------------------------------
+//
+// Rope for a model whose context was extended past its training length.
+//
+// Plain rope extrapolates: a position beyond anything seen in training gets a
+// frequency the model has no calibration for, and quality degrades with
+// distance. YaRN interpolates instead, and does it PER FREQUENCY BAND - high
+// frequencies encode local order and are left alone, low frequencies encode
+// long-range position and are scaled by the extension factor, with a ramp
+// between.
+//
+// The band edges come from how many full rotations a wavelength completes within
+// the original context. A dimension whose wavelength is shorter than the
+// original length has seen every phase and needs no correction; one longer than
+// it has not, and is interpolated.
+//
+// Getting this wrong is quiet: applying plain rope to a YaRN model produces text
+// that is fine for a few thousand tokens and drifts after, which reads as the
+// model being bad at long context rather than as a missing transform.
+static __device__ __forceinline__ float LmYarnFrequency(uint32_t index, uint32_t rope_dimension, float theta, float scale_factor, float original_positions, float low_band, float high_band)
+{
+	float exponent = 2.0f * (float)index / (float)rope_dimension;
+	float inverse = __powf(theta,-exponent);
+	// Wavelength in positions, and where it falls between the two band edges.
+	float wavelength = 6.2831853f / inverse;
+	float rotations = original_positions / wavelength;
+	float ramp = (rotations - low_band) / fmaxf(high_band - low_band,1e-3f);
+	float blend = fminf(fmaxf(ramp,0.0f),1.0f);
+	// blend 1 is a short wavelength, left at the extrapolated frequency;
+	// blend 0 is a long one, fully interpolated by the scale factor.
+	return((inverse * blend) + ((inverse / scale_factor) * (1.0f - blend)));
+}
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmRopeYarnKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t row_stride, uint32_t rope_offset, uint32_t rope_dim, float theta, float scale_factor, float original_positions, float low_band, float high_band)
+{
+	uint64_t base = ((uint64_t)blockIdx.x * row_stride) + rope_offset;
+	uint32_t half = rope_dim / 2u,index;
+	float position = (float)positions[blockIdx.x];
+	for (index = threadIdx.x; index < half; index += THREADS)
+	{
+		float low = LmBf16ToFloat(rows_bf16[base + index]);
+		float high = LmBf16ToFloat(rows_bf16[base + half + index]);
+		float frequency = LmYarnFrequency(index,rope_dim,theta,scale_factor,
+			original_positions,low_band,high_band);
+		LmRopePair(&low,&high,position * frequency);
+		rows_bf16[base + index] = LmFloatToBf16(low);
+		rows_bf16[base + half + index] = LmFloatToBf16(high);
+	}
+}
