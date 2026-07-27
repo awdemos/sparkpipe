@@ -17,6 +17,22 @@
 #define QWEN36_FULL_PHASE 3u                   /* CONFIG layer_types order */
 #define QWEN36_LAYER_IS_LINEAR(layer) (((layer) % QWEN36_ATTENTION_PERIOD) != QWEN36_FULL_PHASE)
 
+// Full attention, one layer in four. These were not here: unity.cu instantiated
+// the KV geometry as 8 heads x 128 dims and the decode kernel as latent 128 plus
+// rope 64, none of which is this model. The checkpoint says 24 query heads over
+// 4 KV heads at head dim 256, rope on the first 64. The byte count per token is
+// why it went unnoticed - 8 x 128 and 4 x 256 are both 1024 elements, so the
+// pool sized correctly while the layout underneath it was another model's.
+#define QWEN36_ATTN_HEADS 24u                  /* CONFIG num_attention_heads */
+#define QWEN36_KV_HEADS 4u                     /* CONFIG num_key_value_heads */
+#define QWEN36_HEAD_DIM 256u                   /* CONFIG head_dim */
+#define QWEN36_ROPE_DIM 64u                    /* CONFIG partial_rotary_factor 0.25 x 256 */
+#define QWEN36_NOPE_DIM (QWEN36_HEAD_DIM - QWEN36_ROPE_DIM)
+#define QWEN36_ROPE_THETA 10000000.0f          /* CONFIG rope_theta */
+#define QWEN36_QK_SCALE 0.0625f                /* 1 / sqrt(256) */
+#define QWEN36_ATTN_OUTPUT_GATE 1u             /* CONFIG attn_output_gate */
+#define QWEN36_QKV_DIM ((QWEN36_ATTN_HEADS + (2u * QWEN36_KV_HEADS)) * QWEN36_HEAD_DIM)
+
 #define QWEN36_GDN_KEY_HEADS 16u               /* CONFIG linear_num_key_heads */
 #define QWEN36_GDN_VALUE_HEADS 48u             /* CONFIG linear_num_value_heads */
 #define QWEN36_GDN_KEY_DIM 128u                /* CONFIG linear_key_head_dim */

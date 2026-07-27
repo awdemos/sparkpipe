@@ -18,10 +18,12 @@
 #include "inference/kernels/formats/int7.cuh"
 #include "inference/llms/qwen_3_6/config.h"
 
-using Qwen36FullKv = LmKvHeads<QWEN36_KV_BITS, 8u, 128u, QWEN36_KV_PAGE_SLOTS>;
+using Qwen36FullKv = LmKvHeads<QWEN36_KV_BITS, QWEN36_KV_HEADS, QWEN36_HEAD_DIM, QWEN36_KV_PAGE_SLOTS>;
 using Qwen36GdnState = LmKvState<QWEN36_GDN_STATE_BYTES>;
 
 static_assert(Qwen36GdnState::kGrows == false, "GDN state is fixed per sequence");
+static_assert(QWEN36_NOPE_DIM + QWEN36_ROPE_DIM == QWEN36_HEAD_DIM,
+	"the decode kernel splits a head into nope and rope; they must be the head");
 static_assert(QWEN36_LAYER_IS_LINEAR(0) && !QWEN36_LAYER_IS_LINEAR(3),
 	"period 4, full attention in phase 3");
 
@@ -48,7 +50,7 @@ template __global__ void LmHeadCandidateKernel<QWEN36_THREADS, 1024u>(const uint
 template __global__ void LmHeadCommitKernel<QWEN36_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
 template __global__ void LmMoeFinalizeKernel<QWEN36_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
 
-template __global__ void LmAttentionDecodeKernel<Qwen36FullKv, QWEN36_THREADS, 128u, 64u>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
+template __global__ void LmAttentionDecodeKernel<Qwen36FullKv, QWEN36_THREADS, QWEN36_NOPE_DIM, QWEN36_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 
 extern "C" int32_t Qwen36GemmFp8(LmGemmArguments *a, const void *x, const void *w,
 	uint32_t rows, uint32_t tokens, uint32_t groups, uint32_t k, uint32_t n,
