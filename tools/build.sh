@@ -52,6 +52,25 @@ done
 # already - a header removed as superseded, and a transport removed alongside
 # the kernel library it shared a directory with - and both times every gate was
 # green.
+# The serving adapter, both ways. It is the seam: legacy calls
+# LaunchStageSlice, first-party calls Glm52StageSlice, and both must compile
+# because a build that only checks one lets the other rot silently.
+ADAPTER=inference/stage/serving_adapter.cu
+for cfg in "" "-DSPARK_GLM52_FIRST_PARTY_LAYER"
+do
+	if "$NVCC" -std=c++17 $ARCH -O1 $cfg -I. \
+		-Imodules/glm52_resident_decode_stage/include -Iinclude \
+		-Ideployment/include -Imodel-families/glm52/include \
+		-c "$ADAPTER" -o /tmp/lm_adapter.o 2>/tmp/lm_adapter.log
+	then
+		printf "  %-14s adapter %-26s %s bytes\n" "" "${cfg:-legacy}" "$(wc -c < /tmp/lm_adapter.o)"
+	else
+		printf "  %-14s ADAPTER FAILED %s\n" "" "${cfg:-legacy}"
+		grep -E "error" /tmp/lm_adapter.log | head -3
+		status=1
+	fi
+done
+
 LEGACY=modules/glm52_resident_decode_stage/source/spark_glm52_sm121_required_decode_stage.cu
 if [ -f "$LEGACY" ]
 then

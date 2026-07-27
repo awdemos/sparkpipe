@@ -27,6 +27,14 @@ typedef struct SparkGlm52ResidentDecodeStageServingAdapterConfiguration
     uint32_t descriptor_bytes;
     uint32_t flags;
     uint32_t pipeline_slot_index;
+    /* First-party layer state. The buffer struct inference/llms/glm5_2/layer.cuh
+       reads, and the absolute index of this rank's first layer - absolute
+       because the DSA index-share group is computed from it, and a group
+       boundary does not align with a rank boundary. Unused by the legacy path
+       and zero there. */
+    void *first_party_buffers;
+    uint32_t first_layer_index;
+    uint32_t host_max_context_length;
     uint32_t maximum_active_sequence_count;
     uint32_t maximum_prompt_token_count;
     uint32_t vocabulary_size;
@@ -46,6 +54,14 @@ typedef struct SparkGlm52ResidentDecodeStageServingAdapter
     uint32_t descriptor_bytes;
     uint32_t flags;
     uint32_t pipeline_slot_index;
+    /* First-party layer state. The buffer struct inference/llms/glm5_2/layer.cuh
+       reads, and the absolute index of this rank's first layer - absolute
+       because the DSA index-share group is computed from it, and a group
+       boundary does not align with a rank boundary. Unused by the legacy path
+       and zero there. */
+    void *first_party_buffers;
+    uint32_t first_layer_index;
+    uint32_t host_max_context_length;
     uint32_t maximum_active_sequence_count;
     uint32_t maximum_prompt_token_count;
     uint32_t vocabulary_size;

@@ -9,6 +9,39 @@
 #define SPARK_GLM52_SERVING_ADAPTER_THREADS 256u
 #define SPARK_GLM52_SERVING_ADAPTER_INVALID_SLOT UINT32_MAX
 
+#if defined(SPARK_GLM52_FIRST_PARTY_LAYER)
+/* Defined in inference/llms/glm5_2/bind.cu. Declared rather than included
+   because bind.cu pulls the whole kernel library and this file needs two
+   symbols from it - an include here would make every edit to a kernel recompile
+   the serving adapter. */
+extern "C" int32_t Glm52StageSlice(const void *node_context, void *layer_buffers,
+    uint32_t first_layer, uint32_t layer_count, uint32_t rows,
+    uint32_t packed_rows, uint32_t context, uint32_t multiprocessors,
+    void *stream);
+
+/* Queried once from the device rather than assumed. The ring size changes. */
+static uint32_t SparkGlm52ResidentDecodeStageMultiprocessorCount(void)
+{
+    static uint32_t cached = 0u;
+    int count = 0;
+    int device = 0;
+
+    if (cached != 0u)
+    {
+        return cached;
+    }
+    if (cudaGetDevice(&device) != cudaSuccess ||
+        cudaDeviceGetAttribute(&count, cudaDevAttrMultiProcessorCount, device) !=
+            cudaSuccess ||
+        count <= 0)
+    {
+        return 0u;
+    }
+    cached = (uint32_t)count;
+    return cached;
+}
+#endif
+
 static SparkStatus SparkGlm52ServingAdapterCudaStatus(cudaError_t status)
 {
     if (status == cudaSuccess)
@@ -831,6 +864,34 @@ static SparkStatus SparkGlm52ServingAdapterLaunchDecodeStep(
         return status;
     }
 
+#if defined(SPARK_GLM52_FIRST_PARTY_LAYER)
+    /* The first-party slice: inference/llms/glm5_2/bind.cu maps the node context
+       to layer buffers and loops. Behind the same build flag as the layer body
+       it calls, because the two must be selected together - a first-party slice
+       driving the legacy layer, or the reverse, is a configuration nobody
+       tested and the compiler cannot see. */
+    return Glm52StageSlice(
+               adapter->layer_node_contexts[0],
+               adapter->first_party_buffers,
+               adapter->first_layer_index,
+               adapter->layer_count,
+               decode_dispatch->active_sequence_count,
+               /* Packed rows: every token expands into one row per expert it
+                  routes to. The dispatch does not carry the product because the
+                  legacy path never needed it. */
+               decode_dispatch->active_sequence_count * SPARK_GLM52_MODEL_MOE_TOP_K,
+               /* The MAXIMUM context across active sequences, not any one
+                  sequence's. It decides the sparse-versus-dense branch, which is
+                  a per-launch decision - a batch containing one long sequence
+                  must take the sparse path for all of them. Using a single
+                  sequence's length would run the dense path over a context the
+                  budget cannot cover. */
+               adapter->host_max_context_length,
+               SparkGlm52ResidentDecodeStageMultiprocessorCount(),
+               stream) == 0
+           ? SPARK_STATUS_OK
+           : SPARK_STATUS_INTERNAL_ERROR;
+#else
     return SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
         adapter->stage_slice_plan,
         adapter->layer_node_contexts,
@@ -842,6 +903,7 @@ static SparkStatus SparkGlm52ServingAdapterLaunchDecodeStep(
         frame_context,
         stream,
         0);
+#endif
 }
 
 static SparkStatus SparkGlm52ServingAdapterDecodeMtpVerify(
