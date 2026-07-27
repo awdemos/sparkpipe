@@ -319,6 +319,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan(
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoePackedHiddenQuantize(
     const void *hidden_bf16,
     const uint32_t *packed_route_rows_by_token_route,
+    const uint32_t *packed_source_token_indices,
     uint8_t *packed_hidden_fp8_e4m3,
     float *packed_hidden_scale_f32,
     float *packed_hidden_amax_f32,

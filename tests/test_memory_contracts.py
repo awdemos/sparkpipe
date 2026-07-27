@@ -331,7 +331,7 @@ def main():
             backend_text) is None:
         violations.append("MTP backend does not force MTP request scheduling")
     residentd_text = (
-        ROOT / "tools/sparkpipe_glm52_cuda_residentd.c").read_text()
+        ROOT / "node/residentd.c").read_text()
     if re.search(
             r"packet->control_generation\s*=\s*"
             r"message->control_generation\s*;",

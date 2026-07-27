@@ -6,7 +6,7 @@
 #include "sparkpipe/spark_glm52_model.h"
 
 #define main SparkTestHttpGatewayToolMain
-#include "../tools/sparkpipe_glm52_http_gateway.c"
+#include "../api/gateway/http_server.c"
 #undef main
 
 static void SparkTestHttpGatewayQueuesBeyondActiveLanes(void)
