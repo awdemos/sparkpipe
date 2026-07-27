@@ -1,5 +1,5 @@
 #define main SparkTestGlm52Pp13RankDaemonMain
-#include "../ring/daemon/rank_daemon.c"
+#include "../node/rank_daemon.c"
 #undef main
 
 #include <assert.h>
