@@ -95,7 +95,6 @@ GLM52_ENABLE_CUDA_GRAPH_REPLAY ?= 0
 GLM52_STAGE_SWEEP_BUCKETS ?= 8,16,32,64,128
 GLM52_STAGE_SWEEP_STAGE_ARGS ?=
 GLM52_STAGE_SWEEP_MAX_STAGE_US ?= 1000000
-GLM52_STAGE_SWEEP_OUTPUT_DIR ?= build/glm52_stage_bucket_sweep
 GLM52_STAGE_SWEEP_WARMUP_RUNS ?= 0
 GLM52_STAGE_SWEEP_MEASURE_RUNS ?= 1
 GLM52_STAGE_SWEEP_PACKAGE_EACH_RUN ?= 0
@@ -118,7 +117,6 @@ GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B
 endif
 GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_PP13_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS))
 GLM52_PP13_NODE_CONTEXT_BUILDER := build/libglm52_pp13_node_context_builder.$(SHARED_LIBRARY_EXT)
-GLM52_FP8_SCALED_GEMM_CUDA_GATE := build/glm52_fp8_scaled_gemm_cuda_gate
 HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA := build/libhidden_transport_spark_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
@@ -238,7 +236,6 @@ PYTHON_TESTS := \
 	tests/test_glm52_fp8_pack_layout.py \
 	tests/test_glm52_w8lut_pack_layout.py \
 	tests/test_glm52_w8lut_artifact_preflight.py \
-	tests/test_glm52_nvfp4_artifact_preflight.py \
 	tests/test_glm52_quantized_cuda_contract.py \
 	tests/test_glm52_w8lut_ring_preflight.py \
 	tests/test_glm52_w8lut_validation_wiring.py \
@@ -251,7 +248,6 @@ PYTHON_TESTS := \
 	tests/test_measured_status.py \
 	tests/test_release_assemble.py \
 	tests/test_glm52_stage_pack.py \
-	tests/test_glm52_stage_bucket_sweep.py \
 	tests/test_glm52_prompt_pipeline_input.py
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
@@ -292,9 +288,6 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     glm52_b12x_compiled_backend \
     glm52_quantized_readiness_test \
     glm52_required_cuda_link_args \
-    glm52_stage_bucket_sweep \
-    glm52_spark2_accuracy_gate \
-    glm52_spark2_local_pipeline_gate \
     glm52_pp13_service_backend \
     hidden_transport_spark_host_rdma_verbs \
     hidden_transport_spark_gpudirect_rdma_verbs \
@@ -456,7 +449,7 @@ build/test_glm52_batch_plane: tests/test_glm52_batch_plane.c $(GLM52_HOST_LIBRAR
 build/sparkpipe_glm52_batchplane_model: tools/sparkpipe_glm52_batchplane_model.c 
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_glm52_tokenize: tools/sparkpipe_glm52_tokenize.c $(COMMON_LIBRARY)
+build/sparkpipe_glm52_tokenize: api/text/tokenize_main.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBRARY)
@@ -465,16 +458,16 @@ build/sparkpipe_tokenize_prompt: tools/sparkpipe_tokenize_prompt.c $(COMMON_LIBR
 build/sparkpipe_tokenizer_benchmark: tools/sparkpipe_tokenizer_benchmark.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_glm52_http_gateway: tools/sparkpipe_glm52_http_gateway.c $(COMMON_LIBRARY)
+build/sparkpipe_glm52_http_gateway: api/gateway/http_server.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_memlink: tools/sparkpipe_memlink.c $(COMMON_LIBRARY)
+build/sparkpipe_memlink: ring/transport/memlink_main.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_prevcp: tools/sparkpipe_memlink.c $(COMMON_LIBRARY)
+build/sparkpipe_prevcp: ring/transport/memlink_main.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DSPARK_MEMLINK_FIXED_COMMAND=\"prevcp\" $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_nextcp: tools/sparkpipe_memlink.c $(COMMON_LIBRARY)
+build/sparkpipe_nextcp: ring/transport/memlink_main.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DSPARK_MEMLINK_FIXED_COMMAND=\"nextcp\" $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_release_manager: deployment/tools/sparkpipe_release_manager.c $(COMMON_LIBRARY)
@@ -483,11 +476,11 @@ build/sparkpipe_release_manager: deployment/tools/sparkpipe_release_manager.c $(
 build/sparkpipe_glm52_pp13_ring_check: tools/sparkpipe_glm52_pp13_ring_check.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -I$(CUDA_HOME)/include $(CFLAGS) tools/sparkpipe_glm52_pp13_ring_check.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 $(LDLIBS) -lcudart -o $@
 
-build/sparkpipe_glm52_pp13_rank_daemon: tools/sparkpipe_glm52_pp13_rank_daemon.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tools/sparkpipe_glm52_pp13_rank_daemon.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/sparkpipe_glm52_pp13_rank_daemon: ring/daemon/rank_daemon.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) ring/daemon/rank_daemon.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_glm52_cuda_residentd: tools/sparkpipe_glm52_cuda_residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tools/sparkpipe_glm52_cuda_residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/sparkpipe_glm52_cuda_residentd: ring/daemon/residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) ring/daemon/residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_cuda_resident_gate: tools/sparkpipe_glm52_cuda_resident_gate.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tools/sparkpipe_glm52_cuda_resident_gate.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -742,7 +735,6 @@ glm52_quantized_readiness_test: build/test_glm52_pp13_runtime build/test_glm52_s
 	./build/test_model_description
 	python3 tests/test_glm52_stage_pack.py
 	python3 tests/test_glm52_w8lut_artifact_preflight.py
-	python3 tests/test_glm52_nvfp4_artifact_preflight.py
 	python3 tests/test_glm52_quantized_cuda_contract.py
 	python3 tests/test_glm52_b12x_resident_manifest.py
 	python3 tests/test_release_assemble.py
@@ -777,12 +769,10 @@ cuda_glm52_resident_decode_stage:
 		$(MAKE) -C modules/glm52_resident_decode_stage archive NVCC=$(NVCC) CUDA_ARCH=sm_121a; \
 	fi
 
-glm52_fp8_scaled_gemm_cuda_gate: cuda_glm52_resident_decode_stage $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE)
 	mkdir -p build
 	$(NVCC) -std=c++17 $(NVCCFLAGS) \
 		-Iinclude \
 		-Imodules/glm52_resident_decode_stage/include \
-		tools/glm52_fp8_scaled_gemm_cuda_gate.cu \
 		$(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) \
 		$(GLM52_PP13_NODE_CONTEXT_BUILDER_LINK_ARGS) \
 		-lcublasLt -lcublas -ldl \
@@ -908,12 +898,10 @@ else
 	@printf "%s %s %s\n" "$(B12X_ADAPTER_ARCHIVE)" "$(B12X_COMPILED_BACKEND_ARCHIVE)" "$(B12X_GENERATED_KERNEL_TABLE_ARCHIVE)"
 endif
 
-glm52_stage_bucket_sweep:
 	@test -n "$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)" || \
 		{ echo "set GLM52_PIPELINE_INPUT_HIDDEN_BF16 to a one-vector or B-vector hidden BF16 file" >&2; exit 2; }
 	@test -s "$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)" || \
 		{ echo "missing GLM52_PIPELINE_INPUT_HIDDEN_BF16: $(GLM52_PIPELINE_INPUT_HIDDEN_BF16)" >&2; exit 2; }
-	python3 ./tools/glm52_stage_bucket_sweep.py \
 		--buckets "$(GLM52_STAGE_SWEEP_BUCKETS)" \
 		--input-hidden "$(GLM52_PIPELINE_INPUT_HIDDEN_BF16)" \
 		--output-dir "$(GLM52_STAGE_SWEEP_OUTPUT_DIR)" \
@@ -937,11 +925,7 @@ glm52_stage_bucket_sweep:
 		$(GLM52_STAGE_SWEEP_STAGE_ARGS) \
 		$(if $(filter 1,$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)),--graph,)
 
-glm52_spark2_accuracy_gate:
-	bash tools/glm52_spark2_accuracy_gate.sh
 
-glm52_spark2_local_pipeline_gate:
-	bash tools/glm52_spark2_local_pipeline_gate.sh
 
 glm52_resident_decode_stage_firmware_package: $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE)
 	@command -v $(NVCC) >/dev/null 2>&1 || \
