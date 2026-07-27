@@ -107,9 +107,21 @@
 // shares.
 #define K3_ATTNRES_BLOCK_SIZE 12u
 
-// SiTU activation, not SwiGLU. Two betas, one for the gated branch and one for
-// the linear branch. kernels/norm.cuh has LmSiluMulKernel and nothing else, so
-// the MLP on every layer of this model is unimplemented.
+// SiTU - "Sigmoid Tanh Unit" - replaces SwiGLU on every layer. THE FORMULA IS
+// NOT PUBLISHED anywhere I can reach. Moonshot's tech blog names it and says it
+// improves "activation control"; the GGUF conversion effort records it as a new
+// activation and does not implement it either. The name and the two betas are
+// all that is public.
+//
+// I am not writing this kernel from the name. "Sigmoid Tanh Unit" with betas at
+// 4.0 and 25.0 admits several readings - sigmoid(beta*x)*tanh(x), x*sigmoid of a
+// tanh, a two-branch gate with a beta each - and they are different functions
+// that all produce fluent text. This is the one gap on the list where a
+// plausible guess is worse than an empty space, because nothing downstream
+// would contradict it.
+//
+// UNBLOCKED BY: modeling_kimi_linear.py from the released repository, which
+// contains the implementation. The config.json alone cannot settle it.
 #define K3_SITU_BETA 4.0f
 #define K3_SITU_LINEAR_BETA 25.0f
 

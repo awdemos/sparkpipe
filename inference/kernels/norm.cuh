@@ -126,6 +126,31 @@ void LmSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 	}
 }
 
+// Gate an attention output elementwise by a sigmoid of its own projection.
+//
+// TWO MODELS NEED THIS AND NEITHER COULD HAVE IT. Qwen 3.6's reference calls its
+// full-attention path GATED attention and sets attn_output_gate; Kimi K3 sets
+// mla_use_output_gate. Both were recorded as unimplemented gaps against a kernel
+// library that had no gate at all.
+//
+// The gate is applied AFTER attention and BEFORE the output projection, so it
+// scales the attended values rather than the logits. A gate on the logits would
+// also run, also produce text, and be a different model.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__restrict__ gate_bf16, uint32_t dimension)
+{
+	uint64_t base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float gate = LmBf16ToFloat(gate_bf16[base + index]);
+		float value = LmBf16ToFloat(output_bf16[base + index]);
+		output_bf16[base + index] =
+			LmFloatToBf16(value * (1.0f / (1.0f + __expf(-gate))));
+	}
+}
+
 // Quantise a row into a format's packed layout with per-group block scales.
 //
 // The absmax and the encode both need the row, so it is staged once rather than

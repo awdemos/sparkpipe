@@ -114,12 +114,33 @@ needs the same gate plus a post-normalisation.
 K3's config settles it: `mla_use_output_gate: true`. One kernel serves both,
 which is the argument for building it before either model needs it separately.
 
+### 5a. Attention output gate — DONE as a kernel, wiring blocked
+
+`LmOutputGateKernel` is in `norm.cuh`: elementwise multiply by a sigmoid of the
+gate projection, applied after attention and before the output projection.
+
+Neither model is wired to it, and the reason is the same for both: the gate
+tensor comes out of the fused QKV projection, and where it sits in that
+projection is not in either config. Qwen's `QWEN36_QKV_DIM` is currently
+`(24 + 2*4) * 256`, which has no room for a gate - so either the projection is
+wider than the config says or the gate is a separate tensor. Guessing which
+would silently reinterpret a slice of the weights.
+
+UNBLOCKED BY: the modelling file for either model.
+
 ### 5b. SiTU activation — kimi_k3, and it blocks every layer
 
-`hidden_act: "situ"` with two betas, 4.0 gated and 25.0 linear. `norm.cuh` has
-`LmSiluMulKernel` and nothing else, so the MLP on all 93 layers is
-unimplemented - not a variant of SwiGLU but a different function. This was
-invisible until the config landed and is the largest single gap for K3.
+`hidden_act: "situ"` with two betas, 4.0 gated and 25.0 linear. The formula is
+not published: Moonshot's blog names "Sigmoid Tanh Unit" and says it improves
+activation control, and the GGUF conversion effort records it as new and
+unimplemented.
+
+The name plus two betas admits several readings that are different functions
+and all produce fluent text. This is the one item on this list where a
+plausible guess is worse than an empty space, because nothing downstream would
+contradict it.
+
+UNBLOCKED BY: `modeling_kimi_linear.py` from the released repository.
 
 Sigmoid gate on the attention output before the output projection. The
 reference calls that path *gated* attention; it is not optional. Currently
