@@ -235,7 +235,7 @@ void LmSplitQkvKernel(const uint16_t *__restrict__ fused_bf16, LmQkvLayout layou
 // each head, not at the end of the row. Rotating the row's tail would rotate the
 // last head only and leave the other sixty-three unrotated - which produces
 // fluent text whose attention ignores position for all but one head.
-template<uint32_t THREADS>
+template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t heads, uint32_t head_dimension, uint32_t rope_dimension, float theta)
 {
@@ -245,11 +245,6 @@ void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__res
 		+ (head_dimension - rope_dimension);
 	float position = (float)positions[row];
 	for (index = threadIdx.x; index < half; index += THREADS)
-	{
-		float low = LmBf16ToFloat(rows_bf16[base + index]);
-		float high = LmBf16ToFloat(rows_bf16[base + half + index]);
-		LmRopePair(&low,&high,position * __powf(theta,-2.0f * (float)index / (float)rope_dimension));
-		rows_bf16[base + index] = LmFloatToBf16(low);
-		rows_bf16[base + half + index] = LmFloatToBf16(high);
-	}
+		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
+			position * __powf(theta,-2.0f * (float)index / (float)rope_dimension));
 }

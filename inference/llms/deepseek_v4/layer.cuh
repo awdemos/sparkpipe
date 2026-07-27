@@ -118,7 +118,7 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 	// DSV4_COMPRESS_ROPE_THETA. Two thetas is not a mistake in the config: the
 	// model trains them separately because the compressed path sees a different
 	// position distribution.
-	LmRopeYarnKernel<DSV4_LAYER_THREADS><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
+	LmRopeYarnKernel<DSV4_LAYER_THREADS,LM_ROPE_INTERLEAVED><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
 		b->query_bf16,b->positions,DSV4_ATTN_HEADS * DSV4_HEAD_DIM,
 		(DSV4_ATTN_HEADS * DSV4_HEAD_DIM) - DSV4_ROPE_DIM,DSV4_ROPE_DIM,
 		DSV4_ROPE_THETA,(float)DSV4_YARN_FACTOR,
@@ -140,7 +140,7 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 		return(status);
 	// YaRN, not plain rope. The compressed path uses its own theta, which is why
 	// the constant is separate rather than shared with the query's.
-	LmRopeYarnKernel<DSV4_LAYER_THREADS><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
+	LmRopeYarnKernel<DSV4_LAYER_THREADS,LM_ROPE_INTERLEAVED><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
 		b->kv_slot_bf16,b->positions,DSV4_HEAD_DIM + DSV4_ROPE_DIM,DSV4_HEAD_DIM,
 		DSV4_ROPE_DIM,DSV4_COMPRESS_ROPE_THETA,(float)DSV4_YARN_FACTOR,
 		(float)DSV4_YARN_ORIGINAL_POSITIONS,1.0f,32.0f);

@@ -37,6 +37,7 @@ run "config coverage"      "python3 tests/test_config_coverage.py"
 # staged out-of-row data past the K bound, the new one drops the tail via
 # k_tiles = input_dimension / TILE_K. Both are wrong output with no crash.
 run "gemm K alignment"     "python3 tests/test_gemm_k_alignment.py"
+run "rope pairing"         "python3 tests/test_rope_pairing.py"
 run "kernel algorithms"    "python3 tests/test_kernel_algorithms.py"
 run "model contracts"      "python3 tests/test_model_driver_contracts.py"
 run "nvcc: sm_121a build"  "sh tools/build.sh"
