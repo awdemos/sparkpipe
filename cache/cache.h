@@ -39,8 +39,29 @@
 //    against BF16 for measured 0.647 percent error, and the format is a
 //    parameter rather than a rebuild.
 //
-// PARTITIONING. The arena's size, the index's size and the reserve held for
-// just-in-time admission are configured together, the way disk partitions are:
+// THIS CACHE IS TWO-TIER AND MY FIRST VERSION WAS NOT. The audit before deleting
+// the old one found forty-nine references to residency in kv_cache.c against two
+// here, and residency is the whole point of a large cache: blocks live in a pool
+// sized in terabytes and only some of them are RESIDENT in device memory at any
+// moment. A single-tier cache with a 1 TB partition is a cache that assumes a
+// terabyte of HBM.
+//
+// So a block has two states that vary independently:
+//
+//   REFERENCED   some sequence needs it. Reference counted; zero means evictable
+//                from the pool entirely.
+//   RESIDENT     it is in device memory right now. Bounded by what the device
+//                has, and a referenced block that is not resident must be
+//                fetched before it can be read.
+//
+// The second bound is the tight one. At GLM 5.2's 1,152-byte slot and 64-token
+// blocks, 1 TB is 14.9 million blocks and 40 GB of device memory holds about
+// 566,000 - so at any moment 96 percent of a full cache is not resident, and
+// which 4 percent is resident is the decision that matters.
+//
+// PARTITIONING. The arena's size, the index's size, the resident limit and the
+// reserve held for just-in-time admission are configured together, the way disk
+// partitions are:
 // not adjusted often, and the thing that saves the day when a workload changes
 // shape. A serving mix with long shared preambles wants a large index and a
 // small reserve; one with many short unique prompts wants the opposite.
@@ -67,7 +88,11 @@ typedef struct LmCachePartition
 	uint32_t slot_bytes;           /* bytes per position, from the model geometry */
 	uint32_t index_entries;        /* content-addressed entries; 0 disables sharing */
 	uint32_t jit_reserve_blocks;   /* held back for admitted-not-started requests */
+	/* How many blocks fit in device memory. The pool may be a thousand times
+	   this; that ratio is the point. */
+	uint32_t resident_limit;
 }
+
 LmCachePartition;
 
 // One block of the arena.
@@ -84,6 +109,16 @@ typedef struct LmCacheBlock
 	uint64_t last_use;             /* monotonic tick */
 	uint32_t reuse_count;          /* times acquired by hash rather than fresh */
 	uint32_t sequence_hint;        /* first owner, for debugging only */
+	/* In device memory right now. Independent of reference_count: a referenced
+	   block may be non-resident and awaiting fetch, and a resident block may be
+	   unreferenced and merely warm. */
+	uint8_t resident;
+	/* Protected from residency eviction even when unreferenced. This is what a
+	   lookahead reservation buys: the scheduler admits a request, protects the
+	   blocks its prefix will need, and the fetch has time to land before the
+	   request runs. Without it a protected block is evicted between admission
+	   and execution and the request stalls on a fetch it already paid for. */
+	uint8_t protected_from_eviction;
 }
 LmCacheBlock;
 
@@ -110,6 +145,9 @@ typedef struct LmCache
 	uint64_t hits;
 	uint64_t misses;
 	uint64_t evictions;
+	uint32_t resident_blocks;
+	uint64_t fetches;              /* referenced but not resident */
+	uint64_t resident_evictions;
 }
 LmCache;
 
@@ -431,4 +469,101 @@ static uint32_t LmCacheHitPercent(const LmCache *cache)
 {
 	uint64_t total = cache->hits + cache->misses;
 	return(total == 0u ? 0u : (uint32_t)((cache->hits * 100u) / total));
+}
+
+// -- residency -------------------------------------------------------------------
+//
+// A block being in the pool and a block being readable are different questions,
+// and conflating them is what a single-tier cache does. These four functions are
+// the second question.
+
+// Which resident block to evict from device memory.
+//
+// Not the same choice as pool eviction. A block may be referenced - some
+// sequence needs it - and still be the right one to page out, if that sequence
+// will not run this step. So the score ignores reference_count and weighs
+// recency against reuse, and protected blocks are never chosen.
+static uint32_t LmCacheSelectResidentVictim(LmCache *cache)
+{
+	uint32_t best = LM_CACHE_NO_BLOCK,index;
+	uint64_t best_score = 0u;
+	for (index = 0u; index < cache->block_count; ++index)
+	{
+		if ( cache->blocks[index].resident == 0u )
+			continue;
+		if ( cache->blocks[index].protected_from_eviction )
+			continue;
+		if ( best == LM_CACHE_NO_BLOCK || LmCacheScore(&cache->blocks[index]) < best_score )
+		{
+			best = index;
+			best_score = LmCacheScore(&cache->blocks[index]);
+		}
+	}
+	return(best);
+}
+
+// Make a block readable. Returns whether a fetch is needed - the caller issues
+// it, because this file does not know whether the source is host memory, NVMe or
+// a peer rank, and should not.
+static int32_t LmCacheMakeResident(LmCache *cache, uint32_t block, int32_t *needs_fetch)
+{
+	*needs_fetch = 0;
+	if ( block >= cache->block_count )
+		return(LM_CACHE_ERR_SHAPE);
+	if ( cache->blocks[block].resident )
+	{
+		cache->blocks[block].last_use = cache->tick++;
+		return(LM_CACHE_OK);
+	}
+	if ( cache->resident_blocks >= cache->partition.resident_limit )
+	{
+		uint32_t victim = LmCacheSelectResidentVictim(cache);
+		if ( victim == LM_CACHE_NO_BLOCK )
+			return(LM_CACHE_ERR_FULL);
+		cache->blocks[victim].resident = 0u;
+		cache->resident_blocks--;
+		cache->resident_evictions++;
+	}
+	cache->blocks[block].resident = 1u;
+	cache->blocks[block].last_use = cache->tick++;
+	cache->resident_blocks++;
+	cache->fetches++;
+	*needs_fetch = 1;
+	return(LM_CACHE_OK);
+}
+
+// Protect a block from residency eviction. What a lookahead reservation buys:
+// the scheduler admits, protects, the fetch lands, the request runs. Unprotecting
+// is the caller's job and forgetting it pins a block forever, which is why the
+// count is reported.
+static int32_t LmCacheProtect(LmCache *cache, uint32_t block, int32_t protect)
+{
+	if ( block >= cache->block_count )
+		return(LM_CACHE_ERR_SHAPE);
+	cache->blocks[block].protected_from_eviction = protect ? 1u : 0u;
+	return(LM_CACHE_OK);
+}
+
+// Is every block a sequence needs already readable?
+//
+// The question admission should ask, and the one a single-tier cache cannot
+// express: a prefix can be a perfect hash hit and still not be readable, and
+// admitting on the hit alone stalls the request on a fetch at its first layer.
+static int32_t LmCacheBlocksAreResident(const LmCache *cache, const uint32_t *blocks, uint32_t count)
+{
+	uint32_t index;
+	for (index = 0u; index < count; ++index)
+	{
+		if ( blocks[index] >= cache->block_count )
+			return(0);
+		if ( cache->blocks[blocks[index]].resident == 0u )
+			return(0);
+	}
+	return(1);
+}
+
+static uint32_t LmCacheResidentPercent(const LmCache *cache)
+{
+	return(cache->block_count == 0u ? 0u
+		: (cache->resident_blocks * 100u) / cache->block_count);
 }

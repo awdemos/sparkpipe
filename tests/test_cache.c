@@ -29,6 +29,7 @@ static LmCache *make_cache(uint32_t blocks, uint32_t reserve)
 	partition.slot_bytes = 1152u;                    /* GLM 5.2 latent */
 	partition.index_entries = blocks;
 	partition.jit_reserve_blocks = reserve;
+	partition.resident_limit = blocks / 4u ? blocks / 4u : 1u;
 	/* size total_bytes so exactly `blocks` blocks fit */
 	partition.total_bytes = ((uint64_t)blocks * (64u * 1152u + sizeof(LmCacheBlock)))
 		+ ((uint64_t)blocks * (sizeof(LmCacheIndexEntry) + sizeof(uint32_t)));
@@ -139,6 +140,60 @@ int main(void)
 		LmCacheReleaseReservation(cache, 4u);
 		expect(LmCacheAcquire(cache, 0u, 99u, &block, &hit) == LM_CACHE_OK,
 			"and can once the reservation is released");
+	}
+
+	printf("\nresidency is a second question and the pool cannot answer it\n");
+	{
+		LmCache *cache = make_cache(64u, 0u);   /* resident limit 16 */
+		uint32_t block[20], index;
+		int32_t hit, fetch;
+		for (index = 0; index < 20u; ++index)
+		{
+			LmCacheAcquire(cache, 0u, index, &block[index], &hit);
+			LmCacheMakeResident(cache, block[index], &fetch);
+		}
+		expect(cache->resident_blocks == 16u, "residency is bounded by the device, not the pool");
+		expect(cache->live_blocks == 20u, "while the pool holds more than fits");
+		expect(cache->resident_evictions == 4u, "and paged out the difference");
+		expect(LmCacheBlocksAreResident(cache, block, 20u) == 0,
+			"a referenced block can be non-resident, which admission must ask about");
+	}
+
+	printf("\nprotection survives residency pressure\n");
+	{
+		LmCache *cache = make_cache(64u, 0u);
+		uint32_t keep, block, index;
+		int32_t hit, fetch;
+		LmCacheAcquire(cache, 0u, 0u, &keep, &hit);
+		LmCacheMakeResident(cache, keep, &fetch);
+		LmCacheProtect(cache, keep, 1);
+		for (index = 0; index < 40u; ++index)
+		{
+			LmCacheAcquire(cache, 0u, index + 1u, &block, &hit);
+			LmCacheMakeResident(cache, block, &fetch);
+		}
+		expect(cache->blocks[keep].resident == 1u,
+			"a protected block is still readable after 40 competing fetches");
+		LmCacheProtect(cache, keep, 0);
+		expect(cache->blocks[keep].protected_from_eviction == 0u, "and unprotects");
+	}
+
+	printf("\n1 TB is mostly not resident, which is the point\n");
+	{
+		LmCachePartition partition;
+		memset(&partition, 0, sizeof(partition));
+		partition.total_bytes = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
+		partition.block_tokens = 64u;
+		partition.slot_bytes = 1152u;
+		partition.index_entries = 1u << 20;
+		uint64_t pool = LmCacheBlocksAvailable(&partition);
+		uint64_t resident = (40ULL * 1024 * 1024 * 1024) / (64u * 1152u);
+		printf("    pool %llu blocks, 40 GB of device holds %llu (%.1f%%)\n",
+			(unsigned long long)pool, (unsigned long long)resident,
+			100.0 * resident / pool);
+		expect(resident * 20u < pool,
+			"the resident set is a small fraction, so which blocks are resident "
+			"is the decision that matters");
 	}
 
 	printf("\n%s (%d failing)\n", failures ? "FAIL" : "PASS", failures);
