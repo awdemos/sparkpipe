@@ -2,9 +2,16 @@
 
 // MiMo 2.5. Shapes and constants only.
 //
-// AUDITED against XiaomiMiMo/MiMo-V2.5-Pro, 2026-07-27. 70 layers, 1 dense and
-// 69 MoE, 384 routed experts at top-8, sliding window 128 interleaved with
-// global attention at 6:1, native FP8 block-wise e4m3, three MTP modules.
+// AUDIT INCOMPLETE, AND MY FIRST PASS AT IT WAS WRONG. I recorded here that this
+// matched XiaomiMiMo/MiMo-V2.5-Pro at 70 layers and 384 routed experts. The
+// constants below say 48 layers, hidden 4096, 256 experts. Those are different
+// models, and the test_layer_kinds gate printed the layer count next to the
+// kinds, which is how the contradiction surfaced.
+//
+// So: the shapes here match SOME MiMo checkpoint and it is not Pro. The 6:1
+// window ratio, window 128 and top-8 routing are shared across the V2.5 family,
+// which is why nothing looked wrong. Whoever knows which checkpoint this was
+// taken from should name it, the way qwen_3_6 names the 27B.
 //
 // ONE GAP THE SHAPES DO NOT SHOW: the reference keeps long-context quality at a
 // ~7x smaller KV cache "via learnable attention sink bias". That is a per-head
@@ -23,6 +30,7 @@
 // expressible as a geometry and two arguments.
 
 #include <stdint.h>
+#include "inference/kernels/layer_kind.cuh"
 
 #define MIMO25_HIDDEN 4096u                    /* CONFIG hidden_size */
 #define MIMO25_LAYERS 48u                      /* CONFIG num_hidden_layers */
@@ -93,3 +101,12 @@ static inline uint32_t Mimo25RowsPerExpert(uint32_t tokens)
 {
 	return(((tokens * MIMO25_TOP_K) + MIMO25_EXPERTS - 1u) / MIMO25_EXPERTS);
 }
+
+// -- layer kinds --
+// Sliding window and global attention interleaved at 6:1, so a period of
+// seven with the global layer last. MIMO25_LAYER_KIND_FULL and _SWA above are
+// the old names for these and are the enum this replaces.
+#define MIMO25_ATTENTION_PERIOD 7u
+#define MIMO25_LAYER_KIND(layer) \
+	((((layer) % MIMO25_ATTENTION_PERIOD) == (MIMO25_ATTENTION_PERIOD - 1u)) \
+		? LM_LAYER_FULL : LM_LAYER_WINDOW)

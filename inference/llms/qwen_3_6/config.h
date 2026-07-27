@@ -26,6 +26,7 @@
 // for a few - reached from a different direction, which is the argument that
 // this is an architecture class rather than one vendor's choice.
 #include <stdint.h>
+#include "inference/kernels/layer_kind.cuh"
 
 #define QWEN36_HIDDEN 5120u                    /* CONFIG hidden_size */
 #define QWEN36_LAYERS 64u                      /* CONFIG num_hidden_layers */
@@ -68,3 +69,8 @@
 #define QWEN36_MTP_LAYERS 1u                   /* CONFIG mtp_num_hidden_layers */
 #define QWEN36_KV_BITS 16u
 #define QWEN36_KV_PAGE_SLOTS 64u
+
+// -- layer kinds --
+// 16 x (3 x gated DeltaNet -> 1 x gated full attention).
+#define QWEN36_LAYER_KIND(layer) \
+	(QWEN36_LAYER_IS_LINEAR(layer) ? LM_LAYER_RECURRENT : LM_LAYER_FULL)

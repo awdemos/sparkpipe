@@ -52,6 +52,7 @@
 // differs is a sliding window on top of the sparse selection, and two rope
 // thetas - one for the compressed path, one for the rest.
 #include <stdint.h>
+#include "inference/kernels/layer_kind.cuh"
 
 #define DSV4_HIDDEN 4096u                      /* CONFIG hidden_size */
 #define DSV4_LAYERS 43u                        /* CONFIG num_hidden_layers */
@@ -110,3 +111,17 @@
 #define DSV4_KV_QUANT_BLOCK 64u
 #define DSV4_KV_BITS 16u
 #define DSV4_KV_PAGE_SLOTS 64u
+
+// -- layer kinds --
+// Flash: the first two layers are pure sliding window, then CSA and HCA
+// interleaved. Layer 2 is CSA (compression 4) and layer 3 is HCA (128), which
+// matches the published compress_ratios [0,0,4,128,4,128,...].
+//
+// UNVERIFIED: the published table ends '...,4,0' and has 44 entries for 43
+// layers. Either the last layer is sliding window or the table carries a
+// trailing entry for the MTP head. This macro says COMPRESSED for layer 42 and
+// that is a guess. PRO DIFFERS HERE TOO: its first two layers are HCA, not
+// window, so this macro is Flash's and a Pro config needs its own.
+#define DSV4_LAYER_KIND(layer) \
+	((layer) < 2u ? LM_LAYER_WINDOW \
+		: (((layer) % 2u) == 0u ? LM_LAYER_SPARSE : LM_LAYER_COMPRESSED))

@@ -12,6 +12,7 @@
 // dispatch, which is the first real test of kernels/kv.cuh's claim that a
 // recurrent state is just a pool that does not grow.
 #include <stdint.h>
+#include "inference/kernels/layer_kind.cuh"
 
 #define K3_HIDDEN 7168u                        /* GUESS (K2 lineage) */
 #define K3_LAYERS 72u                          /* GUESS (71 routed + 1 dense) */
@@ -49,3 +50,9 @@ static inline uint32_t K3RowsPerExpert(uint32_t tokens)
 {
 	return(((tokens * K3_TOP_K) + K3_EXPERTS - 1u) / K3_EXPERTS);
 }
+
+// -- layer kinds --
+// 3 x Kimi Delta Attention -> 1 x gated MLA. Provisional with the rest of this
+// file until the release lands.
+#define K3_LAYER_KIND(layer) \
+	(K3_LAYER_IS_LINEAR(layer) ? LM_LAYER_RECURRENT : LM_LAYER_LATENT)

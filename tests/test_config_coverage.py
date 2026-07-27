@@ -29,6 +29,20 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Each needs a reason. "Not implemented yet" is a valid reason and should be
 # stated, because then this list is the list of what is missing.
 EXEMPT = {
+    "QWEN36_LAYER_KIND": "HALF DONE. The selector exists and returns the right "
+                         "kind for every layer; no host-side dispatcher calls "
+                         "it yet, so the entry point is still chosen by the "
+                         "old QWEN36_LAYER_IS_LINEAR predicate. Kernel code "
+                         "will never read this - it is the host's - but "
+                         "something must, and today nothing does",
+    "MIMO25_LAYER_KIND": "same, and mimo has no host dispatcher either",
+    "MIMO25_ATTENTION_PERIOD": "read by MIMO25_LAYER_KIND, which the host "
+                               "evaluates; the kernel side never sees a period",
+    "K3_LAYER_KIND": "no layer.cuh to dispatch to yet",
+    "GLM52_LAYER_KIND": "uniform model - the selector returns one kind, so "
+                        "there is nothing for a dispatcher to choose",
+    "DSV4_LAYER_KIND": "the three kinds it returns have no entry points; see "
+                       "tests/test_layer_kinds.py KNOWN_INCOMPLETE",
     "QWEN36_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
     "QWEN36_ATTENTION_PERIOD": "read by QWEN36_LAYER_IS_LINEAR, which the host "
                                "evaluates to pick the entry point - the kernel "
