@@ -24,6 +24,8 @@ COMMON = ("include/sparkpipe", "node", "ring", "serving", "api",
           "inference/stage")
 
 GLM_BUDGET = {
+    "serving/spark_tp_shard.c": (9, "stagepack tensor spec (pack decision)"),
+    "include/sparkpipe/spark_tp_shard.h": (11, "stagepack tensor spec (pack decision)"),
     "include/sparkpipe/spark_cuda_resident_ipc.h": (4, "drafter wiring (glm data); kv-cache seam (A3)"),
     "include/sparkpipe/spark_http_gateway.h": (2, "compat surface"),
     "include/sparkpipe/spark_long_context.h": (5, "model header (glm data)"),

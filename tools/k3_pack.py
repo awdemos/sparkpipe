@@ -141,6 +141,14 @@ def quant_pair(reader, base):
 def check_scales(name, scales):
     if int((scales == E8M0_NAN).sum()) != 0:
         raise PackFailure(f"{name}: E8M0 0xff (NaN) in the scale plane")
+    # Dequantisation is bit-exact in bf16 - power-of-two scales against
+    # one-mantissa-bit values - EXCEPT at the exponent ceiling: codes >= 253
+    # can push |6 x 2^(code-127)| past bf16's max. Real weight scales sit
+    # near 127; a code this large is worth a loud line even though legal.
+    high = int((scales >= 253).sum())
+    if high:
+        print(f"ADVISORY {name}: {high} E8M0 codes >= 253; "
+              f"bf16 dequant can overflow at this magnitude")
 
 
 class Pack:
