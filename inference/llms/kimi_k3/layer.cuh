@@ -207,6 +207,13 @@ struct K3LayerBuffers
 	uint16_t *kv_slot_bf16;
 	uint16_t *attention_out_bf16;
 	uint16_t *shared_out_bf16;
+	// AttnRes. The bank holds one representation per completed block; the
+	// partial is the running sum of the block in progress. b_0 is the token
+	// embedding, so the bank is never empty after layer 0.
+	uint16_t *attnres_bank_bf16;
+	uint16_t *attnres_partial_bf16;
+	const void *attnres_attn_weight;
+	const void *attnres_mlp_weight;
 	uint16_t *kda_beta_logit;
 	float *kda_write_gate_out;
 	uint16_t *gate_up_bf16;
@@ -308,6 +315,61 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 // routers and lm_head - none of them saw quantisation-aware training, so none of
 // them is safe in a 4-bit grid. Format reaches exactly the two expert GEMMs.
 //
+// AttnRes: replace the stream with a retrieval over the bank.
+//
+// Report eq. 8-10. The candidates are the completed block representations plus
+// the running partial sum, the score is a dot with the layer's fused
+// pseudo-query, and the mix is a softmax over them.
+//
+// RUN TWICE PER LAYER, WITH DIFFERENT WEIGHTS. The reference applies it before
+// attention with self_attention_res_proj and before the MLP with mlp_res_proj.
+// One call with one weight would run and would be a different model - the two
+// retrievals are asking different questions of the same bank.
+static void K3AttnRes(const K3LayerBuffers *b, const void *score_weight, uint32_t layer, uint32_t rows, cudaStream_t stream)
+{
+	// Blocks completed so far, plus the embedding at b_0, plus the partial.
+	uint32_t sources = (layer / K3_ATTNRES_BLOCK_SIZE) + 2u;
+	if ( sources > K3_ATTNRES_MAX_SOURCES )
+		sources = K3_ATTNRES_MAX_SOURCES;
+	LM_LAUNCH((LmAttnResKernel<K3_LAYER_THREADS,K3_ATTNRES_MAX_SOURCES>),
+		rows, K3_LAYER_THREADS, 0, stream,
+		b->attnres_bank_bf16,b->attnres_partial_bf16,
+		(const uint16_t *)score_weight,b->hidden_bf16,sources,K3_HIDDEN,
+		K3_RMS_EPSILON);
+}
+
+// Fold this layer's output into the block in progress, and close the block if
+// this was its last layer.
+//
+// THE PARTIAL IS A SUM, NOT THE LAST OUTPUT. b_n is the sum over the block's
+// layers - the report writes it as a sum and the reference accumulates - so a
+// layer that assigned here would make every block representation the output of
+// its final layer alone.
+static void K3AttnResAccumulate(const K3LayerBuffers *b, uint32_t layer, uint32_t rows, cudaStream_t stream)
+{
+	uint32_t block = layer / K3_ATTNRES_BLOCK_SIZE;
+	LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),
+		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
+		K3_LAYER_THREADS, 0, stream,
+		b->attnres_partial_bf16,b->hidden_bf16,b->attnres_partial_bf16,
+		rows,K3_HIDDEN);
+	if ( (layer + 1u) % K3_ATTNRES_BLOCK_SIZE != 0u )
+		return;
+	// Close the block: the partial becomes bank entry block+1, because entry 0
+	// is the embedding. A COPY, not an add - the first version passed the
+	// partial as both operands of LmAddRowsKernel, which banks twice the value
+	// and produces activations that look entirely reasonable.
+	//
+	// The partial is not cleared. The reference carries it forward as the
+	// prefix sum, so the next block's candidates include everything before it.
+	LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
+		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
+		K3_LAYER_THREADS, 0, stream,
+		b->attnres_partial_bf16,
+		b->attnres_bank_bf16 + ((uint64_t)(block + 1u) * rows * K3_HIDDEN),
+		rows,K3_HIDDEN);
+}
+
 // Kimi Delta Attention, 69 of 93 layers.
 //
 // Report eq. 1-2 and 5-6, with FlashKDA's ordering where the report is silent:

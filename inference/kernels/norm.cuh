@@ -390,6 +390,23 @@ void LmFusedNormQuantiseKernel(const uint16_t *__restrict__ input_bf16, const ui
 	}
 }
 
+// Copy rows. Trivial, and here because the alternative was worse: closing an
+// AttnRes block wants the partial sum duplicated into a bank slot, and the
+// first version reached for LmAddRowsKernel with the partial as both operands,
+// which is 2x the value. An add is not a copy and reusing one as the other is
+// the kind of thing that produces plausible activations.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension)
+{
+	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint64_t index;
+	if ( row >= rows || element >= dimension )
+		return;
+	index = ((uint64_t)row * dimension) + element;
+	destination_bf16[index] = source_bf16[index];
+}
+
 // Attention Residuals: retrieve from a bank of block representations instead of
 // reading one accumulated stream.
 //

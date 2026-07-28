@@ -158,6 +158,17 @@ it, softmax over the scores, mix the UNNORMALISED candidates. Checked on the
 host against report eq. 9 at 2.2e-3, and the test fails if the values are
 normalised too — which would flatten exactly the layers the mechanism weighs.
 
+WIRED. `K3AttnRes` runs the retrieval before attention and again before the
+MLP with different pseudo-queries, and `K3AttnResAccumulate` folds each layer's
+output into the block in progress, closing it every 12 layers. The driver skips
+layer 0, which has only the embedding in the bank.
+
+The bank costs 143,360 bytes a token — ten hidden states against one — and 8.8
+MB at B64 crossing a stage boundary. That is the transport question as a number,
+and SGLang's answer is still the one to follow: generate the block
+representation once at the boundary layer, share it, carry only new blocks
+incrementally.
+
 WHAT REMAINS IS NOT KERNEL WORK. A layer needs the bank threaded through it:
 the block representation is a running sum reset every 12 layers, the embedding
 is always b_0, and the retrieval runs TWICE per layer — before attention and

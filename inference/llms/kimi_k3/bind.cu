@@ -70,6 +70,8 @@ struct K3LayerWeights
 	const void *dense_gate_up_scale;
 	const void *dense_down_weight;
 	const void *dense_down_scale;
+	const void *attnres_attn_weight;
+	const void *attnres_mlp_weight;
 };
 
 // Each assignment is a claim that two names mean the same tensor. A KDA layer
@@ -130,6 +132,8 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->dense_gate_up_scale = weights->dense_gate_up_scale;
 	buffers->dense_down_weight = weights->dense_down_weight;
 	buffers->dense_down_scale = weights->dense_down_scale;
+	buffers->attnres_attn_weight = weights->attnres_attn_weight;
+	buffers->attnres_mlp_weight = weights->attnres_mlp_weight;
 }
 
 // THE DEFAULT RETURNS AN ERROR. A sixth kind added to LmLayerKind without an arm
@@ -174,6 +178,12 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, K3LayerBuffers *buff
 		if (layer >= K3_LAYERS)
 			return(LM_LAUNCH_ERR_SHAPE);
 		K3BindLayer(&weights[offset],buffers);
+		// AttnRes replaces the stream before attention and again before the MLP,
+		// with different pseudo-queries. The reference applies it from layer 1 -
+		// layer 0 has only the embedding in the bank and nothing to retrieve
+		// from - so every layer above it reads a bank rather than a residual.
+		if ( layer > 0u )
+			K3AttnRes(buffers,weights[offset].attnres_attn_weight,layer,rows,stream);
 		status = K3LaunchAttentionHalf<Format,Geometry>(buffers,layer,rows,context,
 			multiprocessors,stream);
 		if (status != LM_LAUNCH_OK)
@@ -181,12 +191,17 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, K3LayerBuffers *buff
 		// first_k_dense_replace is 1: exactly one full-width feed-forward layer
 		// before the MoE stack. Running LatentMoE on layer 0 would use the
 		// routed intermediate of 3072 where the model has 33792.
+		if ( layer > 0u )
+			K3AttnRes(buffers,weights[offset].attnres_mlp_weight,layer,rows,stream);
 		if (layer < K3_FIRST_ROUTED_LAYER)
 			status = K3LayerDenseMlp<Format>(buffers,rows,multiprocessors,stream);
 		else
 			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream);
 		if (status != LM_LAUNCH_OK)
 			return(status);
+		// The block in progress accumulates this layer's output, and closes if
+		// this was its twelfth.
+		K3AttnResAccumulate(buffers,layer,rows,stream);
 	}
 	return(LM_LAUNCH_OK);
 }

@@ -165,6 +165,12 @@
 // arrays.
 #define K3_ATTNRES_MAX_SOURCES 10u
 
+// THE PER-REQUEST COST OF THE BANK, which is the transport question stated as a
+// number. Eight completed blocks plus the embedding plus the running partial is
+// ten hidden states a token, against one for a conventional residual.
+#define K3_ATTNRES_BANK_BYTES \
+	(K3_ATTNRES_MAX_SOURCES * K3_HIDDEN * (K3_KV_BITS / 8u))
+
 // AttnRes, now read from the modelling file. It is an ATTENTION over residuals,
 // not a weighted sum with learned scalars:
 //

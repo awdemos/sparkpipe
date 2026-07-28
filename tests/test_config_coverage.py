@@ -29,6 +29,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Each needs a reason. "Not implemented yet" is a valid reason and should be
 # stated, because then this list is the list of what is missing.
 EXEMPT = {
+    "K3_ATTNRES_BANK_BYTES": "the per-request cost of the bank, for whoever "
+                             "sizes the pool and the stage payload. Ten hidden "
+                             "states a token against one, and the layer does "
+                             "not allocate - it is handed buffers",
     "K3_MAX_CONTEXT": "a pool-sizing number for the host, not a layer input",
     "K3_ROUTED_SCALE": "1.0 in this checkpoint, so the multiply is omitted "
                        "rather than emitted as a no-op. It stops being safe to "
