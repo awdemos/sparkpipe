@@ -96,13 +96,10 @@ static int32_t LmLowRankProject(const LmLowRankWeights *weights, const LmLowRank
 	// No residual: the compressed row is not a hidden state and has nothing to
 	// add. The output is written back over the same buffer, which is safe
 	// because the norm reads a row before it writes it.
-	LmFusedResidualRmsNormKernel<256u><<<rows,threads,(weights->rank + 8u) * sizeof(float),stream>>>(
-		scratch->compressed_bf16,0,(const uint16_t *)weights->norm_weight,
-		0,scratch->compressed_bf16,weights->rank,weights->rank,weights->norm_epsilon);
-	LmQuantiseRowsKernel<Format,256u><<<dim3(rows,weights->rank / Format::kScaleGroup),threads,
-		(Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
-		scratch->compressed_bf16,0,scratch->compressed_codes,scratch->compressed_scales,
-		rows,weights->rank);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<256u>), rows, threads, (weights->rank + 8u) * sizeof(float), stream,
+		scratch->compressed_bf16,0,(const uint16_t *)weights->norm_weight, 0,scratch->compressed_bf16,weights->rank,weights->rank,weights->norm_epsilon);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,256u>), dim3(rows,weights->rank / Format::kScaleGroup), threads, (Format::kScaleGroup + 8u) * sizeof(float), stream,
+		scratch->compressed_bf16,0,scratch->compressed_codes,scratch->compressed_scales, rows,weights->rank);
 	gemm.scale_a = (const float *)scratch->compressed_scales;
 	gemm.scale_b = (const float *)weights->up_scale;
 	gemm.output_bf16 = output_bf16;

@@ -111,9 +111,9 @@ struct Qwen36LayerBuffers
 template<class Format>
 static void Qwen36Quantise(const Qwen36LayerBuffers *b, const uint16_t *source, uint32_t rows, uint32_t width, cudaStream_t stream)
 {
-	LmQuantiseRowsKernel<Format,QWEN36_LAYER_THREADS>
-		<<<dim3(rows,width / Format::kScaleGroup),QWEN36_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,QWEN36_LAYER_THREADS>),
+		dim3(rows,width / Format::kScaleGroup), QWEN36_LAYER_THREADS,
+		(Format::kScaleGroup + 8u) * sizeof(float), stream,
 		source,0,b->packed_activation,b->packed_scale,rows,width);
 }
 
@@ -124,10 +124,8 @@ static int32_t Qwen36LayerAttention(const Qwen36LayerBuffers *b, uint32_t rows, 
 	LmGemmArguments gemm;
 	LmQkvLayout layout;
 	int32_t status;
-	LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>
-		<<<rows,QWEN36_LAYER_THREADS,(QWEN36_HIDDEN + 8u) * sizeof(float),stream>>>(
-		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
-		b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
@@ -145,25 +143,18 @@ static int32_t Qwen36LayerAttention(const Qwen36LayerBuffers *b, uint32_t rows, 
 	layout.value_dimension = QWEN36_KV_DIM;
 	layout.rope_dimension = QWEN36_ROPE_DIM;
 	layout.head_dimension = QWEN36_HEAD_DIM;
-	LmSplitQkvKernel<QWEN36_LAYER_THREADS><<<rows,QWEN36_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmSplitQkvKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
 		b->fused_qkv_bf16,layout,b->query_bf16,b->key_bf16,b->value_bf16,rows,1.0f);
 	// Partial rotary: rope covers the first 64 of each 256-wide head, so this
 	// is per head. Rotating the row tail would rotate one head and leave 23.
-	LmRopePerHeadKernel<QWEN36_LAYER_THREADS>
-		<<<dim3(rows,QWEN36_ATTN_HEADS),QWEN36_LAYER_THREADS,0,stream>>>(
-		b->query_bf16,b->positions,QWEN36_ATTN_HEADS,QWEN36_HEAD_DIM,
-		QWEN36_ROPE_DIM,QWEN36_ROPE_THETA);
-	LmRopePerHeadKernel<QWEN36_LAYER_THREADS>
-		<<<dim3(rows,QWEN36_KV_HEADS),QWEN36_LAYER_THREADS,0,stream>>>(
-		b->key_bf16,b->positions,QWEN36_KV_HEADS,QWEN36_HEAD_DIM,
-		QWEN36_ROPE_DIM,QWEN36_ROPE_THETA);
-	LmKvStoreKernel<Geometry,QWEN36_LAYER_THREADS><<<rows,QWEN36_LAYER_THREADS,0,stream>>>(
-		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows,
-		Geometry::kSlotBytes / 2u);
-	LmAttentionDecodeKernel<Geometry,QWEN36_LAYER_THREADS,QWEN36_NOPE_DIM,QWEN36_ROPE_DIM>
-		<<<dim3(rows,QWEN36_ATTN_HEADS),QWEN36_LAYER_THREADS,0,stream>>>(
-		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length,
-		0,0u,QWEN36_ATTN_HEADS,QWEN36_QK_SCALE,b->attention_out_bf16,0);
+	LM_LAUNCH((LmRopePerHeadKernel<QWEN36_LAYER_THREADS>), dim3(rows,QWEN36_ATTN_HEADS), QWEN36_LAYER_THREADS, 0, stream,
+		b->query_bf16,b->positions,QWEN36_ATTN_HEADS,QWEN36_HEAD_DIM, QWEN36_ROPE_DIM,QWEN36_ROPE_THETA);
+	LM_LAUNCH((LmRopePerHeadKernel<QWEN36_LAYER_THREADS>), dim3(rows,QWEN36_KV_HEADS), QWEN36_LAYER_THREADS, 0, stream,
+		b->key_bf16,b->positions,QWEN36_KV_HEADS,QWEN36_HEAD_DIM, QWEN36_ROPE_DIM,QWEN36_ROPE_THETA);
+	LM_LAUNCH((LmKvStoreKernel<Geometry,QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
+		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, Geometry::kSlotBytes / 2u);
+	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,QWEN36_LAYER_THREADS,QWEN36_NOPE_DIM,QWEN36_ROPE_DIM>), dim3(rows,QWEN36_ATTN_HEADS), QWEN36_LAYER_THREADS, 0, stream,
+		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,QWEN36_ATTN_HEADS,QWEN36_QK_SCALE,b->attention_out_bf16,0);
 	Qwen36Quantise<Format>(b,b->attention_out_bf16,rows,QWEN36_Q_DIM,stream);
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->output_scale;
@@ -183,10 +174,8 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 	LmGemmArguments gemm;
 	LmQkvLayout layout;
 	int32_t status;
-	LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>
-		<<<rows,QWEN36_LAYER_THREADS,(QWEN36_HIDDEN + 8u) * sizeof(float),stream>>>(
-		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
-		b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
@@ -206,7 +195,7 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 	layout.value_dimension = QWEN36_GDN_V_DIM;
 	layout.rope_dimension = 0u;
 	layout.head_dimension = QWEN36_GDN_KEY_DIM;
-	LmSplitQkvKernel<QWEN36_LAYER_THREADS><<<rows,QWEN36_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmSplitQkvKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
 		b->fused_qkv_bf16,layout,b->query_bf16,b->key_bf16,b->value_bf16,rows,1.0f);
 	// The short causal convolution runs before the recurrence and carries its
 	// own window in the same non-growing slot as the state.
@@ -221,16 +210,10 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 	// 1D grid convolves only the first 256 of 2048 channels and leaves the rest
 	// carrying the projection's raw output. Found by tests/test_kernel_launches.py
 	// on its first run, in a call I wrote.
-	LmCausalConvDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_CONV_KERNEL,LM_CONV_SWISH>
-		<<<dim3(rows,(QWEN36_GDN_QKV_DIM + QWEN36_LAYER_THREADS - 1u) / QWEN36_LAYER_THREADS),
-		   QWEN36_LAYER_THREADS,0,stream>>>(
-		b->gdn_conv_window,b->gdn_state_index,b->key_bf16,
-		(const uint16_t *)b->gdn_conv_weight,b->key_bf16,QWEN36_GDN_QK_DIM,rows);
-	LmDeltaRuleDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>
-		<<<dim3(rows,QWEN36_GDN_KEY_HEADS),QWEN36_LAYER_THREADS,0,stream>>>(
-		b->gdn_state_pool,QWEN36_GDN_STATE_BYTES,b->gdn_state_index,b->query_bf16,b->key_bf16,b->value_bf16,
-		b->gdn_forget_gate,b->gdn_write_gate,b->attention_out_bf16,
-		QWEN36_GDN_KEY_HEADS,QWEN36_GDN_VALUE_PER_KEY,rows);
+	LM_LAUNCH((LmCausalConvDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_CONV_KERNEL,LM_CONV_SWISH>), dim3(rows,(QWEN36_GDN_QKV_DIM + QWEN36_LAYER_THREADS - 1u) / QWEN36_LAYER_THREADS), QWEN36_LAYER_THREADS, 0, stream,
+		b->gdn_conv_window,b->gdn_state_index,b->key_bf16, (const uint16_t *)b->gdn_conv_weight,b->key_bf16,QWEN36_GDN_QK_DIM,rows);
+	LM_LAUNCH((LmDeltaRuleDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>), dim3(rows,QWEN36_GDN_KEY_HEADS), QWEN36_LAYER_THREADS, 0, stream,
+		b->gdn_state_pool,QWEN36_GDN_STATE_BYTES,b->gdn_state_index,b->query_bf16,b->key_bf16,b->value_bf16, b->gdn_forget_gate,b->gdn_write_gate,b->attention_out_bf16, QWEN36_GDN_KEY_HEADS,QWEN36_GDN_VALUE_PER_KEY,rows);
 	Qwen36Quantise<Format>(b,b->attention_out_bf16,rows,QWEN36_GDN_V_DIM,stream);
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->gdn_out_scale;
@@ -247,10 +230,8 @@ static int32_t Qwen36LayerDenseMlp(const Qwen36LayerBuffers *b, uint32_t rows, u
 {
 	LmGemmArguments gemm;
 	int32_t status;
-	LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>
-		<<<rows,QWEN36_LAYER_THREADS,(QWEN36_HIDDEN + 8u) * sizeof(float),stream>>>(
-		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
+		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
@@ -263,7 +244,7 @@ static int32_t Qwen36LayerDenseMlp(const Qwen36LayerBuffers *b, uint32_t rows, u
 		QWEN36_HIDDEN,QWEN36_FFN_INTERMEDIATE * 2u,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LmSiluMulKernel<QWEN36_LAYER_THREADS><<<rows,QWEN36_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmSiluMulKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,QWEN36_FFN_INTERMEDIATE,true);
 	Qwen36Quantise<Format>(b,b->intermediate_bf16,rows,QWEN36_FFN_INTERMEDIATE,stream);
 	gemm.scale_b = (const float *)b->dense_down_scale;
@@ -276,16 +257,11 @@ static int32_t Qwen36LayerDenseMlp(const Qwen36LayerBuffers *b, uint32_t rows, u
 static int32_t Qwen36Head(const Qwen36LayerBuffers *b, const void *head_norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, cudaStream_t stream)
 {
 	uint32_t tiles = (vocabulary + QWEN36_HEAD_TILE - 1u) / QWEN36_HEAD_TILE;
-	LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>
-		<<<rows,QWEN36_LAYER_THREADS,(QWEN36_HIDDEN + 8u) * sizeof(float),stream>>>(
-		b->hidden_bf16,0,(const uint16_t *)head_norm_weight,
-		0,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
-	LmHeadCandidateKernel<QWEN36_LAYER_THREADS,QWEN36_HEAD_TILE>
-		<<<dim3(tiles,rows),QWEN36_LAYER_THREADS,0,stream>>>(
-		b->normed_bf16,(const uint16_t *)head_weight,token_ids,
-		b->head_candidate_score,b->head_candidate_token,rows,QWEN36_HIDDEN,vocabulary);
-	LmHeadCommitKernel<QWEN36_LAYER_THREADS><<<rows,QWEN36_LAYER_THREADS,0,stream>>>(
-		b->head_candidate_score,b->head_candidate_token,tiles,
-		b->output_token,b->output_score,rows);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,0,(const uint16_t *)head_norm_weight, 0,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
+	LM_LAUNCH((LmHeadCandidateKernel<QWEN36_LAYER_THREADS,QWEN36_HEAD_TILE>), dim3(tiles,rows), QWEN36_LAYER_THREADS, 0, stream,
+		b->normed_bf16,(const uint16_t *)head_weight,token_ids, b->head_candidate_score,b->head_candidate_token,rows,QWEN36_HIDDEN,vocabulary);
+	LM_LAUNCH((LmHeadCommitKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
+		b->head_candidate_score,b->head_candidate_token,tiles, b->output_token,b->output_score,rows);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }

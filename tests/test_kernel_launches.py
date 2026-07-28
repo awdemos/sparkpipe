@@ -66,10 +66,13 @@ def call_sites():
                 path = os.path.join(root, name)
                 text = re.sub(r"//[^\n]*", "", open(path, errors="replace").read())
                 flat = re.sub(r"\s+", " ", text)
+                # LM_LAUNCH((Kernel<T...>), grid, block, shared, stream, args)
+                # replaced <<< >>>, so the grid is an ordinary macro argument
+                # rather than something only nvcc's parser understands.
                 for match in re.finditer(
-                        r"(Lm\w+Kernel)\s*<[^>]*>\s*<<<(.*?)>>>\s*\((.*?)\);", flat):
+                        r"LM_LAUNCH\(\((Lm\w+Kernel)[^)]*\),\s*([^,]+),", flat):
                     sites.append((os.path.relpath(path, ROOT), match.group(1),
-                                  match.group(2), match.group(3)))
+                                  match.group(2), ""))
     return sites
 
 

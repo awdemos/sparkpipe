@@ -33,6 +33,38 @@
 #include "inference/kernels/layout.cuh"
 #include <stdint.h>
 
+// LM_LAUNCH: one spelling for a kernel launch, on a device or on a host.
+//
+// <<<grid, block, shared, stream>>> is syntax only nvcc accepts, so a layer
+// written with it cannot be compiled for a CPU - and a layer is made of
+// launches. That is what kept tests/host_cuda from reaching past individual
+// kernels, which is where an external audit found three defects that every
+// per-kernel test passed straight through.
+//
+// It also makes the launch itself checkable. tests/test_kernel_launches.py
+// reads launches with a regular expression, because <<< >>> is not something a
+// compiler will hand you; that gate exists because one launch was wrong four
+// ways and compiled, and a regex can be defeated by reformatting the call.
+// Through a macro the grid and the argument list are ordinary C++.
+//
+// The host expansion lives in tests/host_cuda/lm_host_cuda.cuh and runs one
+// thread per block in block order, which is a schedule a correct kernel must
+// also be valid under.
+//
+// THE KERNEL IS PARENTHESISED, AND IT HAS TO BE. LmQuantiseRowsKernel<Format,256u>
+// contains a comma, and the preprocessor splits macro arguments on commas
+// before it knows anything about templates - so the kernel arrives as two
+// arguments and the expansion is nonsense. Wrapping it and unwrapping with a
+// variadic pass-through is the standard way out, and requiring the parentheses
+// on every call rather than only the ones that need them keeps the form
+// uniform: a reader never has to work out whether this particular kernel has a
+// comma in it.
+#define LM_UNPAREN(...) __VA_ARGS__
+#ifdef __CUDACC__
+#define LM_LAUNCH(kernel, grid, block, shared, stream, ...) \
+	LM_UNPAREN kernel<<<(grid), (block), (shared), (stream)>>>(__VA_ARGS__)
+#endif
+
 #define LM_LAUNCH_OK 0
 #define LM_LAUNCH_ERR_SHAPE (-41)
 #define LM_LAUNCH_ERR_TILE (-42)

@@ -162,6 +162,25 @@ typedef int cudaError_t;
 static inline cudaError_t cudaPeekAtLastError(void) { return cudaSuccess; }
 static inline cudaError_t cudaGetLastError(void) { return cudaSuccess; }
 
+// The host expansion of runtime/launch.h's LM_LAUNCH. Same name, same argument
+// order, so a layer compiles for either target without a second spelling.
+#define LM_UNPAREN(...) __VA_ARGS__
+#define LM_LAUNCH(kernel, grid, block, shared, stream, ...)                   \
+	do {                                                                      \
+		dim3 lm_grid = (grid);                                                \
+		(void)(block); (void)(shared); (void)(stream);                        \
+		blockDim = dim3(1u, 1u, 1u);                                          \
+		gridDim = lm_grid;                                                    \
+		threadIdx = dim3(0u, 0u, 0u);                                         \
+		for (unsigned lm_z = 0u; lm_z < lm_grid.z; ++lm_z)                    \
+			for (unsigned lm_y = 0u; lm_y < lm_grid.y; ++lm_y)                \
+				for (unsigned lm_x = 0u; lm_x < lm_grid.x; ++lm_x)            \
+				{                                                             \
+					blockIdx = dim3(lm_x, lm_y, lm_z);                        \
+					LM_UNPAREN kernel(__VA_ARGS__);                           \
+				}                                                             \
+	} while (0)
+
 // Emulate one launch. The kernel is invoked once per block with threadIdx.x
 // fixed at zero, in block order, which is the sequential schedule a correct
 // kernel must also be valid under.
