@@ -266,8 +266,14 @@ struct K3LayerBuffers
 template<class Format>
 static void K3Quantise(const K3LayerBuffers *b, const uint16_t *source, const uint32_t *source_row_map, uint32_t rows, uint32_t width, cudaStream_t stream)
 {
-	if ( Format::kScaleGroup == 0u )
+	// IF CONSTEXPR, NOT IF. A runtime guard still instantiates the template
+	// below it, so the kernel's static_assert fired for every BF16 projection
+	// even though none of them would have run the launch. The branch has to be
+	// discarded at compile time, which is what constexpr does and what a plain
+	// if cannot.
+	if constexpr ( Format::kScaleGroup == 0u )
 		return;
+	else
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,K3_LAYER_THREADS>),
 		dim3(rows,width / Format::kScaleGroup), K3_LAYER_THREADS,
 		(Format::kScaleGroup + 8u) * sizeof(float), stream,

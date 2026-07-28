@@ -235,6 +235,18 @@ template<class Format, uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmQuantiseRowsKernel(const uint16_t *__restrict__ input_bf16, const uint32_t *__restrict__ source_row_map, uint8_t *__restrict__ output_codes, uint8_t *__restrict__ output_scales, uint32_t row_count, uint32_t dimension)
 {
+	// A FORMAT WITH NO GROUPS CANNOT BE QUANTISED, AND SAYING SO HERE IS THE
+	// GENERAL FORM OF A BUG THAT SHIPPED.
+	//
+	// LmBf16Format declares kScaleGroup zero, correctly - it is not quantised.
+	// A caller that hands this kernel such a format has already divided a width
+	// by it to size the grid, and that division is where the fault appears:
+	// twenty call sites in K3 the moment its non-expert projections moved to
+	// BF16 to match the checkpoint's recipe. The instance is fixed at the
+	// caller; this is the class.
+	static_assert(Format::kScaleGroup > 0u,
+		"an unquantised format has no scale groups and must not reach a "
+		"quantise; the caller should skip it, not divide by zero sizing the grid");
 	extern __shared__ float lm_quant_shared[];
 	float *row = lm_quant_shared;
 	float *reduction = lm_quant_shared + Format::kScaleGroup;
