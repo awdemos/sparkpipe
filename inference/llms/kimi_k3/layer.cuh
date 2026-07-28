@@ -74,12 +74,18 @@ using K3GlobalKv = LmKvLatent<K3_KV_BITS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM, 
 #define K3_MLA_Q_DIM (K3_MLA_HEADS * (K3_KV_LORA_RANK + K3_QK_UNROTATED_DIM))
 #define K3_MLA_KV_A_DIM (K3_KV_LORA_RANK + K3_QK_UNROTATED_DIM)
 #define K3_MLA_KV_B_DIM (K3_MLA_HEADS * (K3_QK_NOPE_DIM + K3_V_HEAD_DIM))
-#define K3_MLA_OUT_DIM (K3_MLA_HEADS * K3_KV_LORA_RANK)
+// The attention output before kv_b_value brings it back to v-space, and after.
+#define K3_MLA_LATENT_OUT_DIM (K3_MLA_HEADS * K3_KV_LORA_RANK)
+#define K3_MLA_OUT_DIM (K3_MLA_HEADS * K3_V_HEAD_DIM)
 
 // The kernel's contract, asserted rather than trusted: it loads LATENT + ROPE
 // per head and this file must hand it exactly that.
 static_assert(K3_MLA_Q_DIM == K3_MLA_HEADS * (K3_KV_LORA_RANK + K3_QK_UNROTATED_DIM),
 	"the query must be as wide as the kernel reads");
+// The gate is applied in v-space, so its width is the reference's g_proj output
+// and the checkpoint tensor is used unchanged.
+static_assert(K3_MLA_OUT_DIM == K3_MLA_HEADS * K3_V_HEAD_DIM,
+	"the gate and output projection live in v-space, not the latent");
 
 // The shared experts run at the full width with the routed intermediate times
 // the shared count, per the report's Ns = 2.
@@ -160,6 +166,7 @@ struct K3LayerBuffers
 	const void *mla_kv_a_scale;
 	const void *mla_kv_a_norm_weight;
 	const void *mla_kv_b_weight;
+	const void *mla_kv_b_value_weight;
 	const void *mla_kv_b_scale;
 	const void *mla_gate_weight;
 	const void *mla_gate_scale;
@@ -425,6 +432,16 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length,
 		0,0u,K3_MLA_HEADS,K3_MLA_QK_SCALE,b->attention_out_bf16,0);
 	(void)context;
+	// BACK TO V-SPACE BEFORE THE GATE. The attention output is heads * kv_lora;
+	// kv_b_value maps each head's 512 to its 128. Absorbing this into o_proj
+	// would be algebraically fine and is not an option: the gate is elementwise
+	// and does not commute with the fold, the checkpoint has no latent-space
+	// gate tensor, and on GB10 it would cost 55 ms a token in weight reads to
+	// save 46 us of arithmetic. See LmPerHeadProjectKernel.
+	LmPerHeadProjectKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>
+		<<<dim3(rows,K3_MLA_HEADS),K3_LAYER_THREADS,0,stream>>>(
+		b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight,
+		b->attention_out_bf16,K3_MLA_HEADS,rows);
 	status = K3Project<Format>(b,b->normed_bf16,b->mla_gate_weight,b->mla_gate_scale,
 		b->gate_bf16,rows,K3_HIDDEN,K3_MLA_OUT_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )

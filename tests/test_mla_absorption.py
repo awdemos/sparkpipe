@@ -1,6 +1,24 @@
 #!/usr/bin/env python3
-"""The absorbed MLA the kernel implements must equal the reconstructed MLA the
-checkpoint describes.
+"""The q-side fold must equal the reconstructed query, and the value fold must not
+be applied at all.
+
+WHAT THE TREE DOES NOW, after the external audit found that absorbing the value
+half is both incorrect and slow here:
+
+    q_up[h]  ->  kv_b_nope[h].T @ q_up_nope[h], concat q_up_rope[h]   FOLDED
+    kv_b_value                                                        NOT folded
+    o_proj                                                            unchanged
+
+The query fold is kept because it is free: the query is projected once per token
+either way, and folding moves work from per-position to per-token. The value
+fold is not, for two independent reasons - the output gate is elementwise in
+v-space and does not commute with it, and on GB10 it trades 55 ms of weight
+reads for 46 us of arithmetic.
+
+The identity below covers the full absorption because that is what proves the
+q-side half is right: if both folds together reproduce the reference, and the
+value fold is simply omitted with kv_b_value applied explicitly instead, the
+q-side fold is correct on its own.
 
 modeling_kimi_linear.py rebuilds per-head keys and values from the cached latent
 through kv_b_proj at attention time. LmAttentionDecodeKernel does not: it reads

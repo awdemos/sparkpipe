@@ -248,3 +248,54 @@ void LmRopePerHeadKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__res
 		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
 			position * __powf(theta,-2.0f * (float)index / (float)rope_dimension));
 }
+
+// Apply a per-head block-diagonal projection: out[h] = W[h] @ in[h].
+//
+// MLA's value absorption folds kv_b_value into the output projection. That is
+// algebraically clean and wrong twice over here.
+//
+// Wrong for correctness: the output gate is elementwise in v-space, and
+// elementwise gating does not commute with a per-head fold - Diag(g) W is not
+// W Diag(g'). The reference gates the attention output before o_proj, and no
+// checkpoint tensor exists for a latent-space gate: g_proj emits
+// heads * v_head_dim.
+//
+// Wrong for speed on GB10, which is what makes the choice easy rather than a
+// trade. docs/GB10_CUDA_COST_MODEL_CALIBRATION.md: 273 GB/s LPDDR5x unified at
+// eta_bw 0.80, and a calibrated 6.5 TFLOP/s on the linear path - 30 FLOP per
+// byte before compute can bind. Absorbing the value half inflates the MLA
+// output projection from heads*v_head to heads*kv_lora, 8.30 GB to 19.55 GB
+// across 24 layers, which costs 55 ms per token in weight reads to save the
+// 302 MFLOP this kernel performs, 46 us. Three orders of magnitude the wrong
+// way, on the one machine this runs on.
+//
+// So attention stays in the latent, this brings it back to v-space, and the
+// gate and output projection use the checkpoint's tensors unchanged.
+template<uint32_t THREADS, uint32_t IN_DIM, uint32_t OUT_DIM>
+__global__ __launch_bounds__(THREADS, 1)
+void LmPerHeadProjectKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t heads, uint32_t rows)
+{
+	__shared__ float shared_input[IN_DIM];
+	uint32_t row = blockIdx.x,head = blockIdx.y,index;
+	uint64_t input_base,weight_base,output_base;
+	if ( row >= rows || head >= heads )
+		return;
+	input_base = (((uint64_t)row * heads) + head) * IN_DIM;
+	weight_base = (uint64_t)head * OUT_DIM * IN_DIM;
+	output_base = (((uint64_t)row * heads) + head) * OUT_DIM;
+	for (index = threadIdx.x; index < IN_DIM; index += THREADS)
+		shared_input[index] = LmBf16ToFloat(input_bf16[input_base + index]);
+	__syncthreads();
+	// The input is staged once and read OUT_DIM times from shared rather than
+	// IN_DIM * OUT_DIM times from memory. The weight read is the whole cost, as
+	// everything is on this machine.
+	for (index = threadIdx.x; index < OUT_DIM; index += THREADS)
+	{
+		float total = 0.0f;
+		uint32_t element;
+		for (element = 0u; element < IN_DIM; ++element)
+			total += shared_input[element]
+				* LmBf16ToFloat(weight_bf16[weight_base + (index * IN_DIM) + element]);
+		output_bf16[output_base + index] = LmFloatToBf16(total);
+	}
+}
