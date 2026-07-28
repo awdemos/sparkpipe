@@ -78,12 +78,22 @@ static __device__ float LmBlockMax(float value, float *shared)
 // read of hidden*2 - which is why the row is staged rather than re-read.
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ residual_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ residual_out_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float epsilon)
+// ROW STRIDE IS EXPLICIT AND HAS NO DEFAULT.
+//
+// This computed base = blockIdx.x * dimension, which assumes a row is exactly
+// as wide as the slice being normalised. K3's kv_a norm covers the 512-element
+// latent of a 576-element row, so row 1's "latent" was row 0's rope tail plus
+// 448 elements of row 1. Correct at rows == 1 and corrupt for every batch above
+// it - the shape of bug that passes a single-row test.
+//
+// No default argument: a caller that means dimension says dimension, because a
+// stride that fills itself in is the same silent-drift pattern as an ifndef.
+void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ residual_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ residual_out_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
 {
 	extern __shared__ float lm_norm_shared[];
 	float *row = lm_norm_shared;
 	float *reduction = lm_norm_shared + dimension;
-	uint64_t base = (uint64_t)blockIdx.x * dimension;
+	uint64_t base = (uint64_t)blockIdx.x * row_stride;
 	uint32_t index;
 	float total = 0.0f,scale;
 	for (index = threadIdx.x; index < dimension; index += THREADS)

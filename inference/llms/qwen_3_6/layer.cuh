@@ -127,7 +127,7 @@ static int32_t Qwen36LayerAttention(const Qwen36LayerBuffers *b, uint32_t rows, 
 	LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>
 		<<<rows,QWEN36_LAYER_THREADS,(QWEN36_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
-		b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
@@ -186,7 +186,7 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 	LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>
 		<<<rows,QWEN36_LAYER_THREADS,(QWEN36_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
-		b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
@@ -250,7 +250,7 @@ static int32_t Qwen36LayerDenseMlp(const Qwen36LayerBuffers *b, uint32_t rows, u
 	LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>
 		<<<rows,QWEN36_LAYER_THREADS,(QWEN36_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
@@ -279,7 +279,7 @@ static int32_t Qwen36Head(const Qwen36LayerBuffers *b, const void *head_norm_wei
 	LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>
 		<<<rows,QWEN36_LAYER_THREADS,(QWEN36_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,0,(const uint16_t *)head_norm_weight,
-		0,b->normed_bf16,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
+		0,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	LmHeadCandidateKernel<QWEN36_LAYER_THREADS,QWEN36_HEAD_TILE>
 		<<<dim3(tiles,rows),QWEN36_LAYER_THREADS,0,stream>>>(
 		b->normed_bf16,(const uint16_t *)head_weight,token_ids,

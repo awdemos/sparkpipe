@@ -62,6 +62,7 @@ run "mla on host"          "python3 tests/test_mla_host.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run "grouped topk builds"  "sh tools/build_grouped_topk.sh"
+run "replay fold builds"   "sh tools/build_replay_fold.sh"
 run "kernel algorithms"    "python3 tests/test_kernel_algorithms.py"
 run "model contracts"      "python3 tests/test_model_driver_contracts.py"
 run "nvcc: sm_121a build"  "sh tools/build.sh"

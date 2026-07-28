@@ -140,7 +140,7 @@ int main(void)
 
 	LM_HOST_LAUNCH(dim3(ROWS),
 		(LmFusedResidualRmsNormKernel<THREADS>(
-			norm_in, norm_res, norm_w, norm_res_out, norm_out, CHANNELS, 1e-5f)));
+			norm_in, norm_res, norm_w, norm_res_out, norm_out, CHANNELS,CHANNELS, 1e-5f)));
 	Emit("normout", norm_out, ROWS * CHANNELS);
 	Emit("normresout", norm_res_out, ROWS * CHANNELS);
 

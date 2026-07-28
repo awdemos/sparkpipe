@@ -67,6 +67,9 @@
 #define K3_LAYERS 93u
 #define K3_VOCAB 163840u
 #define K3_RMS_EPSILON 1e-05f
+// The lora norms take KimiRMSNorm's constructor default; only the layer norms
+// are passed config.rms_norm_eps. q_a_layernorm and kv_a_layernorm use this.
+#define K3_LORA_RMS_EPSILON 1e-06f
 #define K3_MAX_CONTEXT 1048576u
 
 // MoE. Stable LatentMoE: the routed experts run at their own hidden width and

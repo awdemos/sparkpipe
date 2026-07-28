@@ -153,6 +153,7 @@ struct K3LayerBuffers
 	// MLA.
 	const void *mla_q_down_weight;
 	const void *mla_q_down_scale;
+	const void *mla_q_norm_weight;
 	const void *mla_q_up_weight;
 	const void *mla_q_up_scale;
 	const void *mla_kv_a_weight;
@@ -198,6 +199,9 @@ struct K3LayerBuffers
 	uint16_t *latent_bf16;
 	uint16_t *kv_slot_bf16;
 	uint16_t *attention_out_bf16;
+	uint16_t *shared_out_bf16;
+	uint16_t *kda_beta_logit;
+	float *kda_write_gate_out;
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
 	uint8_t *packed_activation;
@@ -224,6 +228,7 @@ struct K3LayerBuffers
 	const uint32_t *dense_tile_prefix;
 	const uint32_t *route_expert;
 	const uint32_t *route_packed_row;
+	const uint32_t *route_source_token;
 	const float *route_weight;
 	const uint32_t *group_row_offset;
 	const uint32_t *group_tile_prefix;
@@ -233,13 +238,20 @@ struct K3LayerBuffers
 	float *output_score;
 };
 
+// THE ROUTE MAP IS A PARAMETER, NOT A NULL.
+//
+// This hardcoded a null source_row_map, so packed row r read source row r. For
+// the routed experts that is wrong twice: packed_rows is rows * top_k, so rows
+// at or above `rows` read past the end of the latent buffer, and no row is
+// route-expanded - every expert consumed whichever activation happened to sit
+// at its packed index. glm52 passes route_source_token here and this did not.
 template<class Format>
-static void K3Quantise(const K3LayerBuffers *b, const uint16_t *source, uint32_t rows, uint32_t width, cudaStream_t stream)
+static void K3Quantise(const K3LayerBuffers *b, const uint16_t *source, const uint32_t *source_row_map, uint32_t rows, uint32_t width, cudaStream_t stream)
 {
 	LmQuantiseRowsKernel<Format,K3_LAYER_THREADS>
 		<<<dim3(rows,width / Format::kScaleGroup),K3_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
-		source,0,b->packed_activation,b->packed_scale,rows,width);
+		source,source_row_map,b->packed_activation,b->packed_scale,rows,width);
 }
 
 // One projection: quantise, GEMM, done. The KDA path does this five times and
@@ -249,7 +261,7 @@ template<class Format>
 static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const void *weight, const void *weight_scale, uint16_t *destination, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
 {
 	LmGemmArguments gemm;
-	K3Quantise<Format>(b,source,rows,input_dimension,stream);
+	K3Quantise<Format>(b,source,0,rows,input_dimension,stream);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)weight_scale;
@@ -278,7 +290,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 	LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>
 		<<<rows,K3_LAYER_THREADS,(K3_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
-		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<Format>(b,b->normed_bf16,b->kda_q_weight,b->kda_q_scale,
 		b->query_bf16,rows,K3_HIDDEN,K3_KDA_QK_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -332,10 +344,21 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 		<<<dim3(rows,K3_KDA_HEADS),K3_LAYER_THREADS,0,stream>>>(
 		b->decay_logit_bf16,b->kda_decay_bias,b->kda_head_log_scale,
 		b->kda_retention,K3_KDA_HEADS,K3_KDA_GATE_LOWER_BOUND,rows);
+	// BETA IS COMPUTED HERE. It was read raw from kda_write_gate, which nothing
+	// filled - the comment said "still on the host" and no host exists. The
+	// reference is Sigmoid(W_beta x), per head, with the sigmoid inside the
+	// kernel (use_beta_sigmoid_in_kernel). BF16 for the same reason as the
+	// decay: 96 outputs is narrower than an INT7 tile.
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_beta_weight,0,
+		(uint16_t *)b->kda_beta_logit,rows,K3_HIDDEN,K3_KDA_HEADS,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LmSigmoidRowsKernel<K3_LAYER_THREADS><<<rows,K3_LAYER_THREADS,0,stream>>>(
+		(const uint16_t *)b->kda_beta_logit,b->kda_write_gate_out,K3_KDA_HEADS);
 	LmDeltaRuleDecodeKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>
 		<<<dim3(rows,K3_KDA_HEADS),K3_LAYER_THREADS,0,stream>>>(
 		b->kda_state_pool,b->kda_state_index,b->query_bf16,b->key_bf16,
-		b->value_bf16,b->kda_retention,b->kda_write_gate,b->attention_out_bf16,
+		b->value_bf16,b->kda_retention,b->kda_write_gate_out,b->attention_out_bf16,
 		K3_KDA_HEADS,1u,rows);
 	// RMSNORM BEFORE THE GATE, AND ONLY HERE. Report eq. 6 normalises the
 	// recurrent output head-wise before gating; eq. 7 gates the MLA output with
@@ -344,7 +367,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 		<<<dim3(rows * K3_KDA_HEADS),K3_LAYER_THREADS,
 		   (K3_KDA_VALUE_DIM + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,0,(const uint16_t *)b->kda_out_norm_weight,
-		0,b->attention_out_bf16,K3_KDA_VALUE_DIM,K3_RMS_EPSILON);
+		0,b->attention_out_bf16,K3_KDA_VALUE_DIM,K3_KDA_VALUE_DIM,K3_RMS_EPSILON);
 	status = K3Project<Format>(b,b->normed_bf16,b->kda_gate_weight,b->kda_gate_scale,
 		b->gate_bf16,rows,K3_HIDDEN,K3_KDA_V_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -367,11 +390,19 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>
 		<<<rows,K3_LAYER_THREADS,(K3_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
-		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<Format>(b,b->normed_bf16,b->mla_q_down_weight,b->mla_q_down_scale,
 		b->latent_bf16,rows,K3_HIDDEN,K3_Q_LORA_RANK,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	// q_a_layernorm. The reference is q_b_proj(q_a_layernorm(q_a_proj(x))) and
+	// this went straight from down to up with nothing between. Its epsilon is
+	// KimiRMSNorm's default 1e-6, not the model's 1e-5 - the lora norms take the
+	// constructor default and only the layer norms are passed config.rms_norm_eps.
+	LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>
+		<<<rows,K3_LAYER_THREADS,(K3_Q_LORA_RANK + 8u) * sizeof(float),stream>>>(
+		b->latent_bf16,0,(const uint16_t *)b->mla_q_norm_weight,
+		0,b->latent_bf16,K3_Q_LORA_RANK,K3_Q_LORA_RANK,K3_LORA_RMS_EPSILON);
 	status = K3Project<Format>(b,b->latent_bf16,b->mla_q_up_weight,b->mla_q_up_scale,
 		b->query_bf16,rows,K3_Q_LORA_RANK,K3_MLA_Q_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -385,7 +416,7 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>
 		<<<rows,K3_LAYER_THREADS,(K3_KV_LORA_RANK + 8u) * sizeof(float),stream>>>(
 		b->kv_slot_bf16,0,(const uint16_t *)b->mla_kv_a_norm_weight,
-		0,b->kv_slot_bf16,K3_KV_LORA_RANK,K3_RMS_EPSILON);
+		0,b->kv_slot_bf16,K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_LORA_RMS_EPSILON);
 	LmKvStoreKernel<Geometry,K3_LAYER_THREADS><<<rows,K3_LAYER_THREADS,0,stream>>>(
 		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows,
 		Geometry::kSlotBytes / 2u);
@@ -425,7 +456,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>
 		<<<rows,K3_LAYER_THREADS,(K3_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	// THE ROUTER RUNS ON THE FULL HIDDEN AND NOT IN THE QUANTISED FORMAT.
 	// modeling_kimi_linear.py casts both the token and the router weight to
 	// float32 before the linear, and the report's quantisation section lists MoE
@@ -448,7 +479,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		b->latent_bf16,rows,K3_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	K3Quantise<Format>(b,b->latent_bf16,packed_rows,K3_ROUTED_EXPERT_HIDDEN,stream);
+	K3Quantise<Format>(b,b->latent_bf16,b->route_source_token,packed_rows,K3_ROUTED_EXPERT_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->expert_w1_scale;
@@ -466,7 +497,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	LmSituMulKernel<K3_LAYER_THREADS><<<packed_rows,K3_LAYER_THREADS,0,stream>>>(
 		b->gate_up_bf16,b->intermediate_bf16,K3_EXPERT_INTERMEDIATE,
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
-	K3Quantise<Format>(b,b->intermediate_bf16,packed_rows,K3_EXPERT_INTERMEDIATE,stream);
+	K3Quantise<Format>(b,b->intermediate_bf16,0,packed_rows,K3_EXPERT_INTERMEDIATE,stream);
 	gemm.scale_b = (const float *)b->expert_w2_scale;
 	gemm.output_bf16 = b->gate_up_bf16;
 	status = LmGemmLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
@@ -499,7 +530,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>
 		<<<rows,K3_LAYER_THREADS,(K3_ROUTED_EXPERT_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->latent_bf16,0,(const uint16_t *)b->routed_norm_weight,
-		0,b->latent_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
+		0,b->latent_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<Format>(b,b->latent_bf16,b->routed_up_weight,b->routed_up_scale,
 		b->hidden_bf16,rows,K3_ROUTED_EXPERT_HIDDEN,K3_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -513,8 +544,24 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	LmSituMulKernel<K3_LAYER_THREADS><<<rows,K3_LAYER_THREADS,0,stream>>>(
 		b->gate_up_bf16,b->intermediate_bf16,K3_SHARED_INTERMEDIATE,
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
-	return(K3Project<Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
-		b->hidden_bf16,rows,K3_SHARED_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream));
+	// SEPARATE BUFFER, THEN ADD. This wrote hidden_bf16, which the routed
+	// up-projection had just written, and LmGemmStore assigns rather than
+	// accumulates - so the MoE output was the shared experts alone and the
+	// routed branch was discarded, on 92 of 93 layers. Eq. 11 is
+	// y = sum(shared) + W_up(RMSNorm(u)), an addition.
+	//
+	// LmAddRowsKernel was written for this - its comment says "for a shared
+	// expert's contribution, which is added rather than weighted because it has
+	// no gate" - and had never been called.
+	status = K3Project<Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
+		b->shared_out_bf16,rows,K3_SHARED_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LmAddRowsKernel<K3_LAYER_THREADS>
+		<<<dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
+		   K3_LAYER_THREADS,0,stream>>>(
+		b->hidden_bf16,b->shared_out_bf16,b->hidden_bf16,rows,K3_HIDDEN);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
 // The dense MLP, layer 0 only. first_k_dense_replace is 1: K3 has exactly one
@@ -531,7 +578,7 @@ static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 	LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>
 		<<<rows,K3_LAYER_THREADS,(K3_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<Format>(b,b->normed_bf16,b->dense_gate_up_weight,
 		b->dense_gate_up_scale,b->gate_up_bf16,rows,K3_HIDDEN,
 		K3_DENSE_INTERMEDIATE * 2u,multiprocessors,stream);
@@ -551,7 +598,7 @@ static int32_t K3Head(const K3LayerBuffers *b, const void *head_norm_weight, con
 	LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>
 		<<<rows,K3_LAYER_THREADS,(K3_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,0,(const uint16_t *)head_norm_weight,
-		0,b->normed_bf16,K3_HIDDEN,K3_RMS_EPSILON);
+		0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	LmHeadCandidateKernel<K3_LAYER_THREADS,K3_HEAD_TILE>
 		<<<dim3(tiles,rows),K3_LAYER_THREADS,0,stream>>>(
 		b->normed_bf16,(const uint16_t *)head_weight,token_ids,

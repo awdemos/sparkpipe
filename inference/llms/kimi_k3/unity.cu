@@ -36,7 +36,7 @@ template __global__ void LmGemmKernel<LmFp8, 16u, K3_TILE_N, 128u, K3_STAGES, K3
 template __global__ void LmGemmKernel<LmFp8, 32u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmInt7, 16u, K3_TILE_N, 256u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmInt7, 32u, K3_TILE_N, 256u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
+template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmInt7, K3_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 // No rope instantiation. K3 is NoPE - the reference sets rotary_emb to None and

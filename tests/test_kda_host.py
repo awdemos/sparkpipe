@@ -51,10 +51,10 @@ def parse(text):
                  value=int(header[5]), steps=int(header[7]),
                  gmin=float(header[9]))
     values = {"bias": [], "scale": [], "q": [], "k": [], "z": [], "v": [],
-              "beta": [], "out": []}
+              "beta": [], "out": [], "ret": [], "replay_mismatch": []}
     for line in lines[1:]:
         tag, _, number = line.partition(" ")
-        values[tag].append(float(number))
+        values[tag].append(float(number.split()[0]))
     return shape, values
 
 
@@ -132,6 +132,23 @@ def main():
     if magnitude < 1e-4:
         print("\nFAIL the outputs are all near zero; the test cannot see anything")
         return 1
+
+    # ReplaySSM: folding the accepted prefix from a checkpoint must land on the
+    # state the recurrent path committed. Here the checkpoint is zero and the
+    # prefix is everything, so the two states must be identical - not close.
+    # Anything else means the fold and the decode disagree, which is the drift
+    # SGLang describes as leaving "every output looking correct".
+    mismatch = values["replay_mismatch"][0] if values["replay_mismatch"] else -1
+    if mismatch != 0:
+        print(f"\nFAIL the replay fold differs from the decode state in "
+              f"{mismatch:.0f} bytes")
+        return 1
+    print("replay fold reproduces the committed state exactly, 0 bytes differ")
+    # SENSITIVITY, MEASURED RATHER THAN ASSUMED. Perturbing the fold's retention
+    # factor by 0.1% moves no bf16 byte at all; 1% moves five. So this catches a
+    # fold that reads a different gate, and does not catch one that differs
+    # below a bf16 ULP - which is the right floor, because a drift smaller than
+    # the state's own quantisation is not a drift in the state.
 
     print("\nthe real KDA kernels, run on a CPU, match the reference recurrence")
     return 0

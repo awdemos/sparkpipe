@@ -47,7 +47,7 @@ template __global__ void LmGemmKernel<LmInt7, 16u, MIMO25_TILE_N, 256u, MIMO25_S
 template __global__ void LmGemmKernel<LmInt7, 32u, MIMO25_TILE_N, 256u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmInt7, 64u, MIMO25_TILE_N, 256u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 
-template __global__ void LmFusedResidualRmsNormKernel<MIMO25_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
+template __global__ void LmFusedResidualRmsNormKernel<MIMO25_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<MIMO25_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, MIMO25_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmQuantiseRowsKernel<LmInt7, MIMO25_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);

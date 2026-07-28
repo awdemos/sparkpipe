@@ -152,7 +152,7 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
 		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
-		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_HIDDEN,GLM52_RMS_EPSILON);
 	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
 		<<<dim3(rows,GLM52_HIDDEN / Format::kScaleGroup),GLM52_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
@@ -264,7 +264,7 @@ static int32_t Glm52LayerDenseMlp(const Glm52LayerBuffers *b, uint32_t rows, uin
 	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
 		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_HIDDEN,GLM52_RMS_EPSILON);
 	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
 		<<<dim3(rows,GLM52_HIDDEN / Format::kScaleGroup),GLM52_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
@@ -309,7 +309,7 @@ static int32_t Glm52LayerMoe(const Glm52LayerBuffers *b, uint32_t rows, uint32_t
 	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
 		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_HIDDEN,GLM52_RMS_EPSILON);
 	// The router logits have to be computed before they are selected from. An
 	// earlier draft of this file read b->router_logits without anything filling
 	// it, which would have selected experts from uninitialised memory - routing
@@ -403,7 +403,7 @@ static int32_t Glm52Head(const Glm52LayerBuffers *b, const void *head_norm_weigh
 	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
 		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,0,(const uint16_t *)head_norm_weight,
-		0,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+		0,b->normed_bf16,GLM52_HIDDEN,GLM52_HIDDEN,GLM52_RMS_EPSILON);
 	LmHeadCandidateKernel<GLM52_LAYER_THREADS,GLM52_HEAD_TILE>
 		<<<dim3(tiles,rows),GLM52_LAYER_THREADS,0,stream>>>(
 		b->normed_bf16,(const uint16_t *)head_weight,token_ids,

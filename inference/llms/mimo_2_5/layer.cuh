@@ -98,7 +98,7 @@ static int32_t Mimo25LayerAttention(const Mimo25LayerBuffers *b, uint32_t rows, 
 	LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>
 		<<<rows,MIMO25_LAYER_THREADS,(MIMO25_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
-		b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
 	LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>
 		<<<dim3(rows,MIMO25_HIDDEN / Format::kScaleGroup),MIMO25_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
@@ -172,7 +172,7 @@ static int32_t Mimo25LayerMoe(const Mimo25LayerBuffers *b, uint32_t rows, uint32
 	LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>
 		<<<rows,MIMO25_LAYER_THREADS,(MIMO25_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
@@ -230,7 +230,7 @@ static int32_t Mimo25LayerDenseMlp(const Mimo25LayerBuffers *b, uint32_t rows, u
 	LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>
 		<<<rows,MIMO25_LAYER_THREADS,(MIMO25_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
+		b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
 	LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>
 		<<<dim3(rows,MIMO25_HIDDEN / Format::kScaleGroup),MIMO25_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
@@ -276,7 +276,7 @@ static int32_t Mimo25Head(const Mimo25LayerBuffers *b, const void *head_norm_wei
 	LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>
 		<<<rows,MIMO25_LAYER_THREADS,(MIMO25_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,0,(const uint16_t *)head_norm_weight,
-		0,b->normed_bf16,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
+		0,b->normed_bf16,MIMO25_HIDDEN,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
 	LmHeadCandidateKernel<MIMO25_LAYER_THREADS,MIMO25_HEAD_TILE>
 		<<<dim3(tiles,rows),MIMO25_LAYER_THREADS,0,stream>>>(
 		b->normed_bf16,(const uint16_t *)head_weight,token_ids,

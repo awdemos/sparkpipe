@@ -151,6 +151,83 @@ void LmL2NormalisePerHeadKernel(uint16_t *__restrict__ rows_bf16, uint32_t heads
 			LmFloatToBf16(LmBf16ToFloat(rows_bf16[base + index]) * inverse);
 }
 
+// -- ReplaySSM ------------------------------------------------------------------
+//
+// Speculation over a recurrent state is the reason K3's decode can go from ~113
+// to ~423 tok/s, and the reason it is hard. Verification accepts a prefix of the
+// draft, so the state must be rewindable - and a KDA state overwrites itself
+// every token. The obvious fix, snapshotting after each draft step, costs
+// heads * KEY_DIM * VALUE_DIM per step per layer: at K3's shape 96 * 128 * 128
+// bf16 is 3 MB, times gamma+1 steps, times 69 layers, per running request. It
+// outgrows the state pool it competes with and caps concurrency.
+//
+// ReplaySSM stores the INPUTS instead. Verify reads the committed checkpoint and
+// never writes it, recording each step's (v, k, gate, beta) - about a kilobyte
+// against three megabytes. Once the sampler fixes the accepted length one fold
+// replays only the accepted prefix. Rejected drafts are never replayed, so
+// rollback is free.
+//
+// THE FOLD MUST NOT RECOMPUTE THE GATE. SGLang's account of getting this wrong
+// is the whole reason this comment is long: an early version recomputed it with
+// a subtly different formula, "which left every output looking correct while the
+// state quietly drifted underneath". The retention factor is stored by verify
+// and read back here. LmBoundedDecay is not called on this path.
+struct LmReplayStep
+{
+	const uint16_t *key_bf16;
+	const uint16_t *value_bf16;
+	const float *retention;
+	const float *write_gate;
+};
+
+// Advance the committed state through the accepted prefix, in place. One block
+// per (row, head); the recurrence over steps is serial by nature and the work
+// inside a step is the same flat pass the decode kernel uses.
+template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM>
+__global__ __launch_bounds__(THREADS, 1)
+void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, const uint32_t *__restrict__ state_index, const LmReplayStep *__restrict__ steps, const uint32_t *__restrict__ accepted_length, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t rows)
+{
+	__shared__ float shared_key[KEY_DIM];
+	__shared__ float shared_predicted[VALUE_DIM];
+	uint32_t row = blockIdx.x,head = blockIdx.y,step,index,flat;
+	uint16_t *state;
+	if ( row >= rows || head >= key_heads )
+		return;
+	state = (uint16_t *)(state_pool + ((uint64_t)state_index[row]
+		* key_heads * KEY_DIM * VALUE_DIM * sizeof(uint16_t)))
+		+ ((uint64_t)head * KEY_DIM * VALUE_DIM);
+	for (step = 0u; step < accepted_length[row]; ++step)
+	{
+		const LmReplayStep *input = &steps[step];
+		uint64_t head_key = (((uint64_t)row * key_heads) + head) * KEY_DIM;
+		uint64_t head_value = (((uint64_t)row * key_heads * value_heads_per_key)
+			+ (head * value_heads_per_key)) * VALUE_DIM;
+		float beta = input->write_gate[(row * key_heads) + head];
+		for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
+			shared_key[index] = LmBf16ToFloat(input->key_bf16[head_key + index]);
+		__syncthreads();
+		for (index = threadIdx.x; index < VALUE_DIM; index += THREADS)
+		{
+			float total = 0.0f;
+			uint32_t channel;
+			for (channel = 0u; channel < KEY_DIM; ++channel)
+				total += LmBf16ToFloat(state[(channel * VALUE_DIM) + index])
+					* shared_key[channel] * input->retention[head_key + channel];
+			shared_predicted[index] = total;
+		}
+		__syncthreads();
+		for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
+		{
+			uint32_t channel = flat / VALUE_DIM,element = flat % VALUE_DIM;
+			float v = LmBf16ToFloat(input->value_bf16[head_value + element]);
+			state[flat] = LmFloatToBf16(
+				(input->retention[head_key + channel] * LmBf16ToFloat(state[flat]))
+				+ (beta * (v - shared_predicted[element]) * shared_key[channel]));
+		}
+		__syncthreads();
+	}
+}
+
 // One decode step of the gated delta rule, one block per (row, head).
 //
 // GROUPED VALUE HEADS. Qwen 3.6 has 16 key heads and 48 value heads, so three

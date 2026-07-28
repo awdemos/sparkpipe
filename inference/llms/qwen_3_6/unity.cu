@@ -33,7 +33,7 @@ static_assert(QWEN36_LAYER_IS_LINEAR(0) && !QWEN36_LAYER_IS_LINEAR(3),
 template __global__ void LmGemmKernel<LmFp8, 16u, QWEN36_TILE_N, 128u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmFp8, 32u, QWEN36_TILE_N, 128u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmFp8, 64u, QWEN36_TILE_N, 128u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmFusedResidualRmsNormKernel<QWEN36_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
+template __global__ void LmFusedResidualRmsNormKernel<QWEN36_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<QWEN36_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, QWEN36_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmRopePerHeadKernel<QWEN36_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);

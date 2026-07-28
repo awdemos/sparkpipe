@@ -115,6 +115,44 @@ int main(void)
 				retention, write_gate, output[step], HEADS, 1u, 1u)));
 		for (index = 0u; index < HEADS * VALUE_DIM; ++index)
 			printf("out %.9g\n", (double)f32(output[step][index]));
+		for (index = 0u; index < HEADS * KEY_DIM; ++index)
+			printf("ret %.9g\n", (double)retention[index]);
+	}
+	// REPLAY THE SAME STEPS FROM ZERO AND DEMAND THE SAME STATE.
+	//
+	// ReplaySSM's correctness claim is that folding the accepted prefix from a
+	// checkpoint reproduces exactly what the recurrent path would have
+	// committed. Here the checkpoint is the zero state and the accepted prefix
+	// is every step, so the fold must land on the state the decode kernel
+	// already produced - byte for byte, since both are the same arithmetic in
+	// the same order.
+	{
+		static uint8_t replay_pool[sizeof(state_pool)];
+		static LmReplayStep steps[STEPS];
+		static float replay_retention[STEPS][HEADS * KEY_DIM];
+		static uint32_t accepted[1];
+		uint32_t mismatch = 0u;
+		memset(replay_pool, 0, sizeof(replay_pool));
+		for (step = 0u; step < STEPS; ++step)
+		{
+			LM_HOST_LAUNCH(dim3(1u, HEADS),
+				(LmBoundedDecayKernel<THREADS, KEY_DIM>(
+					decay_logit[step], channel_bias, head_log_scale,
+					replay_retention[step], HEADS, -5.0f, 1u)));
+			steps[step].key_bf16 = key[step];
+			steps[step].value_bf16 = value[step];
+			steps[step].retention = replay_retention[step];
+			steps[step].write_gate = write_gate;
+		}
+		accepted[0] = STEPS;
+		LM_HOST_LAUNCH(dim3(1u, HEADS),
+			(LmReplayFoldKernel<THREADS, KEY_DIM, VALUE_DIM>(
+				replay_pool, state_index, steps, accepted, HEADS, 1u, 1u)));
+		for (index = 0u; index < sizeof(state_pool); ++index)
+			if (replay_pool[index] != state_pool[index])
+				++mismatch;
+		printf("replay_mismatch %u of %u bytes\n",
+			mismatch, (unsigned)sizeof(state_pool));
 	}
 	return 0;
 }
