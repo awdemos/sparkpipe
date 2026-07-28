@@ -126,6 +126,20 @@ template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
 __global__ __launch_bounds__(THREADS, 1)
 void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, const uint16_t *__restrict__ query_rope_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position)
 {
+	// THE ACCUMULATOR IS EIGHT SLOTS AND THE LATENT MUST FIT IN THEM. Each
+	// thread holds elements threadIdx.x, threadIdx.x + THREADS, ... up to eight
+	// of them, and the loops are guarded by element < LATENT - so a latent wider
+	// than 8 * THREADS is not an overrun. It is worse: the tail is never
+	// computed and never written, and the output carries whatever the buffer
+	// held. Silent truncation of the top of every attention output.
+	//
+	// K3 at latent 512 and 256 threads has room for 2048, and glm5_2 the same,
+	// so nothing in this tree is near the edge. That is exactly why it needed
+	// saying: an instantiation at 32 threads would zero half of every output and
+	// compile without a word. Found by running the kernel at one thread, where
+	// the limit is 8.
+	static_assert(LATENT <= 8u * THREADS,
+		"the latent must fit the per-thread accumulator, or its tail is dropped");
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float shared_query[LATENT + ROPE];
 	float accumulator[8];

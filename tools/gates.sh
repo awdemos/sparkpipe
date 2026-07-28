@@ -56,6 +56,9 @@ run "router on host"       "python3 tests/test_router_host.py"
 # Six more kernels the other two harnesses do not reach, including the MoE
 # finalize whose launch was wrong four ways and compiled.
 run "layer on host"        "python3 tests/test_layer_host.py"
+# The MLA store and attention over a paged cache, two sequences with interleaved
+# pages so ignoring the page table is visible.
+run "mla on host"          "python3 tests/test_mla_host.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run "grouped topk builds"  "sh tools/build_grouped_topk.sh"
