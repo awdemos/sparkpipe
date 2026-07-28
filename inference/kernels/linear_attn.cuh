@@ -63,9 +63,19 @@
 // So a plausible-looking substitution here - softplus for sigmoid, or dropping
 // the bound - does not merely change the model. It reintroduces an overflow the
 // architecture was designed to remove.
-static __device__ __forceinline__ float LmBoundedDecay(float logit, float head_log_scale, float minimum_log_decay)
+// THE BIAS IS ADDED IN FP32, BEFORE THE SCALE. FlashKDA's reference keeps
+// dt_bias as a separate fp32 tensor and adds it after upcasting the bf16 logit:
+// folding a bf16 bias into a bf16 logit and upcasting afterwards is a different
+// number. The report writes z = W_up W_down x + b_alpha and hides that ordering.
+//
+// FlashKDA also works in LOG2: it computes g_min * log2(e) * sigmoid(...) and
+// exponentiates with ex2, because the chunkwise form takes a cumulative sum of
+// these logs and ex2 is the hardware instruction. exp(g_min * s) and
+// exp2(g_min * log2(e) * s) are the same number; anyone writing the chunkwise
+// path should carry log2 rather than convert per element.
+static __device__ __forceinline__ float LmBoundedDecay(float logit, float bias, float head_log_scale, float minimum_log_decay)
 {
-	float scaled = __expf(head_log_scale) * logit;
+	float scaled = __expf(head_log_scale) * (logit + bias);
 	float log_decay = minimum_log_decay * (1.0f / (1.0f + __expf(-scaled)));
 	return(__expf(log_decay));
 }
@@ -75,7 +85,7 @@ static __device__ __forceinline__ float LmBoundedDecay(float logit, float head_l
 // per-head bias - so they are PER HEAD PER CHANNEL, not one scalar per head.
 template<uint32_t THREADS, uint32_t KEY_DIM>
 __global__ __launch_bounds__(THREADS, 1)
-void LmBoundedDecayKernel(const uint16_t *__restrict__ logit_bf16, const float *__restrict__ head_log_scale, float *__restrict__ retention, uint32_t heads, float minimum_log_decay, uint32_t rows)
+void LmBoundedDecayKernel(const uint16_t *__restrict__ logit_bf16, const float *__restrict__ channel_bias, const float *__restrict__ head_log_scale, float *__restrict__ retention, uint32_t heads, float minimum_log_decay, uint32_t rows)
 {
 	uint32_t row = blockIdx.x,head = blockIdx.y,index;
 	uint64_t base;
@@ -84,7 +94,7 @@ void LmBoundedDecayKernel(const uint16_t *__restrict__ logit_bf16, const float *
 	base = (((uint64_t)row * heads) + head) * KEY_DIM;
 	for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
 		retention[base + index] = LmBoundedDecay(LmBf16ToFloat(logit_bf16[base + index]),
-			head_log_scale[head],minimum_log_decay);
+			channel_bias[(head * KEY_DIM) + index],head_log_scale[head],minimum_log_decay);
 }
 
 // One decode step of the gated delta rule, one block per (row, head).

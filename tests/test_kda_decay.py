@@ -41,8 +41,10 @@ def sigmoid(x):
     return exponential / (1.0 + exponential)
 
 
-def reference(logit, head_log_scale=0.0, minimum=G_MIN):
-    return math.exp(minimum * sigmoid(math.exp(head_log_scale) * logit))
+def reference(logit, head_log_scale=0.0, minimum=G_MIN, bias=0.0):
+    """FlashKDA tests/torch_ref.py: the bias is added to the logit in fp32
+    BEFORE the per-head scale multiplies, not after and not in bf16."""
+    return math.exp(minimum * sigmoid(math.exp(head_log_scale) * (logit + bias)))
 
 
 def kernel_source():
@@ -63,17 +65,17 @@ def run(cases):
 #include <math.h>
 int main(void)
 {
-\tfloat cases[][2] = {%s};
+\tfloat cases[][3] = {%s};
 \tint index;
 \tfor (index = 0; index < %d; ++index)
 \t{
-\t\tfloat scaled = expf(cases[index][1]) * cases[index][0];
+\t\tfloat scaled = expf(cases[index][1]) * (cases[index][0] + cases[index][2]);
 \t\tfloat log_decay = %ff * (1.0f / (1.0f + expf(-scaled)));
 \t\tprintf("%%.9g\\n", expf(log_decay));
 \t}
 \treturn 0;
 }
-""" % (",".join("{%ff,%ff}" % c for c in cases), len(cases), G_MIN)
+""" % (",".join("{%ff,%ff,%ff}" % c for c in cases), len(cases), G_MIN)
     source = Path(tempfile.gettempdir()) / "decay_check.c"
     binary = Path(tempfile.gettempdir()) / "decay_check"
     source.write_text(program)
@@ -87,20 +89,23 @@ int main(void)
 
 
 def main():
-    cases = [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (20.0, 0.0), (-20.0, 0.0),
-             (1000.0, 0.0), (-1000.0, 0.0), (1.0, 1.5), (1.0, -1.5), (0.25, 0.0)]
+    # (logit, head_log_scale, channel_bias)
+    cases = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0), (20.0, 0.0, 0.0),
+             (-20.0, 0.0, 0.0), (1000.0, 0.0, 0.0), (-1000.0, 0.0, 0.0),
+             (1.0, 1.5, 0.0), (1.0, -1.5, 0.0),
+             (0.0, 0.0, 2.0), (0.0, 0.0, -2.0), (1.0, 0.5, -3.0)]
     got = run(cases)
     if got is None:
         return 1
     failures = 0
     floor = math.exp(G_MIN)
-    for (logit, scale), value in zip(cases, got):
-        want = reference(logit, scale)
+    for (logit, scale, bias), value in zip(cases, got):
+        want = reference(logit, scale, bias=bias)
         if abs(want - value) > max(1e-6, abs(want) * 1e-6):
-            print(f"  FAIL z={logit} A={scale}: kernel {value:.9g}, reference {want:.9g}")
+            print(f"  FAIL z={logit} A={scale} b={bias}: kernel {value:.9g}, reference {want:.9g}")
             failures += 1
         if not (floor <= value <= 1.0):
-            print(f"  FAIL z={logit} A={scale}: {value:.9g} outside [exp(-5), 1]")
+            print(f"  FAIL z={logit} A={scale} b={bias}: {value:.9g} outside [exp(-5), 1]")
             failures += 1
     # the bound must hold where the mapping it replaced does not
     softplus = math.exp(-math.exp(0.0) * 1000.0)  # Softplus(1000) is 1000
@@ -111,6 +116,9 @@ def main():
     # and the per-head scale must still do something, or a clamp would pass
     if abs(reference(1.0, 1.5) - reference(1.0, -1.5)) < 1e-3:
         print("  FAIL the per-head log-scale does not move the curve")
+        failures += 1
+    if abs(reference(0.0, 0.0, bias=2.0) - reference(0.0, 0.0, bias=-2.0)) < 1e-3:
+        print("  FAIL the channel bias does not move the curve; it is being dropped")
         failures += 1
     print(f"cases {len(cases)}, g_min {G_MIN}, floor exp(g_min) = {floor:.6g}")
     print(f"unbounded softplus at z=1000 would give {softplus:.3g}, "
