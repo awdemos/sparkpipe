@@ -74,7 +74,10 @@
 // losing that distinction is how an inferred number becomes load-bearing.
 //
 // It is load-bearing now - bind.cu branches on it - so it needs confirming
-// against whichever checkpoint these 48 layers came from.
+// against whichever checkpoint these 48 layers came from. SETTLED BY: that
+// checkpoint's config.json, field first_k_dense_replace or its equivalent. One
+// grep, once someone names the variant - and naming the variant is the blocker,
+// not the grep, because the shapes here match no MiMo card I have seen.
 #define MIMO25_FIRST_ROUTED_LAYER 1u           /* GUESS (family pattern) */
 
 

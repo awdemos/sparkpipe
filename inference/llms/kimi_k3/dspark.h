@@ -16,7 +16,7 @@
 //
 //                        GLM-5.2              Kimi K3
 //   block size           8                    7
-//   max verify tokens    7                    (block - 1, presumed)
+//   verify positions     8                    8
 //   aux layer ids        8,23,39,55,70        7,23,51,67,83
 //   draft layers         5                    5
 //   attention heads      64                   64
@@ -120,4 +120,11 @@ static_assert(K3_DSPARK_MASK_TOKEN_ID < K3_VOCAB,
 // Reported gains where it does pay: +68% throughput at batch 256 on chat with
 // accept length easing 2.7 to 2.2, and +24% on few-shot math with 5.0 to 4.3.
 #define K3_DSPARK_TRIM_MIN_BATCH 8u
+
+// A block of 7 drafts plus the bonus token is 8 verified positions. Not
+// presumed from GLM-5.2's block-minus-one: SGLang's post says the target
+// "verifies gamma+1 draft tokens" and then measures "five of the eight verified
+// positions on a typical step get rejected" against an accept length near 2.7.
+// Seven drafts, eight positions.
+#define K3_DSPARK_VERIFY_POSITIONS (K3_DSPARK_BLOCK_SIZE + 1u)
 

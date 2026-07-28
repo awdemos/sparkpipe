@@ -96,12 +96,13 @@
 // suggests, so calling any rope kernel on a K3 layer would be wrong.
 #define K3_QK_UNROTATED_DIM 64u
 #define K3_V_HEAD_DIM 128u
-// DERIVED, NOT READ. config.json carries no softmax_scale for the MLA path, so
-// this is the standard MLA convention: 1/sqrt(qk_nope + qk_rope) over the whole
-// query head, 128 + 64 = 192. DeepSeek-V2's MLA, which K3 says it retains, uses
-// exactly that. It is an inference from the architecture rather than a number
-// from the checkpoint, and the distinction is the same one the GUESS markers
-// above were making before the config landed.
+// READ from modeling_kimi_linear.py line 359: self.scaling = self.q_head_dim
+// ** (-0.5), with q_head_dim = qk_nope_head_dim + qk_rope_head_dim = 128 + 64.
+//
+// I had this as DERIVED, reasoning from the MLA convention, while the modelling
+// file was already on disk. The number was right and the label was wrong, which
+// is the worse of the two failures: a hedge on a fact that could be checked
+// spends someone else's review time confirming what a grep would have settled.
 #define K3_MLA_QK_SCALE 0.0721687836f        /* 1 / sqrt(128 + 64) */
 #define K3_MLA_USE_NOPE 1u
 #define K3_MLA_OUTPUT_GATE 1u
