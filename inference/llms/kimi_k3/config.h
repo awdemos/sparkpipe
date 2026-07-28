@@ -96,6 +96,13 @@
 // suggests, so calling any rope kernel on a K3 layer would be wrong.
 #define K3_QK_UNROTATED_DIM 64u
 #define K3_V_HEAD_DIM 128u
+// DERIVED, NOT READ. config.json carries no softmax_scale for the MLA path, so
+// this is the standard MLA convention: 1/sqrt(qk_nope + qk_rope) over the whole
+// query head, 128 + 64 = 192. DeepSeek-V2's MLA, which K3 says it retains, uses
+// exactly that. It is an inference from the architecture rather than a number
+// from the checkpoint, and the distinction is the same one the GUESS markers
+// above were making before the config landed.
+#define K3_MLA_QK_SCALE 0.0721687836f        /* 1 / sqrt(128 + 64) */
 #define K3_MLA_USE_NOPE 1u
 #define K3_MLA_OUTPUT_GATE 1u
 

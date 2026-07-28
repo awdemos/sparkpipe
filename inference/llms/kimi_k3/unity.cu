@@ -17,7 +17,7 @@
 #include "inference/kernels/head.cuh"
 #include "inference/kernels/formats/fp8.cuh"
 #include "inference/kernels/formats/int7.cuh"
-#include "inference/llms/kimi_k3/config.h"
+#include "inference/llms/kimi_k3/layer.cuh"
 
 // THE MLA LATENT IS kv_lora_rank, NOT THE KDA HEAD DIM. This was
 // LmKvLatent<..., K3_KDA_KEY_DIM, 64u, ...> - 128 elements, the width of a KDA
@@ -78,3 +78,36 @@ extern "C" int32_t K3GemmInt7(LmGemmArguments *a, const void *x, const void *w,
 {
 	return(LmGemmLaunch<LmInt7,K3_TILE_N,256u,K3_STAGES,K3_WARPS>(a,x,w,rows,tokens,K3_TOP_K,groups,k,n,sms,grouped,s));
 }
+
+// -- entry points ---------------------------------------------------------------
+//
+// Two attention kinds chosen by K3_LAYER_IS_LINEAR from the ABSOLUTE layer
+// index. 93 layers with a period of four and an exception at the last one, so a
+// rank that used its own offset would run the wrong kind for every layer it
+// owns.
+
+extern "C" int32_t K3LayerKdaInt7(const K3LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t s)
+{
+	return(K3LayerKda<LmInt7>(b,rows,sms,s));
+}
+
+extern "C" int32_t K3LayerMlaInt7(const K3LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t s)
+{
+	return(K3LayerMla<LmInt7,K3GlobalKv>(b,rows,context,sms,s));
+}
+
+extern "C" int32_t K3LayerLatentMoeInt7(const K3LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t s)
+{
+	return(K3LayerLatentMoe<LmInt7>(b,rows,packed_rows,sms,s));
+}
+
+extern "C" int32_t K3HeadFullVocab(const K3LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t s)
+{
+	return(K3Head(b,norm_weight,head_weight,0,K3_VOCAB,rows,s));
+}
+
+extern "C" int32_t K3HeadRestricted(const K3LayerBuffers *b, const void *norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t count, uint32_t rows, cudaStream_t s)
+{
+	return(K3Head(b,norm_weight,head_weight,token_ids,count,rows,s));
+}
+

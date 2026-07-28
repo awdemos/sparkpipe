@@ -32,7 +32,7 @@ KIND_ENTRY = {
     "LM_LAYER_SPARSE": ("Sparse", "Csa", "Indexed"),
     "LM_LAYER_COMPRESSED": ("Compressed", "Hca"),
     "LM_LAYER_LATENT": ("Attention", "Mla"),
-    "LM_LAYER_RECURRENT": ("Linear", "Delta", "Recurrent"),
+    "LM_LAYER_RECURRENT": ("Linear", "Delta", "Recurrent", "Kda"),
 }
 
 KIND_VALUE = {

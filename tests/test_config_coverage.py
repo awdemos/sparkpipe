@@ -29,6 +29,31 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # Each needs a reason. "Not implemented yet" is a valid reason and should be
 # stated, because then this list is the list of what is missing.
 EXEMPT = {
+    "K3_MAX_CONTEXT": "a pool-sizing number for the host, not a layer input",
+    "K3_FIRST_ROUTED_LAYER": "NOT REACHABLE YET. K3 has one dense layer before "
+                             "the MoE stack and layer.cuh has no dense MLP - "
+                             "every layer currently runs LatentMoE. Layer 0 is "
+                             "wrong until a dense path exists",
+    "K3_DENSE_INTERMEDIATE": "same: the dense MLP for layer 0 is not written",
+    "K3_ROUTED_SCALE": "1.0 in this checkpoint, so the multiply is omitted "
+                       "rather than emitted as a no-op. It stops being safe to "
+                       "omit the moment a sibling checkpoint sets it otherwise",
+    "K3_MLA_USE_NOPE": "a fact about the model that the code expresses by "
+                       "calling no rope kernel; test_rope_pairing.py is what "
+                       "enforces it",
+    "K3_MLA_OUTPUT_GATE": "same - expressed by LmOutputGateKernel being called "
+                          "on the MLA path, not by reading the flag",
+    "K3_KDA_FULL_RANK_GATE": "same. K3 replaced Kimi Linear's low-rank output "
+                             "gate with a full-rank projection, which is what "
+                             "kda_gate_weight at hidden x heads*head_dim IS",
+    "K3_ATTNRES_BLOCK_SIZE": "NOT IMPLEMENTED. AttnRes needs 9 hidden states "
+                             "per token across the stage boundary; see "
+                             "docs/MODEL_SUPPORT.md item 7",
+    "K3_MXFP4_GROUP": "the routed experts are MXFP4 at group 32; the format "
+                      "trait carries the group and no checkpoint is loaded yet",
+    "K3_MTP_LAYERS": "0 in config.json, 1 in the report's Table 1. The "
+                     "checkpoint and the paper disagree and nothing here "
+                     "drives speculation, so neither value is acted on",
     "K3_LAYER_KIND": "no layer.cuh to dispatch to yet",
     "GLM52_LAYER_KIND": "uniform model - the selector returns one kind, so "
                         "there is nothing for a dispatcher to choose",
