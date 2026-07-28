@@ -107,6 +107,25 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		if ( out_values != 0 )
 			out_values[((uint64_t)blockIdx.x * K) + index] = scores[base + slots[index]];
 	}
+	// GROUPED SELECTION IS NOT IMPLEMENTED, and this is what it would take.
+	//
+	// K3 sets num_expert_group 1 and topk_group 1, so modeling_kimi_linear.py
+	// skips the branch entirely and this checkpoint needs nothing. A sibling
+	// with groups would need, before the sort above:
+	//
+	//   score each group by the SUM OF ITS TOP TWO experts, not its best or its
+	//   mean - the reference is topk(2, dim=-1)[0].sum(dim=-1)
+	//   take the top topk_group groups by that score
+	//   mask every expert outside them to -inf
+	//   then run the existing top-k over what remains
+	//
+	// The bias participates in the group score, because the reference groups
+	// scores_for_choice rather than scores. So a grouped implementation has the
+	// same select-versus-weigh split as the ungrouped one, one level up.
+	//
+	// Left unimplemented rather than written blind: no checkpoint in this tree
+	// sets num_expert_group above 1, and a selection path with no model to test
+	// it against is a second thing to get wrong.
 	if ( RENORMALISE && out_values != 0 )
 	{
 		// moe_renormalize: divide the k gates by their sum so they sum to one.
