@@ -151,7 +151,26 @@ recorded as an exemption in `test_config_coverage.py` reading NOT IMPLEMENTED.
 The first three MoE layers route through a token-id → expert-id table rather
 than the router. A different gate, not a different expert kernel.
 
-### 7. Non-uniform residuals — dsv4 (mHC) and kimi_k3 (AttnRes), not kernels
+### 7. Non-uniform residuals — the kernel exists, the transport does not
+
+`LmAttnResKernel` implements the retrieval: normalise each candidate to score
+it, softmax over the scores, mix the UNNORMALISED candidates. Checked on the
+host against report eq. 9 at 2.2e-3, and the test fails if the values are
+normalised too — which would flatten exactly the layers the mechanism weighs.
+
+WHAT REMAINS IS NOT KERNEL WORK. A layer needs the bank threaded through it:
+the block representation is a running sum reset every 12 layers, the embedding
+is always b_0, and the retrieval runs TWICE per layer — before attention and
+before the MLP, with separate projections. That state has to cross the pipeline
+stage boundary, which is 9 hidden states per token instead of one.
+
+SGLang's account is worth following rather than reinventing: the block
+representation is generated once at the boundary layer and shared by every
+subsequent layer, and the pipeline carries only newly generated blocks
+incrementally. That is a scheduler and transport change, and it is where
+deepseek_v4's mHC should land too.
+
+### 7b. The old note, kept because the design argument still holds
 
 Every block carries `n_hc = 4` streams of the hidden state across the boundary,
 mixed by a Sinkhorn-Knopp normalised doubly-stochastic matrix, 20 iterations.

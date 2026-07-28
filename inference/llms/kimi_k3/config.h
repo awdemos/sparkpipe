@@ -158,6 +158,13 @@
 #define K3_KDA_GATE_LOWER_BOUND -5.0f
 #define K3_KDA_FULL_RANK_GATE 1u
 
+// AttnRes sources at K3's shape: 93 layers in blocks of 12 gives 8 blocks, one
+// partial final, and the embedding is always b_0 - so a layer late in the stack
+// scores 9 candidates plus the running partial sum. LmAttnResKernel takes the
+// count at runtime because it grows with depth; MAX_SOURCES bounds the shared
+// arrays.
+#define K3_ATTNRES_MAX_SOURCES 10u
+
 // AttnRes, now read from the modelling file. It is an ATTENTION over residuals,
 // not a weighted sum with learned scalars:
 //

@@ -139,12 +139,36 @@ def main():
             want.append(total)
     failures, _ = compare("moe finalize", want, v["finalout"], failures)
 
+    # AttnRes: normalise each candidate to score it, then mix the UNNORMALISED
+    # candidates. Report eq. 9 and _apply_attn_res both do this, and normalising
+    # the values too would flatten exactly the layers the mechanism weighs.
+    sources = 4
+    want = []
+    for row in range(rows):
+        candidates = []
+        for source in range(sources - 1):
+            base = (row * (sources - 1) + source) * channels
+            candidates.append(v["bank"][base:base + channels])
+        candidates.append(v["partial"][row * channels:(row + 1) * channels])
+        scores = []
+        for candidate in candidates:
+            inverse = 1.0 / math.sqrt(
+                sum(x * x for x in candidate) / channels + 1e-5)
+            scores.append(sum(x * inverse * w
+                              for x, w in zip(candidate, v["attnresw"])))
+        top = max(scores)
+        weights = [math.exp(s - top) for s in scores]
+        total = sum(weights)
+        want.extend(sum(w * c[e] for w, c in zip(weights, candidates)) / total
+                    for e in range(channels))
+    failures, _ = compare("attn res", want, v["attnresout"], failures)
+
     print(f"\nrows {rows}  heads {heads}  channels {channels}  "
           f"tolerance {TOLERANCE:.0e}")
     if failures:
         print(f"\nFAIL ({failures})")
         return 1
-    print("six more kernels run on a CPU and match their references")
+    print("seven more kernels run on a CPU and match their references")
     return 0
 
 

@@ -46,6 +46,7 @@ float lm_quant_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 #define CONV_KERNEL 4u
 #define INTERMEDIATE 5u
 #define TOP_K 2u
+#define SOURCES 4u
 #define EXPERT_ROWS (ROWS * TOP_K)
 
 static uint32_t seed = 24680u;
@@ -74,6 +75,9 @@ int main(void)
 	static uint16_t norm_out[ROWS * CHANNELS];
 	static uint16_t gate_val[ROWS * CHANNELS], gated[ROWS * CHANNELS];
 	static uint16_t expert_out[EXPERT_ROWS * CHANNELS], finalized[ROWS * CHANNELS];
+	static uint16_t bank[ROWS * (SOURCES - 1u) * CHANNELS];
+	static uint16_t partial[ROWS * CHANNELS], attnres_w[CHANNELS];
+	static uint16_t attnres_out[ROWS * CHANNELS];
 	static uint32_t state_index[1] = { 0u };
 	static uint32_t packed_row[ROWS * TOP_K];
 	static float route_weight[ROWS * TOP_K];
@@ -119,6 +123,15 @@ int main(void)
 	Emit("normw", norm_w, CHANNELS);
 	Emit("gateval", gate_val, ROWS * CHANNELS);
 	Emit("gated", gated, ROWS * CHANNELS);
+	for (index = 0u; index < ROWS * (SOURCES - 1u) * CHANNELS; ++index)
+		bank[index] = LmFloatToBf16(NextRandom() * 2.0f);
+	for (index = 0u; index < ROWS * CHANNELS; ++index)
+		partial[index] = LmFloatToBf16(NextRandom());
+	for (index = 0u; index < CHANNELS; ++index)
+		attnres_w[index] = LmFloatToBf16(NextRandom());
+	Emit("bank", bank, ROWS * (SOURCES - 1u) * CHANNELS);
+	Emit("partial", partial, ROWS * CHANNELS);
+	Emit("attnresw", attnres_w, CHANNELS);
 	Emit("expert", expert_out, EXPERT_ROWS * CHANNELS);
 	for (index = 0u; index < ROWS * TOP_K; ++index)
 		printf("rweight %.9g\n", (double)route_weight[index]);
@@ -154,5 +167,10 @@ int main(void)
 			expert_out, packed_row, route_weight, finalized,
 			ROWS, TOP_K, CHANNELS)));
 	Emit("finalout", finalized, ROWS * CHANNELS);
+
+	LM_HOST_LAUNCH(dim3(ROWS),
+		(LmAttnResKernel<THREADS, 16u>(
+			bank, partial, attnres_w, attnres_out, SOURCES, CHANNELS, 1e-5f)));
+	Emit("attnresout", attnres_out, ROWS * CHANNELS);
 	return 0;
 }

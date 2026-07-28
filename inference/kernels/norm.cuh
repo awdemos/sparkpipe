@@ -377,3 +377,85 @@ void LmFusedNormQuantiseKernel(const uint16_t *__restrict__ input_bf16, const ui
 		__syncthreads();
 	}
 }
+
+// Attention Residuals: retrieve from a bank of block representations instead of
+// reading one accumulated stream.
+//
+// Report eq. 8-10 and modeling_kimi_linear.py's _apply_attn_res. Each layer has
+// a learnable pseudo-query; the keys and values are the block representations
+// plus the running partial sum of the current block, with the token embedding
+// always present as b_0.
+//
+//     v      = [b_0, ..., b_{n-1}, partial]
+//     k      = v * rsqrt(mean(v^2) + eps)      each candidate normalised
+//     score  = sum(k * (norm_weight * query))  fused per channel
+//     out    = softmax(score) @ v
+//
+// THE NORM IS ON THE KEY AND NOT THE VALUE. The reference normalises to form the
+// score and then mixes the UNNORMALISED candidates - the RMSNorm is there to stop
+// a layer with large-magnitude output dominating the weights, not to rescale what
+// is retrieved. Normalising both would run and would quietly flatten the
+// contribution of exactly the layers the mechanism exists to weigh.
+//
+// The query and the norm weight are folded into one vector at pack time, which
+// is what the reference does at run time: norm.weight * proj.weight.squeeze(0).
+template<uint32_t THREADS, uint32_t MAX_SOURCES>
+__global__ __launch_bounds__(THREADS, 1)
+void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const uint16_t *__restrict__ score_weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t dimension, float epsilon)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	__shared__ float score[MAX_SOURCES];
+	__shared__ float weight[MAX_SOURCES];
+	uint32_t row = blockIdx.x,source,index;
+	float running_max = -INFINITY,running_sum = 0.0f;
+	// The partial sum is the last candidate; the bank holds the rest.
+	for (source = 0u; source < sources; ++source)
+	{
+		const uint16_t *values = source + 1u == sources
+			? partial_bf16 + ((uint64_t)row * dimension)
+			: bank_bf16 + ((((uint64_t)row * (sources - 1u)) + source) * dimension);
+		float square = 0.0f,dot = 0.0f,inverse;
+		for (index = threadIdx.x; index < dimension; index += THREADS)
+		{
+			float value = LmBf16ToFloat(values[index]);
+			square += value * value;
+		}
+		square = LmBlockSum<THREADS>(square,reduction);
+		inverse = rsqrtf((square / (float)dimension) + epsilon);
+		for (index = threadIdx.x; index < dimension; index += THREADS)
+			dot += LmBf16ToFloat(values[index]) * inverse
+				* LmBf16ToFloat(score_weight_bf16[index]);
+		dot = LmBlockSum<THREADS>(dot,reduction);
+		if ( threadIdx.x == 0u )
+			score[source] = dot;
+		__syncthreads();
+	}
+	// Softmax over a handful of candidates: nine at K3's block size. One thread
+	// is the right shape here - a block reduction over nine values costs more in
+	// barriers than it saves.
+	if ( threadIdx.x == 0u )
+	{
+		for (source = 0u; source < sources; ++source)
+			running_max = fmaxf(running_max,score[source]);
+		for (source = 0u; source < sources; ++source)
+		{
+			weight[source] = __expf(score[source] - running_max);
+			running_sum += weight[source];
+		}
+		for (source = 0u; source < sources; ++source)
+			weight[source] /= running_sum;
+	}
+	__syncthreads();
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float total = 0.0f;
+		for (source = 0u; source < sources; ++source)
+		{
+			const uint16_t *values = source + 1u == sources
+				? partial_bf16 + ((uint64_t)row * dimension)
+				: bank_bf16 + ((((uint64_t)row * (sources - 1u)) + source) * dimension);
+			total += weight[source] * LmBf16ToFloat(values[index]);
+		}
+		output_bf16[((uint64_t)row * dimension) + index] = LmFloatToBf16(total);
+	}
+}
