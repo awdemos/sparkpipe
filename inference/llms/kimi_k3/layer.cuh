@@ -19,6 +19,21 @@
 #include "inference/kernels/kv.cuh"
 #include "inference/llms/kimi_k3/config.h"
 
+// THE MLA LATENT IS kv_lora_rank, NOT THE KDA HEAD DIM. This was
+// LmKvLatent<..., K3_KDA_KEY_DIM, 64u, ...> - 128 elements, the width of a KDA
+// head, standing in for a 512-element MLA latent. Two unrelated dimensions that
+// both happen to be head-shaped, so nothing looked wrong and the pool came out
+// four times too small.
+//
+// Same defect qwen_3_6 had one commit earlier, found the same way: the constant
+// the geometry needed was not in config.h, so a nearby one was used.
+using K3GlobalKv = LmKvLatent<K3_KV_BITS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM, K3_KV_PAGE_SLOTS>;
+
+// Declared here rather than in unity.cu because K3LayerMla takes the geometry
+// as a template argument, so every caller of a layer needs the alias. bind.cu
+// did and could not see it - the same one-line failure qwen_3_6's driver hit,
+// which is a sign the alias belongs beside the layer in every model.
+
 #define K3_LAYER_THREADS 256u
 #define K3_LAYER_TILE_N 128u
 #define K3_LAYER_STAGES 2u
@@ -76,6 +91,7 @@ static_assert(K3_MLA_OUT_DIM % 256u == 0u, "the MLA output projection");
 static_assert(K3_ROUTED_EXPERT_HIDDEN % 256u == 0u, "the routed experts' input");
 static_assert(K3_EXPERT_INTERMEDIATE % 256u == 0u, "the routed down-projection");
 static_assert(K3_SHARED_INTERMEDIATE % 256u == 0u, "the shared down-projection");
+static_assert(K3_DENSE_INTERMEDIATE % 256u == 0u, "layer 0's dense down-projection");
 
 struct K3LayerBuffers
 {
@@ -134,6 +150,10 @@ struct K3LayerBuffers
 	const void *shared_w1_scale;
 	const void *shared_w2_weight;
 	const void *shared_w2_scale;
+	const void *dense_gate_up_weight;
+	const void *dense_gate_up_scale;
+	const void *dense_down_weight;
+	const void *dense_down_scale;
 
 	uint16_t *hidden_bf16;
 	uint16_t *residual_bf16;
@@ -422,6 +442,34 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	return(K3Project<Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
 		b->hidden_bf16,rows,K3_SHARED_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream));
+}
+
+// The dense MLP, layer 0 only. first_k_dense_replace is 1: K3 has exactly one
+// full-width feed-forward layer before the MoE stack begins, at intermediate
+// 33792 rather than the routed 3072.
+//
+// Without this every layer ran LatentMoE and layer 0 was wrong - which the
+// config gate said in those words, as an exemption on K3_FIRST_ROUTED_LAYER,
+// rather than being discovered later.
+template<class Format>
+static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+	int32_t status;
+	LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>
+		<<<rows,K3_LAYER_THREADS,(K3_HIDDEN + 8u) * sizeof(float),stream>>>(
+		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
+		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_RMS_EPSILON);
+	status = K3Project<Format>(b,b->normed_bf16,b->dense_gate_up_weight,
+		b->dense_gate_up_scale,b->gate_up_bf16,rows,K3_HIDDEN,
+		K3_DENSE_INTERMEDIATE * 2u,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	LmSituMulKernel<K3_LAYER_THREADS><<<rows,K3_LAYER_THREADS,0,stream>>>(
+		b->gate_up_bf16,b->intermediate_bf16,K3_DENSE_INTERMEDIATE,
+		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+	return(K3Project<Format>(b,b->intermediate_bf16,b->dense_down_weight,
+		b->dense_down_scale,b->hidden_bf16,rows,K3_DENSE_INTERMEDIATE,K3_HIDDEN,
+		multiprocessors,stream));
 }
 
 static int32_t K3Head(const K3LayerBuffers *b, const void *head_norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, cudaStream_t stream)

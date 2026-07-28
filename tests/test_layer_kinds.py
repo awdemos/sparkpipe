@@ -46,7 +46,6 @@ KIND_VALUE = {
 NO_DRIVER = {
     "deepseek_v4": "three kinds and one entry point; a driver would have "
                    "nothing to dispatch to",
-    "kimi_k3": "no layer.cuh either",
 }
 
 KNOWN_INCOMPLETE = {
@@ -59,10 +58,6 @@ KNOWN_INCOMPLETE = {
     ("deepseek_v4", "LM_LAYER_COMPRESSED"):
         "HCA is CSA at compression 128 with the other rope theta. Same missing "
         "call, plus DSV4_COMPRESS_ROPE_THETA is unreachable without it",
-    ("kimi_k3", "LM_LAYER_RECURRENT"):
-        "no layer.cuh at all; waiting on the release",
-    ("kimi_k3", "LM_LAYER_LATENT"):
-        "no layer.cuh at all; waiting on the release",
 }
 
 

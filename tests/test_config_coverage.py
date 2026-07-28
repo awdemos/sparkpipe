@@ -30,11 +30,6 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 # stated, because then this list is the list of what is missing.
 EXEMPT = {
     "K3_MAX_CONTEXT": "a pool-sizing number for the host, not a layer input",
-    "K3_FIRST_ROUTED_LAYER": "NOT REACHABLE YET. K3 has one dense layer before "
-                             "the MoE stack and layer.cuh has no dense MLP - "
-                             "every layer currently runs LatentMoE. Layer 0 is "
-                             "wrong until a dense path exists",
-    "K3_DENSE_INTERMEDIATE": "same: the dense MLP for layer 0 is not written",
     "K3_ROUTED_SCALE": "1.0 in this checkpoint, so the multiply is omitted "
                        "rather than emitted as a no-op. It stops being safe to "
                        "omit the moment a sibling checkpoint sets it otherwise",

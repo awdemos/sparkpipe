@@ -19,15 +19,6 @@
 #include "inference/kernels/formats/int7.cuh"
 #include "inference/llms/kimi_k3/layer.cuh"
 
-// THE MLA LATENT IS kv_lora_rank, NOT THE KDA HEAD DIM. This was
-// LmKvLatent<..., K3_KDA_KEY_DIM, 64u, ...> - 128 elements, the width of a KDA
-// head, standing in for a 512-element MLA latent. Two unrelated dimensions that
-// both happen to be head-shaped, so nothing looked wrong and the pool came out
-// four times too small.
-//
-// Same defect qwen_3_6 had one commit earlier, found the same way: the constant
-// the geometry needed was not in config.h, so a nearby one was used.
-using K3GlobalKv = LmKvLatent<K3_KV_BITS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM, K3_KV_PAGE_SLOTS>;
 using K3LinearState = LmKvState<K3_KDA_STATE_BYTES>;
 
 static_assert(K3LinearState::kGrows == false, "a delta-rule state does not grow with context");
