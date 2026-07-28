@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.." || exit 1
 cat > /tmp/lm_replay_fold.cu <<'EOF'
 #include "inference/kernels/linear_attn.cuh"
 template __global__ void LmReplayFoldKernel<256u, 128u, 128u>(
-	uint8_t *, const uint32_t *, const LmReplayStep *, const uint32_t *,
+	uint8_t *, uint32_t, const uint32_t *, const LmReplayStep *, const uint32_t *,
 	uint32_t, uint32_t, uint32_t);
 EOF
 "$CUDA/bin/nvcc" -std=c++17 -gencode arch=compute_121a,code=sm_121a -O1 -I. \

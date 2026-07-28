@@ -185,7 +185,7 @@ struct LmReplayStep
 // inside a step is the same flat pass the decode kernel uses.
 template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM>
 __global__ __launch_bounds__(THREADS, 1)
-void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, const uint32_t *__restrict__ state_index, const LmReplayStep *__restrict__ steps, const uint32_t *__restrict__ accepted_length, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t rows)
+void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const LmReplayStep *__restrict__ steps, const uint32_t *__restrict__ accepted_length, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t rows)
 {
 	__shared__ float shared_key[KEY_DIM];
 	__shared__ float shared_predicted[VALUE_DIM];
@@ -193,9 +193,24 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, const uint32_t *__rest
 	uint16_t *state;
 	if ( row >= rows || head >= key_heads )
 		return;
+	// THE POOL STRIDE IS A PARAMETER, NOT AN ASSUMPTION.
+	//
+	// This computed its slot from key_heads * KEY_DIM * VALUE_DIM * 2, hard-wiring
+	// both the element size and the absence of anything else in the slot. K3's
+	// config declares the state fp32 and bundles the three convolution windows
+	// into the same per-request block - sized against SGLang's measured 54 MB at
+	// TP=8 - so a pool allocated at that stride and addressed at this one aliases
+	// sequence 1 into sequence 0 for any batch above one.
+	//
+	// Neither side was wrong on its own. They were two expressions of the same
+	// quantity that nothing forced to agree, which is the third time this branch
+	// has found that shape: the MLA latent standing in for the KDA head dim, and
+	// qwen's KV heads before it.
+	//
+	// slot_bytes now comes from the caller, which reads it from the model's
+	// config, and the element size follows from the same place.
 	state = (uint16_t *)(state_pool + ((uint64_t)state_index[row]
-		* key_heads * KEY_DIM * VALUE_DIM * sizeof(uint16_t)))
-		+ ((uint64_t)head * KEY_DIM * VALUE_DIM);
+		* slot_bytes)) + ((uint64_t)head * KEY_DIM * VALUE_DIM);
 	for (step = 0u; step < accepted_length[row]; ++step)
 	{
 		const LmReplayStep *input = &steps[step];
@@ -236,7 +251,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, const uint32_t *__rest
 // is a parameter rather than assumed to be one.
 template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM>
 __global__ __launch_bounds__(THREADS, 1)
-void LmDeltaRuleDecodeKernel(uint8_t *__restrict__ state_pool, const uint32_t *__restrict__ state_index, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t rows)
+void LmDeltaRuleDecodeKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t rows)
 {
 	__shared__ float shared_key[KEY_DIM];
 	__shared__ float shared_predicted[VALUE_DIM];
@@ -248,7 +263,7 @@ void LmDeltaRuleDecodeKernel(uint8_t *__restrict__ state_pool, const uint32_t *_
 	// One slot per sequence, never paged: the state does not grow, so its
 	// address is the sequence's slot base plus this head's slice.
 	state = (uint16_t *)(state_pool
-		+ ((uint64_t)state_index[row] * key_heads * KEY_DIM * VALUE_DIM * 2u)
+		+ ((uint64_t)state_index[row] * slot_bytes)
 		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * 2u));
 	// PER HEAD PER CHANNEL. This read was forget_gate[(row * key_heads) + head],
 	// one scalar per head, which cannot express Kimi K3's channel-wise decay -

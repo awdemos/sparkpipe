@@ -40,6 +40,9 @@ float lm_norm_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 #define CONV_KERNEL 4u
 #define STEPS 6u
 #define THREADS 1u
+// The pool stride the harness allocates at, named once and passed to both
+// kernels - which is the whole point of the parameter existing.
+#define SLOT_BYTES (HEADS * KEY_DIM * VALUE_DIM * 2u)
 
 static uint16_t bf16(float value) { return LmFloatToBf16(value); }
 static float f32(uint16_t value) { return LmBf16ToFloat(value); }
@@ -111,7 +114,7 @@ int main(void)
 				retention, HEADS, -5.0f, 1u)));
 		LM_HOST_LAUNCH(dim3(1u, HEADS),
 			(LmDeltaRuleDecodeKernel<THREADS, KEY_DIM, VALUE_DIM>(
-				state_pool, state_index, query[step], key[step], value[step],
+				state_pool, SLOT_BYTES, state_index, query[step], key[step], value[step],
 				retention, write_gate, output[step], HEADS, 1u, 1u)));
 		for (index = 0u; index < HEADS * VALUE_DIM; ++index)
 			printf("out %.9g\n", (double)f32(output[step][index]));
@@ -147,7 +150,7 @@ int main(void)
 		accepted[0] = STEPS;
 		LM_HOST_LAUNCH(dim3(1u, HEADS),
 			(LmReplayFoldKernel<THREADS, KEY_DIM, VALUE_DIM>(
-				replay_pool, state_index, steps, accepted, HEADS, 1u, 1u)));
+				replay_pool, SLOT_BYTES, state_index, steps, accepted, HEADS, 1u, 1u)));
 		for (index = 0u; index < sizeof(state_pool); ++index)
 			if (replay_pool[index] != state_pool[index])
 				++mismatch;

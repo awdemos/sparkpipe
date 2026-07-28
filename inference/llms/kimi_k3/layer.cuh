@@ -364,7 +364,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 		(const uint16_t *)b->kda_beta_logit,b->kda_write_gate_out,K3_KDA_HEADS);
 	LmDeltaRuleDecodeKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>
 		<<<dim3(rows,K3_KDA_HEADS),K3_LAYER_THREADS,0,stream>>>(
-		b->kda_state_pool,b->kda_state_index,b->query_bf16,b->key_bf16,
+		b->kda_state_pool,K3_KDA_STATE_BYTES,b->kda_state_index,b->query_bf16,b->key_bf16,
 		b->value_bf16,b->kda_retention,b->kda_write_gate_out,b->attention_out_bf16,
 		K3_KDA_HEADS,1u,rows);
 	// RMSNORM BEFORE THE GATE, AND ONLY HERE. Report eq. 6 normalises the

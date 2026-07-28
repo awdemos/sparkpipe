@@ -228,7 +228,7 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 		(const uint16_t *)b->gdn_conv_weight,b->key_bf16,QWEN36_GDN_QK_DIM,rows);
 	LmDeltaRuleDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>
 		<<<dim3(rows,QWEN36_GDN_KEY_HEADS),QWEN36_LAYER_THREADS,0,stream>>>(
-		b->gdn_state_pool,b->gdn_state_index,b->query_bf16,b->key_bf16,b->value_bf16,
+		b->gdn_state_pool,QWEN36_GDN_STATE_BYTES,b->gdn_state_index,b->query_bf16,b->key_bf16,b->value_bf16,
 		b->gdn_forget_gate,b->gdn_write_gate,b->attention_out_bf16,
 		QWEN36_GDN_KEY_HEADS,QWEN36_GDN_VALUE_PER_KEY,rows);
 	Qwen36Quantise<Format>(b,b->attention_out_bf16,rows,QWEN36_GDN_V_DIM,stream);

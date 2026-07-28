@@ -46,7 +46,17 @@ template __global__ void LmQuantiseRowsKernel<LmInt7, K3_THREADS>(const uint16_t
 // KDA on three of every four layers, gated MLA on the fourth. The same delta
 // rule Qwen 3.6 uses, at K3's widths - which is the argument that this is an
 // architecture class and not one vendor's design.
-template __global__ void LmDeltaRuleDecodeKernel<K3_THREADS, K3_KDA_KEY_DIM, K3_KDA_VALUE_DIM>(uint8_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
+// The slot must hold the state AND the three convolution windows, because
+// config.h sizes it that way against SGLang's measured figure. If the element
+// size ever changes, this is what stops the pool stride and the kernel's
+// addressing from drifting apart again.
+static_assert(K3_KDA_STATE_BYTES >=
+	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * K3_KDA_STATE_ELEMENT_BYTES),
+	"a slot must hold the state it addresses");
+static_assert(K3_KDA_STATE_ELEMENT_BYTES >= sizeof(uint16_t),
+	"the kernel stores bf16; a narrower element would truncate the state");
+
+template __global__ void LmDeltaRuleDecodeKernel<K3_THREADS, K3_KDA_KEY_DIM, K3_KDA_VALUE_DIM>(uint8_t *, uint32_t, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
 // The rest of the KDA path, none of which unity built: the short convolution
 // with its Swish, the L2 normalisation of q and k, the bounded decay mapping,
 // the output gate, and SiTU on every MLP.
