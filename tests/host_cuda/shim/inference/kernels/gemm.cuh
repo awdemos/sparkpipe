@@ -18,4 +18,5 @@ struct LmGemmArguments
 	const uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix;
 	uint16_t *output_bf16;
+	uint16_t *accumulate_bf16;
 };

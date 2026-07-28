@@ -70,6 +70,14 @@ struct LmGemmArguments
 	// prices them for the launch it is about to make.
 	uint32_t *group_tile_prefix;
 	void *output_bf16;
+	// Optional second life for the result: the epilogue ADDS it into this
+	// buffer (read-modify-write; single writer per element by tile
+	// ownership, stream-ordered against other producers). accumulate ==
+	// output means the output itself accumulates. This is how a module's
+	// final projection folds the AttnRes partial add - and the shared
+	// expert's sum - into the store it was already making: one fewer
+	// kernel, one fewer full-width read, per fused add.
+	void *accumulate_bf16;
 	uint32_t group_count;
 	uint32_t input_dimension;
 	uint32_t output_dimension;
@@ -129,6 +137,8 @@ static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4
 {
 	const uint32_t n_frags = TILE_N / WARPS / Format::kMmaN;
 	uint16_t *output = (uint16_t *)args.output_bf16;
+	uint16_t *accumulate = (uint16_t *)args.accumulate_bf16;
+	uint64_t at;
 	uint32_t i,e,mi,ni,row,column;
 	for (i = 0u; i < count; ++i)
 	{
@@ -141,8 +151,15 @@ static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4
 				+ LmMmaAccumulatorColumn(lane,e);
 			if ( row >= row_limit || column >= args.output_dimension )
 				continue;
-			output[((uint64_t)row * args.output_dimension) + column] =
-				LmFloatToBf16(total[i][e]);
+			at = ((uint64_t)row * args.output_dimension) + column;
+			if ( accumulate != 0 )
+			{
+				float sum = LmBf16ToFloat(accumulate[at]) + total[i][e];
+				accumulate[at] = LmFloatToBf16(sum);
+				if ( accumulate == output )
+					continue;
+			}
+			output[at] = LmFloatToBf16(total[i][e]);
 		}
 	}
 }
@@ -275,6 +292,8 @@ static __device__ void LmGemmWeightOnlyConsume(float (*total)[4], const uint8_t 
 	const uint32_t steps = TILE_K / LmBf16Format::kMmaK;
 	uint32_t step,mi,ni,neuron,k_base,k_local,reg;
 	uint32_t a[4],b[2];
+	uint64_t scale_index_cache = ~0ull;
+	float scale_cache = 0.0f;
 	for (step = 0u; step < steps; ++step)
 	{
 		k_base = step * LmBf16Format::kMmaK;
@@ -289,13 +308,21 @@ static __device__ void LmGemmWeightOnlyConsume(float (*total)[4], const uint8_t 
 				neuron = (warp * (TILE_N / WARPS)) + (ni * FormatB::kMmaN);
 				for (reg = 0u; reg < 2u; ++reg)
 				{
+					uint64_t scale_at;
 					k_local = k_base + FormatB::OperandBK(lane,reg);
+					scale_at = (((uint64_t)neuron + FormatB::OperandBRow(lane))
+						* scale_groups) + (k_local / FormatB::kScaleGroup);
+					// One exp2f per group per thread, not one per fragment:
+					// the same E8M0 byte prices several k-steps and the SFU
+					// need not repeat itself.
+					if ( scale_at != scale_index_cache )
+					{
+						scale_index_cache = scale_at;
+						scale_cache = FormatB::ScaleDecode(scale_tile[scale_at]);
+					}
 					b[reg] = FormatB::Fragment(stage_b,
 						neuron + FormatB::OperandBRow(lane),k_local,pitch_b,
-						FormatB::ScaleDecode(scale_tile[
-							(((uint64_t)neuron + FormatB::OperandBRow(lane))
-								* scale_groups)
-							+ (k_local / FormatB::kScaleGroup)]));
+						scale_cache);
 				}
 				LmMmaBf16(total[(mi * n_frags) + ni],a,b);
 			}

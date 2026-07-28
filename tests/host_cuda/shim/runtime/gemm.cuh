@@ -48,8 +48,20 @@ static int32_t LmGemmLaunch(LmGemmArguments *args, const void *activation_bytes,
 	lm_recorded_gemms.push_back(record);
 	for (row = 0u; row < packed_rows; ++row)
 		for (element = 0u; element < output_dimension; ++element)
-			args->output_bf16[((uint64_t)row * output_dimension) + element] =
-				LmFloatToBf16(0.125f * (float)lm_recorded_gemms.size());
+		{
+			uint64_t at = ((uint64_t)row * output_dimension) + element;
+			float value = 0.125f * (float)lm_recorded_gemms.size();
+			// the epilogue's accumulate semantics, mirrored exactly, so the
+			// host trajectories stay the truth the checker recomputes
+			if ( args->accumulate_bf16 != 0 )
+			{
+				float sum = LmBf16ToFloat(args->accumulate_bf16[at]) + value;
+				args->accumulate_bf16[at] = LmFloatToBf16(sum);
+				if ( args->accumulate_bf16 == args->output_bf16 )
+					continue;
+			}
+			args->output_bf16[at] = LmFloatToBf16(value);
+		}
 	(void)tokens; (void)top_k; (void)group_count;
 	(void)multiprocessors; (void)stream;
 	return LM_LAUNCH_OK;

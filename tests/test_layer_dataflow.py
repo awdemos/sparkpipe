@@ -58,8 +58,17 @@ def main():
             writes = [(m.start(), m.group(1)) for m in
                       re.finditer(r"gemm\.output_bf16 = ([\w>\-\.]+);", body)]
             writes += [(m.start(), m.group(1)) for m in
-                       re.finditer(r"K3Project<[^>]*>\([^;]*?,\s*(b->\w+),\s*rows,",
+                       re.finditer(r"K3Project<[^>]*>\([^;]*?,\s*(b->\w+),\s*(?:b->\w+,|\(uint16_t \*\)0,|partial_accumulate,)?\s*rows,",
                                    body, re.S)]
+            # An epilogue ACCUMULATE is a read-modify-write: the projection
+            # whose accumulate argument names a buffer both reads and writes
+            # it, so two consecutive accumulates into the same buffer are a
+            # sum, not a dead store. Accumulate targets leave the dead-store
+            # candidate set entirely.
+            accumulated = set(re.findall(
+                r"K3Project<[^>]*>\([^;]*?,\s*(b->\w+|partial_accumulate),\s*rows,",
+                body, re.S))
+            writes = [w for w in writes if w[1] not in accumulated]
             writes.sort()
             for index in range(len(writes) - 1):
                 position, buffer = writes[index]

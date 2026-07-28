@@ -245,15 +245,15 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 // here stops the model instead of running the wrong one, and the compiler warns
 // about the unhandled enum value before that.
 template<class Format, class Geometry>
-static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *partial_accumulate, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
 	enum LmLayerKind kind = (enum LmLayerKind)K3_LAYER_KIND(layer);
 	switch (kind)
 	{
 	case LM_LAYER_RECURRENT:
-		return(K3LayerKda<Format>(buffers,rows,sequences,commit,multiprocessors,stream));
+		return(K3LayerKda<Format>(buffers,rows,sequences,commit,partial_accumulate,multiprocessors,stream));
 	case LM_LAYER_LATENT:
-		return(K3LayerMla<Format,Geometry>(buffers,rows,context,multiprocessors,stream));
+		return(K3LayerMla<Format,Geometry>(buffers,rows,context,partial_accumulate,multiprocessors,stream));
 	case LM_LAYER_FULL:
 	case LM_LAYER_WINDOW:
 	case LM_LAYER_SPARSE:
@@ -307,18 +307,19 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 				K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
 			K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
 		}
-		status = K3LaunchAttentionHalf<Format,Geometry>(buffers,layer,rows,sequences,commit,context,
+		// The partial RESTARTS from the attention output on a boundary - the
+		// reference sets prefix_sum to None at the append and to `a` after
+		// the attention - and ACCUMULATES it otherwise, which the module's
+		// own out-projection now does in its epilogue: the half receives
+		// the partial as its accumulate target except at a boundary, where
+		// the restart still needs the explicit set.
+		status = K3LaunchAttentionHalf<Format,Geometry>(buffers,layer,rows,sequences,commit,
+			boundary != 0u ? (uint16_t *)0 : buffers->attnres_partial_bf16,context,
 			multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
-		// The partial RESTARTS from the attention output on a boundary - the
-		// reference sets prefix_sum to None at the append and to `a` after the
-		// attention - and accumulates it otherwise. Carrying the old sum across
-		// a boundary makes every bank entry cumulative instead of block-local.
 		if ( boundary != 0u )
 			K3PartialSet(buffers,buffers->attention_out_bf16,rows,stream);
-		else
-			K3PartialAdd(buffers,buffers->attention_out_bf16,rows,stream);
 		// MLP-side retrieval, over the post-append bank and the post-attention
 		// partial. It runs at layer 0 as well: b_0 is in the bank by then.
 		K3AttnRes(buffers,buffers->attnres_mlp_weight,
@@ -332,7 +333,6 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 			status = K3LayerLatentMoe<Format>(buffers,rows,packed_rows,multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
-		K3PartialAdd(buffers,buffers->hidden_bf16,rows,stream);
 		// THE DRAFTER READS THE STREAM, AND THE PARTIAL IS THE STREAM. What
 		// flows between blocks under AttnRes is the running partial - the next
 		// block's first act is a retrieval that REPLACES its input - so the
