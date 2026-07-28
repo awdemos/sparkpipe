@@ -18,6 +18,7 @@
 
 #include "sparkpipe/spark_release.h"
 #include "spark_filesystem.h"
+#include "runtime/net.h"
 
 #define SPARK_RELEASE_MANAGER_BUFFER_BYTES 65536u
 #define SPARK_RELEASE_MANAGER_DEFAULT_PORT 55420u
@@ -66,32 +67,6 @@ static void SparkReleaseManagerPrintUsage(void)
         "  sparkpipe_release_manager agent (--release-dir DIR | --release-url http://HOST:PORT[/sparkpipe.json]) --state-dir DIR --host HOST --rank N --role NAME [--install-dir DIR] [--once]\n"
         "  sparkpipe_release_manager serve --release-dir DIR [--bind ADDRESS] [--port PORT]\n",
         stderr);
-}
-
-static int SparkReleaseManagerParseU32(const char *text,uint32_t *value_out)
-{
-    uint64_t value;
-    uint32_t index;
-
-    if (text == 0 || text[0] == '\0' || value_out == 0)
-    {
-        return -1;
-    }
-    value = 0u;
-    for (index = 0u; text[index] != '\0'; ++index)
-    {
-        if (text[index] < '0' || text[index] > '9')
-        {
-            return -2;
-        }
-        value = (value * 10u) + (uint32_t)(text[index] - '0');
-        if (value > 0xffffffffull)
-        {
-            return -3;
-        }
-    }
-    *value_out = (uint32_t)value;
-    return 0;
 }
 
 static uint64_t SparkReleaseManagerMonotonicMilliseconds(void)
@@ -171,7 +146,7 @@ static SparkStatus SparkReleaseManagerParseUrl(
         }
         memcpy(port_text,colon + 1u,port_text_bytes);
         port_text[port_text_bytes] = '\0';
-        if (SparkReleaseManagerParseU32(port_text,&port) != 0)
+        if (SparkNetParseU32(port_text,&port) != 0)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -1050,7 +1025,7 @@ static int SparkReleaseManagerRunAgent(int argc,char **argv)
         }
         else if (strcmp(argv[index],"--rank") == 0 && index + 1 < argc)
         {
-            if (SparkReleaseManagerParseU32(argv[++index],&configuration.rank) != 0)
+            if (SparkNetParseU32(argv[++index],&configuration.rank) != 0)
             {
                 return 2;
             }
@@ -1058,7 +1033,7 @@ static int SparkReleaseManagerRunAgent(int argc,char **argv)
         }
         else if (strcmp(argv[index],"--poll-ms") == 0 && index + 1 < argc)
         {
-            if (SparkReleaseManagerParseU32(argv[++index],&configuration.poll_interval_ms) != 0)
+            if (SparkNetParseU32(argv[++index],&configuration.poll_interval_ms) != 0)
             {
                 return 2;
             }
@@ -1280,7 +1255,7 @@ int main(int argc,char **argv)
             }
             else if (strcmp(argv[index],"--rank") == 0 && index + 1 < argc)
             {
-                if (SparkReleaseManagerParseU32(argv[++index],&identity.rank) != 0)
+                if (SparkNetParseU32(argv[++index],&identity.rank) != 0)
                 {
                     return 2;
                 }
@@ -1402,7 +1377,7 @@ int main(int argc,char **argv)
             }
             else if (strcmp(argv[index],"--port") == 0 && index + 1 < argc)
             {
-                if (SparkReleaseManagerParseU32(argv[++index],&port) != 0)
+                if (SparkNetParseU32(argv[++index],&port) != 0)
                 {
                     return 2;
                 }

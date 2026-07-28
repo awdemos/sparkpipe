@@ -2,6 +2,24 @@
 
 // MiMo 2.5. Shapes and constants only.
 //
+// AUDIT INCOMPLETE, AND MY FIRST PASS AT IT WAS WRONG. I recorded here that this
+// matched XiaomiMiMo/MiMo-V2.5-Pro at 70 layers and 384 routed experts. The
+// constants below say 48 layers, hidden 4096, 256 experts. Those are different
+// models, and the test_layer_kinds gate printed the layer count next to the
+// kinds, which is how the contradiction surfaced.
+//
+// So: the shapes here match SOME MiMo checkpoint and it is not Pro. The 6:1
+// window ratio, window 128 and top-8 routing are shared across the V2.5 family,
+// which is why nothing looked wrong. Whoever knows which checkpoint this was
+// taken from should name it, the way qwen_3_6 names the 27B.
+//
+// ONE GAP THE SHAPES DO NOT SHOW: the reference keeps long-context quality at a
+// ~7x smaller KV cache "via learnable attention sink bias". That is a per-head
+// bias admitted into the softmax denominator, and LmAttentionDecodeKernel has
+// no sink term. Without it the 6:1 window ratio is a cache saving with nothing
+// compensating for what the window drops - the shape is right and the numbers
+// will not be. See docs/MODEL_SUPPORT.md.
+//
 // The second model in this tree, and the test of whether kernels/ is actually
 // model-agnostic or merely glm52 with the names filed off. Nothing in kernels/
 // changed to accommodate it.
@@ -12,6 +30,7 @@
 // expressible as a geometry and two arguments.
 
 #include <stdint.h>
+#include "inference/kernels/layer_kind.cuh"
 
 #define MIMO25_HIDDEN 4096u                    /* CONFIG hidden_size */
 #define MIMO25_LAYERS 48u                      /* CONFIG num_hidden_layers */
@@ -47,8 +66,20 @@
 #define MIMO25_FULL_QKV_DIM 13568u             /* Q + 4 * (192 + 128) */
 #define MIMO25_SWA_QKV_DIM 14848u              /* Q + 8 * (192 + 128) */
 #define MIMO25_O_INPUT_DIM 8192u               /* heads * v_head_dim */
-#define MIMO25_LAYER_KIND_FULL 0u
-#define MIMO25_LAYER_KIND_SWA 1u
+// INFERRED, NOT READ FROM A CONFIG. Every model in this tree with both a dense
+// and a routed MLP puts the dense layers first, and MiMo's family card says one
+// dense layer then the rest MoE. This constant is that pattern, and it is a
+// GUESS in the sense kimi_k3's header uses the word: a number inferred from a
+// lineage is not the same kind of fact as one read from a published config, and
+// losing that distinction is how an inferred number becomes load-bearing.
+//
+// It is load-bearing now - bind.cu branches on it - so it needs confirming
+// against whichever checkpoint these 48 layers came from. SETTLED BY: that
+// checkpoint's config.json, field first_k_dense_replace or its equivalent. One
+// grep, once someone names the variant - and naming the variant is the blocker,
+// not the grep, because the shapes here match no MiMo card I have seen.
+#define MIMO25_FIRST_ROUTED_LAYER 1u           /* GUESS (family pattern) */
+
 
 // -- MoE -----------------------------------------------------------------------
 //
@@ -82,3 +113,12 @@ static inline uint32_t Mimo25RowsPerExpert(uint32_t tokens)
 {
 	return(((tokens * MIMO25_TOP_K) + MIMO25_EXPERTS - 1u) / MIMO25_EXPERTS);
 }
+
+// -- layer kinds --
+// Sliding window and global attention interleaved at 6:1, so a period of
+// seven with the global layer last. MIMO25_LAYER_KIND_FULL and _SWA above are
+// the old names for these and are the enum this replaces.
+#define MIMO25_ATTENTION_PERIOD 7u
+#define MIMO25_LAYER_KIND(layer) \
+	((((layer) % MIMO25_ATTENTION_PERIOD) == (MIMO25_ATTENTION_PERIOD - 1u)) \
+		? LM_LAYER_FULL : LM_LAYER_WINDOW)

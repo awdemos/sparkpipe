@@ -32,6 +32,48 @@ run "tensor map encode"    "gcc -O2 -Wall -Wextra -I. -Itests/cuda_driver_stub -
 # unavailable, and tools/get_cuda.sh means it is not.
 run "launch planning"      "g++ -std=c++17 -O2 -Wall -Wextra -I. -D__host__= -D__device__= -o /tmp/g_l tests/test_launch.c && /tmp/g_l"
 run "config coverage"      "python3 tests/test_config_coverage.py"
+# Carried forward from #514, whose patch targeted a file the rewrite deleted.
+# The hazard survived the rewrite with a different failure mode: the old tile
+# staged out-of-row data past the K bound, the new one drops the tail via
+# k_tiles = input_dimension / TILE_K. Both are wrong output with no crash.
+run "gemm K alignment"     "python3 tests/test_gemm_k_alignment.py"
+run "rope pairing"         "python3 tests/test_rope_pairing.py"
+run "layer kinds"          "python3 tests/test_layer_kinds.py"
+run "situ activation"      "python3 tests/test_situ_activation.py"
+run "kda decay bound"      "python3 tests/test_kda_decay.py"
+run "kernel launches"      "python3 tests/test_kernel_launches.py"
+run "mla absorption"       "python3 tests/test_mla_absorption.py"
+run "expert grouping"      "python3 tests/test_expert_grouping.py"
+# The real kernels, run on a CPU. Not a reimplementation: kda_host.cu includes
+# inference/kernels/linear_attn.cuh unmodified and gives it a grid. Reverting
+# either of the two bugs this path had - the undecayed prediction, the dropped
+# dt_bias - takes the relative error from 2e-3 to 3e-1 and 6e-2.
+run "kda on host"          "python3 tests/test_kda_host.py"
+# The routing path had three defects, all found by reading and none by running.
+# Emitting the biased score as the weight produces 9 failures here; skipping the
+# renormalisation produces 17.
+run "router on host"       "python3 tests/test_router_host.py"
+# Six more kernels the other two harnesses do not reach, including the MoE
+# finalize whose launch was wrong four ways and compiled.
+run "layer on host"        "python3 tests/test_layer_host.py"
+# The MLA store and attention over a paged cache, two sequences with interleaved
+# pages so ignoring the page table is visible.
+run "mla on host"          "python3 tests/test_mla_host.py"
+# Dataflow, not arithmetic. Every per-kernel harness passes and an audit still
+# found three defects in which buffer feeds which kernel. Reintroducing the
+# shared-expert overwrite makes this fail.
+run "layer dataflow"       "python3 tests/test_layer_dataflow.py"
+# The checkpoint quantises the routed experts and nothing else, because only
+# they saw quantisation-aware training. Putting attention back on Format fails.
+run "k3 quant recipe"      "python3 tests/test_k3_quant_recipe.py"
+# A whole layer, executed. Found a divide-by-zero in production code on its
+# first successful run, and catches the shared-expert overwrite by seeing the
+# routed value missing from the output rather than by reading the source.
+run "k3 layer on host"     "python3 tests/test_k3_layer_host.py"
+# The grouped selection path has no model in this tree, so nothing instantiates
+# it and nothing would notice it failing to compile.
+run "grouped topk builds"  "sh tools/build_grouped_topk.sh"
+run "replay fold builds"   "sh tools/build_replay_fold.sh"
 run "kernel algorithms"    "python3 tests/test_kernel_algorithms.py"
 run "model contracts"      "python3 tests/test_model_driver_contracts.py"
 run "nvcc: sm_121a build"  "sh tools/build.sh"
@@ -43,7 +85,7 @@ run "nvcc: sm_121a build"  "sh tools/build.sh"
 run "makefile parses"      "make -n all"
 run "makefile: test"       "make -n test"
 run "makefile: tools"      "make -n tools"
-run "makefile: backend"    "make -n glm52_pp13_service_backend"
+run "makefile: backend"    "make -n glm52_ring_service_backend"
 run "every source exists"  "python3 tests/test_sources_exist.py"
 printf "  ---- %d pass, %d fail\n" "$ok" "$bad"
 [ "$bad" -eq 0 ]

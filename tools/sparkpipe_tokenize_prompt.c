@@ -6,7 +6,7 @@
 #include "sparkpipe/spark_tokenizer.h"
 
 #include "sparkpipe/spark_glm52_model.h"
-#include "sparkpipe_tool_file.h"
+#include "tools/sparkpipe_tool_file.h"
 
 #define SPARK_TOKENIZE_PROMPT_DEFAULT_TOKEN_CAPACITY \
     SPARK_GLM52_MODEL_MAXIMUM_CONTEXT_TOKENS

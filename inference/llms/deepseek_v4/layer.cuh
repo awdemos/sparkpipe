@@ -99,10 +99,8 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 	// attend outside the window on any context longer than 512.
 	uint32_t budget = context < DSV4_SLIDING_WINDOW ? context : DSV4_SLIDING_WINDOW;
 	bool sparse = context > DSV4_INDEX_TOP_K;
-	LmFusedResidualRmsNormKernel<DSV4_LAYER_THREADS>
-		<<<rows,DSV4_LAYER_THREADS,(DSV4_HIDDEN + 8u) * sizeof(float),stream>>>(
-		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
-		b->residual_bf16,b->normed_bf16,DSV4_HIDDEN,DSV4_RMS_EPSILON);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, (DSV4_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,DSV4_HIDDEN,DSV4_HIDDEN,DSV4_RMS_EPSILON);
 	// Query through the low-rank path: hidden -> 1024 -> norm -> heads.
 	status = LmLowRankProject<Format>(&b->query,&b->query_scratch,b->normed_bf16,
 		b->query_bf16,rows,DSV4_LAYER_THREADS,sms,stream);
@@ -118,14 +116,9 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 	// DSV4_COMPRESS_ROPE_THETA. Two thetas is not a mistake in the config: the
 	// model trains them separately because the compressed path sees a different
 	// position distribution.
-	LmRopeYarnKernel<DSV4_LAYER_THREADS><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
-		b->query_bf16,b->positions,DSV4_ATTN_HEADS * DSV4_HEAD_DIM,
-		(DSV4_ATTN_HEADS * DSV4_HEAD_DIM) - DSV4_ROPE_DIM,DSV4_ROPE_DIM,
-		DSV4_ROPE_THETA,(float)DSV4_YARN_FACTOR,
-		(float)DSV4_YARN_ORIGINAL_POSITIONS,1.0f,32.0f);
-	LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>
-		<<<dim3(rows,DSV4_HIDDEN / Format::kScaleGroup),DSV4_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+	LM_LAUNCH((LmRopeYarnKernel<DSV4_LAYER_THREADS,LM_ROPE_INTERLEAVED>), rows, DSV4_LAYER_THREADS, 0, stream,
+		b->query_bf16,b->positions,DSV4_ATTN_HEADS * DSV4_HEAD_DIM, (DSV4_ATTN_HEADS * DSV4_HEAD_DIM) - DSV4_ROPE_DIM,DSV4_ROPE_DIM, DSV4_ROPE_THETA,(float)DSV4_YARN_FACTOR, (float)DSV4_YARN_ORIGINAL_POSITIONS,1.0f,32.0f);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(rows,DSV4_HIDDEN / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,DSV4_HIDDEN);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
@@ -140,36 +133,23 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 		return(status);
 	// YaRN, not plain rope. The compressed path uses its own theta, which is why
 	// the constant is separate rather than shared with the query's.
-	LmRopeYarnKernel<DSV4_LAYER_THREADS><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
-		b->kv_slot_bf16,b->positions,DSV4_HEAD_DIM + DSV4_ROPE_DIM,DSV4_HEAD_DIM,
-		DSV4_ROPE_DIM,DSV4_COMPRESS_ROPE_THETA,(float)DSV4_YARN_FACTOR,
-		(float)DSV4_YARN_ORIGINAL_POSITIONS,1.0f,32.0f);
-	LmKvStoreKernel<Dsv4Kv,DSV4_LAYER_THREADS><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
-		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows,
-		DSV4_HEAD_DIM + DSV4_ROPE_DIM);
+	LM_LAUNCH((LmRopeYarnKernel<DSV4_LAYER_THREADS,LM_ROPE_INTERLEAVED>), rows, DSV4_LAYER_THREADS, 0, stream,
+		b->kv_slot_bf16,b->positions,DSV4_HEAD_DIM + DSV4_ROPE_DIM,DSV4_HEAD_DIM, DSV4_ROPE_DIM,DSV4_COMPRESS_ROPE_THETA,(float)DSV4_YARN_FACTOR, (float)DSV4_YARN_ORIGINAL_POSITIONS,1.0f,32.0f);
+	LM_LAUNCH((LmKvStoreKernel<Dsv4Kv,DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, 0, stream,
+		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, DSV4_HEAD_DIM + DSV4_ROPE_DIM);
 	if ( sparse )
 	{
-		LmSparseScoreKernel<Dsv4Kv,DSV4_LAYER_THREADS,DSV4_INDEX_DIM>
-			<<<dim3(rows,context),DSV4_LAYER_THREADS,0,stream>>>(
-			b->query_bf16,b->cache,b->sequence_of_row,b->context_length,
-			DSV4_INDEX_HEADS,b->selection_scores);
-		LmTopkHistogramKernel<DSV4_LAYER_THREADS><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
-			b->selection_scores,context,DSV4_INDEX_TOP_K,(uint32_t *)b->head_candidate_score);
-		LmTopkGatherKernel<DSV4_LAYER_THREADS><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
-			b->selection_scores,context,DSV4_INDEX_TOP_K,
-			(const uint32_t *)b->head_candidate_score,b->selected_positions,0);
+		LM_LAUNCH((LmSparseScoreKernel<Dsv4Kv,DSV4_LAYER_THREADS,DSV4_INDEX_DIM>), dim3(rows,context), DSV4_LAYER_THREADS, 0, stream,
+		b->query_bf16,b->cache,b->sequence_of_row,b->context_length, DSV4_INDEX_HEADS,b->selection_scores);
+		LM_LAUNCH((LmTopkHistogramKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, 0, stream,
+		b->selection_scores,context,DSV4_INDEX_TOP_K,(uint32_t *)b->head_candidate_score);
+		LM_LAUNCH((LmTopkGatherKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, 0, stream,
+		b->selection_scores,context,DSV4_INDEX_TOP_K, (const uint32_t *)b->head_candidate_score,b->selected_positions,0);
 	}
-	LmAttentionDecodeKernel<Dsv4Kv,DSV4_LAYER_THREADS,DSV4_HEAD_DIM,DSV4_ROPE_DIM>
-		<<<dim3(rows,DSV4_ATTN_HEADS),DSV4_LAYER_THREADS,0,stream>>>(
-		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length,
-		sparse ? b->selected_positions : 0,sparse ? DSV4_INDEX_TOP_K : budget,
-		DSV4_ATTN_HEADS,rsqrtf((float)DSV4_HEAD_DIM),b->attention_latent_bf16,
-		0);
-	LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>
-		<<<dim3(rows,(DSV4_ATTN_HEADS * DSV4_HEAD_DIM) / Format::kScaleGroup),DSV4_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
-		b->attention_latent_bf16,0,b->packed_activation,b->packed_scale,
-		rows,DSV4_ATTN_HEADS * DSV4_HEAD_DIM);
+	LM_LAUNCH((LmAttentionDecodeKernel<Dsv4Kv,DSV4_LAYER_THREADS,DSV4_HEAD_DIM,DSV4_ROPE_DIM>), dim3(rows,DSV4_ATTN_HEADS), DSV4_LAYER_THREADS, 0, stream,
+		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, sparse ? b->selected_positions : 0,sparse ? DSV4_INDEX_TOP_K : budget, DSV4_ATTN_HEADS,rsqrtf((float)DSV4_HEAD_DIM),b->attention_latent_bf16, 0);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(rows,(DSV4_ATTN_HEADS * DSV4_HEAD_DIM) / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
+		b->attention_latent_bf16,0,b->packed_activation,b->packed_scale, rows,DSV4_ATTN_HEADS * DSV4_HEAD_DIM);
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->output_scale;
 	gemm.output_bf16 = b->attention_out_bf16;
@@ -193,10 +173,8 @@ static int32_t Dsv4LayerMoe(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t p
 {
 	LmGemmArguments gemm;
 	int32_t status;
-	LmFusedResidualRmsNormKernel<DSV4_LAYER_THREADS>
-		<<<rows,DSV4_LAYER_THREADS,(DSV4_HIDDEN + 8u) * sizeof(float),stream>>>(
-		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,DSV4_HIDDEN,DSV4_RMS_EPSILON);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, (DSV4_HIDDEN + 8u) * sizeof(float), stream,
+		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,DSV4_HIDDEN,DSV4_HIDDEN,DSV4_RMS_EPSILON);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
@@ -206,14 +184,11 @@ static int32_t Dsv4LayerMoe(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t p
 		DSV4_HIDDEN,DSV4_EXPERTS,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LmTopkSmallKernel<DSV4_LAYER_THREADS,DSV4_TOP_K>
-		<<<rows,DSV4_LAYER_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream>>>(
-		(const float *)b->router_logits,DSV4_EXPERTS,b->route_expert,b->route_weight,0.0f);
+	LM_LAUNCH((LmTopkSmallKernel<DSV4_LAYER_THREADS,DSV4_TOP_K>), rows, DSV4_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
+		(const float *)b->router_logits,DSV4_EXPERTS,b->route_expert,b->route_weight,0,0);
 	// The shared expert, on the same normed rows, before the routed path
 	// overwrites the packed activation buffer with the expanded copy.
-	LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>
-		<<<dim3(rows,DSV4_HIDDEN / Format::kScaleGroup),DSV4_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(rows,DSV4_HIDDEN / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,DSV4_HIDDEN);
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->shared_w1_scale;
@@ -223,13 +198,10 @@ static int32_t Dsv4LayerMoe(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t p
 		DSV4_HIDDEN,DSV4_SHARED_INTERMEDIATE * 2u,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LmSiluMulKernel<DSV4_LAYER_THREADS><<<rows,DSV4_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmSiluMulKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,DSV4_SHARED_INTERMEDIATE,true);
-	LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>
-		<<<dim3(rows,DSV4_SHARED_INTERMEDIATE / Format::kScaleGroup),DSV4_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
-		b->intermediate_bf16,0,b->packed_activation,b->packed_scale,
-		rows,DSV4_SHARED_INTERMEDIATE);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(rows,DSV4_SHARED_INTERMEDIATE / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
+		b->intermediate_bf16,0,b->packed_activation,b->packed_scale, rows,DSV4_SHARED_INTERMEDIATE);
 	gemm.scale_b = (const float *)b->shared_w2_scale;
 	gemm.output_bf16 = b->shared_out_bf16;
 	status = LmGemmLaunch<Format,DSV4_LAYER_TILE_N,Format::kTileK,DSV4_LAYER_STAGES,DSV4_LAYER_WARPS>(
@@ -239,11 +211,8 @@ static int32_t Dsv4LayerMoe(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t p
 		return(status);
 	// The routed path. Expands into packed_rows, so it must come after the
 	// shared expert has finished with the un-expanded buffer.
-	LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>
-		<<<dim3(packed_rows,DSV4_HIDDEN / Format::kScaleGroup),DSV4_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
-		b->normed_bf16,b->route_source_token,b->packed_activation,b->packed_scale,
-		packed_rows,DSV4_HIDDEN);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(packed_rows,DSV4_HIDDEN / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
+		b->normed_bf16,b->route_source_token,b->packed_activation,b->packed_scale, packed_rows,DSV4_HIDDEN);
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->expert_w1_scale;
 	gemm.group_row_offset = b->group_row_offset;
@@ -254,13 +223,10 @@ static int32_t Dsv4LayerMoe(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t p
 		DSV4_EXPERTS,DSV4_HIDDEN,DSV4_EXPERT_INTERMEDIATE * 2u,sms,true,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LmSiluMulKernel<DSV4_LAYER_THREADS><<<packed_rows,DSV4_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmSiluMulKernel<DSV4_LAYER_THREADS>), packed_rows, DSV4_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,DSV4_EXPERT_INTERMEDIATE,true);
-	LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>
-		<<<dim3(packed_rows,DSV4_EXPERT_INTERMEDIATE / Format::kScaleGroup),DSV4_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
-		b->intermediate_bf16,0,b->packed_activation,b->packed_scale,
-		packed_rows,DSV4_EXPERT_INTERMEDIATE);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(packed_rows,DSV4_EXPERT_INTERMEDIATE / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
+		b->intermediate_bf16,0,b->packed_activation,b->packed_scale, packed_rows,DSV4_EXPERT_INTERMEDIATE);
 	gemm.scale_b = (const float *)b->expert_w2_scale;
 	gemm.output_bf16 = b->expert_out_bf16;
 	status = LmGemmLaunch<Format,DSV4_LAYER_TILE_N,Format::kTileK,DSV4_LAYER_STAGES,DSV4_LAYER_WARPS>(
@@ -271,14 +237,31 @@ static int32_t Dsv4LayerMoe(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t p
 	// Fold the routed outputs, then add the shared one. DSV4_ROUTED_SCALE
 	// multiplies the gates, which the host applies to route_weight - scaling
 	// after the sum is the same number only if the gates sum to one.
-	LmMoeFinalizeKernel<DSV4_LAYER_THREADS>
-		<<<dim3((DSV4_HIDDEN + DSV4_LAYER_THREADS - 1u) / DSV4_LAYER_THREADS,rows),
-		   DSV4_LAYER_THREADS,0,stream>>>(
-		b->expert_out_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16,
-		rows,DSV4_TOP_K,DSV4_HIDDEN);
-	LmAddRowsKernel<DSV4_LAYER_THREADS>
-		<<<dim3((DSV4_HIDDEN + DSV4_LAYER_THREADS - 1u) / DSV4_LAYER_THREADS,rows),
-		   DSV4_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmMoeFinalizeKernel<DSV4_LAYER_THREADS>), dim3((DSV4_HIDDEN + DSV4_LAYER_THREADS - 1u) / DSV4_LAYER_THREADS,rows), DSV4_LAYER_THREADS, 0, stream,
+		b->expert_out_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16, rows,DSV4_TOP_K,DSV4_HIDDEN);
+	LM_LAUNCH((LmAddRowsKernel<DSV4_LAYER_THREADS>), dim3((DSV4_HIDDEN + DSV4_LAYER_THREADS - 1u) / DSV4_LAYER_THREADS,rows), DSV4_LAYER_THREADS, 0, stream,
 		b->hidden_bf16,b->shared_out_bf16,b->hidden_bf16,rows,DSV4_HIDDEN);
+	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+}
+
+// -- output head ----------------------------------------------------------------
+//
+// A layer stack that never reaches a vocabulary produces no token. This model
+// had every layer kind and no head, so DSV4_VOCAB was declared, carried through
+// the config gate as an exemption reading "no layer sequence yet, so no head
+// call", and never read by anything. The sequence is the same three kernels
+// glm5_2 uses; only the widths differ.
+#define DSV4_HEAD_TILE 1024u
+
+static int32_t Dsv4Head(const Dsv4LayerBuffers *b, const void *head_norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, cudaStream_t stream)
+{
+	uint32_t tiles = (vocabulary + DSV4_HEAD_TILE - 1u) / DSV4_HEAD_TILE;
+	// End of the stream, so no residual in and no residual out.
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, (DSV4_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,0,(const uint16_t *)head_norm_weight, 0,b->normed_bf16,DSV4_HIDDEN,DSV4_HIDDEN,DSV4_RMS_EPSILON);
+	LM_LAUNCH((LmHeadCandidateKernel<DSV4_LAYER_THREADS,DSV4_HEAD_TILE>), dim3(tiles,rows), DSV4_LAYER_THREADS, 0, stream,
+		b->normed_bf16,(const uint16_t *)head_weight,token_ids, b->head_candidate_score,b->head_candidate_token,rows,DSV4_HIDDEN,vocabulary);
+	LM_LAUNCH((LmHeadCommitKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, 0, stream,
+		b->head_candidate_score,b->head_candidate_token,tiles, b->output_token,b->output_score,rows);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }

@@ -5,7 +5,7 @@
 #include <time.h>
 
 #include "sparkpipe/spark_tokenizer.h"
-#include "sparkpipe_tool_file.h"
+#include "tools/sparkpipe_tool_file.h"
 
 static double SparkTokenizerBenchmarkSeconds(void)
 {

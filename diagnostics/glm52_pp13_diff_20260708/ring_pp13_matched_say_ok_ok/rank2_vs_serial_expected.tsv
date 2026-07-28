@@ -1,6 +1,0 @@
-token	ring_rank2_rx	serialized_embedding	serialized_rank2_expected_after_layer_11	rx_equals_embedding	rx_equals_expected	ring_rank2_tx	serialized_after_layer_17	tx_equals_after_layer_17
-1	dc9b049d01771775	dc9b049d01771775	8510d15e0aa1e311	True	False	dc9b049d01771775	1386d63c29d92e9f	False
-2	90b93d9fac09e5f0	90b93d9fac09e5f0	1d9acc2485d4d5bc	True	False	90b93d9fac09e5f0	e667fb5d6c648267	False
-3	dc9b049d01771775	dc9b049d01771775	80d80aeed5522243	True	False	dc9b049d01771775	51e82da927c18634	False
-4	90b93d9fac09e5f0	90b93d9fac09e5f0	5d63c9d3f2122b8b	True	False	90b93d9fac09e5f0	04ec49d46da6280f	False
-5	47596f40d1b96aae			False	False	8ae10bc379bbc789		False

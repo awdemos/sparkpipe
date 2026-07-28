@@ -12,7 +12,8 @@
 
 #include "sparkpipe/spark_glm52_service_backend.h"
 #include "sparkpipe/spark_glm52_http_gateway.h"
-#include "sparkpipe/spark_glm52_pp13_runtime.h"
+#include "sparkpipe/spark_glm52_ring_runtime.h"
+#include "runtime/net.h"
 
 #define SPARK_GLM52_GATEWAY_REQUEST_BYTES (SPARK_GLM52_HTTP_GATEWAY_DEFAULT_MAX_UPLOAD_BYTES + (1024u * 1024u))
 #define SPARK_GLM52_GATEWAY_RESPONSE_BYTES (128u * 1024u)
@@ -110,7 +111,7 @@ static void SparkGlm52GatewayInitializeConfig(
 {
 	memset(configuration,0,sizeof(*configuration));
 	configuration->bind_address = "127.0.0.1";
-	configuration->driver_program_name = "glm52.pp13.rank.production";
+	configuration->driver_program_name = "glm52.ring.rank.production";
 	configuration->final_event_bind_address = "0.0.0.0";
 	configuration->final_event_return_host = "spark0";
 	configuration->port = SPARK_GLM52_GATEWAY_DEFAULT_PORT;
@@ -118,7 +119,7 @@ static void SparkGlm52GatewayInitializeConfig(
 	configuration->max_active_sequence_count = 1024u;
 	configuration->port_base = 52100u;
 	configuration->model_quantization_mode =
-		SPARK_GLM52_PP13_RUNTIME_DEFAULT_QUANTIZATION_MODE;
+		SPARK_GLM52_RING_RUNTIME_DEFAULT_QUANTIZATION_MODE;
 }
 
 static int32_t SparkGlm52GatewayInitializePendingStreams(
@@ -257,26 +258,6 @@ static void SparkGlm52GatewayDetachPendingStream(
 	SparkGlm52GatewayReleasePendingStream(runtime,slot_index);
 }
 
-static int32_t SparkGlm52GatewayParseU32(const char *text,uint32_t *value_out)
-{
-	uint64_t value;
-	uint32_t index;
-
-	if (text == 0 || text[0] == '\0' || value_out == 0)
-		return -1;
-	value = 0u;
-	for (index = 0u; text[index] != '\0'; ++index)
-	{
-		if (text[index] < '0' || text[index] > '9')
-			return -2;
-		value = ((value * 10u) + (uint32_t)(text[index] - '0'));
-		if (value > 0xffffffffull)
-			return -3;
-	}
-	*value_out = (uint32_t)value;
-	return 0;
-}
-
 static int32_t SparkGlm52GatewayApplyArgument(
 	SparkGlm52GatewayConfig *configuration,
 	int argc,
@@ -296,7 +277,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--port") == 0)
 	{
 		if ((*index + 1) >= argc ||
-			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0)
+			SparkNetParseU32(argv[*index + 1],&parsed) < 0)
 			return -2;
 		configuration->port = parsed;
 		*index += 1;
@@ -335,7 +316,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--pump-steps") == 0)
 	{
 		if ((*index + 1) >= argc ||
-			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0)
+			SparkNetParseU32(argv[*index + 1],&parsed) < 0)
 			return -6;
 		configuration->pump_steps = parsed;
 		*index += 1;
@@ -352,7 +333,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--model-quantization") == 0)
 	{
 		if ((*index + 1) >= argc ||
-			SparkGlm52Pp13RuntimeParseQuantizationMode(
+			SparkGlm52RingRuntimeParseQuantizationMode(
 				argv[*index + 1],&configuration->model_quantization_mode) !=
 				SPARK_STATUS_OK)
 			return -25;
@@ -427,7 +408,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--max-active") == 0)
 	{
 		if ((*index + 1) >= argc ||
-			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0)
+			SparkNetParseU32(argv[*index + 1],&parsed) < 0)
 			return -15;
 		configuration->max_active_sequence_count = parsed;
 		*index += 1;
@@ -436,7 +417,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--port-base") == 0)
 	{
 		if ((*index + 1) >= argc ||
-			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0)
+			SparkNetParseU32(argv[*index + 1],&parsed) < 0)
 			return -16;
 		configuration->port_base = parsed;
 		*index += 1;
@@ -445,7 +426,7 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	if (strcmp(argv[*index],"--kv-logical-blocks") == 0)
 	{
 		if ((*index + 1) >= argc ||
-			SparkGlm52GatewayParseU32(argv[*index + 1],&parsed) < 0 ||
+			SparkNetParseU32(argv[*index + 1],&parsed) < 0 ||
 			parsed == 0u)
 			return -21;
 		configuration->kv_logical_block_capacity = parsed;
@@ -751,7 +732,7 @@ static int32_t SparkGlm52GatewayAttachServiceBackend(
 		return runtime->configuration.require_service_backend != 0u ? -2 : 0;
 	status = SparkGlm52ServiceBackendLoadInterfaceFromSharedObject(
 		runtime->configuration.service_backend_path,
-		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_PP13_RUNTIME,
+		SPARK_GLM52_SERVICE_BACKEND_CAPABILITY_RING_RUNTIME,
 		&runtime->service_backend_library);
 	if (status != SPARK_STATUS_OK)
 		return -3;
@@ -1120,7 +1101,7 @@ static void SparkGlm52GatewayExtractHeaders(
 				SparkGlm52GatewayContentLengthHeader,
 				sizeof(SparkGlm52GatewayContentLengthHeader) - 1u) == 0)
 		{
-			if (SparkGlm52GatewayParseU32(
+			if (SparkNetParseU32(
 					SparkGlm52GatewaySkipSpaces(
 						line + sizeof(SparkGlm52GatewayContentLengthHeader) - 1u),
 					&value) == 0)
@@ -1131,7 +1112,7 @@ static void SparkGlm52GatewayExtractHeaders(
 				SparkGlm52GatewayContentLengthLowerHeader,
 				sizeof(SparkGlm52GatewayContentLengthLowerHeader) - 1u) == 0)
 		{
-			if (SparkGlm52GatewayParseU32(
+			if (SparkNetParseU32(
 					SparkGlm52GatewaySkipSpaces(
 						line + sizeof(SparkGlm52GatewayContentLengthLowerHeader) - 1u),
 					&value) == 0)

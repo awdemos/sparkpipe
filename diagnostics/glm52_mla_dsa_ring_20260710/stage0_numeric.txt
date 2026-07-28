@@ -1,6 +1,0 @@
-layer_numeric	token=0	layer=5	max_abs=0.001251	rel_l2=0.020111	cos=0.999800
-layer_numeric	token=1	layer=5	max_abs=0.001282	rel_l2=0.025873	cos=0.999665
-layer_numeric	token=2	layer=5	max_abs=0.000610	rel_l2=0.016231	cos=0.999868
-layer_numeric	token=3	layer=5	max_abs=0.001282	rel_l2=0.038615	cos=0.999260
-layer_numeric	token=4	layer=5	max_abs=0.001465	rel_l2=0.017581	cos=0.999846
-layer_numeric	missing=0

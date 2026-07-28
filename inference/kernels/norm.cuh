@@ -78,12 +78,22 @@ static __device__ float LmBlockMax(float value, float *shared)
 // read of hidden*2 - which is why the row is staged rather than re-read.
 template<uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
-void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ residual_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ residual_out_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float epsilon)
+// ROW STRIDE IS EXPLICIT AND HAS NO DEFAULT.
+//
+// This computed base = blockIdx.x * dimension, which assumes a row is exactly
+// as wide as the slice being normalised. K3's kv_a norm covers the 512-element
+// latent of a 576-element row, so row 1's "latent" was row 0's rope tail plus
+// 448 elements of row 1. Correct at rows == 1 and corrupt for every batch above
+// it - the shape of bug that passes a single-row test.
+//
+// No default argument: a caller that means dimension says dimension, because a
+// stride that fills itself in is the same silent-drift pattern as an ifndef.
+void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ residual_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ residual_out_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
 {
 	extern __shared__ float lm_norm_shared[];
 	float *row = lm_norm_shared;
 	float *reduction = lm_norm_shared + dimension;
-	uint64_t base = (uint64_t)blockIdx.x * dimension;
+	uint64_t base = (uint64_t)blockIdx.x * row_stride;
 	uint32_t index;
 	float total = 0.0f,scale;
 	for (index = threadIdx.x; index < dimension; index += THREADS)
@@ -126,6 +136,91 @@ void LmSiluMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 	}
 }
 
+// SiTU, the activation Kimi K3 runs on all 93 layers. From the released
+// modeling_kimi_linear.py:
+//
+//     situ_a = beta * tanh(gate / beta) * sigmoid(gate)
+//     up     = linear_beta * tanh(up / linear_beta)      when linear_beta is set
+//     out    = situ_a * up
+//
+// Compare LmSiluMulKernel directly above: SiLU-mul is gate * sigmoid(gate) * up.
+// SiTU replaces the bare gate with beta * tanh(gate / beta) and does the same to
+// up with its own beta. Both branches are soft-clamped to +/- their beta, which
+// is what Moonshot means by "activation control" - the function is SiLU with
+// both arms bounded, not a new shape.
+//
+// The betas are 4.0 and 25.0 and they are NOT interchangeable: swapping them
+// clamps the gate at 25 and the linear arm at 4, which runs and is wrong. They
+// are separate arguments rather than an array for that reason.
+//
+// GATE IS THE FIRST HALF. The reference splits x at d = width/2 and takes
+// gate = x[..., :d]. LmSiluMulKernel carries a gate_first flag because that
+// convention varies between checkpoints; this one does not vary, so it is fixed
+// here rather than made a parameter nobody can set correctly.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, float beta, float linear_beta)
+{
+	uint64_t base = (uint64_t)blockIdx.x * dimension * 2u;
+	uint64_t out_base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float gate = LmBf16ToFloat(gate_up_bf16[base + index]);
+		float up = LmBf16ToFloat(gate_up_bf16[base + dimension + index]);
+		float activated = beta * tanhf(gate / beta) *
+			(1.0f / (1.0f + __expf(-gate)));
+		if (linear_beta > 0.0f)
+			up = linear_beta * tanhf(up / linear_beta);
+		output_bf16[out_base + index] = LmFloatToBf16(activated * up);
+	}
+}
+
+// Sigmoid a row of router logits in place, bf16 in and float out.
+//
+// K3's router activation is sigmoid, not softmax: config.json sets
+// moe_router_activation_func and modeling_kimi_linear.py branches on it. The
+// difference matters beyond the curve - sigmoid scores are independent per
+// expert, so the top-k weights do not sum to one before renormalisation, which
+// is why moe_renormalize exists at all.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16, float *__restrict__ scores, uint32_t width)
+{
+	uint64_t base = (uint64_t)blockIdx.x * width;
+	uint32_t index;
+	for (index = threadIdx.x; index < width; index += THREADS)
+	{
+		float value = LmBf16ToFloat(logits_bf16[base + index]);
+		scores[base + index] = 1.0f / (1.0f + __expf(-value));
+	}
+}
+
+// Gate an attention output elementwise by a sigmoid of its own projection.
+//
+// TWO MODELS NEED THIS AND NEITHER COULD HAVE IT. Qwen 3.6's reference calls its
+// full-attention path GATED attention and sets attn_output_gate; Kimi K3 sets
+// mla_use_output_gate. Both were recorded as unimplemented gaps against a kernel
+// library that had no gate at all.
+//
+// The gate is applied AFTER attention and BEFORE the output projection, so it
+// scales the attended values rather than the logits. A gate on the logits would
+// also run, also produce text, and be a different model.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmOutputGateKernel(uint16_t *__restrict__ output_bf16, const uint16_t *__restrict__ gate_bf16, uint32_t dimension)
+{
+	uint64_t base = (uint64_t)blockIdx.x * dimension;
+	uint32_t index;
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float gate = LmBf16ToFloat(gate_bf16[base + index]);
+		float value = LmBf16ToFloat(output_bf16[base + index]);
+		output_bf16[base + index] =
+			LmFloatToBf16(value * (1.0f / (1.0f + __expf(-gate))));
+	}
+}
+
 // Quantise a row into a format's packed layout with per-group block scales.
 //
 // The absmax and the encode both need the row, so it is staged once rather than
@@ -140,6 +235,18 @@ template<class Format, uint32_t THREADS>
 __global__ __launch_bounds__(THREADS, 1)
 void LmQuantiseRowsKernel(const uint16_t *__restrict__ input_bf16, const uint32_t *__restrict__ source_row_map, uint8_t *__restrict__ output_codes, uint8_t *__restrict__ output_scales, uint32_t row_count, uint32_t dimension)
 {
+	// A FORMAT WITH NO GROUPS CANNOT BE QUANTISED, AND SAYING SO HERE IS THE
+	// GENERAL FORM OF A BUG THAT SHIPPED.
+	//
+	// LmBf16Format declares kScaleGroup zero, correctly - it is not quantised.
+	// A caller that hands this kernel such a format has already divided a width
+	// by it to size the grid, and that division is where the fault appears:
+	// twenty call sites in K3 the moment its non-expert projections moved to
+	// BF16 to match the checkpoint's recipe. The instance is fixed at the
+	// caller; this is the class.
+	static_assert(Format::kScaleGroup > 0u,
+		"an unquantised format has no scale groups and must not reach a "
+		"quantise; the caller should skip it, not divide by zero sizing the grid");
 	extern __shared__ float lm_quant_shared[];
 	float *row = lm_quant_shared;
 	float *reduction = lm_quant_shared + Format::kScaleGroup;
@@ -280,5 +387,104 @@ void LmFusedNormQuantiseKernel(const uint16_t *__restrict__ input_bf16, const ui
 				row[(group * Format::kScaleGroup) + index + 1u] * inverse);
 		}
 		__syncthreads();
+	}
+}
+
+// Copy rows. Trivial, and here because the alternative was worse: closing an
+// AttnRes block wants the partial sum duplicated into a bank slot, and the
+// first version reached for LmAddRowsKernel with the partial as both operands,
+// which is 2x the value. An add is not a copy and reusing one as the other is
+// the kind of thing that produces plausible activations.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension)
+{
+	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint64_t index;
+	if ( row >= rows || element >= dimension )
+		return;
+	index = ((uint64_t)row * dimension) + element;
+	destination_bf16[index] = source_bf16[index];
+}
+
+// Attention Residuals: retrieve from a bank of block representations instead of
+// reading one accumulated stream.
+//
+// Report eq. 8-10 and modeling_kimi_linear.py's _apply_attn_res. Each layer has
+// a learnable pseudo-query; the keys and values are the block representations
+// plus the running partial sum of the current block, with the token embedding
+// always present as b_0.
+//
+//     v      = [b_0, ..., b_{n-1}, partial]
+//     k      = v * rsqrt(mean(v^2) + eps)      each candidate normalised
+//     score  = sum(k * (norm_weight * query))  fused per channel
+//     out    = softmax(score) @ v
+//
+// THE NORM IS ON THE KEY AND NOT THE VALUE. The reference normalises to form the
+// score and then mixes the UNNORMALISED candidates - the RMSNorm is there to stop
+// a layer with large-magnitude output dominating the weights, not to rescale what
+// is retrieved. Normalising both would run and would quietly flatten the
+// contribution of exactly the layers the mechanism exists to weigh.
+//
+// The query and the norm weight are folded into one vector at pack time, which
+// is what the reference does at run time: norm.weight * proj.weight.squeeze(0).
+template<uint32_t THREADS, uint32_t MAX_SOURCES>
+__global__ __launch_bounds__(THREADS, 1)
+void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const uint16_t *__restrict__ score_weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t dimension, float epsilon)
+{
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	__shared__ float score[MAX_SOURCES];
+	__shared__ float weight[MAX_SOURCES];
+	uint32_t row = blockIdx.x,source,index;
+	float running_max = -INFINITY,running_sum = 0.0f;
+	// The partial sum is the last candidate; the bank holds the rest.
+	for (source = 0u; source < sources; ++source)
+	{
+		const uint16_t *values = source + 1u == sources
+			? partial_bf16 + ((uint64_t)row * dimension)
+			: bank_bf16 + ((((uint64_t)row * (sources - 1u)) + source) * dimension);
+		float square = 0.0f,dot = 0.0f,inverse;
+		for (index = threadIdx.x; index < dimension; index += THREADS)
+		{
+			float value = LmBf16ToFloat(values[index]);
+			square += value * value;
+		}
+		square = LmBlockSum<THREADS>(square,reduction);
+		inverse = rsqrtf((square / (float)dimension) + epsilon);
+		for (index = threadIdx.x; index < dimension; index += THREADS)
+			dot += LmBf16ToFloat(values[index]) * inverse
+				* LmBf16ToFloat(score_weight_bf16[index]);
+		dot = LmBlockSum<THREADS>(dot,reduction);
+		if ( threadIdx.x == 0u )
+			score[source] = dot;
+		__syncthreads();
+	}
+	// Softmax over a handful of candidates: nine at K3's block size. One thread
+	// is the right shape here - a block reduction over nine values costs more in
+	// barriers than it saves.
+	if ( threadIdx.x == 0u )
+	{
+		for (source = 0u; source < sources; ++source)
+			running_max = fmaxf(running_max,score[source]);
+		for (source = 0u; source < sources; ++source)
+		{
+			weight[source] = __expf(score[source] - running_max);
+			running_sum += weight[source];
+		}
+		for (source = 0u; source < sources; ++source)
+			weight[source] /= running_sum;
+	}
+	__syncthreads();
+	for (index = threadIdx.x; index < dimension; index += THREADS)
+	{
+		float total = 0.0f;
+		for (source = 0u; source < sources; ++source)
+		{
+			const uint16_t *values = source + 1u == sources
+				? partial_bf16 + ((uint64_t)row * dimension)
+				: bank_bf16 + ((((uint64_t)row * (sources - 1u)) + source) * dimension);
+			total += weight[source] * LmBf16ToFloat(values[index]);
+		}
+		output_bf16[((uint64_t)row * dimension) + index] = LmFloatToBf16(total);
 	}
 }

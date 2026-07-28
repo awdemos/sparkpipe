@@ -31,6 +31,19 @@
 
 // Monotonic unsigned key from a float. Ordering by this key orders by value,
 // which is what lets a radix pass replace a comparison sort.
+// One score, from whichever source the caller supplied. Sigmoid applied here
+// when the caller passes raw logits, so the selection and the weight read the
+// same number by construction rather than by two call sites agreeing.
+static __device__ __forceinline__ float LmTopkScore(const float *scores, const uint16_t *logits_bf16, uint64_t index)
+{
+	if ( logits_bf16 != 0 )
+	{
+		float value = LmBf16ToFloat(logits_bf16[index]);
+		return(1.0f / (1.0f + __expf(-value)));
+	}
+	return(scores[index]);
+}
+
 static __device__ __forceinline__ uint32_t LmTopkKey(float value)
 {
 	uint32_t bits = __float_as_uint(value);
@@ -50,9 +63,13 @@ static __device__ __forceinline__ float LmTopkValue(uint32_t key)
 // The threshold is not tuned; it is where a block can hold n in shared at all.
 #define LM_TOPK_SMALL_LIMIT 1024u
 
-template<uint32_t THREADS, uint32_t K>
+// A checkpoint with more expert groups than this needs the bound raised; it is
+// a shared-memory array, not a limit of the algorithm.
+#define LM_TOPK_MAX_GROUPS 16u
+
+template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u>
 __global__ __launch_bounds__(THREADS, 1)
-void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, float bias)
+void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ sigmoid_logits_bf16)
 {
 	extern __shared__ uint32_t lm_topk_shared[];
 	uint32_t *keys = lm_topk_shared;
@@ -61,10 +78,79 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 	uint32_t index,size,stride;
 	for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
 	{
-		keys[index] = index < n ? LmTopkKey(scores[base + index] + bias) : 0u;
+		// THE BIAS SELECTS; IT DOES NOT WEIGH. Kimi K3's router adds a per-expert
+		// correction bias to pick the top-k and then gathers the mixture weights
+		// from the UNBIASED scores - the report is explicit that omitting b from
+		// p_i,j is what lets it "regulate dispatch without altering the mixture
+		// weights". This kernel took a scalar bias, folded it into the sorted key,
+		// and emitted that key as the weight, so a frozen load-balancing bias
+		// would have leaked into every mixture weight as a fixed per-expert
+		// distortion. Every caller passed 0.0f, so nothing was wrong yet.
+		// SIGMOID HERE, NOT IN A SEPARATE PASS. A router logit is read once and
+		// selected on; writing sigmoid(logit) to memory and reading it back costs
+		// two trips over experts * rows floats per layer. At 896 experts and 92
+		// MoE layers that is tens of megabytes a token for a value used once.
+		// Pass sigmoid_logits_bf16 and scores is ignored; pass scores and the
+		// activation already happened.
+		keys[index] = index < n ? LmTopkKey(LmTopkScore(scores, sigmoid_logits_bf16,
+			base + index) + (selection_bias != 0 ? selection_bias[index] : 0.0f)) : 0u;
 		slots[index] = index;
 	}
 	__syncthreads();
+	// GROUPED SELECTION, when a checkpoint asks for it.
+	//
+	// The reference scores each group by the SUM OF ITS TOP TWO experts - not
+	// its best and not its mean - keeps the top TOP_GROUPS groups, and masks
+	// everything else out of the top-k. The bias is already in keys[] because
+	// the reference groups scores_for_choice rather than scores, so the
+	// select-versus-weigh split holds one level up as well.
+	//
+	// GROUPS == 1 is the whole of Kimi K3, and the compiler removes this.
+	if ( GROUPS > 1u && GROUPS > TOP_GROUPS )
+	{
+		__shared__ uint32_t group_key[LM_TOPK_MAX_GROUPS];
+		uint32_t group,per_group = n / GROUPS,cut;
+		for (group = threadIdx.x; group < GROUPS; group += THREADS)
+		{
+			uint32_t best = 0u,second = 0u,member;
+			for (member = 0u; member < per_group; ++member)
+			{
+				uint32_t value = keys[(group * per_group) + member];
+				if ( value > best ) { second = best; best = value; }
+				else if ( value > second ) second = value;
+			}
+			// The keys are order-preserving monotone images of the scores, so
+			// their sum is not the sum of the scores. Ranking groups by it
+			// ranks by a different function, so recover the two values first.
+			group_key[group] = LmTopkKey(LmTopkValue(best) + LmTopkValue(second));
+		}
+		__syncthreads();
+		// RANK BY COUNTING, NOT BY SELECTING TOP_GROUPS TIMES. The first version
+		// had thread zero run TOP_GROUPS passes over GROUPS entries, serial and
+		// quadratic, while every other thread waited. Each group instead counts
+		// how many groups outrank it - one pass, one thread per group, no
+		// barrier between - and survives if that count is below TOP_GROUPS.
+		//
+		// Ties broken by index so the count is a strict order and exactly
+		// TOP_GROUPS survive; the serial version broke ties by whichever the
+		// scan reached first, which is the same rule written less clearly.
+		for (group = threadIdx.x; group < GROUPS; group += THREADS)
+		{
+			uint32_t better = 0u,other;
+			for (other = 0u; other < GROUPS; ++other)
+				if ( group_key[other] > group_key[group]
+					|| (group_key[other] == group_key[group] && other < group) )
+					++better;
+			if ( better >= TOP_GROUPS )
+				group_key[group] = 0xffffffffu;
+		}
+		(void)cut;
+		__syncthreads();
+		for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
+			if ( index < n && group_key[index / per_group] != 0xffffffffu )
+				keys[index] = 0u;
+		__syncthreads();
+	}
 	// Bitonic sort, descending. Every exchange is between a fixed pair, so there
 	// is no divergence beyond the direction test.
 	for (size = 2u; size <= LM_TOPK_SMALL_LIMIT; size <<= 1u)
@@ -90,11 +176,42 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 			}
 			__syncthreads();
 		}
+	// The weight is re-read from the unbiased scores at the chosen slot rather
+	// than recovered from the sort key, which carries the bias.
 	for (index = threadIdx.x; index < K; index += THREADS)
 	{
 		out_indices[((uint64_t)blockIdx.x * K) + index] = slots[index];
 		if ( out_values != 0 )
-			out_values[((uint64_t)blockIdx.x * K) + index] = LmTopkValue(keys[index]);
+			out_values[((uint64_t)blockIdx.x * K) + index] =
+				LmTopkScore(scores, sigmoid_logits_bf16, base + slots[index]);
+	}
+	if ( RENORMALISE && out_values != 0 )
+	{
+		// moe_renormalize: divide the k gates by their sum so they sum to one.
+		// K3 sets it; the report's routed_scaling_factor then multiplies a
+		// normalised mixture, which is why that factor being 1.0 makes the
+		// multiply a no-op rather than merely a small number.
+		__shared__ float reduction[LM_TOPK_SMALL_LIMIT];
+		float mine = 0.0f,total;
+		__syncthreads();
+		// A BLOCK REDUCTION, NOT ONE THREAD. The first version had thread zero
+		// walk the k gates twice while the other 255 waited - at 92 MoE layers a
+		// two-pass serial loop per token per layer sits on the critical path for
+		// no reason. K is 16 here, so this is not a large number of cycles; it is
+		// a large number of barriers with nothing behind them.
+		for (index = threadIdx.x; index < K; index += THREADS)
+			mine += out_values[((uint64_t)blockIdx.x * K) + index];
+		reduction[threadIdx.x] = mine;
+		__syncthreads();
+		for (index = THREADS / 2u; index > 0u; index >>= 1)
+		{
+			if ( threadIdx.x < index && threadIdx.x + index < THREADS )
+				reduction[threadIdx.x] += reduction[threadIdx.x + index];
+			__syncthreads();
+		}
+		total = reduction[0] + 1e-20f;
+		for (index = threadIdx.x; index < K; index += THREADS)
+			out_values[((uint64_t)blockIdx.x * K) + index] /= total;
 	}
 }
 

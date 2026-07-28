@@ -149,13 +149,9 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 	int32_t status;
 	bool sparse = context > GLM52_DSA_SELECTED;
 	bool selects = sparse && layer_in_group == 0u;
-	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
-		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
-		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
-		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
-	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
-		<<<dim3(rows,GLM52_HIDDEN / Format::kScaleGroup),GLM52_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, (GLM52_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>), dim3(rows,GLM52_HIDDEN / Format::kScaleGroup), GLM52_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,GLM52_HIDDEN);
 	if ( b->use_absorbed )
 	{
@@ -195,30 +191,23 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 	// offset is zero. An earlier version rotated a slice of a fused row at
 	// offset GLM52_LATENT, which was the right arithmetic for a layout that does
 	// not exist.
-	LmRopeKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmRopeKernel<GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, 0, stream,
 		b->projected.query_rope_bf16,b->positions,GLM52_ROPE_DIM,0u,GLM52_ROPE_DIM,GLM52_ROPE_THETA);
-	LmRopeKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmRopeKernel<GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, 0, stream,
 		b->projected.key_rope_bf16,b->positions,GLM52_ROPE_DIM,0u,GLM52_ROPE_DIM,GLM52_ROPE_THETA);
-	LmKvStoreKernel<Glm52Kv,GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmKvStoreKernel<Glm52Kv,GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, 0, stream,
 		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows,GLM52_LATENT_ROW);
 	if ( selects )
 	{
-		LmSparseScoreKernel<Glm52Kv,GLM52_LAYER_THREADS,GLM52_DSA_INDEX_DIM>
-			<<<dim3(rows,context),GLM52_LAYER_THREADS,0,stream>>>(
-			b->projected.query_latent_bf16,b->cache,b->sequence_of_row,b->context_length,
-			GLM52_DSA_INDEX_HEADS,b->selection_scores);
-		LmTopkHistogramKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
-			b->selection_scores,context,GLM52_DSA_SELECTED,b->group_tile_prefix);
-		LmTopkGatherKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
-			b->selection_scores,context,GLM52_DSA_SELECTED,b->group_tile_prefix,
-			b->selected_positions,0);
+		LM_LAUNCH((LmSparseScoreKernel<Glm52Kv,GLM52_LAYER_THREADS,GLM52_DSA_INDEX_DIM>), dim3(rows,context), GLM52_LAYER_THREADS, 0, stream,
+		b->projected.query_latent_bf16,b->cache,b->sequence_of_row,b->context_length, GLM52_DSA_INDEX_HEADS,b->selection_scores);
+		LM_LAUNCH((LmTopkHistogramKernel<GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, 0, stream,
+		b->selection_scores,context,GLM52_DSA_SELECTED,b->group_tile_prefix);
+		LM_LAUNCH((LmTopkGatherKernel<GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, 0, stream,
+		b->selection_scores,context,GLM52_DSA_SELECTED,b->group_tile_prefix, b->selected_positions,0);
 	}
-	LmAttentionDecodeKernel<Glm52Kv,GLM52_LAYER_THREADS,GLM52_LATENT,GLM52_ROPE_DIM>
-		<<<dim3(rows,GLM52_ATTN_HEADS),GLM52_LAYER_THREADS,0,stream>>>(
-		b->projected.query_latent_bf16,b->projected.query_rope_bf16,b->cache,b->sequence_of_row,b->context_length,
-		sparse ? b->selected_positions : 0,GLM52_DSA_SELECTED,GLM52_ATTN_HEADS,
-		rsqrtf((float)GLM52_LATENT),b->attention_latent_bf16,
-		b->row_positions);
+	LM_LAUNCH((LmAttentionDecodeKernel<Glm52Kv,GLM52_LAYER_THREADS,GLM52_LATENT,GLM52_ROPE_DIM>), dim3(rows,GLM52_ATTN_HEADS), GLM52_LAYER_THREADS, 0, stream,
+		b->projected.query_latent_bf16,b->projected.query_rope_bf16,b->cache,b->sequence_of_row,b->context_length, sparse ? b->selected_positions : 0,GLM52_DSA_SELECTED,GLM52_ATTN_HEADS, rsqrtf((float)GLM52_LATENT),b->attention_latent_bf16, b->row_positions);
 	// THE OUTPUT PROJECTION, which an earlier version of this file declared and
 	// never called. Attention produces heads x latent; the layer's output is
 	// hidden. Without this the residual add receives a tensor of the wrong width
@@ -227,11 +216,8 @@ static int32_t Glm52LayerAttention(const Glm52LayerBuffers *b, uint32_t rows, ui
 	// In absorbed form this weight already carries the folded value
 	// up-projection, which is why its input is the latent width rather than
 	// heads x v_head_dim.
-	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
-		<<<dim3(rows,(GLM52_ATTN_HEADS * GLM52_LATENT) / Format::kScaleGroup),GLM52_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
-		b->attention_latent_bf16,0,b->packed_activation,b->packed_scale,
-		rows,GLM52_ATTN_HEADS * GLM52_LATENT);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>), dim3(rows,(GLM52_ATTN_HEADS * GLM52_LATENT) / Format::kScaleGroup), GLM52_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
+		b->attention_latent_bf16,0,b->packed_activation,b->packed_scale, rows,GLM52_ATTN_HEADS * GLM52_LATENT);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->output_scale;
@@ -261,13 +247,9 @@ static int32_t Glm52LayerDenseMlp(const Glm52LayerBuffers *b, uint32_t rows, uin
 {
 	LmGemmArguments gemm;
 	int32_t status;
-	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
-		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
-		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
-	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
-		<<<dim3(rows,GLM52_HIDDEN / Format::kScaleGroup),GLM52_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, (GLM52_HIDDEN + 8u) * sizeof(float), stream,
+		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>), dim3(rows,GLM52_HIDDEN / Format::kScaleGroup), GLM52_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,GLM52_HIDDEN);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
@@ -280,13 +262,10 @@ static int32_t Glm52LayerDenseMlp(const Glm52LayerBuffers *b, uint32_t rows, uin
 		GLM52_HIDDEN,GLM52_DENSE_INTERMEDIATE * 2u,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LmSiluMulKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmSiluMulKernel<GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,GLM52_DENSE_INTERMEDIATE,true);
-	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
-		<<<dim3(rows,GLM52_DENSE_INTERMEDIATE / Format::kScaleGroup),GLM52_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
-		b->intermediate_bf16,0,b->packed_activation,b->packed_scale,
-		rows,GLM52_DENSE_INTERMEDIATE);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>), dim3(rows,GLM52_DENSE_INTERMEDIATE / Format::kScaleGroup), GLM52_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
+		b->intermediate_bf16,0,b->packed_activation,b->packed_scale, rows,GLM52_DENSE_INTERMEDIATE);
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->dense_down_scale;
 	gemm.output_bf16 = b->hidden_bf16;
@@ -306,10 +285,8 @@ static int32_t Glm52LayerMoe(const Glm52LayerBuffers *b, uint32_t rows, uint32_t
 {
 	LmGemmArguments gemm;
 	int32_t status;
-	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
-		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
-		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
-		b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, (GLM52_HIDDEN + 8u) * sizeof(float), stream,
+		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,GLM52_HIDDEN,GLM52_HIDDEN,GLM52_RMS_EPSILON);
 	// The router logits have to be computed before they are selected from. An
 	// earlier draft of this file read b->router_logits without anything filling
 	// it, which would have selected experts from uninitialised memory - routing
@@ -330,14 +307,10 @@ static int32_t Glm52LayerMoe(const Glm52LayerBuffers *b, uint32_t rows, uint32_t
 		GLM52_HIDDEN,GLM52_EXPERTS,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LmTopkSmallKernel<GLM52_LAYER_THREADS,GLM52_TOP_K>
-		<<<rows,GLM52_LAYER_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream>>>(
-		(const float *)b->router_logits,GLM52_EXPERTS,b->route_expert,b->route_weight,0.0f);
-	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
-		<<<dim3(packed_rows,GLM52_HIDDEN / Format::kScaleGroup),GLM52_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
-		b->normed_bf16,b->route_source_token,b->packed_activation,b->packed_scale,
-		packed_rows,GLM52_HIDDEN);
+	LM_LAUNCH((LmTopkSmallKernel<GLM52_LAYER_THREADS,GLM52_TOP_K>), rows, GLM52_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
+		(const float *)b->router_logits,GLM52_EXPERTS,b->route_expert,b->route_weight,0,0);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>), dim3(packed_rows,GLM52_HIDDEN / Format::kScaleGroup), GLM52_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
+		b->normed_bf16,b->route_source_token,b->packed_activation,b->packed_scale, packed_rows,GLM52_HIDDEN);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->expert_w1_scale;
@@ -349,13 +322,10 @@ static int32_t Glm52LayerMoe(const Glm52LayerBuffers *b, uint32_t rows, uint32_t
 		GLM52_EXPERTS,GLM52_HIDDEN,GLM52_GATE_UP_DIM,sms,true,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LmSiluMulKernel<GLM52_LAYER_THREADS><<<packed_rows,GLM52_LAYER_THREADS,0,stream>>>(
+	LM_LAUNCH((LmSiluMulKernel<GLM52_LAYER_THREADS>), packed_rows, GLM52_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,GLM52_EXPERT_INTERMEDIATE,true);
-	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
-		<<<dim3(packed_rows,GLM52_EXPERT_INTERMEDIATE / Format::kScaleGroup),GLM52_LAYER_THREADS,
-		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(
-		b->intermediate_bf16,0,b->packed_activation,b->packed_scale,
-		packed_rows,GLM52_EXPERT_INTERMEDIATE);
+	LM_LAUNCH((LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>), dim3(packed_rows,GLM52_EXPERT_INTERMEDIATE / Format::kScaleGroup), GLM52_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
+		b->intermediate_bf16,0,b->packed_activation,b->packed_scale, packed_rows,GLM52_EXPERT_INTERMEDIATE);
 	gemm.scale_b = (const float *)b->expert_w2_scale;
 	gemm.output_bf16 = b->expert_out_bf16;
 	status = LmGemmLaunch<Format,GLM52_LAYER_TILE_N,Format::kTileK,GLM52_LAYER_STAGES,GLM52_LAYER_WARPS>(
@@ -373,11 +343,8 @@ static int32_t Glm52LayerMoe(const Glm52LayerBuffers *b, uint32_t rows, uint32_t
 	// GLM 5.2 scales the router output rather than the expert output, and
 	// applying it after the sum is the same number only when the gates already
 	// sum to one, which top-k renormalisation does not guarantee.
-	LmMoeFinalizeKernel<GLM52_LAYER_THREADS>
-		<<<dim3((GLM52_HIDDEN + GLM52_LAYER_THREADS - 1u) / GLM52_LAYER_THREADS,rows),
-		   GLM52_LAYER_THREADS,0,stream>>>(
-		b->expert_out_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16,
-		rows,GLM52_TOP_K,GLM52_HIDDEN);
+	LM_LAUNCH((LmMoeFinalizeKernel<GLM52_LAYER_THREADS>), dim3((GLM52_HIDDEN + GLM52_LAYER_THREADS - 1u) / GLM52_LAYER_THREADS,rows), GLM52_LAYER_THREADS, 0, stream,
+		b->expert_out_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16, rows,GLM52_TOP_K,GLM52_HIDDEN);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }
 
@@ -400,16 +367,11 @@ static int32_t Glm52Head(const Glm52LayerBuffers *b, const void *head_norm_weigh
 	uint32_t tiles = (vocabulary + GLM52_HEAD_TILE - 1u) / GLM52_HEAD_TILE;
 	// The final norm has no residual to add and no residual to write: this is
 	// the end of the stream, not a layer boundary.
-	LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>
-		<<<rows,GLM52_LAYER_THREADS,(GLM52_HIDDEN + 8u) * sizeof(float),stream>>>(
-		b->hidden_bf16,0,(const uint16_t *)head_norm_weight,
-		0,b->normed_bf16,GLM52_HIDDEN,GLM52_RMS_EPSILON);
-	LmHeadCandidateKernel<GLM52_LAYER_THREADS,GLM52_HEAD_TILE>
-		<<<dim3(tiles,rows),GLM52_LAYER_THREADS,0,stream>>>(
-		b->normed_bf16,(const uint16_t *)head_weight,token_ids,
-		b->head_candidate_score,b->head_candidate_token,rows,GLM52_HIDDEN,vocabulary);
-	LmHeadCommitKernel<GLM52_LAYER_THREADS><<<rows,GLM52_LAYER_THREADS,0,stream>>>(
-		b->head_candidate_score,b->head_candidate_token,tiles,
-		b->output_token,b->output_score,rows);
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, (GLM52_HIDDEN + 8u) * sizeof(float), stream,
+		b->hidden_bf16,0,(const uint16_t *)head_norm_weight, 0,b->normed_bf16,GLM52_HIDDEN,GLM52_HIDDEN,GLM52_RMS_EPSILON);
+	LM_LAUNCH((LmHeadCandidateKernel<GLM52_LAYER_THREADS,GLM52_HEAD_TILE>), dim3(tiles,rows), GLM52_LAYER_THREADS, 0, stream,
+		b->normed_bf16,(const uint16_t *)head_weight,token_ids, b->head_candidate_score,b->head_candidate_token,rows,GLM52_HIDDEN,vocabulary);
+	LM_LAUNCH((LmHeadCommitKernel<GLM52_LAYER_THREADS>), rows, GLM52_LAYER_THREADS, 0, stream,
+		b->head_candidate_score,b->head_candidate_token,tiles, b->output_token,b->output_score,rows);
 	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
 }

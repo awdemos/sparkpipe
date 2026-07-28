@@ -48,7 +48,41 @@ static __device__ __forceinline__ void LmRopePair(float *low, float *high, float
 	*high = (a * s) + (b * c);
 }
 
-template<uint32_t THREADS>
+// WHICH TWO ELEMENTS FORM A PAIR. Both conventions are called "rope" and they
+// are different rotations, so a checkpoint trained under one and served under
+// the other is fluent and positionally wrong - the failure the comment above
+// describes, now selectable instead of assumed.
+//
+// Half-split pairs i with i + rope_dim/2. GLM 5.2, Qwen 3.6 and MiMo 2.5 want
+// this and it stays the default, so no existing call site changes.
+//
+// Interleaved pairs 2i with 2i+1, the view_as_complex layout. DeepSeek V4
+// encodes its released checkpoint this way, for both the main attention and the
+// compressor sub-module.
+enum LmRopePairing
+{
+	LM_ROPE_HALF_SPLIT = 0,
+	LM_ROPE_INTERLEAVED = 1
+};
+
+// The three rope kernels below had this body character for character. It is one
+// function now, because the pairing is the thing that varies and a convention
+// duplicated three times is a convention that will only be fixed twice.
+template<LmRopePairing PAIRING>
+static __device__ __forceinline__ void LmRopeRotate(uint16_t *rows_bf16, uint64_t base, uint32_t index, uint32_t half, float angle)
+{
+	uint32_t low_offset,high_offset;
+	float low,high;
+	low_offset = (PAIRING == LM_ROPE_INTERLEAVED) ? (index * 2u) : index;
+	high_offset = (PAIRING == LM_ROPE_INTERLEAVED) ? ((index * 2u) + 1u) : (half + index);
+	low = LmBf16ToFloat(rows_bf16[base + low_offset]);
+	high = LmBf16ToFloat(rows_bf16[base + high_offset]);
+	LmRopePair(&low,&high,angle);
+	rows_bf16[base + low_offset] = LmFloatToBf16(low);
+	rows_bf16[base + high_offset] = LmFloatToBf16(high);
+}
+
+template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t row_stride, uint32_t rope_offset, uint32_t rope_dim, float theta)
 {
@@ -56,13 +90,8 @@ void LmRopeKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__
 	uint32_t half = rope_dim / 2u,index;
 	float position = (float)positions[blockIdx.x];
 	for (index = threadIdx.x; index < half; index += THREADS)
-	{
-		float low = LmBf16ToFloat(rows_bf16[base + index]);
-		float high = LmBf16ToFloat(rows_bf16[base + half + index]);
-		LmRopePair(&low,&high,position * __powf(theta,-2.0f * (float)index / (float)rope_dim));
-		rows_bf16[base + index] = LmFloatToBf16(low);
-		rows_bf16[base + half + index] = LmFloatToBf16(high);
-	}
+		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,
+			position * __powf(theta,-2.0f * (float)index / (float)rope_dim));
 }
 
 // -- latent-absorbed decode attention ------------------------------------------
@@ -97,6 +126,20 @@ template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
 __global__ __launch_bounds__(THREADS, 1)
 void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, const uint16_t *__restrict__ query_rope_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_positions, uint32_t selected_count, uint32_t heads, float qk_scale, uint16_t *__restrict__ output_bf16, const uint32_t *__restrict__ row_position)
 {
+	// THE ACCUMULATOR IS EIGHT SLOTS AND THE LATENT MUST FIT IN THEM. Each
+	// thread holds elements threadIdx.x, threadIdx.x + THREADS, ... up to eight
+	// of them, and the loops are guarded by element < LATENT - so a latent wider
+	// than 8 * THREADS is not an overrun. It is worse: the tail is never
+	// computed and never written, and the output carries whatever the buffer
+	// held. Silent truncation of the top of every attention output.
+	//
+	// K3 at latent 512 and 256 threads has room for 2048, and glm5_2 the same,
+	// so nothing in this tree is near the edge. That is exactly why it needed
+	// saying: an instantiation at 32 threads would zero half of every output and
+	// compile without a word. Found by running the kernel at one thread, where
+	// the limit is 8.
+	static_assert(LATENT <= 8u * THREADS,
+		"the latent must fit the per-thread accumulator, or its tail is dropped");
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float shared_query[LATENT + ROPE];
 	float accumulator[8];
@@ -229,7 +272,7 @@ static __device__ __forceinline__ float LmYarnFrequency(uint32_t index, uint32_t
 	return((inverse * blend) + ((inverse / scale_factor) * (1.0f - blend)));
 }
 
-template<uint32_t THREADS>
+template<uint32_t THREADS, LmRopePairing PAIRING = LM_ROPE_HALF_SPLIT>
 __global__ __launch_bounds__(THREADS, 1)
 void LmRopeYarnKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restrict__ positions, uint32_t row_stride, uint32_t rope_offset, uint32_t rope_dim, float theta, float scale_factor, float original_positions, float low_band, float high_band)
 {
@@ -237,15 +280,9 @@ void LmRopeYarnKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restri
 	uint32_t half = rope_dim / 2u,index;
 	float position = (float)positions[blockIdx.x];
 	for (index = threadIdx.x; index < half; index += THREADS)
-	{
-		float low = LmBf16ToFloat(rows_bf16[base + index]);
-		float high = LmBf16ToFloat(rows_bf16[base + half + index]);
-		float frequency = LmYarnFrequency(index,rope_dim,theta,scale_factor,
-			original_positions,low_band,high_band);
-		LmRopePair(&low,&high,position * frequency);
-		rows_bf16[base + index] = LmFloatToBf16(low);
-		rows_bf16[base + half + index] = LmFloatToBf16(high);
-	}
+		LmRopeRotate<PAIRING>(rows_bf16,base,index,half,position *
+			LmYarnFrequency(index,rope_dim,theta,scale_factor,
+				original_positions,low_band,high_band));
 }
 
 // -- hierarchical sparse selection ------------------------------------------------

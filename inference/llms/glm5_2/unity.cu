@@ -110,7 +110,7 @@ template __global__ void LmGemmKernel<LmNvfp4, 64u, GLM52_TILE_N, 128u, GLM52_ST
 // passed at the call, not baked in: the old decode stage's RmsNormKernel was 62
 // lines carrying seven SPARK_GLM52_MODEL_* references, none of which changed
 // what it computed.
-template __global__ void LmFusedResidualRmsNormKernel<GLM52_NORM_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
+template __global__ void LmFusedResidualRmsNormKernel<GLM52_NORM_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<GLM52_NORM_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmQuantiseRowsKernel<LmInt7, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
@@ -131,7 +131,7 @@ template __global__ void LmSparseScoreKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_
 // Top-k and speculation. The router picks 8 of 256 with the small path; DSA
 // picks its positions with the radix path. Both were separate kernels before and
 // the algorithm was the same.
-template __global__ void LmTopkSmallKernel<GLM52_NORM_THREADS, GLM52_TOP_K>(const float *, uint32_t, uint32_t *, float *, float);
+template __global__ void LmTopkSmallKernel<GLM52_NORM_THREADS, GLM52_TOP_K>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
 template __global__ void LmTopkHistogramKernel<GLM52_NORM_THREADS>(const float *, uint32_t, uint32_t, uint32_t *);
 template __global__ void LmTopkGatherKernel<GLM52_NORM_THREADS>(const float *, uint32_t, uint32_t, const uint32_t *, uint32_t *, uint32_t *);
 template __global__ void LmSpeculativeVerifyGreedyKernel<GLM52_NORM_THREADS>(const uint32_t *, const uint32_t *, uint32_t, uint32_t *, uint32_t *, uint32_t *);

@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""A layer kind a model selects must have an entry point that can run it.
+
+deepseek_v4's config describes sliding-window, compressed-sparse and
+high-compression attention alternating by layer, and unity.cu exported one
+Dsv4LayerAttentionFp8. Three kinds, one entry point, and nothing anywhere said
+so - the shapes were all correct, the model compiled, and two thirds of its
+layers had no implementation to dispatch to.
+
+That is the check here: evaluate each model's LAYER_KIND selector over every
+layer, collect the distinct kinds, and require an exported entry point for
+each. A model that grows a new layer kind and forgets the kernel fails on the
+next run rather than at the first wrong token.
+
+KNOWN_INCOMPLETE below is the honest register of what does not hold yet. An
+entry there must name what is missing, not say "same" - a gate whose exemption
+list is unreadable has stopped being a gate.
+"""
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+LLMS = ROOT / "inference" / "llms"
+
+# What an entry point implementing this kind looks like in a name.
+KIND_ENTRY = {
+    "LM_LAYER_FULL": ("Attention",),
+    "LM_LAYER_WINDOW": ("Swa", "Window", "AttentionFull"),
+    "LM_LAYER_SPARSE": ("Sparse", "Csa", "Indexed"),
+    "LM_LAYER_COMPRESSED": ("Compressed", "Hca"),
+    "LM_LAYER_LATENT": ("Attention", "Mla"),
+    "LM_LAYER_RECURRENT": ("Linear", "Delta", "Recurrent", "Kda"),
+}
+
+KIND_VALUE = {
+    "LM_LAYER_FULL": 0, "LM_LAYER_WINDOW": 1, "LM_LAYER_SPARSE": 2,
+    "LM_LAYER_COMPRESSED": 3, "LM_LAYER_LATENT": 4, "LM_LAYER_RECURRENT": 5,
+}
+
+# A model with more than one layer kind needs a driver that chooses between
+# them. glm5_2 has one (bind.cu); the rest do not, so their entry points have no
+# caller and their LAYER_KIND selector is read by nothing.
+NO_DRIVER = {
+    "deepseek_v4": "three kinds and one entry point; a driver would have "
+                   "nothing to dispatch to",
+}
+
+KNOWN_INCOMPLETE = {
+    ("deepseek_v4", "LM_LAYER_WINDOW"):
+        "first two layers are pure sliding window; no windowed entry point "
+        "exists, only Dsv4LayerAttentionFp8 which attends over everything",
+    ("deepseek_v4", "LM_LAYER_SPARSE"):
+        "CSA needs the indexer to select top-512 and pass selected_positions. "
+        "LmSparseScoreKernel and LmTopkGather exist and nothing calls them",
+    ("deepseek_v4", "LM_LAYER_COMPRESSED"):
+        "HCA is CSA at compression 128 with the other rope theta. Same missing "
+        "call, plus DSV4_COMPRESS_ROPE_THETA is unreachable without it",
+}
+
+
+def selector_kinds(model):
+    """Evaluate the model's LAYER_KIND macro by COMPILING it, not by translating
+    it. The first version of this rewrote C ternaries into Python and produced
+    booleans where it meant enum values - a gate that emulates the thing it
+    checks is a second implementation that can disagree for its own reasons."""
+    config = LLMS / model / "config.h"
+    text = config.read_text()
+    prefix = re.search(r"#define\s+(\w+)_LAYER_KIND\(layer\)", text)
+    layers = re.search(r"#define\s+\w+_LAYERS\s+(\d+)u", text)
+    if not prefix:
+        return None, None
+    count = int(layers.group(1)) if layers else 64
+    program = f"""#include <stdio.h>
+#include "inference/llms/{model}/config.h"
+int main(void)
+{{
+\tint layer;
+\tfor (layer = 0; layer < {count}; ++layer)
+\t\tprintf("%d\\n", (int){prefix.group(1)}_LAYER_KIND(layer));
+\treturn 0;
+}}
+"""
+    source = Path(tempfile.gettempdir()) / f"lk_{model}.c"
+    binary = Path(tempfile.gettempdir()) / f"lk_{model}"
+    source.write_text(program)
+    build = subprocess.run(["gcc", "-O0", f"-I{ROOT}", "-o", str(binary), str(source)],
+                           capture_output=True, text=True)
+    if build.returncode != 0:
+        print(f"         {build.stderr.strip().splitlines()[-1] if build.stderr else 'compile failed'}")
+        return None, count
+    run = subprocess.run([str(binary)], capture_output=True, text=True)
+    names = {v: k for k, v in KIND_VALUE.items()}
+    kinds = {names[int(line)] for line in run.stdout.split() if line}
+    return kinds, count
+
+
+def entry_points(model):
+    unity = LLMS / model / "unity.cu"
+    if not unity.exists():
+        return set()
+    return set(re.findall(r'extern "C" int32_t (\w+)', unity.read_text()))
+
+
+def driver_dispatches(model):
+    """A driver exists and reads the layer kind. Compiling is not enough: a
+    driver that ignores LAYER_KIND and runs one path for every layer is exactly
+    what deepseek_v4 would look like if someone wrote it a bind.cu today."""
+    bind = LLMS / model / "bind.cu"
+    if not bind.exists():
+        return None
+    return "LAYER_KIND" in bind.read_text()
+
+
+def main():
+    failures = 0
+    for model in sorted(p.name for p in LLMS.iterdir() if p.is_dir()):
+        kinds, count = selector_kinds(model)
+        if kinds is None:
+            print(f"  FAIL {model}: no LAYER_KIND selector this gate can evaluate")
+            failures += 1
+            continue
+        exported = entry_points(model)
+        missing, excused = [], []
+        for kind in sorted(kinds):
+            needles = KIND_ENTRY[kind]
+            if any(n in e for e in exported for n in needles):
+                continue
+            if (model, kind) in KNOWN_INCOMPLETE:
+                excused.append(kind)
+            else:
+                missing.append(kind)
+        summary = ", ".join(k.replace("LM_LAYER_", "").lower() for k in sorted(kinds))
+        dispatches = driver_dispatches(model)
+        no_driver_note = ""
+        if dispatches is None and len(kinds) > 1 and model in NO_DRIVER:
+            no_driver_note = ", NO DRIVER"
+        if dispatches is None and len(kinds) > 1 and model not in NO_DRIVER:
+            failures += 1
+            print(f"  FAIL {model}: {len(kinds)} layer kinds and no bind.cu to choose between them")
+            continue
+        if dispatches is False and len(kinds) > 1:
+            failures += 1
+            print(f"  FAIL {model}: bind.cu does not read {model.upper()}_LAYER_KIND; "
+                  "it runs one path for every layer")
+            continue
+        if missing:
+            failures += 1
+            print(f"  FAIL {model}: {count} layers, kinds [{summary}]")
+            for kind in missing:
+                print(f"         no entry point for {kind}")
+        else:
+            mark = "--" if (excused or no_driver_note) else "ok"
+            note = f", {len(excused)} kind(s) not implemented" if excused else ""
+            print(f"  {mark}   {model}: {count} layers, kinds [{summary}]{note}{no_driver_note}")
+    print()
+    stale = [k for k in KNOWN_INCOMPLETE if k[0] not in
+             {p.name for p in LLMS.iterdir() if p.is_dir()}]
+    if stale:
+        print(f"stale exemptions for models that no longer exist: {stale}")
+        return 1
+    if failures:
+        print(f"FAIL ({failures} model(s) selecting a kind nothing implements)")
+        return 1
+    print("every selected layer kind has an entry point or a stated reason")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

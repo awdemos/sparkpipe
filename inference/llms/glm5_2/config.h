@@ -17,6 +17,7 @@
 // belongs in the file of the model it was guessed for, marked, not here.
 
 #include <stdint.h>
+#include "inference/kernels/layer_kind.cuh"
 
 #define GLM52_HIDDEN 6144u                     /* CONFIG hidden_size */
 #define GLM52_LAYERS 78u                       /* CONFIG num_hidden_layers */
@@ -122,3 +123,8 @@ static inline uint32_t Glm52RowsPerExpert(uint32_t tokens)
 {
 	return(((tokens * GLM52_TOP_K) + GLM52_EXPERTS - 1u) / GLM52_EXPERTS);
 }
+
+// -- layer kinds --
+// Uniform: every layer is latent-absorbed MLA with the DSA index. The only one
+// of the six that does not alternate, which is why it never needed to say so.
+#define GLM52_LAYER_KIND(layer) ((void)(layer), LM_LAYER_LATENT)

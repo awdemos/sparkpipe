@@ -47,7 +47,7 @@ template __global__ void LmGemmKernel<LmInt7, 16u, MIMO25_TILE_N, 256u, MIMO25_S
 template __global__ void LmGemmKernel<LmInt7, 32u, MIMO25_TILE_N, 256u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmInt7, 64u, MIMO25_TILE_N, 256u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 
-template __global__ void LmFusedResidualRmsNormKernel<MIMO25_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
+template __global__ void LmFusedResidualRmsNormKernel<MIMO25_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<MIMO25_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, MIMO25_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmQuantiseRowsKernel<LmInt7, MIMO25_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
@@ -61,7 +61,7 @@ template __global__ void LmRopeKernel<MIMO25_THREADS>(uint16_t *, const uint32_t
 template __global__ void LmAttentionDecodeKernel<Mimo25FullKv, MIMO25_THREADS, MIMO25_HEAD_DIM, MIMO25_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 template __global__ void LmAttentionDecodeKernel<Mimo25SwaKv, MIMO25_THREADS, MIMO25_HEAD_DIM, MIMO25_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 
-template __global__ void LmTopkSmallKernel<MIMO25_THREADS, MIMO25_TOP_K>(const float *, uint32_t, uint32_t *, float *, float);
+template __global__ void LmTopkSmallKernel<MIMO25_THREADS, MIMO25_TOP_K>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
 template __global__ void LmSplitQkvKernel<MIMO25_THREADS>(const uint16_t *, LmQkvLayout, uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
 template __global__ void LmRopePerHeadKernel<MIMO25_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
 template __global__ void LmKvStoreKernel<Mimo25FullKv, MIMO25_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
@@ -132,3 +132,14 @@ extern "C" int32_t Mimo25LayerDenseMlpFp8(const Mimo25LayerBuffers *b, uint32_t 
 {
 	return(Mimo25LayerDenseMlp<LmFp8>(b,rows,sms,stream));
 }
+
+extern "C" int32_t Mimo25HeadFullVocab(const Mimo25LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t stream)
+{
+	return(Mimo25Head(b,norm_weight,head_weight,0,MIMO25_VOCAB,rows,stream));
+}
+
+extern "C" int32_t Mimo25HeadRestricted(const Mimo25LayerBuffers *b, const void *norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t count, uint32_t rows, cudaStream_t stream)
+{
+	return(Mimo25Head(b,norm_weight,head_weight,token_ids,count,rows,stream));
+}
+
