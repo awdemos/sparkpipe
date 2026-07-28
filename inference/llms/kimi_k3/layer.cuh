@@ -59,15 +59,15 @@ using K3GlobalKv = LmKvLatent<K3_KV_BITS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM, 
 // and the value half into the output projection - but they need DIFFERENT
 // WEIGHTS, and that is a pack-time transformation, not a runtime one.
 //
-// THE PACKER OWES TWO FOLDS, and they are the reason mla_kv_b_weight has no
-// call site in this file:
+// THE PACKER OWES ONE FOLD:
 //
-//   q_up      absorb the nope half of kv_b:  hidden -> heads * 512, then
-//             concatenate the 64 unrotated slice -> heads * 576
-//   o_proj    absorb the value half of kv_b:  heads * 512 -> hidden
+//   q_up      absorb the nope half of kv_b:  q_lora -> heads * 512, then
+//             concatenate the 64 unrotated rows -> heads * 576
 //
-// Until the packer does that, mla_q_up_weight and mla_out_weight here are named
-// for the absorbed tensors and no checkpoint provides them directly.
+// The VALUE half is NOT absorbed into o_proj: the gate is elementwise in
+// v-space and does not commute with the fold, which is why kv_b_value is its
+// own per-head table and mla_out_weight is o_proj exactly as shipped.
+// tools/k3_pack.py performs the one fold and the split.
 #define K3_MLA_Q_DIM (K3_MLA_HEADS * (K3_KV_LORA_RANK + K3_QK_UNROTATED_DIM))
 #define K3_MLA_KV_A_DIM (K3_KV_LORA_RANK + K3_QK_UNROTATED_DIM)
 #define K3_MLA_KV_B_DIM (K3_MLA_HEADS * (K3_QK_NOPE_DIM + K3_V_HEAD_DIM))
@@ -167,11 +167,12 @@ struct K3LayerBuffers
 	const void *mla_kv_a_weight;
 	const void *mla_kv_a_scale;
 	const void *mla_kv_a_norm_weight;
-	const void *mla_kv_b_weight;
 	const void *mla_kv_b_value_weight;
 	const void *mla_kv_b_scale;
-	const void *mla_gate_weight;
-	const void *mla_gate_scale;
+	// Low-rank, exactly like the KDA gate: g_a to head_dim, g_b to
+	// heads * v_head. One fused matrix exists in no checkpoint.
+	const void *mla_gate_down_weight;
+	const void *mla_gate_up_weight;
 	const void *mla_out_weight;
 	const void *mla_out_scale;
 
@@ -537,8 +538,12 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	// value_bf16 is idle on the MLA path and is sized at heads * 128.
 	LM_LAUNCH((LmPerHeadProjectKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>), dim3(rows,K3_MLA_HEADS), K3_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight, b->value_bf16,K3_MLA_HEADS,rows);
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_weight,b->mla_gate_scale,
-		b->gate_bf16,rows,K3_HIDDEN,K3_MLA_OUT_DIM,multiprocessors,stream);
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_down_weight,0,
+		b->latent_bf16,rows,K3_HIDDEN,K3_V_HEAD_DIM,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->mla_gate_up_weight,0,
+		b->gate_bf16,rows,K3_V_HEAD_DIM,K3_MLA_OUT_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// No RMSNorm here - eq. 7 gates the raw attention output, unlike KDA's eq. 6

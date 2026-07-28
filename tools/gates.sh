@@ -72,6 +72,7 @@ run "k3 quant recipe"      "python3 tests/test_k3_quant_recipe.py"
 run "k3 layer on host"     "python3 tests/test_k3_layer_host.py"
 run "k3 slice on host"     "python3 tests/test_k3_slice_host.py"
 run "k3 engine on host"    "python3 tests/test_k3_engine.py"
+run "k3 pack"              "python3 tests/test_k3_pack.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run "grouped topk builds"  "sh tools/build_grouped_topk.sh"
