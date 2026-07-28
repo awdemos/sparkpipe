@@ -2,18 +2,18 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "sparkpipe/spark_glm52_prompt_pipeline.h"
+#include "sparkpipe/spark_prompt_pipeline.h"
 
 #define SPARK_TEST_PROMPT_PIPELINE_REQUEST_SLOT_COUNT 4u
 #define SPARK_TEST_PROMPT_PIPELINE_KV_BLOCK_COUNT \
-    SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY
+    SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY
 #define SPARK_TEST_PROMPT_PIPELINE_PREFIX_ENTRY_COUNT \
-    SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY
+    SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY
 #define SPARK_TEST_PROMPT_PIPELINE_PREFIX_BINDING_COUNT \
-    (SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY + 4u)
+    (SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY + 4u)
 #define SPARK_TEST_PROMPT_PIPELINE_PREFILL_TOKEN_STRIDE 64u
 #define SPARK_TEST_PROMPT_PIPELINE_LANE_CAPACITY \
-    SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT
+    SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT
 #define SPARK_TEST_PROMPT_PIPELINE_CONTEXT_TOKENS 97u
 
 typedef struct SparkTestPromptPipelineFixture
@@ -21,22 +21,22 @@ typedef struct SparkTestPromptPipelineFixture
     SparkGlm52KvCacheArena kv_arena;
     SparkGlm52KvCacheBlock kv_blocks[
         SPARK_TEST_PROMPT_PIPELINE_KV_BLOCK_COUNT];
-    SparkGlm52PrefixCache prefix_cache;
-    SparkGlm52PrefixCacheEntry prefix_entries[
+    SparkPrefixCache prefix_cache;
+    SparkPrefixCacheEntry prefix_entries[
         SPARK_TEST_PROMPT_PIPELINE_PREFIX_ENTRY_COUNT];
-    SparkGlm52PrefixCacheSequenceBinding prefix_bindings[
+    SparkPrefixCacheSequenceBinding prefix_bindings[
         SPARK_TEST_PROMPT_PIPELINE_PREFIX_BINDING_COUNT];
-    SparkGlm52Scheduler scheduler;
-    SparkGlm52RequestApiSlot request_slots[
+    SparkScheduler scheduler;
+    SparkRequestApiSlot request_slots[
         SPARK_TEST_PROMPT_PIPELINE_REQUEST_SLOT_COUNT];
-    SparkGlm52RequestApi api;
+    SparkRequestApi api;
     uint32_t prompt_tokens[SPARK_TEST_PROMPT_PIPELINE_CONTEXT_TOKENS];
     uint32_t prefill_token_staging[
         SPARK_TEST_PROMPT_PIPELINE_LANE_CAPACITY *
         SPARK_TEST_PROMPT_PIPELINE_PREFILL_TOKEN_STRIDE];
     uint32_t physical_block_indices[
         SPARK_TEST_PROMPT_PIPELINE_LANE_CAPACITY *
-        SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY];
+        SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY];
     uint32_t lane_physical_block_counts[
         SPARK_TEST_PROMPT_PIPELINE_LANE_CAPACITY];
 } SparkTestPromptPipelineFixture;
@@ -76,9 +76,9 @@ static void SparkTestPromptPipelineInitialize(
     SparkTestPromptPipelineFixture *fixture)
 {
     SparkGlm52KvCacheConfiguration kv_configuration;
-    SparkGlm52PrefixCacheConfiguration prefix_configuration;
-    SparkGlm52SchedulerConfiguration scheduler_configuration;
-    SparkGlm52RequestApiConfiguration api_configuration;
+    SparkPrefixCacheConfiguration prefix_configuration;
+    SparkSchedulerConfiguration scheduler_configuration;
+    SparkRequestApiConfiguration api_configuration;
 
     memset(fixture, 0, sizeof(*fixture));
     SparkTestPromptPipelineFillTokenIds(
@@ -93,7 +93,7 @@ static void SparkTestPromptPipelineInitialize(
     kv_configuration.physical_block_count =
         SPARK_TEST_PROMPT_PIPELINE_KV_BLOCK_COUNT;
     kv_configuration.block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     kv_configuration.layer_count = 78u;
     kv_configuration.kv_head_count = 8u;
     kv_configuration.head_dim = 128u;
@@ -106,11 +106,11 @@ static void SparkTestPromptPipelineInitialize(
         &kv_configuration) == SPARK_STATUS_OK);
 
     memset(&prefix_configuration, 0, sizeof(prefix_configuration));
-    prefix_configuration.abi_version = SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
+    prefix_configuration.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
     prefix_configuration.descriptor_bytes =
-        SPARK_GLM52_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     prefix_configuration.block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     prefix_configuration.entry_count =
         SPARK_TEST_PROMPT_PIPELINE_PREFIX_ENTRY_COUNT;
     prefix_configuration.physical_block_count =
@@ -120,45 +120,45 @@ static void SparkTestPromptPipelineInitialize(
     prefix_configuration.entries = fixture->prefix_entries;
     prefix_configuration.sequence_bindings = fixture->prefix_bindings;
     prefix_configuration.kv_cache_arena = &fixture->kv_arena;
-    assert(SparkGlm52PrefixCacheInitialize(
+    assert(SparkPrefixCacheInitialize(
         &fixture->prefix_cache,
         &prefix_configuration) == SPARK_STATUS_OK);
 
     memset(&scheduler_configuration, 0, sizeof(scheduler_configuration));
-    scheduler_configuration.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    scheduler_configuration.abi_version = SPARK_SCHEDULER_ABI_VERSION;
     scheduler_configuration.descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES;
     scheduler_configuration.spark_count =
-        SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT;
+        SPARK_SCHEDULER_MAX_SPARK_COUNT;
     scheduler_configuration.queue_depth_per_spark = 2u;
     scheduler_configuration.measured_profile_id =
-        SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701;
+        SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701;
     scheduler_configuration.quantization_mode =
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
+        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
     scheduler_configuration.max_prefill_tokens_per_step =
         SPARK_TEST_PROMPT_PIPELINE_PREFILL_TOKEN_STRIDE;
     scheduler_configuration.configuration_flags =
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
+        SPARK_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
     scheduler_configuration.prefix_cache_block_tokens =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     scheduler_configuration.prefix_cache = &fixture->prefix_cache;
-    assert(SparkGlm52SchedulerInitialize(
+    assert(SparkSchedulerInitialize(
         &fixture->scheduler,
         &scheduler_configuration) == SPARK_STATUS_OK);
 
     memset(&api_configuration, 0, sizeof(api_configuration));
-    api_configuration.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
+    api_configuration.abi_version = SPARK_REQUEST_API_ABI_VERSION;
     api_configuration.descriptor_bytes =
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES;
     api_configuration.request_capacity =
         SPARK_TEST_PROMPT_PIPELINE_REQUEST_SLOT_COUNT;
     api_configuration.prefetch_lane_count =
-        SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT;
+        SPARK_SCHEDULER_MAX_SPARK_COUNT;
     api_configuration.decode_batch_target = 1u;
     api_configuration.scheduler = &fixture->scheduler;
     api_configuration.request_slots = fixture->request_slots;
     api_configuration.kv_prefetch_function = SparkTestPromptPipelineKvPrefetch;
-    assert(SparkGlm52RequestApiInitialize(
+    assert(SparkRequestApiInitialize(
         &fixture->api,
         &api_configuration) == SPARK_STATUS_OK);
 }
@@ -166,13 +166,13 @@ static void SparkTestPromptPipelineInitialize(
 static void SparkTestPromptPipelineSubmit(
     SparkTestPromptPipelineFixture *fixture)
 {
-    SparkGlm52RequestApiSubmitRequest request;
-    SparkGlm52RequestApiHandle handle;
+    SparkRequestApiSubmitRequest request;
+    SparkRequestApiHandle handle;
 
     memset(&request, 0, sizeof(request));
-    request.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
+    request.abi_version = SPARK_REQUEST_API_ABI_VERSION;
     request.descriptor_bytes =
-        SPARK_GLM52_REQUEST_API_SUBMIT_DESCRIPTOR_BYTES;
+        SPARK_REQUEST_API_SUBMIT_DESCRIPTOR_BYTES;
     request.prompt_token_count = SPARK_TEST_PROMPT_PIPELINE_CONTEXT_TOKENS;
     request.output_token_budget = 1u;
     request.max_prefill_tokens_per_step =
@@ -180,16 +180,16 @@ static void SparkTestPromptPipelineSubmit(
     request.request_id = 701u;
     request.sequence_id = 1701u;
     request.prompt_token_ids = fixture->prompt_tokens;
-    assert(SparkGlm52RequestApiSubmit(
+    assert(SparkRequestApiSubmit(
         &fixture->api,
         &request,
         &handle) == SPARK_STATUS_OK);
-    assert(handle != SPARK_GLM52_REQUEST_API_INVALID_HANDLE);
+    assert(handle != SPARK_REQUEST_API_INVALID_HANDLE);
 }
 
 static SparkStatus SparkTestPromptPipelinePrefillCallback(
     void *context,
-    const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+    const SparkPromptPipelinePrefillDispatch *prefill_dispatch)
 {
     SparkTestPromptPipelineCallbackContext *callback_context;
     uint32_t token_index;
@@ -200,9 +200,9 @@ static SparkStatus SparkTestPromptPipelinePrefillCallback(
     assert(callback_context != 0);
     assert(prefill_dispatch != 0);
     assert(prefill_dispatch->abi_version ==
-        SPARK_GLM52_PROMPT_PIPELINE_ABI_VERSION);
+        SPARK_PROMPT_PIPELINE_ABI_VERSION);
     assert(prefill_dispatch->descriptor_bytes ==
-        SPARK_GLM52_PROMPT_PIPELINE_PREFILL_DISPATCH_DESCRIPTOR_BYTES);
+        SPARK_PROMPT_PIPELINE_PREFILL_DISPATCH_DESCRIPTOR_BYTES);
     assert(prefill_dispatch->active_sequence_count == 1u);
     assert(prefill_dispatch->lane_count == 1u);
     assert(prefill_dispatch->host_token_ids != 0);
@@ -234,7 +234,7 @@ static SparkStatus SparkTestPromptPipelinePrefillCallback(
 
 static SparkStatus SparkTestPromptPipelineDecodeCallback(
     void *context,
-    const SparkGlm52RequestApiDispatch *decode_dispatch)
+    const SparkRequestApiDispatch *decode_dispatch)
 {
     SparkTestPromptPipelineCallbackContext *callback_context;
 
@@ -242,7 +242,7 @@ static SparkStatus SparkTestPromptPipelineDecodeCallback(
     assert(callback_context != 0);
     assert(decode_dispatch != 0);
     assert(decode_dispatch->kind ==
-        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
+        SPARK_REQUEST_API_DISPATCH_KIND_DECODE_BATCH);
     assert(decode_dispatch->decode_batch_decision.active_sequence_count == 1u);
     callback_context->decode_callback_count += 1u;
     return SPARK_STATUS_OK;
@@ -250,8 +250,8 @@ static SparkStatus SparkTestPromptPipelineDecodeCallback(
 
 static void SparkTestPromptPipelineRunsPrefillThenDecodeWithoutPython(void)
 {
-    SparkGlm52PromptPipelineConfiguration configuration;
-    SparkGlm52PromptPipelineRunStats stats;
+    SparkPromptPipelineConfiguration configuration;
+    SparkPromptPipelineRunStats stats;
     SparkTestPromptPipelineCallbackContext callback_context;
 
     SparkTestPromptPipelineInitialize(&Fixture);
@@ -261,11 +261,11 @@ static void SparkTestPromptPipelineRunsPrefillThenDecodeWithoutPython(void)
     callback_context.expected_prompt_tokens = Fixture.prompt_tokens;
 
     memset(&configuration, 0, sizeof(configuration));
-    configuration.abi_version = SPARK_GLM52_PROMPT_PIPELINE_ABI_VERSION;
+    configuration.abi_version = SPARK_PROMPT_PIPELINE_ABI_VERSION;
     configuration.descriptor_bytes =
-        SPARK_GLM52_PROMPT_PIPELINE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_PROMPT_PIPELINE_CONFIGURATION_DESCRIPTOR_BYTES;
     configuration.run_flags =
-        SPARK_GLM52_PROMPT_PIPELINE_RUN_FLAG_STOP_AFTER_FIRST_DECODE_DISPATCH;
+        SPARK_PROMPT_PIPELINE_RUN_FLAG_STOP_AFTER_FIRST_DECODE_DISPATCH;
     configuration.request_api = &Fixture.api;
     configuration.host_prefill_token_ids = Fixture.prefill_token_staging;
     configuration.host_prefill_token_stride =
@@ -274,9 +274,9 @@ static void SparkTestPromptPipelineRunsPrefillThenDecodeWithoutPython(void)
         SPARK_TEST_PROMPT_PIPELINE_LANE_CAPACITY;
     configuration.host_physical_block_indices = Fixture.physical_block_indices;
     configuration.kv_block_lane_stride =
-        SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
+        SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
     configuration.kv_block_lane_capacity =
-        SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
+        SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
     configuration.lane_physical_block_counts =
         Fixture.lane_physical_block_counts;
     configuration.lane_count_capacity =
@@ -285,10 +285,10 @@ static void SparkTestPromptPipelineRunsPrefillThenDecodeWithoutPython(void)
     configuration.decode_function = SparkTestPromptPipelineDecodeCallback;
     configuration.callback_context = &callback_context;
 
-    assert(SparkGlm52PromptPipelineRun(
+    assert(SparkPromptPipelineRun(
         &configuration,
         &stats) == SPARK_STATUS_OK);
-    assert(stats.abi_version == SPARK_GLM52_PROMPT_PIPELINE_ABI_VERSION);
+    assert(stats.abi_version == SPARK_PROMPT_PIPELINE_ABI_VERSION);
     assert(stats.completed_dispatch_count == 3u);
     assert(stats.prefill_dispatch_count == 2u);
     assert(stats.decode_dispatch_count == 1u);

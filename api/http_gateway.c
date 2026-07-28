@@ -1,4 +1,4 @@
-#include "sparkpipe/spark_glm52_http_gateway.h"
+#include "sparkpipe/spark_http_gateway.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -29,7 +29,7 @@ static uint32_t SparkGlm52HttpBytesMatch(
 }
 
 static SparkStatus SparkGlm52HttpWriteBody(
-	SparkGlm52HttpGatewayResponse *response,
+	SparkHttpGatewayResponse *response,
 	const char *content_type,
 	uint32_t status_code,
 	uint32_t flags,
@@ -51,57 +51,57 @@ static SparkStatus SparkGlm52HttpWriteBody(
 	return SPARK_STATUS_OK;
 }
 
-void SparkGlm52HttpGatewayInitializeRequest(
-	SparkGlm52HttpGatewayRequest *request)
+void SparkHttpGatewayInitializeRequest(
+	SparkHttpGatewayRequest *request)
 {
 	if (request == 0)
 		return;
 	memset(request,0,sizeof(*request));
-	request->abi_version = SPARK_GLM52_HTTP_GATEWAY_ABI_VERSION;
-	request->descriptor_bytes = SPARK_GLM52_HTTP_GATEWAY_REQUEST_BYTES;
+	request->abi_version = SPARK_HTTP_GATEWAY_ABI_VERSION;
+	request->descriptor_bytes = SPARK_HTTP_GATEWAY_REQUEST_BYTES;
 }
 
-void SparkGlm52HttpGatewayInitializeResponse(
-	SparkGlm52HttpGatewayResponse *response,
+void SparkHttpGatewayInitializeResponse(
+	SparkHttpGatewayResponse *response,
 	char *body,
 	uint32_t body_capacity)
 {
 	if (response == 0)
 		return;
 	memset(response,0,sizeof(*response));
-	response->abi_version = SPARK_GLM52_HTTP_GATEWAY_ABI_VERSION;
-	response->descriptor_bytes = SPARK_GLM52_HTTP_GATEWAY_RESPONSE_BYTES;
+	response->abi_version = SPARK_HTTP_GATEWAY_ABI_VERSION;
+	response->descriptor_bytes = SPARK_HTTP_GATEWAY_RESPONSE_BYTES;
 	response->body = body;
 	response->body_capacity = body_capacity;
 }
 
-uint32_t SparkGlm52HttpGatewayRoute(
-	const SparkGlm52HttpGatewayRequest *request)
+uint32_t SparkHttpGatewayRoute(
+	const SparkHttpGatewayRequest *request)
 {
 	if (request == 0 || request->method == 0 || request->path == 0)
-		return SPARK_GLM52_HTTP_GATEWAY_ROUTE_NONE;
+		return SPARK_HTTP_GATEWAY_ROUTE_NONE;
 	if (SparkGlm52HttpStringEquals(request->method,"OPTIONS"))
-		return SPARK_GLM52_HTTP_GATEWAY_ROUTE_CORS_PREFLIGHT;
+		return SPARK_HTTP_GATEWAY_ROUTE_CORS_PREFLIGHT;
 	if (SparkGlm52HttpStringEquals(request->method,"GET") &&
 		SparkGlm52HttpStringEquals(request->path,"/"))
-		return SPARK_GLM52_HTTP_GATEWAY_ROUTE_DEMO_UI;
+		return SPARK_HTTP_GATEWAY_ROUTE_DEMO_UI;
 	if (SparkGlm52HttpStringEquals(request->method,"GET") &&
 		SparkGlm52HttpStringEquals(request->path,"/health"))
-		return SPARK_GLM52_HTTP_GATEWAY_ROUTE_HEALTH;
+		return SPARK_HTTP_GATEWAY_ROUTE_HEALTH;
 	if (SparkGlm52HttpStringEquals(request->method,"POST") &&
 		SparkGlm52HttpStringEquals(request->path,"/v1/chat/completions"))
-		return SPARK_GLM52_HTTP_GATEWAY_ROUTE_OPENAI_CHAT;
+		return SPARK_HTTP_GATEWAY_ROUTE_OPENAI_CHAT;
 	if (SparkGlm52HttpStringEquals(request->method,"POST") &&
 		SparkGlm52HttpStringEquals(request->path,"/v1/completions"))
-		return SPARK_GLM52_HTTP_GATEWAY_ROUTE_OPENAI_COMPLETIONS;
+		return SPARK_HTTP_GATEWAY_ROUTE_OPENAI_COMPLETIONS;
 	if (SparkGlm52HttpStringEquals(request->method,"POST") &&
 		SparkGlm52HttpStringEquals(request->path,"/v1/messages"))
-		return SPARK_GLM52_HTTP_GATEWAY_ROUTE_ANTHROPIC_MESSAGES;
-	return SPARK_GLM52_HTTP_GATEWAY_ROUTE_NONE;
+		return SPARK_HTTP_GATEWAY_ROUTE_ANTHROPIC_MESSAGES;
+	return SPARK_HTTP_GATEWAY_ROUTE_NONE;
 }
 
-SparkStatus SparkGlm52HttpGatewayBuildDemoUi(
-	SparkGlm52HttpGatewayResponse *response)
+SparkStatus SparkHttpGatewayBuildDemoUi(
+	SparkHttpGatewayResponse *response)
 {
 	static const char Body[] =
 		"<!doctype html><html><head><meta charset=\"utf-8\">"
@@ -131,8 +131,8 @@ SparkStatus SparkGlm52HttpGatewayBuildDemoUi(
 	return SparkGlm52HttpWriteBody(response,"text/html; charset=utf-8",200u,0u,Body);
 }
 
-SparkStatus SparkGlm52HttpGatewayBuildHealth(
-	SparkGlm52HttpGatewayResponse *response,
+SparkStatus SparkHttpGatewayBuildHealth(
+	SparkHttpGatewayResponse *response,
 	uint32_t runtime_initialized,
 	uint32_t local_control_ready)
 {
@@ -161,8 +161,8 @@ SparkStatus SparkGlm52HttpGatewayBuildHealth(
 	return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52HttpGatewayBuildBackendUnavailable(
-	SparkGlm52HttpGatewayResponse *response,
+SparkStatus SparkHttpGatewayBuildBackendUnavailable(
+	SparkHttpGatewayResponse *response,
 	uint32_t stream)
 {
 	static const char JsonBody[] =
@@ -176,13 +176,13 @@ SparkStatus SparkGlm52HttpGatewayBuildBackendUnavailable(
 			response,
 			"text/event-stream",
 			503u,
-			SPARK_GLM52_HTTP_GATEWAY_RESPONSE_FLAG_STREAM,
+			SPARK_HTTP_GATEWAY_RESPONSE_FLAG_STREAM,
 			StreamBody);
 	return SparkGlm52HttpWriteBody(response,"application/json",503u,0u,JsonBody);
 }
 
-SparkStatus SparkGlm52HttpGatewayBuildRequestTimeout(
-	SparkGlm52HttpGatewayResponse *response,
+SparkStatus SparkHttpGatewayBuildRequestTimeout(
+	SparkHttpGatewayResponse *response,
 	uint32_t stream)
 {
 	static const char JsonBody[] =
@@ -196,13 +196,13 @@ SparkStatus SparkGlm52HttpGatewayBuildRequestTimeout(
 			response,
 			"text/event-stream",
 			504u,
-			SPARK_GLM52_HTTP_GATEWAY_RESPONSE_FLAG_STREAM,
+			SPARK_HTTP_GATEWAY_RESPONSE_FLAG_STREAM,
 			StreamBody);
 	return SparkGlm52HttpWriteBody(response,"application/json",504u,0u,JsonBody);
 }
 
-SparkStatus SparkGlm52HttpGatewayBuildUnauthorized(
-	SparkGlm52HttpGatewayResponse *response)
+SparkStatus SparkHttpGatewayBuildUnauthorized(
+	SparkHttpGatewayResponse *response)
 {
 	return SparkGlm52HttpWriteBody(
 		response,
@@ -212,8 +212,8 @@ SparkStatus SparkGlm52HttpGatewayBuildUnauthorized(
 		"{\"error\":{\"type\":\"unauthorized\",\"message\":\"missing or invalid bearer token\"}}\n");
 }
 
-SparkStatus SparkGlm52HttpGatewayBuildNotFound(
-	SparkGlm52HttpGatewayResponse *response)
+SparkStatus SparkHttpGatewayBuildNotFound(
+	SparkHttpGatewayResponse *response)
 {
 	return SparkGlm52HttpWriteBody(
 		response,
@@ -224,8 +224,8 @@ SparkStatus SparkGlm52HttpGatewayBuildNotFound(
 }
 
 
-SparkStatus SparkGlm52HttpGatewayBuildCorsPreflight(
-	SparkGlm52HttpGatewayResponse *response)
+SparkStatus SparkHttpGatewayBuildCorsPreflight(
+	SparkHttpGatewayResponse *response)
 {
 	return SparkGlm52HttpWriteBody(
 		response,
@@ -235,7 +235,7 @@ SparkStatus SparkGlm52HttpGatewayBuildCorsPreflight(
 		"");
 }
 
-uint32_t SparkGlm52HttpGatewayBodyRequestsStream(
+uint32_t SparkHttpGatewayBodyRequestsStream(
 	const char *body,
 	uint32_t body_bytes)
 {
@@ -278,8 +278,8 @@ uint32_t SparkGlm52HttpGatewayBodyRequestsStream(
 	return 0u;
 }
 
-uint32_t SparkGlm52HttpGatewayAuthorizationMatches(
-	const SparkGlm52HttpGatewayRequest *request,
+uint32_t SparkHttpGatewayAuthorizationMatches(
+	const SparkHttpGatewayRequest *request,
 	const char *api_key)
 {
 	char expected[512];
@@ -389,26 +389,26 @@ static SparkStatus SparkGlm52HttpAppendJsonEscapedBytes(
 }
 
 static uint32_t SparkGlm52HttpServiceEventIsTerminal(
-    const SparkGlm52ServiceEvent *service_event)
+    const SparkServiceEvent *service_event)
 {
     if (service_event == 0)
     {
         return 0u;
     }
-    return service_event->kind == SPARK_GLM52_SERVICE_EVENT_KIND_REQUEST_COMPLETED ||
-        service_event->kind == SPARK_GLM52_SERVICE_EVENT_KIND_REQUEST_CANCELLED ||
-        service_event->kind == SPARK_GLM52_SERVICE_EVENT_KIND_ERROR;
+    return service_event->kind == SPARK_SERVICE_EVENT_KIND_REQUEST_COMPLETED ||
+        service_event->kind == SPARK_SERVICE_EVENT_KIND_REQUEST_CANCELLED ||
+        service_event->kind == SPARK_SERVICE_EVENT_KIND_ERROR;
 }
 
-SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
-    SparkGlm52HttpGatewayResponse *response,
-    const SparkGlm52ServiceStats *stats,
-    const SparkGlm52ServiceBackendView *backend_view)
+SparkStatus SparkHttpGatewayBuildServiceHealth(
+    SparkHttpGatewayResponse *response,
+    const SparkServiceStats *stats,
+    const SparkServiceBackendView *backend_view)
 {
-    SparkGlm52ServiceStats empty_stats;
-    SparkGlm52ServiceBackendView empty_view;
-    const SparkGlm52ServiceStats *stats_view;
-    const SparkGlm52ServiceBackendView *view;
+    SparkServiceStats empty_stats;
+    SparkServiceBackendView empty_view;
+    const SparkServiceStats *stats_view;
+    const SparkServiceBackendView *view;
     const char *batching_status;
     const char *dspark_status;
     const char *end_to_end_status;
@@ -447,12 +447,12 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
             "OBSERVED" : "NOT_MEASURED");
     jit_kv_status =
         (view->request_api_configuration_flags &
-            SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_JIT_KV_PREFETCH) == 0u ?
+            SPARK_REQUEST_API_CONFIGURATION_FLAG_JIT_KV_PREFETCH) == 0u ?
         "NOT_WORKING" :
         (stats_view->serving_stats.jit_prefetch_dispatch_count != 0u ?
             "OBSERVED" : "NOT_MEASURED");
     if ((view->speculation_configuration_flags &
-            SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP) == 0u)
+            SPARK_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP) == 0u)
         mtp_status = "NOT_WORKING";
     else if (stats_view->serving_stats.mtp_verify_dispatch_count != 0u)
         mtp_status = "OBSERVED";
@@ -460,7 +460,7 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
         mtp_status = "NOT_MEASURED";
     dspark_status =
         (view->speculation_configuration_flags &
-            SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_DSPARK) == 0u ?
+            SPARK_SERVICE_BACKEND_CONFIGURATION_FLAG_DSPARK) == 0u ?
         "NOT_WORKING" : "NOT_MEASURED";
     transport_status = view->transport_capability_flags != 0u ?
         "OBSERVED" : "NOT_MEASURED";
@@ -615,9 +615,9 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceHealth(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52HttpGatewayBuildSubmitAccepted(
-    SparkGlm52HttpGatewayResponse *response,
-    const SparkGlm52ServiceSubmitResult *submit_result,
+SparkStatus SparkHttpGatewayBuildSubmitAccepted(
+    SparkHttpGatewayResponse *response,
+    const SparkServiceSubmitResult *submit_result,
     uint32_t stream)
 {
     int32_t written;
@@ -649,7 +649,7 @@ SparkStatus SparkGlm52HttpGatewayBuildSubmitAccepted(
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         }
         response->status_code = 202u;
-        response->flags = SPARK_GLM52_HTTP_GATEWAY_RESPONSE_FLAG_STREAM;
+        response->flags = SPARK_HTTP_GATEWAY_RESPONSE_FLAG_STREAM;
         response->content_type = "text/event-stream";
         response->body_bytes = (uint32_t)written;
         return SPARK_STATUS_OK;
@@ -682,14 +682,14 @@ SparkStatus SparkGlm52HttpGatewayBuildSubmitAccepted(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52HttpGatewaySubmitJsonToService(
-    SparkGlm52ServiceRuntime *service,
-    const SparkGlm52HttpGatewayRequest *request,
-    SparkGlm52ServiceClientId client_id,
-    SparkGlm52ServiceRequestId client_request_id,
+SparkStatus SparkHttpGatewaySubmitJsonToService(
+    SparkServiceRuntime *service,
+    const SparkHttpGatewayRequest *request,
+    SparkServiceClientId client_id,
+    SparkServiceRequestId client_request_id,
     SparkGlm52CompatTextRequest *compat_request,
-    SparkGlm52ServiceSubmitResult *submit_result,
-    SparkGlm52HttpGatewayResponse *response)
+    SparkServiceSubmitResult *submit_result,
+    SparkHttpGatewayResponse *response)
 {
     uint32_t route;
     uint32_t stream;
@@ -700,14 +700,14 @@ SparkStatus SparkGlm52HttpGatewaySubmitJsonToService(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    route = SparkGlm52HttpGatewayRoute(request);
+    route = SparkHttpGatewayRoute(request);
     compat_request->client_id = client_id;
     compat_request->client_request_id = client_request_id;
-    stream = SparkGlm52HttpGatewayBodyRequestsStream(
+    stream = SparkHttpGatewayBodyRequestsStream(
         request->body,
         request->body_bytes);
-    if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_OPENAI_CHAT ||
-        route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_OPENAI_COMPLETIONS)
+    if (route == SPARK_HTTP_GATEWAY_ROUTE_OPENAI_CHAT ||
+        route == SPARK_HTTP_GATEWAY_ROUTE_OPENAI_COMPLETIONS)
     {
         status = SparkGlm52CompatSubmitOpenAiJson(
             service,
@@ -716,7 +716,7 @@ SparkStatus SparkGlm52HttpGatewaySubmitJsonToService(
             compat_request,
             submit_result);
     }
-    else if (route == SPARK_GLM52_HTTP_GATEWAY_ROUTE_ANTHROPIC_MESSAGES)
+    else if (route == SPARK_HTTP_GATEWAY_ROUTE_ANTHROPIC_MESSAGES)
     {
         status = SparkGlm52CompatSubmitAnthropicJson(
             service,
@@ -733,15 +733,15 @@ SparkStatus SparkGlm52HttpGatewaySubmitJsonToService(
     {
         return status;
     }
-    return SparkGlm52HttpGatewayBuildSubmitAccepted(
+    return SparkHttpGatewayBuildSubmitAccepted(
         response,
         submit_result,
         stream);
 }
 
-SparkStatus SparkGlm52HttpGatewayBuildServiceEventStream(
-    SparkGlm52HttpGatewayResponse *response,
-    const SparkGlm52ServiceEvent *service_event,
+SparkStatus SparkHttpGatewayBuildServiceEventStream(
+    SparkHttpGatewayResponse *response,
+    const SparkServiceEvent *service_event,
     const SparkTokenizer *tokenizer)
 {
     char token_text[1024u];
@@ -756,7 +756,7 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceEventStream(
     }
     token_text[0u] = '\0';
     token_text_bytes = 0u;
-    if (service_event->kind == SPARK_GLM52_SERVICE_EVENT_KIND_TOKEN &&
+    if (service_event->kind == SPARK_SERVICE_EVENT_KIND_TOKEN &&
         tokenizer != 0)
     {
         uint32_t token_id;
@@ -786,7 +786,7 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceEventStream(
         "\"sequence_id\":%llu,\"token_id\":%u,\"token_index\":%u,"
         "\"text\":\"",
         SparkGlm52HttpServiceEventIsTerminal(service_event) != 0u ? "done" :
-            (service_event->kind == SPARK_GLM52_SERVICE_EVENT_KIND_TOKEN ? "token" : "event"),
+            (service_event->kind == SPARK_SERVICE_EVENT_KIND_TOKEN ? "token" : "event"),
         service_event->kind,
         service_event->status,
         (unsigned long long)service_event->client_id,
@@ -828,7 +828,7 @@ SparkStatus SparkGlm52HttpGatewayBuildServiceEventStream(
     }
     body_bytes += (uint32_t)written;
     response->status_code = 200u;
-    response->flags = SPARK_GLM52_HTTP_GATEWAY_RESPONSE_FLAG_STREAM;
+    response->flags = SPARK_HTTP_GATEWAY_RESPONSE_FLAG_STREAM;
     response->content_type = "text/event-stream";
     response->body_bytes = body_bytes;
     return SPARK_STATUS_OK;

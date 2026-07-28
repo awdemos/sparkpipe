@@ -122,7 +122,7 @@ typedef struct SparkGlm52ResidentDecodeStageProductionRunner
     SparkGlm52ResidentDecodeStageProductionRunnerStats stats;
 } SparkGlm52ResidentDecodeStageProductionRunner;
 
-SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerInitialize(
+SparkStatus SparkResidentDecodeStageProductionRunnerInitialize(
     SparkGlm52ResidentDecodeStageProductionRunner *runner,
     const SparkGlm52ResidentDecodeStageProductionRunnerConfiguration *configuration);
 

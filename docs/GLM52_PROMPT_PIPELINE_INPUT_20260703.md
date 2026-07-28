@@ -188,12 +188,12 @@ New request-API helpers expose the exact scheduled prefill slice for each
 dispatch:
 
 ```c
-SparkGlm52RequestApiDescribePrefillDispatch(...)
-SparkGlm52RequestApiCopyPrefillDispatchTokenIds(...)
+SparkRequestApiDescribePrefillDispatch(...)
+SparkRequestApiCopyPrefillDispatchTokenIds(...)
 ```
 
 A production prompt server should use these after
-`SparkGlm52RequestApiScheduleNext(...)` for prefill dispatches. The copied token
+`SparkRequestApiScheduleNext(...)` for prefill dispatches. The copied token
 matrix is rectangular and lane-major, so it can be uploaded once per scheduled
 prefill step without Python stepping one token at a time.
 
@@ -253,7 +253,7 @@ The dry-run path performs the production-shaped input sequence in one C process:
 raw UTF-8 prompt text
     -> C byte-level BPE tokenizer
     -> prompt token-id buffer
-    -> SparkGlm52RequestApiSubmit
+    -> SparkRequestApiSubmit
     -> scheduled chunked prefill dispatches
     -> decode_ready only after the full prompt is scheduled/committed
 ```

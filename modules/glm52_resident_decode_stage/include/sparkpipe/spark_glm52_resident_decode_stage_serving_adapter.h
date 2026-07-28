@@ -3,7 +3,7 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
-#include "sparkpipe/spark_glm52_serving_engine.h"
+#include "sparkpipe/spark_serving_engine.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
@@ -104,12 +104,12 @@ void SparkGlm52ResidentDecodeStageServingAdapterDestroy(
 
 SparkStatus SparkGlm52ResidentDecodeStageServingAdapterPrefill(
     void *context,
-    const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch);
+    const SparkPromptPipelinePrefillDispatch *prefill_dispatch);
 
 SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
     void *context,
-    const SparkGlm52ServingDecodeDispatch *decode_dispatch,
-    SparkGlm52ServingDecodeResult *decode_result);
+    const SparkServingDecodeDispatch *decode_dispatch,
+    SparkServingDecodeResult *decode_result);
 
 #ifdef __cplusplus
 }

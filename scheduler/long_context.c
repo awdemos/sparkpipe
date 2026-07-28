@@ -1,4 +1,4 @@
-#include "sparkpipe/spark_glm52_long_context.h"
+#include "sparkpipe/spark_long_context.h"
 
 #include <string.h>
 
@@ -25,7 +25,7 @@ static uint32_t SparkGlm52LongContextNormalizeFlags(
 {
     if (policy_flags == 0u)
     {
-        return SPARK_GLM52_LONG_CONTEXT_POLICY_DEFAULT_FLAGS;
+        return SPARK_LONG_CONTEXT_POLICY_DEFAULT_FLAGS;
     }
     return policy_flags;
 }
@@ -35,7 +35,7 @@ static uint32_t SparkGlm52LongContextNormalizeSelectedTokenCapacity(
 {
     if (selected_token_capacity == 0u)
     {
-        return SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY;
+        return SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY;
     }
     return selected_token_capacity;
 }
@@ -45,7 +45,7 @@ static uint32_t SparkGlm52LongContextNormalizeBlockTokenCount(
 {
     if (block_token_count == 0u)
     {
-        return SPARK_GLM52_LONG_CONTEXT_DEFAULT_BLOCK_TOKEN_COUNT;
+        return SPARK_LONG_CONTEXT_DEFAULT_BLOCK_TOKEN_COUNT;
     }
     return block_token_count;
 }
@@ -55,7 +55,7 @@ static uint32_t SparkGlm52LongContextNormalizeMaxContextTokens(
 {
     if (max_context_tokens == 0u)
     {
-        return SPARK_GLM52_LONG_CONTEXT_DEFAULT_MAX_CONTEXT_TOKENS;
+        return SPARK_LONG_CONTEXT_DEFAULT_MAX_CONTEXT_TOKENS;
     }
     return max_context_tokens;
 }
@@ -65,7 +65,7 @@ static uint32_t SparkGlm52LongContextNormalizeRecentTokenCount(
 {
     if (recent_token_count == 0u)
     {
-        return SPARK_GLM52_LONG_CONTEXT_DEFAULT_RECENT_TOKEN_COUNT;
+        return SPARK_LONG_CONTEXT_DEFAULT_RECENT_TOKEN_COUNT;
     }
     return recent_token_count;
 }
@@ -75,7 +75,7 @@ static uint32_t SparkGlm52LongContextNormalizeSinkTokenCount(
 {
     if (sink_token_count == 0u)
     {
-        return SPARK_GLM52_LONG_CONTEXT_DEFAULT_SINK_TOKEN_COUNT;
+        return SPARK_LONG_CONTEXT_DEFAULT_SINK_TOKEN_COUNT;
     }
     return sink_token_count;
 }
@@ -85,7 +85,7 @@ static uint32_t SparkGlm52LongContextNormalizeStrideSampleTokenCount(
 {
     if (stride_sample_token_count == 0u)
     {
-        return SPARK_GLM52_LONG_CONTEXT_DEFAULT_STRIDE_SAMPLE_TOKEN_COUNT;
+        return SPARK_LONG_CONTEXT_DEFAULT_STRIDE_SAMPLE_TOKEN_COUNT;
     }
     return stride_sample_token_count;
 }
@@ -106,7 +106,7 @@ static uint32_t SparkGlm52LongContextNormalizePrefillChunkTokenCount(
 {
     if (prefill_chunk_token_count == 0u)
     {
-        return SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY;
+        return SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY;
     }
     return prefill_chunk_token_count;
 }
@@ -116,14 +116,14 @@ static uint32_t SparkGlm52LongContextNormalizeLongContextThreshold(
 {
     if (long_context_threshold_token_count == 0u)
     {
-        return SPARK_GLM52_LONG_CONTEXT_DEFAULT_LONG_CONTEXT_THRESHOLD;
+        return SPARK_LONG_CONTEXT_DEFAULT_LONG_CONTEXT_THRESHOLD;
     }
     return long_context_threshold_token_count;
 }
 
 static void SparkGlm52LongContextNormalizePolicyCopy(
-    const SparkGlm52LongContextPolicy *input_policy,
-    SparkGlm52LongContextPolicy *normalized_policy)
+    const SparkLongContextPolicy *input_policy,
+    SparkLongContextPolicy *normalized_policy)
 {
     *normalized_policy = *input_policy;
     normalized_policy->policy_flags = SparkGlm52LongContextNormalizeFlags(
@@ -131,7 +131,7 @@ static void SparkGlm52LongContextNormalizePolicyCopy(
     if (normalized_policy->policy_mode == 0u)
     {
         normalized_policy->policy_mode =
-            SPARK_GLM52_LONG_CONTEXT_POLICY_MODE_BOUNDED_WINDOW;
+            SPARK_LONG_CONTEXT_POLICY_MODE_BOUNDED_WINDOW;
     }
     normalized_policy->max_context_tokens =
         SparkGlm52LongContextNormalizeMaxContextTokens(
@@ -163,79 +163,79 @@ static void SparkGlm52LongContextNormalizePolicyCopy(
             normalized_policy->long_context_threshold_token_count);
 }
 
-void SparkGlm52LongContextInitializeDefaultPolicy(
-    SparkGlm52LongContextPolicy *policy)
+void SparkLongContextInitializeDefaultPolicy(
+    SparkLongContextPolicy *policy)
 {
     if (policy == 0)
     {
         return;
     }
     memset(policy, 0, sizeof(*policy));
-    policy->abi_version = SPARK_GLM52_LONG_CONTEXT_ABI_VERSION;
-    policy->descriptor_bytes = SPARK_GLM52_LONG_CONTEXT_POLICY_DESCRIPTOR_BYTES;
-    policy->policy_mode = SPARK_GLM52_LONG_CONTEXT_POLICY_MODE_BOUNDED_WINDOW;
-    policy->policy_flags = SPARK_GLM52_LONG_CONTEXT_POLICY_DEFAULT_FLAGS;
-    policy->max_context_tokens = SPARK_GLM52_LONG_CONTEXT_DEFAULT_MAX_CONTEXT_TOKENS;
+    policy->abi_version = SPARK_LONG_CONTEXT_ABI_VERSION;
+    policy->descriptor_bytes = SPARK_LONG_CONTEXT_POLICY_DESCRIPTOR_BYTES;
+    policy->policy_mode = SPARK_LONG_CONTEXT_POLICY_MODE_BOUNDED_WINDOW;
+    policy->policy_flags = SPARK_LONG_CONTEXT_POLICY_DEFAULT_FLAGS;
+    policy->max_context_tokens = SPARK_LONG_CONTEXT_DEFAULT_MAX_CONTEXT_TOKENS;
     policy->selected_token_capacity =
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY;
-    policy->block_token_count = SPARK_GLM52_LONG_CONTEXT_DEFAULT_BLOCK_TOKEN_COUNT;
-    policy->recent_token_count = SPARK_GLM52_LONG_CONTEXT_DEFAULT_RECENT_TOKEN_COUNT;
-    policy->sink_token_count = SPARK_GLM52_LONG_CONTEXT_DEFAULT_SINK_TOKEN_COUNT;
+        SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY;
+    policy->block_token_count = SPARK_LONG_CONTEXT_DEFAULT_BLOCK_TOKEN_COUNT;
+    policy->recent_token_count = SPARK_LONG_CONTEXT_DEFAULT_RECENT_TOKEN_COUNT;
+    policy->sink_token_count = SPARK_LONG_CONTEXT_DEFAULT_SINK_TOKEN_COUNT;
     policy->stride_sample_token_count =
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_STRIDE_SAMPLE_TOKEN_COUNT;
+        SPARK_LONG_CONTEXT_DEFAULT_STRIDE_SAMPLE_TOKEN_COUNT;
     policy->maximum_decode_scan_token_count =
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY;
+        SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY;
     policy->prefill_chunk_token_count =
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY;
+        SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY;
     policy->long_context_threshold_token_count =
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_LONG_CONTEXT_THRESHOLD;
+        SPARK_LONG_CONTEXT_DEFAULT_LONG_CONTEXT_THRESHOLD;
 }
 
-SparkStatus SparkGlm52LongContextValidatePolicy(
-    const SparkGlm52LongContextPolicy *policy)
+SparkStatus SparkLongContextValidatePolicy(
+    const SparkLongContextPolicy *policy)
 {
-    SparkGlm52LongContextPolicy normalized_policy;
+    SparkLongContextPolicy normalized_policy;
 
     if (policy == 0 ||
-        policy->abi_version != SPARK_GLM52_LONG_CONTEXT_ABI_VERSION ||
-        policy->descriptor_bytes != SPARK_GLM52_LONG_CONTEXT_POLICY_DESCRIPTOR_BYTES)
+        policy->abi_version != SPARK_LONG_CONTEXT_ABI_VERSION ||
+        policy->descriptor_bytes != SPARK_LONG_CONTEXT_POLICY_DESCRIPTOR_BYTES)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     SparkGlm52LongContextNormalizePolicyCopy(policy, &normalized_policy);
     if ((normalized_policy.policy_flags &
-            ~SPARK_GLM52_LONG_CONTEXT_POLICY_KNOWN_FLAGS) != 0u ||
+            ~SPARK_LONG_CONTEXT_POLICY_KNOWN_FLAGS) != 0u ||
         normalized_policy.max_context_tokens == 0u ||
         normalized_policy.selected_token_capacity == 0u ||
         normalized_policy.selected_token_capacity >
-            SPARK_GLM52_LONG_CONTEXT_MAX_SELECTED_TOKEN_CAPACITY ||
+            SPARK_LONG_CONTEXT_MAX_SELECTED_TOKEN_CAPACITY ||
         normalized_policy.block_token_count == 0u ||
         normalized_policy.maximum_decode_scan_token_count == 0u ||
         normalized_policy.maximum_decode_scan_token_count >
             normalized_policy.selected_token_capacity ||
         normalized_policy.prefill_chunk_token_count == 0u ||
         (normalized_policy.policy_mode !=
-            SPARK_GLM52_LONG_CONTEXT_POLICY_MODE_BOUNDED_WINDOW &&
+            SPARK_LONG_CONTEXT_POLICY_MODE_BOUNDED_WINDOW &&
          normalized_policy.policy_mode !=
-            SPARK_GLM52_LONG_CONTEXT_POLICY_MODE_FULL_CONTEXT_SCAN))
+            SPARK_LONG_CONTEXT_POLICY_MODE_FULL_CONTEXT_SCAN))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((normalized_policy.policy_flags &
-            SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_REQUIRE_BOUNDED_DECODE) != 0u &&
+            SPARK_LONG_CONTEXT_POLICY_FLAG_REQUIRE_BOUNDED_DECODE) != 0u &&
         normalized_policy.policy_mode ==
-            SPARK_GLM52_LONG_CONTEXT_POLICY_MODE_FULL_CONTEXT_SCAN &&
+            SPARK_LONG_CONTEXT_POLICY_MODE_FULL_CONTEXT_SCAN &&
         (normalized_policy.policy_flags &
-            SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_ALLOW_FULL_CONTEXT_SCAN) == 0u)
+            SPARK_LONG_CONTEXT_POLICY_FLAG_ALLOW_FULL_CONTEXT_SCAN) == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((normalized_policy.policy_flags &
-            SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_INCLUDE_SINK_TOKENS) == 0u &&
+            SPARK_LONG_CONTEXT_POLICY_FLAG_INCLUDE_SINK_TOKENS) == 0u &&
         (normalized_policy.policy_flags &
-            SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_INCLUDE_STRIDED_MIDDLE_TOKENS) == 0u &&
+            SPARK_LONG_CONTEXT_POLICY_FLAG_INCLUDE_STRIDED_MIDDLE_TOKENS) == 0u &&
         (normalized_policy.policy_flags &
-            SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_INCLUDE_RECENT_TOKENS) == 0u)
+            SPARK_LONG_CONTEXT_POLICY_FLAG_INCLUDE_RECENT_TOKENS) == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -243,15 +243,15 @@ SparkStatus SparkGlm52LongContextValidatePolicy(
 }
 
 static void SparkGlm52LongContextInitializeDecodePlan(
-    SparkGlm52LongContextDecodePlan *decode_plan,
-    const SparkGlm52LongContextPolicy *policy,
+    SparkLongContextDecodePlan *decode_plan,
+    const SparkLongContextPolicy *policy,
     uint32_t context_token_count,
     uint32_t selected_token_capacity)
 {
     memset(decode_plan, 0, sizeof(*decode_plan));
-    decode_plan->abi_version = SPARK_GLM52_LONG_CONTEXT_ABI_VERSION;
+    decode_plan->abi_version = SPARK_LONG_CONTEXT_ABI_VERSION;
     decode_plan->descriptor_bytes =
-        SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_DESCRIPTOR_BYTES;
+        SPARK_LONG_CONTEXT_DECODE_PLAN_DESCRIPTOR_BYTES;
     decode_plan->context_token_count = context_token_count;
     decode_plan->selected_token_capacity = selected_token_capacity;
     decode_plan->kv_block_token_count = policy->block_token_count;
@@ -262,7 +262,7 @@ static void SparkGlm52LongContextInitializeDecodePlan(
         policy->maximum_decode_scan_token_count;
     if (context_token_count >= policy->long_context_threshold_token_count)
     {
-        decode_plan->flags |= SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_FLAG_LONG_CONTEXT;
+        decode_plan->flags |= SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_LONG_CONTEXT;
     }
 }
 
@@ -276,7 +276,7 @@ static uint32_t SparkGlm52LongContextAppendUniqueToken(
 
     if (selected_token_indices == 0 || selected_token_count == 0 ||
         *selected_token_count >= selected_token_capacity ||
-        token_index == SPARK_GLM52_LONG_CONTEXT_INVALID_TOKEN_ID)
+        token_index == SPARK_LONG_CONTEXT_INVALID_TOKEN_ID)
     {
         return 0u;
     }
@@ -313,7 +313,7 @@ static uint32_t SparkGlm52LongContextCountUniqueBlocks(
         uint32_t already_counted;
 
         token_index = selected_token_indices[selected_index];
-        if (token_index == SPARK_GLM52_LONG_CONTEXT_INVALID_TOKEN_ID)
+        if (token_index == SPARK_LONG_CONTEXT_INVALID_TOKEN_ID)
         {
             continue;
         }
@@ -324,7 +324,7 @@ static uint32_t SparkGlm52LongContextCountUniqueBlocks(
              ++prior_index)
         {
             if (selected_token_indices[prior_index] !=
-                    SPARK_GLM52_LONG_CONTEXT_INVALID_TOKEN_ID &&
+                    SPARK_LONG_CONTEXT_INVALID_TOKEN_ID &&
                 selected_token_indices[prior_index] / block_token_count == block_index)
             {
                 already_counted = 1u;
@@ -347,17 +347,17 @@ static void SparkGlm52LongContextPadSelection(
     while (selected_token_count < selected_token_capacity)
     {
         selected_token_indices[selected_token_count] =
-            SPARK_GLM52_LONG_CONTEXT_INVALID_TOKEN_ID;
+            SPARK_LONG_CONTEXT_INVALID_TOKEN_ID;
         selected_token_count += 1u;
     }
 }
 
 static SparkStatus SparkGlm52LongContextBuildFullSelection(
-    const SparkGlm52LongContextPolicy *policy,
+    const SparkLongContextPolicy *policy,
     uint32_t context_token_count,
     uint32_t *selected_token_indices,
     uint32_t selected_token_capacity,
-    SparkGlm52LongContextDecodePlan *decode_plan)
+    SparkLongContextDecodePlan *decode_plan)
 {
     uint32_t token_index;
 
@@ -383,28 +383,28 @@ static SparkStatus SparkGlm52LongContextBuildFullSelection(
     if (context_token_count < selected_token_capacity)
     {
         decode_plan->flags |=
-            SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_FLAG_SELECTION_PADDED;
+            SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_SELECTION_PADDED;
     }
     if (policy->policy_mode ==
-        SPARK_GLM52_LONG_CONTEXT_POLICY_MODE_FULL_CONTEXT_SCAN)
+        SPARK_LONG_CONTEXT_POLICY_MODE_FULL_CONTEXT_SCAN)
     {
         decode_plan->flags |=
-            SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_FLAG_FULL_CONTEXT_SCAN;
+            SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_FULL_CONTEXT_SCAN;
     }
     else
     {
         decode_plan->flags |=
-            SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_FLAG_BOUNDED_SELECTION;
+            SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_BOUNDED_SELECTION;
     }
     return SPARK_STATUS_OK;
 }
 
 static void SparkGlm52LongContextBuildBoundedSelection(
-    const SparkGlm52LongContextPolicy *policy,
+    const SparkLongContextPolicy *policy,
     uint32_t context_token_count,
     uint32_t *selected_token_indices,
     uint32_t selected_token_capacity,
-    SparkGlm52LongContextDecodePlan *decode_plan)
+    SparkLongContextDecodePlan *decode_plan)
 {
     uint32_t selected_token_count;
     uint32_t sink_count;
@@ -421,7 +421,7 @@ static void SparkGlm52LongContextBuildBoundedSelection(
     recent_count = 0u;
     stride_count = 0u;
     if ((policy->policy_flags &
-            SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_INCLUDE_SINK_TOKENS) != 0u)
+            SPARK_LONG_CONTEXT_POLICY_FLAG_INCLUDE_SINK_TOKENS) != 0u)
     {
         sink_count = SparkGlm52LongContextMinimumU32(
             policy->sink_token_count,
@@ -442,7 +442,7 @@ static void SparkGlm52LongContextBuildBoundedSelection(
     }
 
     if ((policy->policy_flags &
-            SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_INCLUDE_RECENT_TOKENS) != 0u &&
+            SPARK_LONG_CONTEXT_POLICY_FLAG_INCLUDE_RECENT_TOKENS) != 0u &&
         selected_token_count < selected_token_capacity)
     {
         recent_count = SparkGlm52LongContextMinimumU32(
@@ -466,7 +466,7 @@ static void SparkGlm52LongContextBuildBoundedSelection(
         ? middle_end - middle_begin
         : 0u;
     if ((policy->policy_flags &
-            SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_INCLUDE_STRIDED_MIDDLE_TOKENS) != 0u &&
+            SPARK_LONG_CONTEXT_POLICY_FLAG_INCLUDE_STRIDED_MIDDLE_TOKENS) != 0u &&
         middle_token_count != 0u &&
         selected_token_count < selected_token_capacity)
     {
@@ -514,7 +514,7 @@ static void SparkGlm52LongContextBuildBoundedSelection(
         selected_token_indices,
         selected_token_count,
         selected_token_capacity);
-    decode_plan->flags |= SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_FLAG_BOUNDED_SELECTION;
+    decode_plan->flags |= SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_BOUNDED_SELECTION;
     decode_plan->selected_token_count = selected_token_count;
     decode_plan->padded_token_count = selected_token_capacity - selected_token_count;
     decode_plan->selected_block_count = SparkGlm52LongContextCountUniqueBlocks(
@@ -533,29 +533,29 @@ static void SparkGlm52LongContextBuildBoundedSelection(
     if (selected_token_count < selected_token_capacity)
     {
         decode_plan->flags |=
-            SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_FLAG_SELECTION_PADDED;
+            SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_SELECTION_PADDED;
     }
     if (context_token_count > selected_token_count)
     {
         decode_plan->flags |=
-            SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_FLAG_CONTEXT_TRUNCATED;
+            SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_CONTEXT_TRUNCATED;
     }
 }
 
-SparkStatus SparkGlm52LongContextBuildPrefillPlan(
-    const SparkGlm52LongContextPolicy *policy,
+SparkStatus SparkLongContextBuildPrefillPlan(
+    const SparkLongContextPolicy *policy,
     uint32_t prompt_token_count,
     uint32_t max_prefill_tokens_per_step,
-    SparkGlm52LongContextPrefillPlan *prefill_plan)
+    SparkLongContextPrefillPlan *prefill_plan)
 {
-    SparkGlm52LongContextPolicy normalized_policy;
+    SparkLongContextPolicy normalized_policy;
     SparkStatus status;
 
     if (policy == 0 || prefill_plan == 0 || prompt_token_count == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkGlm52LongContextValidatePolicy(policy);
+    status = SparkLongContextValidatePolicy(policy);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -563,7 +563,7 @@ SparkStatus SparkGlm52LongContextBuildPrefillPlan(
     SparkGlm52LongContextNormalizePolicyCopy(policy, &normalized_policy);
     if (prompt_token_count > normalized_policy.max_context_tokens &&
         (normalized_policy.policy_flags &
-            SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_FAIL_ON_CONTEXT_OVERFLOW) != 0u)
+            SPARK_LONG_CONTEXT_POLICY_FLAG_FAIL_ON_CONTEXT_OVERFLOW) != 0u)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
@@ -572,9 +572,9 @@ SparkStatus SparkGlm52LongContextBuildPrefillPlan(
         max_prefill_tokens_per_step = normalized_policy.prefill_chunk_token_count;
     }
     memset(prefill_plan, 0, sizeof(*prefill_plan));
-    prefill_plan->abi_version = SPARK_GLM52_LONG_CONTEXT_ABI_VERSION;
+    prefill_plan->abi_version = SPARK_LONG_CONTEXT_ABI_VERSION;
     prefill_plan->descriptor_bytes =
-        SPARK_GLM52_LONG_CONTEXT_PREFILL_PLAN_DESCRIPTOR_BYTES;
+        SPARK_LONG_CONTEXT_PREFILL_PLAN_DESCRIPTOR_BYTES;
     prefill_plan->prompt_token_count = prompt_token_count;
     prefill_plan->max_prefill_tokens_per_step = max_prefill_tokens_per_step;
     prefill_plan->prefill_chunk_count = SparkGlm52LongContextCeilDivideU32(
@@ -594,24 +594,24 @@ SparkStatus SparkGlm52LongContextBuildPrefillPlan(
     if (prefill_plan->prefill_chunk_count > 1u)
     {
         prefill_plan->flags |=
-            SPARK_GLM52_LONG_CONTEXT_PREFILL_PLAN_FLAG_CHUNKED_PREFILL;
+            SPARK_LONG_CONTEXT_PREFILL_PLAN_FLAG_CHUNKED_PREFILL;
     }
     if (prompt_token_count >= normalized_policy.long_context_threshold_token_count)
     {
         prefill_plan->flags |=
-            SPARK_GLM52_LONG_CONTEXT_PREFILL_PLAN_FLAG_LONG_CONTEXT;
+            SPARK_LONG_CONTEXT_PREFILL_PLAN_FLAG_LONG_CONTEXT;
     }
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52LongContextBuildDecodeSelection(
-    const SparkGlm52LongContextPolicy *policy,
+SparkStatus SparkLongContextBuildDecodeSelection(
+    const SparkLongContextPolicy *policy,
     uint32_t context_token_count,
     uint32_t *selected_token_indices,
     uint32_t selected_token_capacity,
-    SparkGlm52LongContextDecodePlan *decode_plan)
+    SparkLongContextDecodePlan *decode_plan)
 {
-    SparkGlm52LongContextPolicy normalized_policy;
+    SparkLongContextPolicy normalized_policy;
     SparkStatus status;
 
     if (policy == 0 || selected_token_indices == 0 || decode_plan == 0 ||
@@ -619,7 +619,7 @@ SparkStatus SparkGlm52LongContextBuildDecodeSelection(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkGlm52LongContextValidatePolicy(policy);
+    status = SparkLongContextValidatePolicy(policy);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -631,7 +631,7 @@ SparkStatus SparkGlm52LongContextBuildDecodeSelection(
     }
     if (context_token_count > normalized_policy.max_context_tokens &&
         (normalized_policy.policy_flags &
-            SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_FAIL_ON_CONTEXT_OVERFLOW) != 0u)
+            SPARK_LONG_CONTEXT_POLICY_FLAG_FAIL_ON_CONTEXT_OVERFLOW) != 0u)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
@@ -642,10 +642,10 @@ SparkStatus SparkGlm52LongContextBuildDecodeSelection(
         selected_token_capacity);
 
     if (normalized_policy.policy_mode ==
-        SPARK_GLM52_LONG_CONTEXT_POLICY_MODE_FULL_CONTEXT_SCAN)
+        SPARK_LONG_CONTEXT_POLICY_MODE_FULL_CONTEXT_SCAN)
     {
         if ((normalized_policy.policy_flags &
-                SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_ALLOW_FULL_CONTEXT_SCAN) == 0u)
+                SPARK_LONG_CONTEXT_POLICY_FLAG_ALLOW_FULL_CONTEXT_SCAN) == 0u)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
@@ -682,14 +682,14 @@ SparkStatus SparkGlm52LongContextBuildDecodeSelection(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52LongContextBuildDecodeSelectionForLaneBatch(
-    const SparkGlm52LongContextPolicy *policy,
+SparkStatus SparkLongContextBuildDecodeSelectionForLaneBatch(
+    const SparkLongContextPolicy *policy,
     const uint32_t *context_token_counts,
     uint32_t lane_count,
     uint32_t *selected_token_indices,
     uint32_t selected_token_stride,
     uint32_t selected_token_capacity,
-    SparkGlm52LongContextDecodePlan *decode_plans,
+    SparkLongContextDecodePlan *decode_plans,
     uint32_t decode_plan_capacity)
 {
     uint32_t lane_index;
@@ -707,7 +707,7 @@ SparkStatus SparkGlm52LongContextBuildDecodeSelectionForLaneBatch(
          lane_index < lane_count;
          ++lane_index)
     {
-        status = SparkGlm52LongContextBuildDecodeSelection(
+        status = SparkLongContextBuildDecodeSelection(
             policy,
             context_token_counts[lane_index],
             &selected_token_indices[(uint64_t)lane_index * selected_token_stride],

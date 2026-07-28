@@ -520,7 +520,7 @@ $(DSPARK_DRAFT_BACKEND_ARCHIVE): FORCE
 # inference/stage/ is not wired to a link line yet, so this target names the gap
 # instead of failing on a missing prerequisite. .updaterepo-policy runs it when
 # nvcc is present; it will stop here until an owner supplies the source.
-$(GLM52_RING_NODE_CONTEXT_BUILDER): inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h model-families/glm52/include/sparkpipe/spark_glm52_kv_cache.h model-families/glm52/include/sparkpipe/spark_glm52_ring_work_control.h $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(DSPARK_DRAFT_BACKEND_ARCHIVE) $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY)
+$(GLM52_RING_NODE_CONTEXT_BUILDER): inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h model-families/glm52/include/sparkpipe/spark_glm52_kv_cache.h include/sparkpipe/spark_ring_work_control.h $(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) $(DSPARK_DRAFT_BACKEND_ARCHIVE) $(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE) $(COMMON_LIBRARY) $(RUNTIME_LIBRARY)
 	@echo "glm52_ring_node_context_builder: source deleted, replacement not wired; see HANDOFF.md" >&2; exit 2
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "glm52_ring_node_context_builder skipped: nvcc unavailable"; \
@@ -560,7 +560,7 @@ build/test_modules/module_affine.a: build/test_modules/module_affine_entry.o bui
 $(TEST_HIDDEN_TRANSPORT_MODULE): tests/fixtures/hidden_transport_module.c | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
-$(TEST_SERVICE_BACKEND_MODULE): tests/fixtures/glm52_service_backend_module.c model-families/glm52/include/sparkpipe/spark_glm52_service_backend.h | build/test_modules
+$(TEST_SERVICE_BACKEND_MODULE): tests/fixtures/glm52_service_backend_module.c include/sparkpipe/spark_service_backend.h | build/test_modules
 	$(CC) $(CPPFLAGS) $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 $(TEST_VALIDATOR): tests/fixtures/module_validator.c | build
@@ -613,10 +613,10 @@ build/test_tp_collective: tests/test_tp_collective.c include/sparkpipe/spark_tp_
 build/test_glm52_tp_shard: tests/test_glm52_tp_shard.c model-families/glm52/include/sparkpipe/spark_glm52_tp_shard.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_row_allocator: tests/test_glm52_row_allocator.c model-families/glm52/include/sparkpipe/spark_glm52_row_allocator.h $(COMMON_LIBRARY)
+build/test_glm52_row_allocator: tests/test_glm52_row_allocator.c include/sparkpipe/spark_row_allocator.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c model-families/glm52/include/sparkpipe/spark_glm52_mtp_tree.h $(COMMON_LIBRARY)
+build/test_glm52_mtp_tree: tests/test_glm52_mtp_tree.c include/sparkpipe/spark_mtp_tree.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_stagepack: tests/test_glm52_stagepack.c $(COMMON_LIBRARY)

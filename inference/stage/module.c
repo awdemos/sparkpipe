@@ -19,7 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "sparkpipe/spark_glm52_mtp_tree.h"
+#include "sparkpipe/spark_mtp_tree.h"
 #include "spark_glm52_resident_decode_stage_backend.h"
 
 #ifndef SPARK_GLM52_RESIDENT_DECODE_STAGE_MAYBE_UNUSED
@@ -942,7 +942,7 @@ static bool SparkGlm52ResidentDecodeStageExactRingStageSlicePlanIsUsable(
         exact_stage_slice_plan->first_layer_index != first_layer_index ||
         exact_stage_slice_plan->layer_count != 6u ||
         exact_stage_slice_plan->stage_index >= 13u ||
-        SparkGlm52StagePlanBatchBucketIsSupported(
+        SparkStagePlanBatchBucketIsSupported(
             exact_stage_slice_plan->batch_bucket) == 0u ||
         exact_stage_slice_plan->maximum_active_sequence_count <
             required_active_sequence_count ||
@@ -3725,7 +3725,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageExtractFrameContext(
         ((frame_context->flags &
             SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_LAYER_MAJOR_SPECULATIVE_VERIFY) == 0u ||
          frame_context->rows_per_lane !=
-            SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT))
+            SPARK_MODEL_MTP_TREE_VERIFIER_ROW_COUNT))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

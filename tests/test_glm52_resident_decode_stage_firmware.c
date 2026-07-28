@@ -6,10 +6,10 @@
 
 #include "glm52_resident_decode_stage_fake_backend.h"
 #include "sparkpipe/spark_driver_compiler.h"
-#include "sparkpipe/spark_glm52_request_api.h"
+#include "sparkpipe/spark_request_api.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
-#include "sparkpipe/spark_glm52_scheduler.h"
+#include "sparkpipe/spark_scheduler.h"
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_module_library.h"
 #include "sparkpipe/spark_orchestrator.h"
@@ -67,12 +67,12 @@ typedef struct SparkGlm52ResidentDecodeStagePrefillBridgeFixture
 {
     SparkGlm52KvCacheArena kv_arena;
     SparkGlm52KvCacheBlock kv_blocks[16];
-    SparkGlm52PrefixCache prefix_cache;
-    SparkGlm52PrefixCacheEntry prefix_entries[16];
-    SparkGlm52PrefixCacheSequenceBinding prefix_bindings[16];
-    SparkGlm52Scheduler scheduler;
-    SparkGlm52RequestApiSlot request_slots[4];
-    SparkGlm52RequestApi api;
+    SparkPrefixCache prefix_cache;
+    SparkPrefixCacheEntry prefix_entries[16];
+    SparkPrefixCacheSequenceBinding prefix_bindings[16];
+    SparkScheduler scheduler;
+    SparkRequestApiSlot request_slots[4];
+    SparkRequestApi api;
 } SparkGlm52ResidentDecodeStagePrefillBridgeFixture;
 
 static void SparkGlm52ResidentDecodeStageTestCompletion(
@@ -103,9 +103,9 @@ static void SparkTestInitializePrefillBridgeFixture(
     SparkGlm52ResidentDecodeStagePrefillBridgeFixture *fixture)
 {
     SparkGlm52KvCacheConfiguration kv_configuration;
-    SparkGlm52PrefixCacheConfiguration prefix_configuration;
-    SparkGlm52SchedulerConfiguration scheduler_configuration;
-    SparkGlm52RequestApiConfiguration api_configuration;
+    SparkPrefixCacheConfiguration prefix_configuration;
+    SparkSchedulerConfiguration scheduler_configuration;
+    SparkRequestApiConfiguration api_configuration;
 
     memset(fixture, 0, sizeof(*fixture));
     memset(&kv_configuration, 0, sizeof(kv_configuration));
@@ -114,7 +114,7 @@ static void SparkTestInitializePrefillBridgeFixture(
         SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     kv_configuration.physical_block_count = 16u;
     kv_configuration.block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     kv_configuration.layer_count = 78u;
     kv_configuration.kv_head_count = 8u;
     kv_configuration.head_dim = 128u;
@@ -127,66 +127,66 @@ static void SparkTestInitializePrefillBridgeFixture(
         &kv_configuration) == SPARK_STATUS_OK);
 
     memset(&prefix_configuration, 0, sizeof(prefix_configuration));
-    prefix_configuration.abi_version = SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
+    prefix_configuration.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
     prefix_configuration.descriptor_bytes =
-        SPARK_GLM52_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     prefix_configuration.block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     prefix_configuration.entry_count = 16u;
     prefix_configuration.physical_block_count = 16u;
     prefix_configuration.sequence_binding_count = 16u;
     prefix_configuration.entries = fixture->prefix_entries;
     prefix_configuration.sequence_bindings = fixture->prefix_bindings;
     prefix_configuration.kv_cache_arena = &fixture->kv_arena;
-    assert(SparkGlm52PrefixCacheInitialize(
+    assert(SparkPrefixCacheInitialize(
         &fixture->prefix_cache,
         &prefix_configuration) == SPARK_STATUS_OK);
 
     memset(&scheduler_configuration, 0, sizeof(scheduler_configuration));
-    scheduler_configuration.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    scheduler_configuration.abi_version = SPARK_SCHEDULER_ABI_VERSION;
     scheduler_configuration.descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES;
-    scheduler_configuration.spark_count = SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT;
+        SPARK_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES;
+    scheduler_configuration.spark_count = SPARK_SCHEDULER_MAX_SPARK_COUNT;
     scheduler_configuration.queue_depth_per_spark = 1u;
     scheduler_configuration.measured_profile_id =
-        SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701;
+        SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701;
     scheduler_configuration.quantization_mode =
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
+        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
     scheduler_configuration.configuration_flags =
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
+        SPARK_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
     scheduler_configuration.prefix_cache_block_tokens =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     scheduler_configuration.prefix_cache = &fixture->prefix_cache;
-    assert(SparkGlm52SchedulerInitialize(
+    assert(SparkSchedulerInitialize(
         &fixture->scheduler,
         &scheduler_configuration) == SPARK_STATUS_OK);
 
     memset(&api_configuration, 0, sizeof(api_configuration));
-    api_configuration.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
+    api_configuration.abi_version = SPARK_REQUEST_API_ABI_VERSION;
     api_configuration.descriptor_bytes =
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES;
     api_configuration.configuration_flags =
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING |
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING |
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING |
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION;
+        SPARK_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING |
+        SPARK_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING |
+        SPARK_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING |
+        SPARK_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION;
     api_configuration.request_capacity = 4u;
-    api_configuration.prefetch_lane_count = SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT;
+    api_configuration.prefetch_lane_count = SPARK_SCHEDULER_MAX_SPARK_COUNT;
     api_configuration.decode_batch_target = 4u;
     api_configuration.scheduler = &fixture->scheduler;
     api_configuration.request_slots = fixture->request_slots;
-    assert(SparkGlm52RequestApiInitialize(
+    assert(SparkRequestApiInitialize(
         &fixture->api,
         &api_configuration) == SPARK_STATUS_OK);
 }
 
 static void SparkTestInitializeBridgeSubmitRequest(
-    SparkGlm52RequestApiSubmitRequest *request,
+    SparkRequestApiSubmitRequest *request,
     const uint32_t *prompt_token_ids)
 {
     memset(request, 0, sizeof(*request));
-    request->abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
-    request->descriptor_bytes = SPARK_GLM52_REQUEST_API_SUBMIT_DESCRIPTOR_BYTES;
+    request->abi_version = SPARK_REQUEST_API_ABI_VERSION;
+    request->descriptor_bytes = SPARK_REQUEST_API_SUBMIT_DESCRIPTOR_BYTES;
     request->request_id = 14001u;
     request->sequence_id = 24001u;
     request->priority = 10u;
@@ -1618,7 +1618,7 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     first_node_context.reserved_execution_flags |=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_RUNTIME_KV_BLOCK_TABLE;
     first_node_context.kv_block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     first_node_context.kv_block_count = 8u;
     first_node_context.max_blocks_per_sequence = 4u;
     first_node_context.cache_token_capacity = 128u;
@@ -1681,7 +1681,7 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     kv_block_table_view.descriptor_bytes =
         SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
     kv_block_table_view.block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     kv_block_table_view.lane_count = 2u;
     kv_block_table_view.lane_stride = 4u;
     kv_block_table_view.lane_capacity = 4u;
@@ -2349,9 +2349,9 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
     SparkFirmwareModuleConfiguration configuration;
     SparkFirmwareModuleHostServices host_services;
-    SparkGlm52RequestApiSubmitRequest request;
-    SparkGlm52RequestApiHandle request_handle;
-    SparkGlm52RequestApiDispatch dispatch;
+    SparkRequestApiSubmitRequest request;
+    SparkRequestApiHandle request_handle;
+    SparkRequestApiDispatch dispatch;
     SparkGlm52KvBlockTableView block_table_view;
     SparkGlm52ResidentDecodeStageFrameContext frame_context;
     SparkGlm52ResidentDecodeStagePrefillFrameView prefill_view;
@@ -2373,27 +2373,27 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
         prompt_token_ids[token_index] = 60000u + token_index;
     SparkTestInitializePrefillBridgeFixture(&bridge_fixture);
     SparkTestInitializeBridgeSubmitRequest(&request, prompt_token_ids);
-    assert(SparkGlm52RequestApiSubmit(
+    assert(SparkRequestApiSubmit(
         &bridge_fixture.api,
         &request,
         &request_handle) == SPARK_STATUS_OK);
-    assert(SparkGlm52RequestApiScheduleNext(
+    assert(SparkRequestApiScheduleNext(
         &bridge_fixture.api,
         &dispatch) == SPARK_STATUS_OK);
     assert(dispatch.accepted == 1u);
-    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(dispatch.kind == SPARK_REQUEST_API_DISPATCH_KIND_PREFILL);
     assert(dispatch.request_handles[0] == request_handle);
     assert(dispatch.prefill_decision.active_sequence_count == 1u);
     assert(dispatch.prefill_decision.scheduled_prompt_token_offset == 0u);
     assert(dispatch.prefill_decision.scheduled_prompt_token_count == 16u);
-    assert(SparkGlm52RequestApiCompleteDispatch(
+    assert(SparkRequestApiCompleteDispatch(
         &bridge_fixture.api,
         &dispatch) == SPARK_STATUS_OK);
-    assert(SparkGlm52RequestApiScheduleNext(
+    assert(SparkRequestApiScheduleNext(
         &bridge_fixture.api,
         &dispatch) == SPARK_STATUS_OK);
     assert(dispatch.accepted == 1u);
-    assert(dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL);
+    assert(dispatch.kind == SPARK_REQUEST_API_DISPATCH_KIND_PREFILL);
     assert(dispatch.request_handles[0] == request_handle);
     assert(dispatch.prefill_decision.active_sequence_count == 1u);
     assert(dispatch.prefill_decision.scheduled_prompt_token_offset == 16u);
@@ -2401,7 +2401,7 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     memset(host_block_indices, 0, sizeof(host_block_indices));
     memset(execution_block_indices, 0, sizeof(execution_block_indices));
     memset(lane_block_counts, 0, sizeof(lane_block_counts));
-    assert(SparkGlm52RequestApiBuildDispatchKvBlockTables(
+    assert(SparkRequestApiBuildDispatchKvBlockTables(
         &bridge_fixture.api,
         &dispatch,
         host_block_indices,
@@ -2410,7 +2410,7 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
         lane_block_counts,
         1u) == SPARK_STATUS_OK);
     memcpy(execution_block_indices, host_block_indices, sizeof(host_block_indices));
-    assert(SparkGlm52RequestApiBuildDispatchKvBlockTableView(
+    assert(SparkRequestApiBuildDispatchKvBlockTableView(
         &bridge_fixture.api,
         &dispatch,
         host_block_indices,
@@ -2437,9 +2437,9 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     first_node_context.kv_block_count = 16u;
     second_node_context.kv_block_count = 16u;
     first_node_context.kv_block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     second_node_context.kv_block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     first_node_context.max_blocks_per_sequence = 4u;
     second_node_context.max_blocks_per_sequence = 4u;
     first_node_context.cache_token_capacity = 256u;
@@ -3461,7 +3461,7 @@ static void SparkTestGlm52ResidentDecodeStageRuntimeKvBlockTableSubmit(void)
         fake_streams);
     node_context.reserved_execution_flags |=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_RUNTIME_KV_BLOCK_TABLE;
-    node_context.kv_block_token_count = SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+    node_context.kv_block_token_count = SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     node_context.kv_block_count = 8u;
     node_context.max_blocks_per_sequence = 4u;
     node_context.cache_token_capacity = 128u;
@@ -3511,7 +3511,7 @@ static void SparkTestGlm52ResidentDecodeStageRuntimeKvBlockTableSubmit(void)
     kv_block_table_view.descriptor_bytes =
         SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
     kv_block_table_view.block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     kv_block_table_view.lane_count = 2u;
     kv_block_table_view.lane_stride = 4u;
     kv_block_table_view.lane_capacity = 4u;
@@ -3537,7 +3537,7 @@ static void SparkTestGlm52ResidentDecodeStageRuntimeKvBlockTableSubmit(void)
     assert(fake_streams[0].last_runtime_kv_physical_block_indices ==
         physical_block_indices);
     assert(fake_streams[0].last_runtime_kv_block_token_count ==
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS);
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS);
     assert(fake_streams[0].last_runtime_kv_lane_count == 2u);
     assert(completion_state.completion_count == 1u);
 

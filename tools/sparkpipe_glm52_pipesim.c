@@ -4,10 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "sparkpipe/spark_glm52_ring_runtime.h"
-#include "sparkpipe/spark_glm52_serving_engine.h"
+#include "sparkpipe/spark_ring_runtime.h"
+#include "sparkpipe/spark_serving_engine.h"
 
-#define PIPESIM_SPARK_COUNT SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT
+#define PIPESIM_SPARK_COUNT SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT
 #define PIPESIM_LANE_CAPACITY 128u
 #define PIPESIM_REQUEST_SLOTS 4096u
 #define PIPESIM_KV_BLOCKS 32768u
@@ -16,7 +16,7 @@
 #define PIPESIM_PREFILL_STRIDE 256u
 #define PIPESIM_PENDING_CAPACITY 64u
 #define PIPESIM_QUEUE_DEPTH_PER_SPARK 14u
-#define PIPESIM_TOKEN_STRIDE SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE
+#define PIPESIM_TOKEN_STRIDE SPARK_SERVING_MAX_DECODE_TOKENS_PER_LANE
 #define PIPESIM_REQUEST_TOKEN_STRIDE 8448u
 
 typedef struct PipesimPending
@@ -24,7 +24,7 @@ typedef struct PipesimPending
 	uint32_t active;
 	uint32_t is_prefill;
 	uint64_t completion_ns;
-	SparkGlm52RequestApiDispatch dispatch;
+	SparkRequestApiDispatch dispatch;
 } PipesimPending;
 
 typedef struct PipesimRing
@@ -52,19 +52,19 @@ typedef struct PipesimFixture
 {
 	SparkGlm52KvCacheArena kv_arena;
 	SparkGlm52KvCacheBlock kv_blocks[PIPESIM_KV_BLOCKS];
-	SparkGlm52PrefixCache prefix_cache;
-	SparkGlm52PrefixCacheEntry prefix_entries[PIPESIM_KV_BLOCKS];
-	SparkGlm52PrefixCacheSequenceBinding prefix_bindings[PIPESIM_PREFIX_BINDINGS];
-	SparkGlm52Scheduler scheduler;
-	SparkGlm52RequestApiSlot request_slots[PIPESIM_REQUEST_SLOTS];
-	SparkGlm52RequestApi request_api;
-	SparkGlm52ServingEngine serving_engine;
-	SparkGlm52ServingRequestRecord request_records[PIPESIM_REQUEST_SLOTS];
+	SparkPrefixCache prefix_cache;
+	SparkPrefixCacheEntry prefix_entries[PIPESIM_KV_BLOCKS];
+	SparkPrefixCacheSequenceBinding prefix_bindings[PIPESIM_PREFIX_BINDINGS];
+	SparkScheduler scheduler;
+	SparkRequestApiSlot request_slots[PIPESIM_REQUEST_SLOTS];
+	SparkRequestApi request_api;
+	SparkServingEngine serving_engine;
+	SparkServingRequestRecord request_records[PIPESIM_REQUEST_SLOTS];
 	uint32_t request_token_storage[
 		PIPESIM_REQUEST_SLOTS * PIPESIM_REQUEST_TOKEN_STRIDE];
-	SparkGlm52ServingEvent event_ring[PIPESIM_EVENT_CAPACITY];
+	SparkServingEvent event_ring[PIPESIM_EVENT_CAPACITY];
 	uint32_t host_prefill_token_ids[PIPESIM_LANE_CAPACITY * PIPESIM_PREFILL_STRIDE];
-	uint32_t physical_block_indices[PIPESIM_LANE_CAPACITY * SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY];
+	uint32_t physical_block_indices[PIPESIM_LANE_CAPACITY * SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY];
 	uint32_t lane_physical_block_counts[PIPESIM_LANE_CAPACITY];
 	PipesimPending pendings[PIPESIM_PENDING_CAPACITY];
 	PipesimRing ring;
@@ -161,7 +161,7 @@ static SparkStatus PipesimDsparkDraft(void *context, const SparkGlm52DsparkDraft
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus PipesimPrefill(void *context, const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+static SparkStatus PipesimPrefill(void *context, const SparkPromptPipelinePrefillDispatch *prefill_dispatch)
 {
 	PipesimFixture *fixture;
 	PipesimPending *pending;
@@ -188,7 +188,7 @@ static SparkStatus PipesimPrefill(void *context, const SparkGlm52PromptPipelineP
 }
 
 
-static SparkStatus PipesimDecode(void *context, const SparkGlm52ServingDecodeDispatch *decode_dispatch, SparkGlm52ServingDecodeResult *decode_result)
+static SparkStatus PipesimDecode(void *context, const SparkServingDecodeDispatch *decode_dispatch, SparkServingDecodeResult *decode_result)
 {
 	PipesimFixture *fixture;
 	PipesimPending *pending;
@@ -208,12 +208,12 @@ static SparkStatus PipesimDecode(void *context, const SparkGlm52ServingDecodeDis
 	pending->dispatch = *decode_dispatch->request_dispatch;
 	pending->is_prefill = 0u;
 	if ((decode_dispatch->request_dispatch->flags &
-			(SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
-			 SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY)) != 0u)
+			(SPARK_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY |
+			 SPARK_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY)) != 0u)
 	{
 		fixture->verify_dispatch_count += 1u;
 		if ((decode_dispatch->request_dispatch->flags &
-				SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u)
+				SPARK_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u)
 			fixture->dspark_verify_dispatch_count += 1u;
 		pending->completion_ns = PipesimRingTraverse(&fixture->ring, fixture->now_ns, fixture->ring.verify_stage_ns);
 	}
@@ -250,7 +250,7 @@ static PipesimPending *PipesimEarliestPending(PipesimFixture *fixture)
 
 static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pending)
 {
-	SparkGlm52ServingDecodeResult decode_result;
+	SparkServingDecodeResult decode_result;
 	uint32_t lane_index;
 	SparkStatus status;
 	if (pending->completion_ns > fixture->now_ns)
@@ -259,13 +259,13 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 		fixture->stats.observed_ns += pending->completion_ns - fixture->now_ns;
 		fixture->now_ns = pending->completion_ns;
 	}
-	SparkGlm52ServingInitializeDecodeResult(&decode_result, pending->dispatch.request_count, PIPESIM_TOKEN_STRIDE);
+	SparkServingInitializeDecodeResult(&decode_result, pending->dispatch.request_count, PIPESIM_TOKEN_STRIDE);
 	if ((pending->dispatch.flags &
-			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u)
+			SPARK_REQUEST_API_DISPATCH_FLAG_DSPARK_SPECULATIVE_VERIFY) != 0u)
 	{
 		uint32_t accepted, row_index, dspark_draft_count, verifier_row_count;
 		verifier_row_count = pending->dispatch.speculative_verifier_token_count;
-		if (verifier_row_count == 0u || verifier_row_count > SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE)
+		if (verifier_row_count == 0u || verifier_row_count > SPARK_SERVING_MAX_DECODE_TOKENS_PER_LANE)
 			verifier_row_count = 1u;
 		dspark_draft_count = verifier_row_count - 1u;
 		fixture->accept_accum_milli += (uint64_t)fixture->accept_milli * dspark_draft_count;
@@ -285,35 +285,35 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 		}
 	}
 	else if ((pending->dispatch.flags &
-			SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
+			SPARK_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
 	{
 		uint32_t depth, row_index;
 		fixture->accept_accum_milli += (uint64_t)fixture->accept_milli *
-			SPARK_GLM52_MODEL_MTP_TREE_EXECUTION_STEP_COUNT;
+			SPARK_MODEL_MTP_TREE_EXECUTION_STEP_COUNT;
 		depth = (uint32_t)(fixture->accept_accum_milli / 1000u);
 		fixture->accept_accum_milli %= 1000u;
-		if (depth > SPARK_GLM52_MODEL_MTP_TREE_EXECUTION_STEP_COUNT)
-			depth = SPARK_GLM52_MODEL_MTP_TREE_EXECUTION_STEP_COUNT;
+		if (depth > SPARK_MODEL_MTP_TREE_EXECUTION_STEP_COUNT)
+			depth = SPARK_MODEL_MTP_TREE_EXECUTION_STEP_COUNT;
 		for (lane_index = 0u; lane_index < pending->dispatch.request_count; ++lane_index)
 		{
 			decode_result.token_counts[lane_index] =
-				SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
+				SPARK_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
 			for (row_index = 0u;
-				 row_index < SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
+				 row_index < SPARK_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
 				 ++row_index)
 				decode_result.token_ids[lane_index][row_index] = 4242u + row_index;
 			if (depth >= 1u)
 				decode_result.token_ids[lane_index][
-					SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_INPUT_ROW] =
-					7001u + SPARK_GLM52_MODEL_MTP_TREE_DEPTH1_PRIMARY_INDEX;
+					SPARK_MODEL_MTP_TREE_VERIFIER_INPUT_ROW] =
+					7001u + SPARK_MODEL_MTP_TREE_DEPTH1_PRIMARY_INDEX;
 			if (depth >= 2u)
 				decode_result.token_ids[lane_index][
-					SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW] =
-					7001u + SPARK_GLM52_MODEL_MTP_TREE_DEPTH2_PRIMARY_INDEX;
+					SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW] =
+					7001u + SPARK_MODEL_MTP_TREE_DEPTH2_PRIMARY_INDEX;
 			if (depth >= 3u)
 				decode_result.token_ids[lane_index][
-					SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW] =
-					7001u + SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_PRIMARY_INDEX;
+					SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW] =
+					7001u + SPARK_MODEL_MTP_TREE_DEPTH3_PRIMARY_INDEX;
 			fixture->committed_token_estimate += depth + 1u;
 		}
 	}
@@ -328,16 +328,16 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 	}
 	if (fixture->accept_milli != 0u &&
 		(pending->dispatch.flags &
-			(SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT |
-			 SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY)) != 0u)
+			(SPARK_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT |
+			 SPARK_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY)) != 0u)
 	{
 		uint32_t draft_index;
 		for (lane_index = 0u; lane_index < pending->dispatch.request_count; ++lane_index)
 		{
 			decode_result.draft_token_counts[lane_index] =
-				SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+				SPARK_MODEL_MTP_TREE_CANDIDATE_COUNT;
 			for (draft_index = 0u;
-				 draft_index < SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+				 draft_index < SPARK_MODEL_MTP_TREE_CANDIDATE_COUNT;
 				 ++draft_index)
 				decode_result.draft_token_ids[lane_index][draft_index] =
 					7001u + draft_index;
@@ -348,7 +348,7 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 	if (pending->is_prefill != 0u)
 	{
 		if (pending->dispatch.kind ==
-			SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH)
+			SPARK_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH)
 		{
 			uint32_t batch_lane_index;
 			for (batch_lane_index = 0u;
@@ -362,7 +362,7 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 			fixture->prefill_completed_token_count +=
 				pending->dispatch.prefill_decision.scheduled_prompt_token_count;
 		fixture->prefill_last_completion_ns = fixture->now_ns;
-		status = SparkGlm52ServingEngineCompletePrefillDispatch(&fixture->serving_engine, &pending->dispatch);
+		status = SparkServingEngineCompletePrefillDispatch(&fixture->serving_engine, &pending->dispatch);
 		if (status != SPARK_STATUS_OK)
 		{
 			fprintf(stderr, "pipesim complete_prefill status=%u kind=%u count=%u\n", (uint32_t)status, pending->dispatch.kind, pending->dispatch.request_count);
@@ -370,7 +370,7 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 		}
 		return;
 	}
-	status = SparkGlm52ServingEngineCompleteDecodeDispatch(&fixture->serving_engine, &pending->dispatch, &decode_result);
+	status = SparkServingEngineCompleteDecodeDispatch(&fixture->serving_engine, &pending->dispatch, &decode_result);
 	if (status != SPARK_STATUS_OK)
 	{
 		fprintf(stderr, "pipesim complete_decode status=%u kind=%u flags=0x%x budget=%u vtc=%u stc=%u acc=%u draft0=%u\n", (uint32_t)status, pending->dispatch.kind, pending->dispatch.flags, pending->dispatch.mtp_draft_token_budget, pending->dispatch.speculative_verifier_token_count, pending->dispatch.speculative_token_count, pending->dispatch.accepted, pending->dispatch.speculative_draft_token_ids[0][0]);
@@ -387,8 +387,8 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 static void PipesimInitializeCore(PipesimFixture *fixture)
 {
 	SparkGlm52KvCacheConfiguration kv_configuration;
-	SparkGlm52PrefixCacheConfiguration prefix_configuration;
-	SparkGlm52SchedulerConfiguration scheduler_configuration;
+	SparkPrefixCacheConfiguration prefix_configuration;
+	SparkSchedulerConfiguration scheduler_configuration;
 	memset(&kv_configuration, 0, sizeof(kv_configuration));
 	kv_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
 	kv_configuration.descriptor_bytes = SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
@@ -404,8 +404,8 @@ static void PipesimInitializeCore(PipesimFixture *fixture)
 	if (SparkGlm52KvCacheArenaInitialize(&fixture->kv_arena, &kv_configuration) != SPARK_STATUS_OK)
 		exit(10);
 	memset(&prefix_configuration, 0, sizeof(prefix_configuration));
-	prefix_configuration.abi_version = SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
-	prefix_configuration.descriptor_bytes = SPARK_GLM52_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	prefix_configuration.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
+	prefix_configuration.descriptor_bytes = SPARK_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
 	prefix_configuration.block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
 	prefix_configuration.entry_count = PIPESIM_KV_BLOCKS;
 	prefix_configuration.physical_block_count = PIPESIM_KV_BLOCKS;
@@ -413,43 +413,43 @@ static void PipesimInitializeCore(PipesimFixture *fixture)
 	prefix_configuration.entries = fixture->prefix_entries;
 	prefix_configuration.sequence_bindings = fixture->prefix_bindings;
 	prefix_configuration.kv_cache_arena = &fixture->kv_arena;
-	if (SparkGlm52PrefixCacheInitialize(&fixture->prefix_cache, &prefix_configuration) != SPARK_STATUS_OK)
+	if (SparkPrefixCacheInitialize(&fixture->prefix_cache, &prefix_configuration) != SPARK_STATUS_OK)
 		exit(11);
 	memset(&scheduler_configuration, 0, sizeof(scheduler_configuration));
-	scheduler_configuration.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
-	scheduler_configuration.descriptor_bytes = SPARK_GLM52_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES;
+	scheduler_configuration.abi_version = SPARK_SCHEDULER_ABI_VERSION;
+	scheduler_configuration.descriptor_bytes = SPARK_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES;
 	scheduler_configuration.spark_count = PIPESIM_SPARK_COUNT;
 	scheduler_configuration.queue_depth_per_spark = fixture->queue_depth;
-	scheduler_configuration.measured_profile_id = SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701;
-	scheduler_configuration.quantization_mode = SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
+	scheduler_configuration.measured_profile_id = SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701;
+	scheduler_configuration.quantization_mode = SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
 	scheduler_configuration.max_prefill_tokens_per_step = PIPESIM_PREFILL_STRIDE;
-	scheduler_configuration.configuration_flags = SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
+	scheduler_configuration.configuration_flags = SPARK_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
 	scheduler_configuration.prefix_cache_block_tokens = SPARK_GLM52_KV_BLOCK_TOKENS;
 	scheduler_configuration.prefix_cache = &fixture->prefix_cache;
-	if (SparkGlm52SchedulerInitialize(&fixture->scheduler, &scheduler_configuration) != SPARK_STATUS_OK)
+	if (SparkSchedulerInitialize(&fixture->scheduler, &scheduler_configuration) != SPARK_STATUS_OK)
 		exit(12);
 }
 
 static void PipesimInitializeServing(PipesimFixture *fixture)
 {
-	SparkGlm52RequestApiConfiguration request_api_configuration;
-	SparkGlm52ServingEngineConfiguration serving_configuration;
+	SparkRequestApiConfiguration request_api_configuration;
+	SparkServingEngineConfiguration serving_configuration;
 	memset(&request_api_configuration, 0, sizeof(request_api_configuration));
-	request_api_configuration.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
-	request_api_configuration.descriptor_bytes = SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES;
+	request_api_configuration.abi_version = SPARK_REQUEST_API_ABI_VERSION;
+	request_api_configuration.descriptor_bytes = SPARK_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES;
 	request_api_configuration.configuration_flags =
-		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING |
-		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING |
-		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING |
-		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION |
-		SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_ADAPTIVE_PIPELINE_BATCHING |
+		SPARK_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING |
+		SPARK_REQUEST_API_CONFIGURATION_FLAG_PREFILL_BATCHING |
+		SPARK_REQUEST_API_CONFIGURATION_FLAG_PREFIX_COHORTING |
+		SPARK_REQUEST_API_CONFIGURATION_FLAG_QUEUE_AWARE_PREFIX_CACHE_EVICTION |
+		SPARK_REQUEST_API_CONFIGURATION_FLAG_ADAPTIVE_PIPELINE_BATCHING |
 		(fixture->accept_milli != 0u && fixture->speculation_mode != 1u
-			? SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
-			  SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE : 0u) |
+			? SPARK_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
+			  SPARK_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE : 0u) |
 		(fixture->dspark_enabled != 0u
-			? SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE : 0u) |
+			? SPARK_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE : 0u) |
 		(fixture->dspark_enabled != 0u && fixture->speculation_mode == 2u
-			? SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_PREFER_DSPARK_SPECULATION : 0u);
+			? SPARK_REQUEST_API_CONFIGURATION_FLAG_PREFER_DSPARK_SPECULATION : 0u);
 	request_api_configuration.request_capacity = PIPESIM_REQUEST_SLOTS;
 	request_api_configuration.prefetch_lane_count = SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
 	if (fixture->dspark_enabled != 0u)
@@ -481,15 +481,15 @@ static void PipesimInitializeServing(PipesimFixture *fixture)
 	request_api_configuration.scheduler = &fixture->scheduler;
 	request_api_configuration.request_slots = fixture->request_slots;
 	request_api_configuration.kv_prefetch_function = PipesimKvPrefetch;
-	if (SparkGlm52RequestApiInitialize(&fixture->request_api, &request_api_configuration) != SPARK_STATUS_OK)
+	if (SparkRequestApiInitialize(&fixture->request_api, &request_api_configuration) != SPARK_STATUS_OK)
 		exit(13);
 	memset(&serving_configuration, 0, sizeof(serving_configuration));
-	serving_configuration.abi_version = SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
-	serving_configuration.descriptor_bytes = SPARK_GLM52_SERVING_ENGINE_CONFIGURATION_DESCRIPTOR_BYTES;
+	serving_configuration.abi_version = SPARK_SERVING_ENGINE_ABI_VERSION;
+	serving_configuration.descriptor_bytes = SPARK_SERVING_ENGINE_CONFIGURATION_DESCRIPTOR_BYTES;
 	serving_configuration.flags =
-		SPARK_GLM52_SERVING_ENGINE_FLAG_AUTO_RELEASE_COMPLETED_REQUESTS |
-		SPARK_GLM52_SERVING_ENGINE_FLAG_CLAMP_BUDGET_TO_CONTEXT;
-	serving_configuration.runtime_contract_flags = SPARK_GLM52_SERVING_RUNTIME_CONTRACT_CURRENT_IMPLEMENTED_FLAGS;
+		SPARK_SERVING_ENGINE_FLAG_AUTO_RELEASE_COMPLETED_REQUESTS |
+		SPARK_SERVING_ENGINE_FLAG_CLAMP_BUDGET_TO_CONTEXT;
+	serving_configuration.runtime_contract_flags = SPARK_SERVING_RUNTIME_CONTRACT_CURRENT_IMPLEMENTED_FLAGS;
 	serving_configuration.default_output_token_budget = 16u;
 	serving_configuration.default_max_prefill_tokens_per_step = PIPESIM_PREFILL_STRIDE;
 	serving_configuration.max_context_tokens = PIPESIM_REQUEST_TOKEN_STRIDE;
@@ -504,36 +504,36 @@ static void PipesimInitializeServing(PipesimFixture *fixture)
 	serving_configuration.host_prefill_token_stride = PIPESIM_PREFILL_STRIDE;
 	serving_configuration.host_prefill_lane_capacity = PIPESIM_LANE_CAPACITY;
 	serving_configuration.host_physical_block_indices = fixture->physical_block_indices;
-	serving_configuration.kv_block_lane_stride = SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
-	serving_configuration.kv_block_lane_capacity = SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
+	serving_configuration.kv_block_lane_stride = SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
+	serving_configuration.kv_block_lane_capacity = SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
 	serving_configuration.lane_physical_block_counts = fixture->lane_physical_block_counts;
 	serving_configuration.lane_count_capacity = PIPESIM_LANE_CAPACITY;
 	serving_configuration.prefill_function = PipesimPrefill;
 	serving_configuration.decode_function = PipesimDecode;
 	serving_configuration.release_sequence_function = PipesimReleaseSequence;
 	serving_configuration.callback_context = fixture;
-	if (SparkGlm52ServingEngineInitialize(&fixture->serving_engine, &serving_configuration) != SPARK_STATUS_OK)
+	if (SparkServingEngineInitialize(&fixture->serving_engine, &serving_configuration) != SPARK_STATUS_OK)
 		exit(14);
 }
 
 static void PipesimSubmitRequests(PipesimFixture *fixture, uint32_t request_count, uint32_t output_tokens, uint32_t prompt_tokens)
 {
 	static uint32_t PromptTokens[8192u];
-	SparkGlm52ServingSubmitTokenIdsRequest submit_request;
-	SparkGlm52ServingSubmitResult submit_result;
+	SparkServingSubmitTokenIdsRequest submit_request;
+	SparkServingSubmitResult submit_result;
 	uint32_t request_index, token_index;
 	for (token_index = 0u; token_index < prompt_tokens; ++token_index)
 		PromptTokens[token_index] = 5000u + token_index;
 	for (request_index = 0u; request_index < request_count; ++request_index)
 	{
-		SparkGlm52ServingInitializeSubmitTokenIdsRequest(&submit_request);
+		SparkServingInitializeSubmitTokenIdsRequest(&submit_request);
 		submit_request.request_id = 1000u + request_index;
 		submit_request.token_count = prompt_tokens;
 		submit_request.token_ids = PromptTokens;
 		submit_request.output_token_budget = output_tokens;
 		memset(&submit_result, 0, sizeof(submit_result));
 		SparkStatus submit_status;
-		submit_status = SparkGlm52ServingEngineSubmitTokenIds(&fixture->serving_engine, &submit_request, &submit_result);
+		submit_status = SparkServingEngineSubmitTokenIds(&fixture->serving_engine, &submit_request, &submit_result);
 		if (submit_status != SPARK_STATUS_OK)
 		{
 			fprintf(stderr, "pipesim submit %u failed status=%u\n", request_index, (uint32_t)submit_status);
@@ -544,8 +544,8 @@ static void PipesimSubmitRequests(PipesimFixture *fixture, uint32_t request_coun
 
 static void PipesimDrainEvents(PipesimFixture *fixture)
 {
-	SparkGlm52ServingEvent event;
-	while (SparkGlm52ServingEnginePopEvent(&fixture->serving_engine, &event) == SPARK_STATUS_OK)
+	SparkServingEvent event;
+	while (SparkServingEnginePopEvent(&fixture->serving_engine, &event) == SPARK_STATUS_OK)
 	{
 	}
 }
@@ -591,7 +591,7 @@ int main(int argc, char **argv)
 	PipesimSubmitRequests(fixture, request_count, output_tokens, prompt_tokens);
 	for (iteration = 0u; iteration < 2000000u; ++iteration)
 	{
-		status = SparkGlm52ServingEnginePump(&fixture->serving_engine, 0u, 64u, 0);
+		status = SparkServingEnginePump(&fixture->serving_engine, 0u, 64u, 0);
 		if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY &&
 			status != SPARK_STATUS_PENDING && status != SPARK_STATUS_NOT_FOUND)
 		{

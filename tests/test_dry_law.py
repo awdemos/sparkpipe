@@ -1,0 +1,96 @@
+"""The naming law, enforced.
+
+A model's name may appear in exactly two places: inference/llms/<model>/ and
+model-families/<model>/. The common paths - include/sparkpipe, node, ring,
+serving - carry no model name, because generic machinery wearing one model's
+name is how the next model copies ten thousand lines instead of writing a
+table. docs/DRY_LEDGER.md is the argument; this gate is the enforcement.
+
+The glm52 references still present in common paths are the DECLARED debt of
+the two seams the ledger names (kv-cache A3, tp-shard A2) and the glm data
+tables those seams read. Each is budgeted EXACTLY, per file, with its reason:
+a new reference fails, and a reference removed fails too until the budget is
+lowered - the table stays truthful in both directions, which is the whole
+point of a ledger. Any other model token in a common path - k3, kimi, qwen,
+dsv4, mimo - has no budget at all: those models were born after the law.
+"""
+import re
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+COMMON = ("include/sparkpipe", "node", "ring", "serving")
+
+GLM_BUDGET = {
+    "include/sparkpipe/spark_cuda_resident_ipc.h": (4, "drafter wiring (glm data); kv-cache seam (A3)"),
+    "include/sparkpipe/spark_http_gateway.h": (2, "compat surface"),
+    "include/sparkpipe/spark_long_context.h": (5, "model header (glm data)"),
+    "include/sparkpipe/spark_mtp_tree.h": (3, "model header (glm data)"),
+    "include/sparkpipe/spark_prefix_cache.h": (7, "kv-cache seam (A3)"),
+    "include/sparkpipe/spark_production_topology.h": (7, "drafter wiring (glm data); model header (glm data)"),
+    "include/sparkpipe/spark_prompt_pipeline.h": (4, "kv-cache seam (A3)"),
+    "include/sparkpipe/spark_request_api.h": (21, "drafter wiring (glm data); kv-cache seam (A3)"),
+    "include/sparkpipe/spark_ring_node_context_builder.h": (4, "drafter wiring (glm data)"),
+    "include/sparkpipe/spark_ring_runtime.h": (9, "drafter wiring (glm data); model header (glm data); shape-config contract (glm data)"),
+    "include/sparkpipe/spark_ring_work_control.h": (11, "drafter wiring (glm data); kv-cache seam (A3); model header (glm data)"),
+    "include/sparkpipe/spark_row_allocator.h": (2, "seam includes"),
+    "include/sparkpipe/spark_scheduler.h": (4, "seam includes"),
+    "include/sparkpipe/spark_service_backend.h": (1, "seam includes"),
+    "include/sparkpipe/spark_serving_engine.h": (5, "seam includes"),
+    "include/sparkpipe/spark_stage_kv_client.h": (1, "seam includes"),
+    "include/sparkpipe/spark_stage_plan.h": (5, "model header (glm data)"),
+    "node/backend.c": (58, "drafter wiring (glm data); kv-cache seam (A3)"),
+    "node/rank_daemon.c": (26, "drafter wiring (glm data); kv-cache seam (A3)"),
+    "node/rank_runtime.c": (32, "seam includes"),
+    "node/residentd.c": (23, "kv-cache seam (A3)"),
+    "serving/spark_production_topology.c": (7, "seam includes"),
+    "serving/spark_ring_node_context_builder.c": (2, "seam includes"),
+    "serving/spark_service_backend.c": (2, "seam includes"),
+}
+
+FORBIDDEN = re.compile(r"kimi|_k3_|K3[A-Z]|k3_|qwen|dsv4|mimo25|Qwen36|Dsv4|Mimo25",
+                       re.IGNORECASE)
+GLM = re.compile(r"[Gg]lm52|GLM52")
+
+
+def main():
+    failures = 0
+    seen = set()
+    for root in COMMON:
+        for path in sorted((ROOT / root).rglob("*")):
+            if not path.is_file():
+                continue
+            rel = str(path.relative_to(ROOT))
+            text = path.read_text(errors="surrogateescape")
+            if FORBIDDEN.search(text) or FORBIDDEN.search(rel):
+                print(f"  FAIL {rel}: a model token with no budget in a "
+                      f"common path")
+                failures += 1
+            hits = len(GLM.findall(text))
+            entry = GLM_BUDGET.get(rel)
+            if entry is None and hits:
+                print(f"  FAIL {rel}: {hits} glm references and no budget "
+                      f"entry; the seam debt only shrinks")
+                failures += 1
+            if entry is not None:
+                seen.add(rel)
+                if hits != entry[0]:
+                    print(f"  FAIL {rel}: {hits} glm references, budget "
+                          f"says {entry[0]} ({entry[1]}); update the "
+                          f"budget WITH the change, not after")
+                    failures += 1
+    for rel in set(GLM_BUDGET) - seen:
+        print(f"  FAIL budget entry for missing file {rel}")
+        failures += 1
+    print(f"common files budgeted {len(GLM_BUDGET)}, "
+          f"debt {sum(v[0] for v in GLM_BUDGET.values())} references")
+    if failures:
+        print(f"\nFAIL ({failures})")
+        return 1
+    print("\nno model name in a common path beyond the declared, "
+          "shrinking seam debt")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

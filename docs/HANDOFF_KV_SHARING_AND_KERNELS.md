@@ -42,8 +42,8 @@ The prefix cache's table does not reach the device.
 ```c
 // pp13_service_backend.c:2352
 scheduler_configuration.configuration_flags =
-    SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS &
-    ~SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE;
+    SPARK_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS &
+    ~SPARK_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE;
 ```
 
 `..._FLAG_CROSS_SEQUENCE_PREFIX_REUSE` (`0x40`) is part of `DEFAULT_FLAGS`.
@@ -103,7 +103,7 @@ nothing. **Search for the capability by name before you build it** - "prefix",
 - `tools/length_gate.py` enforces 50 lines per function and exits nonzero.
 - Worst offenders in `work_control.c`, both pre-existing: `ValidatePacket` 325
   lines, `BuildPrefillPacket` 124.
-- `model-families/glm52/src/spark_glm52_request_api.c` was 7350 lines and is now
+- `serving/spark_request_api.c` was 7350 lines and is now
   7178 after #511. Remaining known duplication in it: `CompleteDispatch` (195)
   and `CancelDispatch` (157) share 121 lines, but the shared part is scaffolding
   and the variation is at every leaf, so a merge would need several flags and

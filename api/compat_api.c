@@ -654,13 +654,13 @@ static SparkStatus SparkGlm52CompatPrepareCommon(
 }
 
 static SparkStatus SparkGlm52CompatSubmitPrepared(
-    SparkGlm52ServiceRuntime *service,
+    SparkServiceRuntime *service,
     const SparkGlm52CompatTextRequest *compat_request,
-    SparkGlm52ServiceSubmitResult *result)
+    SparkServiceSubmitResult *result)
 {
-    SparkGlm52ServiceSubmitTextRequest request;
+    SparkServiceSubmitTextRequest request;
 
-    SparkGlm52ServiceInitializeSubmitTextRequest(&request);
+    SparkServiceInitializeSubmitTextRequest(&request);
     request.flags = compat_request->flags;
     request.priority = compat_request->priority;
     request.thinking_token_budget = compat_request->thinking_token_budget;
@@ -673,7 +673,7 @@ static SparkStatus SparkGlm52CompatSubmitPrepared(
     request.sequence_id = compat_request->sequence_id;
     request.text = compat_request->text;
     request.text_bytes = compat_request->text_bytes;
-    return SparkGlm52ServiceSubmitText(service, &request, result);
+    return SparkServiceSubmitText(service, &request, result);
 }
 
 void SparkGlm52CompatInitializeTextRequest(
@@ -803,11 +803,11 @@ SparkStatus SparkGlm52CompatPrepareAnthropicJson(
 }
 
 SparkStatus SparkGlm52CompatSubmitOpenAiJson(
-    SparkGlm52ServiceRuntime *service,
+    SparkServiceRuntime *service,
     const char *json_text,
     uint32_t json_bytes,
     SparkGlm52CompatTextRequest *request,
-    SparkGlm52ServiceSubmitResult *result)
+    SparkServiceSubmitResult *result)
 {
     SparkStatus status;
 
@@ -818,11 +818,11 @@ SparkStatus SparkGlm52CompatSubmitOpenAiJson(
 }
 
 SparkStatus SparkGlm52CompatSubmitAnthropicJson(
-    SparkGlm52ServiceRuntime *service,
+    SparkServiceRuntime *service,
     const char *json_text,
     uint32_t json_bytes,
     SparkGlm52CompatTextRequest *request,
-    SparkGlm52ServiceSubmitResult *result)
+    SparkServiceSubmitResult *result)
 {
     SparkStatus status;
 

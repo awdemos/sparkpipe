@@ -4,9 +4,9 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "sparkpipe/spark_glm52_stage_plan.h"
-#include "sparkpipe/spark_glm52_ring_node_context_builder.h"
-#include "sparkpipe/spark_glm52_ring_runtime.h"
+#include "sparkpipe/spark_stage_plan.h"
+#include "sparkpipe/spark_ring_node_context_builder.h"
+#include "sparkpipe/spark_ring_runtime.h"
 #include "sparkpipe/spark_model_description.h"
 
 
@@ -81,11 +81,11 @@ int main(void)
     assert((decode_program->scheduling.flags &
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_PRIVATE_EXPERT_QUEUES) == 0u);
     assert(decode_program->scheduling.max_active_slots ==
-        SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET *
-            SPARK_GLM52_RING_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE);
+        SPARK_STAGE_PLAN_MAX_BATCH_BUCKET *
+            SPARK_RING_RUNTIME_MAX_SPECULATIVE_ROWS_PER_LANE);
     assert(decode_program->scheduling.max_new_tokens == 7u);
     assert(decode_program->scheduling.max_resident_sequences ==
-        SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT);
+        SPARK_RING_NODE_CONTEXT_BUILDER_DEFAULT_RESIDENT_SEQUENCE_COUNT);
     assert(decode_program->scheduling.private_queue_count == 1u);
     assert(decode_program->scheduling.validated_latency_ns == 0u);
     assert(decode_program->scheduling.host_staging_bytes_per_submit_ceiling == 0u);

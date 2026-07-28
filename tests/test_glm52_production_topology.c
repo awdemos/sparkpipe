@@ -2,36 +2,36 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "sparkpipe/spark_glm52_production_topology.h"
+#include "sparkpipe/spark_production_topology.h"
 
 #define SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY 64u
 
-static void SparkTestInitializeRingStagePlan(SparkGlm52StagePlan *stage_plan)
+static void SparkTestInitializeRingStagePlan(SparkStagePlan *stage_plan)
 {
     uint32_t stage_index;
 
     memset(stage_plan, 0, sizeof(*stage_plan));
-    stage_plan->abi_version = SPARK_GLM52_STAGE_PLAN_ABI_VERSION;
-    stage_plan->descriptor_bytes = SPARK_GLM52_STAGE_PLAN_DESCRIPTOR_BYTES;
+    stage_plan->abi_version = SPARK_STAGE_PLAN_ABI_VERSION;
+    stage_plan->descriptor_bytes = SPARK_STAGE_PLAN_DESCRIPTOR_BYTES;
     stage_plan->stage_count = 13u;
     for (stage_index = 0u; stage_index < 13u; ++stage_index)
     {
         stage_plan->stages[stage_index].first_layer_index = stage_index * 6u;
         stage_plan->stages[stage_index].layer_count = 6u;
         stage_plan->stages[stage_index].flags =
-            SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN |
-            SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_OUTPUT_HIDDEN;
+            SPARK_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN |
+            SPARK_STAGE_PLAN_STAGE_FLAG_OUTPUT_HIDDEN;
     }
     stage_plan->stages[0u].flags |=
-        SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_DENSE_PREFIX;
+        SPARK_STAGE_PLAN_STAGE_FLAG_DENSE_PREFIX;
     stage_plan->stages[12u].flags =
-        SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN |
-        SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN;
+        SPARK_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN |
+        SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN;
 }
 
-static const SparkGlm52ProductionTopologyIndexShareSideBand *
+static const SparkProductionTopologyIndexShareSideBand *
 SparkTestFindSidebandForSourceLayer(
-    const SparkGlm52ProductionTopology *topology,
+    const SparkProductionTopology *topology,
     uint32_t source_layer_index)
 {
     uint32_t sideband_index;
@@ -53,45 +53,45 @@ static void SparkTestGlm52IndexShareSchedule(void)
 {
     uint32_t group_end_layer_exclusive;
 
-    assert(SparkGlm52DsaIndexShareSourceLayer(0u) == 0u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(1u) == 1u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(2u) == 2u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(3u) == 2u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(5u) == 2u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(6u) == 6u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(9u) == 6u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(10u) == 10u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(77u) == 74u);
-    assert(SparkGlm52DsaIndexShareSourceLayer(78u) == UINT32_MAX);
-    assert(SparkGlm52DsaIndexShareFindGroupEndLayerExclusive(
+    assert(SparkDsaIndexShareSourceLayer(0u) == 0u);
+    assert(SparkDsaIndexShareSourceLayer(1u) == 1u);
+    assert(SparkDsaIndexShareSourceLayer(2u) == 2u);
+    assert(SparkDsaIndexShareSourceLayer(3u) == 2u);
+    assert(SparkDsaIndexShareSourceLayer(5u) == 2u);
+    assert(SparkDsaIndexShareSourceLayer(6u) == 6u);
+    assert(SparkDsaIndexShareSourceLayer(9u) == 6u);
+    assert(SparkDsaIndexShareSourceLayer(10u) == 10u);
+    assert(SparkDsaIndexShareSourceLayer(77u) == 74u);
+    assert(SparkDsaIndexShareSourceLayer(78u) == UINT32_MAX);
+    assert(SparkDsaIndexShareFindGroupEndLayerExclusive(
         0u,
         &group_end_layer_exclusive) == SPARK_STATUS_OK);
     assert(group_end_layer_exclusive == 1u);
-    assert(SparkGlm52DsaIndexShareFindGroupEndLayerExclusive(
+    assert(SparkDsaIndexShareFindGroupEndLayerExclusive(
         3u,
         &group_end_layer_exclusive) == SPARK_STATUS_OK);
     assert(group_end_layer_exclusive == 6u);
-    assert(SparkGlm52DsaIndexShareFindGroupEndLayerExclusive(
+    assert(SparkDsaIndexShareFindGroupEndLayerExclusive(
         77u,
         &group_end_layer_exclusive) == SPARK_STATUS_OK);
     assert(group_end_layer_exclusive == 78u);
-    assert(SparkGlm52DsaIndexShareFindGroupEndLayerExclusive(
+    assert(SparkDsaIndexShareFindGroupEndLayerExclusive(
         78u,
         &group_end_layer_exclusive) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
 static void SparkTestGlm52ProductionTopologyRingSideband(void)
 {
-    SparkGlm52StagePlan stage_plan;
-    SparkGlm52ProductionTopology topology;
-    const SparkGlm52ProductionTopologyIndexShareSideBand *sideband;
+    SparkStagePlan stage_plan;
+    SparkProductionTopology topology;
+    const SparkProductionTopologyIndexShareSideBand *sideband;
     char error_buffer[256];
 
     SparkTestInitializeRingStagePlan(&stage_plan);
-    assert(SparkGlm52ProductionTopologyBuild(
+    assert(SparkProductionTopologyBuild(
         &stage_plan,
         SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY,
-        SPARK_GLM52_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT,
+        SPARK_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT,
         16u,
         SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS,
         &topology,
@@ -101,9 +101,9 @@ static void SparkTestGlm52ProductionTopologyRingSideband(void)
     assert(topology.active_sequence_capacity ==
         SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY);
     assert(topology.selected_token_count ==
-        SPARK_GLM52_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT);
+        SPARK_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT);
     assert((topology.topology_flags &
-        SPARK_GLM52_PRODUCTION_TOPOLOGY_FLAG_MLA_COMPRESSED_KV_CACHE) != 0u);
+        SPARK_PRODUCTION_TOPOLOGY_FLAG_MLA_COMPRESSED_KV_CACHE) != 0u);
     assert(topology.mla_cache_element_count ==
         SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS);
     {
@@ -116,10 +116,10 @@ static void SparkTestGlm52ProductionTopologyRingSideband(void)
              sideband_index < topology.indexshare_sideband_count;
              ++sideband_index)
         {
-            const SparkGlm52ProductionTopologyIndexShareSideBand *tap =
+            const SparkProductionTopologyIndexShareSideBand *tap =
                 &topology.indexshare_sidebands[sideband_index];
             if ((tap->flags &
-                    SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP) == 0u)
+                    SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP) == 0u)
             {
                 continue;
             }
@@ -143,7 +143,7 @@ static void SparkTestGlm52ProductionTopologyRingSideband(void)
 
         for (hop_index = 0u; hop_index + 1u < topology.stage_count; ++hop_index)
         {
-            assert(SparkGlm52ProductionTopologyHopSidebandLayout(
+            assert(SparkProductionTopologyHopSidebandLayout(
                 &topology,
                 hop_index,
                 &kind_bits,
@@ -180,8 +180,8 @@ static void SparkTestGlm52ProductionTopologyRingSideband(void)
     assert(topology.stages[1u].first_layer_index == 6u);
     assert(topology.stages[1u].layer_count == 6u);
     topology.topology_flags &=
-        ~SPARK_GLM52_PRODUCTION_TOPOLOGY_FLAG_MLA_COMPRESSED_KV_CACHE;
-    assert(SparkGlm52ProductionTopologyValidate(
+        ~SPARK_PRODUCTION_TOPOLOGY_FLAG_MLA_COMPRESSED_KV_CACHE;
+    assert(SparkProductionTopologyValidate(
         &topology,
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
@@ -189,15 +189,15 @@ static void SparkTestGlm52ProductionTopologyRingSideband(void)
 
 static void SparkTestGlm52ProductionTopologyRejectsBadDimensions(void)
 {
-    SparkGlm52StagePlan stage_plan;
-    SparkGlm52ProductionTopology topology;
+    SparkStagePlan stage_plan;
+    SparkProductionTopology topology;
     char error_buffer[256];
 
     SparkTestInitializeRingStagePlan(&stage_plan);
-    assert(SparkGlm52ProductionTopologyBuild(
+    assert(SparkProductionTopologyBuild(
         &stage_plan,
         0u,
-        SPARK_GLM52_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT,
+        SPARK_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT,
         16u,
         SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS,
         &topology,

@@ -73,7 +73,7 @@ New scheduler accounting records interleaved prefill admissions and decode bypas
 
 ### Prefix-cache block manager
 
-Added `SparkGlm52PrefixCache`, a block-level prefix cache manager with prompt block hashing, parent-hash chaining, block lookup, block commit, per-sequence release, reference counts, and LRU-style reusable victim selection. Lookup intentionally keeps the last prompt token scheduled for recomputation when the full prompt hits cache.
+Added `SparkPrefixCache`, a block-level prefix cache manager with prompt block hashing, parent-hash chaining, block lookup, block commit, per-sequence release, reference counts, and LRU-style reusable victim selection. Lookup intentionally keeps the last prompt token scheduled for recomputation when the full prompt hits cache.
 
 ### MoE and final-stage fusion hooks
 

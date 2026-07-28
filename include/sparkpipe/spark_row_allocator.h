@@ -17,7 +17,7 @@
 // milli fixed point inverts it to within a few parts per thousand across the
 // operating range (exact as k grows, and the error vanishes as alpha falls).
 
-typedef struct SparkGlm52RowAllocatorSlotInput
+typedef struct SparkRowAllocatorSlotInput
 {
     // EMA of committed tokens per verify cycle, times 1000 (the request API's
     // mtp_commit_ema_milli). Values at or below 1000 imply no speculative value.
@@ -29,7 +29,7 @@ typedef struct SparkGlm52RowAllocatorSlotInput
     // guaranteed a two-row probe grant (capacity permitting) so the EMA can
     // observe beyond-first acceptance, and competes no further that wave.
     uint32_t probe;
-} SparkGlm52RowAllocatorSlotInput;
+} SparkRowAllocatorSlotInput;
 
 // Fills draft_budgets_out[slot] with the draft rows granted to each slot and
 // returns the total rows assigned including base rows. Base rows are granted in
@@ -43,8 +43,8 @@ typedef struct SparkGlm52RowAllocatorSlotInput
 // cheaper), letting cheap spec rows legitimately outrank a marginal real row in
 // the byte-bound regime: score = alpha^d * 1000 / cost. Values below 1000 only;
 // the E(R) identical-versus-diverse ring measurement calibrates it.
-uint32_t SparkGlm52RowAllocatorAssign(
-    const SparkGlm52RowAllocatorSlotInput *slots,
+uint32_t SparkRowAllocatorAssign(
+    const SparkRowAllocatorSlotInput *slots,
     uint32_t slot_count,
     uint32_t firing_row_cap,
     uint32_t spec_row_relative_cost_milli,

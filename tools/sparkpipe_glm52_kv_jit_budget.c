@@ -5,9 +5,9 @@
 #include <string.h>
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
-#include "sparkpipe/spark_glm52_mtp_tree.h"
-#include "sparkpipe/spark_glm52_ring_node_context_builder.h"
-#include "sparkpipe/spark_glm52_ring_runtime.h"
+#include "sparkpipe/spark_mtp_tree.h"
+#include "sparkpipe/spark_ring_node_context_builder.h"
+#include "sparkpipe/spark_ring_runtime.h"
 
 typedef struct SparkGlm52KvJitBudgetToolConfiguration
 {
@@ -87,14 +87,14 @@ static int SparkGlm52KvJitBudgetToolPopulateKvLayout(
     if (request == 0)
         return -1;
     if (quantization_mode ==
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
     {
         request->attention_cache_layout =
             SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3;
         request->fp8_scale_block_size = SPARK_GLM52_MODEL_FP8_SCALE_BLOCK;
         return 0;
     }
-    if (quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+    if (quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
     {
         request->attention_cache_layout =
             SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE;
@@ -109,7 +109,7 @@ int main(int argc,char **argv)
     SparkGlm52KvJitBudgetToolConfiguration configuration;
     SparkGlm52KvJitStageBudgetRequest request;
     SparkGlm52KvJitStageBudget budget;
-    SparkGlm52StagePlan stage_plan;
+    SparkStagePlan stage_plan;
     char error_buffer[256u];
     uint64_t blocks_per_request;
     uint64_t physical_block_capacity;
@@ -133,11 +133,11 @@ int main(int argc,char **argv)
     memset(&configuration,0,sizeof(configuration));
     configuration.active_sequence_count = 1024u;
     configuration.backing_request_count =
-        SPARK_GLM52_STAGE_PLAN_PIPELINE_INFLIGHT_REQUEST_CAPACITY;
+        SPARK_STAGE_PLAN_PIPELINE_INFLIGHT_REQUEST_CAPACITY;
     configuration.average_context_token_count = 4096u;
     configuration.physical_pool_token_capacity = SPARK_GLM52_KV_POOL_TOKENS;
     configuration.backing_block_capacity =
-        SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_NVME_BLOCK_CAPACITY;
+        SPARK_RING_NODE_CONTEXT_BUILDER_DEFAULT_NVME_BLOCK_CAPACITY;
     configuration.mtp_enabled = 1u;
     for (index = 1; index < argc; ++index)
     {
@@ -164,13 +164,13 @@ int main(int argc,char **argv)
         configuration.physical_pool_token_capacity %
             SPARK_GLM52_KV_BLOCK_TOKENS != 0u ||
         configuration.active_sequence_count >
-            SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
+            SPARK_STAGE_PLAN_MAX_BATCH_BUCKET)
     {
         fprintf(stderr,"invalid KV budget configuration\n");
         return 2;
     }
     memset(error_buffer,0,sizeof(error_buffer));
-    if (SparkGlm52RingRuntimeBuildFixedStagePlan(
+    if (SparkRingRuntimeBuildFixedStagePlan(
             &stage_plan,error_buffer,sizeof(error_buffer)) != SPARK_STATUS_OK)
     {
         fprintf(stderr,"stage plan failed: %s\n",error_buffer);
@@ -188,11 +188,11 @@ int main(int argc,char **argv)
     persistent_backing_blocks = blocks_per_request *
         configuration.backing_request_count;
     mtp_transient_blocks = configuration.mtp_enabled != 0u
-        ? (uint64_t)SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT *
+        ? (uint64_t)SPARK_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT *
             configuration.active_sequence_count
         : 0u;
     mtp_shadow_token_records = configuration.mtp_enabled != 0u
-        ? (uint64_t)SPARK_GLM52_MODEL_MTP_TREE_SHADOW_TOKEN_COUNT *
+        ? (uint64_t)SPARK_MODEL_MTP_TREE_SHADOW_TOKEN_COUNT *
             configuration.backing_request_count
         : 0u;
     if (mtp_shadow_token_records > UINT32_MAX ||
@@ -211,7 +211,7 @@ int main(int argc,char **argv)
     maximum_active_sequence_count = physical_block_capacity /
         (blocks_per_request +
          (configuration.mtp_enabled != 0u
-            ? SPARK_GLM52_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT : 0u));
+            ? SPARK_MODEL_MTP_TREE_TRANSIENT_BLOCK_COUNT : 0u));
     request_cohort_count =
         ((uint64_t)configuration.backing_request_count +
          configuration.active_sequence_count - 1u) /
@@ -265,7 +265,7 @@ int main(int argc,char **argv)
         uint64_t required_nvme_bytes;
         uint64_t mtp_shadow_bytes;
         uint64_t gpu_storage_bytes;
-        const SparkGlm52StagePlanStage *stage;
+        const SparkStagePlanStage *stage;
 
         stage = &stage_plan.stages[rank_index];
         memset(&request,0,sizeof(request));
@@ -286,7 +286,7 @@ int main(int argc,char **argv)
         request.record_alignment_bytes =
             SPARK_GLM52_KV_JIT_DEFAULT_RECORD_ALIGNMENT;
         if (SparkGlm52KvJitBudgetToolPopulateKvLayout(
-                SPARK_GLM52_RING_RUNTIME_DEFAULT_QUANTIZATION_MODE,
+                SPARK_RING_RUNTIME_DEFAULT_QUANTIZATION_MODE,
                 &request) != 0)
         {
             fprintf(stderr,"rank %u KV layout is unsupported\n",rank_index);

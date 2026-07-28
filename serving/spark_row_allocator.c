@@ -1,35 +1,35 @@
-#include "sparkpipe/spark_glm52_row_allocator.h"
+#include "sparkpipe/spark_row_allocator.h"
 
-#define SPARK_GLM52_ROW_ALLOCATOR_MILLI 1000u
-#define SPARK_GLM52_ROW_ALLOCATOR_ALPHA_CEILING 999u
-#define SPARK_GLM52_ROW_ALLOCATOR_PROBE_ROWS 2u
+#define SPARK_ROW_ALLOCATOR_MILLI 1000u
+#define SPARK_ROW_ALLOCATOR_ALPHA_CEILING 999u
+#define SPARK_ROW_ALLOCATOR_PROBE_ROWS 2u
 
 // alpha = (ema - 1000) / ema in milli fixed point, clamped to [0, 999]. An EMA
 // at or below one committed token per cycle means drafting has shown no value,
 // so alpha is zero and the slot's speculative rows never win a grant.
-static uint32_t SparkGlm52RowAllocatorAlphaMilli(uint32_t commit_ema_milli)
+static uint32_t SparkRowAllocatorAlphaMilli(uint32_t commit_ema_milli)
 {
     uint32_t alpha_milli;
-    if (commit_ema_milli <= SPARK_GLM52_ROW_ALLOCATOR_MILLI)
+    if (commit_ema_milli <= SPARK_ROW_ALLOCATOR_MILLI)
         return 0u;
-    alpha_milli = (uint32_t)(((uint64_t)(commit_ema_milli - SPARK_GLM52_ROW_ALLOCATOR_MILLI) *
-        SPARK_GLM52_ROW_ALLOCATOR_MILLI) / commit_ema_milli);
-    if (alpha_milli > SPARK_GLM52_ROW_ALLOCATOR_ALPHA_CEILING)
-        alpha_milli = SPARK_GLM52_ROW_ALLOCATOR_ALPHA_CEILING;
+    alpha_milli = (uint32_t)(((uint64_t)(commit_ema_milli - SPARK_ROW_ALLOCATOR_MILLI) *
+        SPARK_ROW_ALLOCATOR_MILLI) / commit_ema_milli);
+    if (alpha_milli > SPARK_ROW_ALLOCATOR_ALPHA_CEILING)
+        alpha_milli = SPARK_ROW_ALLOCATOR_ALPHA_CEILING;
     return alpha_milli;
 }
 
 // Grant probing slots their fixed two-row probe, in slot-index order, so the
 // EMA can observe beyond-first acceptance at minimal cost. Probing slots do not
 // compete in the value-ranked phase.
-static uint32_t SparkGlm52RowAllocatorGrantProbes(const SparkGlm52RowAllocatorSlotInput *slots,uint32_t slot_count,uint32_t remaining,uint32_t *draft_budgets_out)
+static uint32_t SparkRowAllocatorGrantProbes(const SparkRowAllocatorSlotInput *slots,uint32_t slot_count,uint32_t remaining,uint32_t *draft_budgets_out)
 {
     uint32_t slot_index,grant;
     for (slot_index = 0u; slot_index < slot_count && remaining != 0u; ++slot_index)
     {
         if (slots[slot_index].probe == 0u || slots[slot_index].maximum_draft_depth == 0u)
             continue;
-        grant = SPARK_GLM52_ROW_ALLOCATOR_PROBE_ROWS;
+        grant = SPARK_ROW_ALLOCATOR_PROBE_ROWS;
         if (grant > slots[slot_index].maximum_draft_depth)
             grant = slots[slot_index].maximum_draft_depth;
         if (grant > remaining)
@@ -46,7 +46,7 @@ static uint32_t SparkGlm52RowAllocatorGrantProbes(const SparkGlm52RowAllocatorSl
 // is alpha^d in milli fixed point, maintained incrementally per slot. The scan
 // is O(grants x slots); at wave cadence with bounded depth this is negligible,
 // and a threshold binary search is the drop-in replacement if it ever profiles.
-static void SparkGlm52RowAllocatorGreedyGrant(const SparkGlm52RowAllocatorSlotInput *slots,uint32_t slot_count,uint32_t remaining,uint32_t spec_row_relative_cost_milli,uint32_t *draft_budgets_out)
+static void SparkRowAllocatorGreedyGrant(const SparkRowAllocatorSlotInput *slots,uint32_t slot_count,uint32_t remaining,uint32_t spec_row_relative_cost_milli,uint32_t *draft_budgets_out)
 {
     uint32_t slot_index,best_index,best_value;
     uint64_t next_value;
@@ -65,14 +65,14 @@ static void SparkGlm52RowAllocatorGreedyGrant(const SparkGlm52RowAllocatorSlotIn
             granted = draft_budgets_out[slot_index];
             if (granted >= slots[slot_index].maximum_draft_depth)
                 continue;
-            alpha_milli = SparkGlm52RowAllocatorAlphaMilli(slots[slot_index].commit_ema_milli);
+            alpha_milli = SparkRowAllocatorAlphaMilli(slots[slot_index].commit_ema_milli);
             if (alpha_milli == 0u)
                 continue;
-            value = (uint32_t)(((uint64_t)alpha_milli * SPARK_GLM52_ROW_ALLOCATOR_MILLI) /
-                (spec_row_relative_cost_milli == 0u ? SPARK_GLM52_ROW_ALLOCATOR_MILLI : spec_row_relative_cost_milli));
+            value = (uint32_t)(((uint64_t)alpha_milli * SPARK_ROW_ALLOCATOR_MILLI) /
+                (spec_row_relative_cost_milli == 0u ? SPARK_ROW_ALLOCATOR_MILLI : spec_row_relative_cost_milli));
             for (depth = 0u; depth < granted; ++depth)
             {
-                next_value = ((uint64_t)value * alpha_milli) / SPARK_GLM52_ROW_ALLOCATOR_MILLI;
+                next_value = ((uint64_t)value * alpha_milli) / SPARK_ROW_ALLOCATOR_MILLI;
                 value = (uint32_t)next_value;
             }
             if (value > best_value)
@@ -88,8 +88,8 @@ static void SparkGlm52RowAllocatorGreedyGrant(const SparkGlm52RowAllocatorSlotIn
     }
 }
 
-uint32_t SparkGlm52RowAllocatorAssign(
-    const SparkGlm52RowAllocatorSlotInput *slots,
+uint32_t SparkRowAllocatorAssign(
+    const SparkRowAllocatorSlotInput *slots,
     uint32_t slot_count,
     uint32_t firing_row_cap,
     uint32_t spec_row_relative_cost_milli,
@@ -108,8 +108,8 @@ uint32_t SparkGlm52RowAllocatorAssign(
     if (base_rows > firing_row_cap)
         base_rows = firing_row_cap;
     remaining = firing_row_cap - base_rows;
-    remaining = SparkGlm52RowAllocatorGrantProbes(slots, slot_count, remaining, draft_budgets_out);
-    SparkGlm52RowAllocatorGreedyGrant(slots, slot_count, remaining, spec_row_relative_cost_milli, draft_budgets_out);
+    remaining = SparkRowAllocatorGrantProbes(slots, slot_count, remaining, draft_budgets_out);
+    SparkRowAllocatorGreedyGrant(slots, slot_count, remaining, spec_row_relative_cost_milli, draft_budgets_out);
     total = base_rows;
     for (slot_index = 0u; slot_index < slot_count; ++slot_index)
         total += draft_budgets_out[slot_index];

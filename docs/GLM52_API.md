@@ -28,12 +28,12 @@ validation tools, benchmark harnesses, or temporary rank-runner details.
 Stable caller-facing contracts:
 
 ```text
-SparkGlm52ServiceRuntime
-SparkGlm52ServiceSubmitText
-SparkGlm52ServiceSubmitTokenIds
-SparkGlm52ServicePump
-SparkGlm52ServicePopEvent
-SparkGlm52ServiceCancelRequest
+SparkServiceRuntime
+SparkServiceSubmitText
+SparkServiceSubmitTokenIds
+SparkServicePump
+SparkServicePopEvent
+SparkServiceCancelRequest
 SparkGlm52CompatPrepareOpenAiJson
 SparkGlm52CompatPrepareAnthropicJson
 SparkGlm52CompatSubmitOpenAiJson
@@ -48,7 +48,7 @@ SparkGlm52Pp13RuntimeBuildFixedStagePlan
 SparkGlm52Pp13RuntimeBuildRankPlan
 SparkGlm52Pp13RuntimeValidateRankPlan
 SparkGlm52Pp13RuntimeValidateStageFp8PackFiles
-SparkGlm52ResidentDecodeStageProductionRunnerInitialize
+SparkResidentDecodeStageProductionRunnerInitialize
 SparkGlm52ResidentDecodeStageProductionRunnerSubmit
 ```
 
@@ -92,13 +92,13 @@ Production prompt inference still requires all of these pieces to be connected:
 Public headers:
 
 ```text
-include/sparkpipe/spark_glm52_request_api.h
-include/sparkpipe/spark_glm52_serving_engine.h
-include/sparkpipe/spark_glm52_service.h
+include/sparkpipe/spark_request_api.h
+include/sparkpipe/spark_serving_engine.h
+include/sparkpipe/spark_service.h
 include/sparkpipe/spark_glm52_compat_api.h
 include/sparkpipe/spark_glm52_pp13_runtime.h
 modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h
-include/sparkpipe/spark_glm52_http_gateway.h
+include/sparkpipe/spark_http_gateway.h
 ```
 
 The LAN and public website gateway contract is described in:
@@ -122,7 +122,7 @@ The request API owns request state transitions below the serving layer. It is
 defined in:
 
 ```text
-include/sparkpipe/spark_glm52_request_api.h
+include/sparkpipe/spark_request_api.h
 ```
 
 It works with token ids, not text.
@@ -178,7 +178,7 @@ MTP_COMMIT
 The serving engine is defined in:
 
 ```text
-include/sparkpipe/spark_glm52_serving_engine.h
+include/sparkpipe/spark_serving_engine.h
 ```
 
 It sits above the request API and below the service API.
@@ -187,14 +187,14 @@ It supports two submit forms:
 
 ```c
 SparkStatus SparkGlm52ServingSubmitTokenIds(
-    SparkGlm52ServingEngine *engine,
-    const SparkGlm52ServingSubmitTokenIdsRequest *request,
-    SparkGlm52ServingSubmitResult *result);
+    SparkServingEngine *engine,
+    const SparkServingSubmitTokenIdsRequest *request,
+    SparkServingSubmitResult *result);
 
 SparkStatus SparkGlm52ServingSubmitText(
-    SparkGlm52ServingEngine *engine,
-    const SparkGlm52ServingSubmitTextRequest *request,
-    SparkGlm52ServingSubmitResult *result);
+    SparkServingEngine *engine,
+    const SparkServingSubmitTextRequest *request,
+    SparkServingSubmitResult *result);
 ```
 
 Text submission requires a configured tokenizer in the serving engine. Token-id
@@ -246,7 +246,7 @@ BACKPRESSURE
 The service API is defined in:
 
 ```text
-include/sparkpipe/spark_glm52_service.h
+include/sparkpipe/spark_service.h
 ```
 
 It adds client sessions, client request ids, event forwarding, and frame
@@ -257,7 +257,7 @@ handling on top of the serving engine.
 The caller owns all backing storage. The runtime does not hide heap allocation
 inside initialization.
 
-Required storage in `SparkGlm52ServiceConfiguration`:
+Required storage in `SparkServiceConfiguration`:
 
 ```text
 serving_engine
@@ -272,15 +272,15 @@ event_ring_capacity
 Basic initialization:
 
 ```c
-SparkGlm52ServiceConfiguration configuration;
-SparkGlm52ServiceRuntime service;
+SparkServiceConfiguration configuration;
+SparkServiceRuntime service;
 
 memset(&configuration,0,sizeof(configuration));
-configuration.abi_version = SPARK_GLM52_SERVICE_ABI_VERSION;
-configuration.descriptor_bytes = SPARK_GLM52_SERVICE_CONFIGURATION_DESCRIPTOR_BYTES;
-configuration.flags = SPARK_GLM52_SERVICE_CONFIGURATION_DEFAULT_FLAGS;
-configuration.default_pump_dispatch_steps = SPARK_GLM52_SERVICE_DEFAULT_PUMP_DISPATCH_STEPS;
-configuration.request_id_base = SPARK_GLM52_SERVICE_DEFAULT_REQUEST_ID_BASE;
+configuration.abi_version = SPARK_SERVICE_ABI_VERSION;
+configuration.descriptor_bytes = SPARK_SERVICE_CONFIGURATION_DESCRIPTOR_BYTES;
+configuration.flags = SPARK_SERVICE_CONFIGURATION_DEFAULT_FLAGS;
+configuration.default_pump_dispatch_steps = SPARK_SERVICE_DEFAULT_PUMP_DISPATCH_STEPS;
+configuration.request_id_base = SPARK_SERVICE_DEFAULT_REQUEST_ID_BASE;
 configuration.serving_engine = &serving_engine;
 configuration.client_sessions = client_sessions;
 configuration.client_session_capacity = client_session_capacity;
@@ -289,7 +289,7 @@ configuration.request_map_capacity = request_map_capacity;
 configuration.event_ring = event_ring;
 configuration.event_ring_capacity = event_ring_capacity;
 
-status = SparkGlm52ServiceInitialize(&service,&configuration);
+status = SparkServiceInitialize(&service,&configuration);
 ```
 
 ### Client Lifecycle
@@ -297,15 +297,15 @@ status = SparkGlm52ServiceInitialize(&service,&configuration);
 Register a client:
 
 ```c
-SparkGlm52ServiceClientId client_id;
+SparkServiceClientId client_id;
 
-status = SparkGlm52ServiceRegisterClient(&service,user_cookie,&client_id);
+status = SparkServiceRegisterClient(&service,user_cookie,&client_id);
 ```
 
 Disconnect a client:
 
 ```c
-status = SparkGlm52ServiceDisconnectClient(&service,client_id);
+status = SparkServiceDisconnectClient(&service,client_id);
 ```
 
 Client ids are service-local. The caller can store an external connection or
@@ -316,10 +316,10 @@ tenant id in `user_cookie`.
 Text submission is:
 
 ```c
-SparkGlm52ServiceSubmitTextRequest request;
-SparkGlm52ServiceSubmitResult result;
+SparkServiceSubmitTextRequest request;
+SparkServiceSubmitResult result;
 
-SparkGlm52ServiceInitializeSubmitTextRequest(&request);
+SparkServiceInitializeSubmitTextRequest(&request);
 request.client_id = client_id;
 request.client_request_id = client_request_id;
 request.sequence_id = sequence_id;
@@ -328,22 +328,22 @@ request.text_bytes = prompt_text_bytes;
 request.output_token_budget = output_token_budget;
 request.max_prefill_tokens_per_step = max_prefill_tokens_per_step;
 
-status = SparkGlm52ServiceSubmitText(&service,&request,&result);
+status = SparkServiceSubmitText(&service,&request,&result);
 ```
 
 `client_request_id` is supplied by the caller and is the cancellation/event
 correlation id visible at the service boundary. `serving_request_id` and
-`serving_request_handle` are returned in `SparkGlm52ServiceSubmitResult`.
+`serving_request_handle` are returned in `SparkServiceSubmitResult`.
 
 ### Token-id Submission
 
 Token-id submission avoids tokenizer dependency in the service path:
 
 ```c
-SparkGlm52ServiceSubmitTokenIdsRequest request;
-SparkGlm52ServiceSubmitResult result;
+SparkServiceSubmitTokenIdsRequest request;
+SparkServiceSubmitResult result;
 
-SparkGlm52ServiceInitializeSubmitTokenIdsRequest(&request);
+SparkServiceInitializeSubmitTokenIdsRequest(&request);
 request.client_id = client_id;
 request.client_request_id = client_request_id;
 request.sequence_id = sequence_id;
@@ -351,7 +351,7 @@ request.token_ids = token_ids;
 request.token_count = token_count;
 request.output_token_budget = output_token_budget;
 
-status = SparkGlm52ServiceSubmitTokenIds(&service,&request,&result);
+status = SparkServiceSubmitTokenIds(&service,&request,&result);
 ```
 
 The service does not copy token ids for the caller after submission. The serving
@@ -362,17 +362,17 @@ engine/request API owns its own request-token storage once the submit succeeds.
 Run the service:
 
 ```c
-SparkGlm52ServiceStats stats;
+SparkServiceStats stats;
 
-status = SparkGlm52ServicePump(&service,max_dispatch_steps,&stats);
+status = SparkServicePump(&service,max_dispatch_steps,&stats);
 ```
 
 Pop events:
 
 ```c
-SparkGlm52ServiceEvent event;
+SparkServiceEvent event;
 
-while ( SparkGlm52ServicePopEvent(&service,&event) == SPARK_STATUS_OK )
+while ( SparkServicePopEvent(&service,&event) == SPARK_STATUS_OK )
     handle_event(&event);
 ```
 
@@ -407,7 +407,7 @@ event.sequence_id
 Cancel by client-visible id:
 
 ```c
-status = SparkGlm52ServiceCancelRequest(
+status = SparkServiceCancelRequest(
     &service,
     client_id,
     client_request_id);
@@ -421,12 +421,12 @@ events through the event ring.
 The service API also defines a compact frame protocol. This is suitable for a
 persistent local or fabric-facing daemon, but it is still just a C frame API.
 
-Every frame starts with `SparkGlm52ServiceFrameHeader`:
+Every frame starts with `SparkServiceFrameHeader`:
 
 ```text
-magic              SPARK_GLM52_SERVICE_FRAME_MAGIC
-abi_version        SPARK_GLM52_SERVICE_ABI_VERSION
-descriptor_bytes   sizeof(SparkGlm52ServiceFrameHeader)
+magic              SPARK_SERVICE_FRAME_MAGIC
+abi_version        SPARK_SERVICE_ABI_VERSION
+descriptor_bytes   sizeof(SparkServiceFrameHeader)
 kind               frame kind
 flags              submit flags for submit frames
 body_bytes         body byte count
@@ -455,23 +455,23 @@ PONG
 Frame helpers:
 
 ```c
-SparkGlm52ServiceInitializeFrameHeader(&header,SPARK_GLM52_SERVICE_FRAME_KIND_SUBMIT_TEXT);
-status = SparkGlm52ServiceValidateFrameHeader(&header,maximum_body_bytes);
-status = SparkGlm52ServiceHandleSubmitTextFrame(&service,client_id,&header,body,body_bytes,&result);
-status = SparkGlm52ServiceBuildEventFrame(&event,&event_header,&event_body);
+SparkServiceInitializeFrameHeader(&header,SPARK_SERVICE_FRAME_KIND_SUBMIT_TEXT);
+status = SparkServiceValidateFrameHeader(&header,maximum_body_bytes);
+status = SparkServiceHandleSubmitTextFrame(&service,client_id,&header,body,body_bytes,&result);
+status = SparkServiceBuildEventFrame(&event,&event_header,&event_body);
 ```
 
 Submit text frame body:
 
 ```text
-SparkGlm52ServiceSubmitTextFrameBody
+SparkServiceSubmitTextFrameBody
 text bytes immediately after the body struct
 ```
 
 Submit token frame body:
 
 ```text
-SparkGlm52ServiceSubmitTokenIdsFrameBody
+SparkServiceSubmitTokenIdsFrameBody
 uint32_t token ids immediately after the body struct
 ```
 
@@ -483,7 +483,7 @@ The compatibility API is defined in:
 include/sparkpipe/spark_glm52_compat_api.h
 ```
 
-It translates JSON request bodies into `SparkGlm52ServiceSubmitText` calls.
+It translates JSON request bodies into `SparkServiceSubmitText` calls.
 It does not implement HTTP, SSE, auth, rate limiting, or response JSON
 formatting.
 
@@ -495,7 +495,7 @@ that already rendered a model prompt or intentionally use raw completion mode.
 The caller owns the prompt buffer:
 
 ```c
-char text[SPARK_GLM52_SERVICE_MAX_TEXT_BYTES];
+char text[SPARK_SERVICE_MAX_TEXT_BYTES];
 SparkGlm52CompatTextRequest request;
 
 SparkGlm52CompatInitializeTextRequest(&request,text,sizeof(text));
@@ -621,7 +621,7 @@ default port base: 52100
 Build the global stage plan:
 
 ```c
-SparkGlm52StagePlan stage_plan;
+SparkStagePlan stage_plan;
 char error_buffer[512];
 
 status = SparkGlm52Pp13RuntimeBuildFixedStagePlan(
@@ -639,7 +639,7 @@ status = SparkGlm52Pp13RuntimeBuildRankPlan(
     rank_index,
     max_active_sequence_count,
     SPARK_GLM52_PP13_RUNTIME_DEFAULT_PORT_BASE,
-    SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+    SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
     &rank_plan,
     error_buffer,
     sizeof(error_buffer));
@@ -745,7 +745,7 @@ configuration.driver_instance = driver_instance;
 configuration.program = program;
 configuration.execution_stream = cuda_stream;
 
-status = SparkGlm52ResidentDecodeStageProductionRunnerInitialize(
+status = SparkResidentDecodeStageProductionRunnerInitialize(
     &runner,
     &configuration);
 ```

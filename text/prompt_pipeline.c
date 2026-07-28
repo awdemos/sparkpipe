@@ -1,18 +1,18 @@
-#include "sparkpipe/spark_glm52_prompt_pipeline.h"
+#include "sparkpipe/spark_prompt_pipeline.h"
 
 #include <string.h>
 
-void SparkGlm52PromptPipelineInitializeRunStats(
-    SparkGlm52PromptPipelineRunStats *stats)
+void SparkPromptPipelineInitializeRunStats(
+    SparkPromptPipelineRunStats *stats)
 {
     if (stats == 0)
     {
         return;
     }
     memset(stats, 0, sizeof(*stats));
-    stats->abi_version = SPARK_GLM52_PROMPT_PIPELINE_ABI_VERSION;
+    stats->abi_version = SPARK_PROMPT_PIPELINE_ABI_VERSION;
     stats->descriptor_bytes =
-        SPARK_GLM52_PROMPT_PIPELINE_RUN_STATS_DESCRIPTOR_BYTES;
+        SPARK_PROMPT_PIPELINE_RUN_STATS_DESCRIPTOR_BYTES;
 }
 
 static uint32_t SparkGlm52PromptPipelineMaximumU32(
@@ -23,14 +23,14 @@ static uint32_t SparkGlm52PromptPipelineMaximumU32(
 }
 
 static SparkStatus SparkGlm52PromptPipelineValidateConfiguration(
-    const SparkGlm52PromptPipelineConfiguration *configuration)
+    const SparkPromptPipelineConfiguration *configuration)
 {
     if (configuration == 0 ||
-        configuration->abi_version != SPARK_GLM52_PROMPT_PIPELINE_ABI_VERSION ||
+        configuration->abi_version != SPARK_PROMPT_PIPELINE_ABI_VERSION ||
         configuration->descriptor_bytes !=
-            SPARK_GLM52_PROMPT_PIPELINE_CONFIGURATION_DESCRIPTOR_BYTES ||
+            SPARK_PROMPT_PIPELINE_CONFIGURATION_DESCRIPTOR_BYTES ||
         (configuration->run_flags &
-            ~SPARK_GLM52_PROMPT_PIPELINE_RUN_KNOWN_FLAGS) != 0u ||
+            ~SPARK_PROMPT_PIPELINE_RUN_KNOWN_FLAGS) != 0u ||
         configuration->request_api == 0 ||
         configuration->host_prefill_token_ids == 0 ||
         configuration->host_prefill_token_stride == 0u ||
@@ -50,17 +50,17 @@ static SparkStatus SparkGlm52PromptPipelineValidateConfiguration(
 }
 
 static SparkStatus SparkGlm52PromptPipelineInvokePrefill(
-    const SparkGlm52PromptPipelineConfiguration *configuration,
-    const SparkGlm52RequestApiDispatch *dispatch,
+    const SparkPromptPipelineConfiguration *configuration,
+    const SparkRequestApiDispatch *dispatch,
     uint32_t step_index,
-    SparkGlm52PromptPipelineRunStats *stats)
+    SparkPromptPipelineRunStats *stats)
 {
-    SparkGlm52RequestApiPrefillDispatchView prefill_view;
+    SparkRequestApiPrefillDispatchView prefill_view;
     SparkGlm52KvBlockTableView block_table_view;
-    SparkGlm52PromptPipelinePrefillDispatch prefill_dispatch;
+    SparkPromptPipelinePrefillDispatch prefill_dispatch;
     SparkStatus status;
 
-    status = SparkGlm52RequestApiDescribePrefillDispatch(
+    status = SparkRequestApiDescribePrefillDispatch(
         dispatch,
         &prefill_view);
     if (status != SPARK_STATUS_OK)
@@ -74,7 +74,7 @@ static SparkStatus SparkGlm52PromptPipelineInvokePrefill(
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
 
-    status = SparkGlm52RequestApiCopyPrefillDispatchTokenIds(
+    status = SparkRequestApiCopyPrefillDispatchTokenIds(
         dispatch,
         configuration->host_prefill_token_ids,
         configuration->host_prefill_token_stride,
@@ -84,7 +84,7 @@ static SparkStatus SparkGlm52PromptPipelineInvokePrefill(
         return status;
     }
 
-    status = SparkGlm52RequestApiBuildDispatchKvBlockTableView(
+    status = SparkRequestApiBuildDispatchKvBlockTableView(
         configuration->request_api,
         dispatch,
         configuration->host_physical_block_indices,
@@ -100,9 +100,9 @@ static SparkStatus SparkGlm52PromptPipelineInvokePrefill(
     }
 
     memset(&prefill_dispatch, 0, sizeof(prefill_dispatch));
-    prefill_dispatch.abi_version = SPARK_GLM52_PROMPT_PIPELINE_ABI_VERSION;
+    prefill_dispatch.abi_version = SPARK_PROMPT_PIPELINE_ABI_VERSION;
     prefill_dispatch.descriptor_bytes =
-        SPARK_GLM52_PROMPT_PIPELINE_PREFILL_DISPATCH_DESCRIPTOR_BYTES;
+        SPARK_PROMPT_PIPELINE_PREFILL_DISPATCH_DESCRIPTOR_BYTES;
     prefill_dispatch.step_index = step_index;
     prefill_dispatch.dispatch_kind = dispatch->kind;
     prefill_dispatch.active_sequence_count = prefill_view.active_sequence_count;
@@ -136,9 +136,9 @@ static SparkStatus SparkGlm52PromptPipelineInvokePrefill(
 }
 
 static SparkStatus SparkGlm52PromptPipelineInvokeDecode(
-    const SparkGlm52PromptPipelineConfiguration *configuration,
-    const SparkGlm52RequestApiDispatch *dispatch,
-    SparkGlm52PromptPipelineRunStats *stats)
+    const SparkPromptPipelineConfiguration *configuration,
+    const SparkRequestApiDispatch *dispatch,
+    SparkPromptPipelineRunStats *stats)
 {
     SparkStatus status;
 
@@ -151,7 +151,7 @@ static SparkStatus SparkGlm52PromptPipelineInvokeDecode(
     }
 
     if (dispatch->kind ==
-        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+        SPARK_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
     {
         stats->speculative_verify_dispatch_count += 1u;
     }
@@ -163,11 +163,11 @@ static SparkStatus SparkGlm52PromptPipelineInvokeDecode(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52PromptPipelineRun(
-    const SparkGlm52PromptPipelineConfiguration *configuration,
-    SparkGlm52PromptPipelineRunStats *stats)
+SparkStatus SparkPromptPipelineRun(
+    const SparkPromptPipelineConfiguration *configuration,
+    SparkPromptPipelineRunStats *stats)
 {
-    SparkGlm52PromptPipelineRunStats local_stats;
+    SparkPromptPipelineRunStats local_stats;
     uint32_t step_index;
     uint32_t max_dispatch_steps;
     SparkStatus status;
@@ -178,16 +178,16 @@ SparkStatus SparkGlm52PromptPipelineRun(
         return status;
     }
 
-    SparkGlm52PromptPipelineInitializeRunStats(&local_stats);
+    SparkPromptPipelineInitializeRunStats(&local_stats);
     max_dispatch_steps = configuration->max_dispatch_steps != 0u ?
         configuration->max_dispatch_steps :
-        SPARK_GLM52_PROMPT_PIPELINE_DEFAULT_MAX_DISPATCH_STEPS;
+        SPARK_PROMPT_PIPELINE_DEFAULT_MAX_DISPATCH_STEPS;
 
     for (step_index = 0u; step_index < max_dispatch_steps; ++step_index)
     {
-        SparkGlm52RequestApiDispatch dispatch;
+        SparkRequestApiDispatch dispatch;
 
-        status = SparkGlm52RequestApiScheduleNext(
+        status = SparkRequestApiScheduleNext(
             configuration->request_api,
             &dispatch);
         if (status != SPARK_STATUS_OK)
@@ -199,7 +199,7 @@ SparkStatus SparkGlm52PromptPipelineRun(
             return status;
         }
         if (dispatch.accepted == 0u ||
-            dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_NONE)
+            dispatch.kind == SPARK_REQUEST_API_DISPATCH_KIND_NONE)
         {
             if (stats != 0)
             {
@@ -211,8 +211,8 @@ SparkStatus SparkGlm52PromptPipelineRun(
         local_stats.completed_dispatch_count += 1u;
         local_stats.last_dispatch_kind = dispatch.kind;
 
-        if (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL ||
-            dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH)
+        if (dispatch.kind == SPARK_REQUEST_API_DISPATCH_KIND_PREFILL ||
+            dispatch.kind == SPARK_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH)
         {
             status = SparkGlm52PromptPipelineInvokePrefill(
                 configuration,
@@ -220,9 +220,9 @@ SparkStatus SparkGlm52PromptPipelineRun(
                 step_index,
                 &local_stats);
         }
-        else if (dispatch.kind == SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
+        else if (dispatch.kind == SPARK_REQUEST_API_DISPATCH_KIND_DECODE_BATCH ||
             dispatch.kind ==
-                SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+                SPARK_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
         {
             status = SparkGlm52PromptPipelineInvokeDecode(
                 configuration,
@@ -236,13 +236,13 @@ SparkStatus SparkGlm52PromptPipelineRun(
 
         if (status == SPARK_STATUS_OK)
         {
-            status = SparkGlm52RequestApiCompleteDispatch(
+            status = SparkRequestApiCompleteDispatch(
                 configuration->request_api,
                 &dispatch);
         }
         else
         {
-            (void)SparkGlm52RequestApiCancelDispatch(
+            (void)SparkRequestApiCancelDispatch(
                 configuration->request_api,
                 &dispatch);
         }
@@ -257,7 +257,7 @@ SparkStatus SparkGlm52PromptPipelineRun(
 
         if (local_stats.reached_decode_dispatch != 0u &&
             (configuration->run_flags &
-                SPARK_GLM52_PROMPT_PIPELINE_RUN_FLAG_STOP_AFTER_FIRST_DECODE_DISPATCH) != 0u)
+                SPARK_PROMPT_PIPELINE_RUN_FLAG_STOP_AFTER_FIRST_DECODE_DISPATCH) != 0u)
         {
             if (stats != 0)
             {

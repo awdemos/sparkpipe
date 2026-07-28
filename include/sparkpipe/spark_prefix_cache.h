@@ -10,39 +10,39 @@
 extern "C" {
 #endif
 
-#define SPARK_GLM52_PREFIX_CACHE_ABI_VERSION 6u
-#define SPARK_GLM52_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkGlm52PrefixCacheConfiguration))
-#define SPARK_GLM52_PREFIX_CACHE_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkGlm52PrefixCache))
-#define SPARK_GLM52_PREFIX_CACHE_ENTRY_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkGlm52PrefixCacheEntry))
-#define SPARK_GLM52_PREFIX_CACHE_BINDING_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkGlm52PrefixCacheSequenceBinding))
-#define SPARK_GLM52_PREFIX_CACHE_LOOKUP_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkGlm52PrefixCacheLookup))
-#define SPARK_GLM52_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkGlm52PrefixCacheReservation))
-#define SPARK_GLM52_PREFIX_CACHE_PROMPT_HASH_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkGlm52PrefixCachePromptHash))
-#define SPARK_GLM52_PREFIX_CACHE_HASH_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkGlm52PrefixCachePromptHash))
+#define SPARK_PREFIX_CACHE_ABI_VERSION 6u
+#define SPARK_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkPrefixCacheConfiguration))
+#define SPARK_PREFIX_CACHE_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkPrefixCache))
+#define SPARK_PREFIX_CACHE_ENTRY_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkPrefixCacheEntry))
+#define SPARK_PREFIX_CACHE_BINDING_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkPrefixCacheSequenceBinding))
+#define SPARK_PREFIX_CACHE_LOOKUP_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkPrefixCacheLookup))
+#define SPARK_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkPrefixCacheReservation))
+#define SPARK_PREFIX_CACHE_PROMPT_HASH_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkPrefixCachePromptHash))
+#define SPARK_PREFIX_CACHE_HASH_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkPrefixCachePromptHash))
 
-#define SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_VALID 0x00000001u
-#define SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_REUSABLE 0x00000002u
-#define SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_PENDING 0x00000004u
-#define SPARK_GLM52_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY 0x00000008u
+#define SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID 0x00000001u
+#define SPARK_PREFIX_CACHE_ENTRY_FLAG_REUSABLE 0x00000002u
+#define SPARK_PREFIX_CACHE_ENTRY_FLAG_PENDING 0x00000004u
+#define SPARK_PREFIX_CACHE_ENTRY_FLAG_LIVE_ONLY 0x00000008u
 
-#define SPARK_GLM52_PREFIX_CACHE_BINDING_FLAG_VALID 0x00000001u
-#define SPARK_GLM52_PREFIX_CACHE_BINDING_FLAG_PENDING 0x00000002u
+#define SPARK_PREFIX_CACHE_BINDING_FLAG_VALID 0x00000001u
+#define SPARK_PREFIX_CACHE_BINDING_FLAG_PENDING 0x00000002u
 
-#define SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH 1469598103934665603ull
-#define SPARK_GLM52_PREFIX_CACHE_NO_PHYSICAL_BLOCK 0xffffffffu
-#define SPARK_GLM52_PREFIX_CACHE_NO_ENTRY 0xffffffffu
+#define SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH 1469598103934665603ull
+#define SPARK_PREFIX_CACHE_NO_PHYSICAL_BLOCK 0xffffffffu
+#define SPARK_PREFIX_CACHE_NO_ENTRY 0xffffffffu
 
-#define SPARK_GLM52_PREFIX_CACHE_MAX_BLOCK_TOKENS 256u
+#define SPARK_PREFIX_CACHE_MAX_BLOCK_TOKENS 256u
 
-typedef struct SparkGlm52PrefixCacheEntry
+typedef struct SparkPrefixCacheEntry
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -61,9 +61,9 @@ typedef struct SparkGlm52PrefixCacheEntry
     uint64_t reservation_epoch;
     uint64_t committed_epoch;
     uint64_t lookahead_protection_epoch;
-} SparkGlm52PrefixCacheEntry;
+} SparkPrefixCacheEntry;
 
-typedef struct SparkGlm52PrefixCacheSequenceBinding
+typedef struct SparkPrefixCacheSequenceBinding
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -77,9 +77,9 @@ typedef struct SparkGlm52PrefixCacheSequenceBinding
     uint64_t parent_hash;
     uint64_t block_hash;
     uint64_t acquire_epoch;
-} SparkGlm52PrefixCacheSequenceBinding;
+} SparkPrefixCacheSequenceBinding;
 
-typedef struct SparkGlm52PrefixCachePromptHash
+typedef struct SparkPrefixCachePromptHash
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -91,9 +91,9 @@ typedef struct SparkGlm52PrefixCachePromptHash
     uint32_t reserved1;
     uint64_t parent_hash;
     uint64_t prompt_hash;
-} SparkGlm52PrefixCachePromptHash;
+} SparkPrefixCachePromptHash;
 
-typedef struct SparkGlm52PrefixCacheConfiguration
+typedef struct SparkPrefixCacheConfiguration
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -101,12 +101,12 @@ typedef struct SparkGlm52PrefixCacheConfiguration
     uint32_t entry_count;
     uint32_t physical_block_count;
     uint32_t sequence_binding_count;
-    SparkGlm52PrefixCacheEntry *entries;
-    SparkGlm52PrefixCacheSequenceBinding *sequence_bindings;
+    SparkPrefixCacheEntry *entries;
+    SparkPrefixCacheSequenceBinding *sequence_bindings;
     SparkGlm52KvCacheArena *kv_cache_arena;
-} SparkGlm52PrefixCacheConfiguration;
+} SparkPrefixCacheConfiguration;
 
-typedef struct SparkGlm52PrefixCacheLookup
+typedef struct SparkPrefixCacheLookup
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -118,9 +118,9 @@ typedef struct SparkGlm52PrefixCacheLookup
     uint32_t reserved;
     uint64_t sequence_id;
     uint64_t last_block_hash;
-} SparkGlm52PrefixCacheLookup;
+} SparkPrefixCacheLookup;
 
-typedef struct SparkGlm52PrefixCacheReservation
+typedef struct SparkPrefixCacheReservation
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -136,9 +136,9 @@ typedef struct SparkGlm52PrefixCacheReservation
     uint64_t reservation_epoch;
     uint64_t last_block_hash;
     uint32_t *physical_block_indices;
-} SparkGlm52PrefixCacheReservation;
+} SparkPrefixCacheReservation;
 
-typedef struct SparkGlm52PrefixCache
+typedef struct SparkPrefixCache
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -146,8 +146,8 @@ typedef struct SparkGlm52PrefixCache
     uint32_t entry_count;
     uint32_t physical_block_count;
     uint32_t sequence_binding_count;
-    SparkGlm52PrefixCacheEntry *entries;
-    SparkGlm52PrefixCacheSequenceBinding *sequence_bindings;
+    SparkPrefixCacheEntry *entries;
+    SparkPrefixCacheSequenceBinding *sequence_bindings;
     SparkGlm52KvCacheArena *kv_cache_arena;
     uint32_t free_entry_head;
     uint32_t free_binding_head;
@@ -171,41 +171,41 @@ typedef struct SparkGlm52PrefixCache
     uint64_t reuse_scored_lookahead_eviction_count;
     uint64_t reuse_scored_untracked_eviction_count;
     uint64_t reuse_scored_capacity_stall_count;
-} SparkGlm52PrefixCache;
+} SparkPrefixCache;
 
-SparkStatus SparkGlm52PrefixCacheInitialize(
-    SparkGlm52PrefixCache *cache,
-    const SparkGlm52PrefixCacheConfiguration *configuration);
+SparkStatus SparkPrefixCacheInitialize(
+    SparkPrefixCache *cache,
+    const SparkPrefixCacheConfiguration *configuration);
 
-uint64_t SparkGlm52PrefixCacheHashBlock(
+uint64_t SparkPrefixCacheHashBlock(
     const uint32_t *token_ids,
     uint32_t token_count,
     uint64_t parent_hash);
 
-SparkStatus SparkGlm52PrefixCacheHashPromptTokens(
+SparkStatus SparkPrefixCacheHashPromptTokens(
     uint32_t block_token_count,
     uint64_t parent_hash,
     const uint32_t *token_ids,
     uint32_t token_count,
-    SparkGlm52PrefixCachePromptHash *prompt_hash);
+    SparkPrefixCachePromptHash *prompt_hash);
 
-SparkStatus SparkGlm52PrefixCacheProbePrompt(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheProbePrompt(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     const uint32_t *token_ids,
     uint32_t token_count,
-    SparkGlm52PrefixCacheLookup *lookup);
+    SparkPrefixCacheLookup *lookup);
 
-SparkStatus SparkGlm52PrefixCacheLookupPrompt(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheLookupPrompt(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     const uint32_t *token_ids,
     uint32_t token_count,
-    SparkGlm52PrefixCacheLookup *lookup);
+    SparkPrefixCacheLookup *lookup);
 
 
-SparkStatus SparkGlm52PrefixCacheProbePhysicalBlockTable(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheProbePhysicalBlockTable(
+    SparkPrefixCache *cache,
     const uint32_t *token_ids,
     uint32_t token_count,
     uint32_t *physical_block_indices,
@@ -213,8 +213,8 @@ SparkStatus SparkGlm52PrefixCacheProbePhysicalBlockTable(
     uint32_t *matched_token_count_out,
     uint32_t *physical_block_count_out);
 
-SparkStatus SparkGlm52PrefixCacheProbeReusablePrefixPrefetchSources(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheProbeReusablePrefixPrefetchSources(
+    SparkPrefixCache *cache,
     const uint32_t *token_ids,
     uint32_t token_count,
     SparkGlm52KvCachePrefetchSourceBlock *source_blocks,
@@ -222,27 +222,27 @@ SparkStatus SparkGlm52PrefixCacheProbeReusablePrefixPrefetchSources(
     uint32_t *matched_token_count_out,
     uint32_t *source_block_count_out);
 
-SparkStatus SparkGlm52PrefixCacheProbeReusablePrefixResidency(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheProbeReusablePrefixResidency(
+    SparkPrefixCache *cache,
     const uint32_t *token_ids,
     uint32_t token_count,
     uint32_t *matched_token_count_out,
     uint32_t *resident_block_count_out,
     uint32_t *nonresident_block_count_out);
 
-SparkStatus SparkGlm52PrefixCacheResetLookaheadProtection(
-    SparkGlm52PrefixCache *cache);
+SparkStatus SparkPrefixCacheResetLookaheadProtection(
+    SparkPrefixCache *cache);
 
-SparkStatus SparkGlm52PrefixCacheProtectPromptLookahead(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheProtectPromptLookahead(
+    SparkPrefixCache *cache,
     const uint32_t *token_ids,
     uint32_t token_count,
     uint32_t demand_weight,
     uint32_t *protected_token_count_out,
     uint32_t *protected_block_count_out);
 
-SparkStatus SparkGlm52PrefixCacheTrimResidentBlocksByReuseScore(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheTrimResidentBlocksByReuseScore(
+    SparkPrefixCache *cache,
     uint32_t max_resident_block_count,
     const uint32_t *hard_protected_physical_block_indices,
     uint32_t hard_protected_physical_block_count,
@@ -250,36 +250,36 @@ SparkStatus SparkGlm52PrefixCacheTrimResidentBlocksByReuseScore(
 
 
 
-SparkStatus SparkGlm52PrefixCacheReservePrompt(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheReservePrompt(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     const uint32_t *token_ids,
     uint32_t token_count,
-    SparkGlm52PrefixCacheReservation *reservation);
+    SparkPrefixCacheReservation *reservation);
 
-SparkStatus SparkGlm52PrefixCacheReserveSequencePrompt(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheReserveSequencePrompt(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     const uint32_t *token_ids,
     uint32_t token_count,
-    SparkGlm52PrefixCacheReservation *reservation);
+    SparkPrefixCacheReservation *reservation);
 
-SparkStatus SparkGlm52PrefixCacheCommitReservation(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheCommitReservation(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     uint64_t reservation_epoch);
 
-SparkStatus SparkGlm52PrefixCacheCancelReservation(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheCancelReservation(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     uint64_t reservation_epoch);
 
-SparkStatus SparkGlm52PrefixCacheCommitPrompt(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheCommitPrompt(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     const uint32_t *token_ids,
     uint32_t token_count,
-    SparkGlm52PrefixCacheLookup *lookup);
+    SparkPrefixCacheLookup *lookup);
 
 /*
  * Ensure that a live sequence owns enough KV blocks to write token_count
@@ -287,47 +287,47 @@ SparkStatus SparkGlm52PrefixCacheCommitPrompt(
  * offered as content-addressed prompt-cache hits.  Repeating the call with
  * the same or a smaller token_count is idempotent.
  */
-SparkStatus SparkGlm52PrefixCacheEnsureSequenceTokenCapacity(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     uint32_t token_count);
 
-SparkStatus SparkGlm52PrefixCacheBuildPhysicalBlockTable(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheBuildPhysicalBlockTable(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     uint32_t token_count,
     uint32_t *physical_block_indices,
     uint32_t physical_block_capacity,
     uint32_t *physical_block_count_out);
 
-SparkStatus SparkGlm52PrefixCacheBuildSequencePrefetchSources(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheBuildSequencePrefetchSources(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     uint32_t token_count,
     SparkGlm52KvCachePrefetchSourceBlock *source_blocks,
     uint32_t source_block_capacity,
     uint32_t *source_block_count_out);
 
-SparkStatus SparkGlm52PrefixCacheProbeSequenceResidency(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheProbeSequenceResidency(
+    SparkPrefixCache *cache,
     uint64_t sequence_id,
     uint32_t token_count,
     uint32_t *physical_block_count_out,
     uint32_t *resident_block_count_out,
     uint32_t *nonresident_block_count_out);
 
-SparkStatus SparkGlm52PrefixCacheBindCommittedPrefixFromSequence(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheBindCommittedPrefixFromSequence(
+    SparkPrefixCache *cache,
     uint64_t source_sequence_id,
     uint64_t target_sequence_id,
     uint32_t token_count);
 
-SparkStatus SparkGlm52PrefixCacheReleaseSequence(
-    SparkGlm52PrefixCache *cache,
+SparkStatus SparkPrefixCacheReleaseSequence(
+    SparkPrefixCache *cache,
     uint64_t sequence_id);
 
-SparkStatus SparkGlm52PrefixCacheReset(
-    SparkGlm52PrefixCache *cache);
+SparkStatus SparkPrefixCacheReset(
+    SparkPrefixCache *cache);
 
 #ifdef __cplusplus
 }

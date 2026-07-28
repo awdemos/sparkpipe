@@ -12,10 +12,10 @@ Relevant vLLM mechanisms found:
 
 Sparkpipe changes made from those mechanisms:
 
-1. `SparkGlm52SchedulerRequest` now accepts `computed_prompt_token_count`, `cached_prefix_token_count`, and an optional per-request `max_scheduled_prompt_token_count`.
-2. `SparkGlm52SchedulerAdmit` now schedules a prefill chunk, not necessarily the whole prompt. Default chunk size is 256 tokens and remains block-aligned to 16 tokens for non-final chunks.
+1. `SparkSchedulerRequest` now accepts `computed_prompt_token_count`, `cached_prefix_token_count`, and an optional per-request `max_scheduled_prompt_token_count`.
+2. `SparkSchedulerAdmit` now schedules a prefill chunk, not necessarily the whole prompt. Default chunk size is 256 tokens and remains block-aligned to 16 tokens for non-final chunks.
 3. Prefix-cache admission is block-aligned and safe for all-hit prompts. For a 100-token prompt with a claimed 100-token cache hit, Sparkpipe admits 96 cached tokens and schedules the final 4 tokens.
-4. `SparkGlm52SchedulerDecision` and per-stage dispatch records now expose graph sequence capacity, graph padding count, scheduled prompt offset/count, cached-prefix token count, prefill block count, and total scheduled token count.
+4. `SparkSchedulerDecision` and per-stage dispatch records now expose graph sequence capacity, graph padding count, scheduled prompt offset/count, cached-prefix token count, prefill block count, and total scheduled token count.
 5. Scheduler counters now track scheduled decode tokens, scheduled prefill tokens, prefix-cache hit tokens, and chunked prefill admissions.
 6. Hidden transport now has optional native batched submission capability with `SparkHiddenTransportSendBatch` and `SparkHiddenTransportPostReceiveBatch`. If a transport backend advertises `SPARK_HIDDEN_TRANSPORT_CAP_BATCHED_SUBMISSION`, Sparkpipe submits the whole packet array through one callback. Otherwise it validates the batch and falls back to scalar sends/receives.
 

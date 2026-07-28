@@ -51,7 +51,7 @@ DSPARK_HIDDEN_TAP). The topology test asserts the exact tap mapping.
 ## Dispatcher layer landed; the remaining seam is the work-packet protocol
 
 The dispatcher primitives are now in place. Any packet builder arms a
-hop with one call - SparkGlm52ProductionTopologyArmHopSidebandPacket
+hop with one call - SparkProductionTopologyArmHopSidebandPacket
 sets the sideband flag, kind bits, per-sequence bytes, and payload
 pointer from the topology descriptors (or clears the sideband when the
 hop carries none), with HopSidebandLayout as the sizing half for
@@ -77,6 +77,6 @@ dispatch with FRAME_FLAG_SPECULATIVE_VERIFY and new_token_count up to
 the block size, the tap-capture flag on decode work packets, draft
 backend staging and Draft invocation on the final rank when taps
 arrive, and completion accounting back through
-SparkGlm52RequestApiCompleteDispatch. Validation precondition
+SparkRequestApiCompleteDispatch. Validation precondition
 unchanged: the MTP end-to-end gate on spark2 before any dspark
 throughput claim.

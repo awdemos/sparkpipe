@@ -74,9 +74,9 @@ derived from one recipe constant, not hand-edited N times):
 
 ```text
 firmware.h:74   SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 64
-stage_plan.h    SPARK_GLM52_STAGE_PLAN_BUCKET_B64 ladder ends at 64
-stage_plan.c    SparkGlm52StagePlanSelectBatchBucket caps at B64
-scheduler.h     SPARK_GLM52_SCHEDULER_MAX_PACKED_REQUEST_COUNT = BUCKET_B64
+stage_plan.h    SPARK_STAGE_PLAN_BUCKET_B64 ladder ends at 64
+stage_plan.c    SparkStagePlanSelectBatchBucket caps at B64
+scheduler.h     SPARK_SCHEDULER_MAX_PACKED_REQUEST_COUNT = BUCKET_B64
 required_decode_stage.cu ~15004  exact plan pins batch_bucket to {16,32,64}
 ```
 

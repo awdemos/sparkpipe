@@ -6,10 +6,10 @@ This pass keeps the work narrow and connected.
 
 Sparkpipe now has a concrete async KV prefetch backend behind the request API's internal JIT scheduling path.
 
-The backend is initialized once with a backing store and then attached to `SparkGlm52RequestApiConfiguration` through:
+The backend is initialized once with a backing store and then attached to `SparkRequestApiConfiguration` through:
 
 ```c
-SparkGlm52RequestApiConfigurationUseAsyncKvCachePrefetchBackend(...)
+SparkRequestApiConfigurationUseAsyncKvCachePrefetchBackend(...)
 ```
 
 Callers still submit normal requests. They do not inspect the queue and do not issue prefetches. Sparkpipe builds the critical prefetch plans for the selected near-future dispatch, starts/polls the backend internally, and greenlights dispatch only after the needed KV blocks are resident.

@@ -1,4 +1,4 @@
-#include "sparkpipe/spark_glm52_batch_sequence_table.h"
+#include "sparkpipe/spark_batch_sequence_table.h"
 #include "sparkpipe/spark_glm52_expert_queue.h"
 
 #include <assert.h>
@@ -6,7 +6,7 @@
 #include <string.h>
 
 static SparkGlm52ExpertQueue test_queue;
-static SparkGlm52BatchSequenceTable test_table;
+static SparkBatchSequenceTable test_table;
 
 static void SparkTestExpertQueueThresholdDeadlineAndOrder(void)
 {
@@ -55,51 +55,51 @@ static void SparkTestExpertQueueThresholdDeadlineAndOrder(void)
 
 static void SparkTestBatchSequenceTableLifecycleAndThreshold(void)
 {
-	SparkGlm52BatchSequenceTableConfiguration configuration;
+	SparkBatchSequenceTableConfiguration configuration;
 	uint32_t first_handle,second_handle,first_index;
 	memset(&configuration,0,sizeof(configuration));
-	configuration.abi_version = SPARK_GLM52_BATCH_SEQUENCE_ABI_VERSION;
+	configuration.abi_version = SPARK_BATCH_SEQUENCE_ABI_VERSION;
 	configuration.sequence_capacity = 4u;
 	configuration.lane_count = 8u;
-	assert(SparkGlm52BatchSequenceTableInitialize(&test_table,&configuration) == SPARK_STATUS_OK);
-	assert(SparkGlm52BatchSequenceTableAdmit(&test_table,900u,8192u,0u,128u,&first_handle) == SPARK_STATUS_OK);
-	assert(SparkGlm52BatchSequenceTableAdmit(&test_table,901u,8192u,128u,128u,&second_handle) == SPARK_STATUS_OK);
+	assert(SparkBatchSequenceTableInitialize(&test_table,&configuration) == SPARK_STATUS_OK);
+	assert(SparkBatchSequenceTableAdmit(&test_table,900u,8192u,0u,128u,&first_handle) == SPARK_STATUS_OK);
+	assert(SparkBatchSequenceTableAdmit(&test_table,901u,8192u,128u,128u,&second_handle) == SPARK_STATUS_OK);
 	assert(test_table.active_count == 2u);
-	assert(SparkGlm52BatchSequenceTableFiringThreshold(&test_table,8u,256u,1024u) == 1u);
+	assert(SparkBatchSequenceTableFiringThreshold(&test_table,8u,256u,1024u) == 1u);
 	{
 		uint32_t fill_index,scratch;
 		for (fill_index=2u; fill_index<4u; fill_index++)
-			assert(SparkGlm52BatchSequenceTableAdmit(&test_table,900u + fill_index,8192u,fill_index * 128u,128u,&scratch) == SPARK_STATUS_OK);
-		assert(SparkGlm52BatchSequenceTableAdmit(&test_table,999u,8192u,512u,128u,&scratch) == SPARK_STATUS_CAPACITY_EXCEEDED);
+			assert(SparkBatchSequenceTableAdmit(&test_table,900u + fill_index,8192u,fill_index * 128u,128u,&scratch) == SPARK_STATUS_OK);
+		assert(SparkBatchSequenceTableAdmit(&test_table,999u,8192u,512u,128u,&scratch) == SPARK_STATUS_CAPACITY_EXCEEDED);
 	}
-	assert(SparkGlm52BatchSequenceTableFiringThreshold(&test_table,8u,256u,1024u) == 1u);
-	assert(SparkGlm52BatchSequenceTablePauseForTool(&test_table,first_handle) == SPARK_STATUS_OK);
+	assert(SparkBatchSequenceTableFiringThreshold(&test_table,8u,256u,1024u) == 1u);
+	assert(SparkBatchSequenceTablePauseForTool(&test_table,first_handle) == SPARK_STATUS_OK);
 	assert(test_table.active_count == 3u && test_table.awaiting_tool_count == 1u);
-	assert(SparkGlm52BatchSequenceTablePauseForTool(&test_table,first_handle) == SPARK_STATUS_INVALID_ARGUMENT);
-	assert(SparkGlm52BatchSequenceTableBeginExchange(&test_table,first_handle,192u) == SPARK_STATUS_OK);
-	first_index = (first_handle & SPARK_GLM52_BATCH_SEQUENCE_HANDLE_INDEX_MASK);
+	assert(SparkBatchSequenceTablePauseForTool(&test_table,first_handle) == SPARK_STATUS_INVALID_ARGUMENT);
+	assert(SparkBatchSequenceTableBeginExchange(&test_table,first_handle,192u) == SPARK_STATUS_OK);
+	first_index = (first_handle & SPARK_BATCH_SEQUENCE_HANDLE_INDEX_MASK);
 	assert(test_table.sequences[first_index].exchange_number == 1u);
 	assert(test_table.sequences[first_index].context_tokens == 8384u);
 	assert(test_table.active_count == 4u && test_table.exchange_count == 5u);
-	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_handle) == SPARK_STATUS_OK);
+	assert(SparkBatchSequenceTableComplete(&test_table,second_handle) == SPARK_STATUS_OK);
 	assert(test_table.active_count == 3u && test_table.complete_count == 1u);
 	// The stale handle now fails handle resolution, not just the state check:
 	// the generation moved when the slot was freed, so a holdover handle can
 	// never act on the slot's next occupant.
-	assert(SparkGlm52BatchSequenceTableComplete(&test_table,second_handle) == SPARK_STATUS_NOT_FOUND);
-	assert(SparkGlm52BatchSequenceTablePauseForTool(&test_table,second_handle) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkBatchSequenceTableComplete(&test_table,second_handle) == SPARK_STATUS_NOT_FOUND);
+	assert(SparkBatchSequenceTablePauseForTool(&test_table,second_handle) == SPARK_STATUS_NOT_FOUND);
 	// The completed slot must be reclaimable: a capacity-4 table that has seen
 	// completions keeps admitting under churn instead of leaking slots forever.
 	{
 		uint32_t churn_index,recycled,previous = second_handle;
 		for (churn_index=0u; churn_index<64u; ++churn_index)
 		{
-			assert(SparkGlm52BatchSequenceTableAdmit(&test_table,5000u + churn_index,4089u,0u,64u,&recycled) == SPARK_STATUS_OK);
-			assert((recycled & SPARK_GLM52_BATCH_SEQUENCE_HANDLE_INDEX_MASK) ==
-				(second_handle & SPARK_GLM52_BATCH_SEQUENCE_HANDLE_INDEX_MASK));
+			assert(SparkBatchSequenceTableAdmit(&test_table,5000u + churn_index,4089u,0u,64u,&recycled) == SPARK_STATUS_OK);
+			assert((recycled & SPARK_BATCH_SEQUENCE_HANDLE_INDEX_MASK) ==
+				(second_handle & SPARK_BATCH_SEQUENCE_HANDLE_INDEX_MASK));
 			assert(recycled != previous);
 			previous = recycled;
-			assert(SparkGlm52BatchSequenceTableComplete(&test_table,recycled) == SPARK_STATUS_OK);
+			assert(SparkBatchSequenceTableComplete(&test_table,recycled) == SPARK_STATUS_OK);
 		}
 	}
 }

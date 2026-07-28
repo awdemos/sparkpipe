@@ -1,4 +1,4 @@
-#include "sparkpipe/spark_glm52_stage_plan.h"
+#include "sparkpipe/spark_stage_plan.h"
 
 #include <limits.h>
 #include <stdio.h>
@@ -48,15 +48,15 @@ static SparkStatus SparkGlm52StagePlanNormalizeQuantizationMode(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_AUTO)
+    if (quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_AUTO)
     {
         *normalized_quantization_mode_out =
-            SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
+            SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
         return SPARK_STATUS_OK;
     }
-    if (quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
-        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+    if (quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
+        quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
+        quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
     {
         *normalized_quantization_mode_out = quantization_mode;
         return SPARK_STATUS_OK;
@@ -75,10 +75,10 @@ static uint32_t SparkGlm52StagePlanRoutedLayerCountForRange(
     range_end = first_layer_index + layer_count;
     routed_begin = SparkGlm52StagePlanMaximumU32(
         first_layer_index,
-        SPARK_GLM52_STAGE_PLAN_FIRST_ROUTED_LAYER);
+        SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER);
     routed_end = SparkGlm52StagePlanMinimumU32(
         range_end,
-        SPARK_GLM52_STAGE_PLAN_LAYER_COUNT);
+        SPARK_STAGE_PLAN_LAYER_COUNT);
     if (routed_end <= routed_begin)
     {
         return 0u;
@@ -93,22 +93,22 @@ static uint32_t SparkGlm52StagePlanLayerRangeIsValid(
     uint32_t range_end;
     uint32_t routed_layer_count;
 
-    if (layer_count == 0u || first_layer_index >= SPARK_GLM52_STAGE_PLAN_LAYER_COUNT)
+    if (layer_count == 0u || first_layer_index >= SPARK_STAGE_PLAN_LAYER_COUNT)
     {
         return 0u;
     }
-    if (layer_count > SPARK_GLM52_STAGE_PLAN_LAYER_COUNT - first_layer_index)
+    if (layer_count > SPARK_STAGE_PLAN_LAYER_COUNT - first_layer_index)
     {
         return 0u;
     }
     range_end = first_layer_index + layer_count;
     if (first_layer_index != 0u &&
-        first_layer_index < SPARK_GLM52_STAGE_PLAN_FIRST_ROUTED_LAYER)
+        first_layer_index < SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER)
     {
         return 0u;
     }
-    if (range_end < SPARK_GLM52_STAGE_PLAN_FIRST_ROUTED_LAYER &&
-        range_end != SPARK_GLM52_STAGE_PLAN_FIRST_ROUTED_LAYER)
+    if (range_end < SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER &&
+        range_end != SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER)
     {
         return 0u;
     }
@@ -116,7 +116,7 @@ static uint32_t SparkGlm52StagePlanLayerRangeIsValid(
         first_layer_index,
         layer_count);
     return routed_layer_count <=
-        SPARK_GLM52_STAGE_PLAN_MAX_ROUTED_LAYERS_PER_STAGE;
+        SPARK_STAGE_PLAN_MAX_ROUTED_LAYERS_PER_STAGE;
 }
 
 static uint64_t SparkGlm52StagePlanMaximumU64(
@@ -136,45 +136,45 @@ static uint64_t SparkGlm52StagePlanSegmentCost(
 }
 
 static void SparkGlm52StagePlanReset(
-    SparkGlm52StagePlan *stage_plan)
+    SparkStagePlan *stage_plan)
 {
     memset(stage_plan, 0, sizeof(*stage_plan));
-    stage_plan->abi_version = SPARK_GLM52_STAGE_PLAN_ABI_VERSION;
-    stage_plan->descriptor_bytes = SPARK_GLM52_STAGE_PLAN_DESCRIPTOR_BYTES;
+    stage_plan->abi_version = SPARK_STAGE_PLAN_ABI_VERSION;
+    stage_plan->descriptor_bytes = SPARK_STAGE_PLAN_DESCRIPTOR_BYTES;
 }
 
 static void SparkGlm52StagePlanAssignStageFlags(
-    SparkGlm52StagePlan *stage_plan)
+    SparkStagePlan *stage_plan)
 {
     uint32_t stage_index;
-    SparkGlm52StagePlanStage *stage;
+    SparkStagePlanStage *stage;
 
     for (stage_index = 0u;
          stage_index < stage_plan->stage_count;
          ++stage_index)
     {
         stage = &stage_plan->stages[stage_index];
-        stage->flags = SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN;
+        stage->flags = SPARK_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN;
         if (stage_index + 1u < stage_plan->stage_count)
         {
-            stage->flags |= SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_OUTPUT_HIDDEN;
+            stage->flags |= SPARK_STAGE_PLAN_STAGE_FLAG_OUTPUT_HIDDEN;
         }
         else
         {
-            stage->flags |= SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN;
+            stage->flags |= SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN;
         }
         if (stage->first_layer_index == 0u &&
-            stage->layer_count >= SPARK_GLM52_STAGE_PLAN_FIRST_ROUTED_LAYER)
+            stage->layer_count >= SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER)
         {
-            stage->flags |= SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_DENSE_PREFIX;
+            stage->flags |= SPARK_STAGE_PLAN_STAGE_FLAG_DENSE_PREFIX;
         }
     }
 }
 
-SparkStatus SparkGlm52StagePlanBuildFromLayerCounts(
+SparkStatus SparkStagePlanBuildFromLayerCounts(
     const uint32_t *layer_counts,
     uint32_t stage_count,
-    SparkGlm52StagePlan *stage_plan,
+    SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
@@ -182,7 +182,7 @@ SparkStatus SparkGlm52StagePlanBuildFromLayerCounts(
     uint32_t stage_index;
 
     if (layer_counts == 0 || stage_plan == 0 || stage_count == 0u ||
-        stage_count > SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT)
+        stage_count > SPARK_STAGE_PLAN_MAX_STAGE_COUNT)
     {
         return SparkGlm52StagePlanReport(
             error_buffer,
@@ -197,7 +197,7 @@ SparkStatus SparkGlm52StagePlanBuildFromLayerCounts(
     {
         if (layer_counts[stage_index] == 0u ||
             layer_counts[stage_index] >
-                SPARK_GLM52_STAGE_PLAN_LAYER_COUNT - first_layer_index)
+                SPARK_STAGE_PLAN_LAYER_COUNT - first_layer_index)
         {
             return SparkGlm52StagePlanReport(
                 error_buffer,
@@ -210,18 +210,18 @@ SparkStatus SparkGlm52StagePlanBuildFromLayerCounts(
         first_layer_index += layer_counts[stage_index];
     }
     SparkGlm52StagePlanAssignStageFlags(stage_plan);
-    return SparkGlm52StagePlanValidate(
+    return SparkStagePlanValidate(
         stage_plan,
         error_buffer,
         error_buffer_bytes);
 }
 
-SparkStatus SparkGlm52StagePlanValidate(
-    const SparkGlm52StagePlan *stage_plan,
+SparkStatus SparkStagePlanValidate(
+    const SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    const SparkGlm52StagePlanStage *stage;
+    const SparkStagePlanStage *stage;
     uint32_t expected_first_layer_index;
     uint32_t final_stage_count;
     uint32_t range_end;
@@ -235,8 +235,8 @@ SparkStatus SparkGlm52StagePlanValidate(
             SPARK_STATUS_INVALID_ARGUMENT,
             "stage plan is null");
     }
-    if (stage_plan->abi_version != SPARK_GLM52_STAGE_PLAN_ABI_VERSION ||
-        stage_plan->descriptor_bytes != SPARK_GLM52_STAGE_PLAN_DESCRIPTOR_BYTES)
+    if (stage_plan->abi_version != SPARK_STAGE_PLAN_ABI_VERSION ||
+        stage_plan->descriptor_bytes != SPARK_STAGE_PLAN_DESCRIPTOR_BYTES)
     {
         return SparkGlm52StagePlanReport(
             error_buffer,
@@ -245,7 +245,7 @@ SparkStatus SparkGlm52StagePlanValidate(
             "stage plan ABI mismatch");
     }
     if (stage_plan->stage_count == 0u ||
-        stage_plan->stage_count > SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT)
+        stage_plan->stage_count > SPARK_STAGE_PLAN_MAX_STAGE_COUNT)
     {
         return SparkGlm52StagePlanReport(
             error_buffer,
@@ -261,7 +261,7 @@ SparkStatus SparkGlm52StagePlanValidate(
          ++stage_index)
     {
         stage = &stage_plan->stages[stage_index];
-        if ((stage->flags & ~SPARK_GLM52_STAGE_PLAN_STAGE_KNOWN_FLAGS) != 0u)
+        if ((stage->flags & ~SPARK_STAGE_PLAN_STAGE_KNOWN_FLAGS) != 0u)
         {
             return SparkGlm52StagePlanReport(
                 error_buffer,
@@ -287,7 +287,7 @@ SparkStatus SparkGlm52StagePlanValidate(
                 SPARK_STATUS_INVALID_ARGUMENT,
                 "stage layer range violates GLM-5.2 cut rules");
         }
-        if ((stage->flags & SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN) != 0u)
+        if ((stage->flags & SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN) != 0u)
         {
             ++final_stage_count;
             if (stage_index + 1u != stage_plan->stage_count)
@@ -299,7 +299,7 @@ SparkStatus SparkGlm52StagePlanValidate(
                     "final-token stage is not the last stage");
             }
         }
-        else if ((stage->flags & SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_OUTPUT_HIDDEN) == 0u)
+        else if ((stage->flags & SPARK_STAGE_PLAN_STAGE_FLAG_OUTPUT_HIDDEN) == 0u)
         {
             return SparkGlm52StagePlanReport(
                 error_buffer,
@@ -311,7 +311,7 @@ SparkStatus SparkGlm52StagePlanValidate(
         expected_first_layer_index = range_end;
     }
 
-    if (expected_first_layer_index != SPARK_GLM52_STAGE_PLAN_LAYER_COUNT)
+    if (expected_first_layer_index != SPARK_STAGE_PLAN_LAYER_COUNT)
     {
         return SparkGlm52StagePlanReport(
             error_buffer,
@@ -334,19 +334,19 @@ SparkStatus SparkGlm52StagePlanValidate(
         "");
 }
 
-SparkStatus SparkGlm52StagePlanBuildBalancedWithFinalCost(
+SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
     const uint64_t *layer_cost_ns,
     uint64_t final_stage_extra_cost_ns,
     uint32_t stage_count,
-    SparkGlm52StagePlan *stage_plan,
+    SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    uint64_t prefix_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT + 1u];
-    uint64_t best_cost[SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT + 1u]
-        [SPARK_GLM52_STAGE_PLAN_LAYER_COUNT + 1u];
-    uint32_t best_split[SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT + 1u]
-        [SPARK_GLM52_STAGE_PLAN_LAYER_COUNT + 1u];
+    uint64_t prefix_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT + 1u];
+    uint64_t best_cost[SPARK_STAGE_PLAN_MAX_STAGE_COUNT + 1u]
+        [SPARK_STAGE_PLAN_LAYER_COUNT + 1u];
+    uint32_t best_split[SPARK_STAGE_PLAN_MAX_STAGE_COUNT + 1u]
+        [SPARK_STAGE_PLAN_LAYER_COUNT + 1u];
     uint32_t current_layer_index;
     uint32_t layer_index;
     uint32_t split_layer_index;
@@ -355,7 +355,7 @@ SparkStatus SparkGlm52StagePlanBuildBalancedWithFinalCost(
     uint64_t segment_cost;
 
     if (layer_cost_ns == 0 || stage_plan == 0 || stage_count == 0u ||
-        stage_count > SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT)
+        stage_count > SPARK_STAGE_PLAN_MAX_STAGE_COUNT)
     {
         return SparkGlm52StagePlanReport(
             error_buffer,
@@ -366,7 +366,7 @@ SparkStatus SparkGlm52StagePlanBuildBalancedWithFinalCost(
 
     prefix_cost_ns[0] = 0u;
     for (layer_index = 0u;
-         layer_index < SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
+         layer_index < SPARK_STAGE_PLAN_LAYER_COUNT;
          ++layer_index)
     {
         if (layer_cost_ns[layer_index] == 0u)
@@ -390,11 +390,11 @@ SparkStatus SparkGlm52StagePlanBuildBalancedWithFinalCost(
     }
 
     for (stage_index = 0u;
-         stage_index <= SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT;
+         stage_index <= SPARK_STAGE_PLAN_MAX_STAGE_COUNT;
          ++stage_index)
     {
         for (layer_index = 0u;
-             layer_index <= SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
+             layer_index <= SPARK_STAGE_PLAN_LAYER_COUNT;
              ++layer_index)
         {
             best_cost[stage_index][layer_index] =
@@ -407,7 +407,7 @@ SparkStatus SparkGlm52StagePlanBuildBalancedWithFinalCost(
     for (stage_index = 1u; stage_index <= stage_count; ++stage_index)
     {
         for (layer_index = 1u;
-             layer_index <= SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
+             layer_index <= SPARK_STAGE_PLAN_LAYER_COUNT;
              ++layer_index)
         {
             for (split_layer_index = 0u;
@@ -449,7 +449,7 @@ SparkStatus SparkGlm52StagePlanBuildBalancedWithFinalCost(
         }
     }
 
-    if (best_cost[stage_count][SPARK_GLM52_STAGE_PLAN_LAYER_COUNT] ==
+    if (best_cost[stage_count][SPARK_STAGE_PLAN_LAYER_COUNT] ==
         SPARK_GLM52_STAGE_PLAN_UNREACHABLE_COST)
     {
         return SparkGlm52StagePlanReport(
@@ -461,7 +461,7 @@ SparkStatus SparkGlm52StagePlanBuildBalancedWithFinalCost(
 
     SparkGlm52StagePlanReset(stage_plan);
     stage_plan->stage_count = stage_count;
-    current_layer_index = SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
+    current_layer_index = SPARK_STAGE_PLAN_LAYER_COUNT;
     for (stage_index = stage_count; stage_index > 0u; --stage_index)
     {
         split_layer_index = best_split[stage_index][current_layer_index];
@@ -480,20 +480,20 @@ SparkStatus SparkGlm52StagePlanBuildBalancedWithFinalCost(
         current_layer_index = split_layer_index;
     }
     SparkGlm52StagePlanAssignStageFlags(stage_plan);
-    return SparkGlm52StagePlanValidate(
+    return SparkStagePlanValidate(
         stage_plan,
         error_buffer,
         error_buffer_bytes);
 }
 
-SparkStatus SparkGlm52StagePlanBuildBalanced(
+SparkStatus SparkStagePlanBuildBalanced(
     const uint64_t *layer_cost_ns,
     uint32_t stage_count,
-    SparkGlm52StagePlan *stage_plan,
+    SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    return SparkGlm52StagePlanBuildBalancedWithFinalCost(
+    return SparkStagePlanBuildBalancedWithFinalCost(
         layer_cost_ns,
         0u,
         stage_count,
@@ -506,7 +506,7 @@ static void SparkGlm52StagePlanStoreUniformSegmentCost(
     uint64_t segment_cost_ns,
     uint32_t first_layer_index,
     uint32_t layer_count,
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT])
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT])
 {
     uint64_t base_layer_cost_ns;
     uint64_t remainder_ns;
@@ -522,7 +522,7 @@ static void SparkGlm52StagePlanStoreUniformSegmentCost(
 }
 
 static SparkStatus SparkGlm52StagePlanLoadMeasuredB64CostProfile(
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     static const uint32_t first_layer_index[13] = {
@@ -561,7 +561,7 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB64CostProfile(
 }
 
 static void SparkGlm52StagePlanScaleCostProfile(
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns,
     uint32_t numerator,
     uint32_t denominator)
@@ -569,7 +569,7 @@ static void SparkGlm52StagePlanScaleCostProfile(
     uint32_t layer_index;
 
     for (layer_index = 0u;
-         layer_index < SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
+         layer_index < SPARK_STAGE_PLAN_LAYER_COUNT;
          ++layer_index)
     {
         layer_cost_ns[layer_index] =
@@ -582,7 +582,7 @@ static void SparkGlm52StagePlanScaleCostProfile(
 }
 
 static SparkStatus SparkGlm52StagePlanLoadMeasuredB128CostProfile(
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     static const uint64_t stage_cost_ns[13] = {
@@ -616,13 +616,13 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB128CostProfile(
 
 static SparkStatus SparkGlm52StagePlanLoadEstimatedLargeBatchCostProfile(
     uint32_t batch_bucket,
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     SparkStatus status;
 
-    if (batch_bucket < SPARK_GLM52_STAGE_PLAN_BUCKET_B128 ||
-        SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) == 0u)
+    if (batch_bucket < SPARK_STAGE_PLAN_BUCKET_B128 ||
+        SparkStagePlanBatchBucketIsSupported(batch_bucket) == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -637,12 +637,12 @@ static SparkStatus SparkGlm52StagePlanLoadEstimatedLargeBatchCostProfile(
         layer_cost_ns,
         final_stage_extra_cost_ns_out,
         batch_bucket,
-        SPARK_GLM52_STAGE_PLAN_BUCKET_B128);
+        SPARK_STAGE_PLAN_BUCKET_B128);
     return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkGlm52StagePlanLoadMeasuredB32CostProfile(
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     static const uint64_t stage_cost_ns[13] = {
@@ -675,7 +675,7 @@ static SparkStatus SparkGlm52StagePlanLoadMeasuredB32CostProfile(
 }
 
 static SparkStatus SparkGlm52StagePlanBuildMeasuredB64RingExact(
-    SparkGlm52StagePlan *stage_plan,
+    SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
@@ -693,9 +693,9 @@ static SparkStatus SparkGlm52StagePlanBuildMeasuredB64RingExact(
             "stage plan is null");
     }
     SparkGlm52StagePlanReset(stage_plan);
-    stage_plan->stage_count = SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT;
+    stage_plan->stage_count = SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT;
     for (stage_index = 0u;
-         stage_index < SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT;
+         stage_index < SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT;
          ++stage_index)
     {
         stage_plan->stages[stage_index].first_layer_index =
@@ -703,17 +703,17 @@ static SparkStatus SparkGlm52StagePlanBuildMeasuredB64RingExact(
         stage_plan->stages[stage_index].layer_count = 6u;
     }
     SparkGlm52StagePlanAssignStageFlags(stage_plan);
-    return SparkGlm52StagePlanValidate(
+    return SparkStagePlanValidate(
         stage_plan,
         error_buffer,
         error_buffer_bytes);
 }
 
-SparkStatus SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
+SparkStatus SparkStagePlanLoadMeasuredCostProfileForQuantization(
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
     uint32_t quantization_mode,
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     uint32_t normalized_quantization_mode;
@@ -731,43 +731,43 @@ SparkStatus SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
     {
         return status;
     }
-    if (measured_profile_id != SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701)
+    if (measured_profile_id != SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
     switch (normalized_quantization_mode)
     {
-        case SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT:
-        case SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT:
-        case SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT:
+        case SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT:
+        case SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT:
+        case SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT:
             break;
         default:
             return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    if (batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B64)
+    if (batch_bucket == SPARK_STAGE_PLAN_BUCKET_B64)
     {
         return SparkGlm52StagePlanLoadMeasuredB64CostProfile(
             layer_cost_ns,
             final_stage_extra_cost_ns_out);
     }
-    if (batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B128)
+    if (batch_bucket == SPARK_STAGE_PLAN_BUCKET_B128)
     {
         return SparkGlm52StagePlanLoadMeasuredB128CostProfile(
             layer_cost_ns,
             final_stage_extra_cost_ns_out);
     }
-    if (batch_bucket > SPARK_GLM52_STAGE_PLAN_BUCKET_B128 &&
-        SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) != 0u)
+    if (batch_bucket > SPARK_STAGE_PLAN_BUCKET_B128 &&
+        SparkStagePlanBatchBucketIsSupported(batch_bucket) != 0u)
     {
         return SparkGlm52StagePlanLoadEstimatedLargeBatchCostProfile(
             batch_bucket,
             layer_cost_ns,
             final_stage_extra_cost_ns_out);
     }
-    if (batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B32 ||
-        batch_bucket == SPARK_GLM52_STAGE_PLAN_BUCKET_B16)
+    if (batch_bucket == SPARK_STAGE_PLAN_BUCKET_B32 ||
+        batch_bucket == SPARK_STAGE_PLAN_BUCKET_B16)
     {
         return SparkGlm52StagePlanLoadMeasuredB32CostProfile(
             layer_cost_ns,
@@ -776,34 +776,34 @@ SparkStatus SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
     return SPARK_STATUS_INVALID_ARGUMENT;
 }
 
-SparkStatus SparkGlm52StagePlanLoadMeasuredCostProfile(
+SparkStatus SparkStagePlanLoadMeasuredCostProfile(
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
-    return SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
+    return SparkStagePlanLoadMeasuredCostProfileForQuantization(
         measured_profile_id,
         batch_bucket,
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_AUTO,
+        SPARK_STAGE_PLAN_QUANTIZATION_AUTO,
         layer_cost_ns,
         final_stage_extra_cost_ns_out);
 }
 
-SparkStatus SparkGlm52StagePlanBuildMeasuredBalancedForQuantization(
+SparkStatus SparkStagePlanBuildMeasuredBalancedForQuantization(
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
     uint32_t quantization_mode,
     uint32_t stage_count,
-    SparkGlm52StagePlan *stage_plan,
+    SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     SparkStatus status;
 
-    status = SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
+    status = SparkStagePlanLoadMeasuredCostProfileForQuantization(
         measured_profile_id,
         batch_bucket,
         quantization_mode,
@@ -817,7 +817,7 @@ SparkStatus SparkGlm52StagePlanBuildMeasuredBalancedForQuantization(
             status,
             "measured stage-plan profile is unavailable");
     }
-    return SparkGlm52StagePlanBuildBalancedWithFinalCost(
+    return SparkStagePlanBuildBalancedWithFinalCost(
         layer_cost_ns,
         final_stage_extra_cost_ns,
         stage_count,
@@ -826,29 +826,29 @@ SparkStatus SparkGlm52StagePlanBuildMeasuredBalancedForQuantization(
         error_buffer_bytes);
 }
 
-SparkStatus SparkGlm52StagePlanBuildMeasuredBalanced(
+SparkStatus SparkStagePlanBuildMeasuredBalanced(
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
     uint32_t stage_count,
-    SparkGlm52StagePlan *stage_plan,
+    SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    return SparkGlm52StagePlanBuildMeasuredBalancedForQuantization(
+    return SparkStagePlanBuildMeasuredBalancedForQuantization(
         measured_profile_id,
         batch_bucket,
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_AUTO,
+        SPARK_STAGE_PLAN_QUANTIZATION_AUTO,
         stage_count,
         stage_plan,
         error_buffer,
         error_buffer_bytes);
 }
 
-SparkStatus SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+SparkStatus SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
     uint32_t quantization_mode,
-    SparkGlm52StagePlan *stage_plan,
+    SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
@@ -866,60 +866,60 @@ SparkStatus SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
             status,
             "invalid measured stage-plan quantization mode");
     }
-    if (measured_profile_id == SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701 &&
-        batch_bucket >= SPARK_GLM52_STAGE_PLAN_BUCKET_B64 &&
-        SparkGlm52StagePlanBatchBucketIsSupported(batch_bucket) != 0u &&
-        (normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-         normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
-         normalized_quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT))
+    if (measured_profile_id == SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701 &&
+        batch_bucket >= SPARK_STAGE_PLAN_BUCKET_B64 &&
+        SparkStagePlanBatchBucketIsSupported(batch_bucket) != 0u &&
+        (normalized_quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
+         normalized_quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
+         normalized_quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT))
     {
         return SparkGlm52StagePlanBuildMeasuredB64RingExact(
             stage_plan,
             error_buffer,
             error_buffer_bytes);
     }
-    return SparkGlm52StagePlanBuildMeasuredBalancedForQuantization(
+    return SparkStagePlanBuildMeasuredBalancedForQuantization(
         measured_profile_id,
         batch_bucket,
         normalized_quantization_mode,
-        SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT,
+        SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT,
         stage_plan,
         error_buffer,
         error_buffer_bytes);
 }
 
-SparkStatus SparkGlm52StagePlanBuildCurrentSparkMeasuredBalanced(
+SparkStatus SparkStagePlanBuildCurrentSparkMeasuredBalanced(
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
-    SparkGlm52StagePlan *stage_plan,
+    SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    return SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+    return SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
         measured_profile_id,
         batch_bucket,
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_AUTO,
+        SPARK_STAGE_PLAN_QUANTIZATION_AUTO,
         stage_plan,
         error_buffer,
         error_buffer_bytes);
 }
 
-SparkStatus SparkGlm52StagePlanBuildUniform(
+SparkStatus SparkStagePlanBuildUniform(
     uint32_t stage_count,
-    SparkGlm52StagePlan *stage_plan,
+    SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
     uint32_t layer_index;
 
     for (layer_index = 0u;
-         layer_index < SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
+         layer_index < SPARK_STAGE_PLAN_LAYER_COUNT;
          ++layer_index)
     {
         layer_cost_ns[layer_index] = 1u;
     }
-    return SparkGlm52StagePlanBuildBalanced(
+    return SparkStagePlanBuildBalanced(
         layer_cost_ns,
         stage_count,
         stage_plan,
@@ -927,7 +927,7 @@ SparkStatus SparkGlm52StagePlanBuildUniform(
         error_buffer_bytes);
 }
 
-SparkStatus SparkGlm52StagePlanSelectBatchBucket(
+SparkStatus SparkStagePlanSelectBatchBucket(
     uint32_t active_sequence_count,
     uint32_t *bucket_out)
 {
@@ -935,7 +935,7 @@ SparkStatus SparkGlm52StagePlanSelectBatchBucket(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    *bucket_out = SparkGlm52StagePlanSelectBatchBucketValue(
+    *bucket_out = SparkStagePlanSelectBatchBucketValue(
         active_sequence_count);
     if (*bucket_out == 0u)
     {
@@ -944,7 +944,7 @@ SparkStatus SparkGlm52StagePlanSelectBatchBucket(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52StagePlanExecutionChunkShape(
+SparkStatus SparkStagePlanExecutionChunkShape(
     uint32_t logical_sequence_count,
     uint32_t rows_per_sequence,
     uint32_t execution_row_capacity,
@@ -960,9 +960,9 @@ SparkStatus SparkGlm52StagePlanExecutionChunkShape(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (execution_row_capacity > SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET)
+    if (execution_row_capacity > SPARK_STAGE_PLAN_MAX_BATCH_BUCKET)
     {
-        execution_row_capacity = SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET;
+        execution_row_capacity = SPARK_STAGE_PLAN_MAX_BATCH_BUCKET;
     }
     maximum_sequences_per_chunk = execution_row_capacity / rows_per_sequence;
     if (maximum_sequences_per_chunk == 0u)

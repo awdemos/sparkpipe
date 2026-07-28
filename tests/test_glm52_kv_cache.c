@@ -4,7 +4,7 @@
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_model.h"
-#include "sparkpipe/spark_glm52_stage_plan.h"
+#include "sparkpipe/spark_stage_plan.h"
 
 #define SPARK_TEST_KV_BLOCK_TOKENS 16u
 #define SPARK_TEST_KV_HEAD_COUNT 8u
@@ -847,7 +847,7 @@ static void SparkTestKvJitStageBudgetsMatchRingStorage(void)
     request.backing_block_capacity = 1048576u;
     request.active_sequence_count = 1024u;
     request.backing_request_count =
-        SPARK_GLM52_STAGE_PLAN_PIPELINE_INFLIGHT_REQUEST_CAPACITY;
+        SPARK_STAGE_PLAN_PIPELINE_INFLIGHT_REQUEST_CAPACITY;
     request.selected_token_count = SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT;
     request.block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
     request.record_alignment_bytes =

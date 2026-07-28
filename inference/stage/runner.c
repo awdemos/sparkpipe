@@ -3,7 +3,7 @@
 #include <string.h>
 #include <time.h>
 
-#include "sparkpipe/spark_glm52_mtp_tree.h"
+#include "sparkpipe/spark_mtp_tree.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_production_runner.h"
 
 static SparkStatus SparkGlm52ProductionRunnerValidateProgram(
@@ -99,7 +99,7 @@ static SparkStatus SparkGlm52ProductionRunnerValidateDispatchShape(
         SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_MTP_TREE_VERIFY) != 0u &&
         (prefill != 0u ||
          dispatch->rows_per_lane !=
-            SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT) )
+            SPARK_MODEL_MTP_TREE_VERIFIER_ROW_COUNT) )
         return SPARK_STATUS_INVALID_ARGUMENT;
     if ( dispatch->pipeline_slot >=
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT )
@@ -315,7 +315,7 @@ static SparkStatus SparkGlm52ProductionRunnerAdmit(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageProductionRunnerInitialize(
+SparkStatus SparkResidentDecodeStageProductionRunnerInitialize(
     SparkGlm52ResidentDecodeStageProductionRunner *runner,
     const SparkGlm52ResidentDecodeStageProductionRunnerConfiguration *configuration)
 {

@@ -135,7 +135,7 @@ SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
     {
         return 0u;
     }
-    batch_bucket = SparkGlm52StagePlanSelectBatchBucketValue(
+    batch_bucket = SparkStagePlanSelectBatchBucketValue(
         active_sequence_count);
     if (batch_bucket == 0u ||
         batch_bucket > plan->maximum_active_sequence_count)

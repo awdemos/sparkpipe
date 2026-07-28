@@ -48,15 +48,15 @@ SPARKPIPE_GLM52_SOURCES := \
     api/serving_engine.c \
     cache/kv_cache.c \
     cache/prefix_cache.c \
-    model-families/glm52/src/spark_glm52_batch_sequence_table.c \
+    serving/spark_batch_sequence_table.c \
     text/chat_template.c \
-    model-families/glm52/src/spark_glm52_cuda_resident_ipc.c \
+    serving/spark_cuda_resident_ipc.c \
     model-families/glm52/src/spark_glm52_expert_queue.c \
-    model-families/glm52/src/spark_glm52_ring_node_context_builder.c \
-    model-families/glm52/src/spark_glm52_production_topology.c \
+    serving/spark_ring_node_context_builder.c \
+    serving/spark_production_topology.c \
     text/prompt_pipeline.c \
-    model-families/glm52/src/spark_glm52_row_allocator.c \
-    model-families/glm52/src/spark_glm52_service_backend.c \
+    serving/spark_row_allocator.c \
+    serving/spark_service_backend.c \
     model-families/glm52/src/spark_glm52_shape_config.c \
     text/prompt.c \
     model-families/glm52/src/spark_glm52_tp_shard.c \

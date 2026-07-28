@@ -42,7 +42,7 @@ layer-major verifier rows, and MTP draft rows all call the same BF16
 tensor-core GEMM followed by device argmax.
 
 The workspace row capacity is the smaller of the execution-row capacity and
-`SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET`. For B1024 the additional logits
+`SPARK_STAGE_PLAN_MAX_BATCH_BUCKET`. For B1024 the additional logits
 workspace is exactly 634,388,480 bytes (605 MiB). This makes ordinary B1024
 decode and each B1024 MTP draft head one GEMM. A seven-row B1024 verification
 uses seven 1024-row GEMMs instead of allocating 4.13 GiB for one 7168-row

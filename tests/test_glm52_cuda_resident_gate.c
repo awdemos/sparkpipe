@@ -7,31 +7,31 @@
 
 static void SparkTestGlm52CudaResidentGateAcceptsMeasuredB1024(void)
 {
-	SparkGlm52CudaResidentIpcStats stats;
+	SparkCudaResidentIpcStats stats;
 
 	memset(&stats,0,sizeof(stats));
-	stats.descriptor_bytes = SPARK_GLM52_CUDA_RESIDENT_IPC_STATS_BYTES;
-	stats.state = SPARK_GLM52_CUDA_RESIDENT_IPC_STATE_READY;
+	stats.descriptor_bytes = SPARK_CUDA_RESIDENT_IPC_STATS_BYTES;
+	stats.state = SPARK_CUDA_RESIDENT_IPC_STATE_READY;
 	stats.capability_flags =
-		SPARK_GLM52_CUDA_RESIDENT_IPC_FLAG_DRIVER_RESIDENT |
-		SPARK_GLM52_CUDA_RESIDENT_IPC_FLAG_BUILDER_RESIDENT |
-		SPARK_GLM52_CUDA_RESIDENT_IPC_FLAG_TRANSPORT_RESIDENT |
-		SPARK_GLM52_CUDA_RESIDENT_IPC_FLAG_CUDA_STATE_RESIDENT;
+		SPARK_CUDA_RESIDENT_IPC_FLAG_DRIVER_RESIDENT |
+		SPARK_CUDA_RESIDENT_IPC_FLAG_BUILDER_RESIDENT |
+		SPARK_CUDA_RESIDENT_IPC_FLAG_TRANSPORT_RESIDENT |
+		SPARK_CUDA_RESIDENT_IPC_FLAG_CUDA_STATE_RESIDENT;
 	stats.rank_index = 0u;
 	stats.max_active_sequence_count = 1024u;
 	stats.logical_lane_capacity = 1024u;
 	stats.execution_row_capacity = 1024u;
 	stats.model_quantization_mode =
-		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
+		SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
 	stats.moe_backend_kind =
-		SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED;
+		SPARK_RING_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED;
 	stats.moe_bound_layer_count = 3u;
 	stats.moe_expected_layer_count = 3u;
 	stats.fp8_scaled_gemm_bound_plan_count = 42u;
 	stats.fp8_scaled_gemm_expected_plan_count = 42u;
 	stats.kv_nvme_enabled = 1u;
 	stats.kv_nvme_mode =
-		SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_NVME_MODE_BATCHED_COHORT_JIT;
+		SPARK_RING_NODE_CONTEXT_BUILDER_NVME_MODE_BATCHED_COHORT_JIT;
 	stats.kv_physical_block_capacity = 65536u;
 	stats.kv_logical_block_capacity = 1048576u;
 	stats.kv_resident_bytes_per_token = 7680u;
@@ -47,59 +47,59 @@ static void SparkTestGlm52CudaResidentGateAcceptsMeasuredB1024(void)
 	stats.layer_major_completion_count = 1u;
 	stats.last_layer_major_logical_lane_count = 170u;
 	stats.last_layer_major_rows_per_lane =
-		SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
+		SPARK_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
 	stats.last_layer_major_execution_row_count =
-		170u * SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
+		170u * SPARK_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
 	assert(SparkGlm52CudaResidentGateValidateStats(
 		&stats,0u,
-		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+		SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
 		SPARK_GLM52_CUDA_RESIDENT_GATE_REQUIRE_WORK |
 		SPARK_GLM52_CUDA_RESIDENT_GATE_REQUIRE_LAYER_MAJOR) ==
 		SPARK_STATUS_OK);
 	stats.fp8_scaled_gemm_bound_plan_count -= 1u;
 	assert(SparkGlm52CudaResidentGateValidateStats(
 		&stats,0u,
-		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u) == SPARK_STATUS_MODULE_NOT_VALIDATED);
+		SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u) == SPARK_STATUS_MODULE_NOT_VALIDATED);
 	stats.fp8_scaled_gemm_bound_plan_count += 1u;
 	stats.kv_nvme_pending_load_count = 1u;
 	assert(SparkGlm52CudaResidentGateValidateStats(
 		&stats,0u,
-		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u) == SPARK_STATUS_MODULE_NOT_VALIDATED);
+		SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u) == SPARK_STATUS_MODULE_NOT_VALIDATED);
 	stats.kv_nvme_pending_load_count = 0u;
 	stats.model_quantization_mode =
-		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
+		SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
 	stats.moe_backend_kind =
-		SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA;
+		SPARK_RING_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA;
 	stats.fp8_scaled_gemm_bound_plan_count = 0u;
 	stats.fp8_scaled_gemm_expected_plan_count = 0u;
 	assert(SparkGlm52CudaResidentGateValidateStats(
-		&stats,0u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,0u) ==
+		&stats,0u,SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,0u) ==
 		SPARK_STATUS_OK);
 	stats.fp8_scaled_gemm_bound_plan_count = 1u;
 	stats.fp8_scaled_gemm_expected_plan_count = 1u;
 	assert(SparkGlm52CudaResidentGateValidateStats(
-		&stats,0u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,0u) ==
+		&stats,0u,SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,0u) ==
 		SPARK_STATUS_MODULE_NOT_VALIDATED);
 	stats.fp8_scaled_gemm_bound_plan_count = 0u;
 	stats.fp8_scaled_gemm_expected_plan_count = 0u;
 	stats.model_quantization_mode =
-		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
+		SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
 	stats.moe_backend_kind =
-		SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_MOE_BACKEND_NVFP4_B12X;
+		SPARK_RING_NODE_CONTEXT_BUILDER_MOE_BACKEND_NVFP4_B12X;
 	assert(SparkGlm52CudaResidentGateValidateStats(
-		&stats,0u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,0u) ==
+		&stats,0u,SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,0u) ==
 		SPARK_STATUS_OK);
 	stats.moe_backend_kind =
-		SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED;
+		SPARK_RING_NODE_CONTEXT_BUILDER_MOE_BACKEND_FP8_FLASHINFER_GROUPED;
 	assert(SparkGlm52CudaResidentGateValidateStats(
-		&stats,0u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,0u) ==
+		&stats,0u,SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,0u) ==
 		SPARK_STATUS_MODULE_NOT_VALIDATED);
 	stats.model_quantization_mode =
-		SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
+		SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
 	stats.moe_backend_kind =
-		SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA;
+		SPARK_RING_NODE_CONTEXT_BUILDER_MOE_BACKEND_W8LUT_BF16_WMMA;
 	assert(SparkGlm52CudaResidentGateValidateStats(
-		&stats,0u,SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u) ==
+		&stats,0u,SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u) ==
 		SPARK_STATUS_MODULE_NOT_VALIDATED);
 }
 

@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "sparkpipe/spark_glm52_mtp_tree.h"
+#include "sparkpipe/spark_mtp_tree.h"
 
 typedef struct LegacyMtpTreeResolution
 {
@@ -16,65 +16,65 @@ typedef struct LegacyMtpTreeResolution
 
 static uint32_t LegacyVerifierPositionOffset(uint32_t row_index)
 {
-	if (row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_INPUT_ROW)
+	if (row_index == SPARK_MODEL_MTP_TREE_VERIFIER_INPUT_ROW)
 		return 0u;
-	if (row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW)
+	if (row_index == SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW)
 		return 1u;
-	if (row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW ||
-		row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_ALTERNATE_ROW)
+	if (row_index == SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW ||
+		row_index == SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH2_ALTERNATE_ROW)
 		return 2u;
-	if (row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_PRIMARY_ROW ||
-		row_index == SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_ALTERNATE_ROW)
+	if (row_index == SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH3_PRIMARY_ROW ||
+		row_index == SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH3_ALTERNATE_ROW)
 		return 3u;
 	return UINT32_MAX;
 }
 
 static uint32_t LegacyAcceptedTokenCount(uint32_t path_id)
 {
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH1)
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH1)
 		return 1u;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY ||
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY ||
+		path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
 		return 2u;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY ||
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY ||
+		path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
 		return 3u;
 	return 0u;
 }
 
 static uint32_t LegacyFallbackRowIndex(uint32_t path_id)
 {
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_ALTERNATE_ROW;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY)
-		return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_PRIMARY_ROW;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH3_ALTERNATE_ROW;
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
+		return SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH2_ALTERNATE_ROW;
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY)
+		return SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH3_PRIMARY_ROW;
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
+		return SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH3_ALTERNATE_ROW;
 	return LegacyAcceptedTokenCount(path_id);
 }
 
 static uint32_t LegacyTailCandidateIndex(uint32_t path_id)
 {
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY)
-		return SPARK_GLM52_MODEL_MTP_TREE_DEPTH2_PRIMARY_INDEX;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_DEPTH2_ALTERNATE_INDEX;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY)
-		return SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_PRIMARY_INDEX;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_ALTERNATE_INDEX;
-	return SPARK_GLM52_MODEL_MTP_TREE_DEPTH1_PRIMARY_INDEX;
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY)
+		return SPARK_MODEL_MTP_TREE_DEPTH2_PRIMARY_INDEX;
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
+		return SPARK_MODEL_MTP_TREE_DEPTH2_ALTERNATE_INDEX;
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY)
+		return SPARK_MODEL_MTP_TREE_DEPTH3_PRIMARY_INDEX;
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
+		return SPARK_MODEL_MTP_TREE_DEPTH3_ALTERNATE_INDEX;
+	return SPARK_MODEL_MTP_TREE_DEPTH1_PRIMARY_INDEX;
 }
 
 static uint32_t LegacyTailParentRowIndex(uint32_t path_id)
 {
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY ||
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW;
-	if (path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY ||
-		path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
-		return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW;
-	return SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_INPUT_ROW;
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY ||
+		path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE)
+		return SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW;
+	if (path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY ||
+		path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE)
+		return SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW;
+	return SPARK_MODEL_MTP_TREE_VERIFIER_INPUT_ROW;
 }
 
 static uint32_t LegacyTailBasePositionOffset(uint32_t path_id)
@@ -93,10 +93,10 @@ static uint32_t LegacyResolutionIsValid(
 		return 0u;
 	if (proposed_token_count == 0u)
 		return accepted_token_count == 0u &&
-			path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
-	if (proposed_token_count != SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT)
-		return path_id == SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
-	if (path_id >= SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_COUNT)
+			path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_NONE;
+	if (proposed_token_count != SPARK_MODEL_MTP_TREE_CANDIDATE_COUNT)
+		return path_id == SPARK_MODEL_MTP_TREE_RESOLUTION_NONE;
+	if (path_id >= SPARK_MODEL_MTP_TREE_RESOLUTION_COUNT)
 		return 0u;
 	return accepted_token_count == LegacyAcceptedTokenCount(path_id);
 }
@@ -111,7 +111,7 @@ static SparkStatus LegacyMtpTreeResolve(
 		resolution == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	for (token_index=0u;
-		 token_index<SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT;
+		 token_index<SPARK_MODEL_MTP_TREE_CANDIDATE_COUNT;
 		 token_index++)
 	{
 		if (candidate_token_ids[token_index] >=
@@ -119,39 +119,39 @@ static SparkStatus LegacyMtpTreeResolve(
 			return SPARK_STATUS_INVALID_ARGUMENT;
 	}
 	for (token_index=0u;
-		 token_index<SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
+		 token_index<SPARK_MODEL_MTP_TREE_VERIFIER_ROW_COUNT;
 		 token_index++)
 	{
 		if (verifier_token_ids[token_index] >=
 			SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT)
 			return SPARK_STATUS_INVALID_ARGUMENT;
 	}
-	path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_NONE;
+	path_id = SPARK_MODEL_MTP_TREE_RESOLUTION_NONE;
 	if (verifier_token_ids[
-			SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_INPUT_ROW] ==
-		candidate_token_ids[SPARK_GLM52_MODEL_MTP_TREE_DEPTH1_PRIMARY_INDEX])
+			SPARK_MODEL_MTP_TREE_VERIFIER_INPUT_ROW] ==
+		candidate_token_ids[SPARK_MODEL_MTP_TREE_DEPTH1_PRIMARY_INDEX])
 	{
-		path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH1;
+		path_id = SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH1;
 		if (verifier_token_ids[
-				SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW] ==
-			candidate_token_ids[SPARK_GLM52_MODEL_MTP_TREE_DEPTH2_PRIMARY_INDEX])
+				SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW] ==
+			candidate_token_ids[SPARK_MODEL_MTP_TREE_DEPTH2_PRIMARY_INDEX])
 		{
-			path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY;
+			path_id = SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH2_PRIMARY;
 			if (verifier_token_ids[
-					SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW] ==
+					SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW] ==
 				candidate_token_ids[
-					SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_PRIMARY_INDEX])
-				path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY;
+					SPARK_MODEL_MTP_TREE_DEPTH3_PRIMARY_INDEX])
+				path_id = SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH3_PRIMARY;
 			else if (verifier_token_ids[
-					SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW] ==
+					SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH2_PRIMARY_ROW] ==
 				candidate_token_ids[
-					SPARK_GLM52_MODEL_MTP_TREE_DEPTH3_ALTERNATE_INDEX])
-				path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE;
+					SPARK_MODEL_MTP_TREE_DEPTH3_ALTERNATE_INDEX])
+				path_id = SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH3_ALTERNATE;
 		}
 		else if (verifier_token_ids[
-				SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW] ==
-			candidate_token_ids[SPARK_GLM52_MODEL_MTP_TREE_DEPTH2_ALTERNATE_INDEX])
-			path_id = SPARK_GLM52_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE;
+				SPARK_MODEL_MTP_TREE_VERIFIER_DEPTH1_ROW] ==
+			candidate_token_ids[SPARK_MODEL_MTP_TREE_DEPTH2_ALTERNATE_INDEX])
+			path_id = SPARK_MODEL_MTP_TREE_RESOLUTION_DEPTH2_ALTERNATE;
 	}
 	resolution->path_id = path_id;
 	resolution->accepted_token_count = LegacyAcceptedTokenCount(path_id);
@@ -164,12 +164,12 @@ static void SparkTestMtpTreeCompareResolve(
 	const uint32_t *candidate_token_ids,
 	const uint32_t *verifier_token_ids)
 {
-	SparkGlm52MtpTreeResolution table_resolution;
+	SparkMtpTreeResolution table_resolution;
 	LegacyMtpTreeResolution legacy_resolution;
 	SparkStatus table_status,legacy_status;
 	memset(&table_resolution,0xa5,sizeof(table_resolution));
 	memset(&legacy_resolution,0x5a,sizeof(legacy_resolution));
-	table_status = SparkGlm52MtpTreeResolve(
+	table_status = SparkMtpTreeResolve(
 		candidate_token_ids,verifier_token_ids,&table_resolution);
 	legacy_status = LegacyMtpTreeResolve(
 		candidate_token_ids,verifier_token_ids,&legacy_resolution);
@@ -187,7 +187,7 @@ static void SparkTestMtpTreeCompareResolve(
 
 static void SparkTestMtpTreeTopology(void)
 {
-	assert(SparkGlm52MtpTreeTopologyIsValid() == 1u);
+	assert(SparkMtpTreeTopologyIsValid() == 1u);
 }
 
 static void SparkTestMtpTreeHelperEquivalence(void)
@@ -195,24 +195,24 @@ static void SparkTestMtpTreeHelperEquivalence(void)
 	uint32_t path_id,row_index,proposed,accepted;
 	for (path_id = 0u; path_id < 9u; ++path_id)
 	{
-		assert(SparkGlm52MtpTreeAcceptedTokenCount(path_id) ==
+		assert(SparkMtpTreeAcceptedTokenCount(path_id) ==
 			LegacyAcceptedTokenCount(path_id));
-		assert(SparkGlm52MtpTreeFallbackRowIndex(path_id) ==
+		assert(SparkMtpTreeFallbackRowIndex(path_id) ==
 			LegacyFallbackRowIndex(path_id));
-		assert(SparkGlm52MtpTreeTailCandidateIndex(path_id) ==
+		assert(SparkMtpTreeTailCandidateIndex(path_id) ==
 			LegacyTailCandidateIndex(path_id));
-		assert(SparkGlm52MtpTreeTailParentRowIndex(path_id) ==
+		assert(SparkMtpTreeTailParentRowIndex(path_id) ==
 			LegacyTailParentRowIndex(path_id));
-		assert(SparkGlm52MtpTreeTailBasePositionOffset(path_id) ==
+		assert(SparkMtpTreeTailBasePositionOffset(path_id) ==
 			LegacyTailBasePositionOffset(path_id));
 	}
 	for (row_index = 0u; row_index < 9u; ++row_index)
-		assert(SparkGlm52MtpTreeVerifierPositionOffset(row_index) ==
+		assert(SparkMtpTreeVerifierPositionOffset(row_index) ==
 			LegacyVerifierPositionOffset(row_index));
 	for (proposed = 0u; proposed < 7u; ++proposed)
 		for (accepted = 0u; accepted < 7u; ++accepted)
 			for (path_id = 0u; path_id < 9u; ++path_id)
-				assert(SparkGlm52MtpTreeResolutionIsValid(
+				assert(SparkMtpTreeResolutionIsValid(
 						proposed,accepted,path_id) ==
 					LegacyResolutionIsValid(proposed,accepted,path_id));
 }
@@ -254,23 +254,23 @@ static void SparkTestMtpTreeResolveRandomized(void)
 
 static void SparkTestMtpTreeResolveRejectsInvalid(void)
 {
-	uint32_t candidates[SPARK_GLM52_MODEL_MTP_TREE_CANDIDATE_COUNT];
-	uint32_t verifiers[SPARK_GLM52_MODEL_MTP_TREE_VERIFIER_ROW_COUNT];
-	SparkGlm52MtpTreeResolution resolution;
+	uint32_t candidates[SPARK_MODEL_MTP_TREE_CANDIDATE_COUNT];
+	uint32_t verifiers[SPARK_MODEL_MTP_TREE_VERIFIER_ROW_COUNT];
+	SparkMtpTreeResolution resolution;
 	memset(candidates,0,sizeof(candidates));
 	memset(verifiers,0,sizeof(verifiers));
-	assert(SparkGlm52MtpTreeResolve(0,verifiers,&resolution) ==
+	assert(SparkMtpTreeResolve(0,verifiers,&resolution) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
-	assert(SparkGlm52MtpTreeResolve(candidates,0,&resolution) ==
+	assert(SparkMtpTreeResolve(candidates,0,&resolution) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
-	assert(SparkGlm52MtpTreeResolve(candidates,verifiers,0) ==
+	assert(SparkMtpTreeResolve(candidates,verifiers,0) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
 	candidates[2u] = SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT;
-	assert(SparkGlm52MtpTreeResolve(candidates,verifiers,&resolution) ==
+	assert(SparkMtpTreeResolve(candidates,verifiers,&resolution) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
 	candidates[2u] = 0u;
 	verifiers[5u] = SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT;
-	assert(SparkGlm52MtpTreeResolve(candidates,verifiers,&resolution) ==
+	assert(SparkMtpTreeResolve(candidates,verifiers,&resolution) ==
 		SPARK_STATUS_INVALID_ARGUMENT);
 }
 

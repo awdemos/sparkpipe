@@ -7,17 +7,17 @@ This pass adds a production-shaped serving facade above the lower-level request 
 The intended server integration is now:
 
 ```text
-SparkGlm52ServingEngineSubmitText(...)
+SparkServingEngineSubmitText(...)
     or
-SparkGlm52ServingEngineSubmitTokenIds(...)
+SparkServingEngineSubmitTokenIds(...)
 
 repeat:
-    SparkGlm52ServingEnginePump(...)
-    while SparkGlm52ServingEnginePopEvent(...) == OK:
+    SparkServingEnginePump(...)
+    while SparkServingEnginePopEvent(...) == OK:
         stream accepted / prefill / token / complete / error events
 ```
 
-Callers do not need to choose prefill windows, KV block-table strides, decode batch membership, prefix cohorts, JIT prefetch plans, or tail-window validation modes.  The engine owns copied prompt token storage before submitting into `SparkGlm52RequestApi`, so fire-and-forget prompt buffers can be released or reused immediately after submit returns.
+Callers do not need to choose prefill windows, KV block-table strides, decode batch membership, prefix cohorts, JIT prefetch plans, or tail-window validation modes.  The engine owns copied prompt token storage before submitting into `SparkRequestApi`, so fire-and-forget prompt buffers can be released or reused immediately after submit returns.
 
 ## Production runtime contract
 
@@ -38,11 +38,11 @@ It rejects the old validation bridge flag:
 tail-window-validation-only
 ```
 
-It also checks that the lower-level `SparkGlm52RequestApi` configuration actually enables the requested internal batching/JIT features.  A configuration that merely claims batching while disabling request-api prefill/decode batching is rejected.
+It also checks that the lower-level `SparkRequestApi` configuration actually enables the requested internal batching/JIT features.  A configuration that merely claims batching while disabling request-api prefill/decode batching is rejected.
 
 ## Internal pipeline
 
-Each pump iteration calls `SparkGlm52RequestApiScheduleNext(...)`.  That lower layer already owns:
+Each pump iteration calls `SparkRequestApiScheduleNext(...)`.  That lower layer already owns:
 
 ```text
 queued prefill requests
@@ -61,7 +61,7 @@ resident KV block-table views
 For prefill dispatches, the serving engine builds:
 
 ```text
-SparkGlm52PromptPipelinePrefillDispatch
+SparkPromptPipelinePrefillDispatch
     host token matrix
     prefill lane view
     resident KV block-table view
@@ -76,12 +76,12 @@ SparkGlm52Sm121RequiredDecodeStageLaunchPromptStageSliceBulkPrefillFromHostToken
 For decode and speculative-verify dispatches, the serving engine builds:
 
 ```text
-SparkGlm52ServingDecodeDispatch
+SparkServingDecodeDispatch
     request dispatch
     resident KV block-table view
 ```
 
-and calls the configured decode callback.  That callback should connect to the fast PP13 decode/verify path and fill `SparkGlm52ServingDecodeResult` with token IDs.  The serving engine then publishes token events, completes the request-api dispatch, handles stop-token/request-finish flags, and releases completed records when auto-release is enabled.
+and calls the configured decode callback.  That callback should connect to the fast PP13 decode/verify path and fill `SparkServingDecodeResult` with token IDs.  The serving engine then publishes token events, completes the request-api dispatch, handles stop-token/request-finish flags, and releases completed records when auto-release is enabled.
 
 ## Event stream
 
@@ -97,7 +97,7 @@ error
 backpressure
 ```
 
-Telemetry is exposed through `SparkGlm52ServingStats`, including prompt token count, prefill dispatch count, prefill batch count, decode dispatch count, decoded token count, JIT prefetch counters, async prefetch counters, and prefix-family counters.
+Telemetry is exposed through `SparkServingStats`, including prompt token count, prefill dispatch count, prefill batch count, decode dispatch count, decoded token count, JIT prefetch counters, async prefetch counters, and prefix-family counters.
 
 ## Tests added
 

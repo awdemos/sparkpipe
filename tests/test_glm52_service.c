@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "sparkpipe/spark_glm52_service.h"
+#include "sparkpipe/spark_service.h"
 
 #define SPARK_TEST_SERVICE_REQUEST_SLOT_COUNT 4u
 #define SPARK_TEST_SERVICE_REQUEST_RECORD_COUNT 4u
@@ -10,47 +10,47 @@
 #define SPARK_TEST_SERVICE_PREFILL_TOKEN_STRIDE 64u
 #define SPARK_TEST_SERVICE_PROMPT_TOKEN_COUNT 64u
 #define SPARK_TEST_SERVICE_KV_BLOCK_COUNT \
-    SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY
+    SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY
 #define SPARK_TEST_SERVICE_PREFIX_ENTRY_COUNT \
-    SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY
+    SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY
 #define SPARK_TEST_SERVICE_PREFIX_BINDING_COUNT \
-    (SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY + 8u)
+    (SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY + 8u)
 #define SPARK_TEST_SERVICE_EVENT_CAPACITY 16384u
 #define SPARK_TEST_SERVICE_CLIENT_CAPACITY 4u
 #define SPARK_TEST_SERVICE_REQUEST_MAP_CAPACITY 8u
 #define SPARK_TEST_SERVICE_LANE_CAPACITY \
-    SPARK_GLM52_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT
+    SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT
 
 typedef struct SparkTestServiceFixture
 {
     SparkGlm52KvCacheArena kv_arena;
     SparkGlm52KvCacheBlock kv_blocks[SPARK_TEST_SERVICE_KV_BLOCK_COUNT];
-    SparkGlm52PrefixCache prefix_cache;
-    SparkGlm52PrefixCacheEntry prefix_entries[
+    SparkPrefixCache prefix_cache;
+    SparkPrefixCacheEntry prefix_entries[
         SPARK_TEST_SERVICE_PREFIX_ENTRY_COUNT];
-    SparkGlm52PrefixCacheSequenceBinding prefix_bindings[
+    SparkPrefixCacheSequenceBinding prefix_bindings[
         SPARK_TEST_SERVICE_PREFIX_BINDING_COUNT];
-    SparkGlm52Scheduler scheduler;
-    SparkGlm52RequestApiSlot request_slots[SPARK_TEST_SERVICE_REQUEST_SLOT_COUNT];
-    SparkGlm52RequestApi request_api;
-    SparkGlm52ServingEngine serving_engine;
-    SparkGlm52ServingRequestRecord request_records[
+    SparkScheduler scheduler;
+    SparkRequestApiSlot request_slots[SPARK_TEST_SERVICE_REQUEST_SLOT_COUNT];
+    SparkRequestApi request_api;
+    SparkServingEngine serving_engine;
+    SparkServingRequestRecord request_records[
         SPARK_TEST_SERVICE_REQUEST_RECORD_COUNT];
     uint32_t request_token_storage[
         SPARK_TEST_SERVICE_REQUEST_RECORD_COUNT *
         SPARK_TEST_SERVICE_REQUEST_TOKEN_STRIDE];
-    SparkGlm52ServingEvent serving_event_ring[SPARK_TEST_SERVICE_EVENT_CAPACITY];
+    SparkServingEvent serving_event_ring[SPARK_TEST_SERVICE_EVENT_CAPACITY];
     uint32_t host_prefill_token_ids[
         SPARK_TEST_SERVICE_LANE_CAPACITY *
         SPARK_TEST_SERVICE_PREFILL_TOKEN_STRIDE];
     uint32_t physical_block_indices[
         SPARK_TEST_SERVICE_LANE_CAPACITY *
-        SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY];
+        SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY];
     uint32_t lane_physical_block_counts[SPARK_TEST_SERVICE_LANE_CAPACITY];
-    SparkGlm52ServiceRuntime service;
-    SparkGlm52ServiceClientSession client_sessions[SPARK_TEST_SERVICE_CLIENT_CAPACITY];
-    SparkGlm52ServiceRequestMap request_maps[SPARK_TEST_SERVICE_REQUEST_MAP_CAPACITY];
-    SparkGlm52ServiceEvent service_event_ring[SPARK_TEST_SERVICE_EVENT_CAPACITY];
+    SparkServiceRuntime service;
+    SparkServiceClientSession client_sessions[SPARK_TEST_SERVICE_CLIENT_CAPACITY];
+    SparkServiceRequestMap request_maps[SPARK_TEST_SERVICE_REQUEST_MAP_CAPACITY];
+    SparkServiceEvent service_event_ring[SPARK_TEST_SERVICE_EVENT_CAPACITY];
     uint32_t first_prompt_tokens[SPARK_TEST_SERVICE_PROMPT_TOKEN_COUNT];
     uint32_t second_prompt_tokens[SPARK_TEST_SERVICE_PROMPT_TOKEN_COUNT];
 } SparkTestServiceFixture;
@@ -90,7 +90,7 @@ static SparkStatus SparkTestServiceKvPrefetch(
 
 static SparkStatus SparkTestServicePrefill(
     void *context,
-    const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+    const SparkPromptPipelinePrefillDispatch *prefill_dispatch)
 {
     SparkTestServiceCallbackContext *callback_context;
 
@@ -115,8 +115,8 @@ static SparkStatus SparkTestServicePrefill(
 
 static SparkStatus SparkTestServiceDecode(
     void *context,
-    const SparkGlm52ServingDecodeDispatch *decode_dispatch,
-    SparkGlm52ServingDecodeResult *decode_result)
+    const SparkServingDecodeDispatch *decode_dispatch,
+    SparkServingDecodeResult *decode_result)
 {
     SparkTestServiceCallbackContext *callback_context;
     uint32_t lane_index;
@@ -130,10 +130,10 @@ static SparkStatus SparkTestServiceDecode(
     assert(decode_dispatch->request_count != 0u);
     assert(decode_result != 0);
 
-    SparkGlm52ServingInitializeDecodeResult(
+    SparkServingInitializeDecodeResult(
         decode_result,
         decode_dispatch->request_count,
-        SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE);
+        SPARK_SERVING_MAX_DECODE_TOKENS_PER_LANE);
     for (lane_index = 0u;
          lane_index < decode_dispatch->request_count;
          ++lane_index)
@@ -152,11 +152,11 @@ static void SparkTestServiceInitializeFixture(
     SparkTestServiceCallbackContext *callback_context)
 {
     SparkGlm52KvCacheConfiguration kv_configuration;
-    SparkGlm52PrefixCacheConfiguration prefix_configuration;
-    SparkGlm52SchedulerConfiguration scheduler_configuration;
-    SparkGlm52RequestApiConfiguration request_api_configuration;
-    SparkGlm52ServingEngineConfiguration serving_configuration;
-    SparkGlm52ServiceConfiguration service_configuration;
+    SparkPrefixCacheConfiguration prefix_configuration;
+    SparkSchedulerConfiguration scheduler_configuration;
+    SparkRequestApiConfiguration request_api_configuration;
+    SparkServingEngineConfiguration serving_configuration;
+    SparkServiceConfiguration service_configuration;
 
     memset(fixture, 0, sizeof(*fixture));
     memset(callback_context, 0, sizeof(*callback_context));
@@ -175,7 +175,7 @@ static void SparkTestServiceInitializeFixture(
         SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     kv_configuration.physical_block_count = SPARK_TEST_SERVICE_KV_BLOCK_COUNT;
     kv_configuration.block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     kv_configuration.layer_count = 78u;
     kv_configuration.kv_head_count = 8u;
     kv_configuration.head_dim = 128u;
@@ -188,11 +188,11 @@ static void SparkTestServiceInitializeFixture(
         &kv_configuration) == SPARK_STATUS_OK);
 
     memset(&prefix_configuration, 0, sizeof(prefix_configuration));
-    prefix_configuration.abi_version = SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
+    prefix_configuration.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
     prefix_configuration.descriptor_bytes =
-        SPARK_GLM52_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_PREFIX_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     prefix_configuration.block_token_count =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     prefix_configuration.entry_count = SPARK_TEST_SERVICE_PREFIX_ENTRY_COUNT;
     prefix_configuration.physical_block_count = SPARK_TEST_SERVICE_KV_BLOCK_COUNT;
     prefix_configuration.sequence_binding_count =
@@ -200,54 +200,54 @@ static void SparkTestServiceInitializeFixture(
     prefix_configuration.entries = fixture->prefix_entries;
     prefix_configuration.sequence_bindings = fixture->prefix_bindings;
     prefix_configuration.kv_cache_arena = &fixture->kv_arena;
-    assert(SparkGlm52PrefixCacheInitialize(
+    assert(SparkPrefixCacheInitialize(
         &fixture->prefix_cache,
         &prefix_configuration) == SPARK_STATUS_OK);
 
     memset(&scheduler_configuration, 0, sizeof(scheduler_configuration));
-    scheduler_configuration.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    scheduler_configuration.abi_version = SPARK_SCHEDULER_ABI_VERSION;
     scheduler_configuration.descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES;
-    scheduler_configuration.spark_count = SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT;
+        SPARK_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES;
+    scheduler_configuration.spark_count = SPARK_SCHEDULER_MAX_SPARK_COUNT;
     scheduler_configuration.queue_depth_per_spark = 2u;
     scheduler_configuration.measured_profile_id =
-        SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701;
+        SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701;
     scheduler_configuration.quantization_mode =
-        SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
+        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
     scheduler_configuration.max_prefill_tokens_per_step =
         SPARK_TEST_SERVICE_PREFILL_TOKEN_STRIDE;
     scheduler_configuration.configuration_flags =
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
+        SPARK_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
     scheduler_configuration.prefix_cache_block_tokens =
-        SPARK_GLM52_SCHEDULER_PREFILL_BLOCK_TOKENS;
+        SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     scheduler_configuration.prefix_cache = &fixture->prefix_cache;
-    assert(SparkGlm52SchedulerInitialize(
+    assert(SparkSchedulerInitialize(
         &fixture->scheduler,
         &scheduler_configuration) == SPARK_STATUS_OK);
 
     memset(&request_api_configuration, 0, sizeof(request_api_configuration));
-    request_api_configuration.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
+    request_api_configuration.abi_version = SPARK_REQUEST_API_ABI_VERSION;
     request_api_configuration.descriptor_bytes =
-        SPARK_GLM52_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_REQUEST_API_CONFIGURATION_DESCRIPTOR_BYTES;
     request_api_configuration.request_capacity = SPARK_TEST_SERVICE_REQUEST_SLOT_COUNT;
     request_api_configuration.prefetch_lane_count =
-        SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT;
+        SPARK_SCHEDULER_MAX_SPARK_COUNT;
     request_api_configuration.decode_batch_target = 2u;
     request_api_configuration.scheduler = &fixture->scheduler;
     request_api_configuration.request_slots = fixture->request_slots;
     request_api_configuration.kv_prefetch_function = SparkTestServiceKvPrefetch;
-    assert(SparkGlm52RequestApiInitialize(
+    assert(SparkRequestApiInitialize(
         &fixture->request_api,
         &request_api_configuration) == SPARK_STATUS_OK);
 
     memset(&serving_configuration, 0, sizeof(serving_configuration));
-    serving_configuration.abi_version = SPARK_GLM52_SERVING_ENGINE_ABI_VERSION;
+    serving_configuration.abi_version = SPARK_SERVING_ENGINE_ABI_VERSION;
     serving_configuration.descriptor_bytes =
-        SPARK_GLM52_SERVING_ENGINE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_SERVING_ENGINE_CONFIGURATION_DESCRIPTOR_BYTES;
     serving_configuration.runtime_contract_flags =
-        SPARK_GLM52_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS |
-        SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_JIT_KV_PREFETCH_CONNECTED |
-        SPARK_GLM52_SERVING_RUNTIME_CONTRACT_FLAG_OVERLAPPED_STAGING_READY;
+        SPARK_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS |
+        SPARK_SERVING_RUNTIME_CONTRACT_FLAG_JIT_KV_PREFETCH_CONNECTED |
+        SPARK_SERVING_RUNTIME_CONTRACT_FLAG_OVERLAPPED_STAGING_READY;
     serving_configuration.default_output_token_budget = 1u;
     serving_configuration.default_max_prefill_tokens_per_step =
         SPARK_TEST_SERVICE_PREFILL_TOKEN_STRIDE;
@@ -269,23 +269,23 @@ static void SparkTestServiceInitializeFixture(
     serving_configuration.host_physical_block_indices =
         fixture->physical_block_indices;
     serving_configuration.kv_block_lane_stride =
-        SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
+        SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
     serving_configuration.kv_block_lane_capacity =
-        SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
+        SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
     serving_configuration.lane_physical_block_counts =
         fixture->lane_physical_block_counts;
     serving_configuration.lane_count_capacity = SPARK_TEST_SERVICE_LANE_CAPACITY;
     serving_configuration.prefill_function = SparkTestServicePrefill;
     serving_configuration.decode_function = SparkTestServiceDecode;
     serving_configuration.callback_context = callback_context;
-    assert(SparkGlm52ServingEngineInitialize(
+    assert(SparkServingEngineInitialize(
         &fixture->serving_engine,
         &serving_configuration) == SPARK_STATUS_OK);
 
     memset(&service_configuration, 0, sizeof(service_configuration));
-    service_configuration.abi_version = SPARK_GLM52_SERVICE_ABI_VERSION;
+    service_configuration.abi_version = SPARK_SERVICE_ABI_VERSION;
     service_configuration.descriptor_bytes =
-        SPARK_GLM52_SERVICE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_SERVICE_CONFIGURATION_DESCRIPTOR_BYTES;
     service_configuration.serving_engine = &fixture->serving_engine;
     service_configuration.client_sessions = fixture->client_sessions;
     service_configuration.client_session_capacity = SPARK_TEST_SERVICE_CLIENT_CAPACITY;
@@ -293,47 +293,47 @@ static void SparkTestServiceInitializeFixture(
     service_configuration.request_map_capacity = SPARK_TEST_SERVICE_REQUEST_MAP_CAPACITY;
     service_configuration.event_ring = fixture->service_event_ring;
     service_configuration.event_ring_capacity = SPARK_TEST_SERVICE_EVENT_CAPACITY;
-    assert(SparkGlm52ServiceInitialize(
+    assert(SparkServiceInitialize(
         &fixture->service,
         &service_configuration) == SPARK_STATUS_OK);
 }
 
 static void SparkTestServiceClientsUseInternalQueueing(void)
 {
-    SparkGlm52ServiceClientId first_client_id;
-    SparkGlm52ServiceClientId second_client_id;
-    SparkGlm52ServiceSubmitTokenIdsRequest submit_request;
-    SparkGlm52ServiceSubmitResult submit_result;
-    SparkGlm52ServiceStats stats;
-    SparkGlm52ServiceEvent event;
+    SparkServiceClientId first_client_id;
+    SparkServiceClientId second_client_id;
+    SparkServiceSubmitTokenIdsRequest submit_request;
+    SparkServiceSubmitResult submit_result;
+    SparkServiceStats stats;
+    SparkServiceEvent event;
     uint32_t first_token_event_count;
     uint32_t second_token_event_count;
     uint32_t completion_event_count;
     SparkStatus status;
 
     SparkTestServiceInitializeFixture(&Fixture, &CallbackContext);
-    assert(SparkGlm52ServiceRegisterClient(
+    assert(SparkServiceRegisterClient(
         &Fixture.service,
         100u,
         &first_client_id) == SPARK_STATUS_OK);
-    assert(SparkGlm52ServiceRegisterClient(
+    assert(SparkServiceRegisterClient(
         &Fixture.service,
         200u,
         &second_client_id) == SPARK_STATUS_OK);
 
-    SparkGlm52ServiceInitializeSubmitTokenIdsRequest(&submit_request);
+    SparkServiceInitializeSubmitTokenIdsRequest(&submit_request);
     submit_request.client_id = first_client_id;
     submit_request.client_request_id = 11u;
     submit_request.token_count = SPARK_TEST_SERVICE_PROMPT_TOKEN_COUNT;
     submit_request.token_ids = Fixture.first_prompt_tokens;
-    assert(SparkGlm52ServiceSubmitTokenIds(
+    assert(SparkServiceSubmitTokenIds(
         &Fixture.service,
         &submit_request,
         &submit_result) == SPARK_STATUS_OK);
     assert(submit_result.client_id == first_client_id);
     assert(submit_result.client_request_id == 11u);
 
-    assert(SparkGlm52ServiceSubmitTokenIds(
+    assert(SparkServiceSubmitTokenIds(
         &Fixture.service,
         &submit_request,
         &submit_result) == SPARK_STATUS_DUPLICATE);
@@ -341,12 +341,12 @@ static void SparkTestServiceClientsUseInternalQueueing(void)
     submit_request.client_id = second_client_id;
     submit_request.client_request_id = 22u;
     submit_request.token_ids = Fixture.second_prompt_tokens;
-    assert(SparkGlm52ServiceSubmitTokenIds(
+    assert(SparkServiceSubmitTokenIds(
         &Fixture.service,
         &submit_request,
         &submit_result) == SPARK_STATUS_OK);
 
-    status = SparkGlm52ServicePump(&Fixture.service, 16u, &stats);
+    status = SparkServicePump(&Fixture.service, 16u, &stats);
     assert(status == SPARK_STATUS_OK);
     assert(CallbackContext.prefill_callback_count == 1u);
     assert(CallbackContext.largest_prefill_lane_count == 2u);
@@ -358,9 +358,9 @@ static void SparkTestServiceClientsUseInternalQueueing(void)
     first_token_event_count = 0u;
     second_token_event_count = 0u;
     completion_event_count = 0u;
-    while (SparkGlm52ServicePopEvent(&Fixture.service, &event) == SPARK_STATUS_OK)
+    while (SparkServicePopEvent(&Fixture.service, &event) == SPARK_STATUS_OK)
     {
-        if (event.kind == SPARK_GLM52_SERVICE_EVENT_KIND_TOKEN)
+        if (event.kind == SPARK_SERVICE_EVENT_KIND_TOKEN)
         {
             if (event.client_id == first_client_id)
             {
@@ -373,7 +373,7 @@ static void SparkTestServiceClientsUseInternalQueueing(void)
                 assert(event.client_request_id == 22u);
             }
         }
-        else if (event.kind == SPARK_GLM52_SERVICE_EVENT_KIND_REQUEST_COMPLETED)
+        else if (event.kind == SPARK_SERVICE_EVENT_KIND_REQUEST_COMPLETED)
         {
             completion_event_count += 1u;
         }
@@ -385,33 +385,33 @@ static void SparkTestServiceClientsUseInternalQueueing(void)
 
 static void SparkTestServiceTokenFrameSubmitWorks(void)
 {
-    SparkGlm52ServiceClientId client_id;
-    SparkGlm52ServiceFrameHeader frame_header;
-    SparkGlm52ServiceSubmitTokenIdsFrameBody frame_body;
-    SparkGlm52ServiceSubmitResult submit_result;
+    SparkServiceClientId client_id;
+    SparkServiceFrameHeader frame_header;
+    SparkServiceSubmitTokenIdsFrameBody frame_body;
+    SparkServiceSubmitResult submit_result;
     unsigned char frame_body_storage[
-        SPARK_GLM52_SERVICE_FRAME_SUBMIT_TOKENS_DESCRIPTOR_BYTES +
+        SPARK_SERVICE_FRAME_SUBMIT_TOKENS_DESCRIPTOR_BYTES +
         8u * sizeof(uint32_t)];
     uint32_t *token_ids;
     uint32_t token_index;
 
     SparkTestServiceInitializeFixture(&Fixture, &CallbackContext);
-    assert(SparkGlm52ServiceRegisterClient(
+    assert(SparkServiceRegisterClient(
         &Fixture.service,
         300u,
         &client_id) == SPARK_STATUS_OK);
 
-    SparkGlm52ServiceInitializeFrameHeader(
+    SparkServiceInitializeFrameHeader(
         &frame_header,
-        SPARK_GLM52_SERVICE_FRAME_KIND_SUBMIT_TOKEN_IDS);
+        SPARK_SERVICE_FRAME_KIND_SUBMIT_TOKEN_IDS);
     frame_header.client_id = client_id;
     frame_header.client_request_id = 44u;
     frame_header.body_bytes = sizeof(frame_body_storage);
 
     memset(&frame_body, 0, sizeof(frame_body));
-    frame_body.abi_version = SPARK_GLM52_SERVICE_ABI_VERSION;
+    frame_body.abi_version = SPARK_SERVICE_ABI_VERSION;
     frame_body.descriptor_bytes =
-        SPARK_GLM52_SERVICE_FRAME_SUBMIT_TOKENS_DESCRIPTOR_BYTES;
+        SPARK_SERVICE_FRAME_SUBMIT_TOKENS_DESCRIPTOR_BYTES;
     frame_body.output_token_budget = 1u;
     frame_body.token_count = 8u;
     memcpy(frame_body_storage, &frame_body, sizeof(frame_body));
@@ -421,7 +421,7 @@ static void SparkTestServiceTokenFrameSubmitWorks(void)
         token_ids[token_index] = 88000u + token_index;
     }
 
-    assert(SparkGlm52ServiceHandleSubmitTokenIdsFrame(
+    assert(SparkServiceHandleSubmitTokenIdsFrame(
         &Fixture.service,
         client_id,
         &frame_header,

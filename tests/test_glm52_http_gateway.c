@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "sparkpipe/spark_glm52_http_gateway.h"
+#include "sparkpipe/spark_http_gateway.h"
 #include "sparkpipe/spark_glm52_model.h"
 
 #define main SparkTestHttpGatewayToolMain
@@ -35,8 +35,8 @@ static void SparkTestHttpGatewayQueuesBeyondActiveLanes(void)
 	}
 	assert(runtime.pending_stream_count == 16u);
 	assert(SPARK_GLM52_GATEWAY_PENDING_STREAM_CAPACITY ==
-		SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT *
-		SPARK_GLM52_STAGE_PLAN_MAX_BATCH_BUCKET);
+		SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT *
+		SPARK_STAGE_PLAN_MAX_BATCH_BUCKET);
 	assert(SPARK_GLM52_GATEWAY_PENDING_STREAM_CAPACITY >
 		runtime.configuration.max_active_sequence_count);
 }
@@ -64,7 +64,7 @@ static void SparkTestHttpGatewayPollsBetweenDispatches(void)
 
 	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
 	assert(runtime.configuration.pump_steps ==
-		SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT);
+		SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT);
 	assert(SparkGlm52GatewayPollTimeout(&runtime) == -1);
 	runtime.pump_log_valid = 1u;
 	runtime.last_pump_status = SPARK_STATUS_OK;
@@ -113,43 +113,43 @@ static void SparkTestHttpGatewayCancelsDisconnectedStream(void)
 
 static void SparkTestHttpGatewayRoutes(void)
 {
-	SparkGlm52HttpGatewayRequest request;
+	SparkHttpGatewayRequest request;
 
-	SparkGlm52HttpGatewayInitializeRequest(&request);
+	SparkHttpGatewayInitializeRequest(&request);
 	request.method = "OPTIONS";
 	request.path = "/v1/chat/completions";
-	assert(SparkGlm52HttpGatewayRoute(&request) ==
-		SPARK_GLM52_HTTP_GATEWAY_ROUTE_CORS_PREFLIGHT);
+	assert(SparkHttpGatewayRoute(&request) ==
+		SPARK_HTTP_GATEWAY_ROUTE_CORS_PREFLIGHT);
 	request.method = "GET";
 	request.path = "/";
-	assert(SparkGlm52HttpGatewayRoute(&request) ==
-		SPARK_GLM52_HTTP_GATEWAY_ROUTE_DEMO_UI);
+	assert(SparkHttpGatewayRoute(&request) ==
+		SPARK_HTTP_GATEWAY_ROUTE_DEMO_UI);
 	request.path = "/health";
-	assert(SparkGlm52HttpGatewayRoute(&request) ==
-		SPARK_GLM52_HTTP_GATEWAY_ROUTE_HEALTH);
+	assert(SparkHttpGatewayRoute(&request) ==
+		SPARK_HTTP_GATEWAY_ROUTE_HEALTH);
 	request.method = "POST";
 	request.path = "/v1/chat/completions";
-	assert(SparkGlm52HttpGatewayRoute(&request) ==
-		SPARK_GLM52_HTTP_GATEWAY_ROUTE_OPENAI_CHAT);
+	assert(SparkHttpGatewayRoute(&request) ==
+		SPARK_HTTP_GATEWAY_ROUTE_OPENAI_CHAT);
 	request.path = "/v1/completions";
-	assert(SparkGlm52HttpGatewayRoute(&request) ==
-		SPARK_GLM52_HTTP_GATEWAY_ROUTE_OPENAI_COMPLETIONS);
+	assert(SparkHttpGatewayRoute(&request) ==
+		SPARK_HTTP_GATEWAY_ROUTE_OPENAI_COMPLETIONS);
 	request.path = "/v1/messages";
-	assert(SparkGlm52HttpGatewayRoute(&request) ==
-		SPARK_GLM52_HTTP_GATEWAY_ROUTE_ANTHROPIC_MESSAGES);
+	assert(SparkHttpGatewayRoute(&request) ==
+		SPARK_HTTP_GATEWAY_ROUTE_ANTHROPIC_MESSAGES);
 	request.path = "/bad";
-	assert(SparkGlm52HttpGatewayRoute(&request) ==
-		SPARK_GLM52_HTTP_GATEWAY_ROUTE_NONE);
+	assert(SparkHttpGatewayRoute(&request) ==
+		SPARK_HTTP_GATEWAY_ROUTE_NONE);
 }
 
 
 static void SparkTestHttpGatewayBuildsCorsPreflight(void)
 {
-    SparkGlm52HttpGatewayResponse response;
+    SparkHttpGatewayResponse response;
     char body[16];
 
-    SparkGlm52HttpGatewayInitializeResponse(&response, body, sizeof(body));
-    assert(SparkGlm52HttpGatewayBuildCorsPreflight(&response) ==
+    SparkHttpGatewayInitializeResponse(&response, body, sizeof(body));
+    assert(SparkHttpGatewayBuildCorsPreflight(&response) ==
         SPARK_STATUS_OK);
     assert(response.status_code == 200u);
     assert(response.body_bytes == 0u);
@@ -157,11 +157,11 @@ static void SparkTestHttpGatewayBuildsCorsPreflight(void)
 
 static void SparkTestHttpGatewayBuildsHealth(void)
 {
-	SparkGlm52HttpGatewayResponse response;
+	SparkHttpGatewayResponse response;
 	char body[512];
 
-	SparkGlm52HttpGatewayInitializeResponse(&response,body,sizeof(body));
-	assert(SparkGlm52HttpGatewayBuildHealth(&response,1u,0u) ==
+	SparkHttpGatewayInitializeResponse(&response,body,sizeof(body));
+	assert(SparkHttpGatewayBuildHealth(&response,1u,0u) ==
 		SPARK_STATUS_OK);
 	assert(response.status_code == 200u);
 	assert(strcmp(response.content_type,"application/json") == 0);
@@ -172,14 +172,14 @@ static void SparkTestHttpGatewayBuildsHealth(void)
 
 static void SparkTestHttpGatewayBuildsSseUnavailable(void)
 {
-	SparkGlm52HttpGatewayResponse response;
+	SparkHttpGatewayResponse response;
 	char body[512];
 
-	SparkGlm52HttpGatewayInitializeResponse(&response,body,sizeof(body));
-	assert(SparkGlm52HttpGatewayBuildBackendUnavailable(&response,1u) ==
+	SparkHttpGatewayInitializeResponse(&response,body,sizeof(body));
+	assert(SparkHttpGatewayBuildBackendUnavailable(&response,1u) ==
 		SPARK_STATUS_OK);
 	assert(response.status_code == 503u);
-	assert((response.flags & SPARK_GLM52_HTTP_GATEWAY_RESPONSE_FLAG_STREAM) != 0u);
+	assert((response.flags & SPARK_HTTP_GATEWAY_RESPONSE_FLAG_STREAM) != 0u);
 	assert(strcmp(response.content_type,"text/event-stream") == 0);
 	assert(strstr(body,"event: error") != 0);
 }
@@ -187,9 +187,9 @@ static void SparkTestHttpGatewayBuildsSseUnavailable(void)
 
 static void SparkTestHttpGatewayBuildsServiceHealth(void)
 {
-    SparkGlm52HttpGatewayResponse response;
-    SparkGlm52ServiceBackendView backend_view;
-    SparkGlm52ServiceStats stats;
+    SparkHttpGatewayResponse response;
+    SparkServiceBackendView backend_view;
+    SparkServiceStats stats;
     char body[4096];
 
     memset(&stats, 0, sizeof(stats));
@@ -214,14 +214,14 @@ static void SparkTestHttpGatewayBuildsServiceHealth(void)
 	backend_view.decode_batch_capacity = 256u;
 	backend_view.prefill_wave_token_count = 16u;
     backend_view.speculation_configuration_flags =
-        SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP;
+        SPARK_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP;
     backend_view.release_id = "release-1";
     backend_view.release_git_commit = "abcdef";
     backend_view.release_generation = 42u;
     backend_view.transport_shared_object_path = "tcp-host-staged.so";
     backend_view.first_blocker = "none";
-    SparkGlm52HttpGatewayInitializeResponse(&response, body, sizeof(body));
-    assert(SparkGlm52HttpGatewayBuildServiceHealth(
+    SparkHttpGatewayInitializeResponse(&response, body, sizeof(body));
+    assert(SparkHttpGatewayBuildServiceHealth(
         &response,
         &stats,
         &backend_view) ==
@@ -250,41 +250,41 @@ static void SparkTestHttpGatewayBuildsServiceHealth(void)
 
 static void SparkTestHttpGatewayFormatsTokenEvent(void)
 {
-    SparkGlm52HttpGatewayResponse response;
-    SparkGlm52ServiceEvent event;
+    SparkHttpGatewayResponse response;
+    SparkServiceEvent event;
     char body[1024];
 
     memset(&event, 0, sizeof(event));
-    event.abi_version = SPARK_GLM52_SERVICE_ABI_VERSION;
-    event.descriptor_bytes = SPARK_GLM52_SERVICE_EVENT_DESCRIPTOR_BYTES;
-    event.kind = SPARK_GLM52_SERVICE_EVENT_KIND_TOKEN;
+    event.abi_version = SPARK_SERVICE_ABI_VERSION;
+    event.descriptor_bytes = SPARK_SERVICE_EVENT_DESCRIPTOR_BYTES;
+    event.kind = SPARK_SERVICE_EVENT_KIND_TOKEN;
     event.client_id = 11u;
     event.client_request_id = 22u;
     event.token_id = 333u;
     event.token_index = 4u;
-    SparkGlm52HttpGatewayInitializeResponse(&response, body, sizeof(body));
-    assert(SparkGlm52HttpGatewayBuildServiceEventStream(
+    SparkHttpGatewayInitializeResponse(&response, body, sizeof(body));
+    assert(SparkHttpGatewayBuildServiceEventStream(
         &response,
         &event,
         0) == SPARK_STATUS_OK);
     assert(response.status_code == 200u);
-    assert((response.flags & SPARK_GLM52_HTTP_GATEWAY_RESPONSE_FLAG_STREAM) != 0u);
+    assert((response.flags & SPARK_HTTP_GATEWAY_RESPONSE_FLAG_STREAM) != 0u);
     assert(strstr(body, "event: token") != 0);
     assert(strstr(body, "\"token_id\":333") != 0);
 }
 
 static void SparkTestHttpGatewayAuth(void)
 {
-	SparkGlm52HttpGatewayRequest request;
+	SparkHttpGatewayRequest request;
 	static const char Auth[] = "Bearer secret";
 
-	SparkGlm52HttpGatewayInitializeRequest(&request);
-	assert(SparkGlm52HttpGatewayAuthorizationMatches(&request,0) == 1u);
-	assert(SparkGlm52HttpGatewayAuthorizationMatches(&request,"") == 1u);
+	SparkHttpGatewayInitializeRequest(&request);
+	assert(SparkHttpGatewayAuthorizationMatches(&request,0) == 1u);
+	assert(SparkHttpGatewayAuthorizationMatches(&request,"") == 1u);
 	request.authorization = Auth;
 	request.authorization_bytes = (uint32_t)strlen(Auth);
-	assert(SparkGlm52HttpGatewayAuthorizationMatches(&request,"secret") == 1u);
-	assert(SparkGlm52HttpGatewayAuthorizationMatches(&request,"bad") == 0u);
+	assert(SparkHttpGatewayAuthorizationMatches(&request,"secret") == 1u);
+	assert(SparkHttpGatewayAuthorizationMatches(&request,"bad") == 0u);
 }
 
 static void SparkTestHttpGatewayStreamFlag(void)
@@ -292,10 +292,10 @@ static void SparkTestHttpGatewayStreamFlag(void)
 	static const char StreamBody[] = "{\"model\":\"glm-5.2\",\"stream\" : true}";
 	static const char PlainBody[] = "{\"model\":\"glm-5.2\"}";
 
-	assert(SparkGlm52HttpGatewayBodyRequestsStream(
+	assert(SparkHttpGatewayBodyRequestsStream(
 		StreamBody,
 		(uint32_t)strlen(StreamBody)) == 1u);
-	assert(SparkGlm52HttpGatewayBodyRequestsStream(
+	assert(SparkHttpGatewayBodyRequestsStream(
 		PlainBody,
 		(uint32_t)strlen(PlainBody)) == 0u);
 }

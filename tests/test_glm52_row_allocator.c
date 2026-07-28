@@ -1,4 +1,4 @@
-#include "sparkpipe/spark_glm52_row_allocator.h"
+#include "sparkpipe/spark_row_allocator.h"
 
 #include <assert.h>
 #include <string.h>
@@ -8,7 +8,7 @@
 // acceptance signal is. Speculation never displaces a queued real row.
 static void SparkTestRowAllocatorSaturatedWaveIsAllReal(void)
 {
-    SparkGlm52RowAllocatorSlotInput slots[8];
+    SparkRowAllocatorSlotInput slots[8];
     uint32_t budgets[8];
     uint32_t slot_index,total;
     memset(slots, 0, sizeof(slots));
@@ -17,7 +17,7 @@ static void SparkTestRowAllocatorSaturatedWaveIsAllReal(void)
         slots[slot_index].commit_ema_milli = 2900u;
         slots[slot_index].maximum_draft_depth = 5u;
     }
-    total = SparkGlm52RowAllocatorAssign(slots, 8u, 8u, 1000u, budgets);
+    total = SparkRowAllocatorAssign(slots, 8u, 8u, 1000u, budgets);
     assert(total == 8u);
     for (slot_index = 0u; slot_index < 8u; ++slot_index)
         assert(budgets[slot_index] == 0u);
@@ -27,7 +27,7 @@ static void SparkTestRowAllocatorSaturatedWaveIsAllReal(void)
 // lane, and the total never exceeds the cap.
 static void SparkTestRowAllocatorUndersubscribedFillsByAlpha(void)
 {
-    SparkGlm52RowAllocatorSlotInput slots[2];
+    SparkRowAllocatorSlotInput slots[2];
     uint32_t budgets[2];
     uint32_t total;
     memset(slots, 0, sizeof(slots));
@@ -35,7 +35,7 @@ static void SparkTestRowAllocatorUndersubscribedFillsByAlpha(void)
     slots[0].maximum_draft_depth = 5u;
     slots[1].commit_ema_milli = 1300u;
     slots[1].maximum_draft_depth = 5u;
-    total = SparkGlm52RowAllocatorAssign(slots, 2u, 8u, 1000u, budgets);
+    total = SparkRowAllocatorAssign(slots, 2u, 8u, 1000u, budgets);
     assert(total <= 8u);
     assert(budgets[0] > budgets[1]);
     assert(budgets[0] == 5u);
@@ -52,7 +52,7 @@ static void SparkTestRowAllocatorUndersubscribedFillsByAlpha(void)
 // capacity is abundant.
 static void SparkTestRowAllocatorSuppressedSlotStaysPlain(void)
 {
-    SparkGlm52RowAllocatorSlotInput slots[2];
+    SparkRowAllocatorSlotInput slots[2];
     uint32_t budgets[2];
     uint32_t total;
     memset(slots, 0, sizeof(slots));
@@ -60,7 +60,7 @@ static void SparkTestRowAllocatorSuppressedSlotStaysPlain(void)
     slots[0].maximum_draft_depth = 0u;
     slots[1].commit_ema_milli = 2900u;
     slots[1].maximum_draft_depth = 5u;
-    total = SparkGlm52RowAllocatorAssign(slots, 2u, 16u, 1000u, budgets);
+    total = SparkRowAllocatorAssign(slots, 2u, 16u, 1000u, budgets);
     assert(budgets[0] == 0u);
     assert(budgets[1] == 5u);
     assert(total == 7u);
@@ -70,7 +70,7 @@ static void SparkTestRowAllocatorSuppressedSlotStaysPlain(void)
 // competes no further; the probe is capacity-bounded.
 static void SparkTestRowAllocatorProbeGrant(void)
 {
-    SparkGlm52RowAllocatorSlotInput slots[2];
+    SparkRowAllocatorSlotInput slots[2];
     uint32_t budgets[2];
     uint32_t total;
     memset(slots, 0, sizeof(slots));
@@ -79,13 +79,13 @@ static void SparkTestRowAllocatorProbeGrant(void)
     slots[0].probe = 1u;
     slots[1].commit_ema_milli = 2900u;
     slots[1].maximum_draft_depth = 5u;
-    total = SparkGlm52RowAllocatorAssign(slots, 2u, 16u, 1000u, budgets);
+    total = SparkRowAllocatorAssign(slots, 2u, 16u, 1000u, budgets);
     assert(budgets[0] == 2u);
     assert(budgets[1] == 5u);
     assert(total == 9u);
     // Tight capacity: base rows consume 2 of 3; the single remaining row goes
     // to the probe, which precedes value grants.
-    total = SparkGlm52RowAllocatorAssign(slots, 2u, 3u, 1000u, budgets);
+    total = SparkRowAllocatorAssign(slots, 2u, 3u, 1000u, budgets);
     assert(budgets[0] == 1u);
     assert(budgets[1] == 0u);
     assert(total == 3u);
@@ -95,13 +95,13 @@ static void SparkTestRowAllocatorProbeGrant(void)
 // drafting has demonstrated no value on that lane.
 static void SparkTestRowAllocatorNoValueNoSpec(void)
 {
-    SparkGlm52RowAllocatorSlotInput slots[1];
+    SparkRowAllocatorSlotInput slots[1];
     uint32_t budgets[1];
     uint32_t total;
     memset(slots, 0, sizeof(slots));
     slots[0].commit_ema_milli = 1000u;
     slots[0].maximum_draft_depth = 5u;
-    total = SparkGlm52RowAllocatorAssign(slots, 1u, 16u, 1000u, budgets);
+    total = SparkRowAllocatorAssign(slots, 1u, 16u, 1000u, budgets);
     assert(budgets[0] == 0u);
     assert(total == 1u);
 }
@@ -110,7 +110,7 @@ static void SparkTestRowAllocatorNoValueNoSpec(void)
 // slot-index order, so repeated runs produce identical assignments.
 static void SparkTestRowAllocatorDeterministicTies(void)
 {
-    SparkGlm52RowAllocatorSlotInput slots[3];
+    SparkRowAllocatorSlotInput slots[3];
     uint32_t budgets[3];
     uint32_t reference[3];
     uint32_t slot_index,total,run;
@@ -120,13 +120,13 @@ static void SparkTestRowAllocatorDeterministicTies(void)
         slots[slot_index].commit_ema_milli = 2000u;
         slots[slot_index].maximum_draft_depth = 5u;
     }
-    total = SparkGlm52RowAllocatorAssign(slots, 3u, 5u, 1000u, budgets);
+    total = SparkRowAllocatorAssign(slots, 3u, 5u, 1000u, budgets);
     assert(total == 5u);
     assert(budgets[0] == 1u && budgets[1] == 1u && budgets[2] == 0u);
     memcpy(reference, budgets, sizeof(reference));
     for (run = 0u; run < 4u; ++run)
     {
-        total = SparkGlm52RowAllocatorAssign(slots, 3u, 5u, 1000u, budgets);
+        total = SparkRowAllocatorAssign(slots, 3u, 5u, 1000u, budgets);
         assert(total == 5u);
         assert(memcmp(reference, budgets, sizeof(reference)) == 0);
     }
@@ -136,7 +136,7 @@ static void SparkTestRowAllocatorDeterministicTies(void)
 // equals the cap exactly; admission upstream owns the overflow.
 static void SparkTestRowAllocatorOverflowClampsToCap(void)
 {
-    SparkGlm52RowAllocatorSlotInput slots[4];
+    SparkRowAllocatorSlotInput slots[4];
     uint32_t budgets[4];
     uint32_t slot_index,total;
     memset(slots, 0, sizeof(slots));
@@ -145,7 +145,7 @@ static void SparkTestRowAllocatorOverflowClampsToCap(void)
         slots[slot_index].commit_ema_milli = 2900u;
         slots[slot_index].maximum_draft_depth = 5u;
     }
-    total = SparkGlm52RowAllocatorAssign(slots, 4u, 2u, 1000u, budgets);
+    total = SparkRowAllocatorAssign(slots, 4u, 2u, 1000u, budgets);
     assert(total == 2u);
     for (slot_index = 0u; slot_index < 4u; ++slot_index)
         assert(budgets[slot_index] == 0u);
@@ -157,7 +157,7 @@ static void SparkTestRowAllocatorOverflowClampsToCap(void)
 // base rows are granted before any scored comparison.
 static void SparkTestRowAllocatorCostWeightedScores(void)
 {
-    SparkGlm52RowAllocatorSlotInput slots[2];
+    SparkRowAllocatorSlotInput slots[2];
     uint32_t budgets[2];
     uint32_t total;
     memset(slots, 0, sizeof(slots));
@@ -170,10 +170,10 @@ static void SparkTestRowAllocatorCostWeightedScores(void)
     // 1091, 715, 468, 385, 306, 200 -> identical split to equal cost here, but
     // scores above 1000 demonstrate the regime where spec outranks a marginal
     // real row; saturation still yields all-real.
-    total = SparkGlm52RowAllocatorAssign(slots, 2u, 8u, 600u, budgets);
+    total = SparkRowAllocatorAssign(slots, 2u, 8u, 600u, budgets);
     assert(total == 8u);
     assert(budgets[0] == 5u && budgets[1] == 1u);
-    total = SparkGlm52RowAllocatorAssign(slots, 2u, 2u, 600u, budgets);
+    total = SparkRowAllocatorAssign(slots, 2u, 2u, 600u, budgets);
     assert(total == 2u);
     assert(budgets[0] == 0u && budgets[1] == 0u);
 }

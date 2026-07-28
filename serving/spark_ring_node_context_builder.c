@@ -1,20 +1,20 @@
-#include "sparkpipe/spark_glm52_ring_node_context_builder.h"
+#include "sparkpipe/spark_ring_node_context_builder.h"
 
 #include <dlfcn.h>
 #include <stdio.h>
 #include <string.h>
 
-SparkStatus SparkGlm52RingNodeContextBuilderValidateInterface(
-	const SparkGlm52RingNodeContextBuilderInterface *builder_interface,
+SparkStatus SparkRingNodeContextBuilderValidateInterface(
+	const SparkRingNodeContextBuilderInterface *builder_interface,
 	uint32_t required_capability_flags)
 {
 	if (builder_interface == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (builder_interface->abi_version !=
-		SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_ABI_VERSION)
+		SPARK_RING_NODE_CONTEXT_BUILDER_ABI_VERSION)
 		return SPARK_STATUS_ABI_MISMATCH;
 	if (builder_interface->descriptor_bytes !=
-		SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_INTERFACE_BYTES)
+		SPARK_RING_NODE_CONTEXT_BUILDER_INTERFACE_BYTES)
 		return SPARK_STATUS_ABI_MISMATCH;
 	if ((builder_interface->capability_flags & required_capability_flags) !=
 		required_capability_flags)
@@ -26,56 +26,56 @@ SparkStatus SparkGlm52RingNodeContextBuilderValidateInterface(
 		builder_interface->destroy_result == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((required_capability_flags &
-			SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_CAP_RANK0_TOKEN_INPUT) !=
+			SPARK_RING_NODE_CONTEXT_BUILDER_CAP_RANK0_TOKEN_INPUT) !=
 			0u &&
 		(builder_interface->attach_driver == 0 ||
 		 builder_interface->prefill == 0 ||
 		 builder_interface->decode == 0))
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((required_capability_flags &
-			SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_CAP_RANK_WORK_DISPATCH) !=
+			SPARK_RING_NODE_CONTEXT_BUILDER_CAP_RANK_WORK_DISPATCH) !=
 			0u &&
 		builder_interface->submit_work == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((required_capability_flags &
-			SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_CAP_KV_LOOKAHEAD_PREFETCH) !=
+			SPARK_RING_NODE_CONTEXT_BUILDER_CAP_KV_LOOKAHEAD_PREFETCH) !=
 			0u &&
 		builder_interface->prefetch_work == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((required_capability_flags &
-			SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_CAP_ASYNC_WORK) != 0u &&
+			SPARK_RING_NODE_CONTEXT_BUILDER_CAP_ASYNC_WORK) != 0u &&
 		builder_interface->progress == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((required_capability_flags &
-			SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_CAP_DSPARK_DRAFT) != 0u &&
+			SPARK_RING_NODE_CONTEXT_BUILDER_CAP_DSPARK_DRAFT) != 0u &&
 		builder_interface->take_dspark_draft == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((required_capability_flags &
-			SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_CAP_NVME_KV) != 0u &&
+			SPARK_RING_NODE_CONTEXT_BUILDER_CAP_NVME_KV) != 0u &&
 		builder_interface->get_kv_stats == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((required_capability_flags &
-			SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_CAP_MOONCAKE_KV) != 0u &&
+			SPARK_RING_NODE_CONTEXT_BUILDER_CAP_MOONCAKE_KV) != 0u &&
 		(builder_interface->get_kv_stats == 0 ||
 		 builder_interface->prefetch_work == 0))
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if ((required_capability_flags &
-			SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_CAP_CONTROL_GENERATION_RESET) != 0u &&
+			SPARK_RING_NODE_CONTEXT_BUILDER_CAP_CONTROL_GENERATION_RESET) != 0u &&
 		builder_interface->reset_control_generation == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52RingNodeContextBuilderValidateResult(
-	const SparkGlm52RingNodeContextBuilderResult *result,
-	const SparkGlm52RingRuntimeRankPlan *rank_plan)
+SparkStatus SparkRingNodeContextBuilderValidateResult(
+	const SparkRingNodeContextBuilderResult *result,
+	const SparkRingRuntimeRankPlan *rank_plan)
 {
 	if (result == 0 || rank_plan == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (result->abi_version !=
-		SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_ABI_VERSION ||
+		SPARK_RING_NODE_CONTEXT_BUILDER_ABI_VERSION ||
 		result->descriptor_bytes !=
-			SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_RESULT_BYTES)
+			SPARK_RING_NODE_CONTEXT_BUILDER_RESULT_BYTES)
 		return SPARK_STATUS_ABI_MISMATCH;
 	if (result->node_context == 0 ||
 		result->rank_index != rank_plan->rank_index ||
@@ -86,14 +86,14 @@ SparkStatus SparkGlm52RingNodeContextBuilderValidateResult(
 	return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52RingNodeContextBuilderLoadInterfaceFromSharedObject(
+SparkStatus SparkRingNodeContextBuilderLoadInterfaceFromSharedObject(
 	const char *shared_object_path,
 	uint32_t required_capability_flags,
-	SparkGlm52RingNodeContextBuilderDynamicLibrary *library)
+	SparkRingNodeContextBuilderDynamicLibrary *library)
 {
 	void *dynamic_library;
 	SparkGlm52RingNodeContextBuilderGetInterfaceFunction get_interface;
-	const SparkGlm52RingNodeContextBuilderInterface *builder_interface;
+	const SparkRingNodeContextBuilderInterface *builder_interface;
 	SparkStatus status;
 
 	if (shared_object_path == 0 || library == 0)
@@ -108,18 +108,18 @@ SparkStatus SparkGlm52RingNodeContextBuilderLoadInterfaceFromSharedObject(
 	}
 	get_interface = (SparkGlm52RingNodeContextBuilderGetInterfaceFunction)dlsym(
 		dynamic_library,
-		SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_INTERFACE_SYMBOL);
+		SPARK_RING_NODE_CONTEXT_BUILDER_INTERFACE_SYMBOL);
 	if (get_interface == 0)
 	{
 		fprintf(stderr,"ring_builder_dlsym path=%s symbol=%s error=%s\n",
 			shared_object_path,
-			SPARK_GLM52_RING_NODE_CONTEXT_BUILDER_INTERFACE_SYMBOL,
+			SPARK_RING_NODE_CONTEXT_BUILDER_INTERFACE_SYMBOL,
 			dlerror());
 		dlclose(dynamic_library);
 		return SPARK_STATUS_NOT_FOUND;
 	}
 	builder_interface = get_interface();
-	status = SparkGlm52RingNodeContextBuilderValidateInterface(
+	status = SparkRingNodeContextBuilderValidateInterface(
 		builder_interface,
 		required_capability_flags);
 	if (status != SPARK_STATUS_OK)
@@ -132,8 +132,8 @@ SparkStatus SparkGlm52RingNodeContextBuilderLoadInterfaceFromSharedObject(
 	return SPARK_STATUS_OK;
 }
 
-void SparkGlm52RingNodeContextBuilderUnloadInterface(
-	SparkGlm52RingNodeContextBuilderDynamicLibrary *library)
+void SparkRingNodeContextBuilderUnloadInterface(
+	SparkRingNodeContextBuilderDynamicLibrary *library)
 {
 	if (library == 0)
 		return;

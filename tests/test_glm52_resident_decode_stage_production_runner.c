@@ -141,7 +141,7 @@ static void SparkTestProductionRunnerInitializeRunner(
     configuration.driver_instance = &TestState;
     configuration.program = &TestProgram;
     configuration.execution_stream = (void *)(uintptr_t)0x7777u;
-    assert(SparkGlm52ResidentDecodeStageProductionRunnerInitialize(
+    assert(SparkResidentDecodeStageProductionRunnerInitialize(
         runner,
         &configuration) == SPARK_STATUS_OK);
 }
@@ -358,7 +358,7 @@ static void SparkTestProductionRunnerRejectsSlowProgram(void)
     configuration.driver_interface = &TestInterface;
     configuration.driver_instance = &TestState;
     configuration.program = &slow_program;
-    assert(SparkGlm52ResidentDecodeStageProductionRunnerInitialize(
+    assert(SparkResidentDecodeStageProductionRunnerInitialize(
         &runner,
         &configuration) == SPARK_STATUS_INVALID_ARGUMENT);
 }

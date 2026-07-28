@@ -1,9 +1,9 @@
-#include "sparkpipe/spark_glm52_production_topology.h"
+#include "sparkpipe/spark_production_topology.h"
 
 #include <stdio.h>
 #include <string.h>
 
-static SparkStatus SparkGlm52ProductionTopologyReport(
+static SparkStatus SparkProductionTopologyReport(
     char *error_buffer,
     uint32_t error_buffer_bytes,
     SparkStatus status,
@@ -23,40 +23,40 @@ static SparkStatus SparkGlm52ProductionTopologyReport(
     return status;
 }
 
-static uint32_t SparkGlm52ProductionTopologyMinimumU32(uint32_t left,uint32_t right)
+static uint32_t SparkProductionTopologyMinimumU32(uint32_t left,uint32_t right)
 {
     return left < right ? left : right;
 }
 
-static uint32_t SparkGlm52ProductionTopologyStageEndLayer(
-    const SparkGlm52StagePlanStage *stage)
+static uint32_t SparkProductionTopologyStageEndLayer(
+    const SparkStagePlanStage *stage)
 {
     return stage->first_layer_index + stage->layer_count;
 }
 
-static uint32_t SparkGlm52ProductionTopologyStageContainsLayer(
-    const SparkGlm52StagePlanStage *stage,
+static uint32_t SparkProductionTopologyStageContainsLayer(
+    const SparkStagePlanStage *stage,
     uint32_t layer_index)
 {
     return layer_index >= stage->first_layer_index &&
-        layer_index < SparkGlm52ProductionTopologyStageEndLayer(stage);
+        layer_index < SparkProductionTopologyStageEndLayer(stage);
 }
 
-static SparkStatus SparkGlm52ProductionTopologyFindStageForLayer(
-    const SparkGlm52StagePlan *stage_plan,
+static SparkStatus SparkProductionTopologyFindStageForLayer(
+    const SparkStagePlan *stage_plan,
     uint32_t layer_index,
     uint32_t *stage_index_out)
 {
     uint32_t stage_index;
 
     if (stage_plan == 0 || stage_index_out == 0 ||
-        layer_index >= SPARK_GLM52_STAGE_PLAN_LAYER_COUNT)
+        layer_index >= SPARK_STAGE_PLAN_LAYER_COUNT)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     for (stage_index = 0u; stage_index < stage_plan->stage_count; ++stage_index)
     {
-        if (SparkGlm52ProductionTopologyStageContainsLayer(
+        if (SparkProductionTopologyStageContainsLayer(
                 &stage_plan->stages[stage_index],
                 layer_index))
         {
@@ -67,9 +67,9 @@ static SparkStatus SparkGlm52ProductionTopologyFindStageForLayer(
     return SPARK_STATUS_NOT_FOUND;
 }
 
-static SparkStatus SparkGlm52ProductionTopologyInitializeStages(
-    const SparkGlm52StagePlan *stage_plan,
-    SparkGlm52ProductionTopology *topology)
+static SparkStatus SparkProductionTopologyInitializeStages(
+    const SparkStagePlan *stage_plan,
+    SparkProductionTopology *topology)
 {
     uint32_t stage_index;
 
@@ -92,8 +92,8 @@ static SparkStatus SparkGlm52ProductionTopologyInitializeStages(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ProductionTopologyAppendSideband(
-    SparkGlm52ProductionTopology *topology,
+static SparkStatus SparkProductionTopologyAppendSideband(
+    SparkProductionTopology *topology,
     uint32_t source_layer_index,
     uint32_t group_end_layer_exclusive,
     uint32_t export_stage_index,
@@ -102,15 +102,15 @@ static SparkStatus SparkGlm52ProductionTopologyAppendSideband(
     uint64_t payload_bytes,
     uint32_t sideband_flags)
 {
-    SparkGlm52ProductionTopologyIndexShareSideBand *sideband;
-    SparkGlm52ProductionTopologyStage *export_stage;
-    SparkGlm52ProductionTopologyStage *import_stage;
+    SparkProductionTopologyIndexShareSideBand *sideband;
+    SparkProductionTopologyStage *export_stage;
+    SparkProductionTopologyStage *import_stage;
     uint32_t sideband_index;
 
     if (topology == 0 || export_stage_index >= topology->stage_count ||
         import_stage_index >= topology->stage_count ||
         topology->indexshare_sideband_count >=
-            SPARK_GLM52_PRODUCTION_TOPOLOGY_MAX_INDEXSHARE_SIDEBANDS)
+            SPARK_PRODUCTION_TOPOLOGY_MAX_INDEXSHARE_SIDEBANDS)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
@@ -145,9 +145,9 @@ static SparkStatus SparkGlm52ProductionTopologyAppendSideband(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ProductionTopologyAppendDsparkTapSidebands(
-    const SparkGlm52StagePlan *stage_plan,
-    SparkGlm52ProductionTopology *topology)
+static SparkStatus SparkProductionTopologyAppendDsparkTapSidebands(
+    const SparkStagePlan *stage_plan,
+    SparkProductionTopology *topology)
 {
     static const uint32_t AuxLayerIds[SPARK_GLM52_DSPARK_AUX_LAYER_COUNT] =
         SPARK_GLM52_DSPARK_AUX_LAYER_IDS_INITIALIZER;
@@ -165,13 +165,13 @@ static SparkStatus SparkGlm52ProductionTopologyAppendDsparkTapSidebands(
     {
         capture_layer_index = SPARK_GLM52_MODEL_DSPARK_AUX_CAPTURE_LAYER_INDEX(
             AuxLayerIds[tap_index]);
-        status = SparkGlm52ProductionTopologyFindStageForLayer(
+        status = SparkProductionTopologyFindStageForLayer(
             stage_plan,
             capture_layer_index,
             &export_stage_index);
         if (status != SPARK_STATUS_OK)
             return status;
-        status = SparkGlm52ProductionTopologyAppendSideband(
+        status = SparkProductionTopologyAppendSideband(
             topology,
             capture_layer_index,
             capture_layer_index + 1u,
@@ -179,70 +179,70 @@ static SparkStatus SparkGlm52ProductionTopologyAppendDsparkTapSidebands(
             import_stage_index,
             capture_layer_index + 1u,
             tap_payload_bytes,
-            SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP |
-                SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DEVICE_TO_DEVICE);
+            SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP |
+                SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DEVICE_TO_DEVICE);
         if (status != SPARK_STATUS_OK)
             return status;
     }
     return SPARK_STATUS_OK;
 }
 
-uint32_t SparkGlm52DsaIndexShareSourceLayer(uint32_t layer_index)
+uint32_t SparkDsaIndexShareSourceLayer(uint32_t layer_index)
 {
     uint32_t adjusted_layer_index;
 
-    if (layer_index >= SPARK_GLM52_STAGE_PLAN_LAYER_COUNT)
+    if (layer_index >= SPARK_STAGE_PLAN_LAYER_COUNT)
     {
         return UINT32_MAX;
     }
     if (layer_index <
-        SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT)
+        SPARK_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT)
     {
         return layer_index;
     }
     adjusted_layer_index =
         layer_index -
-        (SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET - 1u);
+        (SPARK_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET - 1u);
     return
-        (SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET - 1u) +
+        (SPARK_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET - 1u) +
         (adjusted_layer_index -
             (adjusted_layer_index %
-             SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT));
+             SPARK_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT));
 }
 
-SparkStatus SparkGlm52DsaIndexShareFindGroupEndLayerExclusive(
+SparkStatus SparkDsaIndexShareFindGroupEndLayerExclusive(
     uint32_t layer_index,
     uint32_t *group_end_layer_exclusive_out)
 {
     uint32_t source_layer_index;
 
     if (group_end_layer_exclusive_out == 0 ||
-        layer_index >= SPARK_GLM52_STAGE_PLAN_LAYER_COUNT)
+        layer_index >= SPARK_STAGE_PLAN_LAYER_COUNT)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    source_layer_index = SparkGlm52DsaIndexShareSourceLayer(layer_index);
+    source_layer_index = SparkDsaIndexShareSourceLayer(layer_index);
     *group_end_layer_exclusive_out =
         source_layer_index + 1u;
     if (source_layer_index + 1u >=
-        SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT)
+        SPARK_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT)
     {
         *group_end_layer_exclusive_out =
-            SparkGlm52ProductionTopologyMinimumU32(
+            SparkProductionTopologyMinimumU32(
                 source_layer_index +
-                    SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT,
-                SPARK_GLM52_STAGE_PLAN_LAYER_COUNT);
+                    SPARK_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT,
+                SPARK_STAGE_PLAN_LAYER_COUNT);
     }
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52ProductionTopologyBuild(
-    const SparkGlm52StagePlan *stage_plan,
+SparkStatus SparkProductionTopologyBuild(
+    const SparkStagePlan *stage_plan,
     uint32_t active_sequence_capacity,
     uint32_t selected_token_count,
     uint32_t kv_block_token_count,
     uint32_t mla_cache_element_count,
-    SparkGlm52ProductionTopology *topology,
+    SparkProductionTopology *topology,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
@@ -257,13 +257,13 @@ SparkStatus SparkGlm52ProductionTopologyBuild(
         selected_token_count == 0u || kv_block_token_count == 0u ||
         mla_cache_element_count == 0u)
     {
-        return SparkGlm52ProductionTopologyReport(
+        return SparkProductionTopologyReport(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
             "production topology arguments are invalid");
     }
-    status = SparkGlm52StagePlanValidate(
+    status = SparkStagePlanValidate(
         stage_plan,
         error_buffer,
         error_buffer_bytes);
@@ -272,46 +272,46 @@ SparkStatus SparkGlm52ProductionTopologyBuild(
         return status;
     }
     memset(topology, 0, sizeof(*topology));
-    topology->abi_version = SPARK_GLM52_PRODUCTION_TOPOLOGY_ABI_VERSION;
-    topology->descriptor_bytes = SPARK_GLM52_PRODUCTION_TOPOLOGY_DESCRIPTOR_BYTES;
+    topology->abi_version = SPARK_PRODUCTION_TOPOLOGY_ABI_VERSION;
+    topology->descriptor_bytes = SPARK_PRODUCTION_TOPOLOGY_DESCRIPTOR_BYTES;
     topology->topology_flags =
-        SPARK_GLM52_PRODUCTION_TOPOLOGY_PRODUCTION_REQUIRED_FLAGS;
+        SPARK_PRODUCTION_TOPOLOGY_PRODUCTION_REQUIRED_FLAGS;
     topology->selected_token_count = selected_token_count;
     topology->active_sequence_capacity = active_sequence_capacity;
     topology->kv_block_token_count = kv_block_token_count;
     topology->mla_cache_element_count = mla_cache_element_count;
-    status = SparkGlm52ProductionTopologyInitializeStages(stage_plan, topology);
+    status = SparkProductionTopologyInitializeStages(stage_plan, topology);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkGlm52ProductionTopologyReport(
+        return SparkProductionTopologyReport(
             error_buffer,
             error_buffer_bytes,
             status,
             "failed to initialize topology stages");
     }
     for (source_layer_index = 0u;
-         source_layer_index < SPARK_GLM52_STAGE_PLAN_LAYER_COUNT;
+         source_layer_index < SPARK_STAGE_PLAN_LAYER_COUNT;
          source_layer_index += 1u)
     {
-        if (SparkGlm52DsaIndexShareSourceLayer(source_layer_index) !=
+        if (SparkDsaIndexShareSourceLayer(source_layer_index) !=
             source_layer_index)
         {
             continue;
         }
-        group_end_layer_exclusive = SparkGlm52ProductionTopologyMinimumU32(
+        group_end_layer_exclusive = SparkProductionTopologyMinimumU32(
             source_layer_index +
                 (source_layer_index + 1u >=
-                    SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT
-                    ? SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT
+                    SPARK_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT
+                    ? SPARK_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT
                     : 1u),
-            SPARK_GLM52_STAGE_PLAN_LAYER_COUNT);
-        status = SparkGlm52ProductionTopologyFindStageForLayer(
+            SPARK_STAGE_PLAN_LAYER_COUNT);
+        status = SparkProductionTopologyFindStageForLayer(
             stage_plan,
             source_layer_index,
             &export_stage_index);
         if (status != SPARK_STATUS_OK)
         {
-            return SparkGlm52ProductionTopologyReport(
+            return SparkProductionTopologyReport(
                 error_buffer,
                 error_buffer_bytes,
                 status,
@@ -326,7 +326,7 @@ SparkStatus SparkGlm52ProductionTopologyBuild(
             if (source_layer_index < boundary_layer_index &&
                 boundary_layer_index < group_end_layer_exclusive)
             {
-                status = SparkGlm52ProductionTopologyAppendSideband(
+                status = SparkProductionTopologyAppendSideband(
                     topology,
                     source_layer_index,
                     group_end_layer_exclusive,
@@ -336,11 +336,11 @@ SparkStatus SparkGlm52ProductionTopologyBuild(
                     (uint64_t)topology->active_sequence_capacity *
                         (uint64_t)topology->selected_token_count *
                         sizeof(uint32_t),
-                    SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_SELECTED_TOKEN_INDICES |
-                        SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DEVICE_TO_DEVICE);
+                    SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_SELECTED_TOKEN_INDICES |
+                        SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DEVICE_TO_DEVICE);
                 if (status != SPARK_STATUS_OK)
                 {
-                    return SparkGlm52ProductionTopologyReport(
+                    return SparkProductionTopologyReport(
                         error_buffer,
                         error_buffer_bytes,
                         status,
@@ -349,30 +349,30 @@ SparkStatus SparkGlm52ProductionTopologyBuild(
             }
         }
     }
-    status = SparkGlm52ProductionTopologyAppendDsparkTapSidebands(
+    status = SparkProductionTopologyAppendDsparkTapSidebands(
         stage_plan,
         topology);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkGlm52ProductionTopologyReport(
+        return SparkProductionTopologyReport(
             error_buffer,
             error_buffer_bytes,
             status,
             "failed to append dspark tap sidebands");
     }
-    return SparkGlm52ProductionTopologyValidate(
+    return SparkProductionTopologyValidate(
         topology,
         error_buffer,
         error_buffer_bytes);
 }
 
-SparkStatus SparkGlm52ProductionTopologyHopSidebandLayout(
-    const SparkGlm52ProductionTopology *topology,
+SparkStatus SparkProductionTopologyHopSidebandLayout(
+    const SparkProductionTopology *topology,
     uint32_t export_stage_index,
     uint32_t *sideband_kind_bits_out,
     uint32_t *sideband_bytes_per_sequence_out)
 {
-    const SparkGlm52ProductionTopologyIndexShareSideBand *sideband;
+    const SparkProductionTopologyIndexShareSideBand *sideband;
     uint32_t sideband_index;
     uint32_t kind_bits;
     uint64_t bytes_per_sequence;
@@ -404,13 +404,13 @@ SparkStatus SparkGlm52ProductionTopologyHopSidebandLayout(
         bytes_per_sequence += sideband->payload_bytes /
             (uint64_t)topology->active_sequence_capacity;
         if ((sideband->flags &
-                SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_SELECTED_TOKEN_INDICES) != 0u)
+                SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_SELECTED_TOKEN_INDICES) != 0u)
         {
             kind_bits |=
                 SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_INDEXSHARE_SELECTED_TOKENS;
         }
         if ((sideband->flags &
-                SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP) != 0u)
+                SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP) != 0u)
         {
             kind_bits |=
                 SPARK_HIDDEN_TRANSPORT_SIDEBAND_KIND_DSPARK_HIDDEN_TAP;
@@ -425,8 +425,8 @@ SparkStatus SparkGlm52ProductionTopologyHopSidebandLayout(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52ProductionTopologyArmHopSidebandPacket(
-    const SparkGlm52ProductionTopology *topology,
+SparkStatus SparkProductionTopologyArmHopSidebandPacket(
+    const SparkProductionTopology *topology,
     uint32_t export_stage_index,
     void *sideband_payload,
     SparkHiddenTransportPacket *packet)
@@ -439,7 +439,7 @@ SparkStatus SparkGlm52ProductionTopologyArmHopSidebandPacket(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkGlm52ProductionTopologyHopSidebandLayout(
+    status = SparkProductionTopologyHopSidebandLayout(
         topology,
         export_stage_index,
         &sideband_kind_bits,
@@ -467,45 +467,45 @@ SparkStatus SparkGlm52ProductionTopologyArmHopSidebandPacket(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52ProductionTopologyValidate(
-    const SparkGlm52ProductionTopology *topology,
+SparkStatus SparkProductionTopologyValidate(
+    const SparkProductionTopology *topology,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    const SparkGlm52ProductionTopologyIndexShareSideBand *sideband;
+    const SparkProductionTopologyIndexShareSideBand *sideband;
     uint32_t sideband_index;
 
     if (topology == 0 ||
-        topology->abi_version != SPARK_GLM52_PRODUCTION_TOPOLOGY_ABI_VERSION ||
+        topology->abi_version != SPARK_PRODUCTION_TOPOLOGY_ABI_VERSION ||
         topology->descriptor_bytes !=
-            SPARK_GLM52_PRODUCTION_TOPOLOGY_DESCRIPTOR_BYTES)
+            SPARK_PRODUCTION_TOPOLOGY_DESCRIPTOR_BYTES)
     {
-        return SparkGlm52ProductionTopologyReport(
+        return SparkProductionTopologyReport(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
             "production topology ABI mismatch");
     }
     if ((topology->topology_flags &
-            SPARK_GLM52_PRODUCTION_TOPOLOGY_PRODUCTION_REQUIRED_FLAGS) !=
-        SPARK_GLM52_PRODUCTION_TOPOLOGY_PRODUCTION_REQUIRED_FLAGS)
+            SPARK_PRODUCTION_TOPOLOGY_PRODUCTION_REQUIRED_FLAGS) !=
+        SPARK_PRODUCTION_TOPOLOGY_PRODUCTION_REQUIRED_FLAGS)
     {
-        return SparkGlm52ProductionTopologyReport(
+        return SparkProductionTopologyReport(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
             "production topology is missing required GLM52 DSA/MLA flags");
     }
     if (topology->stage_count == 0u ||
-        topology->stage_count > SPARK_GLM52_STAGE_PLAN_MAX_STAGE_COUNT ||
+        topology->stage_count > SPARK_STAGE_PLAN_MAX_STAGE_COUNT ||
         topology->active_sequence_capacity == 0u ||
         topology->selected_token_count == 0u ||
         topology->kv_block_token_count == 0u ||
         topology->mla_cache_element_count == 0u ||
         topology->indexshare_sideband_count >
-            SPARK_GLM52_PRODUCTION_TOPOLOGY_MAX_INDEXSHARE_SIDEBANDS)
+            SPARK_PRODUCTION_TOPOLOGY_MAX_INDEXSHARE_SIDEBANDS)
     {
-        return SparkGlm52ProductionTopologyReport(
+        return SparkProductionTopologyReport(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -516,29 +516,29 @@ SparkStatus SparkGlm52ProductionTopologyValidate(
          ++sideband_index)
     {
         sideband = &topology->indexshare_sidebands[sideband_index];
-        if (sideband->source_layer_index >= SPARK_GLM52_STAGE_PLAN_LAYER_COUNT ||
+        if (sideband->source_layer_index >= SPARK_STAGE_PLAN_LAYER_COUNT ||
             sideband->export_stage_index >= topology->stage_count ||
             sideband->import_stage_index >= topology->stage_count ||
             sideband->export_stage_index >= sideband->import_stage_index ||
             sideband->active_sequence_capacity !=
                 topology->active_sequence_capacity)
         {
-            return SparkGlm52ProductionTopologyReport(
+            return SparkProductionTopologyReport(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,
                 "production topology sideband is invalid");
         }
         if ((sideband->flags &
-                SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP) != 0u)
+                SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DSPARK_HIDDEN_TAP) != 0u)
         {
             if (sideband->payload_bytes !=
                     (uint64_t)topology->active_sequence_capacity *
                     SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES ||
                 (sideband->flags &
-                    SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DEVICE_TO_DEVICE) == 0u)
+                    SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DEVICE_TO_DEVICE) == 0u)
             {
-                return SparkGlm52ProductionTopologyReport(
+                return SparkProductionTopologyReport(
                     error_buffer,
                     error_buffer_bytes,
                     SPARK_STATUS_INVALID_ARGUMENT,
@@ -547,7 +547,7 @@ SparkStatus SparkGlm52ProductionTopologyValidate(
             continue;
         }
         if (sideband->group_end_layer_exclusive >
-                SPARK_GLM52_STAGE_PLAN_LAYER_COUNT ||
+                SPARK_STAGE_PLAN_LAYER_COUNT ||
             sideband->source_layer_index >=
                 sideband->first_imported_consumer_layer_index ||
             sideband->first_imported_consumer_layer_index >=
@@ -557,9 +557,9 @@ SparkStatus SparkGlm52ProductionTopologyValidate(
                 (uint64_t)topology->active_sequence_capacity *
                 (uint64_t)topology->selected_token_count * sizeof(uint32_t) ||
             (sideband->flags &
-                SPARK_GLM52_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_SELECTED_TOKEN_INDICES) == 0u)
+                SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_SELECTED_TOKEN_INDICES) == 0u)
         {
-            return SparkGlm52ProductionTopologyReport(
+            return SparkProductionTopologyReport(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,
