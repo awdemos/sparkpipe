@@ -23,6 +23,15 @@ uint32_t lm_topk_shared[LM_HOST_SHARED_BYTES / sizeof(uint32_t)];
 float lm_norm_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 
 #include "inference/kernels/dtype.cuh"
+
+// One lane per warp, overridden here rather than defaulted in mma.cuh. LmBlockSum
+// computes warps = THREADS / LM_WARP_LANES; at one thread and 32 lanes that is
+// zero and the reduction returns zero for every row, which turned an RMS norm
+// into a 225x error until the harness disagreed with the reference.
+#include "inference/kernels/mma.cuh"
+#undef LM_WARP_LANES
+#define LM_WARP_LANES LM_HOST_WARP_LANES
+
 #include "inference/kernels/linear_attn.cuh"
 
 #define HEADS 2u

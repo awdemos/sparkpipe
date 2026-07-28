@@ -65,6 +65,25 @@ extern LmHostDim3 gridDim;
 // rather than to a storage class an extern declaration cannot carry.
 #define __shared__
 #define LM_HOST_SHARED_BYTES 65536u
+
+// ONE LANE PER WARP, and this is load-bearing rather than cosmetic. LmBlockSum
+// computes warps = THREADS / LM_WARP_LANES; at THREADS 1 and 32 lanes that is
+// zero, the second stage reads shared[threadIdx.x] under threadIdx.x < 0, and
+// the reduction returns zero for every row. Declaring one lane per warp makes
+// both stages degenerate correctly: the shuffle loops start at offset 0 and do
+// not run, and the single thread's accumulation is already the total.
+//
+// The override is EXPLICIT AND AT THE CALL SITE, not an ifndef in mma.cuh. A
+// header that defines a value only when nobody else has is exactly the
+// silent-drift pattern this tree bans: it makes the effective width depend on
+// include order, which nothing states and nothing checks. Each harness writes
+//
+//     #undef LM_WARP_LANES
+//     #define LM_WARP_LANES LM_HOST_WARP_LANES
+//
+// after the device headers, so the change is one visible pair of lines in the
+// file that wants it rather than a conditional in the file that does not.
+#define LM_HOST_WARP_LANES 1u
 #define __syncthreads() ((void)0)
 #define __syncwarp(...) ((void)0)
 
@@ -98,7 +117,12 @@ struct uint4 { unsigned x, y, z, w; };
 static inline float2 make_float2(float a, float b) { float2 v; v.x = a; v.y = b; return v; }
 static inline __half __ushort_as_half(unsigned short bits) { __half h; h.raw = bits; return h; }
 static inline unsigned short __half_as_ushort(__half h) { return h.raw; }
-static inline float __shfl_down_sync(unsigned, float value, unsigned, int = 32) { return value; }
+// A shuffle from a lane that does not exist contributes nothing. Returning the
+// value unchanged instead - which is what an identity stub does - makes every
+// warp reduction multiply by two per step, and LmBlockSum's five steps turned
+// an RMS norm into a 225x error before this was fixed. The harness found it by
+// disagreeing with the reference, which is the harness working.
+static inline float __shfl_down_sync(unsigned, float, unsigned, int = 32) { return 0.0f; }
 static inline float __shfl_sync(unsigned, float value, int, int = 32) { return value; }
 static inline unsigned __ballot_sync(unsigned, int) { return 0u; }
 static inline void __threadfence_block(void) {}
