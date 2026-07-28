@@ -103,6 +103,27 @@ static inline float __shfl_sync(unsigned, float value, int, int = 32) { return v
 static inline unsigned __ballot_sync(unsigned, int) { return 0u; }
 static inline void __threadfence_block(void) {}
 
+// Atomics are ordinary reads and writes with one thread. That is exactly the
+// sequential schedule a correct kernel must also be valid under, so a race this
+// cannot see is a race the harness is honest about not seeing - see the shim's
+// header note.
+static inline unsigned atomicAdd(unsigned *address, unsigned value)
+{
+	unsigned old = *address; *address = old + value; return old;
+}
+static inline int atomicAdd(int *address, int value)
+{
+	int old = *address; *address = old + value; return old;
+}
+static inline float atomicAdd(float *address, float value)
+{
+	float old = *address; *address = old + value; return old;
+}
+static inline unsigned atomicMax(unsigned *address, unsigned value)
+{
+	unsigned old = *address; if (value > old) *address = value; return old;
+}
+
 typedef int cudaStream_t;
 typedef int cudaError_t;
 #define cudaSuccess 0

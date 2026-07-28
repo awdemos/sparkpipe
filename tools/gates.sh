@@ -49,6 +49,10 @@ run "expert grouping"      "python3 tests/test_expert_grouping.py"
 # either of the two bugs this path had - the undecayed prediction, the dropped
 # dt_bias - takes the relative error from 2e-3 to 3e-1 and 6e-2.
 run "kda on host"          "python3 tests/test_kda_host.py"
+# The routing path had three defects, all found by reading and none by running.
+# Emitting the biased score as the weight produces 9 failures here; skipping the
+# renormalisation produces 17.
+run "router on host"       "python3 tests/test_router_host.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run "grouped topk builds"  "sh tools/build_grouped_topk.sh"
