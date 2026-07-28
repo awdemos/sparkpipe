@@ -18,7 +18,7 @@
 #define SPARK_GLM52_TENSOR_BODY_EDGE_SAMPLE_BYTES 4096ull
 #define SPARK_GLM52_RESTRICTED_LM_HEAD_FIRST_TOKEN 1000ull
 #define SPARK_GLM52_RESTRICTED_LM_HEAD_TOKEN_COUNT \
-    ((uint64_t)SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT)
+    ((uint64_t)SPARK_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT)
 
 typedef struct SparkGlm52ArtifactGeometry
 {
@@ -337,13 +337,13 @@ static SparkStatus SparkCheckMetadataGeometry(
     SPARK_CHECK_METADATA_U32("heads", SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT);
     SPARK_CHECK_METADATA_U32("latent_dimension", SPARK_GLM52_RESIDENT_DECODE_STAGE_LATENT_DIMENSION);
     SPARK_CHECK_METADATA_U32("rope_dimension", SPARK_GLM52_RESIDENT_DECODE_STAGE_ROPE_DIMENSION);
-    SPARK_CHECK_METADATA_U32("selected_tokens", SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT);
-    SPARK_CHECK_METADATA_U32("kv_block_tokens", SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS);
+    SPARK_CHECK_METADATA_U32("selected_tokens", SPARK_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT);
+    SPARK_CHECK_METADATA_U32("kv_block_tokens", SPARK_RESIDENT_DECODE_STAGE_BLOCK_TOKENS);
     SPARK_CHECK_METADATA_U32("moe_expert_count", SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT);
     SPARK_CHECK_METADATA_U32("moe_top_k", SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K);
     SPARK_CHECK_METADATA_U32("moe_intermediate_dimension", SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION);
-    SPARK_CHECK_METADATA_U32("restricted_vocab_count", SPARK_GLM52_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT);
-    SPARK_CHECK_METADATA_U32("mtp_draft_tokens", SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT);
+    SPARK_CHECK_METADATA_U32("restricted_vocab_count", SPARK_RESIDENT_DECODE_STAGE_RESTRICTED_VOCAB_COUNT);
+    SPARK_CHECK_METADATA_U32("mtp_draft_tokens", SPARK_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT);
 #undef SPARK_CHECK_METADATA_U32
     SparkJsonDocumentDestroy(&document);
     return SPARK_STATUS_OK;
@@ -532,7 +532,7 @@ static SparkStatus SparkCheckArtifactGeometryAgainstFirmware(
     {
         return status;
     }
-    return SparkExpectUInt32("hf_config_geometry.index_topk", expected->selected_token_count, SPARK_GLM52_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT, error_buffer, error_buffer_bytes);
+    return SparkExpectUInt32("hf_config_geometry.index_topk", expected->selected_token_count, SPARK_RESIDENT_DECODE_STAGE_SELECTED_TOKEN_COUNT, error_buffer, error_buffer_bytes);
 }
 
 static SparkStatus SparkCheckModelDescription(
@@ -572,7 +572,7 @@ static SparkStatus SparkCheckModelDescription(
     }
     if (status == SPARK_STATUS_OK)
     {
-        status = SparkExpectString("resident_decode.target", stage->target, SPARK_GLM52_RESIDENT_DECODE_STAGE_TARGET, error_buffer, error_buffer_bytes);
+        status = SparkExpectString("resident_decode.target", stage->target, SPARK_RESIDENT_DECODE_STAGE_TARGET, error_buffer, error_buffer_bytes);
     }
     if (status == SPARK_STATUS_OK)
     {
@@ -584,7 +584,7 @@ static SparkStatus SparkCheckModelDescription(
     }
     if (status == SPARK_STATUS_OK)
     {
-        status = SparkExpectString("decode.operation.module", program->operations[0].module_id, SPARK_GLM52_RESIDENT_DECODE_STAGE_MODULE_ID, error_buffer, error_buffer_bytes);
+        status = SparkExpectString("decode.operation.module", program->operations[0].module_id, SPARK_RESIDENT_DECODE_STAGE_MODULE_ID, error_buffer, error_buffer_bytes);
     }
     if (status == SPARK_STATUS_OK)
     {
@@ -1354,7 +1354,7 @@ int main(int argument_count, char **arguments)
         config_path,
         model_description_path,
         revision_buffer,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODULE_ID,
+        SPARK_RESIDENT_DECODE_STAGE_MODULE_ID,
         actual_geometry.hidden_size,
         actual_geometry.head_count,
         actual_geometry.latent_dimension,

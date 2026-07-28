@@ -20,8 +20,8 @@ not.  Serving runtime restores the produced `.spb12x` files with the native C
 binder:
 
 ```c
-SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile(...)
-SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy(...)
+SparkResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile(...)
+SparkResidentDecodeStageB12xMoeResidentBindingDestroy(...)
 ```
 
 The PP13 model contract keeps attention, DSA, dense layers, shared experts,

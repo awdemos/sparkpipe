@@ -25,7 +25,7 @@ Runtime KV block tables remain connected through this path. If a dispatch carrie
 
 ## No fake AOT
 
-A plan advertising `SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH` without either a real external launch function or the built-in exact PP13 AOT capability is now rejected during resident module validation.
+A plan advertising `SPARK_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH` without either a real external launch function or the built-in exact PP13 AOT capability is now rejected during resident module validation.
 
 `SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES` now means the built-in exact PP13 AOT path, not a set of required-but-unimplemented fused callbacks.
 

@@ -142,7 +142,7 @@ The resident decode-stage frame context now has a first-class DSpark hidden-tap
 contract:
 
 ```c
-SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS
+SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS
 ```
 
 When the flag is set, firmware validates the exact GLM-5.2 DSpark tap plan and

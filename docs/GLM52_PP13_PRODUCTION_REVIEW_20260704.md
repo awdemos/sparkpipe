@@ -73,7 +73,7 @@ currently welded in at several independent places (all must move together,
 derived from one recipe constant, not hand-edited N times):
 
 ```text
-firmware.h:74   SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 64
+firmware.h:74   SPARK_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT 64
 stage_plan.h    SPARK_STAGE_PLAN_BUCKET_B64 ladder ends at 64
 stage_plan.c    SparkStagePlanSelectBatchBucket caps at B64
 scheduler.h     SPARK_SCHEDULER_MAX_PACKED_REQUEST_COUNT = BUCKET_B64
@@ -95,7 +95,7 @@ search.
 The fused final epilogue already selects and commits MTP draft tokens and
 counters (`FUSED_FINAL_TOKEN_TAIL` + `BUILTIN_FUSED_FINAL_TOKEN_EPILOGUE`,
 see `GLM52_FINAL_EPILOGUE_AND_PERSISTENT_TRANSPORT_20260703.md`), and
-`SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT` is 2. Accepted MTP
+`SPARK_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT` is 2. Accepted MTP
 tokens ride the same weight sweep for free. What remains is serving-side:
 consume committed counts in the request API completion path and measure real
 acceptance on target prompts. At acceptance a1 (+a1*a2 for the second draft),
@@ -163,7 +163,7 @@ decode_ready.
 The blocker, stated exactly: a runnable prompt-serving binary needs the GLM52
 node-context builder factored out of the 9.8k-line validation runner. Today
 the only code that can take a resident pack and produce initialized
-`SparkGlm52ResidentDecodeStageNodeContext` + exact stage-slice plans lives in
+`SparkResidentDecodeStageNodeContext` + exact stage-slice plans lives in
 `modules/glm52_resident_decode_stage/validation/spark_glm52_resident_decode_stage_cuda_validation.cu`:
 
 ```text

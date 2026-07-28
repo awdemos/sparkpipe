@@ -89,7 +89,7 @@ typedef struct SparkRingDaemonRuntime
     SparkLoadedModelDriver loaded_driver;
     void *driver_instance;
     const SparkModelDriverProgramDescriptor *program;
-    SparkGlm52ResidentDecodeStageProductionRunner runner;
+    SparkResidentDecodeStageProductionRunner runner;
     int32_t cuda_resident_fd;
     uint32_t trace_enabled;
     const char *cuda_resident_socket_path;
@@ -1633,23 +1633,23 @@ static SparkStatus SparkRingDaemonAttachBuilderDriver(
 static SparkStatus SparkRingDaemonInitializeRunner(
     SparkRingDaemonRuntime *runtime)
 {
-    SparkGlm52ResidentDecodeStageProductionRunnerConfiguration configuration;
+    SparkResidentDecodeStageProductionRunnerConfiguration configuration;
 
     memset(&configuration,0,sizeof(configuration));
     configuration.abi_version =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION;
+        SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION;
     configuration.descriptor_bytes =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_CONFIGURATION_BYTES;
+        SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_CONFIGURATION_BYTES;
     configuration.flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_ADMISSION;
+        SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_ADMISSION;
     if ((runtime->rank_plan.flags &
         SPARK_RING_RUNTIME_RANK_FLAG_HAS_PREVIOUS) != 0u)
         configuration.flags |=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_INPUT_TRANSPORT;
+            SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_INPUT_TRANSPORT;
     if ((runtime->rank_plan.flags &
         SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) != 0u)
         configuration.flags |=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT;
+            SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT;
     configuration.driver_interface = runtime->loaded_driver.interface;
     configuration.driver_instance = runtime->driver_instance;
     configuration.program = runtime->program;
@@ -2372,7 +2372,7 @@ static void SparkRingDaemonHandleWork(
     status = SparkRingWorkControlValidatePacket(
         packet,
         runtime->rank_plan.execution_row_capacity,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
+        SPARK_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
     if (status == SPARK_STATUS_OK)
         status = SparkRingDaemonQueueWork(runtime,packet);
     if (status != SPARK_STATUS_OK)
@@ -3036,7 +3036,7 @@ int main(int argc,char **argv)
         progress |= SparkRingDaemonPumpCudaResident(&runtime);
         SparkRingDaemonCheckInflightOverdue(&runtime);
         if (runtime.cuda_resident_fd < 0)
-            (void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
+            (void)SparkResidentDecodeStageProductionRunnerProgress(
                 &runtime.runner);
 		builder_status = SparkRingDaemonProgressBuilder(&runtime);
 		if (builder_status != SPARK_STATUS_OK &&

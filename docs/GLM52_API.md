@@ -49,7 +49,7 @@ SparkGlm52Pp13RuntimeBuildRankPlan
 SparkGlm52Pp13RuntimeValidateRankPlan
 SparkGlm52Pp13RuntimeValidateStageFp8PackFiles
 SparkResidentDecodeStageProductionRunnerInitialize
-SparkGlm52ResidentDecodeStageProductionRunnerSubmit
+SparkResidentDecodeStageProductionRunnerSubmit
 ```
 
 Unstable internal surfaces:
@@ -730,16 +730,16 @@ BULK_PREFILL
 Initialize:
 
 ```c
-SparkGlm52ResidentDecodeStageProductionRunnerConfiguration configuration;
-SparkGlm52ResidentDecodeStageProductionRunner runner;
+SparkResidentDecodeStageProductionRunnerConfiguration configuration;
+SparkResidentDecodeStageProductionRunner runner;
 
 memset(&configuration,0,sizeof(configuration));
 configuration.abi_version =
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION;
+    SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION;
 configuration.descriptor_bytes =
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_CONFIGURATION_BYTES;
+    SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_CONFIGURATION_BYTES;
 configuration.flags =
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DEFAULT_FLAGS;
+    SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DEFAULT_FLAGS;
 configuration.driver_interface = driver_interface;
 configuration.driver_instance = driver_instance;
 configuration.program = program;
@@ -753,13 +753,13 @@ status = SparkResidentDecodeStageProductionRunnerInitialize(
 Submit:
 
 ```c
-SparkGlm52ResidentDecodeStageProductionRunnerDispatch dispatch;
+SparkResidentDecodeStageProductionRunnerDispatch dispatch;
 
 memset(&dispatch,0,sizeof(dispatch));
 dispatch.abi_version =
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION;
+    SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION;
 dispatch.descriptor_bytes =
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_BYTES;
+    SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_BYTES;
 dispatch.request_id = request_id;
 dispatch.sequence_id = sequence_id;
 dispatch.sequence_position = sequence_position;
@@ -774,7 +774,7 @@ dispatch.hidden_output_packet = output_packet;
 dispatch.completion_function = completion_function;
 dispatch.completion_context = completion_context;
 
-status = SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
+status = SparkResidentDecodeStageProductionRunnerSubmit(
     &runner,
     &dispatch);
 ```
@@ -782,7 +782,7 @@ status = SparkGlm52ResidentDecodeStageProductionRunnerSubmit(
 For prefill:
 
 ```c
-dispatch.flags |= SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_PREFILL;
+dispatch.flags |= SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_DISPATCH_FLAG_PREFILL;
 dispatch.prefill_view = prefill_view;
 ```
 

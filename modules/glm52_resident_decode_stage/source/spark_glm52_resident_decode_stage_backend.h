@@ -9,59 +9,59 @@
 extern "C" {
 #endif
 
-typedef void (*SparkGlm52ResidentDecodeStageBackendCompletionFunction)(
+typedef void (*SparkResidentDecodeStageBackendCompletionFunction)(
     void *completion_context);
 
-typedef struct SparkGlm52ResidentDecodeStageBackendCompletion
+typedef struct SparkResidentDecodeStageBackendCompletion
 {
-    SparkGlm52ResidentDecodeStageBackendCompletionFunction function;
+    SparkResidentDecodeStageBackendCompletionFunction function;
     void *context;
     uint32_t requested_token_count;
     uint32_t token_count;
     uint32_t token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
-} SparkGlm52ResidentDecodeStageBackendCompletion;
+} SparkResidentDecodeStageBackendCompletion;
 
-SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+SparkStatus SparkResidentDecodeStageBackendSubmit(
+    const SparkResidentDecodeStageNodeContext *node_context,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     const SparkKvBlockTableView *runtime_kv_block_table,
-    SparkGlm52ResidentDecodeStageBackendCompletion *completion);
+    SparkResidentDecodeStageBackendCompletion *completion);
 
-SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
-    const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+SparkStatus SparkResidentDecodeStageBackendSubmitStageSlice(
+    const SparkResidentDecodeStageStageSlicePlan *stage_slice_plan,
+    const SparkResidentDecodeStageNodeContext *const *layer_node_contexts,
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkKvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
-    SparkGlm52ResidentDecodeStageBackendCompletion *completion);
+    const SparkResidentDecodeStageFrameContext *frame_context,
+    SparkResidentDecodeStageBackendCompletion *completion);
 
-SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+SparkStatus SparkResidentDecodeStageBackendSubmitBulkPrefill(
+    const SparkResidentDecodeStageNodeContext *node_context,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkKvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
-    SparkGlm52ResidentDecodeStageBackendCompletion *completion);
+    const SparkResidentDecodeStagePrefillFrameView *prefill_frame_view,
+    SparkResidentDecodeStageBackendCompletion *completion);
 
-SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
-    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+SparkStatus SparkResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
+    const SparkResidentDecodeStageNodeContext *const *layer_node_contexts,
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkKvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
-    SparkGlm52ResidentDecodeStageBackendCompletion *completion);
+    const SparkResidentDecodeStagePrefillFrameView *prefill_frame_view,
+    SparkResidentDecodeStageBackendCompletion *completion);
 
-void SparkGlm52ResidentDecodeStageBackendQuiesce(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context);
+void SparkResidentDecodeStageBackendQuiesce(
+    const SparkResidentDecodeStageNodeContext *node_context);
 
 #ifdef __cplusplus
 }

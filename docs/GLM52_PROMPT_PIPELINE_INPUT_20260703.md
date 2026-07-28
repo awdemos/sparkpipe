@@ -218,7 +218,7 @@ host token-id window from request API
     -> device token-id matrix
     -> BF16 embedding gather
     -> prompt positions / slot mapping / context lengths / per-lane counts
-    -> SparkGlm52ResidentDecodeStagePrefillFrameView
+    -> SparkResidentDecodeStagePrefillFrameView
     -> stage-slice bulk prefill
     -> KV-resident decode continuation
 ```

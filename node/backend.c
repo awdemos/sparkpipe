@@ -55,7 +55,7 @@
 #define SPARK_RING_SERVICE_BACKEND_MAX_BLOCKS_PER_SEQUENCE \
     (SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS)
 #define SPARK_RING_SERVICE_BACKEND_KV_BLOCK_TOKENS \
-	SPARK_GLM52_RESIDENT_DECODE_STAGE_BLOCK_TOKENS
+	SPARK_RESIDENT_DECODE_STAGE_BLOCK_TOKENS
 #define SPARK_RING_SERVICE_BACKEND_PREFILL_WAVE_TOKENS \
 	SPARK_GLM52_MODEL_MAX_PREFILL_TOKENS_PER_DISPATCH
 #define SPARK_RING_SERVICE_BACKEND_GPU_BLOCK_COUNT \
@@ -132,7 +132,7 @@ typedef struct SparkRingServiceBackendState
 	SparkLoadedModelDriver loaded_driver;
 	void *driver_instance;
 	const SparkModelDriverProgramDescriptor *program;
-	SparkGlm52ResidentDecodeStageProductionRunner runner;
+	SparkResidentDecodeStageProductionRunner runner;
 	SparkTokenizer tokenizer;
 	SparkKvCacheArena kv_arena;
 	SparkPrefixCache prefix_cache;
@@ -971,7 +971,7 @@ static SparkStatus SparkRingServiceBackendForwardPrefillPacket(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	status = SparkRingWorkControlValidatePacket(
 		packet,state->rank_plan.execution_row_capacity,
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
+		SPARK_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
 	if (status == SPARK_STATUS_OK)
 		status = SparkRingServiceBackendEnqueueWorkPacket(state,packet);
 	if (status != SPARK_STATUS_OK)
@@ -1908,7 +1908,7 @@ static SparkStatus SparkRingServiceBackendForwardPrefillWork(
 		status = SparkRingWorkControlValidatePacket(
 			&packet,
 			state->rank_plan.execution_row_capacity,
-			SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
+			SPARK_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		status = SparkRingServiceBackendEnqueueWorkPacket(state,&packet);
@@ -1956,7 +1956,7 @@ static SparkStatus SparkRingServiceBackendForwardDecodeWork(
 		if (status == SPARK_STATUS_OK)
 			status = SparkRingWorkControlValidatePacket(
 				&packet,state->rank_plan.execution_row_capacity,
-				SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
+				SPARK_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
 		if (status == SPARK_STATUS_OK)
 			status = SparkRingServiceBackendEnqueueWorkPacket(state,&packet);
 		if (status != SPARK_STATUS_OK)
@@ -2809,16 +2809,16 @@ static SparkStatus SparkRingServiceBackendRank0Fail(
 static SparkStatus SparkRingServiceBackendInitializeRunner(
 	SparkRingServiceBackendState *state)
 {
-	SparkGlm52ResidentDecodeStageProductionRunnerConfiguration configuration;
+	SparkResidentDecodeStageProductionRunnerConfiguration configuration;
 
 	memset(&configuration,0,sizeof(configuration));
 	configuration.abi_version =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION;
+		SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_ABI_VERSION;
 	configuration.descriptor_bytes =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_CONFIGURATION_BYTES;
+		SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_CONFIGURATION_BYTES;
 	configuration.flags =
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_ADMISSION |
-		SPARK_GLM52_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT;
+		SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_ADMISSION |
+		SPARK_RESIDENT_DECODE_STAGE_PRODUCTION_RUNNER_FLAG_REQUIRE_OUTPUT_TRANSPORT;
 	configuration.driver_interface = state->loaded_driver.interface;
 	configuration.driver_instance = state->driver_instance;
 	configuration.program = state->program;
@@ -3664,7 +3664,7 @@ static SparkStatus SparkRingServiceBackendPump(
 	if (work_status != SPARK_STATUS_OK && work_status != SPARK_STATUS_BUSY)
 		state->final_event_receive_error_count += 1u;
 	if (state->rank0_runtime_ready != 0u)
-		(void)SparkGlm52ResidentDecodeStageProductionRunnerProgress(
+		(void)SparkResidentDecodeStageProductionRunnerProgress(
 			&state->runner);
 	event_status = SparkRingServiceBackendPumpFinalEvents(state);
 	if (event_status != SPARK_STATUS_OK)

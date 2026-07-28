@@ -8,17 +8,17 @@ Required stage symbols:
 
 ```c
 SparkStatus SparkGlm52Sm121RequiredDecodeStageInitialize(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context);
+    const SparkResidentDecodeStageNodeContext *node_context);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunch(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     void *cuda_stream);
 
 void SparkGlm52Sm121RequiredDecodeStageQuiesce(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context);
+    const SparkResidentDecodeStageNodeContext *node_context);
 ```
 
 Required primitive:

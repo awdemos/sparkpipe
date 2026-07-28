@@ -32,7 +32,7 @@ launcher:
 
 The bulk-prefill path also has a paged chunk prefill plan ABI:
 
-- `SparkGlm52ResidentDecodeStagePagedPrefillPlan` carries vLLM-style prompt
+- `SparkResidentDecodeStagePagedPrefillPlan` carries vLLM-style prompt
   positions, slot mapping, context lengths, and block-table pointers.
 - `SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill` validates the
   paged/chunked plan and launches device kernels for block metadata staging and

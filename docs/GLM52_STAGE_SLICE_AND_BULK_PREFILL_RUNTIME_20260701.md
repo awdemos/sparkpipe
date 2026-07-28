@@ -6,14 +6,14 @@ problems that were still visible after the B32/B64 final validation fix.
 ## Stage-slice submit path
 
 The resident decode-stage module can now be initialized with a
-`SparkGlm52ResidentDecodeStageSliceNodeContext`.  The slice context owns an
-ordered array of per-layer `SparkGlm52ResidentDecodeStageNodeContext` pointers
+`SparkResidentDecodeStageSliceNodeContext`.  The slice context owns an
+ordered array of per-layer `SparkResidentDecodeStageNodeContext` pointers
 and submits the whole slice through one backend completion path.
 
 The CUDA backend entry point is:
 
 ```text
-SparkGlm52ResidentDecodeStageBackendSubmitStageSlice
+SparkResidentDecodeStageBackendSubmitStageSlice
 ```
 
 The SM121 required CUDA entry point is:
@@ -58,9 +58,9 @@ module then validates the request against the attached bulk-prefill plan.
 The resident firmware now exposes:
 
 ```text
-SparkGlm52ResidentDecodeStageBulkPrefillPlan
-SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill
-SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill
+SparkResidentDecodeStageBulkPrefillPlan
+SparkResidentDecodeStageBackendSubmitBulkPrefill
+SparkResidentDecodeStageBackendSubmitStageSliceBulkPrefill
 SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill
 ```
 

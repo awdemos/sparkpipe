@@ -106,7 +106,7 @@ int main(void)
     assert(strstr(decode_program->operations[0].configuration_json,
         "SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan") != 0);
     assert(strstr(decode_program->operations[0].configuration_json,
-        "SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile") != 0);
+        "SparkResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile") != 0);
     assert(strstr(decode_program->operations[0].configuration_json,
         "SparkGlm52Sm121FlashInferB12xMoeActiveKernelManifestHashLow64") != 0);
     assert(strstr(decode_program->operations[0].configuration_json,

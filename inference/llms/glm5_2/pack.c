@@ -54,7 +54,7 @@ typedef struct Glm52TensorRow
 }
 Glm52TensorRow;
 
-#define GLM52_FIELD(field) offsetof(SparkGlm52ResidentDecodeStageNodeContext, field)
+#define GLM52_FIELD(field) offsetof(SparkResidentDecodeStageNodeContext, field)
 
 static const Glm52TensorRow kGlm52Tensors[] =
 {
@@ -131,7 +131,7 @@ static uint64_t Glm52TensorBytes(const Glm52TensorRow *row)
 	return((row->rows * row->columns * row->element_bits) / 8u);
 }
 
-static int32_t Glm52BindPack(SparkGlm52ResidentDecodeStageNodeContext *context, uint32_t layer, Glm52ResolveTensor resolve, void *resolve_context, uint32_t *bound_out, uint32_t *missing_out)
+static int32_t Glm52BindPack(SparkResidentDecodeStageNodeContext *context, uint32_t layer, Glm52ResolveTensor resolve, void *resolve_context, uint32_t *bound_out, uint32_t *missing_out)
 {
 	uint32_t index,bound = 0u,missing = 0u;
 	int32_t absorbed = 0,raw = 0;

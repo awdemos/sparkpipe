@@ -6,7 +6,7 @@
 #include "glm52_resident_decode_stage_fake_backend.h"
 
 static SparkStatus SparkGlm52ResidentDecodeStageFakeValidateRuntimeKvBlockTable(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStageNodeContext *node_context,
     uint32_t active_sequence_count,
     const SparkKvBlockTableView *runtime_kv_block_table)
 {
@@ -51,10 +51,10 @@ static void SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
 }
 
 static SparkStatus SparkGlm52ResidentDecodeStageFakeCopyFinalTokens(
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t final_token_stage,
     uint32_t active_sequence_count,
-    SparkGlm52ResidentDecodeStageBackendCompletion *completion)
+    SparkResidentDecodeStageBackendCompletion *completion)
 {
     uint32_t token_index;
     uint32_t token_count;
@@ -68,7 +68,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageFakeCopyFinalTokens(
     if (token_count == 0u ||
         token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY ||
         token_count >
-            (SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
+            (SPARK_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT + 1u))
         return SPARK_STATUS_INVALID_ARGUMENT;
     completion->token_ids[0u] = pipeline_slot->restricted_selected_token_ids[0u];
     if (token_count > 1u)
@@ -83,12 +83,12 @@ static SparkStatus SparkGlm52ResidentDecodeStageFakeCopyFinalTokens(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+SparkStatus SparkResidentDecodeStageBackendSubmit(
+    const SparkResidentDecodeStageNodeContext *node_context,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     const SparkKvBlockTableView *runtime_kv_block_table,
-    SparkGlm52ResidentDecodeStageBackendCompletion *completion)
+    SparkResidentDecodeStageBackendCompletion *completion)
 {
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream;
 
@@ -132,26 +132,26 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
 }
 
 
-SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
-    const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+SparkStatus SparkResidentDecodeStageBackendSubmitStageSlice(
+    const SparkResidentDecodeStageStageSlicePlan *stage_slice_plan,
+    const SparkResidentDecodeStageNodeContext *const *layer_node_contexts,
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
     const SparkKvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
-    SparkGlm52ResidentDecodeStageBackendCompletion *completion)
+    const SparkResidentDecodeStageFrameContext *frame_context,
+    SparkResidentDecodeStageBackendCompletion *completion)
 {
-    const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
-    const SparkGlm52ResidentDecodeStageNodeContext *completion_node_context;
+    const SparkResidentDecodeStageNodeContext *first_node_context;
+    const SparkResidentDecodeStageNodeContext *completion_node_context;
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream;
     uint32_t layer_index;
 
     if (layer_node_contexts == 0 ||
         layer_count == 0u ||
         layer_count >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_STAGE_SLICE_LAYER_COUNT ||
+            SPARK_RESIDENT_DECODE_STAGE_MAX_STAGE_SLICE_LAYER_COUNT ||
         completion == 0 ||
         completion->function == 0 ||
         final_token_stage > 1u)
@@ -218,7 +218,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     fake_stream->last_dspark_hidden_tap_frame_context_active =
         frame_context != 0 &&
         (frame_context->flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS) != 0u
+            SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS) != 0u
             ? 1u
             : 0u;
     fake_stream->last_dspark_hidden_tap_frame_context = frame_context;
@@ -234,15 +234,15 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+SparkStatus SparkResidentDecodeStageBackendSubmitBulkPrefill(
+    const SparkResidentDecodeStageNodeContext *node_context,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkKvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
-    SparkGlm52ResidentDecodeStageBackendCompletion *completion)
+    const SparkResidentDecodeStagePrefillFrameView *prefill_frame_view,
+    SparkResidentDecodeStageBackendCompletion *completion)
 {
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream;
 
@@ -291,25 +291,25 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
-    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+SparkStatus SparkResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
+    const SparkResidentDecodeStageNodeContext *const *layer_node_contexts,
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
     const SparkKvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
-    SparkGlm52ResidentDecodeStageBackendCompletion *completion)
+    const SparkResidentDecodeStagePrefillFrameView *prefill_frame_view,
+    SparkResidentDecodeStageBackendCompletion *completion)
 {
-    const SparkGlm52ResidentDecodeStageNodeContext *first_node_context;
+    const SparkResidentDecodeStageNodeContext *first_node_context;
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream;
     uint32_t layer_index;
 
     if (layer_node_contexts == 0 ||
         layer_count == 0u ||
         layer_count >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_STAGE_SLICE_LAYER_COUNT ||
+            SPARK_RESIDENT_DECODE_STAGE_MAX_STAGE_SLICE_LAYER_COUNT ||
         completion == 0 ||
         completion->function == 0 ||
         prompt_token_count == 0u)
@@ -377,8 +377,8 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
     return SPARK_STATUS_OK;
 }
 
-void SparkGlm52ResidentDecodeStageBackendQuiesce(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context)
+void SparkResidentDecodeStageBackendQuiesce(
+    const SparkResidentDecodeStageNodeContext *node_context)
 {
     uint32_t pipeline_slot_index;
 
