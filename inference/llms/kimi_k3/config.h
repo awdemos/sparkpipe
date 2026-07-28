@@ -221,12 +221,32 @@
 #define K3_KV_BITS 16u
 #define K3_KV_PAGE_SLOTS 64u
 
-// The delta rule carries a key-by-value outer product per head, so the state is
-// heads * key_dim * value_dim, not heads * key_dim. The old expression here was
-// the latter and understated the pool by 128x: 3 MiB per sequence in bf16, and
-// it does not grow with context, which is the whole point of the mechanism.
+// THE RECURRENT STATE IS FP32, AND THE CONVOLUTION WINDOWS LIVE WITH IT.
+//
+// Checked against SGLang's reported figure rather than derived and left alone:
+// they measure one KDA state block at about 54 MB under TP=8 covering all 69
+// KDA layers. Working backwards,
+//
+//     bf16 outer product   96 * 128 * 128 * 2 = 3 MB/layer -> 25.9 MB at TP=8
+//     fp32 outer product   96 * 128 * 128 * 4 = 6 MB/layer -> 51.8 MB at TP=8
+//     plus 3 conv windows  3 * 12288 * 4 * 2  = 0.28 MB/layer -> 2.4 MB
+//                                                        total 54.2 MB
+//
+// So the state is fp32 and the three short-convolution windows are part of the
+// same per-request block. This expression carried neither: it was bf16 and had
+// no windows, which is half the arithmetic and none of the convolution.
+//
+// A recurrent state accumulates over a million tokens without renormalising, so
+// fp32 is not a precision luxury - the same argument as keeping the flash
+// attention output in fp32 during training. The rest of the model is 4- and
+// 8-bit; this one buffer is not.
+#define K3_KDA_STATE_ELEMENT_BYTES 4u
+#define K3_KDA_CONV_WINDOW_BYTES \
+	(((2u * K3_KDA_HEADS * K3_KDA_KEY_DIM) + (K3_KDA_HEADS * K3_KDA_VALUE_DIM)) \
+		* K3_KDA_CONV_KERNEL * (K3_KV_BITS / 8u))
 #define K3_KDA_STATE_BYTES \
-	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * (K3_KV_BITS / 8u))
+	((K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * K3_KDA_STATE_ELEMENT_BYTES) \
+		+ K3_KDA_CONV_WINDOW_BYTES)
 
 // 1-INDEXED IN THE CONFIG, 0-INDEXED HERE. full_attn_layers is
 // {4,8,...,92} plus 93; subtract one and that is {3,7,...,91} plus 92. So the

@@ -30,6 +30,7 @@
 // 16 is a four-fold difference in the drafter's KV cache, and every other head
 // number matches.
 
+#include <assert.h>
 #include <stdint.h>
 
 #include "inference/llms/kimi_k3/config.h"
@@ -89,3 +90,34 @@ static_assert(K3_DSPARK_AUX_LAYER_COUNT <= K3_LAYERS,
 	"a tap cannot name a layer the target does not have");
 static_assert(K3_DSPARK_MASK_TOKEN_ID < K3_VOCAB,
 	"the mask token is a real vocabulary id");
+
+// -- what the verify budget is actually for --------------------------------------
+//
+// The drafter proposes a block and the target verifies all of it in one forward.
+// At batch 1 the extra positions are nearly free - the step is latency-bound.
+// As the batch fills they compete with every other request, and most lose the
+// bet: SGLang measures accept length around 2.7 on chat traffic, so five of
+// eight verified positions are discarded on a typical step.
+//
+// The confidence head is what makes trimming possible, and the reason it exists.
+// A per-step planner keeps verify tokens only while their predicted survival
+// covers the marginal cost of verifying them, and trims the rest before the
+// target forward launches. What remains is verified exactly as before, so the
+// output stays lossless - the trade is a shorter accepted run for a cheaper
+// step.
+//
+// THE COST CURVE IS A STAIRCASE, NOT A LINE. Their measurement: flat shelves
+// where another verify token slots into the current kernel waves for almost
+// nothing, and steep risers where it starts a new wave. A planner that models
+// marginal cost as linear will cut on a shelf and keep on a riser, which is the
+// wrong side of both. The cost surface has to be profiled per deployment, not
+// derived.
+//
+// And it is not free below batch 8: trimming there is break-even to mildly
+// negative, because there is no pressure to relieve. A small-batch early exit
+// is a known follow-up rather than a subtlety to rediscover.
+//
+// Reported gains where it does pay: +68% throughput at batch 256 on chat with
+// accept length easing 2.7 to 2.2, and +24% on few-shot math with 5.0 to 4.3.
+#define K3_DSPARK_TRIM_MIN_BATCH 8u
+

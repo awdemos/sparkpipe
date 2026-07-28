@@ -73,6 +73,24 @@
 // these logs and ex2 is the hardware instruction. exp(g_min * s) and
 // exp2(g_min * log2(e) * s) are the same number; anyone writing the chunkwise
 // path should carry log2 rather than convert per element.
+// IF SPECULATION EVER REPLAYS THIS RECURRENCE, IT MUST NOT RECOMPUTE THE GATE.
+//
+// SGLang's ReplaySSM handles rejected drafts by storing each draft step's raw
+// inputs - v, k, the gate value and beta, about 1 KB - instead of snapshotting
+// the whole state after every step, which at 96 heads by 128 by 128 would be
+// 64 KB per request per layer per head. After the sampler fixes the accepted
+// length, one fold kernel replays only the accepted prefix.
+//
+// Their note on getting it wrong is the part to keep: an early version
+// recomputed the gate during the fold with a subtly different formula, "which
+// left every output looking correct while the state quietly drifted
+// underneath". The fold consumes the gate values the verify kernel stored, not
+// a second call to this function.
+//
+// So LmBoundedDecay is the wrong thing to call twice. A replay path stores what
+// this returns and reads it back; it does not evaluate the mapping again, even
+// with identical inputs, because __expf is an approximation and two call sites
+// that agree today are two call sites that can be edited apart.
 static __device__ __forceinline__ float LmBoundedDecay(float logit, float bias, float head_log_scale, float minimum_log_decay)
 {
 	float scaled = __expf(head_log_scale) * (logit + bias);
