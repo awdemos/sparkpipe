@@ -61,6 +61,6 @@ which is the gate doing its job on day one.
 
 A2 tp-shard split; A3 kv geometry seam (cache/ + glm kv_cache.h);
 **A4 inference/stage framework/adapter split** (new, the K3 backend's
-doorway); pack format decision; move the two glm py packers out of
+doorway) - acceptance per docs/SERVING_PIPELINE.md P3: the K3 driver consumes SparkServingDecodeDispatch directly like the glm driver, and K3Engine shrinks to the model-side run contract the host gates exercise; one queue, one scheduler, one request API, N drivers; pack format decision; move the two glm py packers out of
 runtime/pack; B-tier: LmHead (0.93 x5) and LmDenseMlp (0.98 x4) extraction,
 pack_common.py, expert_queue parameterisation.
