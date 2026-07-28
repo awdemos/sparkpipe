@@ -56,7 +56,7 @@ GLM_BUDGET = {
     "api/request.c": (637, "drafter wiring (glm data); kv-cache seam (A3)"),
     "api/service.c": (105, "seam includes"),
     "api/serving_engine.c": (138, "seam includes"),
-    "cache/kv_cache.c": (24, "kv-cache seam (A3)"),
+    "cache/kv_cache.c": (9, "kv-cache seam (A3)"),
     "cache/prefix_cache.c": (214, "kv-cache seam (A3)"),
     "cache/store/stage_kv_client.c": (1, "seam includes"),
     "scheduler/long_context.c": (52, "seam includes"),

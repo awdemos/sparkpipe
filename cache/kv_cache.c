@@ -155,21 +155,16 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
     }
 
     local_dsa_index_layer_count = 0u;
-    for (layer_offset = 0u; layer_offset < request->layer_count; ++layer_offset)
-    {
-        uint32_t layer_index;
-        layer_index = request->first_layer_index + layer_offset;
-        if (SparkKvCacheDsaSourceLayer(layer_index) == layer_index)
-        {
-            local_dsa_index_layer_count += 1u;
-        }
-    }
+    // A MODEL WITHOUT AN INDEX CACHE ASKS FOR ZERO INDEX LAYERS. The
+    // request says how many layers carry index keys; scanning a glm layer
+    // schedule here priced every other model's cache with glm's calendar.
+    local_dsa_index_layer_count = request->index_key_layer_count;
     if (request->attention_cache_layout ==
         SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3)
     {
         attention_bytes_per_token_per_layer =
-            (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
-            ((SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+            (uint64_t)(request->latent_dimension + request->rope_dimension) +
+            (((uint64_t)(request->latent_dimension + request->rope_dimension) +
              request->fp8_scale_block_size - 1u) /
              request->fp8_scale_block_size) * sizeof(float);
     }
@@ -177,15 +172,15 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
         SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3)
     {
         key_nope_elements =
-            (uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
-            SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION;
+            (uint64_t)request->head_count *
+            request->qk_nope_head_dimension;
         value_elements =
-            (uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
-            SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION;
+            (uint64_t)request->head_count *
+            request->value_head_dimension;
         attention_bytes_per_token_per_layer =
-            SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+            (request->latent_dimension + request->rope_dimension) +
             key_nope_elements + value_elements +
-            (((SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
+            ((((uint64_t)(request->latent_dimension + request->rope_dimension) +
                 request->fp8_scale_block_size - 1u) /
                request->fp8_scale_block_size) +
              ((key_nope_elements + request->fp8_scale_block_size - 1u) /
@@ -197,19 +192,21 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
         SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE)
     {
         attention_bytes_per_token_per_layer =
-            ((uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS +
-             ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
-              SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION) +
-             ((uint64_t)SPARK_GLM52_MODEL_HEAD_COUNT *
-              SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION)) * sizeof(uint16_t);
+            ((uint64_t)(request->latent_dimension + request->rope_dimension) +
+             ((uint64_t)request->head_count *
+              request->qk_nope_head_dimension) +
+             ((uint64_t)request->head_count *
+              request->value_head_dimension)) * request->bytes_per_scalar;
     }
     else
     {
         attention_bytes_per_token_per_layer =
-            (uint64_t)SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS * sizeof(uint16_t);
+            (uint64_t)(request->latent_dimension + request->rope_dimension) *
+            request->bytes_per_scalar;
     }
     dsa_bytes_per_token_per_layer =
-        (uint64_t)SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION * sizeof(uint16_t);
+        (uint64_t)request->index_key_dimension *
+        request->index_key_bytes_per_scalar;
     summary_bytes_per_index_layer_block =
         (2u * dsa_bytes_per_token_per_layer) + sizeof(uint8_t);
 
