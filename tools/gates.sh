@@ -43,6 +43,10 @@ run "situ activation"      "python3 tests/test_situ_activation.py"
 run "kda decay bound"      "python3 tests/test_kda_decay.py"
 run "kernel launches"      "python3 tests/test_kernel_launches.py"
 run "mla absorption"       "python3 tests/test_mla_absorption.py"
+run "expert grouping"      "python3 tests/test_expert_grouping.py"
+# The grouped selection path has no model in this tree, so nothing instantiates
+# it and nothing would notice it failing to compile.
+run "grouped topk builds"  "sh tools/build_grouped_topk.sh"
 run "kernel algorithms"    "python3 tests/test_kernel_algorithms.py"
 run "model contracts"      "python3 tests/test_model_driver_contracts.py"
 run "nvcc: sm_121a build"  "sh tools/build.sh"

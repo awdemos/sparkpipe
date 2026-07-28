@@ -50,7 +50,11 @@ static __device__ __forceinline__ float LmTopkValue(uint32_t key)
 // The threshold is not tuned; it is where a block can hold n in shared at all.
 #define LM_TOPK_SMALL_LIMIT 1024u
 
-template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false>
+// A checkpoint with more expert groups than this needs the bound raised; it is
+// a shared-memory array, not a limit of the algorithm.
+#define LM_TOPK_MAX_GROUPS 16u
+
+template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u>
 __global__ __launch_bounds__(THREADS, 1)
 void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias)
 {
@@ -74,6 +78,61 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		slots[index] = index;
 	}
 	__syncthreads();
+	// GROUPED SELECTION, when a checkpoint asks for it.
+	//
+	// The reference scores each group by the SUM OF ITS TOP TWO experts - not
+	// its best and not its mean - keeps the top TOP_GROUPS groups, and masks
+	// everything else out of the top-k. The bias is already in keys[] because
+	// the reference groups scores_for_choice rather than scores, so the
+	// select-versus-weigh split holds one level up as well.
+	//
+	// GROUPS == 1 is the whole of Kimi K3, and the compiler removes this.
+	if ( GROUPS > 1u && GROUPS > TOP_GROUPS )
+	{
+		__shared__ uint32_t group_key[LM_TOPK_MAX_GROUPS];
+		uint32_t group,per_group = n / GROUPS,cut;
+		for (group = threadIdx.x; group < GROUPS; group += THREADS)
+		{
+			uint32_t best = 0u,second = 0u,member;
+			for (member = 0u; member < per_group; ++member)
+			{
+				uint32_t value = keys[(group * per_group) + member];
+				if ( value > best ) { second = best; best = value; }
+				else if ( value > second ) second = value;
+			}
+			// The keys are order-preserving monotone images of the scores, so
+			// their sum is not the sum of the scores. Ranking groups by it
+			// ranks by a different function, so recover the two values first.
+			group_key[group] = LmTopkKey(LmTopkValue(best) + LmTopkValue(second));
+		}
+		__syncthreads();
+		// TOP_GROUPS is small - one thread finds the cutoff rather than a second
+		// bitonic sort over a handful of entries.
+		if ( threadIdx.x == 0u )
+		{
+			uint32_t taken,highest,index2;
+			cut = 0u;
+			for (taken = 0u; taken < TOP_GROUPS; ++taken)
+			{
+				highest = 0u;
+				for (index2 = 0u; index2 < GROUPS; ++index2)
+					if ( group_key[index2] > highest && group_key[index2] != 0xffffffffu )
+						highest = group_key[index2];
+				for (index2 = 0u; index2 < GROUPS; ++index2)
+					if ( group_key[index2] == highest )
+					{
+						group_key[index2] = 0xffffffffu;
+						break;
+					}
+			}
+			(void)cut;
+		}
+		__syncthreads();
+		for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
+			if ( index < n && group_key[index / per_group] != 0xffffffffu )
+				keys[index] = 0u;
+		__syncthreads();
+	}
 	// Bitonic sort, descending. Every exchange is between a fixed pair, so there
 	// is no divergence beyond the direction test.
 	for (size = 2u; size <= LM_TOPK_SMALL_LIMIT; size <<= 1u)
@@ -107,25 +166,6 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		if ( out_values != 0 )
 			out_values[((uint64_t)blockIdx.x * K) + index] = scores[base + slots[index]];
 	}
-	// GROUPED SELECTION IS NOT IMPLEMENTED, and this is what it would take.
-	//
-	// K3 sets num_expert_group 1 and topk_group 1, so modeling_kimi_linear.py
-	// skips the branch entirely and this checkpoint needs nothing. A sibling
-	// with groups would need, before the sort above:
-	//
-	//   score each group by the SUM OF ITS TOP TWO experts, not its best or its
-	//   mean - the reference is topk(2, dim=-1)[0].sum(dim=-1)
-	//   take the top topk_group groups by that score
-	//   mask every expert outside them to -inf
-	//   then run the existing top-k over what remains
-	//
-	// The bias participates in the group score, because the reference groups
-	// scores_for_choice rather than scores. So a grouped implementation has the
-	// same select-versus-weigh split as the ungrouped one, one level up.
-	//
-	// Left unimplemented rather than written blind: no checkpoint in this tree
-	// sets num_expert_group above 1, and a selection path with no model to test
-	// it against is a second thing to get wrong.
 	if ( RENORMALISE && out_values != 0 )
 	{
 		// moe_renormalize: divide the k gates by their sum so they sum to one.
