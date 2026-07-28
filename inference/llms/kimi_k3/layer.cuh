@@ -218,8 +218,7 @@ struct K3LayerBuffers
 	float *kda_write_gate_out;
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
-	uint8_t *packed_activation;
-	uint8_t *packed_scale;
+	uint16_t *route_gather_bf16;
 
 	// The recurrent half. Fixed per sequence, never grows with context.
 	uint8_t *kda_state_pool;
@@ -247,41 +246,6 @@ struct K3LayerBuffers
 	float *output_score;
 };
 
-// THE ROUTE MAP IS A PARAMETER, NOT A NULL.
-//
-// This hardcoded a null source_row_map, so packed row r read source row r. For
-// the routed experts that is wrong twice: packed_rows is rows * top_k, so rows
-// at or above `rows` read past the end of the latent buffer, and no row is
-// route-expanded - every expert consumed whichever activation happened to sit
-// at its packed index. glm52 passes route_source_token here and this did not.
-// AN UNQUANTISED FORMAT HAS NO GROUPS AND MUST NOT BE ASKED FOR ANY.
-//
-// LmBf16Format declares kScaleGroup zero, correctly - there is nothing to
-// group. This function divided a width by it. Every non-expert projection in
-// K3 went through here the moment the quantisation recipe put attention,
-// the router and the latent projections on BF16, which is 20 call sites
-// dividing by zero.
-//
-// Found by tests/host_cuda/k3_layer_host.cu on its first successful run, which
-// is the entire argument for a harness that executes a layer rather than its
-// kernels: every kernel here is correct, and the layer faulted immediately.
-template<class Format>
-static void K3Quantise(const K3LayerBuffers *b, const uint16_t *source, const uint32_t *source_row_map, uint32_t rows, uint32_t width, cudaStream_t stream)
-{
-	// IF CONSTEXPR, NOT IF. A runtime guard still instantiates the template
-	// below it, so the kernel's static_assert fired for every BF16 projection
-	// even though none of them would have run the launch. The branch has to be
-	// discarded at compile time, which is what constexpr does and what a plain
-	// if cannot.
-	if constexpr ( Format::kScaleGroup == 0u )
-		return;
-	else
-	LM_LAUNCH((LmQuantiseRowsKernel<Format,K3_LAYER_THREADS>),
-		dim3(rows,width / Format::kScaleGroup), K3_LAYER_THREADS,
-		(Format::kScaleGroup + 8u) * sizeof(float), stream,
-		source,source_row_map,b->packed_activation,b->packed_scale,rows,width);
-}
-
 // One projection: quantise, GEMM, done. The KDA path does this five times and
 // writing it out five times is how a scale pointer comes to describe the wrong
 // buffer.
@@ -289,19 +253,21 @@ template<class Format>
 static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const void *weight, const void *weight_scale, uint16_t *destination, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
 {
 	LmGemmArguments gemm;
-	K3Quantise<Format>(b,source,0,rows,input_dimension,stream);
+	// EVERY PROJECTION THROUGH HERE IS UNQUANTISED. The checkpoint's ignore
+	// list keeps attention, latent projections, shared experts, routers and the
+	// head out of the 4-bit grid, and activations are never quantised at all -
+	// input_activations is null. A Format with a scale group reaching this
+	// helper is a recipe violation, caught at compile time rather than by a
+	// packed buffer nothing filled.
+	static_assert(Format::kScaleGroup == 0u,
+		"K3Project carries the unquantised projections; experts go weight-only");
 	memset(&gemm,0,sizeof(gemm));
-	// An unquantised format feeds the GEMM the rows themselves; there is no
-	// packed buffer, and pointing at one that was never filled is how a skipped
-	// quantise turns into silently reading uninitialised memory.
-	gemm.scale_a = Format::kScaleGroup == 0u ? 0 : (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)weight_scale;
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = destination;
 	return(LmGemmLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,Format::kScaleGroup == 0u ? (const void *)source
-			: (const void *)b->packed_activation,weight,rows,rows,1u,1u,
+		&gemm,source,weight,rows,rows,1u,1u,
 		input_dimension,output_dimension,multiprocessors,false,stream));
 }
 
@@ -568,15 +534,23 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		b->latent_bf16,rows,K3_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	K3Quantise<Format>(b,b->latent_bf16,b->route_source_token,packed_rows,K3_ROUTED_EXPERT_HIDDEN,stream);
+	// THE ROUTE EXPANSION IS A BF16 GATHER, NOT A QUANTISE. input_activations
+	// is null: the checkpoint quantises weights and says nothing about
+	// activations, so the expert GEMMs stream BF16 rows against MXFP4 weights
+	// with the E8M0 plane decoded in the load. The quantiser this replaced was
+	// doing the expansion implicitly on its way to a grid the recipe forbids.
+	LM_LAUNCH((LmGatherRowsKernel<K3_LAYER_THREADS>),
+		dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,packed_rows),
+		K3_LAYER_THREADS, 0, stream,
+		b->latent_bf16,b->route_source_token,b->route_gather_bf16,
+		packed_rows,K3_ROUTED_EXPERT_HIDDEN);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->expert_w1_scale;
+	gemm.scale_b_e8m0 = (const uint8_t *)b->expert_w1_scale;
 	gemm.group_row_offset = b->group_row_offset;
 	gemm.group_tile_prefix = b->group_tile_prefix;
 	gemm.output_bf16 = b->gate_up_bf16;
-	status = LmGemmLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->expert_w1_weight,packed_rows,packed_rows,
+	status = LmGemmWeightOnlyLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+		&gemm,b->route_gather_bf16,b->expert_w1_weight,packed_rows,packed_rows,
 		K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE * 2u,
 		multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -585,11 +559,12 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// the gate branch and 25 the up branch, and swapping them runs.
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,K3_EXPERT_INTERMEDIATE, K3_SITU_BETA,K3_SITU_LINEAR_BETA);
-	K3Quantise<Format>(b,b->intermediate_bf16,0,packed_rows,K3_EXPERT_INTERMEDIATE,stream);
-	gemm.scale_b = (const float *)b->expert_w2_scale;
+	// The SiTU output is already expert-major: no gather, no quantise, the
+	// rows feed the down-projection as they are.
+	gemm.scale_b_e8m0 = (const uint8_t *)b->expert_w2_scale;
 	gemm.output_bf16 = b->gate_up_bf16;
-	status = LmGemmLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->expert_w2_weight,packed_rows,packed_rows,
+	status = LmGemmWeightOnlyLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+		&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,packed_rows,
 		K3_TOP_K,K3_EXPERTS,K3_EXPERT_INTERMEDIATE,K3_ROUTED_EXPERT_HIDDEN,
 		multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )

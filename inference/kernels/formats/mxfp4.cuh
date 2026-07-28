@@ -53,6 +53,12 @@ struct LmMxfp4
 	static __device__ __forceinline__ uint32_t OperandBRow(uint32_t lane) { return(LmMma16OperandBRow(lane)); }
 	static __device__ __forceinline__ uint32_t OperandBK(uint32_t lane, uint32_t reg) { return(LmMma16OperandBK(lane,reg)); }
 
+	// The weight-only GEMM fetches scales as the checkpoint packed them and
+	// asks the format to price one: for MXFP4 that is a bare exponent.
+	static __device__ __forceinline__ float ScaleDecode(uint8_t code)
+	{
+		return(LmE8m0ToFloat(code));
+	}
 	static __device__ __forceinline__ uint8_t Encode(float value)
 	{
 		return((uint8_t)(LmFloatPairToE2m1(value,0.0f) & 15u));

@@ -54,3 +54,13 @@ static int32_t LmGemmLaunch(LmGemmArguments *args, const void *activation_bytes,
 	(void)multiprocessors; (void)stream;
 	return LM_LAUNCH_OK;
 }
+
+// The weight-only launch records identically: the layer checks are about which
+// buffers flow where, and quantisation is exactly what this shim does not do.
+template<class FormatB, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS>
+static int32_t LmGemmWeightOnlyLaunch(LmGemmArguments *args, const void *activation_bf16, const void *weight_bytes, uint32_t packed_rows, uint32_t tokens, uint32_t top_k, uint32_t group_count, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, bool grouped, cudaStream_t stream)
+{
+	return(LmGemmLaunch<FormatB,TILE_N,TILE_K,STAGES,WARPS>(args,activation_bf16,
+		weight_bytes,packed_rows,tokens,top_k,group_count,input_dimension,
+		output_dimension,multiprocessors,grouped,stream));
+}

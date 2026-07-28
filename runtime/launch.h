@@ -82,7 +82,11 @@
 typedef struct LmLaunchShape
 {
 	uint32_t tokens,top_k,expert_count,input_dimension,output_dimension;
-	uint32_t stored_bits,tile_n,tile_k,stages;
+	// stored_bits sizes the WEIGHT operand; stored_bits_a the activation, and
+	// zero means symmetric. Weight-only formats stream BF16 activations against
+	// sub-byte weights, and one width for both was the assumption that priced
+	// that path out of the planner.
+	uint32_t stored_bits,stored_bits_a,tile_n,tile_k,stages;
 }
 LmLaunchShape;
 
@@ -128,7 +132,8 @@ static uint32_t LmLaunchSelectTile(uint32_t peak_rows)
 // pool without instantiating a kernel.
 static uint32_t LmLaunchSharedBytes(const LmLaunchShape *shape, uint32_t tile_m)
 {
-	uint32_t a = (tile_m * shape->tile_k * shape->stored_bits) / 8u;
+	uint32_t bits_a = shape->stored_bits_a != 0u ? shape->stored_bits_a : shape->stored_bits;
+	uint32_t a = (tile_m * shape->tile_k * bits_a) / 8u;
 	uint32_t b = (shape->tile_n * shape->tile_k * shape->stored_bits) / 8u;
 	return((shape->stages * (a + b)) + (shape->stages * 8u));
 }
@@ -164,6 +169,11 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 	pitch = (shape->tile_k * shape->stored_bits) / 8u;
 	plan->swizzle_span = LmSwizzleSpanFor(pitch);
 	if ( plan->swizzle_span == 0u )
+		return(LM_LAUNCH_ERR_MAP);
+	// The activation pitch must be swizzleable in its own right when the widths
+	// differ; the weight span above does not vouch for it.
+	if ( shape->stored_bits_a != 0u
+		&& LmSwizzleSpanFor((shape->tile_k * shape->stored_bits_a) / 8u) == 0u )
 		return(LM_LAUNCH_ERR_MAP);
 	// Persistent grid: one CTA per SM, sized to the machine rather than the
 	// problem, so a short group never leaves an SM idle behind a long one. The

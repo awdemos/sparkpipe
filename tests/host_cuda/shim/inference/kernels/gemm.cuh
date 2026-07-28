@@ -12,6 +12,8 @@ struct LmGemmArguments
 {
 	const float *scale_a;
 	const float *scale_b;
+	const uint8_t *scale_b_e8m0;
+	uint32_t scale_groups;
 	const uint32_t *group_row_offset;
 	const uint32_t *group_tile_prefix;
 	uint16_t *output_bf16;

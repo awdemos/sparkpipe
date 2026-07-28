@@ -39,7 +39,6 @@ template __global__ void LmGemmKernel<LmMxfp4, 16u, K3_TILE_N, 128u, K3_STAGES, 
 template __global__ void LmGemmKernel<LmMxfp4, 32u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
-template __global__ void LmQuantiseRowsKernel<LmMxfp4, K3_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 // No rope instantiation. K3 is NoPE - the reference sets rotary_emb to None and
 // carries the qk_rope slice through unrotated. This line built a rope kernel for
 // a model that never rotates, which cost nothing at runtime and would have told
@@ -75,34 +74,12 @@ template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KV_L
 template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
 template __global__ void LmSigmoidRowsKernel<K3_THREADS>(const uint16_t *, float *, uint32_t);
 
-extern "C" int32_t K3GemmInt7(LmGemmArguments *a, const void *x, const void *w,
-	uint32_t rows, uint32_t tokens, uint32_t groups, uint32_t k, uint32_t n,
-	uint32_t sms, bool grouped, cudaStream_t s)
-{
-	return(LmGemmLaunch<LmInt7,K3_TILE_N,256u,K3_STAGES,K3_WARPS>(a,x,w,rows,tokens,K3_TOP_K,groups,k,n,sms,grouped,s));
-}
-
 // -- entry points ---------------------------------------------------------------
 //
 // Two attention kinds chosen by K3_LAYER_IS_LINEAR from the ABSOLUTE layer
 // index. 93 layers with a period of four and an exception at the last one, so a
 // rank that used its own offset would run the wrong kind for every layer it
 // owns.
-
-extern "C" int32_t K3LayerKdaInt7(const K3LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t s)
-{
-	return(K3LayerKda<LmInt7>(b,rows,sms,s));
-}
-
-extern "C" int32_t K3LayerMlaInt7(const K3LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t s)
-{
-	return(K3LayerMla<LmInt7,K3GlobalKv>(b,rows,context,sms,s));
-}
-
-extern "C" int32_t K3LayerLatentMoeInt7(const K3LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t s)
-{
-	return(K3LayerLatentMoe<LmInt7>(b,rows,packed_rows,sms,s));
-}
 
 extern "C" int32_t K3HeadFullVocab(const K3LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t s)
 {
@@ -119,3 +96,10 @@ template __global__ void LmPerHeadProjectKernel<K3_THREADS, K3_KV_LORA_RANK, K3_
 template __global__ void LmAttnResKernel<K3_THREADS, K3_ATTNRES_MAX_SOURCES>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t, float);
 
 template __global__ void LmCopyRowsKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, uint32_t);
+template __global__ void LmGatherRowsKernel<K3_THREADS>(const uint16_t *, const uint32_t *, uint16_t *, uint32_t, uint32_t);
+// The weight-only GEMM at every tile height the launcher can select. BF16
+// activations, MXFP4 weights, the E8M0 plane decoded in the load - the recipe
+// the checkpoint ships and the only path the routed experts take.
+template __global__ void LmGemmWeightOnlyKernel<LmMxfp4, 16u, K3_LAYER_TILE_N, LmMxfp4::kTileK, K3_LAYER_STAGES, K3_LAYER_WARPS>(const __grid_constant__ LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmWeightOnlyKernel<LmMxfp4, 32u, K3_LAYER_TILE_N, LmMxfp4::kTileK, K3_LAYER_STAGES, K3_LAYER_WARPS>(const __grid_constant__ LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmWeightOnlyKernel<LmMxfp4, 64u, K3_LAYER_TILE_N, LmMxfp4::kTileK, K3_LAYER_STAGES, K3_LAYER_WARPS>(const __grid_constant__ LmGemmArguments, LmTileSource, LmTileSource, bool);

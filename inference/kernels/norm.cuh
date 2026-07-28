@@ -496,3 +496,21 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 		output_bf16[((uint64_t)row * dimension) + index] = LmFloatToBf16(total);
 	}
 }
+
+// Gather rows by a source map: destination row r is source row map[r]. The
+// route expansion for a weight-only expert GEMM - the quantiser used to do
+// this implicitly on its way to MXFP4, and with activations staying BF16 the
+// expansion is the whole job. A null map is a straight copy by index.
+template<uint32_t THREADS>
+__global__ void LmGatherRowsKernel(const uint16_t *__restrict__ source_bf16, const uint32_t *__restrict__ source_row_map, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension)
+{
+	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint32_t source_row;
+	uint64_t from,to;
+	if ( row >= rows || element >= dimension )
+		return;
+	source_row = source_row_map != 0 ? source_row_map[row] : row;
+	from = ((uint64_t)source_row * dimension) + element;
+	to = ((uint64_t)row * dimension) + element;
+	destination_bf16[to] = source_bf16[from];
+}

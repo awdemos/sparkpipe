@@ -11,7 +11,6 @@
 // requirements is the mistake glm5_2/bind.cu records its author stopping to
 // avoid. What a packer produces is its business; this file needs the pointers.
 
-#include "inference/kernels/formats/int7.cuh"
 #include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/llms/kimi_k3/slice.cuh"
 
