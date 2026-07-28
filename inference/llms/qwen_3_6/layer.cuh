@@ -98,7 +98,7 @@ struct Qwen36LayerBuffers
 	const uint32_t *context_length;
 	const uint32_t *positions;
 	const uint32_t *dense_row_offset;
-	const uint32_t *dense_tile_prefix;
+	uint32_t *dense_tile_prefix;
 	float *head_candidate_score;
 	uint32_t *head_candidate_token;
 	uint32_t *output_token;

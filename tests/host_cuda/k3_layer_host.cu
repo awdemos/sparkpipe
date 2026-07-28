@@ -87,6 +87,8 @@ static uint16_t norm_weight[K3_HIDDEN];
 static float router_logits[ROWS * K3_EXPERTS], router_bias[K3_EXPERTS];
 static float route_weight[ROUTES];
 static uint32_t route_expert[ROUTES], route_packed[ROUTES], route_source[ROUTES];
+static uint32_t group_offsets[K3_EXPERTS + 1u], group_tiles[K3_EXPERTS + 1u];
+static uint32_t dense_offsets[2], dense_tiles[2];
 
 int main(void)
 {
@@ -103,8 +105,6 @@ int main(void)
 		hidden[index] = LmFloatToBf16(0.01f * (float)(index % 17));
 	for (index = 0u; index < ROUTES; ++index)
 	{
-		route_packed[index] = index;
-		route_source[index] = index / K3_TOP_K;
 		route_weight[index] = 1.0f / (float)K3_TOP_K;
 	}
 	b.hidden_bf16 = hidden; b.normed_bf16 = normed;
@@ -116,6 +116,9 @@ int main(void)
 	b.router_logits = router_logits; b.router_bias = router_bias;
 	b.route_expert = route_expert; b.route_weight = route_weight;
 	b.route_packed_row = route_packed; b.route_source_token = route_source;
+	b.group_row_offset = group_offsets; b.group_tile_prefix = group_tiles;
+	dense_offsets[0] = 0u; dense_offsets[1] = ROWS;
+	b.dense_row_offset = dense_offsets; b.dense_tile_prefix = dense_tiles;
 
 	// bisect the fault: report before each launch the layer makes
 	printf("start\n"); fflush(stdout);

@@ -59,7 +59,12 @@ struct LmGemmArguments
 	const uint8_t *scale_b_e8m0;
 	uint32_t scale_groups;
 	const uint32_t *group_row_offset;
-	const uint32_t *group_tile_prefix;
+	// FILLED BY THE LAUNCHER, NOT THE CALLER. Tile counts depend on this
+	// launch's tile height and neuron width, so one caller-built prefix cannot
+	// serve two GEMMs of different output widths - and it was serving twenty.
+	// The caller provides group_count + 1 words of device scratch; the launcher
+	// prices them for the launch it is about to make.
+	uint32_t *group_tile_prefix;
 	void *output_bf16;
 	uint32_t group_count;
 	uint32_t input_dimension;
@@ -339,4 +344,25 @@ void LmGemmWeightOnlyKernel(__grid_constant__ const LmGemmArguments args, LmTile
 		__syncthreads();
 	}
 	LmPipelineRelease<STAGES>(barrier);
+}
+
+// Price this launch's tiles from the row offsets: tiles for group g are
+// ceil(rows_g / tile_m) * neuron_tiles, prefixed. Serial over the groups by
+// one thread - 897 additions is not a scan problem - and launched by the GEMM
+// launcher on the same stream, so the GEMM's binary search reads a prefix
+// built for exactly its own geometry.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmGemmTilePrefixKernel(const uint32_t *__restrict__ group_row_offset, uint32_t group_count, uint32_t tile_m, uint32_t neuron_tiles, uint32_t *__restrict__ tile_prefix)
+{
+	uint32_t index,rows,total = 0u;
+	if ( threadIdx.x != 0u || blockIdx.x != 0u )
+		return;
+	for (index = 0u; index < group_count; ++index)
+	{
+		rows = group_row_offset[index + 1u] - group_row_offset[index];
+		tile_prefix[index] = total;
+		total += ((rows + tile_m - 1u) / tile_m) * neuron_tiles;
+	}
+	tile_prefix[group_count] = total;
 }

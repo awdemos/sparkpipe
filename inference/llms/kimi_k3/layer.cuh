@@ -12,6 +12,7 @@
 #include "runtime/gemm.cuh"
 #include "runtime/launch.h"
 #include "inference/kernels/norm.cuh"
+#include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
@@ -238,13 +239,13 @@ struct K3LayerBuffers
 	const uint32_t *context_length;
 	const uint32_t *positions;
 	const uint32_t *dense_row_offset;
-	const uint32_t *dense_tile_prefix;
-	const uint32_t *route_expert;
-	const uint32_t *route_packed_row;
-	const uint32_t *route_source_token;
+	uint32_t *dense_tile_prefix;
+	uint32_t *route_expert;
+	uint32_t *route_packed_row;
+	uint32_t *route_source_token;
 	const float *route_weight;
-	const uint32_t *group_row_offset;
-	const uint32_t *group_tile_prefix;
+	uint32_t *group_row_offset;
+	uint32_t *group_tile_prefix;
 	float *head_candidate_score;
 	uint32_t *head_candidate_token;
 	uint32_t *output_token;
@@ -541,7 +542,13 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// RENORMALISE is true because moe_renormalize is set, and the per-expert
 	// bias is e_score_correction_bias, frozen at inference.
 	LM_LAUNCH((LmTopkSmallKernel<K3_LAYER_THREADS,K3_TOP_K,true>), rows, K3_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
-		0,K3_EXPERTS,(uint32_t *)b->route_expert, (float *)b->route_weight,b->router_bias,(const uint16_t *)b->router_logits);
+		0,K3_EXPERTS,b->route_expert, (float *)b->route_weight,b->router_bias,(const uint16_t *)b->router_logits);
+	// FROM CHOICES TO PACKED ORDER, ON DEVICE. The top-k lives here; a host
+	// cannot pack what it cannot see without a sync on the hot path, and until
+	// this call nothing packed it at all - every harness filled the arrays by
+	// hand, which is the precise shape of a driver that cannot exist.
+	LM_LAUNCH((LmRouteBuildKernel<K3_LAYER_THREADS,K3_EXPERTS>), 1u, K3_LAYER_THREADS, 0, stream,
+		b->route_expert,packed_rows,K3_TOP_K,b->group_row_offset, b->route_packed_row,b->route_source_token);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 		b->latent_bf16,rows,K3_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
