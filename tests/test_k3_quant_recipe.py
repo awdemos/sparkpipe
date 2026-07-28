@@ -1,6 +1,19 @@
 #!/usr/bin/env python3
 """K3's quantisation must follow the checkpoint's recipe, not a global choice.
 
+THIS GATE CURRENTLY FAILS, AND IT IS RIGHT TO. A second external audit found
+that the expert path quantises its ACTIVATIONS to MXFP4. The checkpoint sets
+input_activations null: it quantises weights and says nothing about
+activations, so an inference stack runs BF16 activations against streamed
+MXFP4 weights.
+
+The fix needs an asymmetric GEMM - A at 16 stored bits with no scale, B at 4
+with an E8M0 scale every 32, existing BF16 MMA and FP32 accumulators - and that
+is a change to the tile machinery rather than a call-site edit. It is not done.
+The gate stays strict rather than being softened to green, because a suite that
+passes over a known-wrong data path is worth less than one that says where it
+is wrong. docs/K3_WEIGHT_ONLY_MXFP4.md has the full requirement.
+
 config.json's quantization_config quantises weights to 4 bits at group 32 and
 carries an ignore list: self_attn, shared_experts, the dense mlp projections,
 lm_head and the vision tower. The report's deployment section says the
@@ -38,6 +51,22 @@ def main():
     for tensor in generic:
         print(f"  FAIL {tensor} takes the quantised Format; the checkpoint's "
               f"ignore list excludes it from QAT")
+    # ACTIVATIONS ARE NOT QUANTISED, AND THIS GATE DID NOT CHECK.
+    #
+    # The checkpoint sets input_activations null. It quantises weights and says
+    # nothing about activations, so an inference stack runs BF16 activations
+    # against streamed MXFP4 weights. This file passed while the expert path
+    # quantised its activations to MXFP4, because it only ever asked which
+    # WEIGHT projections took the quantised Format.
+    #
+    # A second audit found it. The check is one line and its absence was the
+    # whole of the defect.
+    for match in re.finditer(r"K3Quantise<(\w+)>", text):
+        if match.group(1) == "Format":
+            print("  FAIL an activation is quantised with the weight Format; "
+                  "the checkpoint sets input_activations null")
+            failures += 1
+
     # the expert GEMMs must still be reachable by Format, or nothing is quantised
     # K3Project is generic - its body says LmGemmLaunch<Format> and its CALLERS
     # choose the format. Counting its single call site as a quantised GEMM

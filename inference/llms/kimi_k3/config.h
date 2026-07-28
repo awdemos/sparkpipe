@@ -27,7 +27,17 @@
 //   normalization" as one. kernels/linear_attn.cuh has the first two. Qwen 3.6
 //   needs an attention output gate too, so this is one kernel serving both.
 //
-//   MXFP4 weights with MXFP8 activations, from quantisation-aware training.
+//   MXFP4 weights, group 32, E8M0 scales. WEIGHT-ONLY: the checkpoint's
+//   quantization_config sets input_activations to null and output_activations
+//   to null. The tech report's deployment section says activations were
+//   computed in MXFP8, and that describes Moonshot's own serving stack, not
+//   what the released checkpoint asks an inference engine to do.
+//
+//   I recorded the report's sentence here and then quantised activations to
+//   MXFP4 - not even the MXFP8 the report mentions - because the GEMM takes one
+//   Format for both operands. The checkpoint asks for neither. The production
+//   path is BF16 activation against a streamed MXFP4 weight, decoded to BF16
+//   registers at the tile, BF16 MMA with FP32 accumulation.
 //   GLM52_MXFP4_GROUP is currently exempted from the coverage gate as "a
 //   supported format with no checkpoint using it". There is now a checkpoint
 //   using it.
