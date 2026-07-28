@@ -92,6 +92,91 @@ uint32_t SparkKvCacheDsaSourceLayer(uint32_t layer_index)
           SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT));
 }
 
+static SparkStatus SparkKvCacheCalculateAttentionBytesPerTokenLayer(
+    const SparkKvCacheCapacityRequest *request,
+    uint64_t *bytes_per_token_per_layer_out)
+{
+    uint64_t element_count;
+    uint64_t scale_count;
+
+    if (request == 0 || bytes_per_token_per_layer_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+
+    switch (request->layout)
+    {
+        case SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE:
+            element_count =
+                (uint64_t)request->latent_dimension +
+                (uint64_t)request->rope_dimension +
+                ((uint64_t)request->head_count *
+                 (uint64_t)request->qk_nope_head_dimension) +
+                ((uint64_t)request->head_count *
+                 (uint64_t)request->value_head_dimension);
+            *bytes_per_token_per_layer_out =
+                element_count * (uint64_t)request->bytes_per_scalar;
+            return SPARK_STATUS_OK;
+
+        case SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED:
+            element_count =
+                (uint64_t)request->latent_dimension +
+                (uint64_t)request->rope_dimension;
+            *bytes_per_token_per_layer_out =
+                element_count * (uint64_t)request->bytes_per_scalar;
+            return SPARK_STATUS_OK;
+
+        case SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3:
+            if (request->fp8_scale_block_size == 0u)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            element_count =
+                (uint64_t)request->latent_dimension +
+                (uint64_t)request->rope_dimension;
+            scale_count = SparkKvCacheCeilDivU64(
+                element_count,
+                (uint64_t)request->fp8_scale_block_size);
+            *bytes_per_token_per_layer_out =
+                element_count + (scale_count * sizeof(float));
+            return SPARK_STATUS_OK;
+
+        case SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3:
+            if (request->fp8_scale_block_size == 0u)
+            {
+                return SPARK_STATUS_INVALID_ARGUMENT;
+            }
+            element_count =
+                (uint64_t)request->latent_dimension +
+                (uint64_t)request->rope_dimension;
+            scale_count = SparkKvCacheCeilDivU64(
+                element_count,
+                (uint64_t)request->fp8_scale_block_size);
+            *bytes_per_token_per_layer_out =
+                element_count + (scale_count * sizeof(float));
+            element_count =
+                (uint64_t)request->head_count *
+                (uint64_t)request->qk_nope_head_dimension;
+            scale_count = SparkKvCacheCeilDivU64(
+                element_count,
+                (uint64_t)request->fp8_scale_block_size);
+            *bytes_per_token_per_layer_out +=
+                element_count + (scale_count * sizeof(float));
+            element_count =
+                (uint64_t)request->head_count *
+                (uint64_t)request->value_head_dimension;
+            scale_count = SparkKvCacheCeilDivU64(
+                element_count,
+                (uint64_t)request->fp8_scale_block_size);
+            *bytes_per_token_per_layer_out +=
+                element_count + (scale_count * sizeof(float));
+            return SPARK_STATUS_OK;
+
+        default:
+            return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+}
+
 SparkStatus SparkKvCacheCalculateJitStageBudget(
     const SparkKvJitStageBudgetRequest *request,
     SparkKvJitStageBudget *budget)
@@ -105,9 +190,6 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
     uint64_t active_token_capacity;
     uint64_t backing_token_capacity;
     uint64_t compact_selected_token_count;
-    uint64_t key_nope_elements;
-    uint64_t value_elements;
-    uint32_t layer_offset;
     uint32_t local_dsa_index_layer_count;
     SparkStatus status;
 
@@ -159,50 +241,25 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
     // request says how many layers carry index keys; scanning a glm layer
     // schedule here priced every other model's cache with glm's calendar.
     local_dsa_index_layer_count = request->index_key_layer_count;
-    if (request->attention_cache_layout ==
-        SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3)
     {
-        attention_bytes_per_token_per_layer =
-            (uint64_t)(request->latent_dimension + request->rope_dimension) +
-            (((uint64_t)(request->latent_dimension + request->rope_dimension) +
-             request->fp8_scale_block_size - 1u) /
-             request->fp8_scale_block_size) * sizeof(float);
-    }
-    else if (request->attention_cache_layout ==
-        SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3)
-    {
-        key_nope_elements =
-            (uint64_t)request->head_count *
-            request->qk_nope_head_dimension;
-        value_elements =
-            (uint64_t)request->head_count *
-            request->value_head_dimension;
-        attention_bytes_per_token_per_layer =
-            (request->latent_dimension + request->rope_dimension) +
-            key_nope_elements + value_elements +
-            ((((uint64_t)(request->latent_dimension + request->rope_dimension) +
-                request->fp8_scale_block_size - 1u) /
-               request->fp8_scale_block_size) +
-             ((key_nope_elements + request->fp8_scale_block_size - 1u) /
-               request->fp8_scale_block_size) +
-             ((value_elements + request->fp8_scale_block_size - 1u) /
-               request->fp8_scale_block_size)) * sizeof(float);
-    }
-    else if (request->attention_cache_layout ==
-        SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE)
-    {
-        attention_bytes_per_token_per_layer =
-            ((uint64_t)(request->latent_dimension + request->rope_dimension) +
-             ((uint64_t)request->head_count *
-              request->qk_nope_head_dimension) +
-             ((uint64_t)request->head_count *
-              request->value_head_dimension)) * request->bytes_per_scalar;
-    }
-    else
-    {
-        attention_bytes_per_token_per_layer =
-            (uint64_t)(request->latent_dimension + request->rope_dimension) *
-            request->bytes_per_scalar;
+        // ONE FORMULA SET, SHARED WITH THE ESTIMATOR. The stage budget
+        // builds the estimator's request from its own geometry fields and
+        // asks the same helper; four duplicated layout formulas retired.
+        SparkKvCacheCapacityRequest geometry;
+        memset(&geometry,0,sizeof(geometry));
+        geometry.layout = request->attention_cache_layout;
+        geometry.fp8_scale_block_size = request->fp8_scale_block_size;
+        geometry.head_count = request->head_count;
+        geometry.qk_nope_head_dimension = request->qk_nope_head_dimension;
+        geometry.value_head_dimension = request->value_head_dimension;
+        geometry.latent_dimension = request->latent_dimension;
+        geometry.rope_dimension = request->rope_dimension;
+        geometry.bytes_per_scalar = request->bytes_per_scalar;
+        if (SparkKvCacheCalculateAttentionBytesPerTokenLayer(&geometry,
+            &attention_bytes_per_token_per_layer) != SPARK_STATUS_OK)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
     }
     dsa_bytes_per_token_per_layer =
         (uint64_t)request->index_key_dimension *
@@ -332,91 +389,6 @@ SparkStatus SparkKvCacheCalculateJitStageBudget(
     budget->maximum_average_backing_context_tokens =
         backing_token_capacity > UINT32_MAX ? UINT32_MAX : (uint32_t)backing_token_capacity;
     return SPARK_STATUS_OK;
-}
-
-static SparkStatus SparkKvCacheCalculateAttentionBytesPerTokenLayer(
-    const SparkKvCacheCapacityRequest *request,
-    uint64_t *bytes_per_token_per_layer_out)
-{
-    uint64_t element_count;
-    uint64_t scale_count;
-
-    if (request == 0 || bytes_per_token_per_layer_out == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-
-    switch (request->layout)
-    {
-        case SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE:
-            element_count =
-                (uint64_t)request->latent_dimension +
-                (uint64_t)request->rope_dimension +
-                ((uint64_t)request->head_count *
-                 (uint64_t)request->qk_nope_head_dimension) +
-                ((uint64_t)request->head_count *
-                 (uint64_t)request->value_head_dimension);
-            *bytes_per_token_per_layer_out =
-                element_count * (uint64_t)request->bytes_per_scalar;
-            return SPARK_STATUS_OK;
-
-        case SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED:
-            element_count =
-                (uint64_t)request->latent_dimension +
-                (uint64_t)request->rope_dimension;
-            *bytes_per_token_per_layer_out =
-                element_count * (uint64_t)request->bytes_per_scalar;
-            return SPARK_STATUS_OK;
-
-        case SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3:
-            if (request->fp8_scale_block_size == 0u)
-            {
-                return SPARK_STATUS_INVALID_ARGUMENT;
-            }
-            element_count =
-                (uint64_t)request->latent_dimension +
-                (uint64_t)request->rope_dimension;
-            scale_count = SparkKvCacheCeilDivU64(
-                element_count,
-                (uint64_t)request->fp8_scale_block_size);
-            *bytes_per_token_per_layer_out =
-                element_count + (scale_count * sizeof(float));
-            return SPARK_STATUS_OK;
-
-        case SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3:
-            if (request->fp8_scale_block_size == 0u)
-            {
-                return SPARK_STATUS_INVALID_ARGUMENT;
-            }
-            element_count =
-                (uint64_t)request->latent_dimension +
-                (uint64_t)request->rope_dimension;
-            scale_count = SparkKvCacheCeilDivU64(
-                element_count,
-                (uint64_t)request->fp8_scale_block_size);
-            *bytes_per_token_per_layer_out =
-                element_count + (scale_count * sizeof(float));
-            element_count =
-                (uint64_t)request->head_count *
-                (uint64_t)request->qk_nope_head_dimension;
-            scale_count = SparkKvCacheCeilDivU64(
-                element_count,
-                (uint64_t)request->fp8_scale_block_size);
-            *bytes_per_token_per_layer_out +=
-                element_count + (scale_count * sizeof(float));
-            element_count =
-                (uint64_t)request->head_count *
-                (uint64_t)request->value_head_dimension;
-            scale_count = SparkKvCacheCeilDivU64(
-                element_count,
-                (uint64_t)request->fp8_scale_block_size);
-            *bytes_per_token_per_layer_out +=
-                element_count + (scale_count * sizeof(float));
-            return SPARK_STATUS_OK;
-
-        default:
-            return SPARK_STATUS_INVALID_ARGUMENT;
-    }
 }
 
 SparkStatus SparkKvCacheEstimateCapacity(

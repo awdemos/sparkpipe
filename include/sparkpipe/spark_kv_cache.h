@@ -38,7 +38,7 @@ extern "C" {
     ((uint32_t)sizeof(SparkKvCacheCapacityRequest))
 #define SPARK_KV_CACHE_CAPACITY_ESTIMATE_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkKvCacheCapacityEstimate))
-#define SPARK_KV_JIT_STAGE_BUDGET_ABI_VERSION 2u
+#define SPARK_KV_JIT_STAGE_BUDGET_ABI_VERSION 3u
 #define SPARK_KV_JIT_STAGE_BUDGET_REQUEST_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkKvJitStageBudgetRequest))
 #define SPARK_KV_JIT_STAGE_BUDGET_DESCRIPTOR_BYTES \
@@ -100,6 +100,15 @@ typedef struct SparkKvJitStageBudgetRequest
     uint32_t record_alignment_bytes;
     uint32_t attention_cache_layout;
     uint32_t fp8_scale_block_size;
+    uint32_t head_count;
+    uint32_t qk_nope_head_dimension;
+    uint32_t value_head_dimension;
+    uint32_t latent_dimension;
+    uint32_t rope_dimension;
+    uint32_t bytes_per_scalar;
+    uint32_t index_key_layer_count;
+    uint32_t index_key_dimension;
+    uint32_t index_key_bytes_per_scalar;
 } SparkKvJitStageBudgetRequest;
 
 typedef struct SparkKvJitStageBudget

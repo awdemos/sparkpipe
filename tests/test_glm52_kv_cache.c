@@ -854,6 +854,27 @@ static void SparkTestKvJitStageBudgetsMatchRingStorage(void)
         SPARK_KV_JIT_DEFAULT_RECORD_ALIGNMENT;
     request.attention_cache_layout =
         SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED;
+    request.head_count = SPARK_GLM52_MODEL_HEAD_COUNT;
+    request.qk_nope_head_dimension = SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION;
+    request.value_head_dimension = SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION;
+    request.latent_dimension = SPARK_GLM52_MODEL_LATENT_DIMENSION;
+    request.rope_dimension = SPARK_GLM52_MODEL_ROPE_DIMENSION;
+    request.bytes_per_scalar = sizeof(uint16_t);
+    request.index_key_dimension = SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION;
+    request.index_key_bytes_per_scalar = sizeof(uint16_t);
+    {
+        uint32_t schedule_layer;
+        request.index_key_layer_count = 0u;
+        for (schedule_layer = request.first_layer_index;
+            schedule_layer < request.first_layer_index + request.layer_count;
+            ++schedule_layer)
+        {
+            if (SparkKvCacheDsaSourceLayer(schedule_layer) == schedule_layer)
+            {
+                request.index_key_layer_count += 1u;
+            }
+        }
+    }
 
     request.first_layer_index = 0u;
     assert(SparkKvCacheCalculateJitStageBudget(
