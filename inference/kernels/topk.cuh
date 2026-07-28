@@ -50,9 +50,9 @@ static __device__ __forceinline__ float LmTopkValue(uint32_t key)
 // The threshold is not tuned; it is where a block can hold n in shared at all.
 #define LM_TOPK_SMALL_LIMIT 1024u
 
-template<uint32_t THREADS, uint32_t K>
+template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false>
 __global__ __launch_bounds__(THREADS, 1)
-void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, float bias)
+void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias)
 {
 	extern __shared__ uint32_t lm_topk_shared[];
 	uint32_t *keys = lm_topk_shared;
@@ -61,7 +61,16 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 	uint32_t index,size,stride;
 	for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
 	{
-		keys[index] = index < n ? LmTopkKey(scores[base + index] + bias) : 0u;
+		// THE BIAS SELECTS; IT DOES NOT WEIGH. Kimi K3's router adds a per-expert
+		// correction bias to pick the top-k and then gathers the mixture weights
+		// from the UNBIASED scores - the report is explicit that omitting b from
+		// p_i,j is what lets it "regulate dispatch without altering the mixture
+		// weights". This kernel took a scalar bias, folded it into the sorted key,
+		// and emitted that key as the weight, so a frozen load-balancing bias
+		// would have leaked into every mixture weight as a fixed per-expert
+		// distortion. Every caller passed 0.0f, so nothing was wrong yet.
+		keys[index] = index < n ? LmTopkKey(scores[base + index]
+			+ (selection_bias != 0 ? selection_bias[index] : 0.0f)) : 0u;
 		slots[index] = index;
 	}
 	__syncthreads();
@@ -90,11 +99,30 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 			}
 			__syncthreads();
 		}
+	// The weight is re-read from the unbiased scores at the chosen slot rather
+	// than recovered from the sort key, which carries the bias.
 	for (index = threadIdx.x; index < K; index += THREADS)
 	{
 		out_indices[((uint64_t)blockIdx.x * K) + index] = slots[index];
 		if ( out_values != 0 )
-			out_values[((uint64_t)blockIdx.x * K) + index] = LmTopkValue(keys[index]);
+			out_values[((uint64_t)blockIdx.x * K) + index] = scores[base + slots[index]];
+	}
+	if ( RENORMALISE && out_values != 0 )
+	{
+		// moe_renormalize: divide the k gates by their sum so they sum to one.
+		// K3 sets it; the report's routed_scaling_factor then multiplies a
+		// normalised mixture, which is why that factor being 1.0 makes the
+		// multiply a no-op rather than merely a small number.
+		__syncthreads();
+		if ( threadIdx.x == 0u )
+		{
+			float total = 0.0f;
+			for (index = 0u; index < K; ++index)
+				total += out_values[((uint64_t)blockIdx.x * K) + index];
+			total += 1e-20f;
+			for (index = 0u; index < K; ++index)
+				out_values[((uint64_t)blockIdx.x * K) + index] /= total;
+		}
 	}
 }
 

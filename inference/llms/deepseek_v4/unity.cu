@@ -38,7 +38,7 @@ template __global__ void LmTopkGatherKernel<DSV4_THREADS>(const float *, uint32_
 template __global__ void LmMoeFinalizeKernel<DSV4_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmHeadCandidateKernel<DSV4_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmHeadCommitKernel<DSV4_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
-template __global__ void LmTopkSmallKernel<DSV4_THREADS, DSV4_TOP_K>(const float *, uint32_t, uint32_t *, float *, float);
+template __global__ void LmTopkSmallKernel<DSV4_THREADS, DSV4_TOP_K>(const float *, uint32_t, uint32_t *, float *, const float *);
 
 extern "C" int32_t Dsv4GemmFp8(LmGemmArguments *a, const void *x, const void *w,
 	uint32_t rows, uint32_t tokens, uint32_t groups, uint32_t k, uint32_t n,

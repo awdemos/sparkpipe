@@ -166,6 +166,26 @@ void LmSituMulKernel(const uint16_t *__restrict__ gate_up_bf16, uint16_t *__rest
 	}
 }
 
+// Sigmoid a row of router logits in place, bf16 in and float out.
+//
+// K3's router activation is sigmoid, not softmax: config.json sets
+// moe_router_activation_func and modeling_kimi_linear.py branches on it. The
+// difference matters beyond the curve - sigmoid scores are independent per
+// expert, so the top-k weights do not sum to one before renormalisation, which
+// is why moe_renormalize exists at all.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmSigmoidRowsKernel(const uint16_t *__restrict__ logits_bf16, float *__restrict__ scores, uint32_t width)
+{
+	uint64_t base = (uint64_t)blockIdx.x * width;
+	uint32_t index;
+	for (index = threadIdx.x; index < width; index += THREADS)
+	{
+		float value = LmBf16ToFloat(logits_bf16[base + index]);
+		scores[base + index] = 1.0f / (1.0f + __expf(-value));
+	}
+}
+
 // Gate an attention output elementwise by a sigmoid of its own projection.
 //
 // TWO MODELS NEED THIS AND NEITHER COULD HAVE IT. Qwen 3.6's reference calls its

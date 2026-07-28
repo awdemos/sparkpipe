@@ -208,7 +208,7 @@ static int32_t Dsv4LayerMoe(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t p
 		return(status);
 	LmTopkSmallKernel<DSV4_LAYER_THREADS,DSV4_TOP_K>
 		<<<rows,DSV4_LAYER_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream>>>(
-		(const float *)b->router_logits,DSV4_EXPERTS,b->route_expert,b->route_weight,0.0f);
+		(const float *)b->router_logits,DSV4_EXPERTS,b->route_expert,b->route_weight,0);
 	// The shared expert, on the same normed rows, before the routed path
 	// overwrites the packed activation buffer with the expanded copy.
 	LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>

@@ -61,7 +61,8 @@ template __global__ void LmHeadCommitKernel<K3_THREADS>(const float *, const uin
 template __global__ void LmMoeFinalizeKernel<K3_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
 
 template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
-template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K>(const float *, uint32_t, uint32_t *, float *, float);
+template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true>(const float *, uint32_t, uint32_t *, float *, const float *);
+template __global__ void LmSigmoidRowsKernel<K3_THREADS>(const uint16_t *, float *, uint32_t);
 
 extern "C" int32_t K3GemmInt7(LmGemmArguments *a, const void *x, const void *w,
 	uint32_t rows, uint32_t tokens, uint32_t groups, uint32_t k, uint32_t n,
