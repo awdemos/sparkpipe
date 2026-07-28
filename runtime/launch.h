@@ -127,6 +127,18 @@ static uint32_t LmLaunchSelectTile(uint32_t peak_rows)
 	return(64u);
 }
 
+// The grouped tile height as a pure function of the batch shape, so a layer
+// can price its expert tile tables in the route build and skip the prefix
+// launches. This IS the planner's choice - one truth, exported.
+static uint32_t LmLaunchGroupedTileM(uint32_t tokens, uint32_t top_k, uint32_t expert_count)
+{
+	LmLaunchShape shape = { 0 };
+	shape.tokens = tokens;
+	shape.top_k = top_k;
+	shape.expert_count = expert_count;
+	return(LmLaunchSelectTile(LmLaunchPeakRowsPerGroup(&shape)));
+}
+
 // Shared memory the kernel will carve, matching LmGemmSharedBytes exactly. Kept
 // as arithmetic rather than a call into the template so the host can size a
 // pool without instantiating a kernel.

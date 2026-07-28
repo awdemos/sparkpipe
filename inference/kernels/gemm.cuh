@@ -58,6 +58,10 @@ struct LmGemmArguments
 	// instruction; the checkpoint's bytes stream as the checkpoint packed them.
 	const uint8_t *scale_b_e8m0;
 	uint32_t scale_groups;
+	// A caller that pre-priced the grouped tile table for this launch's tile
+	// heights sets this; the launcher then makes no prefix launch. The dense
+	// case never needs either - the kernel derives one group's two values.
+	uint32_t prefix_built;
 	const uint32_t *group_row_offset;
 	// FILLED BY THE LAUNCHER, NOT THE CALLER. Tile counts depend on this
 	// launch's tile height and neuron width, so one caller-built prefix cannot
@@ -186,15 +190,28 @@ void LmGemmKernel(__grid_constant__ const LmGemmArguments args, LmTileSource sou
 	const uint32_t count = (TILE_M / Format::kMmaM) * (TILE_N / WARPS / Format::kMmaN);
 	const uint32_t neuron_tiles = (args.output_dimension + TILE_N - 1u) / TILE_N;
 	const uint32_t k_tiles = args.input_dimension / TILE_K;
+	// ONE GROUP NEEDS NO TABLE. A dense GEMM's tile count is two values both
+	// derivable from the arguments, and reading them from memory cost a
+	// prefix-kernel launch per projection - about twenty per layer, seven
+	// hundred per token, pure latency at batch one on a machine where the
+	// decode step is already launch-bound. The grouped case keeps the table,
+	// which the route build now writes.
+	const uint32_t dense_rows = args.group_count == 1u
+		? args.group_row_offset[1] - args.group_row_offset[0] : 0u;
+	const uint32_t dense_tiles = args.group_count == 1u
+		? ((dense_rows + TILE_M - 1u) / TILE_M) * neuron_tiles : 0u;
 	float total[(TILE_M / Format::kMmaM) * (TILE_N / WARPS / Format::kMmaN)][4];
 	uint32_t warp = threadIdx.x / LM_WARP_LANES,lane = threadIdx.x % LM_WARP_LANES;
 	uint32_t tile,group,in_group,row_base,row_limit,neuron_base,k,stage,ahead,total_tiles;
 	LmPipelineInitialise<STAGES>(barrier,WARPS * LM_WARP_LANES);
-	total_tiles = LmTotalTiles(args.group_tile_prefix,args.group_count);
+	total_tiles = args.group_count == 1u ? dense_tiles
+		: LmTotalTiles(args.group_tile_prefix,args.group_count);
 	for (tile = blockIdx.x; tile < total_tiles; tile += gridDim.x)
 	{
-		group = LmGroupOfTile(args.group_tile_prefix,args.group_count,tile);
-		in_group = tile - args.group_tile_prefix[group];
+		group = args.group_count == 1u ? 0u
+			: LmGroupOfTile(args.group_tile_prefix,args.group_count,tile);
+		in_group = args.group_count == 1u ? tile
+			: tile - args.group_tile_prefix[group];
 		row_base = args.group_row_offset[group] + ((in_group / neuron_tiles) * TILE_M);
 		row_limit = args.group_row_offset[group + 1u];
 		neuron_base = (in_group % neuron_tiles) * TILE_N;
@@ -306,16 +323,30 @@ void LmGemmWeightOnlyKernel(__grid_constant__ const LmGemmArguments args, LmTile
 	const uint32_t neuron_tiles = (args.output_dimension + TILE_N - 1u) / TILE_N;
 	const uint32_t k_tiles = args.input_dimension / TILE_K;
 	const uint32_t tile_groups = TILE_K / FormatB::kScaleGroup;
+	// ONE GROUP NEEDS NO TABLE. A dense GEMM's tile count is two values both
+	// derivable from the arguments, and reading them from memory cost a
+	// prefix-kernel launch per projection - about twenty per layer, seven
+	// hundred per token, pure latency at batch one on a machine where the
+	// decode step is already launch-bound. The grouped case keeps the table,
+	// which the route build now writes.
+	const uint32_t dense_rows = args.group_count == 1u
+		? args.group_row_offset[1] - args.group_row_offset[0] : 0u;
+	const uint32_t dense_tiles = args.group_count == 1u
+		? ((dense_rows + TILE_M - 1u) / TILE_M) * neuron_tiles : 0u;
+
 	float total[(TILE_M / LmBf16Format::kMmaM) * (TILE_N / WARPS / LmBf16Format::kMmaN)][4];
 	uint32_t warp = threadIdx.x / LM_WARP_LANES,lane = threadIdx.x % LM_WARP_LANES;
 	uint32_t tile,group,in_group,row_base,row_limit,neuron_base,k,stage,ahead,total_tiles;
 	const uint8_t *scale_plane;
 	LmPipelineInitialise<STAGES>(barrier,WARPS * LM_WARP_LANES);
-	total_tiles = LmTotalTiles(args.group_tile_prefix,args.group_count);
+	total_tiles = args.group_count == 1u ? dense_tiles
+		: LmTotalTiles(args.group_tile_prefix,args.group_count);
 	for (tile = blockIdx.x; tile < total_tiles; tile += gridDim.x)
 	{
-		group = LmGroupOfTile(args.group_tile_prefix,args.group_count,tile);
-		in_group = tile - args.group_tile_prefix[group];
+		group = args.group_count == 1u ? 0u
+			: LmGroupOfTile(args.group_tile_prefix,args.group_count,tile);
+		in_group = args.group_count == 1u ? tile
+			: tile - args.group_tile_prefix[group];
 		row_base = args.group_row_offset[group] + ((in_group / neuron_tiles) * TILE_M);
 		row_limit = args.group_row_offset[group + 1u];
 		neuron_base = (in_group % neuron_tiles) * TILE_N;

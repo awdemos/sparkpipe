@@ -14,3 +14,21 @@
 #define LM_LAUNCH_ERR_MAP (-44)
 #define LM_LAUNCH_ERR_ATTRIBUTE (-45)
 #define LM_LAUNCH_ERR_LAUNCH (-46)
+
+// THE REAL CHOICE, COPIED. The layer prices its expert tile tables with the
+// planner's tile height; the shim must return the same number the real
+// launch.h would or the recorded tables lie about the launches they price.
+static uint32_t LmLaunchGroupedTileM(uint32_t tokens, uint32_t top_k, uint32_t expert_count)
+{
+	uint64_t mean;
+	uint32_t peak;
+	if ( expert_count == 0u )
+		return(16u);
+	mean = (((uint64_t)tokens * top_k) + expert_count - 1u) / expert_count;
+	peak = (uint32_t)(mean * 2u);
+	if ( peak <= 16u )
+		return(16u);
+	if ( peak <= 32u )
+		return(32u);
+	return(64u);
+}

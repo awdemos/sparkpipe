@@ -97,7 +97,7 @@ template __global__ void LmAttnResKernel<K3_THREADS, K3_ATTNRES_MAX_SOURCES>(con
 
 template __global__ void LmCopyRowsKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, uint32_t);
 template __global__ void LmGatherRowsKernel<K3_THREADS>(const uint16_t *, const uint32_t *, uint16_t *, uint32_t, uint32_t);
-template __global__ void LmRouteBuildKernel<K3_THREADS, K3_EXPERTS>(const uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *);
+template __global__ void LmRouteBuildKernel<K3_THREADS, K3_EXPERTS>(const uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t, uint32_t *);
 template __global__ void LmGemmTilePrefixKernel<32u>(const uint32_t *, uint32_t, uint32_t, uint32_t, uint32_t *);
 // The weight-only GEMM at every tile height the launcher can select. BF16
 // activations, MXFP4 weights, the E8M0 plane decoded in the load - the recipe

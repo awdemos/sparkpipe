@@ -263,6 +263,7 @@ struct K3LayerBuffers
 	const float *route_weight;
 	uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix;
+	uint32_t *group_tile_prefix_down;
 	float *head_candidate_score;
 	uint32_t *head_candidate_token;
 	uint32_t *output_token;
@@ -592,7 +593,8 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// this call nothing packed it at all - every harness filled the arrays by
 	// hand, which is the precise shape of a driver that cannot exist.
 	LM_LAUNCH((LmRouteBuildKernel<K3_LAYER_THREADS,K3_EXPERTS>), 1u, K3_LAYER_THREADS, 0, stream,
-		b->route_expert,packed_rows,K3_TOP_K,b->group_row_offset, b->route_packed_row,b->route_source_token);
+		b->route_expert,packed_rows,K3_TOP_K,b->group_row_offset, b->route_packed_row,b->route_source_token,
+		LmLaunchGroupedTileM(packed_rows,K3_TOP_K,K3_EXPERTS), (K3_EXPERT_INTERMEDIATE * 2u + K3_LAYER_TILE_N - 1u) / K3_LAYER_TILE_N,b->group_tile_prefix, (K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_TILE_N - 1u) / K3_LAYER_TILE_N,b->group_tile_prefix_down);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 		b->latent_bf16,rows,K3_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -611,6 +613,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	gemm.scale_b_e8m0 = (const uint8_t *)b->expert_w1_scale;
 	gemm.group_row_offset = b->group_row_offset;
 	gemm.group_tile_prefix = b->group_tile_prefix;
+	gemm.prefix_built = 1u;
 	gemm.output_bf16 = b->gate_up_bf16;
 	status = LmGemmWeightOnlyLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 		&gemm,b->route_gather_bf16,b->expert_w1_weight,packed_rows,packed_rows,
@@ -625,6 +628,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// The SiTU output is already expert-major: no gather, no quantise, the
 	// rows feed the down-projection as they are.
 	gemm.scale_b_e8m0 = (const uint8_t *)b->expert_w2_scale;
+	gemm.group_tile_prefix = b->group_tile_prefix_down;
 	gemm.output_bf16 = b->gate_up_bf16;
 	status = LmGemmWeightOnlyLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
 		&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,packed_rows,

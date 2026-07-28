@@ -87,6 +87,7 @@ static float router_logits[ROWS * K3_EXPERTS], router_bias[K3_EXPERTS];
 static float route_weight[ROUTES];
 static uint32_t route_expert[ROUTES], route_packed[ROUTES], route_source[ROUTES];
 static uint32_t group_offsets[K3_EXPERTS + 1u], group_tiles[K3_EXPERTS + 1u];
+static uint32_t group_tiles_down[K3_EXPERTS + 1u];
 static uint32_t dense_offsets[2], dense_tiles[2];
 static uint16_t ones_weight[K3_HIDDEN];
 static uint16_t attn_query_weight[K3_HIDDEN], mlp_query_weight[K3_HIDDEN];
@@ -201,6 +202,7 @@ int main(void)
 	b.route_expert = route_expert; b.route_weight = route_weight;
 	b.route_packed_row = route_packed; b.route_source_token = route_source;
 	b.group_row_offset = group_offsets; b.group_tile_prefix = group_tiles;
+	b.group_tile_prefix_down = group_tiles_down;
 	dense_offsets[0] = 0u; dense_offsets[1] = ROWS;
 	b.dense_row_offset = dense_offsets; b.dense_tile_prefix = dense_tiles;
 	b.kda_state_index = state_index; b.sequence_of_row = sequence_of_row;

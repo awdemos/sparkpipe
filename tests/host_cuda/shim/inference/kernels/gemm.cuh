@@ -14,6 +14,7 @@ struct LmGemmArguments
 	const float *scale_b;
 	const uint8_t *scale_b_e8m0;
 	uint32_t scale_groups;
+	uint32_t prefix_built;
 	const uint32_t *group_row_offset;
 	uint32_t *group_tile_prefix;
 	uint16_t *output_bf16;

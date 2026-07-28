@@ -126,12 +126,15 @@ static int32_t LmGemmLaunch(LmGemmArguments *args, const void *activation_bytes,
 	args->group_count = group_count;
 	args->input_dimension = input_dimension;
 	args->output_dimension = output_dimension;
-	// The tile prefix is this launch's geometry, built here on the stream. The
-	// dense case is one group and could be two host words, but pricing it the
-	// same way keeps one truth for what a tile is.
-	LmGemmTilePrefixKernel<32u><<<1u,32u,0u,stream>>>(args->group_row_offset,
-		group_count,plan.tile_m,(output_dimension + TILE_N - 1u) / TILE_N,
-		args->group_tile_prefix);
+	// The tile prefix is this launch's geometry. One group derives it in the
+	// kernel from the arguments - no launch, no memory. Grouped launches keep
+	// the table, and a caller that already priced it for this launch's tile
+	// height (the route build does, told the heights by the layer) says so
+	// with prefix_built and skips the launch too.
+	if ( group_count > 1u && args->prefix_built == 0u )
+		LmGemmTilePrefixKernel<32u><<<1u,32u,0u,stream>>>(args->group_row_offset,
+			group_count,plan.tile_m,(output_dimension + TILE_N - 1u) / TILE_N,
+			args->group_tile_prefix);
 	memset(&source_a,0,sizeof(source_a));
 	memset(&source_b,0,sizeof(source_b));
 	source_a.tensor_map = &activation_map;
@@ -224,12 +227,15 @@ static int32_t LmGemmWeightOnlyLaunch(LmGemmArguments *args, const void *activat
 	args->group_count = group_count;
 	args->input_dimension = input_dimension;
 	args->output_dimension = output_dimension;
-	// The tile prefix is this launch's geometry, built here on the stream. The
-	// dense case is one group and could be two host words, but pricing it the
-	// same way keeps one truth for what a tile is.
-	LmGemmTilePrefixKernel<32u><<<1u,32u,0u,stream>>>(args->group_row_offset,
-		group_count,plan.tile_m,(output_dimension + TILE_N - 1u) / TILE_N,
-		args->group_tile_prefix);
+	// The tile prefix is this launch's geometry. One group derives it in the
+	// kernel from the arguments - no launch, no memory. Grouped launches keep
+	// the table, and a caller that already priced it for this launch's tile
+	// height (the route build does, told the heights by the layer) says so
+	// with prefix_built and skips the launch too.
+	if ( group_count > 1u && args->prefix_built == 0u )
+		LmGemmTilePrefixKernel<32u><<<1u,32u,0u,stream>>>(args->group_row_offset,
+			group_count,plan.tile_m,(output_dimension + TILE_N - 1u) / TILE_N,
+			args->group_tile_prefix);
 	args->scale_groups = input_dimension / FormatB::kScaleGroup;
 	memset(&source_a,0,sizeof(source_a));
 	memset(&source_b,0,sizeof(source_b));
