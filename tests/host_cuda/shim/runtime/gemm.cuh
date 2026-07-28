@@ -16,14 +16,7 @@
 #include <stdint.h>
 #include <vector>
 
-struct LmGemmArguments
-{
-	const float *scale_a;
-	const float *scale_b;
-	const uint32_t *group_row_offset;
-	const uint32_t *group_tile_prefix;
-	uint16_t *output_bf16;
-};
+#include "inference/kernels/gemm.cuh"
 
 struct LmRecordedGemm
 {

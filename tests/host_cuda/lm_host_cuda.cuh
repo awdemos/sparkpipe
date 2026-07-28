@@ -106,6 +106,10 @@ static inline float __uint_as_float(unsigned bits)
 {
 	float out; memcpy(&out, &bits, sizeof(out)); return out;
 }
+static inline float __int_as_float(int bits)
+{
+	float out; memcpy(&out, &bits, sizeof(out)); return out;
+}
 static inline unsigned __float_as_uint(float value)
 {
 	unsigned bits; memcpy(&bits, &value, sizeof(bits)); return bits;
