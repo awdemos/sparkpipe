@@ -280,6 +280,11 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 		input_dimension,output_dimension,multiprocessors,false,stream));
 }
 
+// EVERY PROJECTION HERE IS BF16 AND ONLY THE ROUTED EXPERTS TAKE Format.
+// The checkpoint's ignore list is attention, latent projections, shared experts,
+// routers and lm_head - none of them saw quantisation-aware training, so none of
+// them is safe in a 4-bit grid. Format reaches exactly the two expert GEMMs.
+//
 // Kimi Delta Attention, 69 of 93 layers.
 //
 // Report eq. 1-2 and 5-6, with FlashKDA's ordering where the report is silent:
@@ -298,15 +303,15 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 		<<<rows,K3_LAYER_THREADS,(K3_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
 		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
-	status = K3Project<Format>(b,b->normed_bf16,b->kda_q_weight,b->kda_q_scale,
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_q_weight,b->kda_q_scale,
 		b->query_bf16,rows,K3_HIDDEN,K3_KDA_QK_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	status = K3Project<Format>(b,b->normed_bf16,b->kda_k_weight,b->kda_k_scale,
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_k_weight,b->kda_k_scale,
 		b->key_bf16,rows,K3_HIDDEN,K3_KDA_QK_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	status = K3Project<Format>(b,b->normed_bf16,b->kda_v_weight,b->kda_v_scale,
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_v_weight,b->kda_v_scale,
 		b->value_bf16,rows,K3_HIDDEN,K3_KDA_V_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -375,13 +380,13 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 		   (K3_KDA_VALUE_DIM + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,0,(const uint16_t *)b->kda_out_norm_weight,
 		0,b->attention_out_bf16,K3_KDA_VALUE_DIM,K3_KDA_VALUE_DIM,K3_RMS_EPSILON);
-	status = K3Project<Format>(b,b->normed_bf16,b->kda_gate_weight,b->kda_gate_scale,
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_gate_weight,b->kda_gate_scale,
 		b->gate_bf16,rows,K3_HIDDEN,K3_KDA_V_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LmOutputGateKernel<K3_LAYER_THREADS><<<rows,K3_LAYER_THREADS,0,stream>>>(
 		b->attention_out_bf16,b->gate_bf16,K3_KDA_V_DIM);
-	return(K3Project<Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
+	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
 		b->attention_out_bf16,rows,K3_KDA_V_DIM,K3_HIDDEN,multiprocessors,stream));
 }
 
@@ -398,7 +403,7 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 		<<<rows,K3_LAYER_THREADS,(K3_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight,
 		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
-	status = K3Project<Format>(b,b->normed_bf16,b->mla_q_down_weight,b->mla_q_down_scale,
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_q_down_weight,b->mla_q_down_scale,
 		b->latent_bf16,rows,K3_HIDDEN,K3_Q_LORA_RANK,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -410,11 +415,11 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 		<<<rows,K3_LAYER_THREADS,(K3_Q_LORA_RANK + 8u) * sizeof(float),stream>>>(
 		b->latent_bf16,0,(const uint16_t *)b->mla_q_norm_weight,
 		0,b->latent_bf16,K3_Q_LORA_RANK,K3_Q_LORA_RANK,K3_LORA_RMS_EPSILON);
-	status = K3Project<Format>(b,b->latent_bf16,b->mla_q_up_weight,b->mla_q_up_scale,
+	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->mla_q_up_weight,b->mla_q_up_scale,
 		b->query_bf16,rows,K3_Q_LORA_RANK,K3_MLA_Q_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	status = K3Project<Format>(b,b->normed_bf16,b->mla_kv_a_weight,b->mla_kv_a_scale,
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_kv_a_weight,b->mla_kv_a_scale,
 		b->kv_slot_bf16,rows,K3_HIDDEN,K3_MLA_KV_A_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -442,7 +447,7 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 		<<<dim3(rows,K3_MLA_HEADS),K3_LAYER_THREADS,0,stream>>>(
 		b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight,
 		b->attention_out_bf16,K3_MLA_HEADS,rows);
-	status = K3Project<Format>(b,b->normed_bf16,b->mla_gate_weight,b->mla_gate_scale,
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_weight,b->mla_gate_scale,
 		b->gate_bf16,rows,K3_HIDDEN,K3_MLA_OUT_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -456,7 +461,7 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	// exactly that reason.
 	LmOutputGateKernel<K3_LAYER_THREADS><<<rows,K3_LAYER_THREADS,0,stream>>>(
 		b->attention_out_bf16,b->gate_bf16,K3_MLA_OUT_DIM);
-	return(K3Project<Format>(b,b->attention_out_bf16,b->mla_out_weight,b->mla_out_scale,
+	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->mla_out_weight,b->mla_out_scale,
 		b->attention_out_bf16,rows,K3_MLA_OUT_DIM,K3_HIDDEN,multiprocessors,stream));
 }
 
@@ -492,7 +497,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		<<<rows,K3_LAYER_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream>>>(
 		0,K3_EXPERTS,(uint32_t *)b->route_expert,
 		(float *)b->route_weight,b->router_bias,(const uint16_t *)b->router_logits);
-	status = K3Project<Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 		b->latent_bf16,rows,K3_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -548,13 +553,13 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		<<<rows,K3_LAYER_THREADS,(K3_ROUTED_EXPERT_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->latent_bf16,0,(const uint16_t *)b->routed_norm_weight,
 		0,b->latent_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
-	status = K3Project<Format>(b,b->latent_bf16,b->routed_up_weight,b->routed_up_scale,
+	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->routed_up_weight,b->routed_up_scale,
 		b->hidden_bf16,rows,K3_ROUTED_EXPERT_HIDDEN,K3_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// The two shared experts run on the pre-projection hidden at full width and
 	// are added to the routed result, not composed with it.
-	status = K3Project<Format>(b,b->normed_bf16,b->shared_w1_weight,b->shared_w1_scale,
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->shared_w1_weight,b->shared_w1_scale,
 		b->gate_up_bf16,rows,K3_HIDDEN,K3_SHARED_INTERMEDIATE * 2u,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -570,7 +575,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// LmAddRowsKernel was written for this - its comment says "for a shared
 	// expert's contribution, which is added rather than weighted because it has
 	// no gate" - and had never been called.
-	status = K3Project<Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
+	status = K3Project<LmBf16Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
 		b->shared_out_bf16,rows,K3_SHARED_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -596,7 +601,7 @@ static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 		<<<rows,K3_LAYER_THREADS,(K3_HIDDEN + 8u) * sizeof(float),stream>>>(
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight,
 		b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
-	status = K3Project<Format>(b,b->normed_bf16,b->dense_gate_up_weight,
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->dense_gate_up_weight,
 		b->dense_gate_up_scale,b->gate_up_bf16,rows,K3_HIDDEN,
 		K3_DENSE_INTERMEDIATE * 2u,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -604,7 +609,7 @@ static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 	LmSituMulKernel<K3_LAYER_THREADS><<<rows,K3_LAYER_THREADS,0,stream>>>(
 		b->gate_up_bf16,b->intermediate_bf16,K3_DENSE_INTERMEDIATE,
 		K3_SITU_BETA,K3_SITU_LINEAR_BETA);
-	return(K3Project<Format>(b,b->intermediate_bf16,b->dense_down_weight,
+	return(K3Project<LmBf16Format>(b,b->intermediate_bf16,b->dense_down_weight,
 		b->dense_down_scale,b->hidden_bf16,rows,K3_DENSE_INTERMEDIATE,K3_HIDDEN,
 		multiprocessors,stream));
 }

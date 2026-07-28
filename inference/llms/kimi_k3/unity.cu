@@ -17,6 +17,7 @@
 #include "inference/kernels/head.cuh"
 #include "inference/kernels/formats/fp8.cuh"
 #include "inference/kernels/formats/int7.cuh"
+#include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/llms/kimi_k3/layer.cuh"
 
 using K3LinearState = LmKvState<K3_KDA_STATE_BYTES>;
@@ -34,11 +35,11 @@ static_assert(K3GlobalKv::kGrows == true, "the global layers still page");
 // the tile selector lands lower and the 64-row instantiation is never chosen.
 template __global__ void LmGemmKernel<LmFp8, 16u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmFp8, 32u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt7, 16u, K3_TILE_N, 256u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt7, 32u, K3_TILE_N, 256u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmMxfp4, 16u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmMxfp4, 32u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
-template __global__ void LmQuantiseRowsKernel<LmInt7, K3_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
+template __global__ void LmQuantiseRowsKernel<LmMxfp4, K3_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 // No rope instantiation. K3 is NoPE - the reference sets rotary_emb to None and
 // carries the qk_rope slice through unrotated. This line built a rope kernel for
 // a model that never rotates, which cost nothing at runtime and would have told

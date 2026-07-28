@@ -10,6 +10,7 @@
 // avoid. What a packer produces is its business; this file needs the pointers.
 
 #include "inference/kernels/formats/int7.cuh"
+#include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/llms/kimi_k3/layer.cuh"
 
 struct K3LayerWeights
@@ -192,7 +193,18 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, K3LayerBuffers *buff
 
 extern "C" int32_t K3StageSlice(const void *layer_weights, void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, void *stream)
 {
-	return(K3LaunchSlice<LmInt7,K3GlobalKv>(
+	// THE FORMAT FOLLOWS THE CHECKPOINT'S RECIPE, NOT A GLOBAL CHOICE.
+	//
+	// This ran LmInt7 across the whole model. K3's quantization_config quantises
+	// the routed experts to MXFP4 group 32 and its ignore list excludes
+	// attention, latent projections, shared experts, routers and lm_head - and
+	// the report says the quantisation-aware training ran from SFT onward, so
+	// the routed experts were trained INTO that grid and nothing else was.
+	//
+	// Requantising attention to INT7 is off-recipe in the same way that storing
+	// derived factors at MXFP4 would be. The grid is not the protection; the
+	// training into the grid is.
+	return(K3LaunchSlice<LmMxfp4,K3GlobalKv>(
 		(const K3LayerWeights *)layer_weights,
 		(K3LayerBuffers *)layer_buffers,
 		first_layer,layer_count,rows,packed_rows,context,multiprocessors,

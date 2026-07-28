@@ -63,6 +63,9 @@ run "mla on host"          "python3 tests/test_mla_host.py"
 # found three defects in which buffer feeds which kernel. Reintroducing the
 # shared-expert overwrite makes this fail.
 run "layer dataflow"       "python3 tests/test_layer_dataflow.py"
+# The checkpoint quantises the routed experts and nothing else, because only
+# they saw quantisation-aware training. Putting attention back on Format fails.
+run "k3 quant recipe"      "python3 tests/test_k3_quant_recipe.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run "grouped topk builds"  "sh tools/build_grouped_topk.sh"
