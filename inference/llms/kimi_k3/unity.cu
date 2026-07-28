@@ -40,7 +40,10 @@ template __global__ void LmGemmKernel<LmInt7, 32u, K3_TILE_N, 256u, K3_STAGES, K
 template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
 template __global__ void LmSiluMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmInt7, K3_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
-template __global__ void LmRopeKernel<K3_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
+// No rope instantiation. K3 is NoPE - the reference sets rotary_emb to None and
+// carries the qk_rope slice through unrotated. This line built a rope kernel for
+// a model that never rotates, which cost nothing at runtime and would have told
+// whoever wrote layer.cuh that calling it was expected.
 // KDA on three of every four layers, gated MLA on the fourth. The same delta
 // rule Qwen 3.6 uses, at K3's widths - which is the argument that this is an
 // architecture class and not one vendor's design.

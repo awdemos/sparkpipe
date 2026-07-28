@@ -30,7 +30,12 @@ EXPECTED = {
     "glm5_2": ("LM_ROPE_HALF_SPLIT", "half-split, the tree's original convention"),
     "qwen_3_6": ("LM_ROPE_HALF_SPLIT", "Qwen3.6 partial rotary over the head suffix"),
     "mimo_2_5": ("LM_ROPE_HALF_SPLIT", "MiMo 2.5"),
-    "kimi_k3": ("LM_ROPE_HALF_SPLIT", "K3, provisional until the release lands"),
+    # K3 applies NO rope. modeling_kimi_linear.py sets rotary_emb = None, asserts
+    # use_nope, and splits q_rot/k_rot out only to concatenate them back
+    # unrotated. Position is carried by KDA's decay instead, which is how it
+    # reaches 1M tokens without RoPE rescaling. A pairing expectation here
+    # would assert a convention for a rotation that never happens.
+    "kimi_k3": (None, "NoPE - no rotation on any layer"),
 }
 
 ROPE_CALL = re.compile(r"LmRope(?:PerHead|Yarn)?Kernel\s*<([^>]*)>")
@@ -78,6 +83,14 @@ def main():
     for model in sorted(EXPECTED):
         want, source = EXPECTED[model]
         used = pairings_used(model)
+        if want is None:
+            if used:
+                failures += 1
+                print(f"  FAIL {model}: rotates with {sorted(used)}, but this model is NoPE")
+                print(f"         {source}")
+            else:
+                print(f"  ok   {model}: no rope, as the reference has it")
+            continue
         if not used:
             print(f"  --   {model}: no rope call sites yet")
             continue

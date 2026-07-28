@@ -88,7 +88,13 @@
 #define K3_KV_LORA_RANK 512u
 #define K3_Q_LORA_RANK 1536u
 #define K3_QK_NOPE_DIM 128u
-#define K3_QK_ROPE_DIM 64u
+// NOT ROTATED. K3 is NoPE: modeling_kimi_linear.py sets rotary_emb to None and
+// asserts use_nope, then splits this slice out of q and kv only to concatenate
+// it back untouched. The k side is broadcast across heads, MQA style. Position
+// is carried by KDA's decay, which is how the model reaches 1M tokens without
+// RoPE rescaling. The name is the reference's; the behaviour is not what it
+// suggests, so calling any rope kernel on a K3 layer would be wrong.
+#define K3_QK_UNROTATED_DIM 64u
 #define K3_V_HEAD_DIM 128u
 #define K3_MLA_USE_NOPE 1u
 #define K3_MLA_OUTPUT_GATE 1u
