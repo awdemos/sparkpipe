@@ -73,6 +73,8 @@ static uint16_t value[ROWS * K3_KDA_V_DIM], gate[ROWS * K3_KDA_V_DIM];
 static uint16_t decay_logit[ROWS * K3_KDA_QK_DIM];
 static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
 static uint16_t route_gather[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
+static uint16_t aux_slab[K3_DSPARK_AUX_LAYER_COUNT * ROWS * K3_HIDDEN];
+static uint16_t aux_reference[ROWS * K3_HIDDEN];
 static uint16_t kv_slot[ROWS * K3_MLA_KV_A_DIM];
 static uint16_t gate_up[ROUTES * K3_SHARED_INTERMEDIATE * 2u];
 static uint16_t intermediate[ROUTES * K3_SHARED_INTERMEDIATE];
@@ -236,6 +238,7 @@ int main(void)
 		memcpy(hidden_saved, hidden, sizeof(hidden_saved));
 		lm_recorded_gemms.clear();
 		state.verify_rows = 2u;
+		state.dspark_aux = aux_slab; state.aux_rows = ROWS;
 		b.sequence_row_begin = 0;
 		status = K3LaunchSlice<LmHostRecorderFormat,K3GlobalKv>(
 			&weights[0], &state, &b, 0u, 1u, 1u, 1u, 1u, ROUTES, 1u, 1u, 0);
@@ -289,6 +292,8 @@ int main(void)
 			printf("FAIL layer %u status %d\n", layer, (int)status);
 			return 1;
 		}
+		if ( layer == 7u )
+			memcpy(aux_reference, partial, sizeof(aux_reference));
 		printf("layer %u state_offset %llu cache %u\n", layer,
 			(unsigned long long)((const uint8_t *)b.kda_state_pool - kda_state),
 			K3_LAYER_KIND(layer) == LM_LAYER_LATENT
@@ -305,5 +310,12 @@ int main(void)
 	Emit("bank0", bank, ROWS * K3_HIDDEN);
 	Emit("bank1", bank + (1u * ROWS * K3_HIDDEN), ROWS * K3_HIDDEN);
 	printf("done\n");
+	{
+		uint32_t mismatch = 0u; uint64_t byte;
+		for (byte = 0u; byte < (uint64_t)ROWS * K3_HIDDEN; ++byte)
+			if ( aux_slab[byte] != aux_reference[byte] )
+				++mismatch;
+		printf("aux_mismatch %u\n", mismatch);
+	}
 	return 0;
 }

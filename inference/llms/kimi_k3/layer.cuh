@@ -147,8 +147,13 @@ struct K3LayerBuffers
 	const float *kda_decay_bias;
 	const float *kda_head_log_scale;
 	const void *kda_beta_weight;
-	const void *kda_gate_weight;
-	const void *kda_gate_scale;
+	// THE GATE IS LOW-RANK, LIKE THE DECAY. g_a_proj takes the hidden to the
+	// 128-wide head dim and g_b_proj takes that to heads * head_dim; one fused
+	// matrix would be a rank-128 product materialised at 176 MB per layer -
+	// 12 GB of weights and 3.5 ms of bandwidth per token, for arithmetic the
+	// bottleneck already does in 6 MB. Two projections, like f_a and f_b.
+	const void *kda_gate_down_weight;
+	const void *kda_gate_up_weight;
 	const void *kda_out_norm_weight;
 	const void *kda_out_weight;
 	const void *kda_out_scale;
@@ -453,8 +458,12 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	// no normalisation at all. The two paths differ in exactly this step.
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>), dim3(rows * K3_KDA_HEADS), K3_LAYER_THREADS, (K3_KDA_VALUE_DIM + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,0,(const uint16_t *)b->kda_out_norm_weight, 0,b->attention_out_bf16,K3_KDA_VALUE_DIM,K3_KDA_VALUE_DIM,K3_RMS_EPSILON);
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_gate_weight,b->kda_gate_scale,
-		b->gate_bf16,rows,K3_HIDDEN,K3_KDA_V_DIM,multiprocessors,stream);
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_gate_down_weight,0,
+		b->latent_bf16,rows,K3_HIDDEN,K3_KDA_KEY_DIM,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->kda_gate_up_weight,0,
+		b->gate_bf16,rows,K3_KDA_KEY_DIM,K3_KDA_V_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,

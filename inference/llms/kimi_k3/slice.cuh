@@ -29,6 +29,7 @@
 // count at a boundary is one lower than the MLP side's - a single formula
 // double-counted, and the vector being appended also scored as the partial.
 #include "inference/llms/kimi_k3/layer.cuh"
+#include "inference/llms/kimi_k3/dspark.h"
 
 struct K3LayerWeights
 {
@@ -49,8 +50,8 @@ struct K3LayerWeights
 	const float *kda_decay_bias;
 	const float *kda_head_log_scale;
 	const void *kda_beta_weight;
-	const void *kda_gate_weight;
-	const void *kda_gate_scale;
+	const void *kda_gate_down_weight;
+	const void *kda_gate_up_weight;
 	const void *kda_out_norm_weight;
 	const void *kda_out_weight;
 	const void *kda_out_scale;
@@ -115,6 +116,12 @@ struct K3SliceState
 	uint16_t *replay_decay;
 	uint16_t *replay_beta;
 	uint32_t verify_rows;
+	// DSpark's drafter reads the target's hidden stream after the aux layers.
+	// One slab of aux_rows * K3_HIDDEN per aux layer, filled by the slice as
+	// the stream passes; null disables the capture, which is every step that
+	// is not feeding a draft.
+	uint16_t *dspark_aux;
+	uint32_t aux_rows;
 	// Every pool above is strided by this sequence capacity, which is the
 	// allocator's number and not the batch's: rows vary per step, slots do not.
 	uint32_t sequences;
@@ -160,8 +167,8 @@ static void K3BindLayer(const K3LayerWeights *weights, K3LayerBuffers *buffers)
 	buffers->kda_decay_bias = weights->kda_decay_bias;
 	buffers->kda_head_log_scale = weights->kda_head_log_scale;
 	buffers->kda_beta_weight = weights->kda_beta_weight;
-	buffers->kda_gate_weight = weights->kda_gate_weight;
-	buffers->kda_gate_scale = weights->kda_gate_scale;
+	buffers->kda_gate_down_weight = weights->kda_gate_down_weight;
+	buffers->kda_gate_up_weight = weights->kda_gate_up_weight;
 	buffers->kda_out_norm_weight = weights->kda_out_norm_weight;
 	buffers->kda_out_weight = weights->kda_out_weight;
 	buffers->kda_out_scale = weights->kda_out_scale;
@@ -328,6 +335,20 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		if ( status != LM_LAUNCH_OK )
 			return(status);
 		K3PartialAdd(buffers,buffers->hidden_bf16,rows,stream);
+		// THE DRAFTER READS THE STREAM, AND THE PARTIAL IS THE STREAM. What
+		// flows between blocks under AttnRes is the running partial - the next
+		// block's first act is a retrieval that REPLACES its input - so the
+		// hidden state SpecForge captured from the reference after an aux layer
+		// is exactly this value, post both module adds.
+		if ( state->dspark_aux != 0 )
+		{
+			static const uint32_t aux_ids[K3_DSPARK_AUX_LAYER_COUNT] = K3_DSPARK_AUX_LAYER_IDS_INITIALIZER;
+			uint32_t aux;
+			for (aux = 0u; aux < K3_DSPARK_AUX_LAYER_COUNT; ++aux)
+				if ( aux_ids[aux] == layer )
+					LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+						buffers->attnres_partial_bf16,state->dspark_aux + ((uint64_t)aux * state->aux_rows * K3_HIDDEN),rows,K3_HIDDEN);
+		}
 	}
 	if ( first_layer + layer_count == K3_LAYERS )
 	{

@@ -147,6 +147,10 @@ def main():
         failures, _ = compare(f"mlp retrieval layer {l}", want,
                               series[f"normed{l}"], failures, 5e-2)
 
+    aux = re.search(r"aux_mismatch (\d+)", run.stdout)
+    if aux is None or int(aux.group(1)) != 0:
+        print("  FAIL the aux capture after layer 7 differs from the stream")
+        failures += 1
     untouched = re.search(r"verify_untouched (\d+)", run.stdout)
     fold = re.search(r"fold_mismatch (\d+)", run.stdout)
     if untouched is None or int(untouched.group(1)) != 0:
