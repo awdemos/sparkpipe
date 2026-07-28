@@ -305,7 +305,10 @@ def pack_model(model_dir, out_path):
     pack.handle.close()
     echo = {"hidden": hidden, "layers": layers, "experts": experts,
             "top_k": top_k, "latent": latent, "intermediate": inter,
-            "group": GROUP, "vocab": config["vocab_size"]}
+            "group": GROUP, "vocab": config["vocab_size"],
+            "kda_heads": kda_heads, "kda_head": kda_head, "heads": heads,
+            "kv_lora": kv_lora, "rope": rope, "v_head": v_head,
+            "nope": nope, "shared": shared, "q_lora": q_lora}
     manifest = json.dumps({"config": echo, "tensors": pack.manifest},
                           separators=(",", ":")).encode()
     with open(out_path, "wb") as out:

@@ -47,12 +47,12 @@ def write_safetensors(path, tensors):
             handle.write(blob)
 
 
-def mini_checkpoint(root, poison_scale=False):
+def mini_checkpoint(root, poison_scale=False, latent=32, inter=32):
     hidden, vocab = 32, 64
     q_lora, kv_lora, rope, nope, v_head, heads = 16, 32, 8, 16, 32, 2
     kda_heads, kda_head = 2, 32
     kda_dim = kda_heads * kda_head
-    latent, inter, experts = 32, 32, 4
+    experts = 4
     config = {"hidden_size": hidden, "num_hidden_layers": 3, "vocab_size": vocab,
               "num_experts": experts, "num_experts_per_tok": 2,
               "routed_expert_hidden_size": latent, "moe_intermediate_size": inter,
