@@ -212,10 +212,78 @@ int main(void)
 	Emit("embedding", hidden, ROWS * K3_HIDDEN);
 	Emit("attnw", attn_query_weight, K3_HIDDEN);
 	Emit("mlpw", mlp_query_weight, K3_HIDDEN);
+	// VERIFY THEN FOLD MUST LAND WHERE COMMIT WOULD HAVE. Layer 0 is KDA: run
+	// its two rows as one COMMITTED run of one row (the truth), then from zero
+	// state run both rows with commit off - slabs filling, state untouched -
+	// and fold accepted = 1. The folded state, and all three conv windows,
+	// must equal the truth byte for byte; the kda gate already proved the
+	// kernels equivalent, so any difference here is the plumbing lying.
+	{
+		static uint16_t rq[2u * K3_KDA_QK_DIM], rk[2u * K3_KDA_QK_DIM];
+		static uint16_t rv[2u * K3_KDA_V_DIM], rd[2u * K3_KDA_QK_DIM];
+		static uint16_t rb[2u * K3_KDA_HEADS];
+		static uint8_t truth_state[sizeof(kda_state)];
+		static uint16_t truth_q[sizeof(q_window) / 2u], truth_k[sizeof(k_window) / 2u];
+		static uint16_t truth_v[sizeof(v_window) / 2u];
+		static uint32_t vbegin[2] = { 0u, 0u }, vcount[1] = { 1u };
+		static uint16_t hidden_saved[2u * K3_HIDDEN];
+		uint32_t mismatch = 0u; uint64_t byte;
+		// The recorder derives every GEMM's output from the global call index,
+		// so the truth run and the verify run must count from the same zero or
+		// they are different models by construction. And the slice advances the
+		// stream through hidden, which the main loop below treats as the
+		// embedding - saved here, restored on the way out.
+		memcpy(hidden_saved, hidden, sizeof(hidden_saved));
+		lm_recorded_gemms.clear();
+		state.verify_rows = 2u;
+		b.sequence_row_begin = 0;
+		status = K3LaunchSlice<LmHostRecorderFormat,K3GlobalKv>(
+			&weights[0], &state, &b, 0u, 1u, 1u, 1u, 1u, ROUTES, 1u, 1u, 0);
+		if ( status != LM_LAUNCH_OK ) { printf("FAIL truth run %d\n", status); return 1; }
+		memcpy(truth_state, kda_state, sizeof(truth_state));
+		memcpy(truth_q, q_window, sizeof(truth_q));
+		memcpy(truth_k, k_window, sizeof(truth_k));
+		memcpy(truth_v, v_window, sizeof(truth_v));
+		memset(kda_state, 0, sizeof(kda_state));
+		memset(q_window, 0, sizeof(q_window));
+		memset(k_window, 0, sizeof(k_window));
+		memset(v_window, 0, sizeof(v_window));
+		state.replay_conv_q = rq; state.replay_conv_k = rk; state.replay_conv_v = rv;
+		state.replay_decay = rd; state.replay_beta = rb;
+		static uint32_t two_run[2] = { 0u, 2u };
+		memcpy(hidden, hidden_saved, sizeof(hidden_saved));
+		lm_recorded_gemms.clear();
+		b.sequence_row_begin = two_run;
+		status = K3LaunchSlice<LmHostRecorderFormat,K3GlobalKv>(
+			&weights[0], &state, &b, 0u, 1u, 2u, 1u, 0u, ROUTES, 1u, 1u, 0);
+		if ( status != LM_LAUNCH_OK ) { printf("FAIL verify run %d\n", status); return 1; }
+		for (byte = 0u; byte < sizeof(kda_state); ++byte)
+			if ( kda_state[byte] != 0u ) ++mismatch;
+		printf("verify_untouched %u\n", mismatch);
+		status = K3FoldAccepted<LmHostRecorderFormat>(
+			&weights[0], &state, &b, 0u, 1u, 1u, vbegin, vcount, 2u, 1u, 0);
+		if ( status != LM_LAUNCH_OK ) { printf("FAIL fold %d\n", status); return 1; }
+		mismatch = 0u;
+		for (byte = 0u; byte < sizeof(kda_state); ++byte)
+			if ( kda_state[byte] != truth_state[byte] ) ++mismatch;
+		for (byte = 0u; byte < sizeof(truth_q); ++byte)
+			if ( q_window[byte] != truth_q[byte] || k_window[byte] != truth_k[byte]
+				|| v_window[byte] != truth_v[byte] ) ++mismatch;
+		printf("fold_mismatch %u\n", mismatch);
+		state.replay_conv_q = 0; state.replay_conv_k = 0; state.replay_conv_v = 0;
+		state.replay_decay = 0; state.replay_beta = 0;
+		memset(kda_state, 0, sizeof(kda_state));
+		memset(q_window, 0, sizeof(q_window));
+		memset(k_window, 0, sizeof(k_window));
+		memset(v_window, 0, sizeof(v_window));
+		b.sequence_row_begin = 0;
+		memcpy(hidden, hidden_saved, sizeof(hidden_saved));
+		lm_recorded_gemms.clear();
+	}
 	for (layer = 0u; layer < SLICE_LAYERS; ++layer)
 	{
 		status = K3LaunchSlice<LmHostRecorderFormat,K3GlobalKv>(
-			&weights[layer], &state, &b, layer, 1u, ROWS, ROWS, ROUTES, 1u, 1u, 0);
+			&weights[layer], &state, &b, layer, 1u, ROWS, ROWS, 1u, ROUTES, 1u, 1u, 0);
 		if ( status != LM_LAUNCH_OK )
 		{
 			printf("FAIL layer %u status %d\n", layer, (int)status);

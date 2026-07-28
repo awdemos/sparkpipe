@@ -114,7 +114,7 @@ int main(void)
 				retention, HEADS, -5.0f, 1u)));
 		LM_HOST_LAUNCH(dim3(1u, HEADS),
 			(LmDeltaRuleKernel<THREADS, KEY_DIM, VALUE_DIM>(
-				state_pool, SLOT_BYTES, state_index, 0, query[step], key[step], value[step],
+				state_pool, SLOT_BYTES, state_index, 0, 0, query[step], key[step], value[step],
 				retention, write_gate, output[step], HEADS, 1u, 1u, 1u)));
 		for (index = 0u; index < HEADS * VALUE_DIM; ++index)
 			printf("out %.9g\n", (double)f32(output[step][index]));
@@ -190,7 +190,7 @@ int main(void)
 		run_begin[0] = 0u; run_begin[1] = STEPS;
 		LM_HOST_LAUNCH(dim3(1u, HEADS),
 			(LmDeltaRuleKernel<THREADS, KEY_DIM, VALUE_DIM>(
-				run_pool, SLOT_BYTES, state_index, run_begin,
+				run_pool, SLOT_BYTES, state_index, run_begin, 0,
 				run_query[0], run_key[0], run_value[0],
 				run_retention[0], run_beta[0], run_output[0],
 				HEADS, 1u, 1u, 1u)));
@@ -207,7 +207,7 @@ int main(void)
 		memset(run_pool, 0, sizeof(run_pool));
 		LM_HOST_LAUNCH(dim3(1u, HEADS),
 			(LmDeltaRuleKernel<THREADS, KEY_DIM, VALUE_DIM>(
-				run_pool, SLOT_BYTES, state_index, run_begin,
+				run_pool, SLOT_BYTES, state_index, run_begin, 0,
 				run_query[0], run_key[0], run_value[0],
 				run_retention[0], run_beta[0], run_output[0],
 				HEADS, 1u, 1u, 0u)));

@@ -145,7 +145,7 @@ int main(void)
 	static uint32_t conv_run_begin[2] = { 0u, ROWS };
 	LM_HOST_LAUNCH(dim3(1u, CHANNELS),
 		(LmCausalConvKernel<THREADS, CONV_KERNEL, LM_CONV_SWISH>(
-			window, state_index, conv_run_begin, conv_in, conv_w, conv_out, CHANNELS, 1u, 1u)));
+			window, state_index, conv_run_begin, 0, conv_in, conv_w, conv_out, CHANNELS, 1u, 1u)));
 	Emit("convout", conv_out, ROWS * CHANNELS);
 
 	LM_HOST_LAUNCH(dim3(ROWS, HEADS),

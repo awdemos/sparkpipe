@@ -147,6 +147,15 @@ def main():
         failures, _ = compare(f"mlp retrieval layer {l}", want,
                               series[f"normed{l}"], failures, 5e-2)
 
+    untouched = re.search(r"verify_untouched (\d+)", run.stdout)
+    fold = re.search(r"fold_mismatch (\d+)", run.stdout)
+    if untouched is None or int(untouched.group(1)) != 0:
+        print("  FAIL the verify pass advanced state it must not touch")
+        failures += 1
+    if fold is None or int(fold.group(1)) != 0:
+        print(f"  FAIL fold differs from the committed truth "
+              f"({fold.group(1) if fold else 'missing'} bytes)")
+        failures += 1
     failures, _ = compare("bank slot 0", embedding, series["bank0"], failures, 5e-2)
     failures, _ = compare("bank slot 1", bank[1], series["bank1"], failures, 5e-2)
 

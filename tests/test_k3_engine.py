@@ -59,7 +59,10 @@ def main():
                              begin=int(sm.group(3)), end=int(sm.group(4)),
                              context=int(sm.group(5)), logits=int(sm.group(6)),
                              rows=rows))
-        steps.append(dict(index=int(m.group(1)), rows=int(m.group(2)), seqs=seqs))
+        nexts = {int(vm.group(1)): int(vm.group(2)) - 1 for vm in
+                 re.finditer(r"verify_next (\d+) (\d+)", block)}
+        steps.append(dict(index=int(m.group(1)), rows=int(m.group(2)),
+                          seqs=seqs, verify_next=nexts))
 
     last_position = {}
     for step in steps:
@@ -89,6 +92,11 @@ def main():
                 failures += 1
             if positions:
                 last_position[key] = positions[-1]
+        # a verify resolution re-plans the first rejected position - the
+        # bonus landed there without a forward - so resumption restarts one
+        # short of it, exactly as the harness declared at commit time
+        for key, value in step["verify_next"].items():
+            last_position[key] = value
             if seq["logits"] >= 0 and not (seq["begin"] <= seq["logits"] < seq["end"]):
                 print(f"  FAIL step {step['index']}: logits row outside the run")
                 failures += 1
@@ -119,6 +127,28 @@ def main():
         print("  FAIL EOS did not end request b's output at its second token")
         failures += 1
 
+    # the verify lane: a verify-only step of one four-row run, positions
+    # ascending from the last committed token, logits at the head; resolving
+    # it (2 accepted + bonus) must appear as three consecutive outputs.
+    vm = re.search(r"verify step (\d+)", text)
+    if vm is None:
+        print("  FAIL no verify step was planned after the draft")
+        failures += 1
+    else:
+        vstep = next(st for st in steps if st["index"] == int(vm.group(1)))
+        run = vstep["seqs"][0]
+        if len(vstep["seqs"]) != 1 or run["end"] - run["begin"] != 4:
+            print("  FAIL the verify step is not one four-row run")
+            failures += 1
+        if run["logits"] != run["begin"]:
+            print("  FAIL verify logits are not at the run's head")
+            failures += 1
+        if [r[1] for r in run["rows"]][1:] != [201, 202, 203]:
+            print("  FAIL the verify rows do not carry the draft")
+            failures += 1
+    if re.search(r"out_a 100 101 201 202 ", text) is None:
+        print("  FAIL acceptance did not land the drafts in the output")
+        failures += 1
     print(f"steps {len(steps)}, requests finished 3")
     if failures:
         print(f"\nFAIL ({failures})")

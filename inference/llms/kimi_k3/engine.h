@@ -54,6 +54,12 @@ struct K3EngineRequest
 	uint32_t slot;
 	uint32_t state;
 	uint32_t *output;
+	// DSpark: the drafted block awaiting verification. draft_count > 0 turns
+	// the sequence's next planned step into a verify run - the last committed
+	// token plus the drafts, positions ascending - which the driver executes
+	// with commit off and resolves through K3EngineCommitVerify.
+	uint32_t draft[8];
+	uint32_t draft_count;
 };
 
 struct K3EngineStep
@@ -73,6 +79,10 @@ struct K3EngineStep
 	uint32_t *logits_row;
 	uint32_t rows;
 	uint32_t sequences;
+	// A verify step carries ONLY verify runs, because the layer's commit flag
+	// is per slice call: mixing a committed decode with an uncommitted draft
+	// in one call would either advance a draft or drop a token.
+	uint32_t verify;
 };
 
 #define K3_ENGINE_NO_LOGITS 0xffffffffu
@@ -109,6 +119,24 @@ static int32_t K3EngineInit(struct K3Engine *engine, struct K3EngineRequest *req
 
 // Accept a request. The prompt pointer must outlive the request; the output
 // array must hold max_new tokens. Returns the id, or a negative status.
+// Hand a sequence its drafted block. Legal only while it is decoding; the
+// next plan turns it into a verify run.
+static int32_t K3EngineSubmitDraft(struct K3Engine *engine, uint64_t id, const uint32_t *draft, uint32_t count)
+{
+	uint32_t index;
+	if ( engine == 0 || draft == 0 || count == 0u || count > 7u )
+		return(K3_ENGINE_ERR_NULL);
+	for (index = 0u; index < engine->request_capacity; ++index)
+		if ( engine->requests[index].id == id
+			&& engine->requests[index].state == K3_SEQ_DECODE )
+		{
+			memcpy(engine->requests[index].draft,draft,(size_t)count * sizeof(*draft));
+			engine->requests[index].draft_count = count;
+			return(K3_ENGINE_OK);
+		}
+	return(K3_ENGINE_ERR_STATE);
+}
+
 static int64_t K3EngineSubmit(struct K3Engine *engine, const uint32_t *prompt, uint32_t prompt_length, uint32_t max_new, uint32_t *output)
 {
 	struct K3EngineRequest *request = 0;
@@ -216,7 +244,41 @@ static int32_t K3EnginePlanStep(struct K3Engine *engine, struct K3EngineStep *st
 	K3EngineAdmit(engine);
 	step->rows = 0u;
 	step->sequences = 0u;
+	step->verify = 0u;
 	step->sequence_row_begin[0] = 0u;
+	// Verify first, alone: the run is the last committed token plus the
+	// drafts at ascending positions, and the whole step runs with commit off.
+	for (index = 0u; index < engine->request_capacity; ++index)
+	{
+		request = &engine->requests[index];
+		if ( request->state != K3_SEQ_DECODE || request->draft_count == 0u )
+			continue;
+		if ( step->rows + request->draft_count + 1u > engine->row_budget )
+			continue;
+		uint32_t base = step->rows,sequence = step->sequences,r;
+		uint32_t position = request->prompt_length + request->generated - 1u;
+		step->token[base] = request->generated == 0u
+			? request->prompt[request->prompt_length - 1u]
+			: request->output[request->generated - 1u];
+		step->position[base] = position;
+		for (r = 0u; r < request->draft_count; ++r)
+		{
+			step->token[base + 1u + r] = request->draft[r];
+			step->position[base + 1u + r] = position + 1u + r;
+		}
+		for (r = 0u; r < request->draft_count + 1u; ++r)
+			step->sequence_of_row[base + r] = request->slot;
+		step->sequence_row_begin[sequence + 1u] = base + request->draft_count + 1u;
+		step->slot[sequence] = request->slot;
+		step->request_id[sequence] = request->id;
+		step->context_length[sequence] = position + request->draft_count + 1u;
+		step->logits_row[sequence] = base;
+		step->rows = base + request->draft_count + 1u;
+		step->sequences = sequence + 1u;
+		step->verify = 1u;
+	}
+	if ( step->verify != 0u )
+		return((int32_t)step->rows);
 	for (index = 0u; index < engine->request_capacity; ++index)
 	{
 		request = &engine->requests[index];
@@ -263,6 +325,36 @@ static int32_t K3EngineCommitStep(struct K3Engine *engine, const struct K3Engine
 			return(K3_ENGINE_ERR_SAMPLE);
 		token = sampled[sequence];
 		request->output[request->generated++] = token;
+		if ( token == eos_token || request->generated >= request->max_new )
+		{
+			request->state = K3_SEQ_DONE;
+			engine->slot_request[request->slot] = 0xffffffffu;
+		}
+	}
+	return(K3_ENGINE_OK);
+}
+
+// Resolve a verify step: accepted[sequence] drafts survived and
+// bonus[sequence] is the corrected token the target sampled at the first
+// rejected position (or after the last draft). The KDA fold is the driver's
+// job before the next step; the engine only moves the token record.
+static int32_t K3EngineCommitVerify(struct K3Engine *engine, const struct K3EngineStep *step, const uint32_t *accepted, const uint32_t *bonus, uint32_t eos_token)
+{
+	struct K3EngineRequest *request;
+	uint32_t sequence,r,token;
+	if ( engine == 0 || step == 0 || accepted == 0 || bonus == 0 || step->verify == 0u )
+		return(K3_ENGINE_ERR_NULL);
+	for (sequence = 0u; sequence < step->sequences; ++sequence)
+	{
+		request = &engine->requests[engine->slot_request[step->slot[sequence]]];
+		if ( request->state != K3_SEQ_DECODE || accepted[sequence] > request->draft_count )
+			return(K3_ENGINE_ERR_STATE);
+		for (r = 0u; r < accepted[sequence] && request->generated < request->max_new; ++r)
+			request->output[request->generated++] = request->draft[r];
+		token = bonus[sequence];
+		if ( request->generated < request->max_new )
+			request->output[request->generated++] = token;
+		request->draft_count = 0u;
 		if ( token == eos_token || request->generated >= request->max_new )
 		{
 			request->state = K3_SEQ_DONE;

@@ -251,7 +251,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 // is a parameter rather than assumed to be one.
 template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM>
 __global__ __launch_bounds__(THREADS, 1)
-void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit)
+void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit)
 {
 	// ONE KERNEL FOR DECODE, PREFILL AND VERIFY. The recurrence is serial in
 	// the token and parallel in nothing else a batch offers, so the run is the
@@ -276,6 +276,8 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		return;
 	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
 	end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
+	if ( sequence_row_count != 0 )
+		end = begin + sequence_row_count[sequence];
 	// One slot per sequence, never paged: the state does not grow, so its
 	// address is the sequence's slot base plus this head's slice.
 	state = (uint16_t *)(state_pool
@@ -367,7 +369,7 @@ enum LmConvActivation
 
 template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION>
 __global__ __launch_bounds__(THREADS, 1)
-void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit)
+void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit)
 {
 	// ONE KERNEL FOR DECODE, PREFILL AND VERIFY. A sequence's rows are a run -
 	// contiguous, positions ascending - and the window walks the run with the
@@ -386,6 +388,11 @@ void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restric
 		return;
 	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
 	end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
+	// A fold replays only the ACCEPTED prefix of a verify run: the slab keeps
+	// its stride, the run keeps its begin, and the count says how much of it
+	// really happened. Null means the whole run, which is every other caller.
+	if ( sequence_row_count != 0 )
+		end = begin + sequence_row_count[sequence];
 	slot = window + ((uint64_t)state_index[sequence] * channels * KERNEL);
 	for (tap = 0u; tap < KERNEL; ++tap)
 		taps[tap] = slot[(channel * KERNEL) + tap];

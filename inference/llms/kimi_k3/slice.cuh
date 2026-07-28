@@ -106,6 +106,15 @@ struct K3SliceState
 	uint16_t *kda_k_window;
 	uint16_t *kda_v_window;
 	const LmKvView *mla_cache;
+	// DSpark verify slabs, one per KDA layer, each sequences * verify_rows rows
+	// wide in the row layouts the layer copies. Null pools disable the store;
+	// verify_rows is the allocator's per-sequence ceiling (block + 1).
+	uint16_t *replay_conv_q;
+	uint16_t *replay_conv_k;
+	uint16_t *replay_conv_v;
+	uint16_t *replay_decay;
+	uint16_t *replay_beta;
+	uint32_t verify_rows;
 	// Every pool above is strided by this sequence capacity, which is the
 	// allocator's number and not the batch's: rows vary per step, slots do not.
 	uint32_t sequences;
@@ -213,6 +222,16 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 		+ ((uint64_t)kda_index * sequences * K3_KDA_QK_DIM * K3_KDA_CONV_KERNEL);
 	buffers->kda_v_window = state->kda_v_window
 		+ ((uint64_t)kda_index * sequences * K3_KDA_V_DIM * K3_KDA_CONV_KERNEL);
+	buffers->replay_conv_q = state->replay_conv_q == 0 ? 0 : state->replay_conv_q
+		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_QK_DIM);
+	buffers->replay_conv_k = state->replay_conv_k == 0 ? 0 : state->replay_conv_k
+		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_QK_DIM);
+	buffers->replay_conv_v = state->replay_conv_v == 0 ? 0 : state->replay_conv_v
+		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_V_DIM);
+	buffers->replay_decay_logit = state->replay_decay == 0 ? 0 : state->replay_decay
+		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_QK_DIM);
+	buffers->replay_beta_logit = state->replay_beta == 0 ? 0 : state->replay_beta
+		+ ((uint64_t)kda_index * sequences * state->verify_rows * K3_KDA_HEADS);
 	if ( K3_LAYER_KIND(layer) == LM_LAYER_LATENT )
 		buffers->cache = state->mla_cache[mla_index];
 }
@@ -221,13 +240,13 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 // here stops the model instead of running the wrong one, and the compiler warns
 // about the unhandled enum value before that.
 template<class Format, class Geometry>
-static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t sequences, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
 	enum LmLayerKind kind = (enum LmLayerKind)K3_LAYER_KIND(layer);
 	switch (kind)
 	{
 	case LM_LAYER_RECURRENT:
-		return(K3LayerKda<Format>(buffers,rows,sequences,multiprocessors,stream));
+		return(K3LayerKda<Format>(buffers,rows,sequences,commit,multiprocessors,stream));
 	case LM_LAYER_LATENT:
 		return(K3LayerMla<Format,Geometry>(buffers,rows,context,multiprocessors,stream));
 	case LM_LAYER_FULL:
@@ -256,7 +275,7 @@ static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t lay
 // open transport question docs/MODEL_SUPPORT.md item 7 tracks, and this loop
 // is deliberately correct for the single-stage case first.
 template<class Format, class Geometry>
-static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t sequences, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t sequences, uint32_t commit, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
 	uint32_t offset,layer,boundary;
 	int32_t status;
@@ -283,7 +302,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 				K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
 			K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
 		}
-		status = K3LaunchAttentionHalf<Format,Geometry>(buffers,layer,rows,sequences,context,
+		status = K3LaunchAttentionHalf<Format,Geometry>(buffers,layer,rows,sequences,commit,context,
 			multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);
@@ -327,5 +346,45 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
 		K3_LAYER_THREADS, 0, stream,
 		buffers->attnres_partial_bf16,buffers->hidden_bf16,rows,K3_HIDDEN);
+	return(LM_LAUNCH_OK);
+}
+
+// Fold the accepted prefix of a verify step into the real state, with the
+// kernels that would have committed it. Verify ran the slice with commit off
+// and left each KDA layer's raw inputs in the replay slabs; acceptance fixes
+// how much of each run was real, and this replays exactly that much - conv to
+// advance the windows, L2 and the gate transforms to rebuild the delta's
+// inputs, and the delta itself with commit on. Bit-identical to a committed
+// run by the kda gate's own equivalence, because it IS a committed run.
+//
+// verify_row_begin is the slab-strided prefix (sequence s begins at
+// s * verify_rows); accepted[s] says how many of its rows really happened.
+// The step's scratch buffers carry the intermediates; their contents on entry
+// do not matter and on exit are the fold's leavings.
+template<class Format>
+static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t sequences, const uint32_t *verify_row_begin, const uint32_t *accepted, uint32_t slab_rows, uint32_t multiprocessors, cudaStream_t stream)
+{
+	uint32_t layer;
+	for (layer = first_layer; layer < first_layer + layer_count; ++layer)
+	{
+		if ( K3_LAYER_KIND(layer) != LM_LAYER_RECURRENT )
+			continue;
+		K3BindLayer(&weights[layer - first_layer],buffers);
+		K3BindLayerState(state,layer,buffers);
+		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+			buffers->kda_q_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_q, (const uint16_t *)buffers->kda_q_conv_weight,buffers->query_bf16,K3_KDA_QK_DIM,sequences,1u);
+		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+			buffers->kda_k_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_k, (const uint16_t *)buffers->kda_k_conv_weight,buffers->key_bf16,K3_KDA_QK_DIM,sequences,1u);
+		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+			buffers->kda_v_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_v, (const uint16_t *)buffers->kda_v_conv_weight,buffers->value_bf16,K3_KDA_V_DIM,sequences,1u);
+		LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(slab_rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
+			buffers->key_bf16,K3_KDA_HEADS,slab_rows,K3_RMS_EPSILON);
+		LM_LAUNCH((LmBoundedDecayKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(slab_rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
+			buffers->replay_decay_logit,buffers->kda_decay_bias,buffers->kda_head_log_scale, buffers->kda_retention,K3_KDA_HEADS,K3_KDA_GATE_LOWER_BOUND,slab_rows);
+		LM_LAUNCH((LmSigmoidRowsKernel<K3_LAYER_THREADS>), slab_rows, K3_LAYER_THREADS, 0, stream,
+			(const uint16_t *)buffers->replay_beta_logit,buffers->kda_write_gate_out,K3_KDA_HEADS);
+		LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(sequences,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
+			buffers->kda_state_pool,K3_KDA_STATE_SLOT_BYTES,buffers->kda_state_index,verify_row_begin,accepted,buffers->query_bf16,buffers->key_bf16, buffers->value_bf16,buffers->kda_retention,buffers->kda_write_gate_out,buffers->attention_out_bf16, K3_KDA_HEADS,1u,sequences,1u);
+	}
 	return(LM_LAUNCH_OK);
 }

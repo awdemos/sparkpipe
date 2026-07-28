@@ -41,7 +41,7 @@ int main(void)
 	static uint32_t prompt_a[5] = { 11u, 12u, 13u, 14u, 15u };
 	static uint32_t prompt_b[3] = { 21u, 22u, 23u };
 	static uint32_t prompt_c[2] = { 31u, 32u };
-	static uint32_t out_a[3], out_b[4], out_c[2];
+	static uint32_t out_a[6], out_b[4], out_c[2];
 	static uint32_t sampled[SLOTS];
 	struct K3EngineStep step;
 	uint32_t index,s,next = 100u;
@@ -52,13 +52,23 @@ int main(void)
 	step.context_length = context; step.logits_row = logits;
 	if ( K3EngineInit(&engine, requests, 4u, slots, SLOTS, BUDGET) != K3_ENGINE_OK )
 		return 1;
-	printf("submit a %lld\n", (long long)K3EngineSubmit(&engine, prompt_a, 5u, 3u, out_a));
+	printf("submit a %lld\n", (long long)K3EngineSubmit(&engine, prompt_a, 5u, 6u, out_a));
 	printf("submit b %lld\n", (long long)K3EngineSubmit(&engine, prompt_b, 3u, 4u, out_b));
 	// The third arrives before any slot frees: it must queue, then take the
 	// first slot a finished request abandons.
 	printf("submit c %lld\n", (long long)K3EngineSubmit(&engine, prompt_c, 2u, 2u, out_c));
 	for (index = 0u; index < 12u; ++index)
 	{
+		// After request a's first sampled token, hand it a three-token draft:
+		// the next plan must be a verify-only step - one run of four rows at
+		// ascending positions, logits at the run's head - and its resolution
+		// (two accepted plus the bonus) must land exactly three tokens.
+		if ( index == 3u )
+		{
+			static uint32_t draft[3] = { 201u, 202u, 203u };
+			if ( K3EngineSubmitDraft(&engine, 1u, draft, 3u) != K3_ENGINE_OK )
+				return 4;
+		}
 		rows = K3EnginePlanStep(&engine, &step);
 		if ( rows < 0 )
 			return 2;
@@ -68,6 +78,24 @@ int main(void)
 			break;
 		}
 		PrintStep(index, &step);
+		if ( step.verify != 0u )
+		{
+			static uint32_t accepted[SLOTS], bonus[SLOTS];
+			printf("verify step %u\n", index);
+			for (s = 0u; s < step.sequences; ++s)
+			{
+				accepted[s] = 2u;
+				bonus[s] = next++;
+				// The bonus token occupies the first rejected position and
+				// was never forwarded; the next decode row re-runs it there.
+				printf("verify_next %llu %u\n",
+					(unsigned long long)step.request_id[s],
+					step.position[step.sequence_row_begin[s]] + 1u + accepted[s]);
+			}
+			if ( K3EngineCommitVerify(&engine, &step, accepted, bonus, 7u) != K3_ENGINE_OK )
+				return 5;
+			continue;
+		}
 		for (s = 0u; s < step.sequences; ++s)
 		{
 			sampled[s] = 0u;
@@ -82,7 +110,7 @@ int main(void)
 		if ( K3EngineCommitStep(&engine, &step, sampled, 7u) != K3_ENGINE_OK )
 			return 3;
 	}
-	printf("out_a %u %u %u\n", out_a[0], out_a[1], out_a[2]);
+	printf("out_a %u %u %u %u %u %u\n", out_a[0], out_a[1], out_a[2], out_a[3], out_a[4], out_a[5]);
 	printf("out_b %u %u\n", out_b[0], out_b[1]);
 	printf("out_c %u %u\n", out_c[0], out_c[1]);
 	return 0;
