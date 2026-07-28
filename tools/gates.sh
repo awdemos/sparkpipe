@@ -59,6 +59,10 @@ run "layer on host"        "python3 tests/test_layer_host.py"
 # The MLA store and attention over a paged cache, two sequences with interleaved
 # pages so ignoring the page table is visible.
 run "mla on host"          "python3 tests/test_mla_host.py"
+# Dataflow, not arithmetic. Every per-kernel harness passes and an audit still
+# found three defects in which buffer feeds which kernel. Reintroducing the
+# shared-expert overwrite makes this fail.
+run "layer dataflow"       "python3 tests/test_layer_dataflow.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run "grouped topk builds"  "sh tools/build_grouped_topk.sh"
