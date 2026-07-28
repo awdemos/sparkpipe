@@ -66,6 +66,10 @@ run "layer dataflow"       "python3 tests/test_layer_dataflow.py"
 # The checkpoint quantises the routed experts and nothing else, because only
 # they saw quantisation-aware training. Putting attention back on Format fails.
 run "k3 quant recipe"      "python3 tests/test_k3_quant_recipe.py"
+# A whole layer, executed. Found a divide-by-zero in production code on its
+# first successful run, and catches the shared-expert overwrite by seeing the
+# routed value missing from the output rather than by reading the source.
+run "k3 layer on host"     "python3 tests/test_k3_layer_host.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run "grouped topk builds"  "sh tools/build_grouped_topk.sh"

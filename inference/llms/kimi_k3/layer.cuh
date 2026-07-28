@@ -252,9 +252,22 @@ struct K3LayerBuffers
 // at or above `rows` read past the end of the latent buffer, and no row is
 // route-expanded - every expert consumed whichever activation happened to sit
 // at its packed index. glm52 passes route_source_token here and this did not.
+// AN UNQUANTISED FORMAT HAS NO GROUPS AND MUST NOT BE ASKED FOR ANY.
+//
+// LmBf16Format declares kScaleGroup zero, correctly - there is nothing to
+// group. This function divided a width by it. Every non-expert projection in
+// K3 went through here the moment the quantisation recipe put attention,
+// the router and the latent projections on BF16, which is 20 call sites
+// dividing by zero.
+//
+// Found by tests/host_cuda/k3_layer_host.cu on its first successful run, which
+// is the entire argument for a harness that executes a layer rather than its
+// kernels: every kernel here is correct, and the layer faulted immediately.
 template<class Format>
 static void K3Quantise(const K3LayerBuffers *b, const uint16_t *source, const uint32_t *source_row_map, uint32_t rows, uint32_t width, cudaStream_t stream)
 {
+	if ( Format::kScaleGroup == 0u )
+		return;
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,K3_LAYER_THREADS>),
 		dim3(rows,width / Format::kScaleGroup), K3_LAYER_THREADS,
 		(Format::kScaleGroup + 8u) * sizeof(float), stream,
@@ -270,13 +283,17 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 	LmGemmArguments gemm;
 	K3Quantise<Format>(b,source,0,rows,input_dimension,stream);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
+	// An unquantised format feeds the GEMM the rows themselves; there is no
+	// packed buffer, and pointing at one that was never filled is how a skipped
+	// quantise turns into silently reading uninitialised memory.
+	gemm.scale_a = Format::kScaleGroup == 0u ? 0 : (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)weight_scale;
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = destination;
 	return(LmGemmLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,b->packed_activation,weight,rows,rows,1u,1u,
+		&gemm,Format::kScaleGroup == 0u ? (const void *)source
+			: (const void *)b->packed_activation,weight,rows,rows,1u,1u,
 		input_dimension,output_dimension,multiprocessors,false,stream));
 }
 

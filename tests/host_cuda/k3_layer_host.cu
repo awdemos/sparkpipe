@@ -117,7 +117,10 @@ int main(void)
 	b.route_expert = route_expert; b.route_weight = route_weight;
 	b.route_packed_row = route_packed; b.route_source_token = route_source;
 
+	// bisect the fault: report before each launch the layer makes
+	printf("start\n"); fflush(stdout);
 	K3LayerLatentMoe<LmHostRecorderFormat>(&b, ROWS, ROUTES, 1u, 0);
+	printf("survived\n"); fflush(stdout);
 
 	printf("gemms %u\n", (unsigned)lm_recorded_gemms.size());
 	for (size_t i = 0u; i < lm_recorded_gemms.size(); ++i)
