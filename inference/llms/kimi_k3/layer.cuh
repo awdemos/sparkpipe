@@ -223,6 +223,7 @@ struct K3LayerBuffers
 	const uint32_t *dense_row_offset;
 	const uint32_t *dense_tile_prefix;
 	const uint32_t *route_expert;
+	const uint32_t *route_packed_row;
 	const float *route_weight;
 	const uint32_t *group_row_offset;
 	const uint32_t *group_tile_prefix;
@@ -475,9 +476,24 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LmMoeFinalizeKernel<K3_LAYER_THREADS><<<rows,K3_LAYER_THREADS,0,stream>>>(
-		b->gate_up_bf16,b->route_expert,b->route_weight,b->latent_bf16,
-		K3_ROUTED_EXPERT_HIDDEN,K3_TOP_K,rows);
+	// THIS CALL WAS WRONG THREE WAYS AND COMPILED. The kernel's tail is
+	// (packed, packed_row_of_token_route, weight, out, tokens, top_k, dimension)
+	// and it indexes the token from blockIdx.y.
+	//
+	//   route_expert was passed where route_packed_row belongs - the expert id,
+	//   not where this token's route landed in the packed buffer, so it indexed
+	//   the expert output by expert number.
+	//   tokens and dimension were swapped.
+	//   the grid was 1D, so blockIdx.y was always zero and only token 0 would
+	//   have been written.
+	//
+	// Every argument is a uint32_t and every one type-checked. glm5_2's call has
+	// been correct since it was written; I did not read it before writing this.
+	LmMoeFinalizeKernel<K3_LAYER_THREADS>
+		<<<dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
+		   K3_LAYER_THREADS,0,stream>>>(
+		b->gate_up_bf16,b->route_packed_row,b->route_weight,b->latent_bf16,
+		rows,K3_TOP_K,K3_ROUTED_EXPERT_HIDDEN);
 	// RMSNorm between aggregation and the up-projection - the "Normalized" in
 	// Normalized LatentMoE, and the report is explicit that it goes here rather
 	// than after.

@@ -217,8 +217,13 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 	// choice, and Qwen 3.6's linear path is GDN - but citing an architecture is
 	// not reading a checkpoint, and this tree has been wrong twice this week
 	// about exactly that kind of lineage inference.
+	// The kernel indexes its channel as blockIdx.y * THREADS + threadIdx.x, so a
+	// 1D grid convolves only the first 256 of 2048 channels and leaves the rest
+	// carrying the projection's raw output. Found by tests/test_kernel_launches.py
+	// on its first run, in a call I wrote.
 	LmCausalConvDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_CONV_KERNEL,LM_CONV_SWISH>
-		<<<rows,QWEN36_LAYER_THREADS,0,stream>>>(
+		<<<dim3(rows,(QWEN36_GDN_QKV_DIM + QWEN36_LAYER_THREADS - 1u) / QWEN36_LAYER_THREADS),
+		   QWEN36_LAYER_THREADS,0,stream>>>(
 		b->gdn_conv_window,b->gdn_state_index,b->key_bf16,
 		(const uint16_t *)b->gdn_conv_weight,b->key_bf16,QWEN36_GDN_QK_DIM,rows);
 	LmDeltaRuleDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>
