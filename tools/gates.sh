@@ -44,6 +44,11 @@ run "kda decay bound"      "python3 tests/test_kda_decay.py"
 run "kernel launches"      "python3 tests/test_kernel_launches.py"
 run "mla absorption"       "python3 tests/test_mla_absorption.py"
 run "expert grouping"      "python3 tests/test_expert_grouping.py"
+# The real kernels, run on a CPU. Not a reimplementation: kda_host.cu includes
+# inference/kernels/linear_attn.cuh unmodified and gives it a grid. Reverting
+# either of the two bugs this path had - the undecayed prediction, the dropped
+# dt_bias - takes the relative error from 2e-3 to 3e-1 and 6e-2.
+run "kda on host"          "python3 tests/test_kda_host.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run "grouped topk builds"  "sh tools/build_grouped_topk.sh"
