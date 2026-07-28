@@ -190,11 +190,26 @@ void LmDeltaRuleDecodeKernel(uint8_t *__restrict__ state_pool, const uint32_t *_
 	__syncthreads();
 	// predicted = S^T k. Each thread owns a set of value columns and walks the
 	// key dimension, so the state read is contiguous per thread.
+	// THE PREDICTION READS THE DECAYED STATE, NOT THE STATE.
+	//
+	// Report eq. 1 is S = (I - b k k^T) Diag(a) S + b k v^T. Expanding:
+	//
+	//     S = Diag(a) S + b k (v^T - k^T Diag(a) S)
+	//
+	// so the term subtracted from v is k^T (Diag(a) S) - the retention factor
+	// applies BEFORE the prediction, not only to the state that survives it.
+	// FlashKDA folds it into the key instead, k_decayed = k * exp(g_cumsum),
+	// then v - k_decayed @ S.T; the same product, written the other way round.
+	//
+	// This loop read the raw state. Every output stayed finite and plausible
+	// and the delta correction was computed against a memory the model had
+	// already decided to forget, by a factor that varies per key channel.
 	for (element = threadIdx.x; element < VALUE_DIM; element += THREADS)
 	{
 		float total = 0.0f;
 		for (index = 0u; index < KEY_DIM; ++index)
-			total += LmBf16ToFloat(state[(index * VALUE_DIM) + element]) * shared_key[index];
+			total += LmBf16ToFloat(state[(index * VALUE_DIM) + element])
+				* shared_key[index] * forget_gate[index];
 		shared_predicted[element] = total;
 	}
 	__syncthreads();

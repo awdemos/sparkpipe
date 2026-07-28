@@ -44,12 +44,42 @@ using K3GlobalKv = LmKvLatent<K3_KV_BITS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM, 
 #define K3_KDA_QK_DIM (K3_KDA_HEADS * K3_KDA_KEY_DIM)
 #define K3_KDA_V_DIM (K3_KDA_HEADS * K3_KDA_VALUE_DIM)
 
-// MLA widths. The query goes through a 1536-wide low-rank bottleneck; the KV
-// side caches a 512 latent plus a 64 slice that is carried unrotated.
-#define K3_MLA_Q_DIM (K3_MLA_HEADS * (K3_QK_NOPE_DIM + K3_QK_UNROTATED_DIM))
+// MLA widths, IN THE ABSORBED FORM THE KERNEL IMPLEMENTS.
+//
+// LmAttentionDecodeKernel reads LATENT + ROPE elements per head and treats the
+// cached latent row as the key directly. It does not reconstruct per-head keys
+// and values. glm5_2 has used it that way from the start: its query is
+// heads * (LATENT + ROPE) and its output projection reads heads * LATENT.
+//
+// modeling_kimi_linear.py uses the RECONSTRUCTED form instead - it caches the
+// compressed 512+64 row and rebuilds k_pass and value_states through kv_b_proj
+// at attention time, so its query is heads * (qk_nope + qk_rope) = 96 * 192 and
+// its o_proj reads heads * v_head_dim = 96 * 128.
+//
+// I sized this file from the modelling file and handed it to the absorbed
+// kernel: a 192-element query into a loop that reads 576. The two forms are
+// mathematically equal - absorption folds W_kv_b into the query up-projection
+// and the value half into the output projection - but they need DIFFERENT
+// WEIGHTS, and that is a pack-time transformation, not a runtime one.
+//
+// THE PACKER OWES TWO FOLDS, and they are the reason mla_kv_b_weight has no
+// call site in this file:
+//
+//   q_up      absorb the nope half of kv_b:  hidden -> heads * 512, then
+//             concatenate the 64 unrotated slice -> heads * 576
+//   o_proj    absorb the value half of kv_b:  heads * 512 -> hidden
+//
+// Until the packer does that, mla_q_up_weight and mla_out_weight here are named
+// for the absorbed tensors and no checkpoint provides them directly.
+#define K3_MLA_Q_DIM (K3_MLA_HEADS * (K3_KV_LORA_RANK + K3_QK_UNROTATED_DIM))
 #define K3_MLA_KV_A_DIM (K3_KV_LORA_RANK + K3_QK_UNROTATED_DIM)
 #define K3_MLA_KV_B_DIM (K3_MLA_HEADS * (K3_QK_NOPE_DIM + K3_V_HEAD_DIM))
-#define K3_MLA_OUT_DIM (K3_MLA_HEADS * K3_V_HEAD_DIM)
+#define K3_MLA_OUT_DIM (K3_MLA_HEADS * K3_KV_LORA_RANK)
+
+// The kernel's contract, asserted rather than trusted: it loads LATENT + ROPE
+// per head and this file must hand it exactly that.
+static_assert(K3_MLA_Q_DIM == K3_MLA_HEADS * (K3_KV_LORA_RANK + K3_QK_UNROTATED_DIM),
+	"the query must be as wide as the kernel reads");
 
 // The shared experts run at the full width with the routed intermediate times
 // the shared count, per the report's Ns = 2.
@@ -365,7 +395,14 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 		b->gate_bf16,rows,K3_HIDDEN,K3_MLA_OUT_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	// No RMSNorm here. Eq. 7 gates the raw attention output.
+	// No RMSNorm here - eq. 7 gates the raw attention output, unlike KDA's eq. 6
+	// which normalises first.
+	//
+	// THE GATE WIDTH FOLLOWS THE FORM. The reference gates at heads * v_head_dim
+	// because its attention output is reconstructed; in the absorbed form the
+	// output is heads * LATENT, so the gate projection must be too. Same gate,
+	// different width, and mla_gate_weight is sized from K3_MLA_OUT_DIM for
+	// exactly that reason.
 	LmOutputGateKernel<K3_LAYER_THREADS><<<rows,K3_LAYER_THREADS,0,stream>>>(
 		b->attention_out_bf16,b->gate_bf16,K3_MLA_OUT_DIM);
 	return(K3Project<Format>(b,b->attention_out_bf16,b->mla_out_weight,b->mla_out_scale,
