@@ -127,6 +127,14 @@ static inline float __shfl_sync(unsigned, float value, int, int = 32) { return v
 static inline unsigned __ballot_sync(unsigned, int) { return 0u; }
 static inline void __threadfence_block(void) {}
 
+// Address-space casts and the async-copy family. The layer never reaches the
+// TMA path - the recorder replaces the GEMM that would - so these exist to let
+// tma.cuh parse. Any of them being CALLED on the host would be a bug in the
+// harness, not something to emulate, so they return zero rather than something
+// plausible.
+static inline unsigned long long __cvta_generic_to_shared(const void *p) { return (unsigned long long)p; }
+static inline unsigned long long __cvta_generic_to_global(const void *p) { return (unsigned long long)p; }
+
 // Atomics are ordinary reads and writes with one thread. That is exactly the
 // sequential schedule a correct kernel must also be valid under, so a race this
 // cannot see is a race the harness is honest about not seeing - see the shim's
