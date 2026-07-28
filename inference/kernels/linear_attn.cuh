@@ -97,6 +97,45 @@ void LmBoundedDecayKernel(const uint16_t *__restrict__ logit_bf16, const float *
 			channel_bias[(head * KEY_DIM) + index],head_log_scale[head],minimum_log_decay);
 }
 
+// L2-normalise each head's vector. KDA normalises q and k after the convolution
+// and before the recurrence; without it the delta rule's k k^T term is not a
+// projection and the state grows without bound.
+//
+// FlashKDA reduces with a warp-shuffle tree and FMA, and its torch reference
+// reproduces that exact order rather than calling torch.norm - the accumulation
+// order is part of the contract when the result feeds a recurrence. This is a
+// plain block reduction, so it will not be bit-identical; that is a difference
+// worth knowing about before comparing outputs element-wise.
+template<uint32_t THREADS, uint32_t HEAD_DIM>
+__global__ __launch_bounds__(THREADS, 1)
+void LmL2NormalisePerHeadKernel(uint16_t *__restrict__ rows_bf16, uint32_t heads, uint32_t rows, float epsilon)
+{
+	__shared__ float shared_total[THREADS];
+	uint32_t row = blockIdx.x,head = blockIdx.y,index,stride;
+	uint64_t base;
+	float total = 0.0f,inverse;
+	if ( row >= rows || head >= heads )
+		return;
+	base = (((uint64_t)row * heads) + head) * HEAD_DIM;
+	for (index = threadIdx.x; index < HEAD_DIM; index += THREADS)
+	{
+		float value = LmBf16ToFloat(rows_bf16[base + index]);
+		total += value * value;
+	}
+	shared_total[threadIdx.x] = total;
+	__syncthreads();
+	for (stride = THREADS / 2u; stride > 0u; stride >>= 1)
+	{
+		if ( threadIdx.x < stride )
+			shared_total[threadIdx.x] += shared_total[threadIdx.x + stride];
+		__syncthreads();
+	}
+	inverse = rsqrtf(shared_total[0] + epsilon);
+	for (index = threadIdx.x; index < HEAD_DIM; index += THREADS)
+		rows_bf16[base + index] =
+			LmFloatToBf16(LmBf16ToFloat(rows_bf16[base + index]) * inverse);
+}
+
 // One decode step of the gated delta rule, one block per (row, head).
 //
 // GROUPED VALUE HEADS. Qwen 3.6 has 16 key heads and 48 value heads, so three
@@ -185,7 +224,13 @@ void LmDeltaRuleDecodeKernel(uint8_t *__restrict__ state_pool, const uint32_t *_
 // The window lives in the same non-growing slot as the state, after it, because
 // both are per-sequence and neither grows. That is why kernels/kv.cuh sizes the
 // slot from the sum rather than from the state alone.
-template<uint32_t THREADS, uint32_t KERNEL>
+enum LmConvActivation
+{
+	LM_CONV_NONE = 0,
+	LM_CONV_SWISH = 1
+};
+
+template<uint32_t THREADS, uint32_t KERNEL, LmConvActivation ACTIVATION>
 __global__ __launch_bounds__(THREADS, 1)
 void LmCausalConvDecodeKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t rows)
 {
@@ -205,5 +250,13 @@ void LmCausalConvDecodeKernel(uint16_t *__restrict__ window, const uint32_t *__r
 	for (tap = 0u; tap < KERNEL; ++tap)
 		total += LmBf16ToFloat(slot[(channel * KERNEL) + tap])
 			* LmBf16ToFloat(weight_bf16[(channel * KERNEL) + tap]);
+	// SWISH, NOT NOTHING. FlashKDA's projections are
+	// L2Norm(Swish(ShortConv(Wx))) for q and k and Swish(ShortConv(Wx)) for v;
+	// the reference builds ShortConvolution with activation='silu'. A
+	// convolution that returns its raw sum runs and is a different model, so
+	// the activation is a template parameter with no default - a caller has to
+	// say which it wants.
+	if ( ACTIVATION == LM_CONV_SWISH )
+		total = total * (1.0f / (1.0f + __expf(-total)));
 	output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
 }

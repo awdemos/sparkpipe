@@ -210,7 +210,12 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 		b->fused_qkv_bf16,layout,b->query_bf16,b->key_bf16,b->value_bf16,rows,1.0f);
 	// The short causal convolution runs before the recurrence and carries its
 	// own window in the same non-growing slot as the state.
-	LmCausalConvDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_CONV_KERNEL>
+	// SWISH, INFERRED NOT READ. Gated DeltaNet applies Swish after the short
+	// convolution - the K3 report cites GDN for exactly that when describing
+	// KDA's q/k/v projections - and Qwen 3.6's linear path is GDN. I have not
+	// seen Qwen's modelling file, so this follows the architecture rather than
+	// the checkpoint, which is a weaker claim than the K3 side of this tree.
+	LmCausalConvDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_CONV_KERNEL,LM_CONV_SWISH>
 		<<<rows,QWEN36_LAYER_THREADS,0,stream>>>(
 		b->gdn_conv_window,b->gdn_state_index,b->key_bf16,
 		(const uint16_t *)b->gdn_conv_weight,b->key_bf16,QWEN36_GDN_QK_DIM,rows);

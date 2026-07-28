@@ -19,7 +19,15 @@
 #include "inference/kernels/formats/int7.cuh"
 #include "inference/llms/kimi_k3/config.h"
 
-using K3GlobalKv = LmKvLatent<K3_KV_BITS, K3_KDA_KEY_DIM, 64u, K3_KV_PAGE_SLOTS>;
+// THE MLA LATENT IS kv_lora_rank, NOT THE KDA HEAD DIM. This was
+// LmKvLatent<..., K3_KDA_KEY_DIM, 64u, ...> - 128 elements, the width of a KDA
+// head, standing in for a 512-element MLA latent. Two unrelated dimensions that
+// both happen to be head-shaped, so nothing looked wrong and the pool came out
+// four times too small.
+//
+// Same defect qwen_3_6 had one commit earlier, found the same way: the constant
+// the geometry needed was not in config.h, so a nearby one was used.
+using K3GlobalKv = LmKvLatent<K3_KV_BITS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM, K3_KV_PAGE_SLOTS>;
 using K3LinearState = LmKvState<K3_KDA_STATE_BYTES>;
 
 static_assert(K3LinearState::kGrows == false, "a delta-rule state does not grow with context");
@@ -47,13 +55,21 @@ template __global__ void LmQuantiseRowsKernel<LmInt7, K3_THREADS>(const uint16_t
 // KDA on three of every four layers, gated MLA on the fourth. The same delta
 // rule Qwen 3.6 uses, at K3's widths - which is the argument that this is an
 // architecture class and not one vendor's design.
-template __global__ void LmDeltaRuleDecodeKernel<K3_THREADS, K3_KDA_KEY_DIM, K3_KDA_KEY_DIM>(uint8_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
+template __global__ void LmDeltaRuleDecodeKernel<K3_THREADS, K3_KDA_KEY_DIM, K3_KDA_VALUE_DIM>(uint8_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
+// The rest of the KDA path, none of which unity built: the short convolution
+// with its Swish, the L2 normalisation of q and k, the bounded decay mapping,
+// the output gate, and SiTU on every MLP.
+template __global__ void LmCausalConvDecodeKernel<K3_THREADS, K3_KDA_CONV_KERNEL, LM_CONV_SWISH>(uint16_t *, const uint32_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t);
+template __global__ void LmL2NormalisePerHeadKernel<K3_THREADS, K3_KDA_KEY_DIM>(uint16_t *, uint32_t, uint32_t, float);
+template __global__ void LmBoundedDecayKernel<K3_THREADS, K3_KDA_KEY_DIM>(const uint16_t *, const float *, const float *, float *, uint32_t, float, uint32_t);
+template __global__ void LmOutputGateKernel<K3_THREADS>(uint16_t *, const uint16_t *, uint32_t);
+template __global__ void LmSituMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, float, float);
 template __global__ void LmKvStoreKernel<K3GlobalKv, K3_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
 template __global__ void LmHeadCandidateKernel<K3_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmHeadCommitKernel<K3_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
 template __global__ void LmMoeFinalizeKernel<K3_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
 
-template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KDA_KEY_DIM, 64u>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
+template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K>(const float *, uint32_t, uint32_t *, float *, float);
 
 extern "C" int32_t K3GemmInt7(LmGemmArguments *a, const void *x, const void *w,
