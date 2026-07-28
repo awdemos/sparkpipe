@@ -134,7 +134,7 @@ typedef struct SparkRingServiceBackendState
 	const SparkModelDriverProgramDescriptor *program;
 	SparkGlm52ResidentDecodeStageProductionRunner runner;
 	SparkTokenizer tokenizer;
-	SparkGlm52KvCacheArena kv_arena;
+	SparkKvCacheArena kv_arena;
 	SparkPrefixCache prefix_cache;
 	SparkScheduler scheduler;
 	SparkRequestApi request_api;
@@ -147,7 +147,7 @@ typedef struct SparkRingServiceBackendState
 	uint32_t kv_physical_block_capacity;
 	SparkServingEngine serving_engine;
 	SparkServiceRuntime service;
-	SparkGlm52KvCacheBlock *kv_blocks;
+	SparkKvCacheBlock *kv_blocks;
 	SparkPrefixCacheEntry *prefix_entries;
 	SparkPrefixCacheSequenceBinding *prefix_bindings;
 	SparkRequestApiSlot *request_slots;
@@ -1072,7 +1072,7 @@ static SparkStatus SparkRingServiceBackendBuildDecodeResidentPayload(
 	uint32_t *payload_bytes_out)
 {
 	SparkCudaResidentIpcSubmitDecode *message;
-	const SparkGlm52KvBlockTableView *kv_view;
+	const SparkKvBlockTableView *kv_view;
 	const SparkRequestApiDecodeDispatchLaneView *lane;
 	uint64_t payload_bytes;
 	uint64_t execution_row_count;
@@ -2278,12 +2278,12 @@ static SparkStatus SparkRingServiceBackendAllocateServiceStorage(
 static SparkStatus SparkRingServiceBackendInitializeKvArena(
 	SparkRingServiceBackendState *state)
 {
-	SparkGlm52KvCacheConfiguration kv_configuration;
+	SparkKvCacheConfiguration kv_configuration;
 
 	memset(&kv_configuration,0,sizeof(kv_configuration));
-	kv_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+	kv_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
 	kv_configuration.descriptor_bytes =
-		SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+		SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
 	kv_configuration.physical_block_count =
 		state->kv_logical_block_capacity;
 	kv_configuration.block_token_count =
@@ -2297,7 +2297,7 @@ static SparkStatus SparkRingServiceBackendInitializeKvArena(
 	kv_configuration.value_device_base =
 		(void *)(uintptr_t)SPARK_RING_SERVICE_BACKEND_METADATA_VALUE_BASE;
 	kv_configuration.blocks = state->kv_blocks;
-	return SparkGlm52KvCacheArenaInitialize(
+	return SparkKvCacheArenaInitialize(
 		&state->kv_arena,
 		&kv_configuration);
 }
@@ -2487,7 +2487,7 @@ static SparkStatus SparkRingServiceBackendInitializeRequestApi(
 	request_api_configuration.request_capacity =
 		SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY;
 	request_api_configuration.prefetch_lane_count =
-		SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
+		SPARK_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
 	request_api_configuration.decode_batch_target = lane_capacity;
 	request_api_configuration.max_resident_kv_block_count =
 		state->kv_physical_block_capacity;

@@ -23,8 +23,8 @@
 
 typedef struct SparkTestServiceFixture
 {
-    SparkGlm52KvCacheArena kv_arena;
-    SparkGlm52KvCacheBlock kv_blocks[SPARK_TEST_SERVICE_KV_BLOCK_COUNT];
+    SparkKvCacheArena kv_arena;
+    SparkKvCacheBlock kv_blocks[SPARK_TEST_SERVICE_KV_BLOCK_COUNT];
     SparkPrefixCache prefix_cache;
     SparkPrefixCacheEntry prefix_entries[
         SPARK_TEST_SERVICE_PREFIX_ENTRY_COUNT];
@@ -81,7 +81,7 @@ static void SparkTestServiceFillTokenIds(
 
 static SparkStatus SparkTestServiceKvPrefetch(
     void *context,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    const SparkKvCachePrefetchPlan *prefetch_plan)
 {
     (void)context;
     assert(prefetch_plan != 0);
@@ -151,7 +151,7 @@ static void SparkTestServiceInitializeFixture(
     SparkTestServiceFixture *fixture,
     SparkTestServiceCallbackContext *callback_context)
 {
-    SparkGlm52KvCacheConfiguration kv_configuration;
+    SparkKvCacheConfiguration kv_configuration;
     SparkPrefixCacheConfiguration prefix_configuration;
     SparkSchedulerConfiguration scheduler_configuration;
     SparkRequestApiConfiguration request_api_configuration;
@@ -170,9 +170,9 @@ static void SparkTestServiceInitializeFixture(
         222000u);
 
     memset(&kv_configuration, 0, sizeof(kv_configuration));
-    kv_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    kv_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
     kv_configuration.descriptor_bytes =
-        SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     kv_configuration.physical_block_count = SPARK_TEST_SERVICE_KV_BLOCK_COUNT;
     kv_configuration.block_token_count =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
@@ -183,7 +183,7 @@ static void SparkTestServiceInitializeFixture(
     kv_configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
     kv_configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
     kv_configuration.blocks = fixture->kv_blocks;
-    assert(SparkGlm52KvCacheArenaInitialize(
+    assert(SparkKvCacheArenaInitialize(
         &fixture->kv_arena,
         &kv_configuration) == SPARK_STATUS_OK);
 

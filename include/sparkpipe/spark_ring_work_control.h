@@ -333,7 +333,7 @@ SparkStatus SparkRingWorkControlPlanExecutionChunks(
 SparkStatus SparkRingWorkControlBuildHostKvBlockTable(
 	const SparkRingWorkControlPacket *packet,
 	SparkRingWorkControlKvState *state,
-	SparkGlm52KvBlockTableView *view);
+	SparkKvBlockTableView *view);
 SparkStatus SparkRingWorkControlCommitHostKvBlockTable(
 	const SparkRingWorkControlPacket *packet,
 	SparkRingWorkControlKvState *state);

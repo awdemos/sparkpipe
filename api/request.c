@@ -297,7 +297,7 @@ static SparkStatus SparkGlm52RequestApiValidateConfiguration(
         SparkGlm52RequestApiNormalizeDecodeExecutionRowCapacity(configuration);
     if (!SparkGlm52RequestApiConfigurationFlagsAreValid(configuration_flags) ||
         prefetch_lane_count == 0u ||
-        prefetch_lane_count > SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT ||
+        prefetch_lane_count > SPARK_KV_CACHE_MAX_PREFETCH_LANE_COUNT ||
         decode_execution_row_capacity < decode_batch_target)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -467,13 +467,13 @@ static void SparkGlm52RequestApiRemoveSlotHash(
 
 SparkStatus SparkRequestApiConfigurationUseAsyncKvCachePrefetchBackend(
     SparkRequestApiConfiguration *configuration,
-    SparkGlm52KvCacheAsyncPrefetchBackend *backend)
+    SparkKvCacheAsyncPrefetchBackend *backend)
 {
     uint32_t configuration_flags;
 
     if (configuration == 0 || backend == 0 ||
-        backend->abi_version != SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_ABI_VERSION ||
-        backend->descriptor_bytes != SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_DESCRIPTOR_BYTES)
+        backend->abi_version != SPARK_KV_CACHE_PREFETCH_BACKEND_ABI_VERSION ||
+        backend->descriptor_bytes != SPARK_KV_CACHE_PREFETCH_BACKEND_DESCRIPTOR_BYTES)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -486,11 +486,11 @@ SparkStatus SparkRequestApiConfigurationUseAsyncKvCachePrefetchBackend(
     configuration->configuration_flags = configuration_flags;
     configuration->kv_prefetch_context = backend;
     configuration->kv_prefetch_function =
-        SparkGlm52KvCacheAsyncPrefetchBackendSubmitSynchronous;
+        SparkKvCacheAsyncPrefetchBackendSubmitSynchronous;
     configuration->kv_prefetch_start_function =
-        SparkGlm52KvCacheAsyncPrefetchBackendStart;
+        SparkKvCacheAsyncPrefetchBackendStart;
     configuration->kv_prefetch_poll_function =
-        SparkGlm52KvCacheAsyncPrefetchBackendPoll;
+        SparkKvCacheAsyncPrefetchBackendPoll;
     return SPARK_STATUS_OK;
 }
 
@@ -2088,9 +2088,9 @@ static SparkStatus SparkGlm52RequestApiCollectDecodeSlotBlocks(
 }
 
 static void SparkGlm52RequestApiCollectPrefetchSourceBlock(
-    SparkGlm52KvCachePrefetchSourceBlock *source_blocks,
+    SparkKvCachePrefetchSourceBlock *source_blocks,
     uint32_t *source_block_count,
-    const SparkGlm52KvCachePrefetchSourceBlock *source_block)
+    const SparkKvCachePrefetchSourceBlock *source_block)
 {
     uint32_t block_index;
 
@@ -2115,10 +2115,10 @@ static void SparkGlm52RequestApiCollectPrefetchSourceBlock(
 static SparkStatus SparkGlm52RequestApiCollectPrefillSlotPrefetchSources(
     SparkRequestApi *api,
     SparkRequestApiSlot *slot,
-    SparkGlm52KvCachePrefetchSourceBlock *source_blocks,
+    SparkKvCachePrefetchSourceBlock *source_blocks,
     uint32_t *source_block_count)
 {
-    SparkGlm52KvCachePrefetchSourceBlock slot_source_blocks[
+    SparkKvCachePrefetchSourceBlock slot_source_blocks[
         SPARK_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT];
     uint32_t matched_token_count;
     uint32_t slot_source_block_count;
@@ -2155,11 +2155,11 @@ static SparkStatus SparkGlm52RequestApiCollectPrefillSlotPrefetchSources(
 static SparkStatus SparkGlm52RequestApiCollectDecodeSlotPrefetchSources(
     SparkRequestApi *api,
     SparkRequestApiSlot *slot,
-    SparkGlm52KvCachePrefetchSourceBlock *source_blocks,
+    SparkKvCachePrefetchSourceBlock *source_blocks,
     uint32_t *source_block_count)
 {
     uint32_t required_token_count;
-    SparkGlm52KvCachePrefetchSourceBlock slot_source_blocks[
+    SparkKvCachePrefetchSourceBlock slot_source_blocks[
         SPARK_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT];
     uint32_t slot_source_block_count;
     uint32_t block_index;
@@ -2326,7 +2326,7 @@ static uint32_t SparkGlm52RequestApiJitResidencyPolicyIsEnabled(
 }
 
 static void SparkGlm52RequestApiCollectProtectedPrefetchPlanBlocks(
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan,
+    const SparkKvCachePrefetchPlan *prefetch_plan,
     uint32_t *protected_physical_block_indices,
     uint32_t *protected_physical_block_count)
 {
@@ -2422,7 +2422,7 @@ static SparkStatus SparkGlm52RequestApiCollectRunningProtectedBlocks(
 
 static SparkStatus SparkGlm52RequestApiApplyJitKvResidencyPolicy(
     SparkRequestApi *api,
-    const SparkGlm52KvCachePrefetchPlan *protected_prefetch_plan,
+    const SparkKvCachePrefetchPlan *protected_prefetch_plan,
     const uint32_t *additional_protected_physical_block_indices,
     uint32_t additional_protected_physical_block_count)
 {
@@ -2502,11 +2502,11 @@ static SparkStatus SparkGlm52RequestApiApplyJitKvResidencyPolicy(
 
 SparkStatus SparkRequestApiBuildJitKvPrefetchPlan(
     SparkRequestApi *api,
-    SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    SparkKvCachePrefetchPlan *prefetch_plan)
 {
     SparkRequestApiHandle selected_handles[
         SPARK_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT];
-    SparkGlm52KvCachePrefetchSourceBlock source_blocks[
+    SparkKvCachePrefetchSourceBlock source_blocks[
         SPARK_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT];
     uint32_t selected_handle_count;
     uint32_t source_block_count;
@@ -2520,7 +2520,7 @@ SparkStatus SparkRequestApiBuildJitKvPrefetchPlan(
     }
     if (!SparkGlm52RequestApiJitPrefetchIsEnabled(api))
     {
-        return SparkGlm52KvCacheArenaBuildPrefetchPlan(
+        return SparkKvCacheArenaBuildPrefetchPlan(
             api->scheduler->prefix_cache->kv_cache_arena,
             0,
             0u,
@@ -2575,7 +2575,7 @@ SparkStatus SparkRequestApiBuildJitKvPrefetchPlan(
         }
     }
 
-    return SparkGlm52KvCacheArenaBuildPrefetchPlanFromSourceBlocks(
+    return SparkKvCacheArenaBuildPrefetchPlanFromSourceBlocks(
         api->scheduler->prefix_cache->kv_cache_arena,
         source_block_count != 0u ? source_blocks : 0,
         source_block_count,
@@ -2585,10 +2585,10 @@ SparkStatus SparkRequestApiBuildJitKvPrefetchPlan(
 
 static uint32_t SparkGlm52RequestApiPrefetchBlockIsResident(
     const SparkRequestApi *api,
-    const SparkGlm52KvCachePrefetchBlock *prefetch_block)
+    const SparkKvCachePrefetchBlock *prefetch_block)
 {
-    const SparkGlm52KvCacheArena *arena;
-    const SparkGlm52KvCacheBlock *block;
+    const SparkKvCacheArena *arena;
+    const SparkKvCacheBlock *block;
 
     if (SparkGlm52RequestApiCrossSequencePrefixReuseIsEnabled(api) == 0u ||
         api->scheduler->prefix_cache == 0 ||
@@ -2605,14 +2605,14 @@ static uint32_t SparkGlm52RequestApiPrefetchBlockIsResident(
     }
 
     block = &arena->blocks[prefetch_block->physical_block_index];
-    return (block->flags & SPARK_GLM52_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u &&
-        (block->flags & SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u &&
+    return (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) != 0u &&
+        (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u &&
         block->generation == prefetch_block->generation;
 }
 
 static uint32_t SparkGlm52RequestApiPrefetchPlanIsResident(
     const SparkRequestApi *api,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    const SparkKvCachePrefetchPlan *prefetch_plan)
 {
     uint32_t block_index;
 
@@ -2636,7 +2636,7 @@ static uint32_t SparkGlm52RequestApiPrefetchPlanIsResident(
 
 static uint32_t SparkGlm52RequestApiPendingPrefetchContainsBlock(
     const SparkRequestApiPendingPrefetch *pending_prefetch,
-    const SparkGlm52KvCachePrefetchBlock *prefetch_block)
+    const SparkKvCachePrefetchBlock *prefetch_block)
 {
     uint32_t block_index;
 
@@ -2650,7 +2650,7 @@ static uint32_t SparkGlm52RequestApiPendingPrefetchContainsBlock(
          block_index < pending_prefetch->prefetch_plan.prefetch_block_count;
          ++block_index)
     {
-        const SparkGlm52KvCachePrefetchBlock *pending_block;
+        const SparkKvCachePrefetchBlock *pending_block;
 
         pending_block = &pending_prefetch->prefetch_plan.blocks[block_index];
         if (pending_block->physical_block_index ==
@@ -2665,7 +2665,7 @@ static uint32_t SparkGlm52RequestApiPendingPrefetchContainsBlock(
 
 static uint32_t SparkGlm52RequestApiPendingPrefetchesCoverPlan(
     const SparkRequestApi *api,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    const SparkKvCachePrefetchPlan *prefetch_plan)
 {
     uint32_t block_index;
 
@@ -2763,7 +2763,7 @@ static SparkStatus SparkGlm52RequestApiPollOnePendingPrefetch(
         return status;
     }
 
-    status = SparkGlm52KvCacheArenaMarkPrefetchPlanResident(
+    status = SparkKvCacheArenaMarkPrefetchPlanResident(
         api->scheduler->prefix_cache->kv_cache_arena,
         &pending_prefetch->prefetch_plan);
     if (status != SPARK_STATUS_OK)
@@ -2818,7 +2818,7 @@ static SparkStatus SparkGlm52RequestApiPollPendingJitKvPrefetches(
 
 static SparkStatus SparkGlm52RequestApiStartAsyncJitKvPrefetch(
     SparkRequestApi *api,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    const SparkKvCachePrefetchPlan *prefetch_plan)
 {
     SparkRequestApiPendingPrefetch *pending_prefetch;
     SparkStatus status;
@@ -2868,7 +2868,7 @@ static SparkStatus SparkGlm52RequestApiStartAsyncJitKvPrefetch(
 
 static SparkStatus SparkGlm52RequestApiDispatchJitKvPrefetchWithProtectedBlocks(
     SparkRequestApi *api,
-    SparkGlm52KvCachePrefetchPlan *prefetch_plan,
+    SparkKvCachePrefetchPlan *prefetch_plan,
     const uint32_t *additional_protected_physical_block_indices,
     uint32_t additional_protected_physical_block_count)
 {
@@ -2938,7 +2938,7 @@ static SparkStatus SparkGlm52RequestApiDispatchJitKvPrefetchWithProtectedBlocks(
     {
         return status;
     }
-    status = SparkGlm52KvCacheArenaMarkPrefetchPlanResidentWithProtectedBlocks(
+    status = SparkKvCacheArenaMarkPrefetchPlanResidentWithProtectedBlocks(
         api->scheduler->prefix_cache->kv_cache_arena,
         prefetch_plan,
         additional_protected_physical_block_indices,
@@ -2963,7 +2963,7 @@ static SparkStatus SparkGlm52RequestApiDispatchJitKvPrefetchWithProtectedBlocks(
 
 SparkStatus SparkRequestApiDispatchJitKvPrefetch(
     SparkRequestApi *api,
-    SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    SparkKvCachePrefetchPlan *prefetch_plan)
 {
     return SparkGlm52RequestApiDispatchJitKvPrefetchWithProtectedBlocks(
         api,
@@ -2979,9 +2979,9 @@ static SparkStatus SparkGlm52RequestApiBuildSlotArrayJitKvPrefetchPlan(
     SparkRequestApi *api,
     SparkRequestApiSlot **slots,
     uint32_t slot_count,
-    SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    SparkKvCachePrefetchPlan *prefetch_plan)
 {
-    SparkGlm52KvCachePrefetchSourceBlock source_blocks[
+    SparkKvCachePrefetchSourceBlock source_blocks[
         SPARK_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT];
     uint32_t source_block_count;
     uint32_t slot_index;
@@ -3038,7 +3038,7 @@ static SparkStatus SparkGlm52RequestApiBuildSlotArrayJitKvPrefetchPlan(
         }
     }
 
-    return SparkGlm52KvCacheArenaBuildPrefetchPlanFromSourceBlocks(
+    return SparkKvCacheArenaBuildPrefetchPlanFromSourceBlocks(
         api->scheduler->prefix_cache->kv_cache_arena,
         source_block_count != 0u ? source_blocks : 0,
         source_block_count,
@@ -3112,7 +3112,7 @@ static SparkStatus SparkGlm52RequestApiRunSlotArrayCriticalJitKvPrefetch(
 
 static uint32_t SparkGlm52RequestApiPrefetchPlanFitsResidentLimit(
     const SparkRequestApi *api,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan,
+    const SparkKvCachePrefetchPlan *prefetch_plan,
     const uint32_t *protected_physical_block_indices,
     uint32_t protected_physical_block_count)
 {
@@ -3157,7 +3157,7 @@ static SparkStatus SparkGlm52RequestApiRunOpportunisticJitKvPrefetch(
     uint32_t protected_physical_block_indices[
         SPARK_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT];
     uint32_t protected_physical_block_count;
-    SparkGlm52KvCachePrefetchPlan prefetch_plan;
+    SparkKvCachePrefetchPlan prefetch_plan;
     SparkStatus status;
 
     if (!SparkGlm52RequestApiJitPrefetchIsEnabled(api))
@@ -6520,7 +6520,7 @@ SparkStatus SparkRequestApiBuildDispatchKvBlockTableView(
     uint32_t lane_capacity,
     uint32_t *lane_physical_block_counts,
     uint32_t lane_count_capacity,
-    SparkGlm52KvBlockTableView *block_table_view)
+    SparkKvBlockTableView *block_table_view)
 {
     uint32_t lane_count;
     SparkStatus status;
@@ -6570,9 +6570,9 @@ SparkStatus SparkRequestApiBuildDispatchKvBlockTableView(
         return status;
     }
 
-    block_table_view->abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    block_table_view->abi_version = SPARK_KV_CACHE_ABI_VERSION;
     block_table_view->descriptor_bytes =
-        SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+        SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
     block_table_view->block_token_count = api->scheduler->prefix_cache_block_tokens;
     block_table_view->lane_count = lane_count;
     block_table_view->lane_stride = lane_stride;

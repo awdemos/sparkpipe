@@ -36,13 +36,13 @@ extern "C" {
 #define SPARK_REQUEST_API_REALTIME_PRIORITY 4000000000u
 #define SPARK_REQUEST_API_DEFAULT_PREFETCH_LOOKAHEAD_REQUEST_COUNT 64u
 #define SPARK_REQUEST_API_DEFAULT_PREFETCH_LANE_COUNT \
-    SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT
+    SPARK_KV_CACHE_MAX_PREFETCH_LANE_COUNT
 #define SPARK_REQUEST_API_DEFAULT_DECODE_BATCH_TARGET \
     SPARK_SCHEDULER_MAX_PACKED_REQUEST_COUNT
 #define SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT \
     SPARK_SCHEDULER_MAX_PACKED_REQUEST_COUNT
 #define SPARK_REQUEST_API_MAX_PREFETCH_SOURCE_BLOCK_COUNT \
-    SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_CAPACITY
+    SPARK_KV_CACHE_PREFETCH_BLOCK_CAPACITY
 
 #define SPARK_REQUEST_API_CONFIGURATION_FLAG_JIT_KV_PREFETCH 0x00000001u
 #define SPARK_REQUEST_API_CONFIGURATION_FLAG_DECODE_BATCHING 0x00000002u
@@ -123,17 +123,17 @@ typedef uint64_t SparkRequestApiHandle;
 
 typedef SparkStatus (*SparkRequestApiKvPrefetchFunction)(
     void *context,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan);
+    const SparkKvCachePrefetchPlan *prefetch_plan);
 
 typedef SparkStatus (*SparkRequestApiKvPrefetchStartFunction)(
     void *context,
     uint64_t prefetch_id,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan);
+    const SparkKvCachePrefetchPlan *prefetch_plan);
 
 typedef SparkStatus (*SparkRequestApiKvPrefetchPollFunction)(
     void *context,
     uint64_t prefetch_id,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan);
+    const SparkKvCachePrefetchPlan *prefetch_plan);
 
 typedef struct SparkRequestApiSubmitRequest
 {
@@ -201,7 +201,7 @@ typedef struct SparkRequestApiPendingPrefetch
     uint32_t reserved0;
     uint32_t reserved1;
     uint64_t prefetch_id;
-    SparkGlm52KvCachePrefetchPlan prefetch_plan;
+    SparkKvCachePrefetchPlan prefetch_plan;
 } SparkRequestApiPendingPrefetch;
 
 typedef struct SparkRequestApiCacheState
@@ -262,7 +262,7 @@ typedef struct SparkRequestApiDispatch
     SparkSchedulerDecision prefill_decision;
     SparkSchedulerPrefillBatchDecision prefill_batch_decision;
     SparkSchedulerBatchDecision decode_batch_decision;
-    SparkGlm52KvCachePrefetchPlan kv_prefetch_plan;
+    SparkKvCachePrefetchPlan kv_prefetch_plan;
     uint32_t speculative_token_count;
     uint32_t speculative_verifier_token_count;
     uint32_t speculative_max_committed_token_count;
@@ -406,7 +406,7 @@ typedef struct SparkRequestApi
 
 SparkStatus SparkRequestApiConfigurationUseAsyncKvCachePrefetchBackend(
     SparkRequestApiConfiguration *configuration,
-    SparkGlm52KvCacheAsyncPrefetchBackend *backend);
+    SparkKvCacheAsyncPrefetchBackend *backend);
 
 SparkStatus SparkRequestApiInitialize(
     SparkRequestApi *api,
@@ -422,11 +422,11 @@ SparkStatus SparkRequestApiSubmit(
 
 SparkStatus SparkRequestApiBuildJitKvPrefetchPlan(
     SparkRequestApi *api,
-    SparkGlm52KvCachePrefetchPlan *prefetch_plan);
+    SparkKvCachePrefetchPlan *prefetch_plan);
 
 SparkStatus SparkRequestApiDispatchJitKvPrefetch(
     SparkRequestApi *api,
-    SparkGlm52KvCachePrefetchPlan *prefetch_plan);
+    SparkKvCachePrefetchPlan *prefetch_plan);
 
 SparkStatus SparkRequestApiScheduleNext(
     SparkRequestApi *api,
@@ -483,7 +483,7 @@ SparkStatus SparkRequestApiBuildDispatchKvBlockTableView(
     uint32_t lane_capacity,
     uint32_t *lane_physical_block_counts,
     uint32_t lane_count_capacity,
-    SparkGlm52KvBlockTableView *block_table_view);
+    SparkKvBlockTableView *block_table_view);
 
 SparkStatus SparkRequestApiCancelDispatch(
     SparkRequestApi *api,

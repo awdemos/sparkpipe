@@ -114,7 +114,7 @@ static void SparkTestSharedPrefixCollapses(void)
 {
 	SparkRingWorkControlPacket packet;
 	SparkRingWorkControlKvState state;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	uint32_t block_index,context_token_count,expected_block_count;
 	context_token_count = (SPARK_TEST_SHARED_BLOCKS * SPARK_TEST_BLOCK_TOKENS) + 1u;
 	expected_block_count = SPARK_TEST_SHARED_BLOCKS + 1u;
@@ -140,7 +140,7 @@ static void SparkTestSharedReleaseIsRefcounted(void)
 {
 	SparkRingWorkControlPacket packet;
 	SparkRingWorkControlKvState state;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	uint32_t lane_index,context_token_count,expected_block_count,shared_physical_block;
 	context_token_count = (SPARK_TEST_SHARED_BLOCKS * SPARK_TEST_BLOCK_TOKENS) + 1u;
 	expected_block_count = SPARK_TEST_SHARED_BLOCKS + 1u;
@@ -202,7 +202,7 @@ static void SparkTestSharedPromotionKeepsBytes(void)
 {
 	SparkRingWorkControlPacket packet;
 	SparkRingWorkControlKvState state;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	uint32_t private_physical_block,shared_physical_block,context_token_count;
 	context_token_count = (SPARK_TEST_SHARED_BLOCKS * SPARK_TEST_BLOCK_TOKENS) + 1u;
 	SparkTestSharedInitializeState(&state,SPARK_TEST_SHARED_ROWS);

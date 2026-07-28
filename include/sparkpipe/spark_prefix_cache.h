@@ -103,7 +103,7 @@ typedef struct SparkPrefixCacheConfiguration
     uint32_t sequence_binding_count;
     SparkPrefixCacheEntry *entries;
     SparkPrefixCacheSequenceBinding *sequence_bindings;
-    SparkGlm52KvCacheArena *kv_cache_arena;
+    SparkKvCacheArena *kv_cache_arena;
 } SparkPrefixCacheConfiguration;
 
 typedef struct SparkPrefixCacheLookup
@@ -148,7 +148,7 @@ typedef struct SparkPrefixCache
     uint32_t sequence_binding_count;
     SparkPrefixCacheEntry *entries;
     SparkPrefixCacheSequenceBinding *sequence_bindings;
-    SparkGlm52KvCacheArena *kv_cache_arena;
+    SparkKvCacheArena *kv_cache_arena;
     uint32_t free_entry_head;
     uint32_t free_binding_head;
     uint64_t tick;
@@ -217,7 +217,7 @@ SparkStatus SparkPrefixCacheProbeReusablePrefixPrefetchSources(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,
     uint32_t token_count,
-    SparkGlm52KvCachePrefetchSourceBlock *source_blocks,
+    SparkKvCachePrefetchSourceBlock *source_blocks,
     uint32_t source_block_capacity,
     uint32_t *matched_token_count_out,
     uint32_t *source_block_count_out);
@@ -304,7 +304,7 @@ SparkStatus SparkPrefixCacheBuildSequencePrefetchSources(
     SparkPrefixCache *cache,
     uint64_t sequence_id,
     uint32_t token_count,
-    SparkGlm52KvCachePrefetchSourceBlock *source_blocks,
+    SparkKvCachePrefetchSourceBlock *source_blocks,
     uint32_t source_block_capacity,
     uint32_t *source_block_count_out);
 

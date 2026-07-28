@@ -82,7 +82,7 @@ static double SparkGlm52KvJitBudgetToolGiB(uint64_t bytes)
 
 static int SparkGlm52KvJitBudgetToolPopulateKvLayout(
     uint32_t quantization_mode,
-    SparkGlm52KvJitStageBudgetRequest *request)
+    SparkKvJitStageBudgetRequest *request)
 {
     if (request == 0)
         return -1;
@@ -90,14 +90,14 @@ static int SparkGlm52KvJitBudgetToolPopulateKvLayout(
         SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
     {
         request->attention_cache_layout =
-            SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3;
+            SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE_FP8_E4M3;
         request->fp8_scale_block_size = SPARK_GLM52_MODEL_FP8_SCALE_BLOCK;
         return 0;
     }
     if (quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
     {
         request->attention_cache_layout =
-            SPARK_GLM52_KV_CACHE_LAYOUT_FULL_KEY_VALUE;
+            SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE;
         request->fp8_scale_block_size = 0u;
         return 0;
     }
@@ -107,8 +107,8 @@ static int SparkGlm52KvJitBudgetToolPopulateKvLayout(
 int main(int argc,char **argv)
 {
     SparkGlm52KvJitBudgetToolConfiguration configuration;
-    SparkGlm52KvJitStageBudgetRequest request;
-    SparkGlm52KvJitStageBudget budget;
+    SparkKvJitStageBudgetRequest request;
+    SparkKvJitStageBudget budget;
     SparkStagePlan stage_plan;
     char error_buffer[256u];
     uint64_t blocks_per_request;
@@ -269,9 +269,9 @@ int main(int argc,char **argv)
 
         stage = &stage_plan.stages[rank_index];
         memset(&request,0,sizeof(request));
-        request.abi_version = SPARK_GLM52_KV_JIT_STAGE_BUDGET_ABI_VERSION;
+        request.abi_version = SPARK_KV_JIT_STAGE_BUDGET_ABI_VERSION;
         request.descriptor_bytes =
-            SPARK_GLM52_KV_JIT_STAGE_BUDGET_REQUEST_DESCRIPTOR_BYTES;
+            SPARK_KV_JIT_STAGE_BUDGET_REQUEST_DESCRIPTOR_BYTES;
         request.first_layer_index = stage->first_layer_index;
         request.layer_count = stage->layer_count;
         request.physical_pool_token_capacity =
@@ -284,7 +284,7 @@ int main(int argc,char **argv)
             rank_index + 1u == stage_plan.stage_count ? 1u : 0u;
         request.block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
         request.record_alignment_bytes =
-            SPARK_GLM52_KV_JIT_DEFAULT_RECORD_ALIGNMENT;
+            SPARK_KV_JIT_DEFAULT_RECORD_ALIGNMENT;
         if (SparkGlm52KvJitBudgetToolPopulateKvLayout(
                 SPARK_RING_RUNTIME_DEFAULT_QUANTIZATION_MODE,
                 &request) != 0)
@@ -292,7 +292,7 @@ int main(int argc,char **argv)
             fprintf(stderr,"rank %u KV layout is unsupported\n",rank_index);
             return 1;
         }
-        if (SparkGlm52KvCacheCalculateJitStageBudget(
+        if (SparkKvCacheCalculateJitStageBudget(
                 &request,&budget) != SPARK_STATUS_OK ||
             persistent_backing_blocks > UINT64_MAX / budget.nvme_record_bytes ||
             (budget.resident_bytes_per_token != 0u &&

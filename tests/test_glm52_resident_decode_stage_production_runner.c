@@ -101,7 +101,7 @@ static const SparkModelDriverProgramDescriptor TestProgram =
     SparkTestProductionRunnerSubmit
 };
 
-static SparkGlm52KvBlockTableView TestKvTable;
+static SparkKvBlockTableView TestKvTable;
 static uint32_t TestPhysicalBlockIndices[4];
 static uint32_t TestLaneBlockCounts[2];
 static SparkHiddenTransportSession *TestInputSession =
@@ -114,7 +114,7 @@ static void SparkTestProductionRunnerInitializeKvTable(void)
     memset(&TestKvTable, 0, sizeof(TestKvTable));
     TestPhysicalBlockIndices[0] = 3u;
     TestLaneBlockCounts[0] = 1u;
-    TestKvTable.descriptor_bytes = SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+    TestKvTable.descriptor_bytes = SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
     TestKvTable.block_token_count = 64u;
     TestKvTable.lane_count = 1u;
     TestKvTable.lane_stride = 4u;

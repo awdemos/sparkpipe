@@ -87,7 +87,7 @@ typedef struct SparkGlm52ResidentDecodeStageProductionRunnerDispatch
     const SparkGlm52DsparkHiddenTapPlan *dspark_hidden_tap_plan;
     void *const *dspark_hidden_tap_outputs_bf16;
     uint64_t dspark_hidden_tap_lane_stride_bytes;
-    const SparkGlm52KvBlockTableView *kv_block_table;
+    const SparkKvBlockTableView *kv_block_table;
     const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_view;
     SparkHiddenTransportSession *hidden_input_transport_session;
     SparkHiddenTransportSession *hidden_output_transport_session;

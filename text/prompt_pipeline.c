@@ -56,7 +56,7 @@ static SparkStatus SparkGlm52PromptPipelineInvokePrefill(
     SparkPromptPipelineRunStats *stats)
 {
     SparkRequestApiPrefillDispatchView prefill_view;
-    SparkGlm52KvBlockTableView block_table_view;
+    SparkKvBlockTableView block_table_view;
     SparkPromptPipelinePrefillDispatch prefill_dispatch;
     SparkStatus status;
 

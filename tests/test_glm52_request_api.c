@@ -42,19 +42,19 @@ typedef struct SparkTestPrefetchCapture
     uint32_t call_count;
     uint32_t last_lane_count;
     uint32_t last_prefetch_block_count;
-    uint32_t last_lane_block_counts[SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT];
+    uint32_t last_lane_block_counts[SPARK_KV_CACHE_MAX_PREFETCH_LANE_COUNT];
     uint32_t last_physical_block_indices[
-        SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
+        SPARK_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
     uint32_t last_first_token_indices[
-        SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
+        SPARK_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
     uint32_t last_token_counts[
-        SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
+        SPARK_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
     uint64_t last_parent_hashes[
-        SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
+        SPARK_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
     uint64_t last_block_hashes[
-        SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
+        SPARK_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
     uint64_t last_content_hashes[
-        SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
+        SPARK_KV_CACHE_PREFETCH_BLOCK_CAPACITY];
     SparkStatus async_start_status;
     SparkStatus async_poll_status;
     uint32_t async_start_count;
@@ -62,13 +62,13 @@ typedef struct SparkTestPrefetchCapture
     uint32_t async_poll_busy_budget;
     uint32_t async_pending;
     uint64_t async_prefetch_id;
-    SparkGlm52KvCachePrefetchPlan async_prefetch_plan;
+    SparkKvCachePrefetchPlan async_prefetch_plan;
 } SparkTestPrefetchCapture;
 
 typedef struct SparkTestRequestApiFixture
 {
-    SparkGlm52KvCacheArena kv_arena;
-    SparkGlm52KvCacheBlock kv_blocks[SPARK_TEST_KV_BLOCK_COUNT];
+    SparkKvCacheArena kv_arena;
+    SparkKvCacheBlock kv_blocks[SPARK_TEST_KV_BLOCK_COUNT];
     SparkPrefixCache prefix_cache;
     SparkPrefixCacheEntry prefix_entries[SPARK_TEST_PREFIX_ENTRY_COUNT];
     SparkPrefixCacheSequenceBinding prefix_bindings[
@@ -90,7 +90,7 @@ typedef struct SparkTestRequestApiFixture
         SPARK_TEST_KV_BLOCK_PAYLOAD_BYTES];
     uint8_t value_source[SPARK_TEST_KV_BLOCK_COUNT][
         SPARK_TEST_KV_BLOCK_PAYLOAD_BYTES];
-    SparkGlm52KvCacheAsyncPrefetchBackend async_prefetch_backend;
+    SparkKvCacheAsyncPrefetchBackend async_prefetch_backend;
 } SparkTestRequestApiFixture;
 
 static void SparkTestFillTokenIds(
@@ -155,7 +155,7 @@ static SparkStatus SparkTestDsparkDraft(
 
 static SparkStatus SparkTestCaptureKvPrefetch(
     void *context,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    const SparkKvCachePrefetchPlan *prefetch_plan)
 {
     SparkTestPrefetchCapture *capture;
     uint32_t block_index;
@@ -164,17 +164,17 @@ static SparkStatus SparkTestCaptureKvPrefetch(
     capture = (SparkTestPrefetchCapture *)context;
     assert(capture != 0);
     assert(prefetch_plan != 0);
-    assert(prefetch_plan->abi_version == SPARK_GLM52_KV_CACHE_ABI_VERSION);
+    assert(prefetch_plan->abi_version == SPARK_KV_CACHE_ABI_VERSION);
     assert(prefetch_plan->descriptor_bytes ==
-        SPARK_GLM52_KV_CACHE_PREFETCH_PLAN_DESCRIPTOR_BYTES);
+        SPARK_KV_CACHE_PREFETCH_PLAN_DESCRIPTOR_BYTES);
     assert(prefetch_plan->prefetch_block_count <=
-        SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_CAPACITY);
+        SPARK_KV_CACHE_PREFETCH_BLOCK_CAPACITY);
 
     capture->call_count += 1u;
     capture->last_lane_count = prefetch_plan->lane_count;
     capture->last_prefetch_block_count = prefetch_plan->prefetch_block_count;
     for (lane_index = 0u;
-         lane_index < SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
+         lane_index < SPARK_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
          ++lane_index)
     {
         capture->last_lane_block_counts[lane_index] =
@@ -213,7 +213,7 @@ static SparkStatus SparkTestCaptureKvPrefetch(
 static SparkStatus SparkTestStartAsyncKvPrefetch(
     void *context,
     uint64_t prefetch_id,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    const SparkKvCachePrefetchPlan *prefetch_plan)
 {
     SparkTestPrefetchCapture *capture;
 
@@ -233,7 +233,7 @@ static SparkStatus SparkTestStartAsyncKvPrefetch(
 static SparkStatus SparkTestPollAsyncKvPrefetch(
     void *context,
     uint64_t prefetch_id,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    const SparkKvCachePrefetchPlan *prefetch_plan)
 {
     SparkTestPrefetchCapture *capture;
 
@@ -277,7 +277,7 @@ static void SparkTestEnableAsyncPrefetch(
 static void SparkTestInitializeFixture(
     SparkTestRequestApiFixture *fixture)
 {
-    SparkGlm52KvCacheConfiguration kv_configuration;
+    SparkKvCacheConfiguration kv_configuration;
     SparkPrefixCacheConfiguration prefix_configuration;
     SparkSchedulerConfiguration scheduler_configuration;
     SparkRequestApiConfiguration api_configuration;
@@ -286,9 +286,9 @@ static void SparkTestInitializeFixture(
     fixture->prefetch_capture.return_status = SPARK_STATUS_OK;
 
     memset(&kv_configuration, 0, sizeof(kv_configuration));
-    kv_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    kv_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
     kv_configuration.descriptor_bytes =
-        SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     kv_configuration.physical_block_count = SPARK_TEST_KV_BLOCK_COUNT;
     kv_configuration.block_token_count =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
@@ -299,7 +299,7 @@ static void SparkTestInitializeFixture(
     kv_configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
     kv_configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
     kv_configuration.blocks = fixture->kv_blocks;
-    assert(SparkGlm52KvCacheArenaInitialize(
+    assert(SparkKvCacheArenaInitialize(
         &fixture->kv_arena,
         &kv_configuration) == SPARK_STATUS_OK);
 
@@ -377,19 +377,19 @@ static void SparkTestFillMemoryKvSource(
 static void SparkTestInitializeFixtureWithAsyncMemoryBackend(
     SparkTestRequestApiFixture *fixture)
 {
-    SparkGlm52KvCacheConfiguration kv_configuration;
+    SparkKvCacheConfiguration kv_configuration;
     SparkPrefixCacheConfiguration prefix_configuration;
     SparkSchedulerConfiguration scheduler_configuration;
     SparkRequestApiConfiguration api_configuration;
-    SparkGlm52KvCacheAsyncPrefetchBackendConfiguration backend_configuration;
+    SparkKvCacheAsyncPrefetchBackendConfiguration backend_configuration;
 
     memset(fixture, 0, sizeof(*fixture));
     SparkTestFillMemoryKvSource(fixture);
 
     memset(&kv_configuration, 0, sizeof(kv_configuration));
-    kv_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    kv_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
     kv_configuration.descriptor_bytes =
-        SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     kv_configuration.physical_block_count = SPARK_TEST_KV_BLOCK_COUNT;
     kv_configuration.block_token_count =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
@@ -402,7 +402,7 @@ static void SparkTestInitializeFixtureWithAsyncMemoryBackend(
     kv_configuration.key_device_base = fixture->key_destination;
     kv_configuration.value_device_base = fixture->value_destination;
     kv_configuration.blocks = fixture->kv_blocks;
-    assert(SparkGlm52KvCacheArenaInitialize(
+    assert(SparkKvCacheArenaInitialize(
         &fixture->kv_arena,
         &kv_configuration) == SPARK_STATUS_OK);
 
@@ -443,12 +443,12 @@ static void SparkTestInitializeFixtureWithAsyncMemoryBackend(
 
     memset(&backend_configuration, 0, sizeof(backend_configuration));
     backend_configuration.abi_version =
-        SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_ABI_VERSION;
+        SPARK_KV_CACHE_PREFETCH_BACKEND_ABI_VERSION;
     backend_configuration.descriptor_bytes =
-        SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_KV_CACHE_PREFETCH_BACKEND_CONFIGURATION_DESCRIPTOR_BYTES;
     backend_configuration.flags =
-        SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_FLAG_MEMORY_SOURCE |
-        SPARK_GLM52_KV_CACHE_PREFETCH_BACKEND_DEFAULT_COPY_FLAGS;
+        SPARK_KV_CACHE_PREFETCH_BACKEND_FLAG_MEMORY_SOURCE |
+        SPARK_KV_CACHE_PREFETCH_BACKEND_DEFAULT_COPY_FLAGS;
     backend_configuration.lane_count = SPARK_SCHEDULER_MAX_SPARK_COUNT;
     backend_configuration.max_inflight_prefetch_count = 2u;
     backend_configuration.physical_block_count = SPARK_TEST_KV_BLOCK_COUNT;
@@ -459,7 +459,7 @@ static void SparkTestInitializeFixtureWithAsyncMemoryBackend(
     backend_configuration.value_transfer_bytes = 64u;
     backend_configuration.key_source_base = fixture->key_source;
     backend_configuration.value_source_base = fixture->value_source;
-    assert(SparkGlm52KvCacheAsyncPrefetchBackendInitialize(
+    assert(SparkKvCacheAsyncPrefetchBackendInitialize(
         &fixture->async_prefetch_backend,
         &backend_configuration) == SPARK_STATUS_OK);
 
@@ -660,11 +660,11 @@ static void SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest(void)
     assert(matched_token_count == SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS);
     assert(physical_block_count == 1u);
     cold_physical_block_index = physical_block_indices[0];
-    assert(SparkGlm52KvCacheArenaMarkBlockNonResident(
+    assert(SparkKvCacheArenaMarkBlockNonResident(
         &fixture.kv_arena,
         cold_physical_block_index) == SPARK_STATUS_OK);
     assert((fixture.kv_blocks[cold_physical_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
 
     SparkTestInitializeSubmitRequest(
         &request,
@@ -738,7 +738,7 @@ static void SparkTestRequestApiJitPrefetchesCachedPrefixForPriorityRequest(void)
     assert(fixture.prefetch_capture.last_content_hashes[0] ==
         dispatch.kv_prefetch_plan.blocks[0].content_hash);
     assert((fixture.kv_blocks[cold_physical_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
     assert(dispatch.prefill_decision.cached_prefix_token_count ==
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS);
 
@@ -1140,7 +1140,7 @@ static void SparkTestRequestApiCohortsArbitrarySharedPrefixWithSuffixes(void)
     uint32_t batch_block_tables[7u][4u];
     uint32_t execution_block_tables[7u][4u];
     uint32_t batch_block_counts[7u];
-    SparkGlm52KvBlockTableView block_table_view;
+    SparkKvBlockTableView block_table_view;
     uint32_t leader_block_count;
     uint32_t follower_block_count;
     uint32_t request_index;
@@ -1299,9 +1299,9 @@ static void SparkTestRequestApiCohortsArbitrarySharedPrefixWithSuffixes(void)
         batch_block_counts,
         7u,
         &block_table_view) == SPARK_STATUS_OK);
-    assert(block_table_view.abi_version == SPARK_GLM52_KV_CACHE_ABI_VERSION);
+    assert(block_table_view.abi_version == SPARK_KV_CACHE_ABI_VERSION);
     assert(block_table_view.descriptor_bytes ==
-        SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES);
+        SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES);
     assert(block_table_view.block_token_count ==
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS);
     assert(block_table_view.lane_count == 7u);
@@ -1598,7 +1598,7 @@ static void SparkTestRequestApiOpportunisticLookaheadDoesNotBlockReadyPriorityPr
     assert(matched_token_count == SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS);
     assert(physical_block_count == 1u);
     low_priority_cold_block_index = physical_block_indices[0];
-    assert(SparkGlm52KvCacheArenaMarkBlockNonResident(
+    assert(SparkKvCacheArenaMarkBlockNonResident(
         &fixture.kv_arena,
         low_priority_cold_block_index) == SPARK_STATUS_OK);
     fixture.prefetch_capture.return_status = SPARK_STATUS_BUSY;
@@ -1643,7 +1643,7 @@ static void SparkTestRequestApiOpportunisticLookaheadDoesNotBlockReadyPriorityPr
     assert(fixture.prefetch_capture.last_physical_block_indices[0] ==
         low_priority_cold_block_index);
     assert((fixture.kv_blocks[low_priority_cold_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
     assert(fixture.api.request_slots[0].state ==
         SPARK_REQUEST_API_STATE_QUEUED_PREFILL);
 
@@ -1699,11 +1699,11 @@ static void SparkTestRequestApiPrefetchesLiveNonresidentDecodeBlocks(void)
     assert(physical_block_count == 2u);
     cold_physical_block_index = physical_block_indices[0];
     assert(fixture.kv_blocks[cold_physical_block_index].reference_count != 0u);
-    assert(SparkGlm52KvCacheArenaMarkBlockNonResident(
+    assert(SparkKvCacheArenaMarkBlockNonResident(
         &fixture.kv_arena,
         cold_physical_block_index) == SPARK_STATUS_OK);
     assert((fixture.kv_blocks[cold_physical_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
     fixture.prefetch_capture.call_count = 0u;
     fixture.prefetch_capture.return_status = SPARK_STATUS_OK;
 
@@ -1721,7 +1721,7 @@ static void SparkTestRequestApiPrefetchesLiveNonresidentDecodeBlocks(void)
     assert(fixture.prefetch_capture.last_physical_block_indices[0] ==
         cold_physical_block_index);
     assert((fixture.kv_blocks[cold_physical_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
 
     assert(SparkRequestApiCompleteDispatch(
         &fixture.api,
@@ -1809,7 +1809,7 @@ static void SparkTestRequestApiBatchesDecodeAfterBatchCriticalPrefetch(void)
         &second_block_count) == SPARK_STATUS_OK);
     assert(second_block_count == 2u);
     cold_second_block_index = second_block_table[0u];
-    assert(SparkGlm52KvCacheArenaMarkBlockNonResident(
+    assert(SparkKvCacheArenaMarkBlockNonResident(
         &fixture.kv_arena,
         cold_second_block_index) == SPARK_STATUS_OK);
     fixture.prefetch_capture.call_count = 0u;
@@ -1829,7 +1829,7 @@ static void SparkTestRequestApiBatchesDecodeAfterBatchCriticalPrefetch(void)
     assert(dispatch.kv_prefetch_plan.blocks[0u].physical_block_index ==
         cold_second_block_index);
     assert((fixture.kv_blocks[cold_second_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
     assert(SparkRequestApiCompleteDispatch(
         &fixture.api,
         &dispatch) == SPARK_STATUS_OK);
@@ -1892,7 +1892,7 @@ static void SparkTestRequestApiBatchesPrefillAfterBatchCriticalPrefetch(void)
     assert(matched_token_count == 32u);
     assert(second_prefix_block_count == 2u);
     cold_second_prefix_block_index = second_prefix_block_table[0u];
-    assert(SparkGlm52KvCacheArenaMarkBlockNonResident(
+    assert(SparkKvCacheArenaMarkBlockNonResident(
         &fixture.kv_arena,
         cold_second_prefix_block_index) == SPARK_STATUS_OK);
     fixture.prefetch_capture.call_count = 0u;
@@ -1940,7 +1940,7 @@ static void SparkTestRequestApiBatchesPrefillAfterBatchCriticalPrefetch(void)
     assert(dispatch.prefill_batch_decision.maximum_scheduled_prompt_token_count ==
         16u);
     assert((fixture.kv_blocks[cold_second_prefix_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
     assert(SparkRequestApiCompleteDispatch(
         &fixture.api,
         &dispatch) == SPARK_STATUS_OK);
@@ -2202,7 +2202,7 @@ static void SparkTestRequestApiAsyncJitPrefetchOverlapsResidentWork(void)
     assert(matched_token_count == 16u || matched_token_count == 32u);
     assert(physical_block_count != 0u);
     cold_physical_block_index = physical_block_indices[0u];
-    assert(SparkGlm52KvCacheArenaMarkBlockNonResident(
+    assert(SparkKvCacheArenaMarkBlockNonResident(
         &fixture.kv_arena,
         cold_physical_block_index) == SPARK_STATUS_OK);
     SparkTestEnableAsyncPrefetch(&fixture);
@@ -2246,7 +2246,7 @@ static void SparkTestRequestApiAsyncJitPrefetchOverlapsResidentWork(void)
     assert(fixture.api.async_jit_prefetch_start_count == 1u);
     assert(fixture.api.async_jit_prefetch_completion_count == 0u);
     assert((fixture.kv_blocks[cold_physical_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
     assert(fixture.api.request_slots[0u].state ==
         SPARK_REQUEST_API_STATE_QUEUED_PREFILL);
     assert(SparkRequestApiCompleteDispatch(
@@ -2266,7 +2266,7 @@ static void SparkTestRequestApiAsyncJitPrefetchOverlapsResidentWork(void)
     assert(fixture.prefetch_capture.async_pending == 0u);
     assert(fixture.api.async_jit_prefetch_completion_count == 1u);
     assert((fixture.kv_blocks[cold_physical_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
 
     assert(SparkRequestApiCompleteDispatch(
         &fixture.api,
@@ -2307,7 +2307,7 @@ static void SparkTestRequestApiDoesNotGreenlightMissingJitKv(void)
         &physical_block_count) == SPARK_STATUS_OK);
     assert(physical_block_count == 1u);
     cold_physical_block_index = physical_block_indices[0];
-    assert(SparkGlm52KvCacheArenaMarkBlockNonResident(
+    assert(SparkKvCacheArenaMarkBlockNonResident(
         &fixture.kv_arena,
         cold_physical_block_index) == SPARK_STATUS_OK);
     fixture.prefetch_capture.return_status = SPARK_STATUS_BUSY;
@@ -2333,7 +2333,7 @@ static void SparkTestRequestApiDoesNotGreenlightMissingJitKv(void)
     assert(fixture.api.request_slots[0].state ==
         SPARK_REQUEST_API_STATE_QUEUED_PREFILL);
     assert((fixture.kv_blocks[cold_physical_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
     (void)handle;
 }
 
@@ -2413,9 +2413,9 @@ static void SparkTestRequestApiTrimsResidentKvWithoutEvictingNearFuturePrefix(vo
     assert(fixture.api.jit_residency_eviction_count == 2u);
     assert(fixture.kv_arena.resident_block_count == 2u);
     assert((fixture.kv_blocks[hot_blocks[0u]].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
     assert((fixture.kv_blocks[cold_blocks[0u]].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
 
     assert(SparkRequestApiCompleteDispatch(
         &fixture.api,
@@ -2476,9 +2476,9 @@ static void SparkTestRequestApiEvictsColdResidentBlocksButKeepsLookaheadHotset(v
     hot_reusable_block = hot_block_table[0u];
     assert(cold_reusable_block != hot_reusable_block);
     assert((fixture.kv_blocks[cold_reusable_block].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
     assert((fixture.kv_blocks[hot_reusable_block].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
 
     fixture.api.max_resident_kv_block_count = 1u;
     SparkTestInitializeSubmitRequest(
@@ -2503,9 +2503,9 @@ static void SparkTestRequestApiEvictsColdResidentBlocksButKeepsLookaheadHotset(v
     assert(fixture.api.jit_residency_eviction_count != 0u);
     assert(fixture.api.jit_residency_protected_block_count != 0u);
     assert((fixture.kv_blocks[hot_reusable_block].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
     assert((fixture.kv_blocks[cold_reusable_block].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
     assert(fixture.kv_arena.resident_block_count <=
         fixture.api.max_resident_kv_block_count);
 
@@ -2622,9 +2622,9 @@ static void SparkTestRequestApiReuseScoredEvictionKeepsSharedPrefixFamily(void)
     assert(fixture.prefix_cache.reuse_scored_resident_eviction_count >= 3u);
     assert(fixture.prefix_cache.reuse_scored_lookahead_eviction_count != 0u);
     assert((fixture.kv_blocks[hot_reusable_block].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
     assert((fixture.kv_blocks[cold_reusable_block].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u);
     assert(fixture.kv_arena.resident_block_count == 1u);
 
     if (dispatch.accepted != 0u)
@@ -2677,7 +2677,7 @@ static void SparkTestRequestApiUsesBuiltInAsyncMemoryPrefetchBackend(void)
         fixture.value_destination[cold_physical_block_index],
         0,
         sizeof(fixture.value_destination[cold_physical_block_index]));
-    assert(SparkGlm52KvCacheArenaMarkBlockNonResident(
+    assert(SparkKvCacheArenaMarkBlockNonResident(
         &fixture.kv_arena,
         cold_physical_block_index) == SPARK_STATUS_OK);
 
@@ -2712,7 +2712,7 @@ static void SparkTestRequestApiUsesBuiltInAsyncMemoryPrefetchBackend(void)
         fixture.value_source[cold_physical_block_index],
         sizeof(fixture.value_destination[cold_physical_block_index])) == 0);
     assert((fixture.kv_blocks[cold_physical_block_index].flags &
-        SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
+        SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) != 0u);
 
     assert(SparkRequestApiCompleteDispatch(
         &fixture.api,
@@ -4556,7 +4556,7 @@ static void SparkTestRequestApiReservesMtpDraftKvBlocks(void)
     SparkTestRequestApiFixture fixture;
     SparkRequestApiSubmitRequest request;
     SparkRequestApiDispatch dispatch;
-    SparkGlm52KvBlockTableView block_table_view;
+    SparkKvBlockTableView block_table_view;
     SparkRequestApiHandle handles[4u];
     uint32_t physical_block_indices[8u];
     uint32_t lane_block_counts[3u];

@@ -50,8 +50,8 @@ typedef struct PipesimStats
 
 typedef struct PipesimFixture
 {
-	SparkGlm52KvCacheArena kv_arena;
-	SparkGlm52KvCacheBlock kv_blocks[PIPESIM_KV_BLOCKS];
+	SparkKvCacheArena kv_arena;
+	SparkKvCacheBlock kv_blocks[PIPESIM_KV_BLOCKS];
 	SparkPrefixCache prefix_cache;
 	SparkPrefixCacheEntry prefix_entries[PIPESIM_KV_BLOCKS];
 	SparkPrefixCacheSequenceBinding prefix_bindings[PIPESIM_PREFIX_BINDINGS];
@@ -93,7 +93,7 @@ typedef struct PipesimFixture
 
 static PipesimFixture Pipesim;
 
-static SparkStatus PipesimKvPrefetch(void *context, const SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+static SparkStatus PipesimKvPrefetch(void *context, const SparkKvCachePrefetchPlan *prefetch_plan)
 {
 	(void)context;
 	(void)prefetch_plan;
@@ -386,12 +386,12 @@ static void PipesimDeliverCompletion(PipesimFixture *fixture, PipesimPending *pe
 
 static void PipesimInitializeCore(PipesimFixture *fixture)
 {
-	SparkGlm52KvCacheConfiguration kv_configuration;
+	SparkKvCacheConfiguration kv_configuration;
 	SparkPrefixCacheConfiguration prefix_configuration;
 	SparkSchedulerConfiguration scheduler_configuration;
 	memset(&kv_configuration, 0, sizeof(kv_configuration));
-	kv_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
-	kv_configuration.descriptor_bytes = SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+	kv_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	kv_configuration.descriptor_bytes = SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
 	kv_configuration.physical_block_count = PIPESIM_KV_BLOCKS;
 	kv_configuration.block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
 	kv_configuration.layer_count = 78u;
@@ -401,7 +401,7 @@ static void PipesimInitializeCore(PipesimFixture *fixture)
 	kv_configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
 	kv_configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
 	kv_configuration.blocks = fixture->kv_blocks;
-	if (SparkGlm52KvCacheArenaInitialize(&fixture->kv_arena, &kv_configuration) != SPARK_STATUS_OK)
+	if (SparkKvCacheArenaInitialize(&fixture->kv_arena, &kv_configuration) != SPARK_STATUS_OK)
 		exit(10);
 	memset(&prefix_configuration, 0, sizeof(prefix_configuration));
 	prefix_configuration.abi_version = SPARK_PREFIX_CACHE_ABI_VERSION;
@@ -451,7 +451,7 @@ static void PipesimInitializeServing(PipesimFixture *fixture)
 		(fixture->dspark_enabled != 0u && fixture->speculation_mode == 2u
 			? SPARK_REQUEST_API_CONFIGURATION_FLAG_PREFER_DSPARK_SPECULATION : 0u);
 	request_api_configuration.request_capacity = PIPESIM_REQUEST_SLOTS;
-	request_api_configuration.prefetch_lane_count = SPARK_GLM52_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
+	request_api_configuration.prefetch_lane_count = SPARK_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
 	if (fixture->dspark_enabled != 0u)
 	{
 		SparkGlm52DsparkSpeculatorConfiguration dspark_configuration;

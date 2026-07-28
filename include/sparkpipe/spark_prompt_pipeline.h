@@ -42,7 +42,7 @@ typedef struct SparkPromptPipelinePrefillDispatch
     const SparkRequestApiDispatch *request_dispatch;
     const SparkRequestApiPrefillDispatchView *prefill_view;
     const uint32_t *host_token_ids;
-    const SparkGlm52KvBlockTableView *kv_block_table_view;
+    const SparkKvBlockTableView *kv_block_table_view;
 } SparkPromptPipelinePrefillDispatch;
 
 typedef SparkStatus (*SparkPromptPipelinePrefillFunction)(

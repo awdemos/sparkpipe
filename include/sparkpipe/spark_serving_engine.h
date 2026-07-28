@@ -229,7 +229,7 @@ typedef struct SparkServingDecodeDispatch
     uint32_t reserved1;
     uint32_t reserved2;
     const SparkRequestApiDispatch *request_dispatch;
-    const SparkGlm52KvBlockTableView *kv_block_table_view;
+    const SparkKvBlockTableView *kv_block_table_view;
     const SparkRequestApiDecodeDispatchView *decode_view;
     uint32_t input_token_ids[SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     uint32_t speculative_token_count;

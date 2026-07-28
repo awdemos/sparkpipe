@@ -260,6 +260,6 @@ In the order they should be run, because earlier answers change later plans.
   problems differently. Whether the library should absorb the general algorithms
   is a real question; it is not a duplication cleanup.
 - **Four `KvCacheArena` functions duplicate a validation preamble** when
-  `SparkGlm52KvCacheArenaResolveBlock` already exists as a public API doing it.
+  `SparkKvCacheArenaResolveBlock` already exists as a public API doing it.
   Small, and the same shape as the four tool file readers: an API that exists and
   is not reached for.

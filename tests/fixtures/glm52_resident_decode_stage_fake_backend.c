@@ -8,15 +8,15 @@
 static SparkStatus SparkGlm52ResidentDecodeStageFakeValidateRuntimeKvBlockTable(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     uint32_t active_sequence_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table)
+    const SparkKvBlockTableView *runtime_kv_block_table)
 {
     if (runtime_kv_block_table == 0)
     {
         return SPARK_STATUS_OK;
     }
-    if (runtime_kv_block_table->abi_version != SPARK_GLM52_KV_CACHE_ABI_VERSION ||
+    if (runtime_kv_block_table->abi_version != SPARK_KV_CACHE_ABI_VERSION ||
         runtime_kv_block_table->descriptor_bytes !=
-            SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES ||
+            SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES ||
         runtime_kv_block_table->block_token_count == 0u ||
         runtime_kv_block_table->lane_count < active_sequence_count ||
         runtime_kv_block_table->lane_count > node_context->max_active_sequence_count ||
@@ -32,7 +32,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageFakeValidateRuntimeKvBlockTable(
 
 static void SparkGlm52ResidentDecodeStageFakeRecordRuntimeKvBlockTable(
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table)
+    const SparkKvBlockTableView *runtime_kv_block_table)
 {
     if (runtime_kv_block_table == 0)
     {
@@ -87,7 +87,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     SparkGlm52ResidentDecodeStageFakeStream *fake_stream;
@@ -139,7 +139,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
@@ -240,7 +240,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
@@ -298,7 +298,7 @@ SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill(
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {

@@ -94,7 +94,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmit(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
     const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot;
@@ -167,7 +167,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSlice(
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
@@ -283,7 +283,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill(
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {
@@ -346,7 +346,7 @@ extern "C" SparkStatus SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkP
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
     SparkGlm52ResidentDecodeStageBackendCompletion *completion)
 {

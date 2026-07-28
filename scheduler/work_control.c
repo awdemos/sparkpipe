@@ -1945,11 +1945,11 @@ static SparkStatus SparkGlm52RingWorkControlKvBuildLane(const SparkRingWorkContr
 	return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52RingWorkControlKvFillBlockTableView(const SparkRingWorkControlPacket *packet,const SparkRingWorkControlKvState *state,SparkGlm52KvBlockTableView *view)
+static void SparkGlm52RingWorkControlKvFillBlockTableView(const SparkRingWorkControlPacket *packet,const SparkRingWorkControlKvState *state,SparkKvBlockTableView *view)
 {
 	memset(view,0,sizeof(*view));
-	view->abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
-	view->descriptor_bytes = SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+	view->abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	view->descriptor_bytes = SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
 	view->block_token_count = packet->block_token_count;
 	view->lane_count = packet->active_sequence_count;
 	view->lane_stride = state->lane_stride;
@@ -1963,7 +1963,7 @@ static void SparkGlm52RingWorkControlKvFillBlockTableView(const SparkRingWorkCon
 SparkStatus SparkRingWorkControlBuildHostKvBlockTable(
 	const SparkRingWorkControlPacket *packet,
 	SparkRingWorkControlKvState *state,
-	SparkGlm52KvBlockTableView *view)
+	SparkKvBlockTableView *view)
 {
 	uint32_t lane_index;
 	SparkStatus status;

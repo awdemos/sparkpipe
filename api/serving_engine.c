@@ -1188,7 +1188,7 @@ static SparkStatus SparkGlm52ServingBuildPrefillDispatch(
     const SparkRequestApiDispatch *dispatch,
     uint32_t step_index,
     SparkRequestApiPrefillDispatchView *prefill_view,
-    SparkGlm52KvBlockTableView *block_table_view,
+    SparkKvBlockTableView *block_table_view,
     SparkPromptPipelinePrefillDispatch *prefill_dispatch)
 {
     SparkStatus status;
@@ -1289,7 +1289,7 @@ static SparkStatus SparkGlm52ServingInvokePrefill(
     uint32_t step_index)
 {
     SparkRequestApiPrefillDispatchView prefill_view;
-    SparkGlm52KvBlockTableView block_table_view;
+    SparkKvBlockTableView block_table_view;
     SparkPromptPipelinePrefillDispatch prefill_dispatch;
     SparkStatus status;
 
@@ -1344,7 +1344,7 @@ static SparkStatus SparkGlm52ServingInvokePrefill(
 static SparkStatus SparkGlm52ServingBuildDecodeDispatch(
     SparkServingEngine *engine,
     const SparkRequestApiDispatch *dispatch,
-    SparkGlm52KvBlockTableView *block_table_view,
+    SparkKvBlockTableView *block_table_view,
     SparkRequestApiDecodeDispatchView *decode_view,
     SparkServingDecodeDispatch *decode_dispatch)
 {
@@ -2040,7 +2040,7 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     SparkServingEngine *engine,
     SparkRequestApiDispatch *dispatch)
 {
-    SparkGlm52KvBlockTableView block_table_view;
+    SparkKvBlockTableView block_table_view;
     SparkRequestApiDecodeDispatchView decode_view;
     SparkServingDecodeDispatch decode_dispatch;
     SparkServingDecodeResult decode_result;

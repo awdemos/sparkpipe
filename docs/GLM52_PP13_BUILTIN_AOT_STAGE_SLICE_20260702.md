@@ -21,7 +21,7 @@ The SM121 required CUDA path now contains a compiled dispatch table for every ex
 
 The selected launcher checks the exact stage index, first layer, six-layer count, batch bucket, active sequence count, and final-token stage, then runs the six layers through an unrolled built-in exact-stage body under the stage-level graph capture/replay path.
 
-Runtime KV block tables remain connected through this path. If a dispatch carries a `SparkGlm52KvBlockTableView`, each layer receives the execution-time physical KV block table selected by the scheduler/request API.
+Runtime KV block tables remain connected through this path. If a dispatch carries a `SparkKvBlockTableView`, each layer receives the execution-time physical KV block table selected by the scheduler/request API.
 
 ## No fake AOT
 

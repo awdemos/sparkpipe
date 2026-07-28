@@ -147,7 +147,7 @@ static void SparkTestPrefillPacketLanes(
 	SparkRingWorkControlKvState *state)
 {
 	SparkRingWorkControlPacket packet;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	uint32_t lane_index;
 
 	assert(source_packet != 0);
@@ -265,7 +265,7 @@ static void SparkTestGlm52RingWorkControlHostBlockTable(void)
 {
 	SparkRingWorkControlPacket packet;
 	SparkRingWorkControlKvState state;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	SparkTestWorkControlKvStorage storage;
 
 	SparkTestInitializeWorkPacket(&packet);
@@ -275,7 +275,7 @@ static void SparkTestGlm52RingWorkControlHostBlockTable(void)
 		&packet,
 		&state,
 		&view) == SPARK_STATUS_OK);
-	assert(view.abi_version == SPARK_GLM52_KV_CACHE_ABI_VERSION);
+	assert(view.abi_version == SPARK_KV_CACHE_ABI_VERSION);
 	assert(view.block_token_count == packet.block_token_count);
 	assert(view.lane_count == 4u);
 	assert(view.lane_stride == 4096u);
@@ -295,7 +295,7 @@ static void SparkTestGlm52RingWorkControlTracksKvReadiness(void)
 {
 	SparkRingWorkControlPacket packet;
 	SparkRingWorkControlKvState state;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	SparkTestWorkControlKvStorage storage;
 
 	SparkTestInitializeWorkPacket(&packet);
@@ -327,7 +327,7 @@ static void SparkTestGlm52RingWorkControlKeepsStableBlocksAcrossLaneReorder(void
 {
 	SparkRingWorkControlPacket packet;
 	SparkRingWorkControlKvState state;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	SparkTestWorkControlKvStorage storage;
 	SparkRingWorkControlLane lane0;
 	uint32_t sequence11_block0;
@@ -602,7 +602,7 @@ static void SparkTestGlm52RingWorkControlCommitsTreePositions(void)
 	static SparkTestWorkControlKvStorage storage;
 	SparkRingWorkControlKvState state;
 	SparkRingWorkControlPacket packet;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	uint32_t token_index;
 	assert(SparkTestInitializeKvState(
 		&state,&storage,SPARK_TEST_KV_LANE_CAPACITY) == SPARK_STATUS_OK);
@@ -658,7 +658,7 @@ static void SparkTestGlm52RingWorkControlB1024PhysicalDirectory(void)
 {
 	SparkRingWorkControlPacket packet;
 	SparkRingWorkControlKvState state;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	SparkRingWorkControlKvDirectoryEntry *directory_entries;
 	uint32_t *physical_blocks;
 	uint32_t *lane_counts;
@@ -756,7 +756,7 @@ static void SparkTestGlm52RingWorkControlNvmeSwapAndRelease(void)
 	SparkRingWorkControlPacket prefetch_packets[2u];
 	SparkRingWorkControlKvState state;
 	SparkRingWorkControlKvPrefetchEntry prefetch_entries[2u];
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	SparkRingWorkControlKvDirectoryEntry directory_entries[16u];
 	SparkRingWorkControlKvBlockEntry block_entries[16u];
 	SparkTestWorkControlSwapStorage swap_storage;
@@ -935,7 +935,7 @@ static void SparkTestGlm52RingWorkControlBuildDecodeBatch(void)
 	static SparkRequestApiDecodeDispatchView decode_view;
 	static SparkServingDecodeDispatch decode_dispatch;
 	SparkRingWorkControlPacket packet;
-	SparkGlm52KvBlockTableView kv_view;
+	SparkKvBlockTableView kv_view;
 	uint32_t block_indices[4u][2u];
 	uint32_t block_counts[4u];
 	uint32_t lane_index;
@@ -957,8 +957,8 @@ static void SparkTestGlm52RingWorkControlBuildDecodeBatch(void)
 	decode_view.active_sequence_count = 4u;
 	decode_view.lane_count = 4u;
 	memset(&kv_view,0,sizeof(kv_view));
-	kv_view.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
-	kv_view.descriptor_bytes = SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+	kv_view.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	kv_view.descriptor_bytes = SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
 	kv_view.block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
 	kv_view.lane_count = 4u;
 	kv_view.lane_stride = 2u;
@@ -1032,7 +1032,7 @@ static void SparkTestGlm52RingWorkControlBuildPackedMtpVerify(void)
 	static SparkRequestApiDecodeDispatchView decode_view;
 	static SparkServingDecodeDispatch decode_dispatch;
 	SparkRingWorkControlPacket packet;
-	SparkGlm52KvBlockTableView kv_view;
+	SparkKvBlockTableView kv_view;
 	uint32_t token_index;
 	memset(&request_dispatch,0,sizeof(request_dispatch));
 	request_dispatch.abi_version = SPARK_REQUEST_API_ABI_VERSION;
@@ -1090,7 +1090,7 @@ static void SparkTestGlm52RingWorkControlBuildPrefillBatch(void)
 	static SparkRequestApiPrefillDispatchView prefill_view;
 	SparkPromptPipelinePrefillDispatch prefill_dispatch;
 	SparkRingWorkControlPacket packet;
-	SparkGlm52KvBlockTableView kv_view;
+	SparkKvBlockTableView kv_view;
 	uint32_t token_ids[4u][2u];
 	uint32_t block_indices[4u];
 	uint32_t block_counts[4u];
@@ -1116,8 +1116,8 @@ static void SparkTestGlm52RingWorkControlBuildPrefillBatch(void)
 	prefill_view.prompt_token_count = 2u;
 	prefill_view.prompt_token_stride = 2u;
 	memset(&kv_view,0,sizeof(kv_view));
-	kv_view.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
-	kv_view.descriptor_bytes = SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+	kv_view.abi_version = SPARK_KV_CACHE_ABI_VERSION;
+	kv_view.descriptor_bytes = SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
 	kv_view.block_token_count = SPARK_GLM52_KV_BLOCK_TOKENS;
 	kv_view.lane_count = 4u;
 	kv_view.lane_stride = 1u;
@@ -1226,7 +1226,7 @@ static void SparkTestGlm52RingWorkControlResetsOlderGeneration(void)
 	static SparkTestWorkControlKvStorage storage;
 	SparkRingWorkControlKvState state;
 	SparkRingWorkControlPacket packet;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 
 	assert(SparkTestInitializeKvState(&state,&storage,1u) == SPARK_STATUS_OK);
 	SparkTestInitializeWorkPacket(&packet);
@@ -1283,7 +1283,7 @@ static void SparkTestGlm52RingWorkControlPinsSpeculativeBlocks(void)
 	static SparkTestWorkControlKvStorage storage;
 	SparkRingWorkControlKvState state;
 	SparkRingWorkControlPacket packet;
-	SparkGlm52KvBlockTableView view;
+	SparkKvBlockTableView view;
 	uint32_t physical_block_index;
 	assert(SparkTestInitializeKvState(&state,&storage,1u) == SPARK_STATUS_OK);
 	SparkTestInitializeWorkPacket(&packet);

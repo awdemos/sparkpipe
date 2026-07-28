@@ -43,16 +43,16 @@ static void SparkTestInitializePrefixCache(
     uint32_t entry_count,
     uint32_t binding_count)
 {
-    static SparkGlm52KvCacheArena arena;
-    static SparkGlm52KvCacheBlock blocks[512u];
-    SparkGlm52KvCacheConfiguration kv_configuration;
+    static SparkKvCacheArena arena;
+    static SparkKvCacheBlock blocks[512u];
+    SparkKvCacheConfiguration kv_configuration;
     SparkPrefixCacheConfiguration configuration;
 
     assert(entry_count <= 512u);
     memset(&kv_configuration, 0, sizeof(kv_configuration));
-    kv_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    kv_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
     kv_configuration.descriptor_bytes =
-        SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     kv_configuration.physical_block_count = entry_count;
     kv_configuration.block_token_count =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
@@ -63,7 +63,7 @@ static void SparkTestInitializePrefixCache(
     kv_configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
     kv_configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
     kv_configuration.blocks = blocks;
-    assert(SparkGlm52KvCacheArenaInitialize(&arena, &kv_configuration) ==
+    assert(SparkKvCacheArenaInitialize(&arena, &kv_configuration) ==
         SPARK_STATUS_OK);
 
     memset(&configuration, 0, sizeof(configuration));

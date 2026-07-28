@@ -443,7 +443,7 @@ typedef struct SparkGlm52ResidentDecodeStageFrameContext
     uint32_t reserved;
     uint32_t logical_lane_count;
     uint32_t rows_per_lane;
-    const SparkGlm52KvBlockTableView *kv_block_table;
+    const SparkKvBlockTableView *kv_block_table;
     const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_view;
     const uint32_t *mtp_draft_token_budgets;
     const SparkGlm52DsparkHiddenTapPlan *dspark_hidden_tap_plan;

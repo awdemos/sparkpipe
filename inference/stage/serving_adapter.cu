@@ -265,7 +265,7 @@ __global__ static void SparkGlm52ServingAdapterGatherDecodeEmbeddingKernel(
 }
 
 static SparkStatus SparkGlm52ServingAdapterValidateKvCoverage(
-    const SparkGlm52KvBlockTableView *kv_block_table,
+    const SparkKvBlockTableView *kv_block_table,
     uint32_t lane_index,
     uint32_t position)
 {
@@ -273,9 +273,9 @@ static SparkStatus SparkGlm52ServingAdapterValidateKvCoverage(
     uint32_t physical_block_index;
 
     if (kv_block_table == 0 ||
-        kv_block_table->abi_version != SPARK_GLM52_KV_CACHE_ABI_VERSION ||
+        kv_block_table->abi_version != SPARK_KV_CACHE_ABI_VERSION ||
         kv_block_table->descriptor_bytes !=
-            SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES ||
+            SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES ||
         kv_block_table->block_token_count == 0u ||
         kv_block_table->physical_block_indices == 0 ||
         kv_block_table->host_physical_block_indices == 0 ||

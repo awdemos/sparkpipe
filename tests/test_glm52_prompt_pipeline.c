@@ -18,8 +18,8 @@
 
 typedef struct SparkTestPromptPipelineFixture
 {
-    SparkGlm52KvCacheArena kv_arena;
-    SparkGlm52KvCacheBlock kv_blocks[
+    SparkKvCacheArena kv_arena;
+    SparkKvCacheBlock kv_blocks[
         SPARK_TEST_PROMPT_PIPELINE_KV_BLOCK_COUNT];
     SparkPrefixCache prefix_cache;
     SparkPrefixCacheEntry prefix_entries[
@@ -65,7 +65,7 @@ static void SparkTestPromptPipelineFillTokenIds(
 
 static SparkStatus SparkTestPromptPipelineKvPrefetch(
     void *context,
-    const SparkGlm52KvCachePrefetchPlan *prefetch_plan)
+    const SparkKvCachePrefetchPlan *prefetch_plan)
 {
     (void)context;
     (void)prefetch_plan;
@@ -75,7 +75,7 @@ static SparkStatus SparkTestPromptPipelineKvPrefetch(
 static void SparkTestPromptPipelineInitialize(
     SparkTestPromptPipelineFixture *fixture)
 {
-    SparkGlm52KvCacheConfiguration kv_configuration;
+    SparkKvCacheConfiguration kv_configuration;
     SparkPrefixCacheConfiguration prefix_configuration;
     SparkSchedulerConfiguration scheduler_configuration;
     SparkRequestApiConfiguration api_configuration;
@@ -87,9 +87,9 @@ static void SparkTestPromptPipelineInitialize(
         70000u);
 
     memset(&kv_configuration, 0, sizeof(kv_configuration));
-    kv_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    kv_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
     kv_configuration.descriptor_bytes =
-        SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     kv_configuration.physical_block_count =
         SPARK_TEST_PROMPT_PIPELINE_KV_BLOCK_COUNT;
     kv_configuration.block_token_count =
@@ -101,7 +101,7 @@ static void SparkTestPromptPipelineInitialize(
     kv_configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
     kv_configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
     kv_configuration.blocks = fixture->kv_blocks;
-    assert(SparkGlm52KvCacheArenaInitialize(
+    assert(SparkKvCacheArenaInitialize(
         &fixture->kv_arena,
         &kv_configuration) == SPARK_STATUS_OK);
 

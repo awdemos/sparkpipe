@@ -2443,7 +2443,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageNodeContext(
         node_context->reserved1 != 0u ||
         SparkGlm52ResidentDecodeStageEffectiveKvBlockTokenCount(node_context) == 0u ||
         SparkGlm52ResidentDecodeStageEffectiveKvBlockTokenCount(node_context) >
-            SPARK_GLM52_KV_CACHE_MAX_BLOCK_TOKENS ||
+            SPARK_KV_CACHE_MAX_BLOCK_TOKENS ||
         !SparkGlm52ResidentDecodeStageLayerMatchesModelQuantization(
             node_context) ||
         ((node_context->sparse_index_mode ==
@@ -3427,7 +3427,7 @@ static bool SparkGlm52ResidentDecodeStageStateRequiresRuntimeKvBlockTable(
 
 static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNodeContext(
     const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     uint32_t active_sequence_count)
 {
     uint32_t lane_index;
@@ -3441,9 +3441,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
     expected_block_token_count =
         SparkGlm52ResidentDecodeStageEffectiveKvBlockTokenCount(node_context);
     if (runtime_kv_block_table->abi_version !=
-            SPARK_GLM52_KV_CACHE_ABI_VERSION ||
+            SPARK_KV_CACHE_ABI_VERSION ||
         runtime_kv_block_table->descriptor_bytes !=
-            SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES ||
+            SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES ||
         runtime_kv_block_table->block_token_count != expected_block_token_count ||
         runtime_kv_block_table->lane_count < active_sequence_count ||
         runtime_kv_block_table->lane_count > node_context->max_active_sequence_count ||
@@ -3539,7 +3539,7 @@ static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTableForNo
 
 static SparkStatus SparkGlm52ResidentDecodeStageValidateRuntimeKvBlockTable(
     const SparkGlm52ResidentDecodeStageState *state,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     uint32_t active_sequence_count)
 {
     uint32_t layer_index;
@@ -3738,9 +3738,9 @@ static SparkStatus SparkGlm52ResidentDecodeStageExtractRuntimeKvBlockTable(
     const SparkGlm52ResidentDecodeStageState *state,
     const SparkModelDriverFrame *frame,
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
-    const SparkGlm52KvBlockTableView **runtime_kv_block_table_out)
+    const SparkKvBlockTableView **runtime_kv_block_table_out)
 {
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table;
+    const SparkKvBlockTableView *runtime_kv_block_table;
     bool runtime_kv_block_table_is_required;
     SparkStatus status;
 
@@ -4043,7 +4043,7 @@ SparkStatus SparkGlm52ResidentDecodeStageExecute(
     SparkGlm52ResidentDecodeStageState *state;
     SparkGlm52ResidentDecodeStagePendingCompletion *pending_completion;
     const SparkGlm52ResidentDecodeStageFrameContext *frame_context;
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table;
+    const SparkKvBlockTableView *runtime_kv_block_table;
     uint64_t pipeline_slot_value;
     uint32_t pipeline_slot_index;
     uint64_t current_dispatch_generation;

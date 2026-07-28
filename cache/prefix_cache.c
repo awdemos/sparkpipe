@@ -342,7 +342,7 @@ static SparkStatus SparkGlm52PrefixCacheAcquirePhysicalBlock(
 
     if (cache->kv_cache_arena != 0)
     {
-        return SparkGlm52KvCacheArenaAcquireBlock(
+        return SparkKvCacheArenaAcquireBlock(
             cache->kv_cache_arena,
             physical_block_index_out);
     }
@@ -368,7 +368,7 @@ static SparkStatus SparkGlm52PrefixCacheRecyclePhysicalBlock(
 {
     if (cache->kv_cache_arena != 0)
     {
-        return SparkGlm52KvCacheArenaRecycleBlock(
+        return SparkKvCacheArenaRecycleBlock(
             cache->kv_cache_arena,
             physical_block_index);
     }
@@ -383,7 +383,7 @@ static SparkStatus SparkGlm52PrefixCacheRetainPhysicalBlock(
 {
     if (cache->kv_cache_arena != 0)
     {
-        return SparkGlm52KvCacheArenaRetainBlock(
+        return SparkKvCacheArenaRetainBlock(
             cache->kv_cache_arena,
             physical_block_index);
     }
@@ -398,7 +398,7 @@ static SparkStatus SparkGlm52PrefixCacheReleasePhysicalBlockReference(
 {
     if (cache->kv_cache_arena != 0)
     {
-        return SparkGlm52KvCacheArenaReleaseBlockReference(
+        return SparkKvCacheArenaReleaseBlockReference(
             cache->kv_cache_arena,
             physical_block_index);
     }
@@ -413,7 +413,7 @@ static SparkStatus SparkGlm52PrefixCacheMarkPhysicalBlockResident(
 {
     if (cache->kv_cache_arena != 0)
     {
-        return SparkGlm52KvCacheArenaMarkBlockResident(
+        return SparkKvCacheArenaMarkBlockResident(
             cache->kv_cache_arena,
             physical_block_index);
     }
@@ -425,7 +425,7 @@ static SparkStatus SparkGlm52PrefixCacheMarkPhysicalBlockResident(
 static SparkStatus SparkGlm52PrefixCacheFillPrefetchSourceBlock(
     SparkPrefixCache *cache,
     const SparkPrefixCacheEntry *entry,
-    SparkGlm52KvCachePrefetchSourceBlock *source_block)
+    SparkKvCachePrefetchSourceBlock *source_block)
 {
     if (cache == 0 || entry == 0 || source_block == 0 ||
         (entry->flags & SPARK_PREFIX_CACHE_ENTRY_FLAG_VALID) == 0u ||
@@ -436,14 +436,14 @@ static SparkStatus SparkGlm52PrefixCacheFillPrefetchSourceBlock(
     }
 
     memset(source_block, 0, sizeof(*source_block));
-    source_block->abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    source_block->abi_version = SPARK_KV_CACHE_ABI_VERSION;
     source_block->descriptor_bytes =
-        SPARK_GLM52_KV_CACHE_PREFETCH_SOURCE_BLOCK_DESCRIPTOR_BYTES;
+        SPARK_KV_CACHE_PREFETCH_SOURCE_BLOCK_DESCRIPTOR_BYTES;
     source_block->physical_block_index = entry->physical_block_index;
     source_block->token_capacity = cache->block_token_count;
     source_block->first_token_index = entry->first_token_index;
     source_block->token_count = entry->token_count;
-    source_block->flags = SPARK_GLM52_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS;
+    source_block->flags = SPARK_KV_CACHE_PREFETCH_BLOCK_DEFAULT_FLAGS;
     source_block->parent_hash = entry->parent_hash;
     source_block->block_hash = entry->block_hash;
     source_block->content_hash = entry->content_hash;
@@ -462,7 +462,7 @@ static SparkStatus SparkGlm52PrefixCacheFreePhysicalBlock(
 {
     if (cache->kv_cache_arena != 0)
     {
-        return SparkGlm52KvCacheArenaFreeBlock(
+        return SparkKvCacheArenaFreeBlock(
             cache->kv_cache_arena,
             physical_block_index);
     }
@@ -1177,7 +1177,7 @@ SparkStatus SparkPrefixCacheProbeReusablePrefixPrefetchSources(
     SparkPrefixCache *cache,
     const uint32_t *token_ids,
     uint32_t token_count,
-    SparkGlm52KvCachePrefetchSourceBlock *source_blocks,
+    SparkKvCachePrefetchSourceBlock *source_blocks,
     uint32_t source_block_capacity,
     uint32_t *matched_token_count_out,
     uint32_t *source_block_count_out)
@@ -1265,7 +1265,7 @@ SparkStatus SparkPrefixCacheProbeReusablePrefixResidency(
             entry->physical_block_index <
                 cache->kv_cache_arena->physical_block_count &&
             (cache->kv_cache_arena->blocks[entry->physical_block_index].flags &
-                SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u)
+                SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u)
         {
             nonresident_block_count += 1u;
         }
@@ -1488,7 +1488,7 @@ static uint64_t SparkGlm52PrefixCacheAddScoreU64(
 
 static uint64_t SparkGlm52PrefixCacheComputeResidentBlockKeepScore(
     const SparkPrefixCache *cache,
-    const SparkGlm52KvCacheBlock *block,
+    const SparkKvCacheBlock *block,
     const SparkPrefixCacheEntry *entry)
 {
     uint64_t score;
@@ -1551,7 +1551,7 @@ static void SparkGlm52PrefixCacheInitializeResidentEvictionCandidate(
     SparkGlm52PrefixCacheResidentEvictionCandidate *candidate)
 {
     memset(candidate, 0, sizeof(*candidate));
-    candidate->physical_block_index = SPARK_GLM52_KV_CACHE_NO_BLOCK;
+    candidate->physical_block_index = SPARK_KV_CACHE_NO_BLOCK;
     candidate->keep_score = UINT64_MAX;
     candidate->last_used_epoch = UINT64_MAX;
 }
@@ -1560,7 +1560,7 @@ static uint32_t SparkGlm52PrefixCacheResidentEvictionCandidateIsBetter(
     const SparkGlm52PrefixCacheResidentEvictionCandidate *candidate,
     const SparkGlm52PrefixCacheResidentEvictionCandidate *current)
 {
-    if (current->physical_block_index == SPARK_GLM52_KV_CACHE_NO_BLOCK)
+    if (current->physical_block_index == SPARK_KV_CACHE_NO_BLOCK)
     {
         return 1u;
     }
@@ -1594,11 +1594,11 @@ static SparkStatus SparkGlm52PrefixCacheSelectResidentReuseScoreVictim(
     {
         SparkGlm52PrefixCacheResidentEvictionCandidate candidate;
         const SparkPrefixCacheEntry *entry;
-        const SparkGlm52KvCacheBlock *block;
+        const SparkKvCacheBlock *block;
 
         block = &cache->kv_cache_arena->blocks[physical_block_index];
-        if ((block->flags & SPARK_GLM52_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
-            (block->flags & SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
+        if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
+            (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
             SparkGlm52PrefixCacheHardProtectedBlockListContainsBlock(
                 hard_protected_physical_block_indices,
                 hard_protected_physical_block_count,
@@ -1628,7 +1628,7 @@ static SparkStatus SparkGlm52PrefixCacheSelectResidentReuseScoreVictim(
             *victim_out = candidate;
         }
     }
-    return victim_out->physical_block_index == SPARK_GLM52_KV_CACHE_NO_BLOCK
+    return victim_out->physical_block_index == SPARK_KV_CACHE_NO_BLOCK
         ? SPARK_STATUS_NOT_FOUND
         : SPARK_STATUS_OK;
 }
@@ -1683,7 +1683,7 @@ SparkStatus SparkPrefixCacheTrimResidentBlocksByReuseScore(
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         }
 
-        status = SparkGlm52KvCacheArenaMarkBlockNonResident(
+        status = SparkKvCacheArenaMarkBlockNonResident(
             cache->kv_cache_arena,
             victim.physical_block_index);
         if (status != SPARK_STATUS_OK)
@@ -2363,7 +2363,7 @@ SparkStatus SparkPrefixCacheBuildSequencePrefetchSources(
     SparkPrefixCache *cache,
     uint64_t sequence_id,
     uint32_t token_count,
-    SparkGlm52KvCachePrefetchSourceBlock *source_blocks,
+    SparkKvCachePrefetchSourceBlock *source_blocks,
     uint32_t source_block_capacity,
     uint32_t *source_block_count_out)
 {
@@ -2466,7 +2466,7 @@ SparkStatus SparkPrefixCacheProbeSequenceResidency(
         if (cache->kv_cache_arena != 0 &&
             binding->physical_block_index < cache->kv_cache_arena->physical_block_count &&
             (cache->kv_cache_arena->blocks[binding->physical_block_index].flags &
-                SPARK_GLM52_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u)
+                SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u)
         {
             nonresident_block_count += 1u;
         }
@@ -2657,7 +2657,7 @@ SparkStatus SparkPrefixCacheReset(
     }
     if (cache->kv_cache_arena != 0)
     {
-        status = SparkGlm52KvCacheArenaReset(cache->kv_cache_arena);
+        status = SparkKvCacheArenaReset(cache->kv_cache_arena);
         if (status != SPARK_STATUS_OK)
         {
             return status;

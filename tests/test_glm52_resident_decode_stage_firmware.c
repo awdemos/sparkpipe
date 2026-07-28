@@ -65,8 +65,8 @@ typedef struct SparkGlm52ResidentDecodeStageTestCompletionState
 
 typedef struct SparkGlm52ResidentDecodeStagePrefillBridgeFixture
 {
-    SparkGlm52KvCacheArena kv_arena;
-    SparkGlm52KvCacheBlock kv_blocks[16];
+    SparkKvCacheArena kv_arena;
+    SparkKvCacheBlock kv_blocks[16];
     SparkPrefixCache prefix_cache;
     SparkPrefixCacheEntry prefix_entries[16];
     SparkPrefixCacheSequenceBinding prefix_bindings[16];
@@ -102,16 +102,16 @@ static void SparkGlm52ResidentDecodeStageTestWake(void *wake_context)
 static void SparkTestInitializePrefillBridgeFixture(
     SparkGlm52ResidentDecodeStagePrefillBridgeFixture *fixture)
 {
-    SparkGlm52KvCacheConfiguration kv_configuration;
+    SparkKvCacheConfiguration kv_configuration;
     SparkPrefixCacheConfiguration prefix_configuration;
     SparkSchedulerConfiguration scheduler_configuration;
     SparkRequestApiConfiguration api_configuration;
 
     memset(fixture, 0, sizeof(*fixture));
     memset(&kv_configuration, 0, sizeof(kv_configuration));
-    kv_configuration.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    kv_configuration.abi_version = SPARK_KV_CACHE_ABI_VERSION;
     kv_configuration.descriptor_bytes =
-        SPARK_GLM52_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
+        SPARK_KV_CACHE_CONFIGURATION_DESCRIPTOR_BYTES;
     kv_configuration.physical_block_count = 16u;
     kv_configuration.block_token_count =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
@@ -122,7 +122,7 @@ static void SparkTestInitializePrefillBridgeFixture(
     kv_configuration.key_device_base = (void *)(uintptr_t)0x100000000ull;
     kv_configuration.value_device_base = (void *)(uintptr_t)0x200000000ull;
     kv_configuration.blocks = fixture->kv_blocks;
-    assert(SparkGlm52KvCacheArenaInitialize(
+    assert(SparkKvCacheArenaInitialize(
         &fixture->kv_arena,
         &kv_configuration) == SPARK_STATUS_OK);
 
@@ -1603,7 +1603,7 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
     SparkFirmwareModuleHostServices host_services;
     SparkModelDriverFrame frame;
     SparkModelDriverRuntimeSnapshot runtime_snapshot;
-    SparkGlm52KvBlockTableView kv_block_table_view;
+    SparkKvBlockTableView kv_block_table_view;
     SparkGlm52ResidentDecodeStageFrameContext frame_context;
     uint32_t physical_block_indices[24];
     uint32_t lane_block_counts[6];
@@ -1677,9 +1677,9 @@ static void SparkTestGlm52ResidentDecodeStageSliceSubmit(void)
         lane_block_counts[lane_index] = 1u;
     }
     memset(&kv_block_table_view, 0, sizeof(kv_block_table_view));
-    kv_block_table_view.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    kv_block_table_view.abi_version = SPARK_KV_CACHE_ABI_VERSION;
     kv_block_table_view.descriptor_bytes =
-        SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+        SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
     kv_block_table_view.block_token_count =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     kv_block_table_view.lane_count = 2u;
@@ -2352,7 +2352,7 @@ static void SparkTestGlm52ResidentDecodeStageRequestApiPrefillBridge(void)
     SparkRequestApiSubmitRequest request;
     SparkRequestApiHandle request_handle;
     SparkRequestApiDispatch dispatch;
-    SparkGlm52KvBlockTableView block_table_view;
+    SparkKvBlockTableView block_table_view;
     SparkGlm52ResidentDecodeStageFrameContext frame_context;
     SparkGlm52ResidentDecodeStagePrefillFrameView prefill_view;
     SparkModelDriverFrame frame;
@@ -3296,7 +3296,7 @@ static void SparkTestGlm52ResidentDecodeStagePagedBulkPrefillPlanWithoutLaunchFu
     SparkFirmwareModuleConfiguration configuration;
     SparkFirmwareModuleHostServices host_services;
     SparkModelDriverFrame frame;
-    SparkGlm52KvBlockTableView kv_block_table_view;
+    SparkKvBlockTableView kv_block_table_view;
     SparkGlm52ResidentDecodeStageFrameContext frame_context;
     SparkGlm52ResidentDecodeStagePrefillFrameView prefill_view;
     void *module_state;
@@ -3403,9 +3403,9 @@ static void SparkTestGlm52ResidentDecodeStagePagedBulkPrefillPlanWithoutLaunchFu
         SPARK_STATUS_INVALID_ARGUMENT);
 
     memset(&kv_block_table_view, 0, sizeof(kv_block_table_view));
-    kv_block_table_view.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    kv_block_table_view.abi_version = SPARK_KV_CACHE_ABI_VERSION;
     kv_block_table_view.descriptor_bytes =
-        SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+        SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
     kv_block_table_view.block_token_count = 16u;
     kv_block_table_view.lane_count = 4u;
     kv_block_table_view.lane_stride = 8u;
@@ -3449,7 +3449,7 @@ static void SparkTestGlm52ResidentDecodeStageRuntimeKvBlockTableSubmit(void)
     SparkFirmwareModuleHostServices host_services;
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
     SparkModelDriverFrame frame;
-    SparkGlm52KvBlockTableView kv_block_table_view;
+    SparkKvBlockTableView kv_block_table_view;
     SparkGlm52ResidentDecodeStageFrameContext frame_context;
     uint32_t physical_block_indices[8];
     uint32_t lane_block_counts[2];
@@ -3507,9 +3507,9 @@ static void SparkTestGlm52ResidentDecodeStageRuntimeKvBlockTableSubmit(void)
     lane_block_counts[1] = 1u;
 
     memset(&kv_block_table_view, 0, sizeof(kv_block_table_view));
-    kv_block_table_view.abi_version = SPARK_GLM52_KV_CACHE_ABI_VERSION;
+    kv_block_table_view.abi_version = SPARK_KV_CACHE_ABI_VERSION;
     kv_block_table_view.descriptor_bytes =
-        SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
+        SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES;
     kv_block_table_view.block_token_count =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     kv_block_table_view.lane_count = 2u;
