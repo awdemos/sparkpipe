@@ -221,13 +221,13 @@ static void K3BindLayerState(const K3SliceState *state, uint32_t layer, K3LayerB
 // here stops the model instead of running the wrong one, and the compiler warns
 // about the unhandled enum value before that.
 template<class Format, class Geometry>
-static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t layer, uint32_t rows, uint32_t sequences, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
 	enum LmLayerKind kind = (enum LmLayerKind)K3_LAYER_KIND(layer);
 	switch (kind)
 	{
 	case LM_LAYER_RECURRENT:
-		return(K3LayerKda<Format>(buffers,rows,multiprocessors,stream));
+		return(K3LayerKda<Format>(buffers,rows,sequences,multiprocessors,stream));
 	case LM_LAYER_LATENT:
 		return(K3LayerMla<Format,Geometry>(buffers,rows,context,multiprocessors,stream));
 	case LM_LAYER_FULL:
@@ -256,7 +256,7 @@ static int32_t K3LaunchAttentionHalf(const K3LayerBuffers *buffers, uint32_t lay
 // open transport question docs/MODEL_SUPPORT.md item 7 tracks, and this loop
 // is deliberately correct for the single-stage case first.
 template<class Format, class Geometry>
-static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *state, K3LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t sequences, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
 	uint32_t offset,layer,boundary;
 	int32_t status;
@@ -283,7 +283,7 @@ static int32_t K3LaunchSlice(const K3LayerWeights *weights, const K3SliceState *
 				K3PartialSet(buffers,buffers->hidden_bf16,rows,stream);
 			K3BankStore(buffers,layer / K3_ATTNRES_BLOCK_SIZE,rows,stream);
 		}
-		status = K3LaunchAttentionHalf<Format,Geometry>(buffers,layer,rows,context,
+		status = K3LaunchAttentionHalf<Format,Geometry>(buffers,layer,rows,sequences,context,
 			multiprocessors,stream);
 		if ( status != LM_LAUNCH_OK )
 			return(status);

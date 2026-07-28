@@ -51,7 +51,8 @@ def parse(text):
                  value=int(header[5]), steps=int(header[7]),
                  gmin=float(header[9]))
     values = {"bias": [], "scale": [], "q": [], "k": [], "z": [], "v": [],
-              "beta": [], "out": [], "ret": [], "replay_mismatch": []}
+              "beta": [], "out": [], "ret": [], "replay_mismatch": [],
+              "run_mismatch": [], "verify_mismatch": []}
     for line in lines[1:]:
         tag, _, number = line.partition(" ")
         values[tag].append(float(number.split()[0]))
@@ -144,6 +145,24 @@ def main():
               f"{mismatch:.0f} bytes")
         return 1
     print("replay fold reproduces the committed state exactly, 0 bytes differ")
+    # THE RUN IS ITS STEPS. One kernel call over the whole sequence must equal
+    # the six decode calls byte for byte - outputs and final state - because
+    # the state crosses tokens in shared memory at the slot's own BF16 width.
+    # Prefill and DSpark verify both stand on this equivalence.
+    run = values["run_mismatch"][0] if values["run_mismatch"] else -1
+    if run != 0:
+        print(f"\nFAIL the sequence run differs from its decode steps "
+              f"({run:.0f} values)")
+        return 1
+    print("a six-token run equals six decode calls, bit for bit")
+    # AND AN UNCOMMITTED RUN TOUCHES NOTHING. commit == 0 is the verify mode:
+    # every output produced, the slot exactly as it was found.
+    verify = values["verify_mismatch"][0] if values["verify_mismatch"] else -1
+    if verify != 0:
+        print(f"\nFAIL the uncommitted run leaked state or changed outputs "
+              f"({verify:.0f} values)")
+        return 1
+    print("an uncommitted run produces the outputs and abandons the state")
     # SENSITIVITY, MEASURED RATHER THAN ASSUMED. Perturbing the fold's retention
     # factor by 0.1% moves no bf16 byte at all; 1% moves five. So this catches a
     # fold that reads a different gate, and does not catch one that differs

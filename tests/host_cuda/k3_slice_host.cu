@@ -212,7 +212,7 @@ int main(void)
 	for (layer = 0u; layer < SLICE_LAYERS; ++layer)
 	{
 		status = K3LaunchSlice<LmHostRecorderFormat,K3GlobalKv>(
-			&weights[layer], &state, &b, layer, 1u, ROWS, ROUTES, 1u, 1u, 0);
+			&weights[layer], &state, &b, layer, 1u, ROWS, ROWS, ROUTES, 1u, 1u, 0);
 		if ( status != LM_LAUNCH_OK )
 		{
 			printf("FAIL layer %u status %d\n", layer, (int)status);

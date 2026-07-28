@@ -113,9 +113,9 @@ int main(void)
 				decay_logit[step], channel_bias, head_log_scale,
 				retention, HEADS, -5.0f, 1u)));
 		LM_HOST_LAUNCH(dim3(1u, HEADS),
-			(LmDeltaRuleDecodeKernel<THREADS, KEY_DIM, VALUE_DIM>(
-				state_pool, SLOT_BYTES, state_index, query[step], key[step], value[step],
-				retention, write_gate, output[step], HEADS, 1u, 1u)));
+			(LmDeltaRuleKernel<THREADS, KEY_DIM, VALUE_DIM>(
+				state_pool, SLOT_BYTES, state_index, 0, query[step], key[step], value[step],
+				retention, write_gate, output[step], HEADS, 1u, 1u, 1u)));
 		for (index = 0u; index < HEADS * VALUE_DIM; ++index)
 			printf("out %.9g\n", (double)f32(output[step][index]));
 		for (index = 0u; index < HEADS * KEY_DIM; ++index)
@@ -156,6 +156,70 @@ int main(void)
 				++mismatch;
 		printf("replay_mismatch %u of %u bytes\n",
 			mismatch, (unsigned)sizeof(state_pool));
+	}
+	// ONE RUN MUST EQUAL ITS STEPS, BIT FOR BIT.
+	//
+	// The kernel's claim is that a sequence-run is the same arithmetic as its
+	// decode steps: the state crosses tokens through shared memory at exactly
+	// the BF16 width the slot stores between calls, so no rounding path
+	// differs. Prefill and DSpark verify both stand on this, so it is a gate:
+	// replay the six steps as one run from a zero slot and demand the decode
+	// path's outputs and final state, byte for byte.
+	{
+		static uint8_t run_pool[sizeof(state_pool)];
+		static uint16_t run_output[STEPS][HEADS * VALUE_DIM];
+		static uint16_t run_query[STEPS][HEADS * KEY_DIM];
+		static uint16_t run_key[STEPS][HEADS * KEY_DIM];
+		static uint16_t run_value[STEPS][HEADS * VALUE_DIM];
+		static float run_retention[STEPS][HEADS * KEY_DIM];
+		static float run_beta[STEPS][HEADS];
+		static uint32_t run_begin[2];
+		uint32_t mismatch = 0u;
+		memset(run_pool, 0, sizeof(run_pool));
+		for (step = 0u; step < STEPS; ++step)
+		{
+			memcpy(run_query[step], query[step], sizeof(run_query[step]));
+			memcpy(run_key[step], key[step], sizeof(run_key[step]));
+			memcpy(run_value[step], value[step], sizeof(run_value[step]));
+			memcpy(run_beta[step], write_gate, sizeof(run_beta[step]));
+			LM_HOST_LAUNCH(dim3(1u, HEADS),
+				(LmBoundedDecayKernel<THREADS, KEY_DIM>(
+					decay_logit[step], channel_bias, head_log_scale,
+					run_retention[step], HEADS, -5.0f, 1u)));
+		}
+		run_begin[0] = 0u; run_begin[1] = STEPS;
+		LM_HOST_LAUNCH(dim3(1u, HEADS),
+			(LmDeltaRuleKernel<THREADS, KEY_DIM, VALUE_DIM>(
+				run_pool, SLOT_BYTES, state_index, run_begin,
+				run_query[0], run_key[0], run_value[0],
+				run_retention[0], run_beta[0], run_output[0],
+				HEADS, 1u, 1u, 1u)));
+		for (step = 0u; step < STEPS; ++step)
+			for (index = 0u; index < HEADS * VALUE_DIM; ++index)
+				if (run_output[step][index] != output[step][index])
+					++mismatch;
+		for (index = 0u; index < sizeof(state_pool); ++index)
+			if (run_pool[index] != state_pool[index])
+				++mismatch;
+		printf("run_mismatch %u\n", mismatch);
+		// And a run that is NOT committed must leave the slot exactly as it
+		// found it while still producing every output - the verify contract.
+		memset(run_pool, 0, sizeof(run_pool));
+		LM_HOST_LAUNCH(dim3(1u, HEADS),
+			(LmDeltaRuleKernel<THREADS, KEY_DIM, VALUE_DIM>(
+				run_pool, SLOT_BYTES, state_index, run_begin,
+				run_query[0], run_key[0], run_value[0],
+				run_retention[0], run_beta[0], run_output[0],
+				HEADS, 1u, 1u, 0u)));
+		mismatch = 0u;
+		for (index = 0u; index < sizeof(run_pool); ++index)
+			if (run_pool[index] != 0u)
+				++mismatch;
+		for (step = 0u; step < STEPS; ++step)
+			for (index = 0u; index < HEADS * VALUE_DIM; ++index)
+				if (run_output[step][index] != output[step][index])
+					++mismatch;
+		printf("verify_mismatch %u\n", mismatch);
 	}
 	return 0;
 }

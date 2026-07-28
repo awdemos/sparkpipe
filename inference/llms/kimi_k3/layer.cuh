@@ -219,6 +219,11 @@ struct K3LayerBuffers
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
 	uint16_t *route_gather_bf16;
+	// Rows sorted by sequence, sequence_row_begin a prefix of length
+	// sequences + 1: sequence s owns rows [begin[s], begin[s+1]). Null means
+	// identity - row i is sequence i - which is every pure-decode step. The
+	// KDA state index is per SEQUENCE under this contract, not per row.
+	const uint32_t *sequence_row_begin;
 
 	// The recurrent half. Fixed per sequence, never grows with context.
 	uint8_t *kda_state_pool;
@@ -349,7 +354,7 @@ static void K3BankStore(const K3LayerBuffers *b, uint32_t slot, uint32_t rows, c
 //     S    = (I - beta k k^T) Diag(a) S + beta k v^T
 //     y    = W_o[ sigmoid(W_g x) * RMSNorm(S^T q) ]
 template<class Format>
-static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
 	// THE INPUT IS THE RETRIEVAL, ALONE. Under AttnRes there is no residual
@@ -374,12 +379,12 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 	// THREE CONVOLUTIONS, NOT ONE, EACH WITH ITS OWN WINDOW. q, k and v are
 	// separate ShortConvolution modules in the reference; sharing a window
 	// between them would mix three token streams into one and still run.
-	LM_LAUNCH((LmCausalConvDecodeKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(rows,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_q_window,b->kda_state_index,b->query_bf16, (const uint16_t *)b->kda_q_conv_weight,b->query_bf16,K3_KDA_QK_DIM,rows);
-	LM_LAUNCH((LmCausalConvDecodeKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(rows,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_k_window,b->kda_state_index,b->key_bf16, (const uint16_t *)b->kda_k_conv_weight,b->key_bf16,K3_KDA_QK_DIM,rows);
-	LM_LAUNCH((LmCausalConvDecodeKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(rows,(K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_v_window,b->kda_state_index,b->value_bf16, (const uint16_t *)b->kda_v_conv_weight,b->value_bf16,K3_KDA_V_DIM,rows);
+	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_q_window,b->kda_state_index,b->sequence_row_begin,b->query_bf16, (const uint16_t *)b->kda_q_conv_weight,b->query_bf16,K3_KDA_QK_DIM,sequences,1u);
+	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_k_window,b->kda_state_index,b->sequence_row_begin,b->key_bf16, (const uint16_t *)b->kda_k_conv_weight,b->key_bf16,K3_KDA_QK_DIM,sequences,1u);
+	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_v_window,b->kda_state_index,b->sequence_row_begin,b->value_bf16, (const uint16_t *)b->kda_v_conv_weight,b->value_bf16,K3_KDA_V_DIM,sequences,1u);
 	// q and k only. The value is not normalised.
 	LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
 		b->query_bf16,K3_KDA_HEADS,rows,K3_RMS_EPSILON);
@@ -410,8 +415,8 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 		return(status);
 	LM_LAUNCH((LmSigmoidRowsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		(const uint16_t *)b->kda_beta_logit,b->kda_write_gate_out,K3_KDA_HEADS);
-	LM_LAUNCH((LmDeltaRuleDecodeKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_state_pool,K3_KDA_STATE_SLOT_BYTES,b->kda_state_index,b->query_bf16,b->key_bf16, b->value_bf16,b->kda_retention,b->kda_write_gate_out,b->attention_out_bf16, K3_KDA_HEADS,1u,rows);
+	LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(sequences,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_state_pool,K3_KDA_STATE_SLOT_BYTES,b->kda_state_index,b->sequence_row_begin,b->query_bf16,b->key_bf16, b->value_bf16,b->kda_retention,b->kda_write_gate_out,b->attention_out_bf16, K3_KDA_HEADS,1u,sequences,1u);
 	// RMSNORM BEFORE THE GATE, AND ONLY HERE. Report eq. 6 normalises the
 	// recurrent output head-wise before gating; eq. 7 gates the MLA output with
 	// no normalisation at all. The two paths differ in exactly this step.
@@ -468,8 +473,15 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 	LM_LAUNCH((LmKvStoreKernel<Geometry,K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, Geometry::kSlotBytes / 2u);
 	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,K3_ATTN_THREADS,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>), dim3(rows,K3_MLA_HEADS), K3_ATTN_THREADS, 0, stream,
-		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,K3_MLA_HEADS,K3_MLA_QK_SCALE,b->attention_out_bf16,0);
+		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,K3_MLA_HEADS,K3_MLA_QK_SCALE,b->attention_out_bf16,b->positions);
 	(void)context;
+	// PREFILL IS THAT ONE ARGUMENT. The kernel skips any cached position past
+	// row_position[row], so a chunk of rows at ascending positions attends
+	// causally over everything stored - including itself and the rest of the
+	// chunk, which LmKvStoreKernel put there in this same stream order. Decode
+	// is unchanged: every stored position is at or before the row's own, and
+	// the guard admits them all. The contract the driver owes:
+	// context_length[sequence] counts ALL stored rows, the chunk included.
 	// BACK TO V-SPACE BEFORE THE GATE. The attention output is heads * kv_lora;
 	// kv_b_value maps each head's 512 to its 128. Absorbing this into o_proj
 	// would be algebraically fine and is not an option: the gate is elementwise
