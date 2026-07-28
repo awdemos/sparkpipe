@@ -69,7 +69,6 @@ SPARKPIPE_GLM52_SOURCES := \
     scheduler/work_control.c
 
 SPARKPIPE_QWEN36_SOURCES := \
-    model-families/qwen36/src/spark_qwen36_work_control.c
 
 SPARKPIPE_DEPLOYMENT_SOURCES := \
     deployment/src/spark_release.c
