@@ -436,15 +436,14 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		(uint16_t *)b->router_logits,rows,K3_HIDDEN,K3_EXPERTS,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	// Sigmoid, then select on score+bias and weigh on score. RENORMALISE is true
-	// because moe_renormalize is set; the per-expert bias is
-	// e_score_correction_bias, frozen at inference.
-	LmSigmoidRowsKernel<K3_LAYER_THREADS><<<rows,K3_LAYER_THREADS,0,stream>>>(
-		(const uint16_t *)b->router_logits,b->router_logits,K3_EXPERTS);
+	// The sigmoid rides inside the selection rather than writing 896 floats per
+	// row and reading them straight back. Select on score+bias, weigh on score;
+	// RENORMALISE is true because moe_renormalize is set, and the per-expert
+	// bias is e_score_correction_bias, frozen at inference.
 	LmTopkSmallKernel<K3_LAYER_THREADS,K3_TOP_K,true>
 		<<<rows,K3_LAYER_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream>>>(
-		b->router_logits,K3_EXPERTS,(uint32_t *)b->route_expert,
-		(float *)b->route_weight,b->router_bias);
+		0,K3_EXPERTS,(uint32_t *)b->route_expert,
+		(float *)b->route_weight,b->router_bias,(const uint16_t *)b->router_logits);
 	status = K3Project<Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 		b->latent_bf16,rows,K3_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )

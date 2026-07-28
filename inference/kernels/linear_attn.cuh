@@ -40,6 +40,7 @@
 
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/norm.cuh"
+#include "inference/kernels/norm.cuh"
 #include <stdint.h>
 
 // The decay logit to a per-channel retention factor. Kimi K3 technical report
@@ -128,8 +129,12 @@ template<uint32_t THREADS, uint32_t HEAD_DIM>
 __global__ __launch_bounds__(THREADS, 1)
 void LmL2NormalisePerHeadKernel(uint16_t *__restrict__ rows_bf16, uint32_t heads, uint32_t rows, float epsilon)
 {
-	__shared__ float shared_total[THREADS];
-	uint32_t row = blockIdx.x,head = blockIdx.y,index,stride;
+	// LmBlockSum, not a hand-rolled tree. The first version of this kernel wrote
+	// its own shared-memory reduction with a barrier per step - log2(THREADS)
+	// barriers where the shuffle path needs one - and duplicated a reduction the
+	// tree already had. Same defect twice over: slower and a second copy.
+	__shared__ float reduction[THREADS / LM_WARP_LANES];
+	uint32_t row = blockIdx.x,head = blockIdx.y,index;
 	uint64_t base;
 	float total = 0.0f,inverse;
 	if ( row >= rows || head >= heads )
@@ -140,15 +145,7 @@ void LmL2NormalisePerHeadKernel(uint16_t *__restrict__ rows_bf16, uint32_t heads
 		float value = LmBf16ToFloat(rows_bf16[base + index]);
 		total += value * value;
 	}
-	shared_total[threadIdx.x] = total;
-	__syncthreads();
-	for (stride = THREADS / 2u; stride > 0u; stride >>= 1)
-	{
-		if ( threadIdx.x < stride )
-			shared_total[threadIdx.x] += shared_total[threadIdx.x + stride];
-		__syncthreads();
-	}
-	inverse = rsqrtf(shared_total[0] + epsilon);
+	inverse = rsqrtf(LmBlockSum<THREADS>(total,reduction) + epsilon);
 	for (index = threadIdx.x; index < HEAD_DIM; index += THREADS)
 		rows_bf16[base + index] =
 			LmFloatToBf16(LmBf16ToFloat(rows_bf16[base + index]) * inverse);
@@ -218,21 +215,28 @@ void LmDeltaRuleDecodeKernel(uint8_t *__restrict__ state_pool, const uint32_t *_
 	// to its own value, exactly as a softmax token attends to its own key.
 	{
 		uint32_t value_head = head * value_heads_per_key;
-		for (index = 0u; index < KEY_DIM; ++index)
+		uint64_t value_base =
+			(((uint64_t)row * key_heads * value_heads_per_key) + value_head) * VALUE_DIM;
+		uint32_t flat;
+		// FLAT OVER THE WHOLE OUTER PRODUCT. Every (key channel, value element)
+		// pair is independent - the update reads state[i][e] and writes
+		// state[i][e] and nothing else - so this was a serial loop over KEY_DIM
+		// for no reason, 128 sequential steps each using VALUE_DIM threads.
+		// At K3's shape that is 128 iterations at half occupancy on a 256-thread
+		// block, where one pass at full occupancy does the same work.
+		//
+		// Consecutive threads still take consecutive elements within a row, so
+		// the coalescing the old shape had is preserved: flat / VALUE_DIM is the
+		// channel and flat % VALUE_DIM the element, and the fast axis is the one
+		// that is contiguous in memory.
+		for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
 		{
-			float k = shared_key[index];
-			// Diag(alpha) acts on the KEY axis, so the retention factor is indexed
-			// by key channel and not by value element. Indexing it the other way
-			// would decay the wrong axis of the outer product and still run.
-			float channel_alpha = forget_gate[index];
-			for (element = threadIdx.x; element < VALUE_DIM; element += THREADS)
-			{
-				float v = LmBf16ToFloat(value_bf16[
-					(((uint64_t)row * key_heads * value_heads_per_key) + value_head) * VALUE_DIM + element]);
-				float previous = LmBf16ToFloat(state[(index * VALUE_DIM) + element]);
-				state[(index * VALUE_DIM) + element] =
-					LmFloatToBf16((channel_alpha * previous) + (beta * (v - shared_predicted[element]) * k));
-			}
+			uint32_t channel = flat / VALUE_DIM,element_index = flat % VALUE_DIM;
+			float v = LmBf16ToFloat(value_bf16[value_base + element_index]);
+			float previous = LmBf16ToFloat(state[flat]);
+			state[flat] = LmFloatToBf16(
+				(forget_gate[channel] * previous)
+				+ (beta * (v - shared_predicted[element_index]) * shared_key[channel]));
 		}
 	}
 	__syncthreads();

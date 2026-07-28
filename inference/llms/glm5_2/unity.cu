@@ -131,7 +131,7 @@ template __global__ void LmSparseScoreKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_
 // Top-k and speculation. The router picks 8 of 256 with the small path; DSA
 // picks its positions with the radix path. Both were separate kernels before and
 // the algorithm was the same.
-template __global__ void LmTopkSmallKernel<GLM52_NORM_THREADS, GLM52_TOP_K>(const float *, uint32_t, uint32_t *, float *, const float *);
+template __global__ void LmTopkSmallKernel<GLM52_NORM_THREADS, GLM52_TOP_K>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
 template __global__ void LmTopkHistogramKernel<GLM52_NORM_THREADS>(const float *, uint32_t, uint32_t, uint32_t *);
 template __global__ void LmTopkGatherKernel<GLM52_NORM_THREADS>(const float *, uint32_t, uint32_t, const uint32_t *, uint32_t *, uint32_t *);
 template __global__ void LmSpeculativeVerifyGreedyKernel<GLM52_NORM_THREADS>(const uint32_t *, const uint32_t *, uint32_t, uint32_t *, uint32_t *, uint32_t *);

@@ -66,11 +66,11 @@ int main(void)
 				(double)LmBf16ToFloat(logits[(row * EXPERTS) + expert]));
 
 	// sigmoid, then select on score+bias and weigh on score, renormalised
-	LM_HOST_LAUNCH(dim3(ROWS),
-		(LmSigmoidRowsKernel<THREADS>(logits, scores, EXPERTS)));
+	// the sigmoid rides inside the selection now; scores is unused
+	(void)scores;
 	LM_HOST_LAUNCH(dim3(ROWS),
 		(LmTopkSmallKernel<THREADS, TOP_K, true>(
-			scores, EXPERTS, chosen, weights, bias)));
+			0, EXPERTS, chosen, weights, bias, logits)));
 
 	for (row = 0u; row < ROWS; ++row)
 		for (expert = 0u; expert < TOP_K; ++expert)

@@ -332,7 +332,7 @@ static int32_t Glm52LayerMoe(const Glm52LayerBuffers *b, uint32_t rows, uint32_t
 		return(status);
 	LmTopkSmallKernel<GLM52_LAYER_THREADS,GLM52_TOP_K>
 		<<<rows,GLM52_LAYER_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream>>>(
-		(const float *)b->router_logits,GLM52_EXPERTS,b->route_expert,b->route_weight,0);
+		(const float *)b->router_logits,GLM52_EXPERTS,b->route_expert,b->route_weight,0,0);
 	LmQuantiseRowsKernel<Format,GLM52_LAYER_THREADS>
 		<<<dim3(packed_rows,GLM52_HIDDEN / Format::kScaleGroup),GLM52_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(

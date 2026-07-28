@@ -184,7 +184,7 @@ static int32_t Mimo25LayerMoe(const Mimo25LayerBuffers *b, uint32_t rows, uint32
 		return(status);
 	LmTopkSmallKernel<MIMO25_LAYER_THREADS,MIMO25_TOP_K>
 		<<<rows,MIMO25_LAYER_THREADS,2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),stream>>>(
-		(const float *)b->router_logits,MIMO25_EXPERTS,b->route_expert,b->route_weight,0);
+		(const float *)b->router_logits,MIMO25_EXPERTS,b->route_expert,b->route_weight,0,0);
 	LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>
 		<<<dim3(packed_rows,MIMO25_HIDDEN / Format::kScaleGroup),MIMO25_LAYER_THREADS,
 		   (Format::kScaleGroup + 8u) * sizeof(float),stream>>>(

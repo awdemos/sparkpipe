@@ -12,7 +12,7 @@ ARCH="-gencode arch=compute_121a,code=sm_121a"
 cat > /tmp/lm_grouped_topk.cu <<'EOF'
 #include "inference/kernels/topk.cuh"
 template __global__ void LmTopkSmallKernel<256u, 6u, true, 8u, 3u>(
-	const float *, uint32_t, uint32_t *, float *, const float *);
+	const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
 EOF
 cd "$(dirname "$0")/.." || exit 1
 "$CUDA/bin/nvcc" -std=c++17 $ARCH -O1 -I. -c /tmp/lm_grouped_topk.cu \

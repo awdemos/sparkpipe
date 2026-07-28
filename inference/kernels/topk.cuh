@@ -31,6 +31,19 @@
 
 // Monotonic unsigned key from a float. Ordering by this key orders by value,
 // which is what lets a radix pass replace a comparison sort.
+// One score, from whichever source the caller supplied. Sigmoid applied here
+// when the caller passes raw logits, so the selection and the weight read the
+// same number by construction rather than by two call sites agreeing.
+static __device__ __forceinline__ float LmTopkScore(const float *scores, const uint16_t *logits_bf16, uint64_t index)
+{
+	if ( logits_bf16 != 0 )
+	{
+		float value = LmBf16ToFloat(logits_bf16[index]);
+		return(1.0f / (1.0f + __expf(-value)));
+	}
+	return(scores[index]);
+}
+
 static __device__ __forceinline__ uint32_t LmTopkKey(float value)
 {
 	uint32_t bits = __float_as_uint(value);
@@ -56,7 +69,7 @@ static __device__ __forceinline__ float LmTopkValue(uint32_t key)
 
 template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u>
 __global__ __launch_bounds__(THREADS, 1)
-void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias)
+void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ sigmoid_logits_bf16)
 {
 	extern __shared__ uint32_t lm_topk_shared[];
 	uint32_t *keys = lm_topk_shared;
@@ -73,8 +86,14 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		// and emitted that key as the weight, so a frozen load-balancing bias
 		// would have leaked into every mixture weight as a fixed per-expert
 		// distortion. Every caller passed 0.0f, so nothing was wrong yet.
-		keys[index] = index < n ? LmTopkKey(scores[base + index]
-			+ (selection_bias != 0 ? selection_bias[index] : 0.0f)) : 0u;
+		// SIGMOID HERE, NOT IN A SEPARATE PASS. A router logit is read once and
+		// selected on; writing sigmoid(logit) to memory and reading it back costs
+		// two trips over experts * rows floats per layer. At 896 experts and 92
+		// MoE layers that is tens of megabytes a token for a value used once.
+		// Pass sigmoid_logits_bf16 and scores is ignored; pass scores and the
+		// activation already happened.
+		keys[index] = index < n ? LmTopkKey(LmTopkScore(scores, sigmoid_logits_bf16,
+			base + index) + (selection_bias != 0 ? selection_bias[index] : 0.0f)) : 0u;
 		slots[index] = index;
 	}
 	__syncthreads();
@@ -106,27 +125,26 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 			group_key[group] = LmTopkKey(LmTopkValue(best) + LmTopkValue(second));
 		}
 		__syncthreads();
-		// TOP_GROUPS is small - one thread finds the cutoff rather than a second
-		// bitonic sort over a handful of entries.
-		if ( threadIdx.x == 0u )
+		// RANK BY COUNTING, NOT BY SELECTING TOP_GROUPS TIMES. The first version
+		// had thread zero run TOP_GROUPS passes over GROUPS entries, serial and
+		// quadratic, while every other thread waited. Each group instead counts
+		// how many groups outrank it - one pass, one thread per group, no
+		// barrier between - and survives if that count is below TOP_GROUPS.
+		//
+		// Ties broken by index so the count is a strict order and exactly
+		// TOP_GROUPS survive; the serial version broke ties by whichever the
+		// scan reached first, which is the same rule written less clearly.
+		for (group = threadIdx.x; group < GROUPS; group += THREADS)
 		{
-			uint32_t taken,highest,index2;
-			cut = 0u;
-			for (taken = 0u; taken < TOP_GROUPS; ++taken)
-			{
-				highest = 0u;
-				for (index2 = 0u; index2 < GROUPS; ++index2)
-					if ( group_key[index2] > highest && group_key[index2] != 0xffffffffu )
-						highest = group_key[index2];
-				for (index2 = 0u; index2 < GROUPS; ++index2)
-					if ( group_key[index2] == highest )
-					{
-						group_key[index2] = 0xffffffffu;
-						break;
-					}
-			}
-			(void)cut;
+			uint32_t better = 0u,other;
+			for (other = 0u; other < GROUPS; ++other)
+				if ( group_key[other] > group_key[group]
+					|| (group_key[other] == group_key[group] && other < group) )
+					++better;
+			if ( better >= TOP_GROUPS )
+				group_key[group] = 0xffffffffu;
 		}
+		(void)cut;
 		__syncthreads();
 		for (index = threadIdx.x; index < LM_TOPK_SMALL_LIMIT; index += THREADS)
 			if ( index < n && group_key[index / per_group] != 0xffffffffu )
@@ -164,7 +182,8 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 	{
 		out_indices[((uint64_t)blockIdx.x * K) + index] = slots[index];
 		if ( out_values != 0 )
-			out_values[((uint64_t)blockIdx.x * K) + index] = scores[base + slots[index]];
+			out_values[((uint64_t)blockIdx.x * K) + index] =
+				LmTopkScore(scores, sigmoid_logits_bf16, base + slots[index]);
 	}
 	if ( RENORMALISE && out_values != 0 )
 	{
@@ -172,16 +191,27 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		// K3 sets it; the report's routed_scaling_factor then multiplies a
 		// normalised mixture, which is why that factor being 1.0 makes the
 		// multiply a no-op rather than merely a small number.
+		__shared__ float reduction[LM_TOPK_SMALL_LIMIT];
+		float mine = 0.0f,total;
 		__syncthreads();
-		if ( threadIdx.x == 0u )
+		// A BLOCK REDUCTION, NOT ONE THREAD. The first version had thread zero
+		// walk the k gates twice while the other 255 waited - at 92 MoE layers a
+		// two-pass serial loop per token per layer sits on the critical path for
+		// no reason. K is 16 here, so this is not a large number of cycles; it is
+		// a large number of barriers with nothing behind them.
+		for (index = threadIdx.x; index < K; index += THREADS)
+			mine += out_values[((uint64_t)blockIdx.x * K) + index];
+		reduction[threadIdx.x] = mine;
+		__syncthreads();
+		for (index = THREADS / 2u; index > 0u; index >>= 1)
 		{
-			float total = 0.0f;
-			for (index = 0u; index < K; ++index)
-				total += out_values[((uint64_t)blockIdx.x * K) + index];
-			total += 1e-20f;
-			for (index = 0u; index < K; ++index)
-				out_values[((uint64_t)blockIdx.x * K) + index] /= total;
+			if ( threadIdx.x < index && threadIdx.x + index < THREADS )
+				reduction[threadIdx.x] += reduction[threadIdx.x + index];
+			__syncthreads();
 		}
+		total = reduction[0] + 1e-20f;
+		for (index = threadIdx.x; index < K; index += THREADS)
+			out_values[((uint64_t)blockIdx.x * K) + index] /= total;
 	}
 }
 
