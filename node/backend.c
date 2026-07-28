@@ -899,6 +899,15 @@ static SparkStatus SparkRingServiceBackendSubmitReleaseToResident(
 		SPARK_CUDA_RESIDENT_IPC_SUBMIT_WORK_FLAG_EXPECT_RESULT);
 	if (status != SPARK_STATUS_OK)
 		return status;
+	// FIRE AND FORGET IS THE DEFAULT. Ordering safety is the resident's
+	// FIFO: this release entered the queue before any dispatch that could
+	// reuse its blocks, so it is processed first by construction. The
+	// EXPECT_RESULT stays set, so the credit returns and a rejection still
+	// surfaces - through the async pump, which already handles both. The
+	// synchronous await was the serving loop's only blocking stall; it
+	// remains available to a sparkdev bisecting a reuse suspicion.
+	if (getenv("SPARKPIPE_RELEASE_SYNC_AWAIT") == 0)
+		return SPARK_STATUS_OK;
 	return SparkRingServiceBackendResidentAwaitSubmitResult(state,0);
 }
 
@@ -2339,9 +2348,20 @@ static SparkStatus SparkRingServiceBackendInitializeScheduler(
 		SPARK_RING_SERVICE_BACKEND_PREFILL_WAVE_TOKENS;
 	scheduler_configuration.prefix_cache_block_tokens =
 		SPARK_RING_SERVICE_BACKEND_KV_BLOCK_TOKENS;
+	// FAST IS THE DEFAULT. The library default already includes
+	// cross-sequence prefix reuse; this site used to clear it, which made
+	// the disabled state the silent default - a fallback wearing a
+	// configuration's clothes. The kill-switch below is for a sparkdev
+	// troubleshooting a suspected reuse bug, and it announces itself.
 	scheduler_configuration.configuration_flags =
-		SPARK_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS &
-		~SPARK_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE;
+		SPARK_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
+	if (getenv("SPARKPIPE_DISABLE_PREFIX_REUSE") != 0)
+	{
+		scheduler_configuration.configuration_flags &=
+			~SPARK_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE;
+		fprintf(stderr,"ring_config prefix_reuse=DISABLED by "
+			"SPARKPIPE_DISABLE_PREFIX_REUSE\n");
+	}
 	scheduler_configuration.prefix_cache = &state->prefix_cache;
 	return SparkSchedulerInitialize(
 		&state->scheduler,
@@ -3073,6 +3093,17 @@ static SparkStatus SparkRingServiceBackendInitialize(
 			"RING service runtime failed to initialize");
 		return status;
 	}
+	// THE BANNER IS THE ANTI-FOOTGUN. Every speed path states its effective
+	// mode in one place at startup, so a disabled booster is a line in a
+	// log, never a surprise in a profile.
+	fprintf(stderr,
+		"ring_effective_config prefix_reuse=%s release=%s dspark=%s "
+		"mtp=%s adaptive_batching=on chunked_prefill=on "
+		"cudagraph_padding=on measured_buckets=on\n",
+		getenv("SPARKPIPE_DISABLE_PREFIX_REUSE") == 0 ? "on" : "OFF",
+		getenv("SPARKPIPE_RELEASE_SYNC_AWAIT") == 0 ? "async" : "SYNC",
+		state->dspark_enabled != 0u ? "on" : "OFF",
+		state->mtp_enabled != 0u ? "on" : "off(opt-in)");
 	return SPARK_STATUS_OK;
 }
 

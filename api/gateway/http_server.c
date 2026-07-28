@@ -110,6 +110,11 @@ static void SparkGlm52GatewayInitializeConfig(
 	SparkGlm52GatewayConfig *configuration)
 {
 	memset(configuration,0,sizeof(*configuration));
+	// FAST IS THE DEFAULT: DSpark speculation on unless a sparkdev turns it
+	// off (--no-dspark or SPARKPIPE_DISABLE_DSPARK). MTP stays opt-in - two
+	// simultaneous speculators is a mode choice, not a speed default.
+	configuration->dspark_enabled =
+		getenv("SPARKPIPE_DISABLE_DSPARK") == 0 ? 1u : 0u;
 	configuration->bind_address = "127.0.0.1";
 	configuration->driver_program_name = "glm52.ring.rank.production";
 	configuration->final_event_bind_address = "0.0.0.0";
@@ -459,7 +464,13 @@ static int32_t SparkGlm52GatewayApplyArgument(
 	}
 	if (strcmp(argv[*index],"--dspark") == 0)
 	{
+		// accepted for compatibility: speculation is the default now
 		configuration->dspark_enabled = 1u;
+		return 0;
+	}
+	if (strcmp(argv[*index],"--no-dspark") == 0)
+	{
+		configuration->dspark_enabled = 0u;
 		return 0;
 	}
 	if (strcmp(argv[*index],"--mtp") == 0)

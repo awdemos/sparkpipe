@@ -97,3 +97,27 @@ refuses multi-chunk decode loudly rather than half-supporting it.
 A change to admission, completion, or release lands with its line here:
 what the slot-refill latency is after the change, and why the long tail is
 still the only thing that waits.
+
+## Fast by default (2026-07-28)
+
+The findings above stopped being findings: cross-sequence prefix reuse is
+ON (the backend takes the scheduler's own default flags), sequence release
+is FIRE-AND-FORGET (EXPECT_RESULT stays set, so credits and rejections
+flow through the async pump the loop already runs), and DSpark speculation
+is ON at the gateway. A disabled speed booster is a fallback wearing a
+configuration's clothes; the doctrine now enforced by
+tests/test_fast_defaults.py is: fast is the default, slow is a NAMED
+kill-switch for a sparkdev bisecting a suspicion, and every mode announces
+itself in the ring_effective_config banner at startup.
+
+| kill-switch | restores |
+|---|---|
+| SPARKPIPE_DISABLE_PREFIX_REUSE | per-sequence-only prefix cache |
+| SPARKPIPE_RELEASE_SYNC_AWAIT | blocking release round-trip |
+| SPARKPIPE_DISABLE_DSPARK / --no-dspark | plain decode, no speculation |
+
+MTP remains opt-in (--mtp): two simultaneous speculators is a mode choice,
+not a speed default. The P1 hardware validation (shared-prefix aliasing,
+byte-identical logits) is still owed on first ring bring-up - the default
+changed because the code path is complete and the library already believed
+in it; the test confirms, it does not enable.

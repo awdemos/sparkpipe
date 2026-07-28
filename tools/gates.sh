@@ -75,6 +75,7 @@ run "k3 engine on host"    "python3 tests/test_k3_engine.py"
 run "k3 pack"              "python3 tests/test_k3_pack.py"
 run "k3 tp shard"          "python3 tests/test_k3_shard.py"
 run "k3 shard table"       "python3 tests/test_k3_shard_table.py"
+run "fast defaults"        "python3 tests/test_fast_defaults.py"
 run "dry naming law"       "python3 tests/test_dry_law.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
