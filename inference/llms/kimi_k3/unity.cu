@@ -20,7 +20,7 @@
 #include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/llms/kimi_k3/layer.cuh"
 
-using K3LinearState = LmKvState<K3_KDA_STATE_BYTES>;
+using K3LinearState = LmKvState<K3_KDA_STATE_SLOT_BYTES>;
 
 static_assert(K3LinearState::kGrows == false, "a delta-rule state does not grow with context");
 static_assert(K3LinearState::kPageSlots == 1u, "one slot per sequence");
@@ -47,12 +47,12 @@ template __global__ void LmQuantiseRowsKernel<LmMxfp4, K3_THREADS>(const uint16_
 // KDA on three of every four layers, gated MLA on the fourth. The same delta
 // rule Qwen 3.6 uses, at K3's widths - which is the argument that this is an
 // architecture class and not one vendor's design.
-// The slot must hold the state AND the three convolution windows, because
-// config.h sizes it that way against SGLang's measured figure. If the element
-// size ever changes, this is what stops the pool stride and the kernel's
-// addressing from drifting apart again.
-static_assert(K3_KDA_STATE_BYTES >=
-	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * K3_KDA_STATE_ELEMENT_BYTES),
+// The pool stride is the outer-product slot alone; the convolution windows are
+// their own pools with their own strides, and K3_KDA_STATE_BYTES is the sum a
+// capacity plan budgets. If the element size ever changes, this is what stops
+// the pool stride and the kernel's addressing from drifting apart again.
+static_assert(K3_KDA_STATE_SLOT_BYTES >=
+	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(uint16_t)),
 	"a slot must hold the state it addresses");
 static_assert(K3_KDA_STATE_ELEMENT_BYTES >= sizeof(uint16_t),
 	"the kernel stores bf16; a narrower element would truncate the state");
@@ -116,6 +116,6 @@ extern "C" int32_t K3HeadRestricted(const K3LayerBuffers *b, const void *norm_we
 
 template __global__ void LmPerHeadProjectKernel<K3_THREADS, K3_KV_LORA_RANK, K3_V_HEAD_DIM>(const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t);
 
-template __global__ void LmAttnResKernel<K3_THREADS, K3_ATTNRES_MAX_SOURCES>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, float);
+template __global__ void LmAttnResKernel<K3_THREADS, K3_ATTNRES_MAX_SOURCES>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t, float);
 
 template __global__ void LmCopyRowsKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, uint32_t);

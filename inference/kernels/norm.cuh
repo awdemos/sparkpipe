@@ -430,7 +430,7 @@ void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__rest
 // is what the reference does at run time: norm.weight * proj.weight.squeeze(0).
 template<uint32_t THREADS, uint32_t MAX_SOURCES>
 __global__ __launch_bounds__(THREADS, 1)
-void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const uint16_t *__restrict__ score_weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t dimension, float epsilon)
+void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const uint16_t *__restrict__ score_weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t rows, uint32_t dimension, float epsilon)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float score[MAX_SOURCES];
@@ -438,11 +438,19 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 	uint32_t row = blockIdx.x,source,index;
 	float running_max = -INFINITY,running_sum = 0.0f;
 	// The partial sum is the last candidate; the bank holds the rest.
+	//
+	// THE BANK IS [source][row][dimension], WHICH IS THE ONLY LAYOUT THAT CAN BE
+	// STABLE. The writer stores one completed block for every row at a time, so
+	// its natural stride is rows - and a [row][source] layout would need a row
+	// stride equal to the source count, which GROWS as blocks close: a bank
+	// written when three sources existed would be re-read wrongly when there are
+	// five. This kernel read [row][sources-1] and the driver wrote [source][row];
+	// the two agreed at one row and at no other batch size.
 	for (source = 0u; source < sources; ++source)
 	{
 		const uint16_t *values = source + 1u == sources
 			? partial_bf16 + ((uint64_t)row * dimension)
-			: bank_bf16 + ((((uint64_t)row * (sources - 1u)) + source) * dimension);
+			: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
 		float square = 0.0f,dot = 0.0f,inverse;
 		for (index = threadIdx.x; index < dimension; index += THREADS)
 		{
@@ -482,7 +490,7 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 		{
 			const uint16_t *values = source + 1u == sources
 				? partial_bf16 + ((uint64_t)row * dimension)
-				: bank_bf16 + ((((uint64_t)row * (sources - 1u)) + source) * dimension);
+				: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
 			total += weight[source] * LmBf16ToFloat(values[index]);
 		}
 		output_bf16[((uint64_t)row * dimension) + index] = LmFloatToBf16(total);

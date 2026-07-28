@@ -76,7 +76,7 @@ struct LmHostRecorderFormat
 #define ROWS 2u
 #define ROUTES (ROWS * K3_TOP_K)
 
-static uint16_t hidden[ROWS * K3_HIDDEN], residual[ROWS * K3_HIDDEN];
+static uint16_t hidden[ROWS * K3_HIDDEN];
 static uint16_t normed[ROWS * K3_HIDDEN], attention_out[ROWS * K3_HIDDEN];
 static uint16_t shared_out[ROWS * K3_HIDDEN];
 static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
@@ -96,18 +96,19 @@ int main(void)
 	memset(&b, 0, sizeof(b));
 	for (index = 0u; index < K3_HIDDEN; ++index)
 		norm_weight[index] = LmFloatToBf16(1.0f);
+	// hidden is the MLP-side retrieval under AttnRes - the driver writes it
+	// there before calling the layer, and the layer's first norm reads it
+	// alone. residual_bf16 no longer exists: the stream advances only by the
+	// driver's explicit partial adds.
 	for (index = 0u; index < ROWS * K3_HIDDEN; ++index)
-	{
 		hidden[index] = LmFloatToBf16(0.01f * (float)(index % 17));
-		residual[index] = LmFloatToBf16(0.005f * (float)(index % 11));
-	}
 	for (index = 0u; index < ROUTES; ++index)
 	{
 		route_packed[index] = index;
 		route_source[index] = index / K3_TOP_K;
 		route_weight[index] = 1.0f / (float)K3_TOP_K;
 	}
-	b.hidden_bf16 = hidden; b.residual_bf16 = residual; b.normed_bf16 = normed;
+	b.hidden_bf16 = hidden; b.normed_bf16 = normed;
 	b.attention_out_bf16 = attention_out; b.shared_out_bf16 = shared_out;
 	b.latent_bf16 = latent; b.gate_up_bf16 = gate_up;
 	b.intermediate_bf16 = intermediate;

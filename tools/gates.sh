@@ -70,6 +70,7 @@ run "k3 quant recipe"      "python3 tests/test_k3_quant_recipe.py"
 # first successful run, and catches the shared-expert overwrite by seeing the
 # routed value missing from the output rather than by reading the source.
 run "k3 layer on host"     "python3 tests/test_k3_layer_host.py"
+run "k3 slice on host"     "python3 tests/test_k3_slice_host.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run "grouped topk builds"  "sh tools/build_grouped_topk.sh"

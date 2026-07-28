@@ -271,9 +271,18 @@
 #define K3_KDA_CONV_WINDOW_BYTES \
 	(((2u * K3_KDA_HEADS * K3_KDA_KEY_DIM) + (K3_KDA_HEADS * K3_KDA_VALUE_DIM)) \
 		* K3_KDA_CONV_KERNEL * (K3_KV_BITS / 8u))
-#define K3_KDA_STATE_BYTES \
-	((K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * K3_KDA_STATE_ELEMENT_BYTES) \
-		+ K3_KDA_CONV_WINDOW_BYTES)
+// THREE NAMES, THREE USES, ONE SUM. The kernel addresses the outer-product
+// slot alone - the convolution windows are separate pools with their own
+// strides, because LmCausalConvDecodeKernel indexes them by channels * kernel
+// and an interleaved slot cannot be reached by base + index * stride. The SLOT
+// constant is what the delta rule and the replay fold are handed; the sum is
+// what a capacity plan budgets per sequence per layer.
+#define K3_KDA_STATE_SLOT_BYTES \
+	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * K3_KDA_STATE_ELEMENT_BYTES)
+#define K3_KDA_STATE_BYTES (K3_KDA_STATE_SLOT_BYTES + K3_KDA_CONV_WINDOW_BYTES)
+// Layer counts by kind, so per-layer pool arithmetic has one source. 69 + 24.
+#define K3_KDA_LAYER_COUNT (K3_LAYERS - K3_MLA_LAYER_COUNT)
+#define K3_MLA_LAYER_COUNT ((K3_LAYERS / 4u) + 1u)
 
 // 1-INDEXED IN THE CONFIG, 0-INDEXED HERE. full_attn_layers is
 // {4,8,...,92} plus 93; subtract one and that is {3,7,...,91} plus 92. So the

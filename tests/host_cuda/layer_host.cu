@@ -170,7 +170,7 @@ int main(void)
 
 	LM_HOST_LAUNCH(dim3(ROWS),
 		(LmAttnResKernel<THREADS, 16u>(
-			bank, partial, attnres_w, attnres_out, SOURCES, CHANNELS, 1e-5f)));
+			bank, partial, attnres_w, attnres_out, SOURCES, ROWS, CHANNELS, 1e-5f)));
 	Emit("attnresout", attnres_out, ROWS * CHANNELS);
 	return 0;
 }
