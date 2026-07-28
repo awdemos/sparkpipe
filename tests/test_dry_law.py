@@ -19,7 +19,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-COMMON = ("include/sparkpipe", "node", "ring", "serving")
+COMMON = ("include/sparkpipe", "node", "ring", "serving", "api",
+          "cache", "scheduler", "text", "src", "runtime", "deployment",
+          "inference/stage")
 
 GLM_BUDGET = {
     "include/sparkpipe/spark_cuda_resident_ipc.h": (4, "drafter wiring (glm data); kv-cache seam (A3)"),
@@ -39,13 +41,43 @@ GLM_BUDGET = {
     "include/sparkpipe/spark_serving_engine.h": (5, "seam includes"),
     "include/sparkpipe/spark_stage_kv_client.h": (1, "seam includes"),
     "include/sparkpipe/spark_stage_plan.h": (5, "model header (glm data)"),
-    "node/backend.c": (58, "drafter wiring (glm data); kv-cache seam (A3)"),
-    "node/rank_daemon.c": (26, "drafter wiring (glm data); kv-cache seam (A3)"),
+    "node/backend.c": (58, "drafter wiring (glm data); kv-cache seam (A3); stage firmware (A4)"),
+    "node/rank_daemon.c": (26, "drafter wiring (glm data); kv-cache seam (A3); stage firmware (A4)"),
     "node/rank_runtime.c": (32, "seam includes"),
     "node/residentd.c": (23, "kv-cache seam (A3)"),
     "serving/spark_production_topology.c": (7, "seam includes"),
     "serving/spark_ring_node_context_builder.c": (2, "seam includes"),
     "serving/spark_service_backend.c": (2, "seam includes"),
+    "api/compat_api.c": (136, "compat surface; template data"),
+    "api/gateway/http_server.c": (224, "seam includes"),
+    "api/http_gateway.c": (49, "seam includes"),
+    "api/request.c": (678, "drafter wiring (glm data); kv-cache seam (A3)"),
+    "api/service.c": (105, "seam includes"),
+    "api/serving_engine.c": (142, "seam includes"),
+    "cache/kv_cache.c": (427, "kv-cache seam (A3)"),
+    "cache/prefix_cache.c": (237, "kv-cache seam (A3)"),
+    "cache/store/stage_kv_client.c": (1, "seam includes"),
+    "scheduler/long_context.c": (52, "seam includes"),
+    "scheduler/scheduler.c": (174, "seam includes"),
+    "scheduler/speculation.c": (213, "drafter wiring (glm data)"),
+    "scheduler/stage_plan.c": (67, "seam includes"),
+    "scheduler/work_control.c": (139, "seam includes"),
+    "text/chat_template.c": (79, "template data"),
+    "text/prompt.c": (15, "template data"),
+    "text/prompt_pipeline.c": (10, "seam includes"),
+    "text/tokenize_main.c": (36, "model header (glm data); template data"),
+    "runtime/launch.h": (0, "seam includes"),
+    "runtime/pack/artifact_check.c": (82, "stage firmware (A4)"),
+    "runtime/pack/fp8_resident_pack.py": (5, "stage firmware (A4)"),
+    "runtime/pack/stage_pack.py": (2, "seam includes"),
+    "runtime/pack/stagepack.c": (66, "stagepack format (pack decision)"),
+    "deployment/src/spark_release.c": (14, "seam includes"),
+    "inference/stage/dispatch.cu": (59, "stage firmware (A4)"),
+    "inference/stage/draft_backend.cu": (600, "drafter wiring (glm data)"),
+    "inference/stage/legacy_entry.cu": (6, "stage firmware (A4)"),
+    "inference/stage/module.c": (1042, "drafter wiring (glm data); stage firmware (A4)"),
+    "inference/stage/runner.c": (80, "stage firmware (A4)"),
+    "inference/stage/serving_adapter.cu": (166, "stage firmware (A4)"),
 }
 
 FORBIDDEN = re.compile(r"kimi|_k3_|K3[A-Z]|k3_|qwen|dsv4|mimo25|Qwen36|Dsv4|Mimo25",

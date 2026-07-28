@@ -157,7 +157,7 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 	// the two meet is here. Every K extent in the three drivers today is a
 	// multiple of 256, which is why it has never bitten, but INT7 tiles at 256
 	// rather than 128 and the two models without a layer.cuh are unwritten.
-	// GLM52_QK_NOPE_DIM and MIMO25_HEAD_DIM are already 192 and would silently
+	// two models' 192-wide head dims exist in this tree today and would silently
 	// compute nothing at all under INT7: 192 / 256 == 0 tiles.
 	if ( (shape->input_dimension % shape->tile_k) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
