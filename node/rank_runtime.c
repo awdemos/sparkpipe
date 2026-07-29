@@ -75,45 +75,9 @@ SparkStatus SparkRingRuntimeParseQuantizationMode(
     else if (strcmp(name,"nvfp4") == 0)
         *quantization_mode_out =
             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
-    else if (strcmp(name,"w8lut") == 0)
-        *quantization_mode_out =
-            SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
-    else
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    return SPARK_STATUS_OK;
-}
-
-const char *SparkRingRuntimeQuantizationModeName(
-    uint32_t quantization_mode)
-{
-    if (quantization_mode ==
-        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
-        return "fp8";
-    if (quantization_mode ==
-        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
-        return "nvfp4";
-    if (quantization_mode ==
-        SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
-        return "w8lut";
-    return 0;
-}
-
-SparkStatus SparkRingRuntimeValidateFp8PlanCounts(
-    uint32_t quantization_mode,
-    uint32_t bound_plan_count,
-    uint32_t expected_plan_count)
-{
-    if (quantization_mode ==
-        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
-    {
-        return expected_plan_count != 0u &&
-            bound_plan_count == expected_plan_count
-            ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
-    }
     if (quantization_mode ==
             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
         quantization_mode ==
-            SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
     {
         return bound_plan_count == 0u && expected_plan_count == 0u
             ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
@@ -136,9 +100,7 @@ SparkStatus SparkRingRuntimeExpectedMoeBackendKind(
         *backend_kind_out =
             SPARK_RING_RUNTIME_MOE_BACKEND_NVFP4_B12X;
     else if (quantization_mode ==
-        SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
         *backend_kind_out =
-            SPARK_RING_RUNTIME_MOE_BACKEND_W8LUT_BF16_WMMA;
     else
         return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
@@ -286,7 +248,6 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
          quantization_mode !=
              SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT &&
          quantization_mode !=
-             SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT) ||
         port_base > (65535u - SPARK_RING_RUNTIME_STAGE_COUNT))
     {
         return SparkRingRuntimeReport(
@@ -652,7 +613,6 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
          rank_plan->quantization_mode !=
              SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT &&
          rank_plan->quantization_mode !=
-             SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT) ||
         rank_plan->max_packet_bytes !=
             ((uint64_t)SPARK_RING_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
              (uint64_t)rank_plan->execution_row_capacity))
@@ -759,12 +719,10 @@ SparkStatus SparkRingRuntimeBuildMoePackPath(
             shape_tag);
     }
     else if (quantization_mode ==
-        SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
     {
         written = snprintf(
             pack_path,
             pack_path_bytes,
-            "%s/glm52_layer_%04u_w8lut_moe%s.spw8lut",
             pack_root,
             layer_index,
             shape_tag);
@@ -817,7 +775,6 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
     }
     manifest_names[0] = SPARK_RING_RUNTIME_FP8_PACK_MANIFEST;
     manifest_names[1] = SPARK_RING_RUNTIME_B12X_PACK_MANIFEST;
-    manifest_names[2] = SPARK_RING_RUNTIME_W8LUT_PACK_MANIFEST;
     if (rank_plan->quantization_mode ==
         SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
         selected_manifest_index = 0u;

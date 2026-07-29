@@ -41,7 +41,7 @@ static inline uint64_t SparkResidentDecodeStageDivideRoundUpU64(
 extern "C" {
 #endif
 
-#define SPARK_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 29u
+#define SPARK_RESIDENT_DECODE_STAGE_NODE_CONTEXT_ABI_VERSION 30u
 #define SPARK_RESIDENT_DECODE_STAGE_MOE_W1_COMPONENT_COUNT \
     SPARK_GLM52_MODEL_MOE_W1_COMPONENT_COUNT
 #define SPARK_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT 128u
@@ -117,7 +117,6 @@ extern "C" {
 #define SPARK_RESIDENT_DECODE_STAGE_EXACT_STAGE_SLICE_PLAN_ABI_VERSION 4u
 #define SPARK_RESIDENT_DECODE_STAGE_PAGED_PREFILL_PLAN_ABI_VERSION 3u
 #define SPARK_RESIDENT_DECODE_STAGE_FP8_MOE_PLAN_ABI_VERSION 2u
-#define SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_PLAN_ABI_VERSION 1u
 #define SPARK_RESIDENT_DECODE_STAGE_MTP_EVENT_COUNTER_COUNT 5u
 #define SPARK_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_SIZE 32u
 #define SPARK_RESIDENT_DECODE_STAGE_FINAL_EPILOGUE_CANDIDATE_GROUP_COUNT \
@@ -802,35 +801,6 @@ typedef struct SparkGlm52ResidentDecodeStageFp8MoePlan
     uint64_t validated_maximum_latency_ns;
 } SparkGlm52ResidentDecodeStageFp8MoePlan;
 
-typedef struct SparkGlm52ResidentDecodeStageW8lutMoePlan
-{
-    uint32_t abi_version;
-    uint32_t capability_flags;
-    uint32_t maximum_active_sequence_count;
-    uint32_t maximum_token_count;
-    uint32_t expert_count;
-    uint32_t top_k;
-    uint32_t hidden_dimension;
-    uint32_t intermediate_dimension;
-    uint32_t output_dtype;
-    uint32_t cuda_architecture;
-    uint32_t gate_up_order;
-    uint32_t weight_layout;
-    uint32_t scale_layout;
-    uint32_t quant_mode;
-    uint32_t reserved0;
-    uint32_t reserved1;
-    void *launch_function;
-    void *opaque_state;
-    const uint8_t *w1_weight_codes;
-    const uint16_t *w1_exponent_base;
-    const uint8_t *w2_weight_codes;
-    const uint16_t *w2_exponent_base;
-    void *workspace;
-    uint64_t workspace_bytes;
-    uint64_t validated_maximum_latency_ns;
-} SparkGlm52ResidentDecodeStageW8lutMoePlan;
-
 typedef struct SparkResidentDecodeStageFp8KvCachePlan
 {
     uint32_t abi_version;
@@ -1148,7 +1118,6 @@ typedef struct SparkResidentDecodeStageNodeContext
     const SparkResidentDecodeStageFullStagePlan *full_stage_plan;
     const SparkResidentDecodeStageBulkPrefillPlan *bulk_prefill_plan;
     const SparkGlm52ResidentDecodeStageFp8MoePlan *fp8_moe_plan;
-    const SparkGlm52ResidentDecodeStageW8lutMoePlan *w8lut_moe_plan;
     const SparkResidentDecodeStageFp8KvCachePlan *fp8_kv_cache_plan;
     uint32_t model_quantization_mode;
     uint32_t reserved1;
@@ -1254,13 +1223,6 @@ SparkStatus SparkResidentDecodeStageLaunchFlashInferB12xMoe(
 
 SparkStatus SparkResidentDecodeStageLaunchFp8Moe(
     const SparkGlm52ResidentDecodeStageFp8MoePlan *fp8_moe_plan,
-    const SparkResidentDecodeStageNodeContext *node_context,
-    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
-    uint32_t active_sequence_count,
-    void *cuda_stream);
-
-SparkStatus SparkResidentDecodeStageLaunchW8lutMoe(
-    const SparkGlm52ResidentDecodeStageW8lutMoePlan *w8lut_moe_plan,
     const SparkResidentDecodeStageNodeContext *node_context,
     const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t active_sequence_count,

@@ -148,61 +148,6 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanIsUsable(
             node_context->max_active_sequence_count;
 }
 
-static inline bool SparkGlm52ResidentDecodeStageW8lutMoePlanIsUsable(
-    const SparkResidentDecodeStageNodeContext *node_context)
-{
-    const SparkGlm52ResidentDecodeStageW8lutMoePlan *plan;
-    uint32_t required_capabilities;
-    if (node_context == 0 || node_context->w8lut_moe_plan == 0)
-    {
-        return false;
-    }
-    plan = node_context->w8lut_moe_plan;
-    required_capabilities =
-        SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_REQUIRED_CAPABILITIES;
-    return plan->abi_version ==
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_PLAN_ABI_VERSION &&
-        plan->reserved0 == 0u && plan->reserved1 == 0u &&
-        plan->maximum_active_sequence_count >=
-            node_context->max_active_sequence_count &&
-        plan->maximum_token_count >= node_context->max_active_sequence_count &&
-        plan->expert_count == SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT &&
-        plan->top_k == SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K &&
-        plan->hidden_dimension == SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION &&
-        plan->intermediate_dimension ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION &&
-        plan->output_dtype ==
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_OUTPUT_DTYPE_BF16 &&
-        plan->cuda_architecture == 121u &&
-        plan->gate_up_order ==
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_GATE_UP_ORDER_UP_GATE &&
-        plan->weight_layout ==
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR &&
-        plan->scale_layout ==
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_SCALE_LAYOUT_EXPERT_COMPONENT_E0 &&
-        plan->quant_mode == SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_QUANT_MODE &&
-        plan->launch_function != 0 && plan->w1_weight_codes != 0 &&
-        plan->w1_exponent_base != 0 && plan->w2_weight_codes != 0 &&
-        plan->w2_exponent_base != 0 && plan->workspace != 0 &&
-        plan->workspace_bytes != 0u &&
-        (plan->capability_flags & required_capabilities) == required_capabilities &&
-        SparkResidentDecodeStagePointerIsAligned(
-            plan->w1_weight_codes,
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_ALIGNMENT_BYTES) &&
-        SparkResidentDecodeStagePointerIsAligned(
-            plan->w2_weight_codes,
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_ALIGNMENT_BYTES) &&
-        SparkResidentDecodeStagePointerIsAligned(
-            plan->w1_exponent_base,
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_EXPONENT_ALIGNMENT_BYTES) &&
-        SparkResidentDecodeStagePointerIsAligned(
-            plan->w2_exponent_base,
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_EXPONENT_ALIGNMENT_BYTES) &&
-        SparkResidentDecodeStagePointerIsAligned(
-            plan->workspace,
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_WORKSPACE_ALIGNMENT_BYTES);
-}
-
 static inline bool SparkGlm52ResidentDecodeStageB12xMoePlanIsUsable(
     const SparkResidentDecodeStageNodeContext *node_context,
     const SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan *b12x_moe_dispatch_plan)

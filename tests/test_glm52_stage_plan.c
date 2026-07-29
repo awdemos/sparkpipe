@@ -279,7 +279,6 @@ static void SparkTestGlm52StagePlanMeasuredBalancedQuantizationModes(void)
 {
     SparkStagePlan stage_plan_4bit;
     SparkStagePlan stage_plan_8bit;
-    SparkStagePlan stage_plan_w8lut;
     uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     char error_buffer[256];
@@ -308,7 +307,6 @@ static void SparkTestGlm52StagePlanMeasuredBalancedQuantizationModes(void)
     assert(SparkStagePlanLoadMeasuredCostProfileForQuantization(
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B128,
-        SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,
         layer_cost_ns,
         &final_stage_extra_cost_ns) == SPARK_STATUS_OK);
     assert(final_stage_extra_cost_ns == 0u);
@@ -330,8 +328,6 @@ static void SparkTestGlm52StagePlanMeasuredBalancedQuantizationModes(void)
     assert(SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B64,
-        SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT,
-        &stage_plan_w8lut,
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(memcmp(
@@ -340,7 +336,6 @@ static void SparkTestGlm52StagePlanMeasuredBalancedQuantizationModes(void)
         sizeof(stage_plan_4bit)) == 0);
     assert(memcmp(
         &stage_plan_8bit,
-        &stage_plan_w8lut,
         sizeof(stage_plan_8bit)) == 0);
     assert(SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,

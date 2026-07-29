@@ -94,7 +94,6 @@ static int SparkGlm52KvJitBudgetToolPopulateKvLayout(
         request->fp8_scale_block_size = SPARK_GLM52_MODEL_FP8_SCALE_BLOCK;
         return 0;
     }
-    if (quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
     {
         request->attention_cache_layout =
             SPARK_KV_CACHE_LAYOUT_FULL_KEY_VALUE;
