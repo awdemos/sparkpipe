@@ -72,6 +72,7 @@
 #define LM_LAUNCH_ERR_MAP (-44)
 #define LM_LAUNCH_ERR_ATTRIBUTE (-45)
 #define LM_LAUNCH_ERR_LAUNCH (-46)
+#define LM_LAUNCH_ERR_OUTPUT (-47)
 
 // Tile heights the library instantiates. A bucket outside this range is a
 // caller error rather than a case to approximate, because the tile sizes shared

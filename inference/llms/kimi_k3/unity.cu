@@ -72,7 +72,7 @@ template __global__ void LmHeadCommitKernel<K3_THREADS>(const float *, const uin
 template __global__ void LmMoeFinalizeKernel<K3_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
 
 template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
-template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
+template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true, 1u, 1u, true>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
 template __global__ void LmSigmoidRowsKernel<K3_THREADS>(const uint16_t *, float *, uint32_t);
 
 // -- entry points ---------------------------------------------------------------

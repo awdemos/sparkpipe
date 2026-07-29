@@ -301,7 +301,7 @@ static int32_t Glm52LayerMoe(const Glm52LayerBuffers *b, uint32_t rows, uint32_t
 	gemm.scale_b = 0;
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
-	gemm.output_bf16 = b->router_logits;
+	gemm.output_f32 = b->router_logits;
 	status = LmGemmLaunch<LmBf16Format,GLM52_LAYER_TILE_N,LmBf16Format::kTileK,GLM52_LAYER_STAGES,GLM52_LAYER_WARPS>(
 		&gemm,b->normed_bf16,b->router_weight,rows,rows,GLM52_TOP_K,1u,
 		GLM52_HIDDEN,GLM52_EXPERTS,sms,false,stream);

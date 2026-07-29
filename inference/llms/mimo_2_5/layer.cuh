@@ -160,7 +160,7 @@ static int32_t Mimo25LayerMoe(const Mimo25LayerBuffers *b, uint32_t rows, uint32
 	memset(&gemm,0,sizeof(gemm));
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
-	gemm.output_bf16 = b->router_logits;
+	gemm.output_f32 = b->router_logits;
 	status = LmGemmLaunch<LmBf16Format,MIMO25_LAYER_TILE_N,LmBf16Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
 		&gemm,b->normed_bf16,b->router_weight,rows,rows,MIMO25_TOP_K,1u,
 		MIMO25_HIDDEN,MIMO25_EXPERTS,sms,false,stream);

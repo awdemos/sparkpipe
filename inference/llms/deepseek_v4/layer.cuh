@@ -178,7 +178,7 @@ static int32_t Dsv4LayerMoe(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t p
 	memset(&gemm,0,sizeof(gemm));
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
-	gemm.output_bf16 = b->router_logits;
+	gemm.output_f32 = b->router_logits;
 	status = LmGemmLaunch<LmBf16Format,DSV4_LAYER_TILE_N,LmBf16Format::kTileK,DSV4_LAYER_STAGES,DSV4_LAYER_WARPS>(
 		&gemm,b->normed_bf16,b->router_weight,rows,rows,DSV4_TOP_K,1u,
 		DSV4_HIDDEN,DSV4_EXPERTS,sms,false,stream);

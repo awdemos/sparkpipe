@@ -53,6 +53,7 @@ run "kda on host"          "python3 tests/test_kda_host.py"
 # Emitting the biased score as the weight produces 9 failures here; skipping the
 # renormalisation produces 17.
 run "router on host"       "python3 tests/test_router_host.py"
+run "router fp32 contract"  "python3 tests/test_router_precision_contract.py"
 # Six more kernels the other two harnesses do not reach, including the MoE
 # finalize whose launch was wrong four ways and compiled.
 run "layer on host"        "python3 tests/test_layer_host.py"

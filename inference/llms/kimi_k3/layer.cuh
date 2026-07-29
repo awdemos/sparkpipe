@@ -570,38 +570,24 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 		b->attention_out_bf16,partial_accumulate,rows,K3_MLA_OUT_DIM,K3_HIDDEN,multiprocessors,stream));
 }
 
-// Stable LatentMoE, on every layer. Report eq. 11.
-//
-// THE ROUTER READS THE FULL HIDDEN. Only the experts are latent: the token is
-// projected to 3584 after routing, not before. Routing in the latent space
-// would run and would be a different model.
 template<class Format>
 static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t multiprocessors, cudaStream_t stream)
 {
 	LmGemmArguments gemm;
 	int32_t status;
-	// THE INPUT IS THE MLP-SIDE RETRIEVAL, IN hidden_bf16 - not the attention
-	// output. The driver ran K3AttnRes over the post-attention partial before
-	// calling this; reading attention_out here would compute the retrieval and
-	// then ignore it, which is what this file did.
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,0,(const uint16_t *)b->mlp_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
-	// THE ROUTER RUNS ON THE FULL HIDDEN AND NOT IN THE QUANTISED FORMAT.
-	// modeling_kimi_linear.py casts both the token and the router weight to
-	// float32 before the linear, and the report's quantisation section lists MoE
-	// routers among the components that stay in higher precision while the
-	// expert weights go to MXFP4. Routing 896 experts from a 4-bit score is a
-	// different model.
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->router_weight,0,
-		(uint16_t *)b->router_logits,rows,K3_HIDDEN,K3_EXPERTS,multiprocessors,stream);
+	memset(&gemm,0,sizeof(gemm));
+	gemm.group_row_offset = b->dense_row_offset;
+	gemm.group_tile_prefix = b->dense_tile_prefix;
+	gemm.output_f32 = b->router_logits;
+	status = LmGemmLaunch<LmBf16Format,K3_LAYER_TILE_N,LmBf16Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+		&gemm,b->normed_bf16,b->router_weight,rows,rows,1u,1u,
+		K3_HIDDEN,K3_EXPERTS,multiprocessors,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	// The sigmoid rides inside the selection rather than writing 896 floats per
-	// row and reading them straight back. Select on score+bias, weigh on score;
-	// RENORMALISE is true because moe_renormalize is set, and the per-expert
-	// bias is e_score_correction_bias, frozen at inference.
-	LM_LAUNCH((LmTopkSmallKernel<K3_LAYER_THREADS,K3_TOP_K,true>), rows, K3_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
-		0,K3_EXPERTS,b->route_expert, (float *)b->route_weight,b->router_bias,(const uint16_t *)b->router_logits);
+	LM_LAUNCH((LmTopkSmallKernel<K3_LAYER_THREADS,K3_TOP_K,true,1u,1u,true>), rows, K3_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
+		b->router_logits,K3_EXPERTS,b->route_expert, (float *)b->route_weight,b->router_bias,0);
 	// FROM CHOICES TO PACKED ORDER, ON DEVICE. The top-k lives here; a host
 	// cannot pack what it cannot see without a sync on the hot path, and until
 	// this call nothing packed it at all - every harness filled the arrays by
