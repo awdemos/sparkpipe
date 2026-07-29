@@ -762,7 +762,6 @@ SparkStatus SparkSchedulerInitialize(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    scheduler->stage_geometry = configuration->stage_geometry;
     measured_profile_id = SparkSchedulerNormalizeMeasuredProfileId(
         configuration->measured_profile_id);
     quantization_mode = SparkSchedulerNormalizeQuantizationMode(
@@ -775,6 +774,7 @@ SparkStatus SparkSchedulerInitialize(
             prefix_cache_block_tokens);
 
     memset(scheduler, 0, sizeof(*scheduler));
+    scheduler->stage_geometry = configuration->stage_geometry;
     scheduler->abi_version = SPARK_SCHEDULER_ABI_VERSION;
     scheduler->descriptor_bytes = SPARK_SCHEDULER_DESCRIPTOR_BYTES;
     scheduler->spark_count = SPARK_SCHEDULER_MAX_SPARK_COUNT;

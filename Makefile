@@ -359,15 +359,18 @@ GLM52_LINK_TARGETS := \
     build/test_model_description \
     $(GLM52_RING_SERVICE_BACKEND) \
     $(GLM52_RING_NODE_CONTEXT_BUILDER)
-QWEN36_LINK_TARGETS := build/test_qwen36_work_control
-
-build/test_null_seam_link: tests/test_null_seam_link.c $(NULL_REQUEST_MODEL_OBJECT) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-	$(CC) -I. -Iinclude -Imodel-families/glm52/include -std=c11 -Wall -Wextra -Werror -O3 -g -pthread tests/test_null_seam_link.c $(NULL_REQUEST_MODEL_OBJECT) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -o $@
 NULL_REQUEST_MODEL_OBJECT := build/obj/serving/spark_request_model_null.o
 
 $(NULL_REQUEST_MODEL_OBJECT): serving/spark_request_model_null.c include/sparkpipe/spark_request_api.h
 	@mkdir -p $(dir $@)
 	$(CC) -I. -Iinclude -Imodel-families/glm52/include -std=c11 -Wall -Wextra -Werror -O3 -g -c serving/spark_request_model_null.c -o $@
+
+build/test_null_seam_link: tests/test_null_seam_link.c $(NULL_REQUEST_MODEL_OBJECT) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) -I. -Iinclude -Imodel-families/glm52/include -std=c11 -Wall -Wextra -Werror -O3 -g -pthread tests/test_null_seam_link.c $(NULL_REQUEST_MODEL_OBJECT) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -o $@
+
+QWEN36_LINK_TARGETS := build/test_qwen36_work_control
+
+
 DEPLOYMENT_LINK_TARGETS := build/sparkpipe_release_manager build/test_release
 
 $(MODEL_COMMON_LINK_TARGETS): COMMON_LIBRARY = $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)

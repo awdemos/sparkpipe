@@ -7,6 +7,7 @@
 #include "sparkpipe/spark_mtp_tree.h"
 #include "sparkpipe/spark_glm52_text_prompt.h"
 #include "sparkpipe/spark_request_api.h"
+#include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_tokenizer.h"
 
 #define SPARK_TEST_REQUEST_SLOT_COUNT 32u
@@ -513,7 +514,7 @@ static void SparkTestEnableDsparkSpeculation(
     fixture->dspark_capture.next_token_id = 140000u;
     fixture->api.configuration_flags |=
         SPARK_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE;
-    fixture->api.dspark_speculator = &fixture->dspark_speculator;
+    fixture->api.model_speculator = (struct SparkRequestModelSpeculator *)&fixture->dspark_speculator;
 }
 
 static void SparkTestInitializeSubmitRequest(
