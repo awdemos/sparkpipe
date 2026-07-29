@@ -5,7 +5,6 @@ CUDA_ARCH ?= sm_121a
 NVCCFLAGS ?= -std=c++17 -O3 -Xcompiler=-fPIC -Xcompiler=-fvisibility=hidden
 BUILD_DIRECTORY := $(REPOSITORY_ROOT)/build/modules/glm52_dspark_draft_backend
 BACKEND_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_dspark_draft_backend.o
-POLICY_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_dspark_dispatch_policy.o
 BACKEND_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_dspark_draft_backend.a
 VALIDATOR := $(BUILD_DIRECTORY)/validate_glm52_dspark_epoch3_cuda
 DSPARK_MANIFEST ?=
@@ -24,7 +23,7 @@ $(BUILD_DIRECTORY):
 $(BACKEND_OBJECT): source/spark_glm52_dspark_draft_backend.cu include/sparkpipe/spark_glm52_dspark_draft_backend.h | $(BUILD_DIRECTORY)
 	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -c $< -o $@
 
-$(BACKEND_ARCHIVE): $(BACKEND_OBJECT) $(POLICY_OBJECT)
+$(BACKEND_ARCHIVE): $(BACKEND_OBJECT)
 	rm -f $@
 	$(AR) rcs $@ $^
 
@@ -50,5 +49,4 @@ validate_epoch3: $(VALIDATOR)
 clean:
 	rm -rf $(BUILD_DIRECTORY)
 
-$(POLICY_OBJECT): source/spark_glm52_dspark_dispatch_policy.c | $(BUILD_DIRECTORY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) -c source/spark_glm52_dspark_dispatch_policy.c -o $@
+

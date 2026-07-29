@@ -2482,7 +2482,7 @@ static SparkStatus SparkRingServiceBackendInitializeRequestApi(
 	{
 		request_api_configuration.configuration_flags |=
 			SPARK_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE;
-		request_api_configuration.dspark_speculator = &state->dspark_speculator;
+		request_api_configuration.model_speculator = (struct SparkRequestModelSpeculator *)&state->dspark_speculator;
 	}
 	request_api_configuration.request_capacity =
 		SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY;

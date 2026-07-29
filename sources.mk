@@ -61,6 +61,8 @@ SPARKPIPE_GLM52_SOURCES := \
     model-families/glm52/src/spark_glm52_shape_config.c \
     text/prompt.c \
     model-families/glm52/src/spark_glm52_tp_shard.c \
+    modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c \
+    modules/glm52_dspark_draft_backend/source/spark_glm52_request_model.c \
     node/rank_runtime.c \
     runtime/pack/stagepack.c \
     scheduler/long_context.c \
