@@ -4,6 +4,26 @@ The diff between README.md and `git HEAD`. Ledger order: an item leaves this
 file by landing with a gate, or by being struck from the README. Nothing
 leaves silently.
 
+## K3 correctness blockers (fail closed; reference: sglang kimi_k3.py)
+
+Sparkdev's checkpoint-backed probe exposed four production blockers.
+Each must FAIL CLOSED until fixed - wrong-but-running K3 output is worse
+than no K3 output:
+- ~~fp32 checkpoint tensors read as bf16~~ FIXED: the packer requires and
+  bit-preserves FP32 for A_log, dt_bias, o_norm and all three short-convolution
+  weights; the layer tables and kernels carry those types explicitly.
+- ~~KDA state bf16~~ FIXED: both state kernels hold and store fp32,
+  the delta tile is dynamic shared (64 KB), harness pools resized. The
+  bf16-state OPTIMIZATION remains a separate validated-later line.
+- ~~A_log[128] -> 96-head narrowing~~ FIXED: the packer requires the
+  128-element checkpoint shape and emits only the first runtime-head entries.
+- ~~KDA query scaling~~ IDENTIFIED AND FIXED: the reference runs
+  use_qk_l2norm_in_kernel=True - q and k are L2-normalized in kernel.
+  Implemented in the delta kernel AND the replay fold (which must
+  replay the same arithmetic or states diverge byte-wise - the fold
+  gate caught exactly that, 99 bytes). K3_KDA_QK_L2NORM is a
+  compile-time contract now.
+
 ## K3 path to first token
 
 - **K3 stage execute.** The K3 module answers the two validation questions
@@ -21,6 +41,102 @@ leaves silently.
   cross-check gate against the fla reference before hardware.
 - **State pool admission wiring.** `SparkStatePool` exists and is gated;
   the scheduler does not yet price 434 MB/sequence at admission.
+
+## Solutions/(codesize^2) - the measured gap and the plan (2026-07-29)
+
+Census: ~90K product lines + 34.7K test lines. DRY-law debt: 3,667
+budgeted glm refs across 57 common paths. The end-state is ~300
+irreducible refs (dimension tables only). Ranked removal path:
+
+RULE: model drivers are never size cuts. Every potential frontier
+open-source target keeps its driver; a driver is a solution, and the
+metric's numerator moves first.
+
+0. **The size gate is live** (tests/test_code_size.py): non-test lines,
+   ceiling only descends. Current 106.5K. Realistic architecture-stable
+   floor ~60K lines (~500K tokens - whole codebase in one large-context
+   window, which is the point); the <100K-token ideal implies a different
+   product.
+1. **The envelope, designed (2026-07-29, third measurement pass).** Two
+   customers fell without it: speculation.c was the drafter's unwired
+   dispatch policy (877L, zero callers) - homed into the drafter
+   module; the gateway's 43 Glm52Gateway fns were 39 parts costume,
+   4 parts payload. What remains is the true core and one design:
+
+   THE SLOT MODEL-STATE ENVELOPE. request.c's slot struct carries
+   glm-typed draft/verify fields; 30 functions touch them; 8 are
+   zero-closure but ALL are bound by the slot type living inside
+   request.c. Design: the slot gains one member -
+   `SparkRequestModelState { alignas(16) uint8_t bytes[SPARK_REQUEST_MODEL_STATE_BYTES]; }`
+   - and the glm module defines the real struct with a static_assert
+   fit, owning the 12 seam entries as neutral externs
+   (SparkRequestApiModelSlotCanSpeculate, ...PrepareDraft,
+   ...PendingTokens, ...ScheduleVerifyBatch, ...FinishVerify,
+   ...DiscardDraft, ...Release, ...RetryCounters x2, ...DraftAccess x3)
+   plus the schedulers' remaining touches as accessor calls. One
+   surgery, ~182 refs in request.c + the stage FrameContext's 149+96
+   by the same stroke (its dspark tap-plan array and flashinfer recipe
+   become the stage's model-frame blob). Sequencing: slot envelope
+   first (request), frame envelope second (stage), http_server's 4
+   payload fns ride whichever side owns them.
+
+1b. **The old scare figure, retired**
+   (map 2026-07-29, sharpened same day): the EXTERNAL request API is
+   already fully neutral - zero glm-named functions called from outside
+   request.c, header 537 lines / 2 refs. The debt is implementation-
+   internal: of 157 glm-NAMED internal functions, 129 had model-agnostic
+   bodies and are renamed already; 28 carry real glm payload (dspark
+   plans, verify wiring) and await the envelope. 174 of 176 functions in api/request.c touch
+   glm/dspark symbols - 7,059 of 7,205 lines. The surgery re-founds the
+   request API on neutral dispatch/verify types with a model payload
+   envelope; glm's wire builders become module source behind the linker
+   seam. Expected: ~4.5K generic + ~1.8K glm module, net -1K lines,
+   -600 refs, and the seam K3's drafter walks through. (~1,450 refs: api/request.c 637,
+   draft_backend.cu 600, scheduler/speculation.c 213). DSpark carries
+   glm dspark payload TYPES through common request/scheduler paths.
+   Same recipe as the validation tier: neutral payload envelope in the
+   common ABI (size + alignment), model module owns the contents,
+   linker resolves. Erases 40% of all debt and ~2-3K lines of
+   glm marshaling.
+2. **FrameContext payload config-flow** (149 + 96 refs) - the A4
+   remainder below; same envelope mechanism as (1), do together.
+3. **W8LUT deletion** (deprecated; 173 refs, 10 files, ~800 lines:
+   plan family in firmware header, stagepack branches, checks).
+4. **Seam-include tier** (~600 refs: http_server 224, prefix_cache 214,
+   scheduler 174 are mostly glm header includes + constants that fall
+   out once (1) and (2) land).
+5. **API compatibility surfaces (KEEPER, and an endpoint feature).**
+   compat_api.c is the chat-template/text-request foundation. Endpoint:
+   OpenAI-compatible and Anthropic-Messages-compatible wire APIs on the
+   gateway, so existing clients point at sparkpipe unmodified.
+6. Dead complexity: 4 "was deleted" Makefile error stanzas,
+   legacy_entry.cu (42 lines), --dspark compat no-op flag.
+7. **Option-table argument parser** (from node-twin anatomy): a shared
+   declarative parser (name, kind, destination) replaces the twinned
+   if-strcmp chains in rank_daemon (147L) and residentd (270L), and any
+   tool that wants it. Net ~−250L, complexity down. Non-RDMA note: TCP
+   transport deleted; RDMA-less development uses soft-RoCE (rxe).
+8. B-tier templates (LmHead 0.93x5, LmDenseMlp 0.98x4, expert_queue
+   17 hits, pack_common): ~400-700 lines.
+
+Post-plan: ~85K product lines, debt ~300, same solutions - the metric
+roughly doubles. Items (1)+(2) are one A4-part-two-scale surgery.
+
+## Model swap (16x single-tenant by mode)
+
+K3 (1.6 TB) + GLM-class (~0.4 TB) cannot be co-resident with useful KV
+(2.0 TB vs 2.0 TB capacity). Swap = drain + parallel NVMe load of ~100
+GB/node: 14-20 s at 5-7 GB/s local NVMe, plus arena re-init. Target
+<20 s via pack mmap + JIT residency warm path; orchestration (drain,
+load, announce) is scheduler work. Big-batch workloads run the smaller
+resident model; K3 owns B1-B8 interactive with shared-prefix reuse.
+
+## Architecture audits (from MODULE_MAP v2, 2026-07-29)
+
+Six measured questions, ~7K lines of stake, listed in docs/MODULE_MAP.md.
+Order of attack: serving_engine supersession check first (read the pump,
+diff the loops), then tcp.cu's demotion, then the tools reclassification
+call (ct's), then the node twin-init similarity pass.
 
 ## Stage seam completion (A4 remainder)
 
@@ -53,6 +169,16 @@ leaves silently.
   bring-up.
 - **P2: async release FIFO wire verification.** Fire-and-forget release
   assumes resident FIFO ordering; verify on the wire, not in the comment.
+- **Consecutive-token routing overlap (DSpark at B=1).** If adjacent
+  positions route to overlapping experts, verify rows share weight reads
+  and B=1 speculation turns real (~x1.5 hypothesis). Measure from route
+  logs at bring-up.
+- **E8M0 scale-plane codec** (from the compression study): tile-
+  addressable delta+pack, in-kernel decode on the existing scale-cache
+  path. ~60-65 GB capacity + ~4% ceiling throughput. Design from
+  sparkdev's bits/element numbers when the full sweep lands.
+- **Compressed NVMe packs**: ~11% off the 15-20 s model swap, zero
+  runtime cost. Rides the pack format decision.
 - **Route-log collection deploy.** 24-byte wire format and the
   Bonferroni-corrected analysis exist; the collector runs when Sparks are
   back (August window).

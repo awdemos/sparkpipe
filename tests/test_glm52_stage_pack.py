@@ -170,7 +170,6 @@ def main() -> int:
             {
                 "model_dir": w8_model_dir,
                 "output_dir": w8_output_dir,
-                "model_quantization": module.MODEL_QUANTIZATION_W8LUT,
                 "stages": "3",
                 "reuse": False,
                 "mtp_only": False,
@@ -180,7 +179,6 @@ def main() -> int:
         w8_index = json.loads(
             (w8_output_dir / module.INDEX_FILE).read_text(encoding="utf-8")
         )
-        assert w8_index["model_quantization"] == "w8lut"
         assert w8_index["non_expert_weight_dtype"] == "BF16"
         assert len(w8_index["source_model_index_sha256"]) == 64
         assert w8_index["tensor_map"][
@@ -218,7 +216,6 @@ def main() -> int:
             {
                 "model_dir": model_dir,
                 "output_dir": root / "bad-w8-stagepacks",
-                "model_quantization": module.MODEL_QUANTIZATION_W8LUT,
                 "stages": "3",
                 "reuse": False,
                 "mtp_only": False,
@@ -229,7 +226,6 @@ def main() -> int:
         except module.StagePackFailure as error:
             assert "must be BF16" in str(error)
         else:
-            raise AssertionError("W8LUT stage pack accepted a non-BF16 weight")
         bad_nvfp4_args = type(
             "Args",
             (),

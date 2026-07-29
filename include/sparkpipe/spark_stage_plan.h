@@ -31,7 +31,6 @@ extern "C" {
 #define SPARK_STAGE_PLAN_QUANTIZATION_AUTO 0u
 #define SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT 1u
 #define SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT 2u
-#define SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT 3u
 
 #define SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN 0x00000001u
 #define SPARK_STAGE_PLAN_STAGE_FLAG_INPUT_HIDDEN 0x00000002u
@@ -222,4 +221,12 @@ SparkStatus SparkStagePlanExecutionChunkShape(
 }
 #endif
 
+
+static inline uint32_t SparkRoutedLayerCountForRange(uint32_t first_layer_index, uint32_t layer_count, uint32_t first_routed_layer, uint32_t total_layer_count)
+{
+	uint32_t range_end = first_layer_index + layer_count;
+	uint32_t routed_begin = first_layer_index > first_routed_layer ? first_layer_index : first_routed_layer;
+	uint32_t routed_end = range_end < total_layer_count ? range_end : total_layer_count;
+	return routed_end <= routed_begin ? 0u : routed_end - routed_begin;
+}
 #endif

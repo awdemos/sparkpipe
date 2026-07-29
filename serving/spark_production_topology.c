@@ -3,26 +3,6 @@
 #include <stdio.h>
 #include <string.h>
 
-static SparkStatus SparkProductionTopologyReport(
-    char *error_buffer,
-    uint32_t error_buffer_bytes,
-    SparkStatus status,
-    const char *message)
-{
-    if (error_buffer != 0 && error_buffer_bytes != 0u)
-    {
-        if (message == 0)
-        {
-            error_buffer[0] = '\0';
-        }
-        else
-        {
-            (void)snprintf(error_buffer, error_buffer_bytes, "%s", message);
-        }
-    }
-    return status;
-}
-
 static uint32_t SparkProductionTopologyMinimumU32(uint32_t left,uint32_t right)
 {
     return left < right ? left : right;
@@ -257,7 +237,7 @@ SparkStatus SparkProductionTopologyBuild(
         selected_token_count == 0u || kv_block_token_count == 0u ||
         mla_cache_element_count == 0u)
     {
-        return SparkProductionTopologyReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -283,7 +263,7 @@ SparkStatus SparkProductionTopologyBuild(
     status = SparkProductionTopologyInitializeStages(stage_plan, topology);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkProductionTopologyReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             status,
@@ -311,7 +291,7 @@ SparkStatus SparkProductionTopologyBuild(
             &export_stage_index);
         if (status != SPARK_STATUS_OK)
         {
-            return SparkProductionTopologyReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 status,
@@ -340,7 +320,7 @@ SparkStatus SparkProductionTopologyBuild(
                         SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DEVICE_TO_DEVICE);
                 if (status != SPARK_STATUS_OK)
                 {
-                    return SparkProductionTopologyReport(
+                    return SparkReportError(
                         error_buffer,
                         error_buffer_bytes,
                         status,
@@ -354,7 +334,7 @@ SparkStatus SparkProductionTopologyBuild(
         topology);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkProductionTopologyReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             status,
@@ -480,7 +460,7 @@ SparkStatus SparkProductionTopologyValidate(
         topology->descriptor_bytes !=
             SPARK_PRODUCTION_TOPOLOGY_DESCRIPTOR_BYTES)
     {
-        return SparkProductionTopologyReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -490,7 +470,7 @@ SparkStatus SparkProductionTopologyValidate(
             SPARK_PRODUCTION_TOPOLOGY_PRODUCTION_REQUIRED_FLAGS) !=
         SPARK_PRODUCTION_TOPOLOGY_PRODUCTION_REQUIRED_FLAGS)
     {
-        return SparkProductionTopologyReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -505,7 +485,7 @@ SparkStatus SparkProductionTopologyValidate(
         topology->indexshare_sideband_count >
             SPARK_PRODUCTION_TOPOLOGY_MAX_INDEXSHARE_SIDEBANDS)
     {
-        return SparkProductionTopologyReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -523,7 +503,7 @@ SparkStatus SparkProductionTopologyValidate(
             sideband->active_sequence_capacity !=
                 topology->active_sequence_capacity)
         {
-            return SparkProductionTopologyReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,
@@ -538,7 +518,7 @@ SparkStatus SparkProductionTopologyValidate(
                 (sideband->flags &
                     SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_DEVICE_TO_DEVICE) == 0u)
             {
-                return SparkProductionTopologyReport(
+                return SparkReportError(
                     error_buffer,
                     error_buffer_bytes,
                     SPARK_STATUS_INVALID_ARGUMENT,
@@ -559,7 +539,7 @@ SparkStatus SparkProductionTopologyValidate(
             (sideband->flags &
                 SPARK_PRODUCTION_TOPOLOGY_SIDEBAND_FLAG_SELECTED_TOKEN_INDICES) == 0u)
         {
-            return SparkProductionTopologyReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,

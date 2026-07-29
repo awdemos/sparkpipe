@@ -12,26 +12,6 @@ static const uint32_t SparkGlm52RingRuntimeDefaultLayerCounts[
     6u, 6u, 6u, 6u, 6u, 6u
 };
 
-static SparkStatus SparkRingRuntimeReport(
-    char *error_buffer,
-    uint32_t error_buffer_bytes,
-    SparkStatus status,
-    const char *message)
-{
-    if (error_buffer != 0 && error_buffer_bytes != 0u)
-    {
-        if (message == 0)
-        {
-            error_buffer[0] = '\0';
-        }
-        else
-        {
-            (void)snprintf(error_buffer, error_buffer_bytes, "%s", message);
-        }
-    }
-    return status;
-}
-
 uint32_t SparkRingRuntimeDsaCandidateBucket(
     uint32_t context_token_count)
 {
@@ -75,9 +55,6 @@ SparkStatus SparkRingRuntimeParseQuantizationMode(
     else if (strcmp(name,"nvfp4") == 0)
         *quantization_mode_out =
             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
-    else if (strcmp(name,"w8lut") == 0)
-        *quantization_mode_out =
-            SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
     else
         return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
@@ -92,9 +69,6 @@ const char *SparkRingRuntimeQuantizationModeName(
     if (quantization_mode ==
         SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
         return "nvfp4";
-    if (quantization_mode ==
-        SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
-        return "w8lut";
     return 0;
 }
 
@@ -111,9 +85,7 @@ SparkStatus SparkRingRuntimeValidateFp8PlanCounts(
             ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
     }
     if (quantization_mode ==
-            SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-        quantization_mode ==
-            SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
+        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
     {
         return bound_plan_count == 0u && expected_plan_count == 0u
             ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
@@ -135,10 +107,6 @@ SparkStatus SparkRingRuntimeExpectedMoeBackendKind(
         SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
         *backend_kind_out =
             SPARK_RING_RUNTIME_MOE_BACKEND_NVFP4_B12X;
-    else if (quantization_mode ==
-        SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
-        *backend_kind_out =
-            SPARK_RING_RUNTIME_MOE_BACKEND_W8LUT_BF16_WMMA;
     else
         return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
@@ -194,7 +162,7 @@ static void SparkRingRuntimeInitializeEndpoint(
         (uint64_t)SPARK_RING_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
         (uint64_t)endpoint->max_active_sequence_count;
     endpoint->transport_module_id =
-        SPARK_HIDDEN_TRANSPORT_TCP_CUDA_HOST_MODULE_ID;
+        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_MODULE_ID;
     endpoint->route_name = route_name;
 }
 
@@ -202,13 +170,13 @@ static void SparkRingRuntimeInitializeEndpoint(
 // the geometry and inputs so the plan, the sharder, and the packs cannot
 // disagree. The latent KV element is one byte, the FP8 latent cache.
 static SparkStatus SparkRingRuntimeShapeNodeConfig(
-    const SparkGlm52TpShapeDescriptor *shape,
+    const SparkTpShapeDescriptor *shape,
     SparkGlm52ShapeNodeConfig *config)
 {
-    SparkGlm52TpModelGeometry geometry;
+    SparkTpModelGeometry geometry;
     SparkGlm52ShapeModelInputs inputs;
 
-    SparkGlm52TpModelGeometryFromModel(&geometry);
+    SparkTpModelGeometryFromModel(&geometry);
     memset(&inputs, 0, sizeof(inputs));
     inputs.abi_version = SPARK_GLM52_SHAPE_CONFIG_ABI_VERSION;
     inputs.total_layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
@@ -230,7 +198,7 @@ SparkStatus SparkRingRuntimeBuildFixedStagePlan(
 {
     if (stage_plan == 0)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -284,12 +252,10 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
         (quantization_mode !=
              SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT &&
          quantization_mode !=
-             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT &&
-         quantization_mode !=
-             SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT) ||
+             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT) ||
         port_base > (65535u - SPARK_RING_RUNTIME_STAGE_COUNT))
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -330,10 +296,10 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
     rank_plan->pp_stage_index = rank_index;
     rank_plan->tp_collective_listen_port = 0u;
     {
-        SparkGlm52TpShapeDescriptor shape;
+        SparkTpShapeDescriptor shape;
         SparkGlm52ShapeNodeConfig shape_config;
         memset(&shape, 0, sizeof(shape));
-        shape.abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+        shape.abi_version = SPARK_TP_SHARD_ABI_VERSION;
         shape.tp_degree = 1u;
         shape.tp_rank = 0u;
         shape.pp_stage_count = SPARK_RING_RUNTIME_STAGE_COUNT;
@@ -343,7 +309,7 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
             shape_config.first_layer_index != rank_plan->first_layer_index ||
             shape_config.layer_count != rank_plan->layer_count)
         {
-            return SparkRingRuntimeReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_VALIDATION_FAILED,
@@ -433,7 +399,7 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
 }
 
 SparkStatus SparkRingRuntimeBuildShapeRankPlan(
-    const SparkGlm52TpShapeDescriptor *shape,
+    const SparkTpShapeDescriptor *shape,
     uint32_t logical_lane_capacity,
     uint32_t port_base,
     uint32_t tp_port_base,
@@ -453,7 +419,7 @@ SparkStatus SparkRingRuntimeBuildShapeRankPlan(
     status = SparkRingRuntimeShapeNodeConfig(shape, &shape_config);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             status,
@@ -495,7 +461,7 @@ SparkStatus SparkRingRuntimeBuildShapeRankPlan(
         sizeof(rank_plan->host_name));
     if (status != SPARK_STATUS_OK)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             status,
@@ -593,20 +559,20 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    SparkGlm52TpShapeDescriptor shape;
+    SparkTpShapeDescriptor shape;
     SparkGlm52ShapeNodeConfig shape_config;
     SparkStatus status;
 
     if (rank_plan == 0)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
             "RING rank plan is null");
     }
     memset(&shape, 0, sizeof(shape));
-    shape.abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+    shape.abi_version = SPARK_TP_SHARD_ABI_VERSION;
     shape.tp_degree = rank_plan->tp_degree;
     shape.tp_rank = rank_plan->tp_rank;
     shape.pp_stage_count = rank_plan->pp_stage_count;
@@ -614,7 +580,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
     status = SparkRingRuntimeShapeNodeConfig(&shape, &shape_config);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             status,
@@ -650,14 +616,12 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
         (rank_plan->quantization_mode !=
              SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT &&
          rank_plan->quantization_mode !=
-             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT &&
-         rank_plan->quantization_mode !=
-             SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT) ||
+             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT) ||
         rank_plan->max_packet_bytes !=
             ((uint64_t)SPARK_RING_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
              (uint64_t)rank_plan->execution_row_capacity))
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -668,7 +632,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
         status = SparkHiddenTransportValidateEndpoint(&rank_plan->input_endpoint);
         if (status != SPARK_STATUS_OK)
         {
-            return SparkRingRuntimeReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 status,
@@ -680,7 +644,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
         status = SparkHiddenTransportValidateEndpoint(&rank_plan->output_endpoint);
         if (status != SPARK_STATUS_OK)
         {
-            return SparkRingRuntimeReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 status,
@@ -697,7 +661,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    return SparkRingRuntimeReport(
+    return SparkReportError(
         error_buffer,
         error_buffer_bytes,
         SPARK_STATUS_OK,
@@ -758,17 +722,6 @@ SparkStatus SparkRingRuntimeBuildMoePackPath(
             layer_index,
             shape_tag);
     }
-    else if (quantization_mode ==
-        SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT)
-    {
-        written = snprintf(
-            pack_path,
-            pack_path_bytes,
-            "%s/glm52_layer_%04u_w8lut_moe%s.spw8lut",
-            pack_root,
-            layer_index,
-            shape_tag);
-    }
     else
     {
         pack_path[0] = '\0';
@@ -809,7 +762,7 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
     }
     if (pack_root == 0 || pack_root[0] == '\0')
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -817,7 +770,6 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
     }
     manifest_names[0] = SPARK_RING_RUNTIME_FP8_PACK_MANIFEST;
     manifest_names[1] = SPARK_RING_RUNTIME_B12X_PACK_MANIFEST;
-    manifest_names[2] = SPARK_RING_RUNTIME_W8LUT_PACK_MANIFEST;
     if (rank_plan->quantization_mode ==
         SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
         selected_manifest_index = 0u;
@@ -825,7 +777,13 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
         SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
         selected_manifest_index = 1u;
     else
-        selected_manifest_index = 2u;
+    {
+        return SparkReportError(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "MoE pack manifest: unknown quantization mode");
+    }
     manifest_name = manifest_names[selected_manifest_index];
     written = snprintf(
         manifest_path,
@@ -839,7 +797,7 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
     }
     if (!SparkRingRuntimePathIsPresent(manifest_path))
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_NOT_FOUND,
@@ -859,7 +817,7 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         if (SparkRingRuntimePathIsPresent(foreign_manifest_path))
         {
-            return SparkRingRuntimeReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_MODULE_NOT_VALIDATED,
@@ -888,14 +846,14 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
         }
         if (!SparkRingRuntimePathIsPresent(pack_path))
         {
-            return SparkRingRuntimeReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_NOT_FOUND,
                 "resident MoE layer pack is missing");
         }
     }
-    return SparkRingRuntimeReport(
+    return SparkReportError(
         error_buffer,
         error_buffer_bytes,
         SPARK_STATUS_OK,
@@ -914,7 +872,7 @@ SparkStatus SparkRingRuntimeBuildFinalEventRoute(
     if (route == 0 ||
         port_base > (65535u - SPARK_RING_RUNTIME_FINAL_EVENT_PORT_OFFSET))
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -980,13 +938,13 @@ SparkStatus SparkRingRuntimeValidateFinalEventRoute(
         strcmp(route->route_name,
             "10.10.100.22_to_10.10.100.10_final_events") != 0)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
             "RING final event route is invalid");
     }
-    return SparkRingRuntimeReport(
+    return SparkReportError(
         error_buffer,
         error_buffer_bytes,
         SPARK_STATUS_OK,

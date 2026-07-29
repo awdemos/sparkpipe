@@ -503,4 +503,18 @@ SparkStatus SparkKvCacheArenaReset(
 }
 #endif
 
+
+static inline uint32_t SparkKvProtectedBlockListContainsBlock(const uint32_t *protected_physical_block_indices, uint32_t protected_physical_block_count, uint32_t physical_block_index)
+{
+	uint32_t protected_block_index;
+	if ( protected_physical_block_count != 0u && protected_physical_block_indices == 0 )
+		return 0u;
+	for (protected_block_index = 0u; protected_block_index < protected_physical_block_count; ++protected_block_index)
+	{
+		if ( protected_physical_block_indices[protected_block_index] == physical_block_index )
+			return 1u;
+	}
+	return 0u;
+}
+
 #endif

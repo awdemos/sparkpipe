@@ -70,6 +70,7 @@ struct LmGemmArguments
 	// prices them for the launch it is about to make.
 	uint32_t *group_tile_prefix;
 	void *output_bf16;
+	void *output_f32;
 	// Optional second life for the result: the epilogue ADDS it into this
 	// buffer (read-modify-write; single writer per element by tile
 	// ownership, stream-ordered against other producers). accumulate ==
@@ -137,6 +138,7 @@ static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4
 {
 	const uint32_t n_frags = TILE_N / WARPS / Format::kMmaN;
 	uint16_t *output = (uint16_t *)args.output_bf16;
+	float *output_f32 = (float *)args.output_f32;
 	uint16_t *accumulate = (uint16_t *)args.accumulate_bf16;
 	uint64_t at;
 	uint32_t i,e,mi,ni,row,column;
@@ -159,7 +161,10 @@ static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4
 				if ( accumulate == output )
 					continue;
 			}
-			output[at] = LmFloatToBf16(total[i][e]);
+			if ( output_f32 != 0 )
+				output_f32[at] = total[i][e];
+			else
+				output[at] = LmFloatToBf16(total[i][e]);
 		}
 	}
 }

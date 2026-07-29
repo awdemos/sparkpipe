@@ -42,7 +42,7 @@ describe() {
 	api/text/tokenizer.*) echo "tokenizer" ;;
 	scheduler/scheduler.c) echo "admission and batching, zero model constants" ;;
 	scheduler/work_control.c) echo "packet building, batch buckets, prefill chunking" ;;
-	scheduler/speculation.c) echo "DSpark dispatch policy" ;;
+	modules/glm52_dspark_draft_backend/source/spark_glm52_dspark_dispatch_policy.c) echo "DSpark dispatch policy" ;;
 	scheduler/stage_plan.c) echo "which rank owns which layers" ;;
 	scheduler/long_context.c) echo "long-context admission" ;;
 	cache/cache.h) echo "THE CACHE: arena, content-addressed sharing, JIT reserve" ;;

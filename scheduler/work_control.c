@@ -91,7 +91,7 @@ SparkStatus SparkRingWorkControlSelectMtpDraftBudget(
 	return SPARK_STATUS_OK;
 }
 
-static uint32_t SparkGlm52RingWorkControlWrittenPositionCount(
+static uint32_t SparkRingWorkControlWrittenPositionCount(
 	const SparkRingWorkControlPacket *packet)
 {
 	if (packet != 0 &&
@@ -101,7 +101,7 @@ static uint32_t SparkGlm52RingWorkControlWrittenPositionCount(
 	return packet == 0 ? 0u : packet->new_token_count;
 }
 
-static void SparkGlm52RingWorkControlSetDecodeFlags(
+static void SparkRingWorkControlSetDecodeFlags(
 	const SparkServingDecodeDispatch *decode_dispatch,
 	uint32_t mtp_budget,
 	SparkRingWorkControlPacket *packet)
@@ -126,7 +126,7 @@ static void SparkGlm52RingWorkControlSetDecodeFlags(
 			SPARK_RING_WORK_CONTROL_FLAG_MTP_TREE_VERIFY;
 }
 
-static void SparkGlm52RingWorkControlSetMtpResolutionFlag(
+static void SparkRingWorkControlSetMtpResolutionFlag(
 	SparkRingWorkControlPacket *packet)
 {
 	uint32_t lane_index;
@@ -142,7 +142,7 @@ static void SparkGlm52RingWorkControlSetMtpResolutionFlag(
 	}
 }
 
-static SparkStatus SparkGlm52RingWorkControlBuildDecodeLanes(
+static SparkStatus SparkRingWorkControlBuildDecodeLanes(
 	const SparkServingDecodeDispatch *decode_dispatch,
 	uint32_t lane_offset,
 	uint32_t lane_count,
@@ -302,13 +302,13 @@ SparkStatus SparkRingWorkControlBuildDecodePacketRange(
 	packet->max_blocks_per_sequence =
 		SPARK_RING_WORK_CONTROL_KV_BLOCK_CAPACITY;
 	packet->mtp_draft_token_count = mtp_budget;
-	SparkGlm52RingWorkControlSetDecodeFlags(decode_dispatch,mtp_budget,packet);
-	status = SparkGlm52RingWorkControlBuildDecodeLanes(
+	SparkRingWorkControlSetDecodeFlags(decode_dispatch,mtp_budget,packet);
+	status = SparkRingWorkControlBuildDecodeLanes(
 		decode_dispatch,lane_offset,lane_count,speculative_verify,
 		mtp_budget,packet);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	SparkGlm52RingWorkControlSetMtpResolutionFlag(packet);
+	SparkRingWorkControlSetMtpResolutionFlag(packet);
 	packet->request_id = packet->lanes[0u].request_id;
 	packet->sequence_id = packet->lanes[0u].sequence_id;
 	packet->sequence_position = packet->lanes[0u].sequence_position;
@@ -787,7 +787,7 @@ SparkStatus SparkRingWorkControlValidatePacket(
 		uint32_t lane_position_count;
 		lane = &packet->lanes[lane_index];
 		lane_position_count =
-			SparkGlm52RingWorkControlWrittenPositionCount(packet);
+			SparkRingWorkControlWrittenPositionCount(packet);
 		if (lane->request_id == 0u || lane->sequence_id == 0u ||
 			lane->request_slot_index == SPARK_RING_WORK_CONTROL_INVALID_REQUEST_SLOT ||
 			lane->context_token_count == 0u ||
@@ -883,7 +883,7 @@ SparkStatus SparkRingWorkControlValidatePacket(
 	return SPARK_STATUS_OK;
 }
 
-static uint64_t SparkGlm52RingWorkControlKvMix(uint64_t value)
+static uint64_t SparkRingWorkControlKvMix(uint64_t value)
 {
 	value ^= (value >> 30u);
 	value *= 0xbf58476d1ce4e5b9ull;
@@ -894,13 +894,13 @@ static uint64_t SparkGlm52RingWorkControlKvMix(uint64_t value)
 
 uint32_t SparkRingWorkControlKvKeyEqual(SparkRingKvKey left,SparkRingKvKey right) { return (left.low == right.low && left.high == right.high) ? 1u : 0u; }
 
-static uint32_t SparkGlm52RingWorkControlKvKeyEmpty(SparkRingKvKey key) { return (key.low == 0u && key.high == 0u) ? 1u : 0u; }
+static uint32_t SparkRingWorkControlKvKeyEmpty(SparkRingKvKey key) { return (key.low == 0u && key.high == 0u) ? 1u : 0u; }
 
 SparkRingKvKey SparkRingWorkControlPrivateKey(uint64_t sequence_id,uint32_t logical_block_index)
 {
 	SparkRingKvKey key;
-	key.low = SparkGlm52RingWorkControlKvMix(sequence_id ^ ((uint64_t)logical_block_index * 0x9e3779b97f4a7c15ull));
-	key.high = SparkGlm52RingWorkControlKvMix(key.low ^ 0xd6e8feb86659fd93ull) | 1ull;
+	key.low = SparkRingWorkControlKvMix(sequence_id ^ ((uint64_t)logical_block_index * 0x9e3779b97f4a7c15ull));
+	key.high = SparkRingWorkControlKvMix(key.low ^ 0xd6e8feb86659fd93ull) | 1ull;
 	return key;
 }
 
@@ -912,7 +912,7 @@ SparkRingKvKey SparkRingWorkControlContentKey(uint64_t digest_low,uint64_t diges
 	return key;
 }
 
-static SparkRingKvKey *SparkGlm52RingWorkControlKvIndexKeyAt(void *entries,uint32_t entry_bytes,uint32_t slot)
+static SparkRingKvKey *SparkRingWorkControlKvIndexKeyAt(void *entries,uint32_t entry_bytes,uint32_t slot)
 {
 	return (SparkRingKvKey *)((uint8_t *)entries + ((size_t)slot * (size_t)entry_bytes));
 }
@@ -920,7 +920,7 @@ static SparkRingKvKey *SparkGlm52RingWorkControlKvIndexKeyAt(void *entries,uint3
 // Both key domains carry an avalanched low half - private keys are a splitmix
 // output, content keys a caller digest - so the home slot is a mask, not another
 // mix. This runs on every probe of every block of every lane.
-static uint32_t SparkGlm52RingWorkControlKvIndexHome(SparkRingKvKey key,uint32_t mask)
+static uint32_t SparkRingWorkControlKvIndexHome(SparkRingKvKey key,uint32_t mask)
 {
 	return (uint32_t)(key.low & (uint64_t)mask);
 }
@@ -928,17 +928,17 @@ static uint32_t SparkGlm52RingWorkControlKvIndexHome(SparkRingKvKey key,uint32_t
 // Linear probe over a power-of-two open-addressed table whose entries begin with
 // a SparkRingKvKey. Returns the slot to occupy when the key is absent, so
 // one implementation serves both the sequence directory and the block table.
-static uint32_t SparkGlm52RingWorkControlKvIndexProbe(void *entries,uint32_t entry_bytes,uint32_t capacity,SparkRingKvKey key,uint32_t *found_out)
+static uint32_t SparkRingWorkControlKvIndexProbe(void *entries,uint32_t entry_bytes,uint32_t capacity,SparkRingKvKey key,uint32_t *found_out)
 {
 	const SparkRingKvKey *slot_key;
 	uint32_t mask,slot,probes;
 	mask = capacity - 1u;
-	slot = SparkGlm52RingWorkControlKvIndexHome(key,mask);
+	slot = SparkRingWorkControlKvIndexHome(key,mask);
 	*found_out = 0u;
 	for (probes = 0u; probes <= mask; ++probes)
 	{
-		slot_key = SparkGlm52RingWorkControlKvIndexKeyAt(entries,entry_bytes,slot);
-		if (SparkGlm52RingWorkControlKvKeyEmpty(*slot_key) != 0u)
+		slot_key = SparkRingWorkControlKvIndexKeyAt(entries,entry_bytes,slot);
+		if (SparkRingWorkControlKvKeyEmpty(*slot_key) != 0u)
 			return slot;
 		if (SparkRingWorkControlKvKeyEqual(*slot_key,key) != 0u)
 		{
@@ -953,7 +953,7 @@ static uint32_t SparkGlm52RingWorkControlKvIndexProbe(void *entries,uint32_t ent
 // Backward-shift deletion keeps every probe chain contiguous, so no tombstone
 // state is needed and probe length stays governed only by load factor. The
 // scan is bounded by a full revolution so a saturated table cannot spin.
-static void SparkGlm52RingWorkControlKvIndexErase(void *entries,uint32_t entry_bytes,uint32_t capacity,uint32_t slot)
+static void SparkRingWorkControlKvIndexErase(void *entries,uint32_t entry_bytes,uint32_t capacity,uint32_t slot)
 {
 	const SparkRingKvKey *scan_key;
 	uint8_t *base;
@@ -964,10 +964,10 @@ static void SparkGlm52RingWorkControlKvIndexErase(void *entries,uint32_t entry_b
 	memset(base + ((size_t)hole * entry_bytes),0,entry_bytes);
 	for (scan = (hole + 1u) & mask; scan != hole; scan = (scan + 1u) & mask)
 	{
-		scan_key = SparkGlm52RingWorkControlKvIndexKeyAt(entries,entry_bytes,scan);
-		if (SparkGlm52RingWorkControlKvKeyEmpty(*scan_key) != 0u)
+		scan_key = SparkRingWorkControlKvIndexKeyAt(entries,entry_bytes,scan);
+		if (SparkRingWorkControlKvKeyEmpty(*scan_key) != 0u)
 			return;
-		home = SparkGlm52RingWorkControlKvIndexHome(*scan_key,mask);
+		home = SparkRingWorkControlKvIndexHome(*scan_key,mask);
 		hole_distance = (hole - home) & mask;
 		scan_distance = (scan - home) & mask;
 		if (hole_distance >= scan_distance)
@@ -980,30 +980,30 @@ static void SparkGlm52RingWorkControlKvIndexErase(void *entries,uint32_t entry_b
 
 // Slot of an existing key, or UINT32_MAX. Load factor is held at one half, so
 // an exhausted probe and an absent key are the same answer to every caller.
-static uint32_t SparkGlm52RingWorkControlKvIndexFind(void *entries,uint32_t entry_bytes,uint32_t capacity,SparkRingKvKey key)
+static uint32_t SparkRingWorkControlKvIndexFind(void *entries,uint32_t entry_bytes,uint32_t capacity,SparkRingKvKey key)
 {
 	uint32_t slot,found;
-	slot = SparkGlm52RingWorkControlKvIndexProbe(entries,entry_bytes,capacity,key,&found);
+	slot = SparkRingWorkControlKvIndexProbe(entries,entry_bytes,capacity,key,&found);
 	return found != 0u ? slot : UINT32_MAX;
 }
 
-#define SPARK_GLM52_KV_FIND_DIRECTORY(state,sequence_id,logical_block_index) \
-	SparkGlm52RingWorkControlKvIndexFind((state)->directory_entries,(uint32_t)sizeof((state)->directory_entries[0]),(state)->directory_capacity,SparkRingWorkControlPrivateKey((sequence_id),(logical_block_index)))
+#define SPARK_KV_FIND_DIRECTORY(state,sequence_id,logical_block_index) \
+	SparkRingWorkControlKvIndexFind((state)->directory_entries,(uint32_t)sizeof((state)->directory_entries[0]),(state)->directory_capacity,SparkRingWorkControlPrivateKey((sequence_id),(logical_block_index)))
 
 // The block record a sequence slot names, or 0 when the slot is not held.
 // Every caller that walks a packet wants this, not the two lookups separately.
-static SparkRingWorkControlKvBlockEntry *SparkGlm52RingWorkControlKvSequenceBlock(const SparkRingWorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index);
+static SparkRingWorkControlKvBlockEntry *SparkRingWorkControlKvSequenceBlock(const SparkRingWorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index);
 
-#define SPARK_GLM52_KV_FIND_BLOCK(state,block_key) \
-	SparkGlm52RingWorkControlKvIndexFind((state)->block_entries,(uint32_t)sizeof((state)->block_entries[0]),(state)->block_entry_capacity,(block_key))
+#define SPARK_KV_FIND_BLOCK(state,block_key) \
+	SparkRingWorkControlKvIndexFind((state)->block_entries,(uint32_t)sizeof((state)->block_entries[0]),(state)->block_entry_capacity,(block_key))
 
-static SparkRingWorkControlKvBlockEntry *SparkGlm52RingWorkControlKvSequenceBlock(const SparkRingWorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index)
+static SparkRingWorkControlKvBlockEntry *SparkRingWorkControlKvSequenceBlock(const SparkRingWorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index)
 {
 	uint32_t slot;
-	slot = SPARK_GLM52_KV_FIND_DIRECTORY(state,sequence_id,logical_block_index);
+	slot = SPARK_KV_FIND_DIRECTORY(state,sequence_id,logical_block_index);
 	if (slot == UINT32_MAX)
 		return 0;
-	return &state->block_entries[SPARK_GLM52_KV_FIND_BLOCK(state,state->directory_entries[slot].block_key)];
+	return &state->block_entries[SPARK_KV_FIND_BLOCK(state,state->directory_entries[slot].block_key)];
 }
 
 SparkStatus SparkRingWorkControlInitializeKvState(
@@ -1154,7 +1154,7 @@ SparkStatus SparkRingWorkControlPinPhysicalBlock(
 {
 	if (state == 0 || state->physical_block_pin_counts == 0 ||
 		physical_block_index >= state->physical_block_capacity ||
-		SparkGlm52RingWorkControlKvKeyEmpty(
+		SparkRingWorkControlKvKeyEmpty(
 			state->physical_block_keys[physical_block_index]) != 0u ||
 		state->physical_block_pin_counts[physical_block_index] == UINT32_MAX)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1174,7 +1174,7 @@ SparkStatus SparkRingWorkControlUnpinPhysicalBlock(
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52RingWorkControlValidateKvState(
+static SparkStatus SparkRingWorkControlValidateKvState(
 	const SparkRingWorkControlPacket *packet,
 	const SparkRingWorkControlKvState *state)
 {
@@ -1227,7 +1227,7 @@ static SparkStatus SparkGlm52RingWorkControlValidateKvState(
 	return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52RingWorkControlResetBackingBlocks(
+static void SparkRingWorkControlResetBackingBlocks(
 	SparkRingWorkControlKvState *state)
 {
 	uint32_t backing_block_index;
@@ -1250,7 +1250,7 @@ static void SparkGlm52RingWorkControlResetBackingBlocks(
 	state->free_backing_block_head = 0u;
 }
 
-static void SparkGlm52RingWorkControlResetKvGeneration(
+static void SparkRingWorkControlResetKvGeneration(
 	SparkRingWorkControlKvState *state,
 	uint64_t control_generation)
 {
@@ -1273,7 +1273,7 @@ static void SparkGlm52RingWorkControlResetKvGeneration(
 		state->directory_capacity * sizeof(state->directory_entries[0]));
 	memset(state->block_entries,0,
 		state->block_entry_capacity * sizeof(state->block_entries[0]));
-	SparkGlm52RingWorkControlResetBackingBlocks(state);
+	SparkRingWorkControlResetBackingBlocks(state);
 	state->next_physical_block_index = 0u;
 	state->directory_entry_count = 0u;
 	state->block_entry_count = 0u;
@@ -1296,11 +1296,11 @@ SparkStatus SparkRingWorkControlAdvanceKvGeneration(
 	if (control_generation < state->control_generation)
 		return SPARK_STATUS_VALIDATION_FAILED;
 	if (control_generation != state->control_generation)
-		SparkGlm52RingWorkControlResetKvGeneration(state,control_generation);
+		SparkRingWorkControlResetKvGeneration(state,control_generation);
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52RingWorkControlSelectKvGeneration(
+static SparkStatus SparkRingWorkControlSelectKvGeneration(
 	const SparkRingWorkControlPacket *packet,
 	SparkRingWorkControlKvState *state)
 {
@@ -1311,7 +1311,7 @@ static SparkStatus SparkGlm52RingWorkControlSelectKvGeneration(
 		? SPARK_STATUS_NOT_FOUND : status;
 }
 
-static void SparkGlm52RingWorkControlResetReadinessCounts(
+static void SparkRingWorkControlResetReadinessCounts(
 	SparkRingWorkControlKvState *state)
 {
 	state->missing_block_count = 0u;
@@ -1319,7 +1319,7 @@ static void SparkGlm52RingWorkControlResetReadinessCounts(
 	state->resident_block_count = 0u;
 }
 
-static void SparkGlm52RingWorkControlAccountReadiness(
+static void SparkRingWorkControlAccountReadiness(
 	SparkRingWorkControlKvState *state,
 	uint8_t entry_state)
 {
@@ -1353,7 +1353,7 @@ SparkStatus SparkRingWorkControlCollectKvPrefetchEntries(
 		const SparkRingWorkControlPacket *packet;
 		SparkStatus status;
 		packet = &packets[packet_index];
-		status = SparkGlm52RingWorkControlValidateKvState(packet,state);
+		status = SparkRingWorkControlValidateKvState(packet,state);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		if (packet->control_generation != state->control_generation)
@@ -1371,7 +1371,7 @@ SparkStatus SparkRingWorkControlCollectKvPrefetchEntries(
 			for (block_index = 0u; block_index < block_count; ++block_index)
 			{
 				SparkRingWorkControlKvBlockEntry *block_entry;
-				block_entry = SparkGlm52RingWorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
+				block_entry = SparkRingWorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
 				if (block_entry == 0)
 					continue;
 				// Sharers reach one record many times. Marking the record dedupes
@@ -1398,7 +1398,7 @@ SparkStatus SparkRingWorkControlCollectKvPrefetchEntries(
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52RingWorkControlKvBackingAcquire(
+static SparkStatus SparkRingWorkControlKvBackingAcquire(
 	SparkRingWorkControlKvState *state,
 	uint32_t *backing_block_index_out)
 {
@@ -1422,7 +1422,7 @@ static SparkStatus SparkGlm52RingWorkControlKvBackingAcquire(
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52RingWorkControlKvBackingRelease(
+static SparkStatus SparkRingWorkControlKvBackingRelease(
 	SparkRingWorkControlKvState *state,
 	uint32_t backing_block_index)
 {
@@ -1441,7 +1441,7 @@ static SparkStatus SparkGlm52RingWorkControlKvBackingRelease(
 	return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52RingWorkControlKvClearPhysicalBlock(SparkRingWorkControlKvState *state,uint32_t physical_block_index)
+static void SparkRingWorkControlKvClearPhysicalBlock(SparkRingWorkControlKvState *state,uint32_t physical_block_index)
 {
 	state->physical_block_keys[physical_block_index].low = 0u;
 	state->physical_block_keys[physical_block_index].high = 0u;
@@ -1449,7 +1449,7 @@ static void SparkGlm52RingWorkControlKvClearPhysicalBlock(SparkRingWorkControlKv
 	state->physical_block_states[physical_block_index] = SPARK_RING_KV_ENTRY_MISSING;
 }
 
-static void SparkGlm52RingWorkControlKvAssignPhysicalBlock(SparkRingWorkControlKvState *state,uint32_t physical_block_index,SparkRingKvKey key,uint8_t physical_state)
+static void SparkRingWorkControlKvAssignPhysicalBlock(SparkRingWorkControlKvState *state,uint32_t physical_block_index,SparkRingKvKey key,uint8_t physical_state)
 {
 	state->physical_block_keys[physical_block_index] = key;
 	state->physical_block_last_used_epochs[physical_block_index] = state->epoch;
@@ -1458,7 +1458,7 @@ static void SparkGlm52RingWorkControlKvAssignPhysicalBlock(SparkRingWorkControlK
 }
 
 // Write a resident block out to its backing slot and mark the record swapped.
-static SparkStatus SparkGlm52RingWorkControlKvSpillBlock(SparkRingWorkControlKvState *state,SparkRingWorkControlKvBlockEntry *entry,uint32_t physical_block_index)
+static SparkStatus SparkRingWorkControlKvSpillBlock(SparkRingWorkControlKvState *state,SparkRingWorkControlKvBlockEntry *entry,uint32_t physical_block_index)
 {
 	SparkStatus status;
 	if (entry->backing_valid == 0u)
@@ -1473,7 +1473,7 @@ static SparkStatus SparkGlm52RingWorkControlKvSpillBlock(SparkRingWorkControlKvS
 		state->clean_evict_count += 1u;
 	entry->physical_block_index = SPARK_RING_KV_INVALID_BLOCK_INDEX;
 	entry->residency_state = SPARK_RING_KV_DIRECTORY_RESIDENCY_NVME;
-	SparkGlm52RingWorkControlKvClearPhysicalBlock(state,physical_block_index);
+	SparkRingWorkControlKvClearPhysicalBlock(state,physical_block_index);
 	state->allocated_physical_block_count -= 1u;
 	state->swapped_block_count += 1u;
 	return SPARK_STATUS_OK;
@@ -1484,7 +1484,7 @@ static SparkStatus SparkGlm52RingWorkControlKvSpillBlock(SparkRingWorkControlKvS
 // carried on the physical block, so the cost is one probe however many sequences
 // share the block, and every sharer observes the spill because residency lives
 // only on the block record.
-static SparkStatus SparkGlm52RingWorkControlKvAcquirePhysicalBlock(SparkRingWorkControlKvState *state,uint32_t *physical_block_index_out)
+static SparkStatus SparkRingWorkControlKvAcquirePhysicalBlock(SparkRingWorkControlKvState *state,uint32_t *physical_block_index_out)
 {
 	SparkRingWorkControlKvBlockEntry *entry;
 	uint32_t physical_block_index,scan_count,slot;
@@ -1495,7 +1495,7 @@ static SparkStatus SparkGlm52RingWorkControlKvAcquirePhysicalBlock(SparkRingWork
 		state->next_physical_block_index = (physical_block_index + 1u) % state->physical_block_capacity;
 		if (state->physical_block_pin_counts != 0 && state->physical_block_pin_counts[physical_block_index] != 0u)
 			continue;
-		if (SparkGlm52RingWorkControlKvKeyEmpty(state->physical_block_keys[physical_block_index]) != 0u)
+		if (SparkRingWorkControlKvKeyEmpty(state->physical_block_keys[physical_block_index]) != 0u)
 		{
 			*physical_block_index_out = physical_block_index;
 			return SPARK_STATUS_OK;
@@ -1504,9 +1504,9 @@ static SparkStatus SparkGlm52RingWorkControlKvAcquirePhysicalBlock(SparkRingWork
 			state->physical_block_states[physical_block_index] != SPARK_RING_KV_ENTRY_RESIDENT ||
 			state->physical_block_last_used_epochs[physical_block_index] == state->epoch)
 			continue;
-		slot = SPARK_GLM52_KV_FIND_BLOCK(state,state->physical_block_keys[physical_block_index]);
+		slot = SPARK_KV_FIND_BLOCK(state,state->physical_block_keys[physical_block_index]);
 		entry = &state->block_entries[slot];
-		status = SparkGlm52RingWorkControlKvSpillBlock(state,entry,physical_block_index);
+		status = SparkRingWorkControlKvSpillBlock(state,entry,physical_block_index);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		*physical_block_index_out = physical_block_index;
@@ -1524,11 +1524,11 @@ SparkStatus SparkRingWorkControlAcquireTransientPhysicalBlock(
 	if (state == 0 || physical_block_index_out == 0 ||
 		state->physical_block_pin_counts == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	status = SparkGlm52RingWorkControlKvAcquirePhysicalBlock(
+	status = SparkRingWorkControlKvAcquirePhysicalBlock(
 		state,&physical_block_index);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	SparkGlm52RingWorkControlKvAssignPhysicalBlock(state,physical_block_index,
+	SparkRingWorkControlKvAssignPhysicalBlock(state,physical_block_index,
 		SparkRingWorkControlPrivateKey(UINT64_MAX,physical_block_index),
 		SPARK_RING_KV_ENTRY_TRANSIENT);
 	state->physical_block_pin_counts[physical_block_index] = 1u;
@@ -1551,7 +1551,7 @@ SparkStatus SparkRingWorkControlReleaseTransientPhysicalBlock(
 		state->allocated_physical_block_count == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	state->physical_block_pin_counts[physical_block_index] = 0u;
-	SparkGlm52RingWorkControlKvClearPhysicalBlock(
+	SparkRingWorkControlKvClearPhysicalBlock(
 		state,physical_block_index);
 	state->allocated_physical_block_count -= 1u;
 	return SPARK_STATUS_OK;
@@ -1559,12 +1559,12 @@ SparkStatus SparkRingWorkControlReleaseTransientPhysicalBlock(
 
 // Take a reference on the block a key names, admitting a physical block and a
 // backing slot on the first reference and sharing them on every later one.
-static SparkStatus SparkGlm52RingWorkControlKvBlockResolve(SparkRingWorkControlKvState *state,SparkRingKvKey block_key)
+static SparkStatus SparkRingWorkControlKvBlockResolve(SparkRingWorkControlKvState *state,SparkRingKvKey block_key)
 {
 	SparkRingWorkControlKvBlockEntry *entry;
 	uint32_t slot,found,physical_block_index,backing_block_index;
 	SparkStatus status;
-	slot = SparkGlm52RingWorkControlKvIndexProbe(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,block_key,&found);
+	slot = SparkRingWorkControlKvIndexProbe(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,block_key,&found);
 	if (slot == UINT32_MAX)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	entry = &state->block_entries[slot];
@@ -1576,13 +1576,13 @@ static SparkStatus SparkGlm52RingWorkControlKvBlockResolve(SparkRingWorkControlK
 	}
 	if (state->block_entry_count >= (state->backing_block_capacity != 0u ? state->backing_block_capacity : state->physical_block_capacity))
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	status = SparkGlm52RingWorkControlKvBackingAcquire(state,&backing_block_index);
+	status = SparkRingWorkControlKvBackingAcquire(state,&backing_block_index);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52RingWorkControlKvAcquirePhysicalBlock(state,&physical_block_index);
+	status = SparkRingWorkControlKvAcquirePhysicalBlock(state,&physical_block_index);
 	if (status != SPARK_STATUS_OK)
 	{
-		(void)SparkGlm52RingWorkControlKvBackingRelease(state,backing_block_index);
+		(void)SparkRingWorkControlKvBackingRelease(state,backing_block_index);
 		return status;
 	}
 	entry = &state->block_entries[slot];
@@ -1594,19 +1594,19 @@ static SparkStatus SparkGlm52RingWorkControlKvBlockResolve(SparkRingWorkControlK
 	entry->backing_valid = 0u;
 	state->block_entry_count += 1u;
 	state->share_admit_count += 1u;
-	SparkGlm52RingWorkControlKvAssignPhysicalBlock(state,physical_block_index,block_key,SPARK_RING_KV_ENTRY_MISSING);
+	SparkRingWorkControlKvAssignPhysicalBlock(state,physical_block_index,block_key,SPARK_RING_KV_ENTRY_MISSING);
 	return SPARK_STATUS_OK;
 }
 
 // Drop a reference, freeing the physical and backing blocks at zero. The
 // decrement is guarded so an unbalanced release reports rather than wrapping to
 // UINT32_MAX and stranding the block forever.
-static SparkStatus SparkGlm52RingWorkControlKvBlockDeref(SparkRingWorkControlKvState *state,SparkRingKvKey block_key)
+static SparkStatus SparkRingWorkControlKvBlockDeref(SparkRingWorkControlKvState *state,SparkRingKvKey block_key)
 {
 	SparkRingWorkControlKvBlockEntry *entry;
 	uint32_t slot;
 	SparkStatus status;
-	slot = SPARK_GLM52_KV_FIND_BLOCK(state,block_key);
+	slot = SPARK_KV_FIND_BLOCK(state,block_key);
 	entry = &state->block_entries[slot];
 	if (entry->reference_count > 1u)
 	{
@@ -1617,31 +1617,31 @@ static SparkStatus SparkGlm52RingWorkControlKvBlockDeref(SparkRingWorkControlKvS
 	{
 		if (state->physical_block_pin_counts != 0 && state->physical_block_pin_counts[entry->physical_block_index] != 0u)
 			return SPARK_STATUS_BUSY;
-		SparkGlm52RingWorkControlKvClearPhysicalBlock(state,entry->physical_block_index);
+		SparkRingWorkControlKvClearPhysicalBlock(state,entry->physical_block_index);
 		state->allocated_physical_block_count -= 1u;
 	}
 	else
 		state->swapped_block_count -= 1u;
-	status = SparkGlm52RingWorkControlKvBackingRelease(state,entry->backing_block_index);
+	status = SparkRingWorkControlKvBackingRelease(state,entry->backing_block_index);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	entry->reference_count = 0u;
 	state->block_entry_count -= 1u;
-	SparkGlm52RingWorkControlKvIndexErase(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,slot);
+	SparkRingWorkControlKvIndexErase(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,slot);
 	return SPARK_STATUS_OK;
 }
 
 // Change a block record's identity in place. Used when a private block becomes
 // the first block to publish its content, so the bytes already computed are kept
 // and no other sequence has to recompute them.
-static void SparkGlm52RingWorkControlKvRekeyBlock(SparkRingWorkControlKvState *state,uint32_t source_slot,SparkRingKvKey block_key)
+static void SparkRingWorkControlKvRekeyBlock(SparkRingWorkControlKvState *state,uint32_t source_slot,SparkRingKvKey block_key)
 {
 	SparkRingWorkControlKvBlockEntry record;
 	uint32_t slot,found;
 	record = state->block_entries[source_slot];
-	SparkGlm52RingWorkControlKvIndexErase(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,source_slot);
+	SparkRingWorkControlKvIndexErase(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,source_slot);
 	record.key = block_key;
-	slot = SparkGlm52RingWorkControlKvIndexProbe(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,block_key,&found);
+	slot = SparkRingWorkControlKvIndexProbe(state->block_entries,(uint32_t)sizeof(state->block_entries[0]),state->block_entry_capacity,block_key,&found);
 	state->block_entries[slot] = record;
 	if (record.residency_state == SPARK_RING_KV_DIRECTORY_RESIDENCY_GPU)
 		state->physical_block_keys[record.physical_block_index] = block_key;
@@ -1651,27 +1651,27 @@ static void SparkGlm52RingWorkControlKvRekeyBlock(SparkRingWorkControlKvState *s
 // same content, or publish the private block under that content key when no
 // sharer exists yet. Refused while the private block carries an in-flight
 // speculative write, so a rejected draft can never reach another sequence.
-static SparkStatus SparkGlm52RingWorkControlKvPromoteBlock(SparkRingWorkControlKvState *state,SparkRingWorkControlKvDirectoryEntry *entry,SparkRingKvKey block_key)
+static SparkStatus SparkRingWorkControlKvPromoteBlock(SparkRingWorkControlKvState *state,SparkRingWorkControlKvDirectoryEntry *entry,SparkRingKvKey block_key)
 {
 	SparkRingWorkControlKvBlockEntry *previous;
 	uint32_t source_slot;
 	SparkStatus status;
-	source_slot = SPARK_GLM52_KV_FIND_BLOCK(state,entry->block_key);
+	source_slot = SPARK_KV_FIND_BLOCK(state,entry->block_key);
 	previous = &state->block_entries[source_slot];
 	if (previous->residency_state == SPARK_RING_KV_DIRECTORY_RESIDENCY_GPU &&
 		state->physical_block_pin_counts != 0 &&
 		state->physical_block_pin_counts[previous->physical_block_index] != 0u)
 		return SPARK_STATUS_OK;
-	if (SPARK_GLM52_KV_FIND_BLOCK(state,block_key) == UINT32_MAX && previous->reference_count == 1u)
+	if (SPARK_KV_FIND_BLOCK(state,block_key) == UINT32_MAX && previous->reference_count == 1u)
 	{
-		SparkGlm52RingWorkControlKvRekeyBlock(state,source_slot,block_key);
+		SparkRingWorkControlKvRekeyBlock(state,source_slot,block_key);
 		entry->block_key = block_key;
 		return SPARK_STATUS_OK;
 	}
-	status = SparkGlm52RingWorkControlKvBlockResolve(state,block_key);
+	status = SparkRingWorkControlKvBlockResolve(state,block_key);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52RingWorkControlKvBlockDeref(state,entry->block_key);
+	status = SparkRingWorkControlKvBlockDeref(state,entry->block_key);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	entry->block_key = block_key;
@@ -1680,12 +1680,12 @@ static SparkStatus SparkGlm52RingWorkControlKvPromoteBlock(SparkRingWorkControlK
 
 // Return the physical block a key resides in, faulting it back from backing
 // storage when the clock sweep has spilled it.
-static SparkStatus SparkGlm52RingWorkControlKvBlockResident(SparkRingWorkControlKvState *state,SparkRingKvKey block_key,uint32_t *physical_block_index_out)
+static SparkStatus SparkRingWorkControlKvBlockResident(SparkRingWorkControlKvState *state,SparkRingKvKey block_key,uint32_t *physical_block_index_out)
 {
 	SparkRingWorkControlKvBlockEntry *entry;
 	uint32_t slot,physical_block_index;
 	SparkStatus status;
-	slot = SPARK_GLM52_KV_FIND_BLOCK(state,block_key);
+	slot = SPARK_KV_FIND_BLOCK(state,block_key);
 	entry = &state->block_entries[slot];
 	if (entry->residency_state == SPARK_RING_KV_DIRECTORY_RESIDENCY_GPU)
 	{
@@ -1693,7 +1693,7 @@ static SparkStatus SparkGlm52RingWorkControlKvBlockResident(SparkRingWorkControl
 		*physical_block_index_out = entry->physical_block_index;
 		return SPARK_STATUS_OK;
 	}
-	status = SparkGlm52RingWorkControlKvAcquirePhysicalBlock(state,&physical_block_index);
+	status = SparkRingWorkControlKvAcquirePhysicalBlock(state,&physical_block_index);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	status = state->swap_load_function(state->swap_context,block_key,physical_block_index,entry->backing_block_index);
@@ -1703,19 +1703,19 @@ static SparkStatus SparkGlm52RingWorkControlKvBlockResident(SparkRingWorkControl
 	state->swap_load_count += 1u;
 	entry->physical_block_index = physical_block_index;
 	entry->residency_state = SPARK_RING_KV_DIRECTORY_RESIDENCY_GPU;
-	SparkGlm52RingWorkControlKvAssignPhysicalBlock(state,physical_block_index,block_key,SPARK_RING_KV_ENTRY_RESIDENT);
+	SparkRingWorkControlKvAssignPhysicalBlock(state,physical_block_index,block_key,SPARK_RING_KV_ENTRY_RESIDENT);
 	*physical_block_index_out = physical_block_index;
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52RingWorkControlKvDirectoryAcquire(SparkRingWorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index,SparkRingKvKey block_key,uint32_t *physical_block_index_out)
+static SparkStatus SparkRingWorkControlKvDirectoryAcquire(SparkRingWorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index,SparkRingKvKey block_key,uint32_t *physical_block_index_out)
 {
 	SparkRingWorkControlKvDirectoryEntry *entry;
 	SparkRingKvKey directory_key;
 	uint32_t slot,found;
 	SparkStatus status;
 	directory_key = SparkRingWorkControlPrivateKey(sequence_id,logical_block_index);
-	slot = SparkGlm52RingWorkControlKvIndexProbe(state->directory_entries,(uint32_t)sizeof(state->directory_entries[0]),state->directory_capacity,directory_key,&found);
+	slot = SparkRingWorkControlKvIndexProbe(state->directory_entries,(uint32_t)sizeof(state->directory_entries[0]),state->directory_capacity,directory_key,&found);
 	if (slot == UINT32_MAX)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	entry = &state->directory_entries[slot];
@@ -1723,7 +1723,7 @@ static SparkStatus SparkGlm52RingWorkControlKvDirectoryAcquire(SparkRingWorkCont
 	{
 		if (state->directory_entry_count >= state->directory_capacity / 2u)
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
-		status = SparkGlm52RingWorkControlKvBlockResolve(state,block_key);
+		status = SparkRingWorkControlKvBlockResolve(state,block_key);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		entry->key = directory_key;
@@ -1732,32 +1732,32 @@ static SparkStatus SparkGlm52RingWorkControlKvDirectoryAcquire(SparkRingWorkCont
 	}
 	else if (SparkRingWorkControlKvKeyEqual(entry->block_key,block_key) == 0u)
 	{
-		status = SparkGlm52RingWorkControlKvPromoteBlock(state,entry,block_key);
+		status = SparkRingWorkControlKvPromoteBlock(state,entry,block_key);
 		if (status != SPARK_STATUS_OK)
 			return status;
 	}
-	return SparkGlm52RingWorkControlKvBlockResident(state,entry->block_key,physical_block_index_out);
+	return SparkRingWorkControlKvBlockResident(state,entry->block_key,physical_block_index_out);
 }
 
 
-static SparkStatus SparkGlm52RingWorkControlKvDirectoryRelease(SparkRingWorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index)
+static SparkStatus SparkRingWorkControlKvDirectoryRelease(SparkRingWorkControlKvState *state,uint64_t sequence_id,uint32_t logical_block_index)
 {
 	SparkRingKvKey block_key;
 	uint32_t slot;
 	SparkStatus status;
-	slot = SPARK_GLM52_KV_FIND_DIRECTORY(state,sequence_id,logical_block_index);
+	slot = SPARK_KV_FIND_DIRECTORY(state,sequence_id,logical_block_index);
 	if (slot == UINT32_MAX)
 		return SPARK_STATUS_NOT_FOUND;
 	block_key = state->directory_entries[slot].block_key;
-	status = SparkGlm52RingWorkControlKvBlockDeref(state,block_key);
+	status = SparkRingWorkControlKvBlockDeref(state,block_key);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	state->directory_entry_count -= 1u;
-	SparkGlm52RingWorkControlKvIndexErase(state->directory_entries,(uint32_t)sizeof(state->directory_entries[0]),state->directory_capacity,slot);
+	SparkRingWorkControlKvIndexErase(state->directory_entries,(uint32_t)sizeof(state->directory_entries[0]),state->directory_capacity,slot);
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52RingWorkControlMarkTable(
+static SparkStatus SparkRingWorkControlMarkTable(
 	const SparkRingWorkControlPacket *packet,
 	SparkRingWorkControlKvState *state,
 	uint8_t entry_state)
@@ -1769,7 +1769,7 @@ static SparkStatus SparkGlm52RingWorkControlMarkTable(
 	SparkRingWorkControlKvBlockEntry *block_entry;
 	SparkStatus status;
 
-	status = SparkGlm52RingWorkControlValidateKvState(packet,state);
+	status = SparkRingWorkControlValidateKvState(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	if (packet->control_generation != state->control_generation)
@@ -1783,7 +1783,7 @@ static SparkStatus SparkGlm52RingWorkControlMarkTable(
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		for (block_index = 0u; block_index < block_count; ++block_index)
 		{
-			block_entry = SparkGlm52RingWorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
+			block_entry = SparkRingWorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
 			if (block_entry == 0)
 				return SPARK_STATUS_NOT_FOUND;
 			physical_block_index = block_entry->physical_block_index;
@@ -1810,16 +1810,16 @@ uint64_t SparkRingWorkControlKvCommittedFrontier(const SparkRingWorkControlLane 
 // Content key when the caller published one for a committed block, private key
 // otherwise. The lane's key row and frontier are hoisted by the caller, so the
 // per-block cost here is one compare.
-static SparkRingKvKey SparkGlm52RingWorkControlKvSelectKey(const SparkRingKvKey *lane_keys,uint64_t sequence_id,uint32_t logical_block_index,uint64_t block_end_token,uint64_t committed_frontier)
+static SparkRingKvKey SparkRingWorkControlKvSelectKey(const SparkRingKvKey *lane_keys,uint64_t sequence_id,uint32_t logical_block_index,uint64_t block_end_token,uint64_t committed_frontier)
 {
 	if (lane_keys != 0 && block_end_token <= committed_frontier &&
-		SparkGlm52RingWorkControlKvKeyEmpty(lane_keys[logical_block_index]) == 0u)
+		SparkRingWorkControlKvKeyEmpty(lane_keys[logical_block_index]) == 0u)
 		return SparkRingWorkControlContentKey(lane_keys[logical_block_index].low,lane_keys[logical_block_index].high);
 	return SparkRingWorkControlPrivateKey(sequence_id,logical_block_index);
 }
 
 // The lane's published key row, or null when this lane cannot share.
-static const SparkRingKvKey *SparkGlm52RingWorkControlKvLaneKeys(const SparkRingWorkControlKvState *state,uint32_t lane_index,uint32_t block_count)
+static const SparkRingKvKey *SparkRingWorkControlKvLaneKeys(const SparkRingWorkControlKvState *state,uint32_t lane_index,uint32_t block_count)
 {
 	if (state->lane_block_keys == 0 || block_count > state->lane_block_key_stride)
 		return 0;
@@ -1831,7 +1831,7 @@ static const SparkRingKvKey *SparkGlm52RingWorkControlKvLaneKeys(const SparkRing
 // sequences presenting a prefix that is already admitted cost no physical block
 // at all. Lanes presenting the same brand new key in one packet are counted
 // once each, which over-states the need and can only reject conservatively.
-static SparkStatus SparkGlm52RingWorkControlKvCountAdmission(const SparkRingWorkControlKvState *state,const SparkRingWorkControlPacket *packet,uint32_t *new_entry_count_out,uint32_t *new_block_count_out)
+static SparkStatus SparkRingWorkControlKvCountAdmission(const SparkRingWorkControlKvState *state,const SparkRingWorkControlPacket *packet,uint32_t *new_entry_count_out,uint32_t *new_block_count_out)
 {
 	const SparkRingWorkControlLane *lane;
 	const SparkRingKvKey *lane_keys;
@@ -1845,14 +1845,14 @@ static SparkStatus SparkGlm52RingWorkControlKvCountAdmission(const SparkRingWork
 		block_count = SparkRingWorkControlBlockCount(lane->context_token_count,packet->block_token_count);
 		if (block_count == 0u || block_count > packet->max_blocks_per_sequence || block_count > state->physical_block_capacity)
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
-		lane_keys = SparkGlm52RingWorkControlKvLaneKeys(state,lane_index,block_count);
+		lane_keys = SparkRingWorkControlKvLaneKeys(state,lane_index,block_count);
 		committed_frontier = SparkRingWorkControlKvCommittedFrontier(lane);
 		block_end_token = 0u;
 		for (block_index = 0u; block_index < block_count; ++block_index)
 		{
 			block_end_token += (uint64_t)packet->block_token_count;
-			new_entry_count += SPARK_GLM52_KV_FIND_DIRECTORY(state,lane->sequence_id,block_index) == UINT32_MAX ? 1u : 0u;
-			new_block_count += SPARK_GLM52_KV_FIND_BLOCK(state,SparkGlm52RingWorkControlKvSelectKey(lane_keys,lane->sequence_id,block_index,block_end_token,committed_frontier)) == UINT32_MAX ? 1u : 0u;
+			new_entry_count += SPARK_KV_FIND_DIRECTORY(state,lane->sequence_id,block_index) == UINT32_MAX ? 1u : 0u;
+			new_block_count += SPARK_KV_FIND_BLOCK(state,SparkRingWorkControlKvSelectKey(lane_keys,lane->sequence_id,block_index,block_end_token,committed_frontier)) == UINT32_MAX ? 1u : 0u;
 		}
 	}
 	*new_entry_count_out = new_entry_count;
@@ -1864,7 +1864,7 @@ static SparkStatus SparkGlm52RingWorkControlKvCountAdmission(const SparkRingWork
 // costs one multiply per lane and admits every packet that would fit even with
 // no sharing at all; the probing count runs only when that bound is exceeded,
 // which is exactly when sharing has to be measured to know whether it fits.
-static SparkStatus SparkGlm52RingWorkControlKvAdmitPacket(const SparkRingWorkControlPacket *packet,SparkRingWorkControlKvState *state)
+static SparkStatus SparkRingWorkControlKvAdmitPacket(const SparkRingWorkControlPacket *packet,SparkRingWorkControlKvState *state)
 {
 	uint32_t lane_index,block_count,total_block_count,new_entry_count,new_block_count;
 	SparkStatus status;
@@ -1879,7 +1879,7 @@ static SparkStatus SparkGlm52RingWorkControlKvAdmitPacket(const SparkRingWorkCon
 	if (state->directory_entry_count + total_block_count <= state->directory_capacity / 2u &&
 		total_block_count <= state->physical_block_capacity)
 		return SPARK_STATUS_OK;
-	status = SparkGlm52RingWorkControlKvCountAdmission(state,packet,&new_entry_count,&new_block_count);
+	status = SparkRingWorkControlKvCountAdmission(state,packet,&new_entry_count,&new_block_count);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	if (state->directory_entry_count > state->directory_capacity / 2u ||
@@ -1891,7 +1891,7 @@ static SparkStatus SparkGlm52RingWorkControlKvAdmitPacket(const SparkRingWorkCon
 
 // Readiness state machine for one block of one lane. Prefill may start a missing
 // block; decode requires every block but the last to be resident already.
-static SparkStatus SparkGlm52RingWorkControlKvResolveEntryState(const SparkRingWorkControlPacket *packet,SparkRingWorkControlKvState *state,uint32_t block_index,uint32_t block_count,uint8_t *entry_state)
+static SparkStatus SparkRingWorkControlKvResolveEntryState(const SparkRingWorkControlPacket *packet,SparkRingWorkControlKvState *state,uint32_t block_index,uint32_t block_count,uint8_t *entry_state)
 {
 	if ((packet->flags & SPARK_RING_WORK_CONTROL_FLAG_PREFILL) != 0u)
 	{
@@ -1901,7 +1901,7 @@ static SparkStatus SparkGlm52RingWorkControlKvResolveEntryState(const SparkRingW
 	}
 	if (block_index + 1u < block_count && *entry_state != SPARK_RING_KV_ENTRY_RESIDENT)
 	{
-		SparkGlm52RingWorkControlAccountReadiness(state,*entry_state);
+		SparkRingWorkControlAccountReadiness(state,*entry_state);
 		return SPARK_STATUS_BUSY;
 	}
 	if (block_index + 1u == block_count && *entry_state == SPARK_RING_KV_ENTRY_MISSING)
@@ -1909,7 +1909,7 @@ static SparkStatus SparkGlm52RingWorkControlKvResolveEntryState(const SparkRingW
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52RingWorkControlKvBuildLane(const SparkRingWorkControlPacket *packet,SparkRingWorkControlKvState *state,uint32_t lane_index)
+static SparkStatus SparkRingWorkControlKvBuildLane(const SparkRingWorkControlPacket *packet,SparkRingWorkControlKvState *state,uint32_t lane_index)
 {
 	const SparkRingWorkControlLane *lane;
 	const SparkRingKvKey *lane_keys;
@@ -1924,28 +1924,28 @@ static SparkStatus SparkGlm52RingWorkControlKvBuildLane(const SparkRingWorkContr
 	base_block_index = (uint64_t)lane_index * (uint64_t)state->lane_stride;
 	if (base_block_index + block_count > state->table_entry_capacity)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	lane_keys = SparkGlm52RingWorkControlKvLaneKeys(state,lane_index,block_count);
+	lane_keys = SparkRingWorkControlKvLaneKeys(state,lane_index,block_count);
 	committed_frontier = SparkRingWorkControlKvCommittedFrontier(lane);
 	state->lane_physical_block_counts[lane_index] = block_count;
 	block_end_token = 0u;
 	for (block_index = 0u; block_index < block_count; ++block_index)
 	{
 		block_end_token += (uint64_t)packet->block_token_count;
-		status = SparkGlm52RingWorkControlKvDirectoryAcquire(state,lane->sequence_id,block_index,SparkGlm52RingWorkControlKvSelectKey(lane_keys,lane->sequence_id,block_index,block_end_token,committed_frontier),&physical_block_index);
+		status = SparkRingWorkControlKvDirectoryAcquire(state,lane->sequence_id,block_index,SparkRingWorkControlKvSelectKey(lane_keys,lane->sequence_id,block_index,block_end_token,committed_frontier),&physical_block_index);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		entry_state = state->physical_block_states[physical_block_index];
-		status = SparkGlm52RingWorkControlKvResolveEntryState(packet,state,block_index,block_count,&entry_state);
+		status = SparkRingWorkControlKvResolveEntryState(packet,state,block_index,block_count,&entry_state);
 		if (status != SPARK_STATUS_OK)
 			return status;
 		state->physical_block_states[physical_block_index] = entry_state;
-		SparkGlm52RingWorkControlAccountReadiness(state,entry_state);
+		SparkRingWorkControlAccountReadiness(state,entry_state);
 		state->physical_block_indices[base_block_index + block_index] = physical_block_index;
 	}
 	return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52RingWorkControlKvFillBlockTableView(const SparkRingWorkControlPacket *packet,const SparkRingWorkControlKvState *state,SparkKvBlockTableView *view)
+static void SparkRingWorkControlKvFillBlockTableView(const SparkRingWorkControlPacket *packet,const SparkRingWorkControlKvState *state,SparkKvBlockTableView *view)
 {
 	memset(view,0,sizeof(*view));
 	view->abi_version = SPARK_KV_CACHE_ABI_VERSION;
@@ -1969,27 +1969,27 @@ SparkStatus SparkRingWorkControlBuildHostKvBlockTable(
 	SparkStatus status;
 	if (view == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	status = SparkGlm52RingWorkControlValidateKvState(packet,state);
+	status = SparkRingWorkControlValidateKvState(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52RingWorkControlSelectKvGeneration(packet,state);
+	status = SparkRingWorkControlSelectKvGeneration(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;
-	status = SparkGlm52RingWorkControlKvAdmitPacket(packet,state);
+	status = SparkRingWorkControlKvAdmitPacket(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	memset(state->lane_physical_block_counts,0,packet->active_sequence_count * sizeof(state->lane_physical_block_counts[0]));
 	state->epoch += 1u;
 	if (state->epoch == 0u)
 		state->epoch = 1u;
-	SparkGlm52RingWorkControlResetReadinessCounts(state);
+	SparkRingWorkControlResetReadinessCounts(state);
 	for (lane_index = 0u; lane_index < packet->active_sequence_count; ++lane_index)
 	{
-		status = SparkGlm52RingWorkControlKvBuildLane(packet,state,lane_index);
+		status = SparkRingWorkControlKvBuildLane(packet,state,lane_index);
 		if (status != SPARK_STATUS_OK)
 			return status;
 	}
-	SparkGlm52RingWorkControlKvFillBlockTableView(packet,state,view);
+	SparkRingWorkControlKvFillBlockTableView(packet,state,view);
 	return SPARK_STATUS_OK;
 }
 
@@ -2006,14 +2006,14 @@ SparkStatus SparkRingWorkControlCommitHostKvBlockTable(
 	uint32_t written_position_count;
 	SparkStatus status;
 
-	status = SparkGlm52RingWorkControlMarkTable(
+	status = SparkRingWorkControlMarkTable(
 		packet,
 		state,
 		SPARK_RING_KV_ENTRY_RESIDENT);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	written_position_count =
-		SparkGlm52RingWorkControlWrittenPositionCount(packet);
+		SparkRingWorkControlWrittenPositionCount(packet);
 	if (written_position_count == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	for (lane_index = 0u; lane_index < packet->active_sequence_count; ++lane_index)
@@ -2031,7 +2031,7 @@ SparkStatus SparkRingWorkControlCommitHostKvBlockTable(
 			 block_index <= last_written_block;
 			 ++block_index)
 		{
-			block_entry = SparkGlm52RingWorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
+			block_entry = SparkRingWorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
 			if (block_entry == 0)
 				return SPARK_STATUS_NOT_FOUND;
 			block_entry->backing_valid = 0u;
@@ -2051,7 +2051,7 @@ SparkStatus SparkRingWorkControlCancelHostKvBlockTable(
 	SparkRingWorkControlKvBlockEntry *block_entry;
 	SparkStatus status;
 
-	status = SparkGlm52RingWorkControlValidateKvState(packet,state);
+	status = SparkRingWorkControlValidateKvState(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	if (packet->control_generation != state->control_generation)
@@ -2065,14 +2065,14 @@ SparkStatus SparkRingWorkControlCancelHostKvBlockTable(
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		for (block_index = 0u; block_index < block_count; ++block_index)
 		{
-			block_entry = SparkGlm52RingWorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
+			block_entry = SparkRingWorkControlKvSequenceBlock(state,packet->lanes[lane_index].sequence_id,block_index);
 			if (block_entry == 0)
 				continue;
 			physical_block_index = block_entry->physical_block_index;
 			if (state->physical_block_states[physical_block_index] ==
 				SPARK_RING_KV_ENTRY_IN_FLIGHT)
 			{
-				status = SparkGlm52RingWorkControlKvDirectoryRelease(
+				status = SparkRingWorkControlKvDirectoryRelease(
 					state,packet->lanes[lane_index].sequence_id,block_index);
 				if (status != SPARK_STATUS_OK)
 					return status;
@@ -2100,7 +2100,7 @@ SparkStatus SparkRingWorkControlReleaseSequence(
 		 ++logical_block_index)
 	{
 		SparkStatus status;
-		status = SparkGlm52RingWorkControlKvDirectoryRelease(
+		status = SparkRingWorkControlKvDirectoryRelease(
 			state,sequence_id,logical_block_index);
 		if (status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND)
 			return status;
@@ -2115,7 +2115,7 @@ SparkStatus SparkRingWorkControlReleasePacketSequences(
 	uint32_t lane_index;
 	SparkStatus status;
 
-	status = SparkGlm52RingWorkControlValidateKvState(packet,state);
+	status = SparkRingWorkControlValidateKvState(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	if ((packet->flags &
@@ -2123,7 +2123,7 @@ SparkStatus SparkRingWorkControlReleasePacketSequences(
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (packet->control_generation < state->control_generation)
 		return SPARK_STATUS_OK;
-	status = SparkGlm52RingWorkControlSelectKvGeneration(packet,state);
+	status = SparkRingWorkControlSelectKvGeneration(packet,state);
 	if (status != SPARK_STATUS_OK)
 		return status;
 	for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)

@@ -34,6 +34,7 @@
 // One score, from whichever source the caller supplied. Sigmoid applied here
 // when the caller passes raw logits, so the selection and the weight read the
 // same number by construction rather than by two call sites agreeing.
+template<bool SIGMOID_FLOAT>
 static __device__ __forceinline__ float LmTopkScore(const float *scores, const uint16_t *logits_bf16, uint64_t index)
 {
 	if ( logits_bf16 != 0 )
@@ -41,7 +42,8 @@ static __device__ __forceinline__ float LmTopkScore(const float *scores, const u
 		float value = LmBf16ToFloat(logits_bf16[index]);
 		return(1.0f / (1.0f + __expf(-value)));
 	}
-	return(scores[index]);
+	float value = scores[index];
+	return(SIGMOID_FLOAT ? 1.0f / (1.0f + __expf(-value)) : value);
 }
 
 static __device__ __forceinline__ uint32_t LmTopkKey(float value)
@@ -67,7 +69,7 @@ static __device__ __forceinline__ float LmTopkValue(uint32_t key)
 // a shared-memory array, not a limit of the algorithm.
 #define LM_TOPK_MAX_GROUPS 16u
 
-template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u>
+template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u, bool SIGMOID_FLOAT = false>
 __global__ __launch_bounds__(THREADS, 1)
 void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ sigmoid_logits_bf16)
 {
@@ -92,7 +94,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		// MoE layers that is tens of megabytes a token for a value used once.
 		// Pass sigmoid_logits_bf16 and scores is ignored; pass scores and the
 		// activation already happened.
-		keys[index] = index < n ? LmTopkKey(LmTopkScore(scores, sigmoid_logits_bf16,
+		keys[index] = index < n ? LmTopkKey(LmTopkScore<SIGMOID_FLOAT>(scores, sigmoid_logits_bf16,
 			base + index) + (selection_bias != 0 ? selection_bias[index] : 0.0f)) : 0u;
 		slots[index] = index;
 	}
@@ -183,7 +185,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		out_indices[((uint64_t)blockIdx.x * K) + index] = slots[index];
 		if ( out_values != 0 )
 			out_values[((uint64_t)blockIdx.x * K) + index] =
-				LmTopkScore(scores, sigmoid_logits_bf16, base + slots[index]);
+				LmTopkScore<SIGMOID_FLOAT>(scores, sigmoid_logits_bf16, base + slots[index]);
 	}
 	if ( RENORMALISE && out_values != 0 )
 	{

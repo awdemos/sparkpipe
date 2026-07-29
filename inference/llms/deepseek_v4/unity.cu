@@ -24,7 +24,7 @@ static_assert(Dsv4Kv::kSlotBytes == 1152u, "512 + 64 latent elements at bf16");
 template __global__ void LmGemmKernel<LmFp8, 16u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmFp8, 32u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmFp8, 64u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmFusedResidualRmsNormKernel<DSV4_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
+template __global__ void LmFusedResidualRmsNormKernel<DSV4_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<DSV4_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, DSV4_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmRopeKernel<DSV4_THREADS,LM_ROPE_INTERLEAVED>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);

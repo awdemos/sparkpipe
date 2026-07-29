@@ -27,8 +27,9 @@ offset, bytes} keyed by the K3LayerWeights field names (model.layers.N.
 prefixed), and 64-byte-aligned payload. A loader walks names to pointers and
 needs to know nothing else.
 
-Torch is not required. BF16 rides as uint16; the two folds run in float32
-through numpy and round to nearest even on the way back. Failure is loud:
+Torch is not required. BF16 rides as uint16 and checkpoint FP32 stays float32;
+the two folds run in float32 through numpy and round to nearest even on the way
+back. Failure is loud:
 a missing tensor, an E8M0 0xff, a group size that is not 32, an expert count
 that is not the config's - each is a PackFailure naming what and where.
 """
@@ -44,6 +45,7 @@ VERSION = 1
 ALIGN = 64
 E8M0_NAN = 0xFF
 GROUP = 32
+A_LOG_SOURCE_HEADS = 128
 
 
 class PackFailure(RuntimeError):
@@ -124,6 +126,14 @@ class SafetensorDir:
         if shape is not None and got != tuple(shape):
             raise PackFailure(f"{name}: shape {got}, expected {tuple(shape)}")
         return np.frombuffer(raw, dtype=np.uint8).reshape(got)
+
+    def f32(self, name, shape=None):
+        dtype, got, raw = self.tensor(name)
+        if dtype != "F32":
+            raise PackFailure(f"{name}: expected F32, checkpoint says {dtype}")
+        if shape is not None and got != tuple(shape):
+            raise PackFailure(f"{name}: shape {got}, expected {tuple(shape)}")
+        return np.frombuffer(raw, dtype=np.float32).reshape(got)
 
 
 def quant_pair(reader, base):
@@ -230,18 +240,20 @@ def pack_model(model_dir, out_path):
             bf(p + "kda_k_weight", a + "k_proj.weight", (kda_dim, hidden))
             bf(p + "kda_v_weight", a + "v_proj.weight", (kda_dim, hidden))
             for conv in "qkv":
-                w = reader.bf16(a + f"{conv}_conv1d.weight", (kda_dim, 1, kernel))
+                w = reader.f32(a + f"{conv}_conv1d.weight", (kda_dim, 1, kernel))
                 pack.add(p + f"kda_{conv}_conv_weight", w.reshape(kda_dim, kernel))
             bf(p + "kda_decay_down_weight", a + "f_a_proj.weight", (kda_head, hidden))
             bf(p + "kda_decay_up_weight", a + "f_b_proj.weight", (kda_dim, kda_head))
-            dtype, shape, raw = reader.tensor(a + "dt_bias")
-            pack.add(p + "kda_decay_bias", np.frombuffer(raw, np.uint16 if dtype == "BF16" else np.float32))
-            dtype, shape, raw = reader.tensor(a + "A_log")
-            pack.add(p + "kda_head_log_scale", np.frombuffer(raw, np.uint16 if dtype == "BF16" else np.float32))
+            pack.add(p + "kda_decay_bias",
+                     reader.f32(a + "dt_bias", (kda_dim,)))
+            head_log_scale = reader.f32(
+                a + "A_log", (A_LOG_SOURCE_HEADS,))
+            pack.add(p + "kda_head_log_scale", head_log_scale[:kda_heads])
             bf(p + "kda_beta_weight", a + "b_proj.weight", (kda_heads, hidden))
             bf(p + "kda_gate_down_weight", a + "g_a_proj.weight", (kda_head, hidden))
             bf(p + "kda_gate_up_weight", a + "g_b_proj.weight", (kda_dim, kda_head))
-            bf(p + "kda_out_norm_weight", a + "o_norm.weight", (kda_head,))
+            pack.add(p + "kda_out_norm_weight",
+                     reader.f32(a + "o_norm.weight", (kda_head,)))
             bf(p + "kda_out_weight", a + "o_proj.weight", (hidden, kda_dim))
         else:
             a = p + "self_attn."

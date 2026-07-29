@@ -1,6 +1,7 @@
 #ifndef SPARKPIPE_SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRMWARE_H
 #define SPARKPIPE_SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRMWARE_H
 
+#include <math.h>
 #include "sparkpipe/spark_resident_decode_stage.h"
 #include "sparkpipe/spark_glm52_model.h"
 #include <stdbool.h>
@@ -11,6 +12,177 @@
     "cuda.sm121.glm52.resident_decode_stage.bf16"
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
+
+#include "sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h"
+#include "sparkpipe/spark_glm52_dspark.h"
+
+// Relocated from the common stage header: glm plan vocabulary that no
+// common path names. The frame's tap members are opaque there; the
+// concrete plan type and the tap-count mirror live here.
+typedef char SparkGlm52StageTapCountMirrorAssert[
+    (SPARK_GLM52_MODEL_DSPARK_AUX_LAYER_COUNT == SPARK_STAGE_MODEL_MAX_HIDDEN_TAPS) ? 1 : -1];
+#define SPARK_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan))
+#define SPARK_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PAYLOAD_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload))
+typedef struct SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan
+{
+    uint32_t abi_version;
+    uint32_t plan_kind;
+    uint32_t maximum_active_sequence_count;
+    uint32_t maximum_route_count;
+    uint32_t expert_count;
+    uint32_t top_k;
+    uint32_t intermediate_dimension;
+    uint32_t reserved;
+    void *opaque_state;
+    uint64_t validated_maximum_latency_ns;
+} SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan;
+typedef struct SparkGlm52ResidentDecodeStageB12xMoePlan
+{
+    uint32_t abi_version;
+    uint32_t capability_flags;
+    uint32_t maximum_active_sequence_count;
+    uint32_t maximum_token_count;
+    uint32_t expert_count;
+    uint32_t top_k;
+    uint32_t hidden_dimension;
+    uint32_t intermediate_dimension;
+    uint32_t gate_up_order;
+    uint32_t weight_layout;
+    uint32_t scale_layout;
+    uint32_t quant_mode;
+    uint32_t output_dtype;
+    uint32_t cuda_architecture;
+    uint32_t reserved0;
+    uint32_t reserved1;
+    SparkGlm52Sm121FlashInferB12xMoeRecipe recipe;
+    void **state_cell;
+    const void *w1_weight_fp4_static_view;
+    const void *w1_scale_static_storage_ue4m3;
+    const float *w1_alpha_fp32_by_expert;
+    const float *fc2_input_scale_fp32_by_expert;
+    const void *w2_weight_fp4_static_view;
+    const void *w2_scale_static_storage_ue4m3;
+    const float *w2_alpha_fp32_by_expert;
+    void *workspace;
+    uint64_t workspace_bytes;
+    uint64_t validated_maximum_latency_ns;
+} SparkGlm52ResidentDecodeStageB12xMoePlan;
+typedef struct SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t flags;
+    uint32_t reserved0;
+    uint64_t source_block_stride_bytes;
+    uint64_t destination_block_stride_bytes;
+    uint64_t transfer_bytes;
+    const void *source_base;
+    void *destination_base;
+} SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload;
+typedef struct SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t capability_flags;
+    uint32_t payload_count;
+    uint32_t physical_block_count;
+    uint32_t maximum_active_sequence_count;
+    uint32_t selected_block_stride;
+    uint32_t selected_block_capacity;
+    uint64_t transport_epoch;
+    const uint32_t *source_physical_block_indices_by_destination;
+    const uint32_t *destination_physical_block_indices_by_source;
+    uint64_t *requested_epoch_by_physical_block;
+    uint64_t *ready_epoch_by_physical_block;
+    uint32_t *written_logical_block_indices;
+    uint32_t *written_logical_block_counts;
+    uint32_t written_logical_block_stride;
+    uint32_t reserved1;
+    const uint64_t *source_fragment_keys_by_physical_block;
+    const uint64_t *expected_fragment_keys_by_destination;
+    uint32_t *copied_block_count_device;
+    uint32_t *duplicate_block_count_device;
+    uint32_t *invalid_block_count_device;
+    uint32_t *key_mismatch_count_device;
+    void *selection_ready_event;
+    void *transport_ready_event;
+    void *transport_stream;
+    uint64_t validated_maximum_latency_ns;
+    SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPayload payloads[
+        SPARK_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_MAX_PAYLOADS];
+} SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan;
+typedef struct SparkGlm52ResidentDecodeStageFp8MoePlan
+{
+    uint32_t abi_version;
+    uint32_t capability_flags;
+    uint32_t maximum_active_sequence_count;
+    uint32_t maximum_token_count;
+    uint32_t expert_count;
+    uint32_t top_k;
+    uint32_t hidden_dimension;
+    uint32_t intermediate_dimension;
+    uint32_t output_dtype;
+    uint32_t cuda_architecture;
+    uint32_t gate_up_order;
+    uint32_t weight_layout;
+    uint32_t scale_layout;
+    uint32_t quant_mode;
+    uint32_t scale_block_size;
+    uint32_t reserved0;
+    uint32_t reserved1;
+    void *launch_function;
+    void *opaque_state;
+    const uint8_t *w1_weight_fp8_e4m3;
+    const float *w1_scale_inv_f32;
+    const uint8_t *w2_weight_fp8_e4m3;
+    const float *w2_scale_inv_f32;
+    void *workspace;
+    uint64_t workspace_bytes;
+    uint64_t validated_maximum_latency_ns;
+} SparkGlm52ResidentDecodeStageFp8MoePlan;
+typedef enum SparkGlm52ResidentDecodeStageLinearPlanIndex
+{
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_QUERY_LATENT = 0,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_QUERY_ROPE = 1,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_KEY_ROPE = 2,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_KV_LATENT = 3,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A = 4,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_B = 5,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_A = 6,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_KV_B = 7,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ATTENTION_OUTPUT = 8,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_GATE = 9,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_UP = 10,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DENSE_DOWN = 11,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_MOE_GATE = 12,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_MOE_UP = 13,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_MOE_DOWN = 14,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RESTRICTED_LOGITS = 15,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_ROUTER_LOGITS = 16,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_QUERY = 17,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_KEY = 18,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DSA_WEIGHTS = 19,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RESERVED_1 = 20
+} SparkGlm52ResidentDecodeStageLinearPlanIndex;
+typedef enum SparkGlm52ResidentDecodeStageLinearPlanKind
+{
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_UNUSED = 0,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_BF16_ROW_MAJOR = 1,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_FP8_E4M3_ROW_MAJOR = 2,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_DRIVER_CUSTOM = 3,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR = 4,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_NVFP4_E2M1_ROW_MAJOR = 5,
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_MXFP4_E2M1_ROW_MAJOR = 6
+} SparkGlm52ResidentDecodeStageLinearPlanKind;
+typedef enum SparkGlm52ResidentDecodeStageLinearWeightFormat
+{
+    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_BF16 = 0,
+    SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3 = 1,
+    SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1 = 2,
+    SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1 = 3
+} SparkGlm52ResidentDecodeStageLinearWeightFormat;
 
 // What remains after A4 part one: the glm DIMENSION TIER. The stage's node
 // context, frame context, slots, flags, validation and completion machinery
@@ -36,7 +208,7 @@
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK SPARK_GLM52_MODEL_FP8_SCALE_BLOCK
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS
+#define SPARK_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT SPARK_GLM52_MODEL_LAYER_COUNT
 
 // THE PLAN-USABILITY HELPERS. Shared by the validation tier (glm's own
@@ -49,7 +221,7 @@ static inline bool SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsRequiredFor
     const SparkResidentDecodeStageNodeContext *node_context)
 {
     return node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK;
+        SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK;
 }
 
 static inline bool SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(
@@ -63,7 +235,7 @@ static inline bool SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(
         return false;
     }
 
-    fp8_moe_plan = node_context->fp8_moe_plan;
+    fp8_moe_plan = (const SparkGlm52ResidentDecodeStageFp8MoePlan *)node_context->fp8_moe_plan;
     required_capabilities =
         SPARK_RESIDENT_DECODE_STAGE_FP8_MOE_REQUIRED_CAPABILITIES;
     if (fp8_moe_plan->abi_version !=
@@ -130,7 +302,7 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanIsUsable(
     uint32_t input_dimension,
     uint32_t output_dimension)
 {
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan;
+    const SparkResidentDecodeStageLinearPlan *linear_plan;
 
     if (node_context->linear_plans == 0 ||
         plan_index >= node_context->linear_plan_count)
@@ -146,61 +318,6 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanIsUsable(
         linear_plan->output_dimension == output_dimension &&
         linear_plan->maximum_active_sequence_count >=
             node_context->max_active_sequence_count;
-}
-
-static inline bool SparkGlm52ResidentDecodeStageW8lutMoePlanIsUsable(
-    const SparkResidentDecodeStageNodeContext *node_context)
-{
-    const SparkGlm52ResidentDecodeStageW8lutMoePlan *plan;
-    uint32_t required_capabilities;
-    if (node_context == 0 || node_context->w8lut_moe_plan == 0)
-    {
-        return false;
-    }
-    plan = node_context->w8lut_moe_plan;
-    required_capabilities =
-        SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_REQUIRED_CAPABILITIES;
-    return plan->abi_version ==
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_PLAN_ABI_VERSION &&
-        plan->reserved0 == 0u && plan->reserved1 == 0u &&
-        plan->maximum_active_sequence_count >=
-            node_context->max_active_sequence_count &&
-        plan->maximum_token_count >= node_context->max_active_sequence_count &&
-        plan->expert_count == SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT &&
-        plan->top_k == SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_TOP_K &&
-        plan->hidden_dimension == SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION &&
-        plan->intermediate_dimension ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION &&
-        plan->output_dtype ==
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_OUTPUT_DTYPE_BF16 &&
-        plan->cuda_architecture == 121u &&
-        plan->gate_up_order ==
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_GATE_UP_ORDER_UP_GATE &&
-        plan->weight_layout ==
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_LAYOUT_EXPERT_MAJOR_ROW_MAJOR &&
-        plan->scale_layout ==
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_SCALE_LAYOUT_EXPERT_COMPONENT_E0 &&
-        plan->quant_mode == SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_QUANT_MODE &&
-        plan->launch_function != 0 && plan->w1_weight_codes != 0 &&
-        plan->w1_exponent_base != 0 && plan->w2_weight_codes != 0 &&
-        plan->w2_exponent_base != 0 && plan->workspace != 0 &&
-        plan->workspace_bytes != 0u &&
-        (plan->capability_flags & required_capabilities) == required_capabilities &&
-        SparkResidentDecodeStagePointerIsAligned(
-            plan->w1_weight_codes,
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_ALIGNMENT_BYTES) &&
-        SparkResidentDecodeStagePointerIsAligned(
-            plan->w2_weight_codes,
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_WEIGHT_ALIGNMENT_BYTES) &&
-        SparkResidentDecodeStagePointerIsAligned(
-            plan->w1_exponent_base,
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_EXPONENT_ALIGNMENT_BYTES) &&
-        SparkResidentDecodeStagePointerIsAligned(
-            plan->w2_exponent_base,
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_EXPONENT_ALIGNMENT_BYTES) &&
-        SparkResidentDecodeStagePointerIsAligned(
-            plan->workspace,
-            SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_WORKSPACE_ALIGNMENT_BYTES);
 }
 
 static inline bool SparkGlm52ResidentDecodeStageB12xMoePlanIsUsable(
@@ -318,17 +435,17 @@ static inline uint32_t SparkGlm52ResidentDecodeStageLinearPlanExpectedScaleBlock
     uint32_t weight_format)
 {
     if (weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
+        SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
     {
         return SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK;
     }
     if (weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1)
+        SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1)
     {
         return SPARK_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE;
     }
     if (weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1)
+        SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1)
     {
         return SPARK_RESIDENT_DECODE_STAGE_MXFP4_GROUP_SIZE;
     }
@@ -341,17 +458,17 @@ static inline uint32_t SparkGlm52ResidentDecodeStageLinearPlanExpectedWeightForm
     if (plan_kind ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR)
     {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
+        return SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
     }
     if (plan_kind ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_NVFP4_E2M1_ROW_MAJOR)
     {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1;
+        return SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1;
     }
     if (plan_kind ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_MXFP4_E2M1_ROW_MAJOR)
     {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1;
+        return SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1;
     }
     return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_BF16;
 }
@@ -369,7 +486,7 @@ static inline bool SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsUsable(
     {
         return false;
     }
-    b12x_moe_dispatch_plan = node_context->b12x_moe_dispatch_plan;
+    b12x_moe_dispatch_plan = (const SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan *)node_context->b12x_moe_dispatch_plan;
     required_route_count =
         (uint64_t)node_context->max_active_sequence_count *
         (uint64_t)node_context->moe_top_k;
@@ -397,7 +514,7 @@ static inline bool SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsUsable(
 static inline bool SparkGlm52ResidentDecodeStageRouterLinearPlanIsProductionFast(
     const SparkResidentDecodeStageNodeContext *node_context)
 {
-    const SparkGlm52ResidentDecodeStageLinearPlan *router_plan;
+    const SparkResidentDecodeStageLinearPlan *router_plan;
 
     if (!SparkGlm52ResidentDecodeStageRouterLinearPlanIsUsable(node_context) ||
         node_context->linear_plans == 0 ||
@@ -424,7 +541,7 @@ static inline bool SparkGlm52ResidentDecodeStageRouterWeightOrPlanIsUsable(
 }
 
 static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTensorCoreState(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan)
+    const SparkResidentDecodeStageLinearPlan *linear_plan)
 {
     const SparkResidentDecodeStageQuantizedLinearView *view;
     uint32_t expected_weight_format;
@@ -479,7 +596,7 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTen
         return false;
     }
     if (view->weight_format ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
+            SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
     {
         if ((view->storage_output_dimension %
                 SPARK_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT) != 0u)
@@ -496,7 +613,7 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTen
         (uint64_t)view->input_dimension *
         (uint64_t)view->storage_output_dimension;
     required_payload_bytes = view->weight_format ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
+            SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
         ? weight_element_count
         : SparkResidentDecodeStageDivideRoundUpU64(
             weight_element_count,
@@ -509,7 +626,7 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTen
         view->scale_block_size);
     scale_element_count = input_scale_block_count * output_scale_block_count;
     required_scale_bytes = view->weight_format ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
+            SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
         ? scale_element_count * (uint64_t)sizeof(float)
         : scale_element_count;
 
@@ -531,7 +648,7 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasQuantizedProjection
     const SparkResidentDecodeStageNodeContext *node_context,
     uint32_t plan_index)
 {
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan;
+    const SparkResidentDecodeStageLinearPlan *linear_plan;
     uint32_t required_tensor_core_plan_kind;
 
     if (node_context->linear_plans == 0 ||
@@ -544,10 +661,10 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasQuantizedProjection
     required_tensor_core_plan_kind =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_UNUSED;
     if (node_context->projection_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3)
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_FP8_E4M3)
     {
         if (node_context->projection_backend_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT)
+            SPARK_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT)
         {
             return linear_plan->plan_kind ==
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_FP8_E4M3_ROW_MAJOR;
@@ -556,13 +673,13 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasQuantizedProjection
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR;
     }
     else if (node_context->projection_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_NVFP4_E2M1)
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_NVFP4_E2M1)
     {
         required_tensor_core_plan_kind =
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_NVFP4_E2M1_ROW_MAJOR;
     }
     else if (node_context->projection_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_MXFP4_E2M1)
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_MXFP4_E2M1)
     {
         required_tensor_core_plan_kind =
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_MXFP4_E2M1_ROW_MAJOR;

@@ -28,8 +28,6 @@ extern "C" {
     "spark.hidden_transport.spark_host_pinned_rdma.verbs.v1"
 #define SPARK_HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA_VERBS_MODULE_ID \
     "spark.hidden_transport.spark_gpudirect_rdma.verbs.v1"
-#define SPARK_HIDDEN_TRANSPORT_TCP_CUDA_HOST_MODULE_ID \
-    "spark.hidden_transport.tcp.cuda_host.v1"
 #define SPARK_HIDDEN_TRANSPORT_SPARK_HOST_RDMA_INFINIBAND_SYSFS_PATH \
     "/sys/class/infiniband"
 #define SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_STATISTICS_BYTES \

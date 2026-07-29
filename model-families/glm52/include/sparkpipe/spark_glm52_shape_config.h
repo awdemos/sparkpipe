@@ -60,8 +60,8 @@ typedef struct SparkGlm52ShapeNodeConfig
 // every derived value, so two nodes agreeing on the hash agree on the whole
 // geometry.
 SparkStatus SparkGlm52ShapeDeriveNodeConfig(
-	const SparkGlm52TpShapeDescriptor *shape,
-	const SparkGlm52TpModelGeometry *geometry,
+	const SparkTpShapeDescriptor *shape,
+	const SparkTpModelGeometry *geometry,
 	const SparkGlm52ShapeModelInputs *inputs,
 	SparkGlm52ShapeNodeConfig *config_out);
 
@@ -77,8 +77,8 @@ SparkStatus SparkGlm52ShapeDeriveNodeConfig(
 SparkStatus SparkGlm52ShapeWriteNodeStagePack(
 	const char *full_stagepack_root,
 	const char *node_stagepack_root,
-	const SparkGlm52TpShapeDescriptor *shape,
-	const SparkGlm52TpModelGeometry *geometry,
+	const SparkTpShapeDescriptor *shape,
+	const SparkTpModelGeometry *geometry,
 	const SparkGlm52StagePackTensorSpec *specs,
 	uint32_t spec_count,
 	void *scratch,

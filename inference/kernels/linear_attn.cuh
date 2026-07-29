@@ -190,7 +190,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 	__shared__ float shared_key[KEY_DIM];
 	__shared__ float shared_predicted[VALUE_DIM];
 	uint32_t row = blockIdx.x,head = blockIdx.y,step,index,flat;
-	uint16_t *state;
+	float *state;
 	if ( row >= rows || head >= key_heads )
 		return;
 	// THE POOL STRIDE IS A PARAMETER, NOT AN ASSUMPTION.
@@ -209,7 +209,7 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 	//
 	// slot_bytes now comes from the caller, which reads it from the model's
 	// config, and the element size follows from the same place.
-	state = (uint16_t *)(state_pool + ((uint64_t)state_index[row]
+	state = (float *)(state_pool + ((uint64_t)state_index[row]
 		* slot_bytes)) + ((uint64_t)head * KEY_DIM * VALUE_DIM);
 	for (step = 0u; step < accepted_length[row]; ++step)
 	{
@@ -221,12 +221,25 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 		for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
 			shared_key[index] = LmBf16ToFloat(input->key_bf16[head_key + index]);
 		__syncthreads();
+		// the decode path L2-normalizes k before the update; the fold must
+		// replay the SAME arithmetic or the states diverge byte by byte
+		if ( threadIdx.x == 0u )
+		{
+			float kk = 0.0f;
+			for (index = 0u; index < KEY_DIM; ++index)
+				kk += shared_key[index] * shared_key[index];
+			shared_predicted[0] = rsqrtf(kk + 1e-6f);
+		}
+		__syncthreads();
+		for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
+			shared_key[index] *= shared_predicted[0];
+		__syncthreads();
 		for (index = threadIdx.x; index < VALUE_DIM; index += THREADS)
 		{
 			float total = 0.0f;
 			uint32_t channel;
 			for (channel = 0u; channel < KEY_DIM; ++channel)
-				total += LmBf16ToFloat(state[(channel * VALUE_DIM) + index])
+				total += state[(channel * VALUE_DIM) + index]
 					* shared_key[channel] * input->retention[head_key + channel];
 			shared_predicted[index] = total;
 		}
@@ -235,8 +248,8 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 		{
 			uint32_t channel = flat / VALUE_DIM,element = flat % VALUE_DIM;
 			float v = LmBf16ToFloat(input->value_bf16[head_value + element]);
-			state[flat] = LmFloatToBf16(
-				(input->retention[head_key + channel] * LmBf16ToFloat(state[flat]))
+			state[flat] = (
+				(input->retention[head_key + channel] * state[flat])
 				+ (beta * (v - shared_predicted[element]) * shared_key[channel]));
 		}
 		__syncthreads();
@@ -266,11 +279,19 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 	// Verify is the third caller: DSpark scores a drafted block by running it
 	// forward, and a draft must not advance what the sequence remembers.
 	// commit == 0 computes every output and abandons the state.
-	__shared__ uint16_t state_s[KEY_DIM * VALUE_DIM];
+	// THE STATE IS FP32, IN SHARED AND IN THE POOL. The contract
+	// (K3_KDA_STATE_ELEMENT_BYTES = 4) always said so; this kernel held it
+	// bf16, which both halved the precision of a recurrence that compounds
+	// per token and mis-strode slabs sized for four-byte elements. 64 KB
+	// per head-block exceeds the static shared limit, so the tile is
+	// dynamic - the launch passes KEY_DIM * VALUE_DIM * 4 bytes.
+	extern __shared__ float state_s[];
 	__shared__ float shared_key[KEY_DIM];
+	__shared__ float shared_query[KEY_DIM];
+	__shared__ float shared_norm[2];
 	__shared__ float shared_predicted[VALUE_DIM];
 	uint32_t sequence = blockIdx.x,head = blockIdx.y,index,element,row,begin,end,flat;
-	uint16_t *state;
+	float *state;
 	float beta;
 	if ( sequence >= sequences || head >= key_heads )
 		return;
@@ -280,9 +301,9 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		end = begin + sequence_row_count[sequence];
 	// One slot per sequence, never paged: the state does not grow, so its
 	// address is the sequence's slot base plus this head's slice.
-	state = (uint16_t *)(state_pool
+	state = (float *)(state_pool
 		+ ((uint64_t)state_index[sequence] * slot_bytes)
-		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * 2u));
+		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * 4u));
 	for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
 		state_s[flat] = state[flat];
 	for (row = begin; row < end; ++row)
@@ -295,9 +316,34 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		const float *forget = forget_gate + ((((uint64_t)row * key_heads) + head) * KEY_DIM);
 		beta = write_gate[(row * key_heads) + head];
 		for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
+		{
 			shared_key[index] = LmBf16ToFloat(key_bf16[(((uint64_t)row * key_heads) + head) * KEY_DIM + index]);
+			shared_query[index] = LmBf16ToFloat(query_bf16[(((uint64_t)row * key_heads) + head) * KEY_DIM + index]);
+		}
 		for (index = threadIdx.x; index < VALUE_DIM; index += THREADS)
 			shared_predicted[index] = 0.0f;
+		__syncthreads();
+		// QK L2-NORM, IN KERNEL, per the reference's
+		// use_qk_l2norm_in_kernel=True: q and k are unit vectors before the
+		// delta rule sees them. Serial reduce by thread 0 - KEY_DIM is 128
+		// and this runs once per row, not per element.
+		if ( threadIdx.x == 0u )
+		{
+			float kk = 0.0f,qq = 0.0f;
+			for (index = 0u; index < KEY_DIM; ++index)
+			{
+				kk += shared_key[index] * shared_key[index];
+				qq += shared_query[index] * shared_query[index];
+			}
+			shared_norm[0] = rsqrtf(kk + 1e-6f);
+			shared_norm[1] = rsqrtf(qq + 1e-6f);
+		}
+		__syncthreads();
+		for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
+		{
+			shared_key[index] *= shared_norm[0];
+			shared_query[index] *= shared_norm[1];
+		}
 		__syncthreads();
 		// predicted = S^T k, against the DECAYED state. Report eq. 1 expands to
 		// S = Diag(a) S + b k (v^T - k^T Diag(a) S): the retention factor
@@ -308,7 +354,7 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		{
 			float total = 0.0f;
 			for (index = 0u; index < KEY_DIM; ++index)
-				total += LmBf16ToFloat(state_s[(index * VALUE_DIM) + element])
+				total += state_s[(index * VALUE_DIM) + element]
 					* shared_key[index] * forget[index];
 			shared_predicted[element] = total;
 		}
@@ -327,10 +373,10 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 			{
 				uint32_t channel = flat / VALUE_DIM,element_index = flat % VALUE_DIM;
 				float v = LmBf16ToFloat(value_bf16[value_base + element_index]);
-				float previous = LmBf16ToFloat(state_s[flat]);
-				state_s[flat] = LmFloatToBf16(
+				float previous = state_s[flat];
+				state_s[flat] =
 					(forget[channel] * previous)
-					+ (beta * (v - shared_predicted[element_index]) * shared_key[channel]));
+					+ (beta * (v - shared_predicted[element_index]) * shared_key[channel]);
 			}
 		}
 		__syncthreads();
@@ -338,8 +384,8 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		{
 			float total = 0.0f;
 			for (index = 0u; index < KEY_DIM; ++index)
-				total += LmBf16ToFloat(state_s[(index * VALUE_DIM) + element])
-					* LmBf16ToFloat(query_bf16[(((uint64_t)row * key_heads) + head) * KEY_DIM + index]);
+				total += state_s[(index * VALUE_DIM) + element]
+					* shared_query[index];
 			output_bf16[(((uint64_t)row * key_heads) + head) * VALUE_DIM + element] =
 				LmFloatToBf16(total);
 		}
@@ -367,9 +413,9 @@ enum LmConvActivation
 	LM_CONV_SWISH = 1
 };
 
-template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION>
+template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
 __global__ __launch_bounds__(THREADS, 1)
-void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit)
+void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit)
 {
 	// ONE KERNEL FOR DECODE, PREFILL AND VERIFY. A sequence's rows are a run -
 	// contiguous, positions ascending - and the window walks the run with the
@@ -407,7 +453,7 @@ void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restric
 		taps[KERNEL - 1u] = input_bf16[((uint64_t)row * channels) + channel];
 		for (tap = 0u; tap < KERNEL; ++tap)
 			total += LmBf16ToFloat(taps[tap])
-				* LmBf16ToFloat(weight_bf16[(channel * KERNEL) + tap]);
+				* LmScalarToFloat(weight[(channel * KERNEL) + tap]);
 		// SWISH, NOT NOTHING. FlashKDA's projections are
 		// L2Norm(Swish(ShortConv(Wx))) for q and k and Swish(ShortConv(Wx)) for
 		// v; the reference builds ShortConvolution with activation='silu'. A

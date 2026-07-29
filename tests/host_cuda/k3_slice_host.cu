@@ -26,6 +26,7 @@ LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
 
 uint32_t lm_topk_shared[LM_HOST_SHARED_BYTES / sizeof(uint32_t)];
 float lm_norm_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
+float state_s[LM_HOST_SHARED_BYTES / sizeof(float)];
 float lm_fused_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 float lm_quant_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 
@@ -90,8 +91,9 @@ static uint32_t group_offsets[K3_EXPERTS + 1u], group_tiles[K3_EXPERTS + 1u];
 static uint32_t group_tiles_down[K3_EXPERTS + 1u];
 static uint32_t dense_offsets[2], dense_tiles[2];
 static uint16_t ones_weight[K3_HIDDEN];
+static float ones_f32[K3_KDA_VALUE_DIM];
 static uint16_t attn_query_weight[K3_HIDDEN], mlp_query_weight[K3_HIDDEN];
-static uint16_t conv_weight[K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
+static float conv_weight[K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
 static uint16_t head_project_weight[K3_MLA_HEADS * K3_V_HEAD_DIM * K3_KV_LORA_RANK];
 static float decay_bias[K3_KDA_QK_DIM], head_log_scale[K3_KDA_HEADS];
 static uint8_t kda_state[SLICE_KDA * ROWS * K3_KDA_STATE_SLOT_BYTES];
@@ -150,6 +152,8 @@ int main(void)
 		attn_query_weight[index] = LmFloatToBf16(NextRandom() * 0.05f);
 		mlp_query_weight[index] = LmFloatToBf16(NextRandom() * 0.05f);
 	}
+	for (index = 0u; index < K3_KDA_VALUE_DIM; ++index)
+		ones_f32[index] = 1.0f;
 	for (index = 0u; index < ROWS * K3_HIDDEN; ++index)
 		hidden[index] = LmFloatToBf16(0.01f * (float)(index % 17) + 0.02f);
 	for (index = 0u; index < ROUTES; ++index)
@@ -179,7 +183,7 @@ int main(void)
 		w->attn_norm_weight = ones_weight; w->mlp_norm_weight = ones_weight;
 		w->routed_norm_weight = ones_weight;
 		w->mla_q_norm_weight = ones_weight; w->mla_kv_a_norm_weight = ones_weight;
-		w->kda_out_norm_weight = ones_weight;
+		w->kda_out_norm_weight = ones_f32;
 		w->kda_q_conv_weight = conv_weight; w->kda_k_conv_weight = conv_weight;
 		w->kda_v_conv_weight = conv_weight;
 		w->kda_decay_bias = decay_bias; w->kda_head_log_scale = head_log_scale;

@@ -946,7 +946,7 @@ static SparkStatus SparkReleaseBuildInstallPath(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkReleaseEnsureParentDirectory(const char *path)
+SparkStatus SparkReleaseEnsureParentDirectory(const char *path)
 {
     char parent_path[SPARK_RELEASE_MAX_PATH_BYTES];
     char *slash;
@@ -972,29 +972,15 @@ static SparkStatus SparkReleaseEnsureParentDirectory(const char *path)
 
 static SparkStatus SparkReleaseCopyFileAtomically(const char *source_path,const char *destination_path)
 {
-    char temporary_path[SPARK_RELEASE_MAX_PATH_BYTES];
-    SparkStatus status;
-
-    if (source_path == 0 || destination_path == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    if (snprintf(temporary_path,sizeof(temporary_path),"%s.tmp.%ld",destination_path,(long)getpid()) >= (int)sizeof(temporary_path))
-    {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
-    }
-    status = SparkCopyFile(source_path,temporary_path);
-    if (status != SPARK_STATUS_OK)
-    {
-        unlink(temporary_path);
-        return status;
-    }
-    if (rename(temporary_path,destination_path) != 0)
-    {
-        unlink(temporary_path);
-        return SPARK_STATUS_IO_ERROR;
-    }
-    return SPARK_STATUS_OK;
+	char *data;
+	size_t data_bytes;
+	SparkStatus status;
+	status = SparkReadEntireFile(source_path, &data, &data_bytes);
+	if ( status != SPARK_STATUS_OK )
+		return status;
+	status = SparkWriteEntireFileAtomically(destination_path, data, data_bytes);
+	free(data);
+	return status;
 }
 
 SparkStatus SparkReleaseSyncFilesFromDirectory(

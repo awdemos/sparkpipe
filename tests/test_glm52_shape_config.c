@@ -10,20 +10,20 @@
 #define SPARK_TEST_SHAPE_FULL_ROOT "/tmp/spark_shape_full_pack"
 #define SPARK_TEST_SHAPE_NODE_ROOT "/tmp/spark_shape_node_pack"
 
-static void SparkTestShapeDescriptor(SparkGlm52TpShapeDescriptor *shape,uint32_t tp_degree,uint32_t tp_rank,uint32_t pp_stage_count,uint32_t pp_stage_index)
+static void SparkTestShapeDescriptor(SparkTpShapeDescriptor *shape,uint32_t tp_degree,uint32_t tp_rank,uint32_t pp_stage_count,uint32_t pp_stage_index)
 {
 	memset(shape,0,sizeof(*shape));
-	shape->abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+	shape->abi_version = SPARK_TP_SHARD_ABI_VERSION;
 	shape->tp_degree = tp_degree;
 	shape->tp_rank = tp_rank;
 	shape->pp_stage_count = pp_stage_count;
 	shape->pp_stage_index = pp_stage_index;
 }
 
-static void SparkTestShapeGeometry(SparkGlm52TpModelGeometry *geometry)
+static void SparkTestShapeGeometry(SparkTpModelGeometry *geometry)
 {
 	memset(geometry,0,sizeof(*geometry));
-	geometry->abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+	geometry->abi_version = SPARK_TP_SHARD_ABI_VERSION;
 	geometry->head_count = 64u;
 	geometry->q_b_head_block = 256u;
 	geometry->kv_b_head_block = 448u;
@@ -48,8 +48,8 @@ static void SparkTestShapeInputs(SparkGlm52ShapeModelInputs *inputs)
 // row and independent of the TP degree.
 static void SparkTestShapeDerivation(void)
 {
-	SparkGlm52TpShapeDescriptor shape;
-	SparkGlm52TpModelGeometry geometry;
+	SparkTpShapeDescriptor shape;
+	SparkTpModelGeometry geometry;
 	SparkGlm52ShapeModelInputs inputs;
 	SparkGlm52ShapeNodeConfig config;
 	SparkTestShapeGeometry(&geometry);
@@ -87,8 +87,8 @@ static void SparkTestShapeDerivation(void)
 
 static void SparkTestShapeFailsClosed(void)
 {
-	SparkGlm52TpShapeDescriptor shape;
-	SparkGlm52TpModelGeometry geometry;
+	SparkTpShapeDescriptor shape;
+	SparkTpModelGeometry geometry;
 	SparkGlm52ShapeModelInputs inputs;
 	SparkGlm52ShapeNodeConfig config;
 	SparkTestShapeGeometry(&geometry);
@@ -110,8 +110,8 @@ static void SparkTestShapeFailsClosed(void)
 
 static void SparkTestShapeHashSeparates(void)
 {
-	SparkGlm52TpShapeDescriptor shape;
-	SparkGlm52TpModelGeometry geometry;
+	SparkTpShapeDescriptor shape;
+	SparkTpModelGeometry geometry;
 	SparkGlm52ShapeModelInputs inputs;
 	SparkGlm52ShapeNodeConfig config_a,config_b,config_c;
 	SparkTestShapeGeometry(&geometry);
@@ -135,8 +135,8 @@ static void SparkTestShapeHashSeparates(void)
 // generation knows about sharding.
 static void SparkTestShapeNodePackRoundTrip(void)
 {
-	SparkGlm52TpShapeDescriptor shape;
-	SparkGlm52TpModelGeometry geometry;
+	SparkTpShapeDescriptor shape;
+	SparkTpModelGeometry geometry;
 	SparkGlm52StagePackTensorSpec specs[2];
 	SparkGlm52StagePackTensorSpec node_spec;
 	SparkGlm52StagePackTensorRegion region;

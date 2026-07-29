@@ -120,7 +120,6 @@ GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B
 endif
 GLM52_RING_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS))
 GLM52_RING_NODE_CONTEXT_BUILDER := build/libglm52_ring_node_context_builder.$(SHARED_LIBRARY_EXT)
-HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA := build/libhidden_transport_spark_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
 
@@ -351,7 +350,6 @@ MODEL_COMMON_LINK_TARGETS := \
     build/test_kv_mooncake \
     build/test_tp_collective \
     build/test_tokenizer \
-    $(HIDDEN_TRANSPORT_TCP_CUDA) \
     $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) \
     $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA)
 GLM52_LINK_TARGETS := \
@@ -416,13 +414,13 @@ build/sparkpipe_model_compile: tools/sparkpipe_model_compile.c $(COMPILER_LIBRAR
 build/sparkpipe_driver_inspect: tools/sparkpipe_driver_inspect.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_glm52_pipesim: tools/sparkpipe_glm52_pipesim.c $(COMMON_LIBRARY)
+build/sparkpipe_glm52_pipesim: tests/studies/sparkpipe_glm52_pipesim.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_batch_plane: tests/test_glm52_batch_plane.c $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(GLM52_INCLUDE_FLAGS) $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_glm52_batchplane_model: tools/sparkpipe_glm52_batchplane_model.c 
+build/sparkpipe_glm52_batchplane_model: tests/studies/sparkpipe_glm52_batchplane_model.c 
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_tokenize: text/tokenize_main.c $(COMMON_LIBRARY)
@@ -450,27 +448,23 @@ build/sparkpipe_release_manager: deployment/tools/sparkpipe_release_manager.c $(
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_ring_rank_daemon: node/rank_daemon.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) node/rank_daemon.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -I$(CUDA_HOME)/include node/rank_daemon.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/sparkpipe_glm52_cuda_residentd: node/residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) node/residentd.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_glm52_kv_jit_budget: tools/sparkpipe_glm52_kv_jit_budget.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) $(CFLAGS) tools/sparkpipe_glm52_kv_jit_budget.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+build/sparkpipe_glm52_kv_jit_budget: tests/studies/sparkpipe_glm52_kv_jit_budget.c $(COMMON_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/studies/sparkpipe_glm52_kv_jit_budget.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 $(GLM52_RING_SERVICE_BACKEND): node/backend.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(RUNTIME_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) node/backend.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 glm52_ring_service_backend: $(GLM52_RING_SERVICE_BACKEND)
 
-$(HIDDEN_TRANSPORT_TCP_CUDA): ring/transport/tcp.cu $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "hidden_transport_tcp_cuda skipped: nvcc unavailable"; \
 	else \
-		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/tcp.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@; \
 	fi
 
-hidden_transport_tcp_cuda: $(HIDDEN_TRANSPORT_TCP_CUDA)
 
 $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \

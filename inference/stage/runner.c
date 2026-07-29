@@ -192,16 +192,16 @@ static void SparkGlm52ProductionRunnerBuildFrameContext(
     {
         uint32_t tap_index;
         frame_context->flags |=
-            SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS;
-        frame_context->dspark_hidden_tap_plan =
+            SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MODEL_HIDDEN_TAPS;
+        frame_context->model_hidden_tap_plan =
             dispatch->dspark_hidden_tap_plan;
         if ( dispatch->dspark_hidden_tap_outputs_bf16 != 0 )
         {
             for ( tap_index = 0u; tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT; ++tap_index )
-                frame_context->dspark_hidden_tap_output_bf16[tap_index] =
+                frame_context->model_hidden_tap_output_bf16[tap_index] =
                     dispatch->dspark_hidden_tap_outputs_bf16[tap_index];
         }
-        frame_context->dspark_hidden_tap_lane_stride_bytes =
+        frame_context->model_hidden_tap_lane_stride_bytes =
             dispatch->dspark_hidden_tap_lane_stride_bytes;
     }
     if ( dispatch->hidden_input_transport_session != 0 )

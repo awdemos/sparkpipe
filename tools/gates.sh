@@ -53,6 +53,7 @@ run "kda on host"          "python3 tests/test_kda_host.py"
 # Emitting the biased score as the weight produces 9 failures here; skipping the
 # renormalisation produces 17.
 run "router on host"       "python3 tests/test_router_host.py"
+run "router fp32 contract"  "python3 tests/test_router_precision_contract.py"
 # Six more kernels the other two harnesses do not reach, including the MoE
 # finalize whose launch was wrong four ways and compiled.
 run "layer on host"        "python3 tests/test_layer_host.py"
@@ -81,6 +82,8 @@ run "k3 kv seam"          "gcc -O2 -Wall -Wextra -Iinclude -Imodel-families/glm5
 run "state pool"          "gcc -O2 -Wall -Wextra -I. -o /tmp/g_sp tests/test_state_pool.c && /tmp/g_sp"
 run "k3 kv geometry"      "python3 tests/test_k3_kv_geometry.py"
 run "fast defaults"        "python3 tests/test_fast_defaults.py"
+run "node daemons compile"  "make -s build/sparkpipe_glm52_cuda_residentd build/sparkpipe_glm52_ring_rank_daemon"
+run "code size"           "python3 tests/test_code_size.py"
 run "dry naming law"       "python3 tests/test_dry_law.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.

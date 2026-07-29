@@ -643,29 +643,6 @@ static SparkStatus SparkReleaseManagerStopRole(const SparkReleaseResolvedRole *r
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkReleaseManagerEnsureParentDirectory(const char *path)
-{
-    char parent_path[SPARK_RELEASE_MAX_PATH_BYTES];
-    char *slash;
-
-    if (path == 0 || strlen(path) >= sizeof(parent_path))
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    strcpy(parent_path,path);
-    slash = strrchr(parent_path,'/');
-    if (slash == 0)
-    {
-        return SPARK_STATUS_OK;
-    }
-    *slash = '\0';
-    if (parent_path[0] == '\0')
-    {
-        return SPARK_STATUS_OK;
-    }
-    return SparkCreateDirectories(parent_path);
-}
-
 static uint32_t SparkReleaseManagerIsSha256Hex(const char *text)
 {
     uint32_t index;
@@ -745,7 +722,7 @@ static SparkStatus SparkReleaseManagerRememberRoleManifest(
     {
         return SPARK_STATUS_OK;
     }
-    status = SparkReleaseManagerEnsureParentDirectory(path);
+    status = SparkReleaseEnsureParentDirectory(path);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -798,7 +775,7 @@ static SparkStatus SparkReleaseManagerStartRole(const SparkReleaseResolvedRole *
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkReleaseManagerEnsureParentDirectory(resolved_role->pid_file);
+    status = SparkReleaseEnsureParentDirectory(resolved_role->pid_file);
     if (status != SPARK_STATUS_OK)
     {
         return status;

@@ -22,6 +22,7 @@ LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
 
 uint32_t lm_topk_shared[LM_HOST_SHARED_BYTES / sizeof(uint32_t)];
 float lm_norm_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
+float state_s[LM_HOST_SHARED_BYTES / sizeof(float)];
 float lm_fused_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 float lm_quant_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 
@@ -63,15 +64,24 @@ static void Emit(const char *tag, const uint16_t *values, uint32_t count)
 		printf("%s %.9g\n", tag, (double)LmBf16ToFloat(values[index]));
 }
 
+static void EmitF32(const char *tag, const float *values, uint32_t count)
+{
+	uint32_t index;
+	for (index = 0u; index < count; ++index)
+		printf("%s %.9g\n", tag, (double)values[index]);
+}
+
 int main(void)
 {
 	static uint16_t window[CHANNELS * CONV_KERNEL];
-	static uint16_t conv_in[ROWS * CHANNELS], conv_w[CHANNELS * CONV_KERNEL];
+	static uint16_t conv_in[ROWS * CHANNELS];
+	static float conv_w[CHANNELS * CONV_KERNEL];
 	static uint16_t conv_out[ROWS * CHANNELS];
 	static uint16_t l2_in[ROWS * CHANNELS];
 	static uint16_t gate_up[ROWS * INTERMEDIATE * 2u], situ_out[ROWS * INTERMEDIATE];
 	static uint16_t norm_in[ROWS * CHANNELS], norm_res[ROWS * CHANNELS];
-	static uint16_t norm_w[CHANNELS], norm_res_out[ROWS * CHANNELS];
+	static float norm_w[CHANNELS];
+	static uint16_t norm_res_out[ROWS * CHANNELS];
 	static uint16_t norm_out[ROWS * CHANNELS];
 	static uint16_t gate_val[ROWS * CHANNELS], gated[ROWS * CHANNELS];
 	static uint16_t expert_out[EXPERT_ROWS * CHANNELS], finalized[ROWS * CHANNELS];
@@ -89,7 +99,7 @@ int main(void)
 	for (index = 0u; index < CHANNELS * CONV_KERNEL; ++index)
 	{
 		window[index] = LmFloatToBf16(NextRandom());
-		conv_w[index] = LmFloatToBf16(NextRandom() * 0.5f);
+		conv_w[index] = NextRandom() * 0.5f;
 	}
 	for (index = 0u; index < ROWS * CHANNELS; ++index)
 	{
@@ -101,7 +111,7 @@ int main(void)
 		gated[index] = LmFloatToBf16(NextRandom());
 	}
 	for (index = 0u; index < CHANNELS; ++index)
-		norm_w[index] = LmFloatToBf16(1.0f + 0.2f * NextRandom());
+		norm_w[index] = 1.0f + 0.2f * NextRandom();
 	for (index = 0u; index < ROWS * INTERMEDIATE * 2u; ++index)
 		gate_up[index] = LmFloatToBf16(NextRandom() * 4.0f);
 	for (index = 0u; index < EXPERT_ROWS * CHANNELS; ++index)
@@ -114,13 +124,13 @@ int main(void)
 		}
 
 	Emit("window", window, CHANNELS * CONV_KERNEL);
-	Emit("convw", conv_w, CHANNELS * CONV_KERNEL);
+	EmitF32("convw", conv_w, CHANNELS * CONV_KERNEL);
 	Emit("convin", conv_in, ROWS * CHANNELS);
 	Emit("l2in", l2_in, ROWS * CHANNELS);
 	Emit("gateup", gate_up, ROWS * INTERMEDIATE * 2u);
 	Emit("normin", norm_in, ROWS * CHANNELS);
 	Emit("normres", norm_res, ROWS * CHANNELS);
-	Emit("normw", norm_w, CHANNELS);
+	EmitF32("normw", norm_w, CHANNELS);
 	Emit("gateval", gate_val, ROWS * CHANNELS);
 	Emit("gated", gated, ROWS * CHANNELS);
 	for (index = 0u; index < ROWS * (SOURCES - 1u) * CHANNELS; ++index)
@@ -144,7 +154,7 @@ int main(void)
 	// sequence, one block per channel group, the taps in registers.
 	static uint32_t conv_run_begin[2] = { 0u, ROWS };
 	LM_HOST_LAUNCH(dim3(1u, CHANNELS),
-		(LmCausalConvKernel<THREADS, CONV_KERNEL, LM_CONV_SWISH>(
+		(LmCausalConvKernel<THREADS, CONV_KERNEL, LM_CONV_SWISH,float>(
 			window, state_index, conv_run_begin, 0, conv_in, conv_w, conv_out, CHANNELS, 1u, 1u)));
 	Emit("convout", conv_out, ROWS * CHANNELS);
 
@@ -158,7 +168,7 @@ int main(void)
 	Emit("situout", situ_out, ROWS * INTERMEDIATE);
 
 	LM_HOST_LAUNCH(dim3(ROWS),
-		(LmFusedResidualRmsNormKernel<THREADS>(
+		(LmFusedResidualRmsNormKernel<THREADS,float>(
 			norm_in, norm_res, norm_w, norm_res_out, norm_out, CHANNELS,CHANNELS, 1e-5f)));
 	Emit("normout", norm_out, ROWS * CHANNELS);
 	Emit("normresout", norm_res_out, ROWS * CHANNELS);

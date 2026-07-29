@@ -89,7 +89,7 @@ typedef struct SparkCudaResidentdConfiguration
     uint32_t kv_store_lookahead_packet_count;
     uint32_t port_base;
     uint32_t model_quantization_mode;
-    uint32_t dspark_enabled;
+    uint32_t speculation_enabled;
 	uint32_t mtp_enabled;
     uint32_t dspark_maximum_context_token_count;
     uint64_t cuda_generation;
@@ -281,25 +281,37 @@ static void SparkCudaResidentdInitializeConfiguration(
     configuration->dspark_maximum_context_token_count = 2048u;
 }
 
-static int32_t SparkCudaResidentdParseU64(
-    const char *text,
-    uint64_t *value_out)
-{
-    uint64_t value;
-    uint32_t index;
+#include <stddef.h>
+#include "sparkpipe/spark_options.h"
 
-    if (text == 0 || text[0] == '\0' || value_out == 0)
-        return -1;
-    value = 0u;
-    for (index = 0u; text[index] != '\0'; ++index)
-    {
-        if (text[index] < '0' || text[index] > '9')
-            return -2;
-        value = (value * 10u) + (uint32_t)(text[index] - '0');
-    }
-    *value_out = value;
-    return 0;
-}
+static const SparkOption spark_cuda_residentd_options[] =
+{
+	{ "--socket", SPARK_OPTION_STRING, -1, (uint16_t)offsetof(SparkCudaResidentdConfiguration, socket_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--rank", SPARK_OPTION_U32, -2, (uint16_t)offsetof(SparkCudaResidentdConfiguration, rank_index), (uint16_t)offsetof(SparkCudaResidentdConfiguration, rank_is_set) },
+	{ "--max-active", SPARK_OPTION_U32, -3, (uint16_t)offsetof(SparkCudaResidentdConfiguration, max_active_sequence_count), SPARK_OPTION_NO_SET_FLAG },
+	{ "--kv-pool-tokens", SPARK_OPTION_U32, -17, (uint16_t)offsetof(SparkCudaResidentdConfiguration, kv_pool_token_capacity), SPARK_OPTION_NO_SET_FLAG },
+	{ "--kv-nvme-path", SPARK_OPTION_STRING, -18, (uint16_t)offsetof(SparkCudaResidentdConfiguration, kv_nvme_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--kv-nvme-blocks", SPARK_OPTION_U32, -19, (uint16_t)offsetof(SparkCudaResidentdConfiguration, kv_nvme_block_capacity), SPARK_OPTION_NO_SET_FLAG },
+	{ "--kv-nvme-batch-blocks", SPARK_OPTION_U32, -20, (uint16_t)offsetof(SparkCudaResidentdConfiguration, kv_nvme_batch_block_count), SPARK_OPTION_NO_SET_FLAG },
+	{ "--port-base", SPARK_OPTION_U32, -4, (uint16_t)offsetof(SparkCudaResidentdConfiguration, port_base), SPARK_OPTION_NO_SET_FLAG },
+	{ "--cuda-generation", SPARK_OPTION_U64, -5, (uint16_t)offsetof(SparkCudaResidentdConfiguration, cuda_generation), SPARK_OPTION_NO_SET_FLAG },
+	{ "--control-generation", SPARK_OPTION_U64, -6, (uint16_t)offsetof(SparkCudaResidentdConfiguration, control_generation), SPARK_OPTION_NO_SET_FLAG },
+	{ "--moe-pack-root", SPARK_OPTION_STRING, -7, (uint16_t)offsetof(SparkCudaResidentdConfiguration, moe_pack_root), SPARK_OPTION_NO_SET_FLAG },
+	{ "--model-quantization", SPARK_OPTION_QUANT, -21, (uint16_t)offsetof(SparkCudaResidentdConfiguration, model_quantization_mode), SPARK_OPTION_NO_SET_FLAG },
+	{ "--stagepack-root", SPARK_OPTION_STRING, -8, (uint16_t)offsetof(SparkCudaResidentdConfiguration, stagepack_root), SPARK_OPTION_NO_SET_FLAG },
+	{ "--transport-so", SPARK_OPTION_STRING, -9, (uint16_t)offsetof(SparkCudaResidentdConfiguration, transport_shared_object_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--driver-so", SPARK_OPTION_STRING, -10, (uint16_t)offsetof(SparkCudaResidentdConfiguration, driver_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--node-context-builder-so", SPARK_OPTION_STRING, -11, (uint16_t)offsetof(SparkCudaResidentdConfiguration, node_context_builder_shared_object_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--embedding-pack", SPARK_OPTION_STRING, -12, (uint16_t)offsetof(SparkCudaResidentdConfiguration, embedding_pack_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--dspark", SPARK_OPTION_FLAG, -1, (uint16_t)offsetof(SparkCudaResidentdConfiguration, speculation_enabled), SPARK_OPTION_NO_SET_FLAG },
+	{ "--mtp", SPARK_OPTION_FLAG, -1, (uint16_t)offsetof(SparkCudaResidentdConfiguration, mtp_enabled), SPARK_OPTION_NO_SET_FLAG },
+	{ "--dspark-safetensors", SPARK_OPTION_STRING, -15, (uint16_t)offsetof(SparkCudaResidentdConfiguration, dspark_safetensors_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--dspark-manifest", SPARK_OPTION_STRING, -17, (uint16_t)offsetof(SparkCudaResidentdConfiguration, dspark_manifest_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--dspark-config", SPARK_OPTION_STRING, -18, (uint16_t)offsetof(SparkCudaResidentdConfiguration, dspark_config_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--dspark-max-context", SPARK_OPTION_U32, -16, (uint16_t)offsetof(SparkCudaResidentdConfiguration, dspark_maximum_context_token_count), SPARK_OPTION_NO_SET_FLAG },
+	{ "--program", SPARK_OPTION_STRING, -13, (uint16_t)offsetof(SparkCudaResidentdConfiguration, program_name), SPARK_OPTION_NO_SET_FLAG },
+	{ "--node-target", SPARK_OPTION_STRING, -14, (uint16_t)offsetof(SparkCudaResidentdConfiguration, node_target), SPARK_OPTION_NO_SET_FLAG },
+};
 
 static int32_t SparkCudaResidentdApplyArgument(
     SparkCudaResidentdConfiguration *configuration,
@@ -307,269 +319,13 @@ static int32_t SparkCudaResidentdApplyArgument(
     char **argv,
     int32_t *index)
 {
-    uint32_t parsed_u32;
-    uint64_t parsed_u64;
-
-    if (strcmp(argv[*index], "--socket") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -1;
-        configuration->socket_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--rank") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
-            return -2;
-        configuration->rank_index = parsed_u32;
-        configuration->rank_is_set = 1u;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--max-active") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
-            return -3;
-        configuration->max_active_sequence_count = parsed_u32;
-        *index += 1;
-        return 0;
-    }
-	if (strcmp(argv[*index], "--kv-pool-tokens") == 0)
-	{
-		if ((*index + 1) >= argc ||
-			SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
-			return -17;
-		configuration->kv_pool_token_capacity = parsed_u32;
-		*index += 1;
-		return 0;
-	}
-    if (strcmp(argv[*index], "--kv-nvme-path") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -18;
-        configuration->kv_nvme_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--kv-nvme-blocks") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
-            return -19;
-        configuration->kv_nvme_block_capacity = parsed_u32;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--kv-nvme-batch-blocks") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
-            return -20;
-        configuration->kv_nvme_batch_block_count = parsed_u32;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--kv-store-module") == 0 ||
-        strcmp(argv[*index], "--kv-store-service") == 0 ||
-        strcmp(argv[*index], "--kv-store-ipc-socket") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -21;
-        if (strcmp(argv[*index], "--kv-store-module") == 0)
-            configuration->kv_store_module_path = argv[*index + 1];
-        else if (strcmp(argv[*index], "--kv-store-service") == 0)
-            configuration->kv_store_service_address = argv[*index + 1];
-        else
-            configuration->kv_store_ipc_socket_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--kv-store-blocks") == 0 ||
-        strcmp(argv[*index], "--kv-store-batch-blocks") == 0 ||
-        strcmp(argv[*index], "--kv-store-workers") == 0 ||
-        strcmp(argv[*index], "--kv-store-lookahead") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkNetParseU32(argv[*index + 1],&parsed_u32) < 0)
-            return -22;
-        if (strcmp(argv[*index], "--kv-store-blocks") == 0)
-            configuration->kv_store_block_capacity = parsed_u32;
-        else if (strcmp(argv[*index], "--kv-store-batch-blocks") == 0)
-            configuration->kv_store_batch_block_count = parsed_u32;
-        else if (strcmp(argv[*index], "--kv-store-workers") == 0)
-            configuration->kv_store_worker_count = parsed_u32;
-        else
-            configuration->kv_store_lookahead_packet_count = parsed_u32;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--kv-store-model-fingerprint") == 0 ||
-        strcmp(argv[*index], "--kv-store-layout-fingerprint") == 0 ||
-        strcmp(argv[*index], "--kv-store-client-memory") == 0 ||
-        strcmp(argv[*index], "--kv-store-local-buffer") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkCudaResidentdParseU64(argv[*index + 1],&parsed_u64) < 0)
-            return -23;
-        if (strcmp(argv[*index], "--kv-store-model-fingerprint") == 0)
-            configuration->kv_store_model_fingerprint = parsed_u64;
-        else if (strcmp(argv[*index], "--kv-store-layout-fingerprint") == 0)
-            configuration->kv_store_layout_fingerprint = parsed_u64;
-        else if (strcmp(argv[*index], "--kv-store-client-memory") == 0)
-            configuration->kv_store_client_memory_pool_bytes = parsed_u64;
-        else
-            configuration->kv_store_local_buffer_bytes = parsed_u64;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--port-base") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
-            return -4;
-        configuration->port_base = parsed_u32;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--cuda-generation") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkCudaResidentdParseU64(argv[*index + 1], &parsed_u64) < 0)
-            return -5;
-        configuration->cuda_generation = parsed_u64;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--control-generation") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkCudaResidentdParseU64(argv[*index + 1], &parsed_u64) < 0)
-            return -6;
-        configuration->control_generation = parsed_u64;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--moe-pack-root") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -7;
-        configuration->moe_pack_root = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--model-quantization") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkRingRuntimeParseQuantizationMode(
-                argv[*index + 1],&configuration->model_quantization_mode) !=
-                SPARK_STATUS_OK)
-            return -21;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--stagepack-root") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -8;
-        configuration->stagepack_root = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--transport-so") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -9;
-        configuration->transport_shared_object_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--driver-so") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -10;
-        configuration->driver_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--node-context-builder-so") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -11;
-        configuration->node_context_builder_shared_object_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--embedding-pack") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -12;
-        configuration->embedding_pack_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--dspark") == 0)
-    {
-        configuration->dspark_enabled = 1u;
-        return 0;
-    }
-	if (strcmp(argv[*index], "--mtp") == 0)
-	{
-		configuration->mtp_enabled = 1u;
-		return 0;
-	}
-    if (strcmp(argv[*index], "--dspark-safetensors") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -15;
-        configuration->dspark_safetensors_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--dspark-manifest") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -17;
-        configuration->dspark_manifest_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--dspark-config") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -18;
-        configuration->dspark_config_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--dspark-max-context") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkNetParseU32(argv[*index + 1], &parsed_u32) < 0)
-            return -16;
-        configuration->dspark_maximum_context_token_count = parsed_u32;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--program") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -13;
-        configuration->program_name = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index], "--node-target") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -14;
-        configuration->node_target = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    return -100;
+	int32_t status;
+	status = SparkOptionsApply(spark_cuda_residentd_options,
+		(uint32_t)(sizeof(spark_cuda_residentd_options) / sizeof(spark_cuda_residentd_options[0])),
+		configuration, argc, argv, index);
+	if (status <= 0)
+		return status;
+	return -1;
 }
 
 static SparkStatus SparkCudaResidentdValidateConfiguration(
@@ -634,7 +390,7 @@ static SparkStatus SparkCudaResidentdValidateConfiguration(
             configuration->rank_index);
         configuration->socket_path = default_socket_path;
     }
-    if (configuration->dspark_enabled != 0u &&
+    if (configuration->speculation_enabled != 0u &&
         configuration->rank_index == SPARK_RING_RUNTIME_STAGE_COUNT - 1u &&
         (configuration->dspark_manifest_path == 0 ||
          configuration->dspark_config_path == 0 ||
@@ -1175,7 +931,7 @@ static SparkStatus SparkCudaResidentdBuildNodeContext(
     builder_configuration.stagepack_root = configuration->stagepack_root;
     builder_configuration.embedding_pack_path = configuration->embedding_pack_path;
     builder_configuration.node_target = configuration->node_target;
-    if (configuration->dspark_enabled != 0u)
+    if (configuration->speculation_enabled != 0u)
     {
         builder_configuration.flags |=
             SPARK_RING_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK;
@@ -2519,7 +2275,7 @@ static void SparkCudaResidentdPrintReady(
 static void SparkCudaResidentdUsage(const char *program)
 {
     fprintf(stderr,
-        "usage: %s --rank n --socket path --model-quantization fp8|nvfp4|w8lut --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--mtp] [--dspark --dspark-manifest path --dspark-config path --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--kv-pool-tokens n] [--kv-nvme-path path --kv-nvme-blocks n --kv-nvme-batch-blocks n | --kv-store-module path --kv-store-service addr --kv-store-ipc-socket path --kv-store-blocks n --kv-store-batch-blocks n --kv-store-workers n --kv-store-lookahead n --kv-store-model-fingerprint n --kv-store-layout-fingerprint n --kv-store-client-memory n --kv-store-local-buffer n] [--port-base n]\n",
+        "usage: %s --rank n --socket path --model-quantization fp8|nvfp4 --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--mtp] [--dspark --dspark-manifest path --dspark-config path --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--kv-pool-tokens n] [--kv-nvme-path path --kv-nvme-blocks n --kv-nvme-batch-blocks n | --kv-store-module path --kv-store-service addr --kv-store-ipc-socket path --kv-store-blocks n --kv-store-batch-blocks n --kv-store-workers n --kv-store-lookahead n --kv-store-model-fingerprint n --kv-store-layout-fingerprint n --kv-store-client-memory n --kv-store-local-buffer n] [--port-base n]\n",
         program);
 }
 

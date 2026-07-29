@@ -11,13 +11,13 @@
 
 static void SparkTestHttpGatewayQueuesBeyondActiveLanes(void)
 {
-	static SparkGlm52GatewayRuntime runtime;
-	SparkGlm52GatewayPendingStream *stream;
+	static SparkGatewayRuntime runtime;
+	SparkGatewayPendingStream *stream;
 	uint64_t client_request_id;
 	uint32_t slot_index;
 	uint32_t index;
 
-	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
+	SparkGatewayInitializeConfig(&runtime.configuration);
 	runtime.configuration.max_active_sequence_count = 4u;
 	assert(SparkGlm52GatewayInitializePendingStreams(&runtime) == 0);
 	assert(runtime.pending_stream_capacity ==
@@ -43,9 +43,9 @@ static void SparkTestHttpGatewayQueuesBeyondActiveLanes(void)
 
 static void SparkTestHttpGatewayCoalescesOnlyIdlePartialBatch(void)
 {
-	static SparkGlm52GatewayRuntime runtime;
+	static SparkGatewayRuntime runtime;
 
-	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
+	SparkGatewayInitializeConfig(&runtime.configuration);
 	runtime.configuration.max_active_sequence_count = 64u;
 	runtime.pending_stream_count = 1u;
 	assert(SparkGlm52GatewayShouldCoalesceBatch(&runtime) == 1u);
@@ -60,9 +60,9 @@ static void SparkTestHttpGatewayCoalescesOnlyIdlePartialBatch(void)
 
 static void SparkTestHttpGatewayPollsBetweenDispatches(void)
 {
-	static SparkGlm52GatewayRuntime runtime;
+	static SparkGatewayRuntime runtime;
 
-	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
+	SparkGatewayInitializeConfig(&runtime.configuration);
 	assert(runtime.configuration.pump_steps ==
 		SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT);
 	assert(SparkGlm52GatewayPollTimeout(&runtime) == -1);
@@ -81,8 +81,8 @@ static void SparkTestHttpGatewayPollsBetweenDispatches(void)
 
 static void SparkTestHttpGatewayCancelsDisconnectedStream(void)
 {
-	static SparkGlm52GatewayRuntime runtime;
-	SparkGlm52GatewayPendingStream *stream;
+	static SparkGatewayRuntime runtime;
+	SparkGatewayPendingStream *stream;
 	struct pollfd poll_fds[2u];
 	uint32_t poll_stream_slots[2u];
 	uint64_t client_request_id;
@@ -90,7 +90,7 @@ static void SparkTestHttpGatewayCancelsDisconnectedStream(void)
 	uint32_t slot_index;
 	int32_t sockets[2u];
 
-	SparkGlm52GatewayInitializeConfig(&runtime.configuration);
+	SparkGatewayInitializeConfig(&runtime.configuration);
 	runtime.configuration.max_active_sequence_count = 4u;
 	assert(SparkGlm52GatewayInitializePendingStreams(&runtime) == 0);
 	assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);

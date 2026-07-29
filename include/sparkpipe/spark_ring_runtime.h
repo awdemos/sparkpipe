@@ -33,13 +33,10 @@ extern "C" {
     SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT
 #define SPARK_RING_RUNTIME_FP8_PACK_MANIFEST \
     "fp8_moe_pack_manifest.json"
-#define SPARK_RING_RUNTIME_W8LUT_PACK_MANIFEST \
-    "w8lut_moe_pack_manifest.json"
 #define SPARK_RING_RUNTIME_B12X_PACK_MANIFEST \
     "resident_moe_pack_manifest.json"
 #define SPARK_RING_RUNTIME_MOE_BACKEND_NONE 0u
 #define SPARK_RING_RUNTIME_MOE_BACKEND_FP8_FLASHINFER_GROUPED 1u
-#define SPARK_RING_RUNTIME_MOE_BACKEND_W8LUT_BF16_WMMA 2u
 #define SPARK_RING_RUNTIME_MOE_BACKEND_NVFP4_B12X 3u
 #define SPARK_RING_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE \
     SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES
@@ -207,7 +204,7 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
 // fixed host table by linear node index, so shapes needing more nodes than
 // the table lists fail closed until the table grows with the hardware.
 SparkStatus SparkRingRuntimeBuildShapeRankPlan(
-    const SparkGlm52TpShapeDescriptor *shape,
+    const SparkTpShapeDescriptor *shape,
     uint32_t logical_lane_capacity,
     uint32_t port_base,
     uint32_t tp_port_base,

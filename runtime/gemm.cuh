@@ -104,6 +104,10 @@ static int32_t LmGemmLaunch(LmGemmArguments *args, const void *activation_bytes,
 	LmTileSource source_a,source_b;
 	CUtensorMap activation_map,weight_map;
 	int32_t status;
+	if ( (args->output_bf16 == 0) == (args->output_f32 == 0) )
+		return(LM_LAUNCH_ERR_OUTPUT);
+	if ( args->output_f32 != 0 && args->accumulate_bf16 != 0 )
+		return(LM_LAUNCH_ERR_OUTPUT);
 	memset(&shape,0,sizeof(shape));
 	shape.tokens = tokens;
 	shape.top_k = top_k;

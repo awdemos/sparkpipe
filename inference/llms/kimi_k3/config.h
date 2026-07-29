@@ -267,6 +267,18 @@
 // fp32 is not a precision luxury - the same argument as keeping the flash
 // attention output in fp32 during training. The rest of the model is 4- and
 // 8-bit; this one buffer is not.
+// Reference semantics (moonshotai/Kimi-K3 modeling_kimi_linear.py): the
+// checkpoint's A_log tensor carries 128 heads; the model runs 96 - the
+// loader takes the authoritative first-96 slice and must refuse other
+// shapes. A_log and dt_bias are FP32 in the checkpoint and stay FP32
+// through bind. q and k are L2-normalized IN KERNEL
+// (use_qk_l2norm_in_kernel), beta passes through sigmoid in kernel, the
+// gate combines g, A_log and dt_bias in kernel with the safe lower
+// bound below, and the reference stores state TRANSPOSED
+// (transpose_state_layout=True) - the pack/loader owns that flip.
+#define K3_KDA_A_LOG_SOURCE_HEADS 128u
+#define K3_KDA_QK_L2NORM 1u
+#define K3_KDA_GATE_LOWER_BOUND (-5.0f)
 #define K3_KDA_STATE_ELEMENT_BYTES 4u
 #define K3_KDA_CONV_WINDOW_BYTES \
 	(((2u * K3_KDA_HEADS * K3_KDA_KEY_DIM) + (K3_KDA_HEADS * K3_KDA_VALUE_DIM)) \

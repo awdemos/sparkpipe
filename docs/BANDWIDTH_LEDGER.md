@@ -128,3 +128,73 @@ Prefill agg tok/s (2048 chunks): PP16 11.8K > TP2xPP8 10.2K > TP4xPP4 6.1K
 DSpark: ~x1.9 effective at full sweep (verify rows ride paid weight reads);
   ~x1.0 at B=1 on top-8-of-384. Measured column replaces all of this at
   bring-up.
+
+
+## Expert precombination study (measured, 2026-07-29)
+
+Kimi-K3 HF weights, layer 5, w2, 16 experts, MXFP4 dequantized, sketch
+rank 256/expert. Shared-basis hypothesis W_e ~ A C_e B + delta: REJECTED.
+  shared MEAN energy: 6.3% (min 6.0%)
+  shared COLUMN space: r=64 6.9% / r=128 13.1% / r=256 24.2% /
+                       r=512 42.3% / r=1024 67.6%   (rows: same +1-2%)
+  single-expert own spectrum: top-64 7.9%, top-512 46.1%
+The cross-expert shared basis at r=512 captures LESS than one expert's
+own top-512: column spaces are mutually ~random. MXFP4-native training
+left no linear redundancy to precombine. Bytes floor stands at ~59
+GB/token B=1 (moe_intermediate corrected 4096 -> 3072 from config.json;
+expert = 35 MB; all decode estimates improve ~13%). Config also confirms
+every serving-tier geometry number our drift gates hold: hidden 7168,
+93 layers, MLA schedule [every 4th + last], kda 96x128, conv 4,
+kv_lora 512, rope 64.
+
+
+## Compression codec architecture (sparkdev K3 data, 2026-07-29)
+
+Measured: MXFP4 nibbles 3.752/4 bits (zstd 5.81%); E8M0 scale plane 84.7%
+compressible; whole shard 10.96%. The 160 GB is real but NOT uniform, and
+WHERE decompression happens decides whether bandwidth wins or dies:
+
+THE STAGING TRAP: weights are read every step. Storing compressed in
+unified memory and decompressing LPDDR->LPDDR (nvCOMP pass, rotating
+staging) costs read C + write U + read U per step ~= 2.9x layer traffic.
+On a bus-bound machine that is a ~65% throughput cut to save capacity.
+Staging decompress is NEVER for hot weights. (It IS free money for the
+NVMe pack: model swap time drops ~11% at zero runtime cost.)
+
+THE REGISTER-FEED RULE (refines the >1% rule): a plane earns a resident
+codec iff (a) capacity saved > 1%, (b) TILE-ADDRESSABLE - independent
+blocks matching GEMM tiles (128 x TILE_K) with an offset table, random
+access preserved, and (c) decode <= ~8 ALU ops/byte fused into the
+consume path. Then the bus reads COMPRESSED bytes and the win is
+capacity AND bandwidth together.
+
+VERDICTS ON THE MEASURED PLANES:
+- Nibbles at 5.81%: fails (c) - entropy decode at fragment rate is not
+  8 ops/byte. Not harvestable unless structure is found (see test spec).
+- E8M0 scales at 84.7%: PASSES ALL THREE. Scales are 1/17 of expert
+  bytes (~76 GB of ~1.3 TB); 84.7% structure means per-row exponent
+  streams delta+pack to ~2-3 bits/group with a mode+exceptions decode of
+  a few ops - and the consume path ALREADY has the per-thread scale
+  cache to hang it on. Expected: ~60-65 GB capacity AND ~4-5% fewer
+  expert bytes per full-sweep step = ~+4% ceiling throughput. This is
+  the codec to build.
+
+TEST SPEC FOR THE FULL-DATA SWEEP (what to measure so verdicts follow):
+1. Everything BLOCK-WISE at 128x512-element tiles, not whole-tensor -
+   random access is the constraint, and whole-tensor numbers flatter.
+2. Byte-plane splits: bf16 attention/shared/dense tensors as sign / exp
+   / mantissa planes (exponent planes of trained bf16 typically 60-80%
+   compressible - the 0.3 TB non-expert tier may hide 30-60 GB).
+3. E8M0 deltas two ways: within-row (neuron-adjacent groups) and
+   CROSS-EXPERT (expert_i scale map minus expert_0's) - if experts share
+   scale topology the plane crushes further.
+4. fp32 tensors (A_log, dt_bias, norms) as planes; router weights;
+   embedding table.
+5. Report bits/element post-transform, not zstd ratio, so the in-kernel
+   decode can be designed from the number.
+
+External validation, same report: a 14-real-layer CPU traversal matched
+our layer semantics exactly - MLA at 0-indexed 3/7/11, AttnRes
+boundaries at 0 and 12, layer-12 bank advancing to two vectors, layer-1
+top-16 routing equal to the retained reference. The host-gate trajectory
+claims now have a checkpoint-backed witness.

@@ -77,7 +77,7 @@ uint64_t SparkGlm52TpShardGeometryHash(const SparkGlm52StagePackTensorSpec *spec
 	return SparkTpShardGeometryHash(spec,shape,view);
 }
 
-SparkStatus SparkGlm52TpShardReadTensor(int32_t descriptor, const SparkGlm52StagePackTensorSpec *spec, const SparkTpShapeDescriptor *shape, const SparkTpModelGeometry *geometry, void *destination, uint64_t destination_bytes, SparkTpShardView *view_out)
+SparkStatus SparkGlm52TpShardReadTensor(const char *stagepack_root, const SparkGlm52StagePackTensorSpec *spec, const SparkTpShapeDescriptor *shape, const SparkTpModelGeometry *geometry, void *destination, uint64_t destination_bytes, SparkTpShardView *view_out)
 {
-	return SparkTpShardReadTensor(SparkGlm52TpShardClassifyTensor, SparkGlm52TpShardHeadBlock,descriptor,spec,shape,geometry,destination,destination_bytes,view_out);
+	return SparkTpShardReadTensor(SparkGlm52TpShardClassifyTensor, SparkGlm52TpShardHeadBlock,stagepack_root,spec,shape,geometry,destination,destination_bytes,view_out);
 }

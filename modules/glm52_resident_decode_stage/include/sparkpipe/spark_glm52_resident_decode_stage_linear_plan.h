@@ -125,7 +125,7 @@ typedef struct SparkGlm52ResidentDecodeStageLinearPlanResidentBindingCreateInfo
 
 static inline uint32_t
 SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
-    const SparkGlm52ResidentDecodeStageLinearPlan *plan,
+    const SparkResidentDecodeStageLinearPlan *plan,
     uint32_t active_sequence_count)
 {
     uint32_t batch_bucket;
@@ -154,17 +154,17 @@ SparkStatus SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPrepareActiveR
     uint32_t active_sequence_count);
 
 uint32_t SparkGlm52ResidentDecodeStageLinearPlanPreparedActiveRows(
-    const SparkGlm52ResidentDecodeStageLinearPlan *plan);
+    const SparkResidentDecodeStageLinearPlan *plan);
 
 void SparkGlm52ResidentDecodeStageLinearPlanResidentBindingDestroy(
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding);
 
-const SparkGlm52ResidentDecodeStageLinearPlan *
+const SparkResidentDecodeStageLinearPlan *
 SparkGlm52ResidentDecodeStageLinearPlanResidentBindingPlans(
     const SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
     uint32_t *plan_count_out);
 
-SparkGlm52ResidentDecodeStageLinearPlan *
+SparkResidentDecodeStageLinearPlan *
 SparkGlm52ResidentDecodeStageLinearPlanResidentBindingMutablePlans(
     SparkGlm52ResidentDecodeStageLinearPlanResidentBinding *binding,
     uint32_t *plan_count_out);

@@ -26,6 +26,7 @@
 // build links exactly one definition of these; the common module asks the
 // questions and the model answers them. See rules.mk: MODULE_FAMILY was
 // always the seam.
+SparkStatus SparkResidentDecodeStageModelValidateFrameTaps(const SparkResidentDecodeStageFrameContext *frame_context);
 SparkStatus SparkResidentDecodeStageModelValidateNodeContext(const SparkResidentDecodeStageNodeContext *node_context);
 SparkStatus SparkResidentDecodeStageModelValidateSliceNodeContext(const SparkResidentDecodeStageSliceNodeContext *slice_node_context, const SparkResidentDecodeStageNodeContext **first_node_context);
 
@@ -37,7 +38,7 @@ SparkStatus SparkResidentDecodeStageModelValidateSliceNodeContext(const SparkRes
 #endif
 #endif
 
-#if defined(SPARK_GLM52_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES)
+#if defined(SPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES)
 extern SparkStatus SparkResidentDecodeStageBackendVerifyRequiredCudaModules(
     const SparkResidentDecodeStageNodeContext *node_context);
 #endif
@@ -91,10 +92,10 @@ typedef struct SparkResidentDecodeStagePendingCompletion
 
 enum
 {
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE = 0u,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_RESERVED = 1u,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED = 2u,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_COMPLETING = 3u
+    SPARK_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE = 0u,
+    SPARK_RESIDENT_DECODE_STAGE_SLOT_RESERVED = 1u,
+    SPARK_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED = 2u,
+    SPARK_RESIDENT_DECODE_STAGE_SLOT_COMPLETING = 3u
 };
 
 struct SparkResidentDecodeStageState
@@ -140,34 +141,27 @@ static bool SparkResidentDecodeStageModelQuantizationModeIsSupported(
     uint32_t model_quantization_mode)
 {
     return model_quantization_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_AUTO ||
+            SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_AUTO ||
         model_quantization_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT ||
+            SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT ||
         model_quantization_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT ||
-        model_quantization_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT;
+            SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
 }
 
 static uint32_t SparkResidentDecodeStageEffectiveModelQuantizationMode(
     const SparkResidentDecodeStageNodeContext *node_context)
 {
     if (node_context->model_quantization_mode !=
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_AUTO)
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_AUTO)
     {
         return node_context->model_quantization_mode;
     }
     if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK)
+        SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK)
     {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
+        return SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
     }
-    if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK)
-    {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT;
-    }
-    return SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
+    return SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
 }
 
 static bool SparkResidentDecodeStageLayerMatchesModelQuantization(
@@ -178,28 +172,16 @@ static bool SparkResidentDecodeStageLayerMatchesModelQuantization(
     model_quantization_mode =
         SparkResidentDecodeStageEffectiveModelQuantizationMode(node_context);
     if (model_quantization_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT)
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT)
     {
         return node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK &&
-            node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK;
+                SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK;
     }
     if (model_quantization_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT)
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT)
     {
         return node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK &&
-            node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK;
-    }
-    if (model_quantization_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_W8LUT_8BIT)
-    {
-        return node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK &&
-            node_context->layer_progression_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK;
+                SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK;
     }
     return false;
 }
@@ -208,29 +190,29 @@ static bool SparkResidentDecodeStageProjectionBackendIsPrebound(
     const SparkResidentDecodeStageNodeContext *node_context)
 {
     return node_context->projection_backend_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT ||
+            SPARK_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT ||
         node_context->projection_backend_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
+            SPARK_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
 }
 
 static bool SparkResidentDecodeStageProjectionModeUsesQuantizedPlan(
     const SparkResidentDecodeStageNodeContext *node_context)
 {
     return node_context->projection_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_NVFP4_E2M1 ||
+            SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_NVFP4_E2M1 ||
         node_context->projection_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3 ||
+            SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_FP8_E4M3 ||
         node_context->projection_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_MXFP4_E2M1;
+            SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_MXFP4_E2M1;
 }
 
 static bool SparkResidentDecodeStageMlpExecutionUsesQuantizedPlan(
     const SparkResidentDecodeStageNodeContext *node_context)
 {
     return node_context->mlp_execution_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE ||
+            SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE ||
         node_context->mlp_execution_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
+            SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
 }
 
 static SPARK_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkResidentDecodeStageAlignUpU64(
@@ -244,14 +226,14 @@ static SPARK_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkResidentDecodeStag
     uint32_t weight_format)
 {
     if (weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
+        SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
     {
         return 32u;
     }
     if (weight_format ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1 ||
+            SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1 ||
         weight_format ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1)
+            SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1)
     {
         return SPARK_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE;
     }
@@ -259,7 +241,7 @@ static SPARK_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkResidentDecodeStag
 }
 
 static SPARK_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkResidentDecodeStageNativeQuantizedProjectionWorkspaceBytes(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
+    const SparkResidentDecodeStageLinearPlan *linear_plan,
     uint32_t weight_format)
 {
     uint64_t element_count;
@@ -276,7 +258,7 @@ static SPARK_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkResidentDecodeStag
         (uint64_t)linear_plan->maximum_active_sequence_count *
         (uint64_t)linear_plan->input_dimension;
     payload_bytes = weight_format ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
+            SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
         ? element_count
         : SparkResidentDecodeStageDivideRoundUpU64(element_count, 2u);
     scale_block_size =
@@ -311,7 +293,7 @@ static bool SparkResidentDecodeStageMtpDraftPlanIsUsable(
         mtp_draft_plan->draft_token_count !=
             SPARK_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT ||
         mtp_draft_plan->weight_format >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1 ||
+            SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1 ||
         mtp_draft_plan->graph_draft_token_count >
             mtp_draft_plan->draft_token_count ||
         mtp_draft_plan->launch_function == 0 ||
@@ -556,28 +538,6 @@ static uint32_t SparkResidentDecodeStageMaximumU32(
     return left > right ? left : right;
 }
 
-static uint32_t SparkResidentDecodeStageRoutedLayerCountForRange(
-    uint32_t first_layer_index,
-    uint32_t layer_count)
-{
-    uint32_t range_end;
-    uint32_t routed_begin;
-    uint32_t routed_end;
-
-    range_end = first_layer_index + layer_count;
-    routed_begin = SparkResidentDecodeStageMaximumU32(
-        first_layer_index,
-        SPARK_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER);
-    routed_end = SparkResidentDecodeStageMinimumU32(
-        range_end,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT);
-    if (routed_end <= routed_begin)
-    {
-        return 0u;
-    }
-    return routed_end - routed_begin;
-}
-
 static bool SparkResidentDecodeStageSliceLayerRangeIsUsable(
     uint32_t first_layer_index,
     uint32_t layer_count)
@@ -606,9 +566,11 @@ static bool SparkResidentDecodeStageSliceLayerRangeIsUsable(
         return false;
     }
 
-    routed_layer_count = SparkResidentDecodeStageRoutedLayerCountForRange(
-        first_layer_index,
-        layer_count);
+    routed_layer_count = SparkRoutedLayerCountForRange(
+first_layer_index,
+layer_count,
+SPARK_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER,
+SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT);
     return routed_layer_count <=
         SPARK_RESIDENT_DECODE_STAGE_MAX_ROUTED_STAGE_SLICE_LAYER_COUNT;
 }
@@ -635,7 +597,7 @@ static bool SparkResidentDecodeStageBulkPrefillPlanIsUsable(
         return false;
     }
     if (node_context->attention_execution_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
+            SPARK_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT &&
         !SparkResidentDecodeStageExecutionFlagIsSet(
             node_context,
             SPARK_RESIDENT_DECODE_STAGE_EXECUTION_DSA_SPARSE_PREFILL))
@@ -690,7 +652,7 @@ static bool SparkResidentDecodeStageFp8KvCachePlanIsUsable(
         fp8_kv_cache_plan->cache_token_capacity <
             node_context->cache_token_capacity ||
         fp8_kv_cache_plan->cache_token_elements !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS ||
+            SPARK_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS ||
         (compressed_mla_only
             ? fp8_kv_cache_plan->key_nope_elements != 0u ||
                 fp8_kv_cache_plan->value_elements != 0u ||
@@ -777,44 +739,35 @@ static bool SparkResidentDecodeStageLayerSupportsBuiltInFusedStageMoe(
         return false;
     }
     if (node_context->layer_progression_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ATTENTION_ONLY ||
+            SPARK_RESIDENT_DECODE_STAGE_LAYER_ATTENTION_ONLY ||
         node_context->layer_progression_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP)
+            SPARK_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP)
     {
         return true;
     }
     if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY)
+        SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTER_BF16_TOPK_ONLY)
     {
         return false;
     }
     if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK)
+        SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK)
     {
         return node_context->mlp_execution_mode ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE &&
+                SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE &&
             SparkGlm52ResidentDecodeStageRouterLinearPlanIsProductionFast(
                 node_context) &&
             SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsUsable(
                 node_context);
     }
     if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK)
+        SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK)
     {
         return node_context->mlp_execution_mode ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE &&
+                SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE &&
             SparkGlm52ResidentDecodeStageRouterLinearPlanIsProductionFast(
                 node_context) &&
             SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(node_context);
-    }
-    if (node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK)
-    {
-        return node_context->mlp_execution_mode ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_W8LUT_EXPERT_TENSOR_CORE &&
-            SparkGlm52ResidentDecodeStageRouterLinearPlanIsProductionFast(
-                node_context) &&
-            SparkGlm52ResidentDecodeStageW8lutMoePlanIsUsable(node_context);
     }
     return false;
 }
@@ -845,7 +798,7 @@ static void SparkResidentDecodeStageReleaseSlot(
         memory_order_release);
     atomic_store_explicit(
         &pending_completion->state,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE,
+        SPARK_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE,
         memory_order_release);
 }
 
@@ -898,11 +851,11 @@ static void SparkResidentDecodeStageTryComplete(
     {
         return;
     }
-    expected_state = SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED;
+    expected_state = SPARK_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED;
     if (!atomic_compare_exchange_strong_explicit(
             &pending_completion->state,
             &expected_state,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_COMPLETING,
+            SPARK_RESIDENT_DECODE_STAGE_SLOT_COMPLETING,
             memory_order_acq_rel,
             memory_order_relaxed))
     {
@@ -957,7 +910,7 @@ static void SparkResidentDecodeStageTryComplete(
         {
             atomic_store_explicit(
                 &pending_completion->state,
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED,
+                SPARK_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED,
                 memory_order_release);
             return;
         }
@@ -1050,7 +1003,7 @@ SparkStatus SparkResidentDecodeStageInitialize(
             return status;
         }
     }
-#if defined(SPARK_GLM52_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES)
+#if defined(SPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES)
     if (slice_node_context != 0)
     {
         uint32_t layer_index;
@@ -1116,7 +1069,7 @@ SparkStatus SparkResidentDecodeStageInitialize(
         pending_completion = &state->pending_completions[pipeline_slot_index];
         atomic_init(
             &pending_completion->state,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE);
+            SPARK_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE);
         atomic_init(&pending_completion->backend_completion_ready, 0u);
         atomic_init(&pending_completion->dispatch_generation, 1u);
         pending_completion->owner = state;
@@ -1185,7 +1138,7 @@ static uint32_t SparkResidentDecodeStageFindAvailableSlot(
         if (atomic_load_explicit(
                 &state->pending_completions[slot_index].state,
                 memory_order_acquire) ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE)
+            SPARK_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE)
         {
             return slot_index;
         }
@@ -1470,29 +1423,12 @@ static SparkStatus SparkResidentDecodeStageValidateDsparkHiddenTapFrameContext(
     uint32_t tap_index;
 
     if ((frame_context->flags &
-            SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS) ==
+            SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MODEL_HIDDEN_TAPS) ==
         0u)
     {
         return SPARK_STATUS_OK;
     }
-    if (frame_context->dspark_hidden_tap_lane_stride_bytes <
-            SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES ||
-        SparkResidentDecodeStageValidateDsparkHiddenTapPlanInline(
-            frame_context->dspark_hidden_tap_plan) != SPARK_STATUS_OK)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    output_count = 0u;
-    for (tap_index = 0u;
-         tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
-         ++tap_index)
-    {
-        if (frame_context->dspark_hidden_tap_output_bf16[tap_index] != 0)
-            output_count += 1u;
-    }
-    if (output_count != 0u && output_count != SPARK_GLM52_DSPARK_AUX_LAYER_COUNT)
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    return SPARK_STATUS_OK;
+    return SparkResidentDecodeStageModelValidateFrameTaps(frame_context);
 }
 
 static SparkStatus SparkResidentDecodeStageExtractFrameContext(
@@ -2002,11 +1938,11 @@ SparkStatus SparkResidentDecodeStageExecute(
             return SPARK_STATUS_BUSY;
         }
     }
-    expected_state = SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE;
+    expected_state = SPARK_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE;
     if (!atomic_compare_exchange_strong_explicit(
             &pending_completion->state,
             &expected_state,
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_RESERVED,
+            SPARK_RESIDENT_DECODE_STAGE_SLOT_RESERVED,
             memory_order_acq_rel,
             memory_order_relaxed))
     {
@@ -2101,7 +2037,7 @@ SparkStatus SparkResidentDecodeStageExecute(
 
     atomic_store_explicit(
         &pending_completion->state,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED,
+        SPARK_RESIDENT_DECODE_STAGE_SLOT_SUBMITTED,
         memory_order_release);
 
     if ((frame->flags & SPARK_MODEL_DRIVER_FRAME_FLAG_PREFILL) != 0u)
@@ -2246,7 +2182,7 @@ SparkStatus SparkResidentDecodeStageAdmit(
     selected_slot = SparkResidentDecodeStageFindAvailableSlot(state);
     available_slot_count = SparkResidentDecodeStageCountSlotsInState(
         state,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE);
+        SPARK_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE);
     active_submission_count = state->pipeline_slot_count - available_slot_count;
     decision->available_dispatch_slot_count = available_slot_count;
     decision->private_queue_pressure = state->pipeline_slot_count != 0u ?
@@ -2306,7 +2242,7 @@ SparkStatus SparkResidentDecodeStageSnapshot(
     SparkResidentDecodeStageProgressPendingCompletions(state);
     available_slot_count = SparkResidentDecodeStageCountSlotsInState(
         state,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE);
+        SPARK_RESIDENT_DECODE_STAGE_SLOT_AVAILABLE);
     active_submission_count = state->pipeline_slot_count - available_slot_count;
 
     memset(snapshot, 0, sizeof(*snapshot));

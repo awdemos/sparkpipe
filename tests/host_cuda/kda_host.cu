@@ -21,6 +21,7 @@ LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
 // runs at a time.
 uint32_t lm_topk_shared[LM_HOST_SHARED_BYTES / sizeof(uint32_t)];
 float lm_norm_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
+float state_s[LM_HOST_SHARED_BYTES / sizeof(float)];
 
 #include "inference/kernels/dtype.cuh"
 
@@ -42,7 +43,7 @@ float lm_norm_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 #define THREADS 1u
 // The pool stride the harness allocates at, named once and passed to both
 // kernels - which is the whole point of the parameter existing.
-#define SLOT_BYTES (HEADS * KEY_DIM * VALUE_DIM * 2u)
+#define SLOT_BYTES (HEADS * KEY_DIM * VALUE_DIM * 4u)
 
 static uint16_t bf16(float value) { return LmFloatToBf16(value); }
 static float f32(uint16_t value) { return LmBf16ToFloat(value); }
@@ -64,7 +65,7 @@ int main(void)
 	static float write_gate[HEADS];
 	static float channel_bias[HEADS * KEY_DIM];
 	static float head_log_scale[HEADS];
-	static uint8_t state_pool[HEADS * KEY_DIM * VALUE_DIM * 2u];
+	static uint8_t state_pool[HEADS * KEY_DIM * VALUE_DIM * 4u];
 	static uint32_t state_index[1] = { 0u };
 	uint32_t seed = 12345u, step, index, head;
 

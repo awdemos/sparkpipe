@@ -80,7 +80,7 @@ typedef struct PipesimFixture
 	SparkGlm52DsparkSpeculator dspark_speculator;
 	SparkGlm52DsparkSequenceState dspark_sequence_states[PIPESIM_REQUEST_SLOTS];
 	SparkGlm52DsparkModelContract dspark_model_contract;
-	uint32_t dspark_enabled;
+	uint32_t speculation_enabled;
 	uint32_t speculation_mode;
 	uint64_t producer_dispatch_count;
 	uint64_t committed_token_estimate;
@@ -446,13 +446,13 @@ static void PipesimInitializeServing(PipesimFixture *fixture)
 		(fixture->accept_milli != 0u && fixture->speculation_mode != 1u
 			? SPARK_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
 			  SPARK_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE : 0u) |
-		(fixture->dspark_enabled != 0u
+		(fixture->speculation_enabled != 0u
 			? SPARK_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE : 0u) |
-		(fixture->dspark_enabled != 0u && fixture->speculation_mode == 2u
+		(fixture->speculation_enabled != 0u && fixture->speculation_mode == 2u
 			? SPARK_REQUEST_API_CONFIGURATION_FLAG_PREFER_DSPARK_SPECULATION : 0u);
 	request_api_configuration.request_capacity = PIPESIM_REQUEST_SLOTS;
 	request_api_configuration.prefetch_lane_count = SPARK_KV_CACHE_MAX_PREFETCH_LANE_COUNT;
-	if (fixture->dspark_enabled != 0u)
+	if (fixture->speculation_enabled != 0u)
 	{
 		SparkGlm52DsparkSpeculatorConfiguration dspark_configuration;
 
@@ -585,7 +585,7 @@ int main(int argc, char **argv)
 	fixture->queue_depth = queue_depth;
 	fixture->accept_milli = accept_milli > 1000u ? 1000u : accept_milli;
 	fixture->speculation_mode = speculation_mode;
-	fixture->dspark_enabled = (speculation_mode >= 1u && fixture->accept_milli != 0u) ? 1u : 0u;
+	fixture->speculation_enabled = (speculation_mode >= 1u && fixture->accept_milli != 0u) ? 1u : 0u;
 	PipesimInitializeCore(fixture);
 	PipesimInitializeServing(fixture);
 	PipesimSubmitRequests(fixture, request_count, output_tokens, prompt_tokens);

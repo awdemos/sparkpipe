@@ -95,7 +95,7 @@ static int32_t Mimo25LayerAttention(const Mimo25LayerBuffers *b, uint32_t rows, 
 	LmGemmArguments gemm;
 	LmQkvLayout layout;
 	int32_t status;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>), rows, MIMO25_LAYER_THREADS, (MIMO25_HIDDEN + 8u) * sizeof(float), stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS,uint16_t>), rows, MIMO25_LAYER_THREADS, (MIMO25_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>), dim3(rows,MIMO25_HIDDEN / Format::kScaleGroup), MIMO25_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,MIMO25_HIDDEN);
@@ -155,12 +155,12 @@ static int32_t Mimo25LayerMoe(const Mimo25LayerBuffers *b, uint32_t rows, uint32
 {
 	LmGemmArguments gemm;
 	int32_t status;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>), rows, MIMO25_LAYER_THREADS, (MIMO25_HIDDEN + 8u) * sizeof(float), stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS,uint16_t>), rows, MIMO25_LAYER_THREADS, (MIMO25_HIDDEN + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
-	gemm.output_bf16 = b->router_logits;
+	gemm.output_f32 = b->router_logits;
 	status = LmGemmLaunch<LmBf16Format,MIMO25_LAYER_TILE_N,LmBf16Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
 		&gemm,b->normed_bf16,b->router_weight,rows,rows,MIMO25_TOP_K,1u,
 		MIMO25_HIDDEN,MIMO25_EXPERTS,sms,false,stream);
@@ -201,7 +201,7 @@ static int32_t Mimo25LayerDenseMlp(const Mimo25LayerBuffers *b, uint32_t rows, u
 {
 	LmGemmArguments gemm;
 	int32_t status;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>), rows, MIMO25_LAYER_THREADS, (MIMO25_HIDDEN + 8u) * sizeof(float), stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS,uint16_t>), rows, MIMO25_LAYER_THREADS, (MIMO25_HIDDEN + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>), dim3(rows,MIMO25_HIDDEN / Format::kScaleGroup), MIMO25_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,MIMO25_HIDDEN);
@@ -240,7 +240,7 @@ static int32_t Mimo25Head(const Mimo25LayerBuffers *b, const void *head_norm_wei
 {
 	uint32_t tiles = (vocabulary + MIMO25_HEAD_TILE - 1u) / MIMO25_HEAD_TILE;
 	// End of the stream, so no residual in and no residual out.
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS>), rows, MIMO25_LAYER_THREADS, (MIMO25_HIDDEN + 8u) * sizeof(float), stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS,uint16_t>), rows, MIMO25_LAYER_THREADS, (MIMO25_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,0,(const uint16_t *)head_norm_weight, 0,b->normed_bf16,MIMO25_HIDDEN,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
 	LM_LAUNCH((LmHeadCandidateKernel<MIMO25_LAYER_THREADS,MIMO25_HEAD_TILE>), dim3(tiles,rows), MIMO25_LAYER_THREADS, 0, stream,
 		b->normed_bf16,(const uint16_t *)head_weight,token_ids, b->head_candidate_score,b->head_candidate_token,rows,MIMO25_HIDDEN,vocabulary);

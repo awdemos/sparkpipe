@@ -4,7 +4,6 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_kv_cache.h"
-#include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_mtp_tree.h"
 #include "sparkpipe/spark_scheduler.h"
 #include "sparkpipe/spark_status.h"
@@ -135,6 +134,8 @@ typedef SparkStatus (*SparkRequestApiKvPrefetchPollFunction)(
     uint64_t prefetch_id,
     const SparkKvCachePrefetchPlan *prefetch_plan);
 
+struct SparkRequestModelSpeculator;
+
 typedef struct SparkRequestApiSubmitRequest
 {
     uint32_t abi_version;
@@ -149,6 +150,40 @@ typedef struct SparkRequestApiSubmitRequest
     uint64_t sequence_id;
     const uint32_t *prompt_token_ids;
 } SparkRequestApiSubmitRequest;
+
+#define SPARK_REQUEST_MODEL_MAX_SPECULATIVE_TOKENS 7u
+#define SPARK_REQUEST_MODEL_SPECULATIVE_SOURCE_DRAFTER 1u
+#define SPARK_REQUEST_MODEL_SPECULATIVE_SOURCE_MTP 2u
+#define SPARK_REQUEST_MODEL_ABI_VERSION 2u
+#define SPARK_REQUEST_MODEL_VERIFY_RESULT_FLAG_ACCEPTED_ALL 0x00000001u
+#define SPARK_REQUEST_MODEL_VERIFY_RESULT_FLAG_REJECTED 0x00000002u
+
+typedef struct SparkRequestModelDraftResult
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t flags;
+    uint32_t token_count;
+    uint32_t confidence_milli[SPARK_REQUEST_MODEL_MAX_SPECULATIVE_TOKENS];
+    uint32_t token_ids[SPARK_REQUEST_MODEL_MAX_SPECULATIVE_TOKENS];
+} SparkRequestModelDraftResult;
+
+typedef struct SparkRequestModelVerifyResult
+{
+    uint32_t abi_version;
+    uint32_t descriptor_bytes;
+    uint32_t flags;
+    uint32_t proposed_token_count;
+    uint32_t accepted_draft_token_count;
+    uint32_t committed_token_count;
+    uint32_t fallback_token_id;
+    uint32_t reserved;
+} SparkRequestModelVerifyResult;
+
+#define SPARK_REQUEST_MODEL_DRAFT_RESULT_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkRequestModelDraftResult))
+#define SPARK_REQUEST_MODEL_VERIFY_RESULT_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkRequestModelVerifyResult))
 
 typedef struct SparkRequestApiSlot
 {
@@ -236,7 +271,9 @@ typedef struct SparkRequestApiConfiguration
     void *kv_prefetch_context;
     SparkRequestApiKvPrefetchStartFunction kv_prefetch_start_function;
     SparkRequestApiKvPrefetchPollFunction kv_prefetch_poll_function;
-    SparkGlm52DsparkSpeculator *dspark_speculator;
+    // Opaque model speculator: the drafter module owns the concrete type
+    // and is the only place this pointer is cast.
+    struct SparkRequestModelSpeculator *model_speculator;
 } SparkRequestApiConfiguration;
 
 typedef struct SparkRequestApiDispatch
@@ -276,10 +313,10 @@ typedef struct SparkRequestApiDispatch
         SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
     uint32_t speculative_draft_token_ids[
         SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT][
-            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+            SPARK_REQUEST_MODEL_MAX_SPECULATIVE_TOKENS];
     uint32_t speculative_confidence_milli[
         SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT][
-            SPARK_GLM52_DSPARK_MAX_SPECULATIVE_TOKEN_COUNT];
+            SPARK_REQUEST_MODEL_MAX_SPECULATIVE_TOKENS];
     uint32_t mtp_draft_token_budget;
     uint32_t decode_committed_token_counts[
         SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
@@ -386,7 +423,9 @@ typedef struct SparkRequestApi
     void *kv_prefetch_context;
     SparkRequestApiKvPrefetchStartFunction kv_prefetch_start_function;
     SparkRequestApiKvPrefetchPollFunction kv_prefetch_poll_function;
-    SparkGlm52DsparkSpeculator *dspark_speculator;
+    // Opaque model speculator: the drafter module owns the concrete type
+    // and is the only place this pointer is cast.
+    struct SparkRequestModelSpeculator *model_speculator;
     uint64_t dspark_tap_capture_dispatch_count;
     uint64_t dspark_draft_ready_count;
     uint64_t dspark_verify_dispatch_count;

@@ -67,12 +67,22 @@ def reference(shape, values):
     per_step_k = heads * key_dim
     per_step_v = heads * value_dim
     for step in range(steps):
-        q = values["q"][step * per_step_k:(step + 1) * per_step_k]
-        k = values["k"][step * per_step_k:(step + 1) * per_step_k]
+        q = list(values["q"][step * per_step_k:(step + 1) * per_step_k])
+        k = list(values["k"][step * per_step_k:(step + 1) * per_step_k])
         z = values["z"][step * per_step_k:(step + 1) * per_step_k]
         v = values["v"][step * per_step_v:(step + 1) * per_step_v]
         beta = values["beta"][step * heads:(step + 1) * heads]
         for head in range(heads):
+            # the kernel L2-normalizes q and k per head before the recurrence
+            # (reference: use_qk_l2norm_in_kernel=True), so the model does too
+            base = head * key_dim
+            kk = sum(k[base + i] * k[base + i] for i in range(key_dim))
+            qq = sum(q[base + i] * q[base + i] for i in range(key_dim))
+            ks = (kk + 1e-6) ** -0.5
+            qs = (qq + 1e-6) ** -0.5
+            for i in range(key_dim):
+                k[base + i] *= ks
+                q[base + i] *= qs
             alpha = []
             for channel in range(key_dim):
                 index = head * key_dim + channel

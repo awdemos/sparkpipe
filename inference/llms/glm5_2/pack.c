@@ -9,7 +9,6 @@
 //
 // WHAT THE OTHER 8,000 LINES WERE. Measured before deleting: 2,701 lines of MTP
 // setup, 1,674 of layer buffer and scratch allocation, 1,620 of KV cache layout,
-// 794 of drafter setup, and 137 of binding for b12x and w8lut, both of which are
 // deleted. The KV layout is cache/cache.h now, the scratch is arithmetic over
 // config.h, and the drafter placement is ring/sideband.h's tap plan.
 //

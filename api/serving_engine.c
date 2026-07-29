@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
-static uint32_t SparkGlm52ServingNormalizeFlags(
+static uint32_t SparkServingNormalizeFlags(
     uint32_t flags)
 {
     if (flags == 0u)
@@ -14,7 +14,7 @@ static uint32_t SparkGlm52ServingNormalizeFlags(
     return flags;
 }
 
-static uint32_t SparkGlm52ServingNormalizeOutputTokenBudget(
+static uint32_t SparkServingNormalizeOutputTokenBudget(
     uint32_t output_token_budget)
 {
     if (output_token_budget == 0u)
@@ -24,7 +24,7 @@ static uint32_t SparkGlm52ServingNormalizeOutputTokenBudget(
     return output_token_budget;
 }
 
-static uint32_t SparkGlm52ServingNormalizeMaxContextTokens(
+static uint32_t SparkServingNormalizeMaxContextTokens(
     uint32_t max_context_tokens)
 {
     if (max_context_tokens == 0u)
@@ -34,7 +34,7 @@ static uint32_t SparkGlm52ServingNormalizeMaxContextTokens(
     return max_context_tokens;
 }
 
-static uint64_t SparkGlm52ServingNormalizeRequestIdBase(
+static uint64_t SparkServingNormalizeRequestIdBase(
     uint64_t request_id_base)
 {
     if (request_id_base == 0u)
@@ -44,14 +44,14 @@ static uint64_t SparkGlm52ServingNormalizeRequestIdBase(
     return request_id_base;
 }
 
-static uint32_t SparkGlm52ServingEventRingSafetyMargin(void)
+static uint32_t SparkServingEventRingSafetyMargin(void)
 {
     return (SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT *
             SPARK_SERVING_MAX_DECODE_TOKENS_PER_LANE) +
         SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT + 8u;
 }
 
-static uint32_t SparkGlm52ServingEventRingFreeCount(
+static uint32_t SparkServingEventRingFreeCount(
     const SparkServingEngine *engine)
 {
     if (engine == 0 || engine->event_ring_capacity < engine->event_count)
@@ -61,7 +61,7 @@ static uint32_t SparkGlm52ServingEventRingFreeCount(
     return engine->event_ring_capacity - engine->event_count;
 }
 
-static uint32_t SparkGlm52ServingRuntimeContractIsProduction(
+static uint32_t SparkServingRuntimeContractIsProduction(
     uint32_t runtime_contract_flags)
 {
     if ((runtime_contract_flags &
@@ -74,7 +74,7 @@ static uint32_t SparkGlm52ServingRuntimeContractIsProduction(
         SPARK_SERVING_RUNTIME_CONTRACT_PRODUCTION_REQUIRED_FLAGS;
 }
 
-static uint32_t SparkGlm52ServingRuntimeContractMatchesRequestApi(
+static uint32_t SparkServingRuntimeContractMatchesRequestApi(
     const SparkRequestApi *request_api,
     uint32_t runtime_contract_flags)
 {
@@ -108,7 +108,7 @@ static uint32_t SparkGlm52ServingRuntimeContractMatchesRequestApi(
     return 1u;
 }
 
-static SparkStatus SparkGlm52ServingValidateConfiguration(
+static SparkStatus SparkServingValidateConfiguration(
     const SparkServingEngineConfiguration *configuration)
 {
     uint32_t flags;
@@ -121,14 +121,14 @@ static SparkStatus SparkGlm52ServingValidateConfiguration(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    flags = SparkGlm52ServingNormalizeFlags(configuration->flags);
+    flags = SparkServingNormalizeFlags(configuration->flags);
     if ((flags & ~SPARK_SERVING_ENGINE_KNOWN_FLAGS) != 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if ((flags &
             SPARK_SERVING_ENGINE_FLAG_REQUIRE_PRODUCTION_RUNTIME_CONTRACT) != 0u &&
-        !SparkGlm52ServingRuntimeContractIsProduction(
+        !SparkServingRuntimeContractIsProduction(
             configuration->runtime_contract_flags))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -142,7 +142,7 @@ static SparkStatus SparkGlm52ServingValidateConfiguration(
         configuration->request_records == 0 ||
         configuration->request_record_capacity == 0u ||
         configuration->event_ring == 0 ||
-        configuration->event_ring_capacity <= SparkGlm52ServingEventRingSafetyMargin() ||
+        configuration->event_ring_capacity <= SparkServingEventRingSafetyMargin() ||
         configuration->host_prefill_token_ids == 0 ||
         configuration->host_prefill_token_stride == 0u ||
         configuration->host_prefill_lane_capacity == 0u ||
@@ -171,7 +171,7 @@ static SparkStatus SparkGlm52ServingValidateConfiguration(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (!SparkGlm52ServingRuntimeContractMatchesRequestApi(
+    if (!SparkServingRuntimeContractMatchesRequestApi(
             configuration->request_api,
             configuration->runtime_contract_flags))
     {
@@ -186,7 +186,7 @@ static SparkStatus SparkGlm52ServingValidateConfiguration(
     return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52ServingInitializeRequestRecord(
+static void SparkServingInitializeRequestRecord(
     SparkServingRequestRecord *record,
     uint32_t *token_storage,
     uint32_t token_capacity)
@@ -201,7 +201,7 @@ static void SparkGlm52ServingInitializeRequestRecord(
     record->token_capacity = token_capacity;
 }
 
-static uint32_t SparkGlm52ServingHashHandle(
+static uint32_t SparkServingHashHandle(
     SparkServingRequestHandle request_handle)
 {
     uint64_t hash;
@@ -213,7 +213,7 @@ static uint32_t SparkGlm52ServingHashHandle(
     return (uint32_t)(hash % SPARK_SERVING_RECORD_HASH_SLOTS);
 }
 
-static uint32_t SparkGlm52ServingRecordIndex(
+static uint32_t SparkServingRecordIndex(
     const SparkServingEngine *engine,
     const SparkServingRequestRecord *record)
 {
@@ -236,25 +236,25 @@ static uint32_t SparkGlm52ServingRecordIndex(
     return (uint32_t)record_index;
 }
 
-static void SparkGlm52ServingInsertRecordHash(
+static void SparkServingInsertRecordHash(
     SparkServingEngine *engine,
     SparkServingRequestRecord *record)
 {
     uint32_t record_index;
     uint32_t hash_slot;
 
-    record_index = SparkGlm52ServingRecordIndex(engine, record);
+    record_index = SparkServingRecordIndex(engine, record);
     if (record_index == SPARK_SERVING_NO_RECORD_SLOT ||
         record->request_handle == SPARK_REQUEST_API_INVALID_HANDLE)
     {
         return;
     }
-    hash_slot = SparkGlm52ServingHashHandle(record->request_handle);
+    hash_slot = SparkServingHashHandle(record->request_handle);
     record->handle_hash_next = engine->request_handle_hash_heads[hash_slot];
     engine->request_handle_hash_heads[hash_slot] = record_index;
 }
 
-static void SparkGlm52ServingRemoveRecordHash(
+static void SparkServingRemoveRecordHash(
     SparkServingEngine *engine,
     SparkServingRequestRecord *record)
 {
@@ -263,13 +263,13 @@ static void SparkGlm52ServingRemoveRecordHash(
     uint32_t current_index;
     uint32_t previous_index;
 
-    record_index = SparkGlm52ServingRecordIndex(engine, record);
+    record_index = SparkServingRecordIndex(engine, record);
     if (record_index == SPARK_SERVING_NO_RECORD_SLOT ||
         record->request_handle == SPARK_REQUEST_API_INVALID_HANDLE)
     {
         return;
     }
-    hash_slot = SparkGlm52ServingHashHandle(record->request_handle);
+    hash_slot = SparkServingHashHandle(record->request_handle);
     current_index = engine->request_handle_hash_heads[hash_slot];
     previous_index = SPARK_SERVING_NO_RECORD_SLOT;
     while (current_index != SPARK_SERVING_NO_RECORD_SLOT)
@@ -295,7 +295,7 @@ static void SparkGlm52ServingRemoveRecordHash(
     }
 }
 
-static void SparkGlm52ServingInitializeEvent(
+static void SparkServingInitializeEvent(
     SparkServingEvent *event)
 {
     memset(event, 0, sizeof(*event));
@@ -303,7 +303,7 @@ static void SparkGlm52ServingInitializeEvent(
     event->descriptor_bytes = SPARK_SERVING_EVENT_DESCRIPTOR_BYTES;
 }
 
-static void SparkGlm52ServingRefreshStats(
+static void SparkServingRefreshStats(
     SparkServingEngine *engine)
 {
     SparkServingStats *stats;
@@ -420,7 +420,7 @@ SparkStatus SparkServingEngineInitialize(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkGlm52ServingValidateConfiguration(configuration);
+    status = SparkServingValidateConfiguration(configuration);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -429,17 +429,17 @@ SparkStatus SparkServingEngineInitialize(
     memset(engine, 0, sizeof(*engine));
     engine->abi_version = SPARK_SERVING_ENGINE_ABI_VERSION;
     engine->descriptor_bytes = SPARK_SERVING_ENGINE_DESCRIPTOR_BYTES;
-    engine->flags = SparkGlm52ServingNormalizeFlags(configuration->flags);
+    engine->flags = SparkServingNormalizeFlags(configuration->flags);
     engine->runtime_contract_flags = configuration->runtime_contract_flags;
     engine->default_thinking_token_budget =
         configuration->default_thinking_token_budget;
-    engine->default_output_token_budget = SparkGlm52ServingNormalizeOutputTokenBudget(
+    engine->default_output_token_budget = SparkServingNormalizeOutputTokenBudget(
         configuration->default_output_token_budget);
     engine->default_max_prefill_tokens_per_step =
         configuration->default_max_prefill_tokens_per_step;
-    engine->max_context_tokens = SparkGlm52ServingNormalizeMaxContextTokens(
+    engine->max_context_tokens = SparkServingNormalizeMaxContextTokens(
         configuration->max_context_tokens);
-    engine->next_generated_request_id = SparkGlm52ServingNormalizeRequestIdBase(
+    engine->next_generated_request_id = SparkServingNormalizeRequestIdBase(
         configuration->request_id_base);
     engine->request_api = configuration->request_api;
     engine->tokenizer = configuration->tokenizer;
@@ -500,7 +500,7 @@ SparkStatus SparkServingEngineInitialize(
                 (uint64_t)record_index * engine->request_token_stride];
             token_capacity = engine->request_token_stride;
         }
-        SparkGlm52ServingInitializeRequestRecord(
+        SparkServingInitializeRequestRecord(
             &engine->request_records[record_index],
             token_storage,
             token_capacity);
@@ -514,13 +514,13 @@ SparkStatus SparkServingEngineInitialize(
          record_index < engine->event_ring_capacity;
          ++record_index)
     {
-        SparkGlm52ServingInitializeEvent(&engine->event_ring[record_index]);
+        SparkServingInitializeEvent(&engine->event_ring[record_index]);
     }
-    SparkGlm52ServingRefreshStats(engine);
+    SparkServingRefreshStats(engine);
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingValidateEngine(
+static SparkStatus SparkServingValidateEngine(
     SparkServingEngine *engine)
 {
     if (engine == 0 ||
@@ -538,7 +538,7 @@ static SparkStatus SparkGlm52ServingValidateEngine(
     return SPARK_STATUS_OK;
 }
 
-static SparkServingRequestRecord *SparkGlm52ServingFindFreeRecord(
+static SparkServingRequestRecord *SparkServingFindFreeRecord(
     SparkServingEngine *engine)
 {
     if (engine == 0 ||
@@ -555,7 +555,7 @@ static SparkServingRequestRecord *SparkGlm52ServingFindFreeRecord(
     return &engine->request_records[engine->free_record_head];
 }
 
-static SparkStatus SparkGlm52ServingEnsureRecordTokenCapacity(
+static SparkStatus SparkServingEnsureRecordTokenCapacity(
     SparkServingEngine *engine,
     SparkServingRequestRecord *record,
     uint32_t required_token_capacity)
@@ -606,7 +606,7 @@ static SparkStatus SparkGlm52ServingEnsureRecordTokenCapacity(
     return SPARK_STATUS_OK;
 }
 
-static SparkServingRequestRecord *SparkGlm52ServingFindRecordByHandle(
+static SparkServingRequestRecord *SparkServingFindRecordByHandle(
     SparkServingEngine *engine,
     SparkServingRequestHandle request_handle)
 {
@@ -617,7 +617,7 @@ static SparkServingRequestRecord *SparkGlm52ServingFindRecordByHandle(
     {
         return 0;
     }
-    hash_slot = SparkGlm52ServingHashHandle(request_handle);
+    hash_slot = SparkServingHashHandle(request_handle);
     record_index = engine->request_handle_hash_heads[hash_slot];
     while (record_index != SPARK_SERVING_NO_RECORD_SLOT &&
            record_index < engine->request_record_capacity)
@@ -635,7 +635,7 @@ static SparkServingRequestRecord *SparkGlm52ServingFindRecordByHandle(
     return 0;
 }
 
-static SparkServingRequestRecord *SparkGlm52ServingFindRecordByRequestId(
+static SparkServingRequestRecord *SparkServingFindRecordByRequestId(
     SparkServingEngine *engine,
     uint64_t request_id)
 {
@@ -656,7 +656,7 @@ static SparkServingRequestRecord *SparkGlm52ServingFindRecordByRequestId(
     return 0;
 }
 
-static uint32_t SparkGlm52ServingTokenIsStopToken(
+static uint32_t SparkServingTokenIsStopToken(
     const SparkServingEngine *engine,
     uint32_t token_id)
 {
@@ -674,7 +674,7 @@ static uint32_t SparkGlm52ServingTokenIsStopToken(
     return 0u;
 }
 
-static SparkStatus SparkGlm52ServingPushEvent(
+static SparkStatus SparkServingPushEvent(
     SparkServingEngine *engine,
     const SparkServingEvent *event)
 {
@@ -701,7 +701,7 @@ static SparkStatus SparkGlm52ServingPushEvent(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingPushSimpleEvent(
+static SparkStatus SparkServingPushSimpleEvent(
     SparkServingEngine *engine,
     uint32_t event_kind,
     uint32_t status,
@@ -709,7 +709,7 @@ static SparkStatus SparkGlm52ServingPushSimpleEvent(
 {
     SparkServingEvent event;
 
-    SparkGlm52ServingInitializeEvent(&event);
+    SparkServingInitializeEvent(&event);
     event.kind = event_kind;
     event.status = status;
     if (record != 0)
@@ -719,10 +719,10 @@ static SparkStatus SparkGlm52ServingPushSimpleEvent(
         event.request_handle = record->request_handle;
         event.prompt_token_count = record->prompt_token_count;
     }
-    return SparkGlm52ServingPushEvent(engine, &event);
+    return SparkServingPushEvent(engine, &event);
 }
 
-static void SparkGlm52ServingFailDispatchRequests(
+static void SparkServingFailDispatchRequests(
     SparkServingEngine *engine,
     const SparkRequestApiDispatch *dispatch,
     SparkStatus failure_status)
@@ -740,7 +740,7 @@ static void SparkGlm52ServingFailDispatchRequests(
     {
         SparkServingRequestRecord *record;
 
-        record = SparkGlm52ServingFindRecordByHandle(
+        record = SparkServingFindRecordByHandle(
             engine,
             dispatch->request_handles[lane_index]);
         if (record == 0 ||
@@ -750,7 +750,7 @@ static void SparkGlm52ServingFailDispatchRequests(
             continue;
         }
         record->state = SPARK_SERVING_REQUEST_RECORD_STATE_CANCELLED;
-        (void)SparkGlm52ServingPushSimpleEvent(
+        (void)SparkServingPushSimpleEvent(
             engine,
             SPARK_SERVING_EVENT_KIND_REQUEST_CANCELLED,
             (uint32_t)failure_status,
@@ -758,7 +758,7 @@ static void SparkGlm52ServingFailDispatchRequests(
     }
 }
 
-static SparkStatus SparkGlm52ServingApplyContextBudget(
+static SparkStatus SparkServingApplyContextBudget(
     SparkServingEngine *engine,
     uint32_t prompt_token_count,
     uint32_t requested_thinking_token_budget,
@@ -823,7 +823,7 @@ static SparkStatus SparkGlm52ServingApplyContextBudget(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingResolveSubmittedSequence(
+static SparkStatus SparkServingResolveSubmittedSequence(
     SparkRequestApi *request_api,
     SparkRequestApiHandle request_handle,
     uint64_t request_id,
@@ -853,7 +853,7 @@ static SparkStatus SparkGlm52ServingResolveSubmittedSequence(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingSubmitPreparedRecord(
+static SparkStatus SparkServingSubmitPreparedRecord(
     SparkServingEngine *engine,
     SparkServingRequestRecord *record,
     uint32_t request_flags,
@@ -893,7 +893,7 @@ static SparkStatus SparkGlm52ServingSubmitPreparedRecord(
     {
         return status;
     }
-    status = SparkGlm52ServingResolveSubmittedSequence(
+    status = SparkServingResolveSubmittedSequence(
         engine->request_api,
         request_handle,
         request_id,
@@ -909,7 +909,7 @@ static SparkStatus SparkGlm52ServingSubmitPreparedRecord(
         return status;
     }
 
-    record_index = SparkGlm52ServingRecordIndex(engine, record);
+    record_index = SparkServingRecordIndex(engine, record);
     if (record_index == SPARK_SERVING_NO_RECORD_SLOT ||
         engine->free_record_head != record_index ||
         record->state != SPARK_SERVING_REQUEST_RECORD_STATE_FREE)
@@ -932,7 +932,7 @@ static SparkStatus SparkGlm52ServingSubmitPreparedRecord(
     record->request_id = request_id;
     record->sequence_id = sequence_id;
     record->request_handle = request_handle;
-    SparkGlm52ServingInsertRecordHash(engine, record);
+    SparkServingInsertRecordHash(engine, record);
     engine->stats.submitted_request_count += 1u;
     engine->stats.accepted_request_count += 1u;
 
@@ -950,12 +950,12 @@ static SparkStatus SparkGlm52ServingSubmitPreparedRecord(
         result->request_handle = request_handle;
     }
 
-    status = SparkGlm52ServingPushSimpleEvent(
+    status = SparkServingPushSimpleEvent(
         engine,
         SPARK_SERVING_EVENT_KIND_REQUEST_ACCEPTED,
         SPARK_STATUS_OK,
         record);
-    SparkGlm52ServingRefreshStats(engine);
+    SparkServingRefreshStats(engine);
     return status;
 }
 
@@ -972,7 +972,7 @@ SparkStatus SparkServingEngineSubmitTokenIds(
     uint64_t request_id;
     SparkStatus status;
 
-    status = SparkGlm52ServingValidateEngine(engine);
+    status = SparkServingValidateEngine(engine);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -987,12 +987,12 @@ SparkStatus SparkServingEngineSubmitTokenIds(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    record = SparkGlm52ServingFindFreeRecord(engine);
+    record = SparkServingFindFreeRecord(engine);
     if (record == 0)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    status = SparkGlm52ServingApplyContextBudget(
+    status = SparkServingApplyContextBudget(
         engine,
         request->token_count,
         request->thinking_token_budget,
@@ -1009,7 +1009,7 @@ SparkStatus SparkServingEngineSubmitTokenIds(
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    status = SparkGlm52ServingEnsureRecordTokenCapacity(
+    status = SparkServingEnsureRecordTokenCapacity(
         engine,
         record,
         (uint32_t)required_token_capacity);
@@ -1026,7 +1026,7 @@ SparkStatus SparkServingEngineSubmitTokenIds(
     request_id = request->request_id != 0u
         ? request->request_id
         : engine->next_generated_request_id++;
-    return SparkGlm52ServingSubmitPreparedRecord(
+    return SparkServingSubmitPreparedRecord(
         engine,
         record,
         request->flags,
@@ -1054,7 +1054,7 @@ SparkStatus SparkServingEngineSubmitText(
     uint64_t request_id;
     SparkStatus status;
 
-    status = SparkGlm52ServingValidateEngine(engine);
+    status = SparkServingValidateEngine(engine);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1085,7 +1085,7 @@ SparkStatus SparkServingEngineSubmitText(
         text_bytes = request->text_bytes;
     }
 
-    record = SparkGlm52ServingFindFreeRecord(engine);
+    record = SparkServingFindFreeRecord(engine);
     if (record == 0)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -1108,7 +1108,7 @@ SparkStatus SparkServingEngineSubmitText(
     {
         required_prompt_token_capacity =
             encoding.token_count + encoding.overflow_token_count;
-        status = SparkGlm52ServingEnsureRecordTokenCapacity(
+        status = SparkServingEnsureRecordTokenCapacity(
             engine,
             record,
             required_prompt_token_capacity);
@@ -1140,7 +1140,7 @@ SparkStatus SparkServingEngineSubmitText(
         return status;
     }
 
-    status = SparkGlm52ServingApplyContextBudget(
+    status = SparkServingApplyContextBudget(
         engine,
         encoding.token_count,
         request->thinking_token_budget,
@@ -1157,7 +1157,7 @@ SparkStatus SparkServingEngineSubmitText(
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    status = SparkGlm52ServingEnsureRecordTokenCapacity(
+    status = SparkServingEnsureRecordTokenCapacity(
         engine,
         record,
         (uint32_t)required_token_capacity);
@@ -1170,7 +1170,7 @@ SparkStatus SparkServingEngineSubmitText(
     request_id = request->request_id != 0u
         ? request->request_id
         : engine->next_generated_request_id++;
-    return SparkGlm52ServingSubmitPreparedRecord(
+    return SparkServingSubmitPreparedRecord(
         engine,
         record,
         request->flags,
@@ -1183,7 +1183,7 @@ SparkStatus SparkServingEngineSubmitText(
         result);
 }
 
-static SparkStatus SparkGlm52ServingBuildPrefillDispatch(
+static SparkStatus SparkServingBuildPrefillDispatch(
     SparkServingEngine *engine,
     const SparkRequestApiDispatch *dispatch,
     uint32_t step_index,
@@ -1251,7 +1251,7 @@ static SparkStatus SparkGlm52ServingBuildPrefillDispatch(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingPublishPrefillEvents(
+static SparkStatus SparkServingPublishPrefillEvents(
     SparkServingEngine *engine,
     const SparkPromptPipelinePrefillDispatch *prefill_dispatch)
 {
@@ -1265,7 +1265,7 @@ static SparkStatus SparkGlm52ServingPublishPrefillEvents(
         const SparkRequestApiPrefillDispatchLaneView *lane;
 
         lane = &prefill_dispatch->prefill_view->lanes[lane_index];
-        SparkGlm52ServingInitializeEvent(&event);
+        SparkServingInitializeEvent(&event);
         event.kind = SPARK_SERVING_EVENT_KIND_PREFILL_PROGRESS;
         event.status = SPARK_STATUS_OK;
         event.prompt_token_offset = lane->prompt_token_offset;
@@ -1275,7 +1275,7 @@ static SparkStatus SparkGlm52ServingPublishPrefillEvents(
         event.request_id = lane->request_id;
         event.sequence_id = lane->sequence_id;
         event.request_handle = lane->request_handle;
-        if (SparkGlm52ServingPushEvent(engine, &event) != SPARK_STATUS_OK)
+        if (SparkServingPushEvent(engine, &event) != SPARK_STATUS_OK)
         {
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         }
@@ -1283,7 +1283,7 @@ static SparkStatus SparkGlm52ServingPublishPrefillEvents(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingInvokePrefill(
+static SparkStatus SparkServingInvokePrefill(
     SparkServingEngine *engine,
     const SparkRequestApiDispatch *dispatch,
     uint32_t step_index)
@@ -1293,7 +1293,7 @@ static SparkStatus SparkGlm52ServingInvokePrefill(
     SparkPromptPipelinePrefillDispatch prefill_dispatch;
     SparkStatus status;
 
-    status = SparkGlm52ServingBuildPrefillDispatch(
+    status = SparkServingBuildPrefillDispatch(
         engine,
         dispatch,
         step_index,
@@ -1313,7 +1313,7 @@ static SparkStatus SparkGlm52ServingInvokePrefill(
         return status;
     }
 
-    if (SparkGlm52ServingPublishPrefillEvents(
+    if (SparkServingPublishPrefillEvents(
             engine,
             &prefill_dispatch) != SPARK_STATUS_OK)
     {
@@ -1341,7 +1341,7 @@ static SparkStatus SparkGlm52ServingInvokePrefill(
     return status;
 }
 
-static SparkStatus SparkGlm52ServingBuildDecodeDispatch(
+static SparkStatus SparkServingBuildDecodeDispatch(
     SparkServingEngine *engine,
     const SparkRequestApiDispatch *dispatch,
     SparkKvBlockTableView *block_table_view,
@@ -1392,7 +1392,7 @@ static SparkStatus SparkGlm52ServingBuildDecodeDispatch(
         SparkServingRequestRecord *record;
         uint32_t input_token_index;
 
-        record = SparkGlm52ServingFindRecordByHandle(
+        record = SparkServingFindRecordByHandle(
             engine,
             dispatch->request_handles[lane_index]);
         if (record == 0 ||
@@ -1425,7 +1425,7 @@ static SparkStatus SparkGlm52ServingBuildDecodeDispatch(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingValidateDecodeResult(
+static SparkStatus SparkServingValidateDecodeResult(
     const SparkRequestApiDispatch *dispatch,
     const SparkServingDecodeResult *decode_result)
 {
@@ -1501,7 +1501,7 @@ static SparkStatus SparkGlm52ServingValidateDecodeResult(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingResolveMtpDecode(
+static SparkStatus SparkServingResolveMtpDecode(
     SparkRequestApiDispatch *dispatch,
     const SparkServingDecodeResult *decode_result)
 {
@@ -1526,7 +1526,7 @@ static SparkStatus SparkGlm52ServingResolveMtpDecode(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingCaptureMtpDraftTokens(
+static SparkStatus SparkServingCaptureMtpDraftTokens(
     const SparkRequestApiDispatch *dispatch,
     SparkServingDecodeResult *decode_result,
     uint32_t *draft_token_ids,
@@ -1630,7 +1630,7 @@ static SparkStatus SparkGlm52ServingCaptureMtpDraftTokens(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingClampSpeculativeVerifyDecodeResult(
+static SparkStatus SparkServingClampSpeculativeVerifyDecodeResult(
     const SparkRequestApiDispatch *dispatch,
     SparkServingDecodeResult *decode_result)
 {
@@ -1665,7 +1665,7 @@ static SparkStatus SparkGlm52ServingClampSpeculativeVerifyDecodeResult(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingResolveSpeculativeDecode(
+static SparkStatus SparkServingResolveSpeculativeDecode(
     SparkServingEngine *engine,
     SparkRequestApiDispatch *dispatch,
     const SparkServingDecodeResult *decode_result)
@@ -1716,7 +1716,7 @@ static SparkStatus SparkGlm52ServingResolveSpeculativeDecode(
         verifier_token_count);
 }
 
-static SparkStatus SparkGlm52ServingPublishDecodeEvents(
+static SparkStatus SparkServingPublishDecodeEvents(
     SparkServingEngine *engine,
     const SparkRequestApiDispatch *dispatch,
     const SparkServingDecodeResult *decode_result,
@@ -1735,7 +1735,7 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
         uint32_t lane_finish;
         SparkServingRequestRecord *record;
 
-        record = SparkGlm52ServingFindRecordByHandle(
+        record = SparkServingFindRecordByHandle(
             engine,
             dispatch->request_handles[lane_index]);
         if (record == 0)
@@ -1747,7 +1747,7 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
         lane_token_count = decode_result->token_counts[lane_index];
         for (token_index = 0u; token_index < lane_token_count; ++token_index)
         {
-            if (SparkGlm52ServingTokenIsStopToken(
+            if (SparkServingTokenIsStopToken(
                     engine,
                     decode_result->token_ids[lane_index][token_index]))
             {
@@ -1778,7 +1778,7 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
             {
                 continue;
             }
-            SparkGlm52ServingInitializeEvent(&event);
+            SparkServingInitializeEvent(&event);
             event.kind = SPARK_SERVING_EVENT_KIND_TOKEN;
             event.status = SPARK_STATUS_OK;
             event.token_id = token_id;
@@ -1790,7 +1790,7 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
             event.request_id = record->request_id;
             event.sequence_id = record->sequence_id;
             event.request_handle = record->request_handle;
-            if (SparkGlm52ServingPushEvent(engine, &event) != SPARK_STATUS_OK)
+            if (SparkServingPushEvent(engine, &event) != SPARK_STATUS_OK)
             {
                 return SPARK_STATUS_CAPACITY_EXCEEDED;
             }
@@ -1808,7 +1808,7 @@ static SparkStatus SparkGlm52ServingPublishDecodeEvents(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingCompleteFinishedHandles(
+static SparkStatus SparkServingCompleteFinishedHandles(
     SparkServingEngine *engine,
     const SparkServingRequestHandle *finish_handles,
     uint32_t finish_handle_count)
@@ -1824,7 +1824,7 @@ static SparkStatus SparkGlm52ServingCompleteFinishedHandles(
         SparkStatus status;
 
         request_handle = finish_handles[finish_index];
-        record = SparkGlm52ServingFindRecordByHandle(engine, request_handle);
+        record = SparkServingFindRecordByHandle(engine, request_handle);
         if (record == 0)
         {
             continue;
@@ -1837,7 +1837,7 @@ static SparkStatus SparkGlm52ServingCompleteFinishedHandles(
             return status;
         }
         record->state = SPARK_SERVING_REQUEST_RECORD_STATE_COMPLETED;
-        status = SparkGlm52ServingPushSimpleEvent(
+        status = SparkServingPushSimpleEvent(
             engine,
             SPARK_SERVING_EVENT_KIND_REQUEST_COMPLETED,
             SPARK_STATUS_OK,
@@ -1858,7 +1858,7 @@ static SparkStatus SparkGlm52ServingCompleteFinishedHandles(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServingCompleteBudgetFinishedRequests(
+static SparkStatus SparkServingCompleteBudgetFinishedRequests(
     SparkServingEngine *engine,
     const SparkRequestApiDispatch *dispatch)
 {
@@ -1872,7 +1872,7 @@ static SparkStatus SparkGlm52ServingCompleteBudgetFinishedRequests(
         SparkServingRequestRecord *record;
         SparkStatus status;
 
-        record = SparkGlm52ServingFindRecordByHandle(
+        record = SparkServingFindRecordByHandle(
             engine,
             dispatch->request_handles[request_index]);
         if (record == 0)
@@ -1894,7 +1894,7 @@ static SparkStatus SparkGlm52ServingCompleteBudgetFinishedRequests(
         if (cache_state.state == SPARK_REQUEST_API_STATE_COMPLETED)
         {
             record->state = SPARK_SERVING_REQUEST_RECORD_STATE_COMPLETED;
-            status = SparkGlm52ServingPushSimpleEvent(
+            status = SparkServingPushSimpleEvent(
                 engine,
                 SPARK_SERVING_EVENT_KIND_REQUEST_COMPLETED,
                 SPARK_STATUS_OK,
@@ -1934,17 +1934,17 @@ SparkStatus SparkServingEngineCompleteDecodeDispatch(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkGlm52ServingValidateEngine(engine);
+    status = SparkServingValidateEngine(engine);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    status = SparkGlm52ServingValidateDecodeResult(dispatch, decode_result);
+    status = SparkServingValidateDecodeResult(dispatch, decode_result);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    status = SparkGlm52ServingResolveSpeculativeDecode(
+    status = SparkServingResolveSpeculativeDecode(
         engine,
         dispatch,
         decode_result);
@@ -1952,7 +1952,7 @@ SparkStatus SparkServingEngineCompleteDecodeDispatch(
     {
         return status;
     }
-    status = SparkGlm52ServingClampSpeculativeVerifyDecodeResult(
+    status = SparkServingClampSpeculativeVerifyDecodeResult(
         dispatch,
         decode_result);
     if (status != SPARK_STATUS_OK)
@@ -1960,7 +1960,7 @@ SparkStatus SparkServingEngineCompleteDecodeDispatch(
         return status;
     }
     mtp_draft_token_count = 0u;
-    status = SparkGlm52ServingCaptureMtpDraftTokens(
+    status = SparkServingCaptureMtpDraftTokens(
         dispatch,
         decode_result,
         mtp_draft_token_ids,
@@ -1970,12 +1970,12 @@ SparkStatus SparkServingEngineCompleteDecodeDispatch(
     {
         return status;
     }
-    status = SparkGlm52ServingResolveMtpDecode(dispatch, decode_result);
+    status = SparkServingResolveMtpDecode(dispatch, decode_result);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    status = SparkGlm52ServingPublishDecodeEvents(
+    status = SparkServingPublishDecodeEvents(
         engine,
         dispatch,
         decode_result,
@@ -2025,7 +2025,7 @@ SparkStatus SparkServingEngineCompleteDecodeDispatch(
     {
         engine->stats.mtp_verify_dispatch_count += 1u;
     }
-    status = SparkGlm52ServingCompleteFinishedHandles(
+    status = SparkServingCompleteFinishedHandles(
         engine,
         finish_handles,
         finish_handle_count);
@@ -2033,10 +2033,10 @@ SparkStatus SparkServingEngineCompleteDecodeDispatch(
     {
         return status;
     }
-    return SparkGlm52ServingCompleteBudgetFinishedRequests(engine, dispatch);
+    return SparkServingCompleteBudgetFinishedRequests(engine, dispatch);
 }
 
-static SparkStatus SparkGlm52ServingInvokeDecode(
+static SparkStatus SparkServingInvokeDecode(
     SparkServingEngine *engine,
     SparkRequestApiDispatch *dispatch)
 {
@@ -2046,7 +2046,7 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
     SparkServingDecodeResult decode_result;
     SparkStatus status;
 
-    status = SparkGlm52ServingBuildDecodeDispatch(
+    status = SparkServingBuildDecodeDispatch(
         engine,
         dispatch,
         &block_table_view,
@@ -2076,7 +2076,7 @@ static SparkStatus SparkGlm52ServingInvokeDecode(
         &decode_result);
 }
 
-static SparkStatus SparkGlm52ServingCompletePrefillDispatch(
+static SparkStatus SparkServingCompletePrefillDispatch(
     SparkServingEngine *engine,
     const SparkRequestApiDispatch *dispatch)
 {
@@ -2093,7 +2093,7 @@ SparkStatus SparkServingEngineCompletePrefillDispatch(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    return SparkGlm52ServingCompletePrefillDispatch(engine, dispatch);
+    return SparkServingCompletePrefillDispatch(engine, dispatch);
 }
 
 SparkStatus SparkServingEnginePump(
@@ -2107,7 +2107,7 @@ SparkStatus SparkServingEnginePump(
     uint32_t step_limit;
     SparkStatus status;
 
-    status = SparkGlm52ServingValidateEngine(engine);
+    status = SparkServingValidateEngine(engine);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -2127,12 +2127,12 @@ SparkStatus SparkServingEnginePump(
         uint32_t dispatch_was_completed_by_decode_path;
         uint32_t dispatch_was_retried;
 
-        if (SparkGlm52ServingEventRingFreeCount(engine) <
-            SparkGlm52ServingEventRingSafetyMargin())
+        if (SparkServingEventRingFreeCount(engine) <
+            SparkServingEventRingSafetyMargin())
         {
             status = SPARK_STATUS_BUSY;
             engine->stats.last_status = status;
-            SparkGlm52ServingRefreshStats(engine);
+            SparkServingRefreshStats(engine);
             if (stats != 0)
             {
                 *stats = engine->stats;
@@ -2148,7 +2148,7 @@ SparkStatus SparkServingEnginePump(
             if (accepted_pending_dispatch_count != 0u)
                 status = SPARK_STATUS_PENDING;
             engine->stats.last_status = status;
-            SparkGlm52ServingRefreshStats(engine);
+            SparkServingRefreshStats(engine);
             if (stats != 0)
             {
                 *stats = engine->stats;
@@ -2158,7 +2158,7 @@ SparkStatus SparkServingEnginePump(
         if (status != SPARK_STATUS_OK)
         {
             engine->stats.last_status = status;
-            SparkGlm52ServingRefreshStats(engine);
+            SparkServingRefreshStats(engine);
             if (stats != 0)
             {
                 *stats = engine->stats;
@@ -2169,7 +2169,7 @@ SparkStatus SparkServingEnginePump(
             dispatch.kind == SPARK_REQUEST_API_DISPATCH_KIND_NONE)
         {
             engine->stats.last_status = SPARK_STATUS_BUSY;
-            SparkGlm52ServingRefreshStats(engine);
+            SparkServingRefreshStats(engine);
             if (stats != 0)
             {
                 *stats = engine->stats;
@@ -2182,13 +2182,13 @@ SparkStatus SparkServingEnginePump(
         if (dispatch.kind == SPARK_REQUEST_API_DISPATCH_KIND_PREFILL ||
             dispatch.kind == SPARK_REQUEST_API_DISPATCH_KIND_PREFILL_BATCH)
         {
-            status = SparkGlm52ServingInvokePrefill(
+            status = SparkServingInvokePrefill(
                 engine,
                 &dispatch,
                 step_index);
             if (status == SPARK_STATUS_OK)
             {
-                status = SparkGlm52ServingCompletePrefillDispatch(
+                status = SparkServingCompletePrefillDispatch(
                     engine,
                     &dispatch);
                 if (status != SPARK_STATUS_OK)
@@ -2205,7 +2205,7 @@ SparkStatus SparkServingEnginePump(
             dispatch.kind ==
                 SPARK_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
         {
-            status = SparkGlm52ServingInvokeDecode(engine, &dispatch);
+            status = SparkServingInvokeDecode(engine, &dispatch);
             if (status == SPARK_STATUS_OK)
             {
                 dispatch_was_completed_by_decode_path = 1u;
@@ -2248,7 +2248,7 @@ SparkStatus SparkServingEnginePump(
                         SPARK_SERVING_PUMP_FLAG_STOP_AFTER_ONE_DISPATCH) != 0u)
                 {
                     engine->stats.last_status = SPARK_STATUS_PENDING;
-                    SparkGlm52ServingRefreshStats(engine);
+                    SparkServingRefreshStats(engine);
                     if (stats != 0)
                     {
                         *stats = engine->stats;
@@ -2263,7 +2263,7 @@ SparkStatus SparkServingEnginePump(
                  dispatch_was_retried != 0u))
             {
                 engine->stats.last_status = status;
-                SparkGlm52ServingRefreshStats(engine);
+                SparkServingRefreshStats(engine);
                 if (stats != 0)
                 {
                     *stats = engine->stats;
@@ -2276,13 +2276,13 @@ SparkStatus SparkServingEnginePump(
                 (void)SparkRequestApiCancelDispatch(
                     engine->request_api,
                     &dispatch);
-                SparkGlm52ServingFailDispatchRequests(
+                SparkServingFailDispatchRequests(
                     engine,
                     &dispatch,
                     status);
             }
             engine->stats.last_status = status;
-            SparkGlm52ServingRefreshStats(engine);
+            SparkServingRefreshStats(engine);
             if (stats != 0)
             {
                 *stats = engine->stats;
@@ -2293,7 +2293,7 @@ SparkStatus SparkServingEnginePump(
         if ((pump_flags & SPARK_SERVING_PUMP_FLAG_STOP_AFTER_ONE_DISPATCH) != 0u)
         {
             engine->stats.last_status = SPARK_STATUS_OK;
-            SparkGlm52ServingRefreshStats(engine);
+            SparkServingRefreshStats(engine);
             if (stats != 0)
             {
                 *stats = engine->stats;
@@ -2306,7 +2306,7 @@ SparkStatus SparkServingEnginePump(
         ? SPARK_STATUS_PENDING
         : SPARK_STATUS_OK;
     engine->stats.last_status = status;
-    SparkGlm52ServingRefreshStats(engine);
+    SparkServingRefreshStats(engine);
     if (stats != 0)
     {
         *stats = engine->stats;
@@ -2320,7 +2320,7 @@ SparkStatus SparkServingEnginePopEvent(
 {
     SparkStatus status;
 
-    status = SparkGlm52ServingValidateEngine(engine);
+    status = SparkServingValidateEngine(engine);
     if (status != SPARK_STATUS_OK || event_out == 0)
     {
         return status == SPARK_STATUS_OK ? SPARK_STATUS_INVALID_ARGUMENT : status;
@@ -2331,14 +2331,14 @@ SparkStatus SparkServingEnginePopEvent(
     }
 
     *event_out = engine->event_ring[engine->event_read_index];
-    SparkGlm52ServingInitializeEvent(&engine->event_ring[engine->event_read_index]);
+    SparkServingInitializeEvent(&engine->event_ring[engine->event_read_index]);
     engine->event_read_index += 1u;
     if (engine->event_read_index == engine->event_ring_capacity)
     {
         engine->event_read_index = 0u;
     }
     engine->event_count -= 1u;
-    SparkGlm52ServingRefreshStats(engine);
+    SparkServingRefreshStats(engine);
     return SPARK_STATUS_OK;
 }
 
@@ -2348,12 +2348,12 @@ SparkStatus SparkServingEngineGetStats(
 {
     SparkStatus status;
 
-    status = SparkGlm52ServingValidateEngine(engine);
+    status = SparkServingValidateEngine(engine);
     if (status != SPARK_STATUS_OK || stats_out == 0)
     {
         return status == SPARK_STATUS_OK ? SPARK_STATUS_INVALID_ARGUMENT : status;
     }
-    SparkGlm52ServingRefreshStats(engine);
+    SparkServingRefreshStats(engine);
     *stats_out = engine->stats;
     return SPARK_STATUS_OK;
 }
@@ -2365,12 +2365,12 @@ SparkStatus SparkServingEngineCancelRequest(
     SparkServingRequestRecord *record;
     SparkStatus status;
 
-    status = SparkGlm52ServingValidateEngine(engine);
+    status = SparkServingValidateEngine(engine);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    record = SparkGlm52ServingFindRecordByHandle(engine, request_handle);
+    record = SparkServingFindRecordByHandle(engine, request_handle);
     if (record == 0)
     {
         return SPARK_STATUS_NOT_FOUND;
@@ -2381,12 +2381,12 @@ SparkStatus SparkServingEngineCancelRequest(
         return status;
     }
     record->state = SPARK_SERVING_REQUEST_RECORD_STATE_CANCELLED;
-    status = SparkGlm52ServingPushSimpleEvent(
+    status = SparkServingPushSimpleEvent(
         engine,
         SPARK_SERVING_EVENT_KIND_REQUEST_CANCELLED,
         SPARK_STATUS_OK,
         record);
-    SparkGlm52ServingRefreshStats(engine);
+    SparkServingRefreshStats(engine);
     return status;
 }
 
@@ -2398,7 +2398,7 @@ SparkStatus SparkServingEngineFailRequestByRequestId(
     SparkServingRequestRecord *record;
     SparkStatus status;
 
-    status = SparkGlm52ServingValidateEngine(engine);
+    status = SparkServingValidateEngine(engine);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -2407,7 +2407,7 @@ SparkStatus SparkServingEngineFailRequestByRequestId(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    record = SparkGlm52ServingFindRecordByRequestId(engine,request_id);
+    record = SparkServingFindRecordByRequestId(engine,request_id);
     if (record == 0)
     {
         return SPARK_STATUS_NOT_FOUND;
@@ -2421,12 +2421,12 @@ SparkStatus SparkServingEngineFailRequestByRequestId(
         engine->request_api,
         record->request_handle);
     record->state = SPARK_SERVING_REQUEST_RECORD_STATE_CANCELLED;
-    status = SparkGlm52ServingPushSimpleEvent(
+    status = SparkServingPushSimpleEvent(
         engine,
         SPARK_SERVING_EVENT_KIND_REQUEST_CANCELLED,
         (uint32_t)failure_status,
         record);
-    SparkGlm52ServingRefreshStats(engine);
+    SparkServingRefreshStats(engine);
     return status;
 }
 
@@ -2440,12 +2440,12 @@ SparkStatus SparkServingEngineReleaseCompletedRequest(
     uint32_t token_capacity;
     SparkStatus status;
 
-    status = SparkGlm52ServingValidateEngine(engine);
+    status = SparkServingValidateEngine(engine);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    record = SparkGlm52ServingFindRecordByHandle(engine, request_handle);
+    record = SparkServingFindRecordByHandle(engine, request_handle);
     if (record == 0)
     {
         return SPARK_STATUS_NOT_FOUND;
@@ -2476,7 +2476,7 @@ SparkStatus SparkServingEngineReleaseCompletedRequest(
     }
     token_ids = record->token_ids;
     token_capacity = record->token_capacity;
-    record_index = SparkGlm52ServingRecordIndex(engine, record);
+    record_index = SparkServingRecordIndex(engine, record);
     if (record_index == SPARK_SERVING_NO_RECORD_SLOT)
     {
         return SPARK_STATUS_INTERNAL_ERROR;
@@ -2488,13 +2488,13 @@ SparkStatus SparkServingEngineReleaseCompletedRequest(
         token_ids = 0;
         token_capacity = 0u;
     }
-    SparkGlm52ServingRemoveRecordHash(engine, record);
-    SparkGlm52ServingInitializeRequestRecord(
+    SparkServingRemoveRecordHash(engine, record);
+    SparkServingInitializeRequestRecord(
         record,
         token_ids,
         token_capacity);
     record->free_record_next = engine->free_record_head;
     engine->free_record_head = record_index;
-    SparkGlm52ServingRefreshStats(engine);
+    SparkServingRefreshStats(engine);
     return SPARK_STATUS_OK;
 }
