@@ -872,10 +872,6 @@ static uint32_t SparkRequestApiMinimumU32(
     uint32_t left,
     uint32_t right);
 
-static uint32_t SparkRequestApiRoundDownToMultiple(
-    uint32_t value,
-    uint32_t multiple);
-
 static uint32_t SparkRequestApiPrefillCachedBlocksAreResident(
     SparkRequestApi *api,
     const SparkRequestApiSlot *slot,
@@ -1248,12 +1244,12 @@ static uint32_t SparkGlm52RequestApiBuildBestPrefixFamilyChoice(
 
         maximum_family_prefix_token_count = reusable_prefix_token_count +
             scheduled_prompt_token_count;
-        maximum_family_prefix_token_count = SparkRequestApiRoundDownToMultiple(
+        maximum_family_prefix_token_count = SparkRoundDownToMultipleU32(
             SparkRequestApiMinimumU32(
                 maximum_family_prefix_token_count,
                 slot->prompt_token_count),
             block_token_count);
-        prefix_token_count = SparkRequestApiRoundDownToMultiple(
+        prefix_token_count = SparkRoundDownToMultipleU32(
             reusable_prefix_token_count + block_token_count,
             block_token_count);
         if (prefix_token_count <= reusable_prefix_token_count)
@@ -1639,16 +1635,6 @@ static uint32_t SparkRequestApiMaximumU32(
     return left > right ? left : right;
 }
 
-static uint32_t SparkRequestApiRoundDownToMultiple(
-    uint32_t value,
-    uint32_t multiple)
-{
-    if (multiple == 0u)
-    {
-        return 0u;
-    }
-    return value - (value % multiple);
-}
 
 static uint32_t SparkRequestApiCountCommonPrefixTokens(
     const SparkRequestApiSlot *left,
@@ -1695,7 +1681,7 @@ static uint32_t SparkRequestApiSharedCachePrefixTokenCount(
     common_prefix_token_count = SparkRequestApiCountCommonPrefixTokens(
         left,
         right);
-    common_prefix_token_count = SparkRequestApiRoundDownToMultiple(
+    common_prefix_token_count = SparkRoundDownToMultipleU32(
         common_prefix_token_count,
         block_token_count);
     if (common_prefix_token_count <= SparkRequestApiMaximumU32(

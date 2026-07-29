@@ -118,17 +118,6 @@ SparkStatus SparkTpShardComputeView(
 	return SparkTpShardSplitDimension(spec,shape,1u,1u,view_out);
 }
 
-static uint64_t SparkTpShardHashBytes(uint64_t hash,const void *data,uint32_t data_bytes)
-{
-	const uint8_t *bytes = (const uint8_t *)data;
-	uint32_t byte_index;
-	for (byte_index = 0u; byte_index < data_bytes; ++byte_index)
-	{
-		hash ^= bytes[byte_index];
-		hash *= 1099511628211u;
-	}
-	return hash;
-}
 
 uint64_t SparkTpShardGeometryHash(
 	const SparkGlm52StagePackTensorSpec *spec,
@@ -139,18 +128,18 @@ uint64_t SparkTpShardGeometryHash(
 	uint32_t dimension_index;
 	if (spec == 0 || shape == 0 || view == 0)
 		return 0u;
-	hash = SparkTpShardHashBytes(hash,spec->tensor_name,(uint32_t)strlen(spec->tensor_name));
-	hash = SparkTpShardHashBytes(hash,&spec->rank,sizeof(spec->rank));
+	hash = SparkHashBytes(hash,spec->tensor_name,(uint32_t)strlen(spec->tensor_name));
+	hash = SparkHashBytes(hash,&spec->rank,sizeof(spec->rank));
 	for (dimension_index = 0u; dimension_index < spec->rank; ++dimension_index)
-		hash = SparkTpShardHashBytes(hash,&spec->shape[dimension_index],sizeof(spec->shape[0]));
-	hash = SparkTpShardHashBytes(hash,&shape->tp_degree,sizeof(shape->tp_degree));
-	hash = SparkTpShardHashBytes(hash,&shape->tp_rank,sizeof(shape->tp_rank));
-	hash = SparkTpShardHashBytes(hash,&shape->pp_stage_count,sizeof(shape->pp_stage_count));
-	hash = SparkTpShardHashBytes(hash,&shape->pp_stage_index,sizeof(shape->pp_stage_index));
-	hash = SparkTpShardHashBytes(hash,&view->shard_class,sizeof(view->shard_class));
-	hash = SparkTpShardHashBytes(hash,&view->split_dimension,sizeof(view->split_dimension));
-	hash = SparkTpShardHashBytes(hash,&view->element_offset,sizeof(view->element_offset));
-	hash = SparkTpShardHashBytes(hash,&view->element_extent,sizeof(view->element_extent));
+		hash = SparkHashBytes(hash,&spec->shape[dimension_index],sizeof(spec->shape[0]));
+	hash = SparkHashBytes(hash,&shape->tp_degree,sizeof(shape->tp_degree));
+	hash = SparkHashBytes(hash,&shape->tp_rank,sizeof(shape->tp_rank));
+	hash = SparkHashBytes(hash,&shape->pp_stage_count,sizeof(shape->pp_stage_count));
+	hash = SparkHashBytes(hash,&shape->pp_stage_index,sizeof(shape->pp_stage_index));
+	hash = SparkHashBytes(hash,&view->shard_class,sizeof(view->shard_class));
+	hash = SparkHashBytes(hash,&view->split_dimension,sizeof(view->split_dimension));
+	hash = SparkHashBytes(hash,&view->element_offset,sizeof(view->element_offset));
+	hash = SparkHashBytes(hash,&view->element_extent,sizeof(view->element_extent));
 	return hash;
 }
 

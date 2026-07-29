@@ -699,4 +699,15 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasQuantizedProjection
         SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTensorCoreState(
             linear_plan);
 }
+
+static inline uint32_t SparkResidentDecodeStageEffectiveKvBlockTokenCount(
+    const SparkResidentDecodeStageNodeContext *node_context)
+{
+    if (node_context->kv_block_token_count != 0u)
+    {
+        return node_context->kv_block_token_count;
+    }
+    return SPARK_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
+}
+
 #endif

@@ -8,17 +8,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
-static uint64_t SparkGlm52ShapeHashBytes(uint64_t hash,const void *data,uint32_t data_bytes)
-{
-	const uint8_t *bytes = (const uint8_t *)data;
-	uint32_t byte_index;
-	for (byte_index = 0u; byte_index < data_bytes; ++byte_index)
-	{
-		hash ^= bytes[byte_index];
-		hash *= 1099511628211u;
-	}
-	return hash;
-}
 
 SparkStatus SparkGlm52ShapeDeriveNodeConfig(
 	const SparkTpShapeDescriptor *shape,
@@ -72,10 +61,10 @@ SparkStatus SparkGlm52ShapeDeriveNodeConfig(
 		inputs->kv_latent_plus_rope_dimension *
 		inputs->kv_bytes_per_element;
 	hash = 1469598103934665603u;
-	hash = SparkGlm52ShapeHashBytes(hash,shape,sizeof(*shape));
-	hash = SparkGlm52ShapeHashBytes(hash,geometry,sizeof(*geometry));
-	hash = SparkGlm52ShapeHashBytes(hash,inputs,sizeof(*inputs));
-	hash = SparkGlm52ShapeHashBytes(hash,config_out,
+	hash = SparkHashBytes(hash,shape,sizeof(*shape));
+	hash = SparkHashBytes(hash,geometry,sizeof(*geometry));
+	hash = SparkHashBytes(hash,inputs,sizeof(*inputs));
+	hash = SparkHashBytes(hash,config_out,
 		(uint32_t)((const uint8_t *)&config_out->configuration_hash -
 			(const uint8_t *)config_out));
 	config_out->configuration_hash = hash;

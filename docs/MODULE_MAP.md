@@ -121,3 +121,14 @@ externs (fail-closed until its execute path lands), a provider choice,
 and geometry at its wiring sites. The family conformance gate checks
 the first three; the linker enforces the fourth; the scheduler's
 initialize validation catches a forgotten fifth.
+
+### Instrument re-run after the multi-model surgery (2026-07-29, later)
+1,937 functions, 22 pairs at 0.85+, every one under seventeen lines.
+Four micro-shares extracted to the spark_status.h annex - the FNV hash,
+round-down-to-multiple beside its ceil-div siblings, and the two
+normalize clamps with their default values parameterized so policy
+stays at the call site while the mechanism is shared. The daemon
+attach-builder pair stays by the posture rule. The stage-mode helper
+that survived in both module.c and validation.c is a firmware-header
+inline now. The ceiling holds: no cluster anywhere reaches twenty
+lines.

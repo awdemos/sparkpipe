@@ -97,15 +97,6 @@ struct SparkResidentDecodeStageState
     SparkResidentDecodeStagePendingCompletion pending_completions[];
 };
 
-static uint32_t SparkResidentDecodeStageEffectiveKvBlockTokenCount(
-    const SparkResidentDecodeStageNodeContext *node_context)
-{
-    if (node_context->kv_block_token_count != 0u)
-    {
-        return node_context->kv_block_token_count;
-    }
-    return SPARK_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
-}
 
 static bool SparkResidentDecodeStageNodeContextRequiresRuntimeKvBlockTable(
     const SparkResidentDecodeStageNodeContext *node_context)

@@ -9,16 +9,6 @@ static uint32_t SparkPrefixCacheMinimumU32(
     return left < right ? left : right;
 }
 
-static uint32_t SparkPrefixCacheRoundDownToMultiple(
-    uint32_t value,
-    uint32_t multiple)
-{
-    if (multiple == 0u)
-    {
-        return 0u;
-    }
-    return value - (value % multiple);
-}
 
 static uint32_t SparkPrefixCacheMaximumReusableTokenCount(
     const SparkPrefixCache *cache,
@@ -28,7 +18,7 @@ static uint32_t SparkPrefixCacheMaximumReusableTokenCount(
     {
         return 0u;
     }
-    return SparkPrefixCacheRoundDownToMultiple(
+    return SparkRoundDownToMultipleU32(
         token_count - 1u,
         cache->block_token_count);
 }
@@ -41,7 +31,7 @@ static uint32_t SparkPrefixCacheFullBlockTokenCount(
     {
         return 0u;
     }
-    return SparkPrefixCacheRoundDownToMultiple(
+    return SparkRoundDownToMultipleU32(
         token_count,
         cache->block_token_count);
 }

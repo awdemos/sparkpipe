@@ -39,15 +39,6 @@ static uint32_t SparkLongContextNormalizeBlockTokenCount(
     return block_token_count;
 }
 
-static uint32_t SparkLongContextNormalizeMaxContextTokens(
-    uint32_t max_context_tokens)
-{
-    if (max_context_tokens == 0u)
-    {
-        return SPARK_LONG_CONTEXT_DEFAULT_MAX_CONTEXT_TOKENS;
-    }
-    return max_context_tokens;
-}
 
 static uint32_t SparkLongContextNormalizeRecentTokenCount(
     uint32_t recent_token_count)
@@ -123,7 +114,7 @@ static void SparkLongContextNormalizePolicyCopy(
             SPARK_LONG_CONTEXT_POLICY_MODE_BOUNDED_WINDOW;
     }
     normalized_policy->max_context_tokens =
-        SparkLongContextNormalizeMaxContextTokens(
+        SparkNormalizeMaxContextTokens(SPARK_LONG_CONTEXT_DEFAULT_MAX_CONTEXT_TOKENS, 
             normalized_policy->max_context_tokens);
     normalized_policy->selected_token_capacity =
         SparkLongContextNormalizeSelectedTokenCapacity(

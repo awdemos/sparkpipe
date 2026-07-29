@@ -188,15 +188,6 @@ static void SparkResidentDecodeStageReportValidationFailure(
         node_context->reserved_execution_flags);
 }
 
-static uint32_t SparkResidentDecodeStageEffectiveKvBlockTokenCount(
-    const SparkResidentDecodeStageNodeContext *node_context)
-{
-    if (node_context->kv_block_token_count != 0u)
-    {
-        return node_context->kv_block_token_count;
-    }
-    return SPARK_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
-}
 
 static bool SparkResidentDecodeStageModelQuantizationModeIsSupported(
     uint32_t model_quantization_mode)

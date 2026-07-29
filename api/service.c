@@ -23,15 +23,6 @@ static uint32_t SparkServiceNormalizePumpDispatchSteps(
     return default_pump_dispatch_steps;
 }
 
-static uint64_t SparkServiceNormalizeRequestIdBase(
-    uint64_t request_id_base)
-{
-    if (request_id_base == 0u)
-    {
-        return SPARK_SERVICE_DEFAULT_REQUEST_ID_BASE;
-    }
-    return request_id_base;
-}
 
 static void SparkServiceInitializeClientSession(
     SparkServiceClientSession *client_session)
@@ -823,7 +814,7 @@ SparkStatus SparkServiceInitialize(
     service->default_pump_dispatch_steps =
         SparkServiceNormalizePumpDispatchSteps(
             configuration->default_pump_dispatch_steps);
-    service->next_generated_request_id = SparkServiceNormalizeRequestIdBase(
+    service->next_generated_request_id = SparkNormalizeRequestIdBase(SPARK_SERVICE_DEFAULT_REQUEST_ID_BASE, 
         configuration->request_id_base);
     service->next_generated_client_id = 1u;
     service->serving_engine = configuration->serving_engine;
