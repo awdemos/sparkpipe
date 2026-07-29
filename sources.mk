@@ -65,7 +65,6 @@ SPARKPIPE_GLM52_SOURCES := \
     runtime/pack/stagepack.c \
     scheduler/long_context.c \
     scheduler/scheduler.c \
-    scheduler/speculation.c \
     scheduler/stage_plan.c \
     scheduler/work_control.c
 
