@@ -12,14 +12,20 @@ than no K3 output:
 - **fp32 checkpoint tensors read as bf16** (loader/pack tier): A_log,
   dt_bias, norms are fp32 in the checkpoint; the bind path must type
   them or refuse.
-- **KDA recurrent state stored bf16 in kernels** while the contract
-  (K3_KDA_STATE_ELEMENT_BYTES = 4) says f32. f32 is the correctness
-  baseline; bf16 remains a SEPARATE validated-later optimization.
-- **A_log[128] -> 96-head narrowing** absent: the checkpoint carries 128
+- ~~KDA state bf16~~ FIXED: both state kernels hold and store fp32,
+  the delta tile is dynamic shared (64 KB), harness pools resized. The
+  bf16-state OPTIMIZATION remains a separate validated-later line.
+- **A_log[128] -> 96-head narrowing**: contract constant
+  K3_KDA_A_LOG_SOURCE_HEADS landed with a static_assert; the loader
+  slice itself lands with bind. Original note: the checkpoint carries 128
   heads' worth; the authoritative slice must be explicit in the loader
   with a named constant, not implied.
-- **KDA-side query scaling** unverified (MLA's K3_MLA_QK_SCALE is wired;
-  the KDA path's q treatment must match the reference semantics).
+- ~~KDA query scaling~~ IDENTIFIED AND FIXED: the reference runs
+  use_qk_l2norm_in_kernel=True - q and k are L2-normalized in kernel.
+  Implemented in the delta kernel AND the replay fold (which must
+  replay the same arithmetic or states diverge byte-wise - the fold
+  gate caught exactly that, 99 bytes). K3_KDA_QK_L2NORM is a
+  compile-time contract now.
 
 ## K3 path to first token
 

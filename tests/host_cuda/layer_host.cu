@@ -22,6 +22,7 @@ LmHostDim3 blockIdx, threadIdx, blockDim, gridDim;
 
 uint32_t lm_topk_shared[LM_HOST_SHARED_BYTES / sizeof(uint32_t)];
 float lm_norm_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
+float state_s[LM_HOST_SHARED_BYTES / sizeof(float)];
 float lm_fused_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 float lm_quant_shared[LM_HOST_SHARED_BYTES / sizeof(float)];
 

@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include "inference/llms/kimi_k3/engine.h"
 
+float state_s[65536u / sizeof(float)];
+
 #define SLOTS 2u
 #define BUDGET 4u
 #define STEP_MAX 16u
