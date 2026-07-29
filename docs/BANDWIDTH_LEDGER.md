@@ -101,3 +101,30 @@ for this ledger.
 A new kernel or path lands with its line in this ledger: what it reads,
 what it writes, and why that is the minimum. The gates prove correctness;
 this file is where "correct but slow" goes to be seen.
+
+
+## Topology study: TP_g x PP_s on the two-plane fabric (model, 2026-07-29)
+
+CORRECTION recorded: an earlier decode estimate amortized the expert sweep
+over B under PP; the correct law is m = B/s - a stage's weight pass serves
+only its microbatch. Large-B PP numbers shrink accordingly; TP's standing
+improves everywhere once the switched fabric's ~20 us AR floor replaces the
+ring's 870 us.
+
+Laws: (1) touched experts/layer = 384*(1-(47/48)^m), m = B/s;
+(2) AR cost per layer-pass = 2 ARs * (20 us + 2*m*14.3KB*(g-1)/g / 12.5 GB/s)
+    over the switch; TP2 pairs ride adjacent ring links instead;
+(3) per-node weight residency invariant in (g,s); only time moves.
+
+Decode agg tok/s ideal/sustained (MBU .55, net .8, 2K ctx; 256K col fp8 KV):
+  TP16     : B1 50/30  B8 111/63  B64 202/115  B1024 1028/649  B64@256K 174/98
+  TP8xPP2  : B1 28/16  B8  99/56  B64 161/90   B1024  894/520  B64@256K 142/79
+  TP4xPP4  : B1 15/9   B8  82/46  B64 138/76   B1024  581/324  B64@256K 124/68
+  TP2xPP8  : B1  8/4   B8  61/34  B64 121/67   B1024  344/190  B64@256K 110/61
+  PP16     : B1  4/2   B8  32/18  B64 106/58   B1024  223/123  B64@256K  97/54
+Prefill agg tok/s (2048 chunks): PP16 11.8K > TP2xPP8 10.2K > TP4xPP4 6.1K
+  > TP8xPP2 3.7K > TP16 2.1K. Decode monotone toward TP (switch flattened
+  the AR tax); prefill monotone toward PP (chunk ARs are bandwidth).
+DSpark: ~x1.9 effective at full sweep (verify rows ride paid weight reads);
+  ~x1.0 at B=1 on top-8-of-384. Measured column replaces all of this at
+  bring-up.

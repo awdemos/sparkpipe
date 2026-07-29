@@ -60,6 +60,12 @@ leaves silently.
   is bus-model-derived; BANDWIDTH_LEDGER.md gets the measured column at
   bring-up and the README numbers get replaced, not defended.
 
+- **Topology-aware dispatch.** The README's per-deployment TP_g x PP_s
+  selection and chunked-prefill interleaving across placements: scheduler
+  work; today's placement is fixed at launch.
+- **bf16 KDA state.** Halves the 434 MB/sequence slab and doubles ceiling
+  batch; blocked on delta-rule numerical-stability validation.
+
 ## Structure (README tree vs reality)
 
 - **`speculation/` does not exist yet** — DSpark lives in
