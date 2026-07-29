@@ -18,8 +18,8 @@ bits exist before rank12 finishes, so cross-cycle overlap is impossible).
 
 ## Host groundwork already merged
 
-`include/sparkpipe/spark_glm52_mtp_tree.h` is now table-driven:
-`SparkGlm52MtpTreeNode {parent_row, depth, candidate_index, child_row_base,
+`include/sparkpipe/spark_mtp_tree.h` is now table-driven:
+`SparkMtpTreeNode {parent_row, depth, candidate_index, child_row_base,
 child_count}` with a generic resolver, proven bit-identical to the legacy
 depth-3 ladder by `tests/test_glm52_mtp_tree.c` (exhaustive 3^11 token
 assignments plus 200k randomized plus helper-by-helper equivalence).

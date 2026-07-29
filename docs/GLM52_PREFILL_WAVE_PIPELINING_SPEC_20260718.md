@@ -47,7 +47,7 @@ completion tolerance:
    computed <= dispatched <= prompt_token_count; equal when idle.
 2. `SchedulePrefill` eligibility: a slot in RUNNING_PREFILL with
    dispatched < prompt_token_count remains prefill-schedulable, capped by
-   `SPARK_GLM52_REQUEST_API_PREFILL_INFLIGHT_WAVE_LIMIT` (12: one below the
+   `SPARK_REQUEST_API_PREFILL_INFLIGHT_WAVE_LIMIT` (12: one below the
    ring depth so decode injection is never fully starved). The admit request
    passes dispatched as the offset source; on accept, dispatched +=
    scheduled_prompt_token_count.
@@ -113,7 +113,7 @@ in-flight chain advances the next wave's offset. Correctness rests on
 ring order: wave N writes its KV at every rank before wave N+1 arrives
 there. The serving engine gained the async contract the backend needs:
 prefill_function may return PENDING and
-SparkGlm52ServingEngineCompletePrefillDispatch delivers completion.
+SparkServingEngineCompletePrefillDispatch delivers completion.
 
 Prefill inflight is bounded by queue_depth_per_spark minus the decode
 interleave reserve, so ring depth is the pipelining knob: waves in

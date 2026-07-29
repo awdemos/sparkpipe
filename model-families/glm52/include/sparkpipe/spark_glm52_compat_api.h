@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 
-#include "sparkpipe/spark_glm52_service.h"
+#include "sparkpipe/spark_service.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
@@ -24,8 +24,8 @@ typedef struct SparkGlm52CompatTextRequest
     uint32_t output_token_budget;
     uint32_t max_prefill_tokens_per_step;
     uint32_t tokenizer_encode_flags;
-    SparkGlm52ServiceClientId client_id;
-    SparkGlm52ServiceRequestId client_request_id;
+    SparkServiceClientId client_id;
+    SparkServiceRequestId client_request_id;
     uint64_t sequence_id;
     char *text;
     uint32_t text_capacity;
@@ -48,18 +48,18 @@ SparkStatus SparkGlm52CompatPrepareAnthropicJson(
     SparkGlm52CompatTextRequest *request);
 
 SparkStatus SparkGlm52CompatSubmitOpenAiJson(
-    SparkGlm52ServiceRuntime *service,
+    SparkServiceRuntime *service,
     const char *json_text,
     uint32_t json_bytes,
     SparkGlm52CompatTextRequest *request,
-    SparkGlm52ServiceSubmitResult *result);
+    SparkServiceSubmitResult *result);
 
 SparkStatus SparkGlm52CompatSubmitAnthropicJson(
-    SparkGlm52ServiceRuntime *service,
+    SparkServiceRuntime *service,
     const char *json_text,
     uint32_t json_bytes,
     SparkGlm52CompatTextRequest *request,
-    SparkGlm52ServiceSubmitResult *result);
+    SparkServiceSubmitResult *result);
 
 #ifdef __cplusplus
 }

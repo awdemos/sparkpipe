@@ -98,7 +98,7 @@ struct Qwen36LayerBuffers
 	const uint32_t *context_length;
 	const uint32_t *positions;
 	const uint32_t *dense_row_offset;
-	const uint32_t *dense_tile_prefix;
+	uint32_t *dense_tile_prefix;
 	float *head_candidate_score;
 	uint32_t *head_candidate_token;
 	uint32_t *output_token;
@@ -210,10 +210,13 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 	// 1D grid convolves only the first 256 of 2048 channels and leaves the rest
 	// carrying the projection's raw output. Found by tests/test_kernel_launches.py
 	// on its first run, in a call I wrote.
-	LM_LAUNCH((LmCausalConvDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_CONV_KERNEL,LM_CONV_SWISH>), dim3(rows,(QWEN36_GDN_QKV_DIM + QWEN36_LAYER_THREADS - 1u) / QWEN36_LAYER_THREADS), QWEN36_LAYER_THREADS, 0, stream,
-		b->gdn_conv_window,b->gdn_state_index,b->key_bf16, (const uint16_t *)b->gdn_conv_weight,b->key_bf16,QWEN36_GDN_QK_DIM,rows);
-	LM_LAUNCH((LmDeltaRuleDecodeKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>), dim3(rows,QWEN36_GDN_KEY_HEADS), QWEN36_LAYER_THREADS, 0, stream,
-		b->gdn_state_pool,QWEN36_GDN_STATE_BYTES,b->gdn_state_index,b->query_bf16,b->key_bf16,b->value_bf16, b->gdn_forget_gate,b->gdn_write_gate,b->attention_out_bf16, QWEN36_GDN_KEY_HEADS,QWEN36_GDN_VALUE_PER_KEY,rows);
+	// Identity runs: a null prefix means row i is sequence i, which is what
+	// decode is. Qwen's driver has not brought this model to prefill yet; when
+	// it does, the prefix is the only argument that changes.
+	LM_LAUNCH((LmCausalConvKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_CONV_KERNEL,LM_CONV_SWISH>), dim3(rows,(QWEN36_GDN_QKV_DIM + QWEN36_LAYER_THREADS - 1u) / QWEN36_LAYER_THREADS), QWEN36_LAYER_THREADS, 0, stream,
+		b->gdn_conv_window,b->gdn_state_index,0,0,b->key_bf16, (const uint16_t *)b->gdn_conv_weight,b->key_bf16,QWEN36_GDN_QK_DIM,rows,1u);
+	LM_LAUNCH((LmDeltaRuleKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>), dim3(rows,QWEN36_GDN_KEY_HEADS), QWEN36_LAYER_THREADS, 0, stream,
+		b->gdn_state_pool,QWEN36_GDN_STATE_BYTES,b->gdn_state_index,0,0,b->query_bf16,b->key_bf16,b->value_bf16, b->gdn_forget_gate,b->gdn_write_gate,b->attention_out_bf16, QWEN36_GDN_KEY_HEADS,QWEN36_GDN_VALUE_PER_KEY,rows,1u);
 	Qwen36Quantise<Format>(b,b->attention_out_bf16,rows,QWEN36_GDN_V_DIM,stream);
 	gemm.scale_a = (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)b->gdn_out_scale;

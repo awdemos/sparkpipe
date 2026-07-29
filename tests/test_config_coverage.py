@@ -44,7 +44,7 @@ EXEMPT = {
                           "on the MLA path, not by reading the flag",
     "K3_KDA_FULL_RANK_GATE": "same. K3 replaced Kimi Linear's low-rank output "
                              "gate with a full-rank projection, which is what "
-                             "kda_gate_weight at hidden x heads*head_dim IS",
+                             "kda_gate is low-rank g_a/g_b, like the decay",
     "K3_ATTNRES_BLOCK_SIZE": "NOT IMPLEMENTED. AttnRes needs 9 hidden states "
                              "per token across the stage boundary; see "
                              "docs/MODEL_SUPPORT.md item 7",

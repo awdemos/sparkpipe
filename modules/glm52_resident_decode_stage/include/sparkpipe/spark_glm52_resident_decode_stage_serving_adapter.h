@@ -3,25 +3,25 @@
 #include <stdint.h>
 
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
-#include "sparkpipe/spark_glm52_serving_engine.h"
+#include "sparkpipe/spark_serving_engine.h"
 #include "sparkpipe/spark_status.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_ABI_VERSION 1u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_CONFIGURATION_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkGlm52ResidentDecodeStageServingAdapterConfiguration))
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_DESCRIPTOR_BYTES \
-    ((uint32_t)sizeof(SparkGlm52ResidentDecodeStageServingAdapter))
+#define SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_ABI_VERSION 1u
+#define SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_CONFIGURATION_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkResidentDecodeStageServingAdapterConfiguration))
+#define SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_DESCRIPTOR_BYTES \
+    ((uint32_t)sizeof(SparkResidentDecodeStageServingAdapter))
 
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_SYNCHRONIZE_AFTER_LAUNCH \
+#define SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_SYNCHRONIZE_AFTER_LAUNCH \
     0x00000001u
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_KNOWN_FLAGS \
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_SYNCHRONIZE_AFTER_LAUNCH
+#define SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_KNOWN_FLAGS \
+    SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_SYNCHRONIZE_AFTER_LAUNCH
 
-typedef struct SparkGlm52ResidentDecodeStageServingAdapterConfiguration
+typedef struct SparkResidentDecodeStageServingAdapterConfiguration
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -41,14 +41,14 @@ typedef struct SparkGlm52ResidentDecodeStageServingAdapterConfiguration
     uint32_t hidden_dimension;
     uint32_t final_token_stage;
     uint32_t reserved0;
-    const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan;
-    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts;
+    const SparkResidentDecodeStageStageSlicePlan *stage_slice_plan;
+    const SparkResidentDecodeStageNodeContext *const *layer_node_contexts;
     uint32_t layer_count;
     const void *embedding_weight_bf16;
     void *cuda_stream;
-} SparkGlm52ResidentDecodeStageServingAdapterConfiguration;
+} SparkResidentDecodeStageServingAdapterConfiguration;
 
-typedef struct SparkGlm52ResidentDecodeStageServingAdapter
+typedef struct SparkResidentDecodeStageServingAdapter
 {
     uint32_t abi_version;
     uint32_t descriptor_bytes;
@@ -70,8 +70,8 @@ typedef struct SparkGlm52ResidentDecodeStageServingAdapter
     uint32_t layer_count;
     uint32_t owns_cuda_stream;
     uint32_t reserved0;
-    const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan;
-    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts;
+    const SparkResidentDecodeStageStageSlicePlan *stage_slice_plan;
+    const SparkResidentDecodeStageNodeContext *const *layer_node_contexts;
     const void *embedding_weight_bf16;
     void *cuda_stream;
     uint32_t *host_lane_offsets;
@@ -93,23 +93,23 @@ typedef struct SparkGlm52ResidentDecodeStageServingAdapter
     uint32_t *device_prompt_token_counts;
     void *device_prompt_hidden_bf16;
     void *device_prompt_output_hidden_bf16;
-} SparkGlm52ResidentDecodeStageServingAdapter;
+} SparkResidentDecodeStageServingAdapter;
 
-SparkStatus SparkGlm52ResidentDecodeStageServingAdapterInitialize(
-    SparkGlm52ResidentDecodeStageServingAdapter *adapter,
-    const SparkGlm52ResidentDecodeStageServingAdapterConfiguration *configuration);
+SparkStatus SparkResidentDecodeStageServingAdapterInitialize(
+    SparkResidentDecodeStageServingAdapter *adapter,
+    const SparkResidentDecodeStageServingAdapterConfiguration *configuration);
 
-void SparkGlm52ResidentDecodeStageServingAdapterDestroy(
-    SparkGlm52ResidentDecodeStageServingAdapter *adapter);
+void SparkResidentDecodeStageServingAdapterDestroy(
+    SparkResidentDecodeStageServingAdapter *adapter);
 
-SparkStatus SparkGlm52ResidentDecodeStageServingAdapterPrefill(
+SparkStatus SparkResidentDecodeStageServingAdapterPrefill(
     void *context,
-    const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch);
+    const SparkPromptPipelinePrefillDispatch *prefill_dispatch);
 
-SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
+SparkStatus SparkResidentDecodeStageServingAdapterDecode(
     void *context,
-    const SparkGlm52ServingDecodeDispatch *decode_dispatch,
-    SparkGlm52ServingDecodeResult *decode_result);
+    const SparkServingDecodeDispatch *decode_dispatch,
+    SparkServingDecodeResult *decode_result);
 
 #ifdef __cplusplus
 }

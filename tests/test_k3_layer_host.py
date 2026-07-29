@@ -61,13 +61,22 @@ def main():
         print(f"  FAIL {destinations.count('hidden')} GEMMs write hidden; "
               f"the routed branch and the shared branch must not share it")
         failures += 1
-    # every GEMM writes 0.125 * its index, so the output tells you what happened
+    # every GEMM writes 0.125 * its index, so the output tells you what
+    # happened. THE SUM NO LONGER LIVES IN HIDDEN: both module-output halves
+    # fold into the AttnRes partial in their own epilogues (the layer host
+    # binds no partial, so the accumulate is a no-op here and the slice gate
+    # owns the summed trajectory). Hidden must hold the routed result ALONE -
+    # a hidden that equals routed + shared would mean the deleted AddRows
+    # came back.
     hidden = float(values.get("hidden", 0.0))
     shared = float(values.get("shared_out", 0.0))
     routed_index = destinations.index("hidden") + 1
-    if abs(hidden - (0.125 * routed_index + shared)) > 1e-3:
-        print(f"  FAIL hidden is {hidden}, not routed ({0.125*routed_index}) "
-              f"plus shared ({shared}); the addition did not happen")
+    if abs(hidden - 0.125 * routed_index) > 1e-3:
+        print(f"  FAIL hidden is {hidden}, not the routed result "
+              f"({0.125*routed_index}) alone; the epilogue fusion regressed")
+        failures += 1
+    if shared == 0.0:
+        print("  FAIL the shared branch produced nothing")
         failures += 1
     grouped = [g for g in gemms if g["grouped"]]
     if len(grouped) != 2:

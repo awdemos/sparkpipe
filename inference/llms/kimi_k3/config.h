@@ -135,7 +135,7 @@
 // The shared experts are NOT in the latent space and take the pre-projection
 // hidden at intermediate moe_intermediate * num_shared = 3072 * 2 = 6144.
 //
-// KDA DOES NOT FIT LmDeltaRuleDecodeKernel AS IT STANDS. The projections:
+// KDA DOES NOT FIT LmDeltaRuleKernel AS IT STANDS. The projections:
 //
 //     q_proj, k_proj, v_proj   hidden -> heads * head_dim = 12288, each with its
 //                              OWN short convolution, each with a SiLU
@@ -154,7 +154,7 @@
 // this model's decay, and widening that argument is the first piece of K3 work
 // that changes a shared kernel rather than adding one.
 //
-// Three separate convolutions with SiLU, not one; LmCausalConvDecodeKernel has
+// Three separate convolutions with SiLU, not one; LmCausalConvKernel has
 // no activation. The final decay arithmetic combining g, A_log and dt_bias lives
 // in fla's fused_recurrent_kda and is NOT in the released modelling file, so it
 // is the one piece still unread.
@@ -271,9 +271,18 @@
 #define K3_KDA_CONV_WINDOW_BYTES \
 	(((2u * K3_KDA_HEADS * K3_KDA_KEY_DIM) + (K3_KDA_HEADS * K3_KDA_VALUE_DIM)) \
 		* K3_KDA_CONV_KERNEL * (K3_KV_BITS / 8u))
-#define K3_KDA_STATE_BYTES \
-	((K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * K3_KDA_STATE_ELEMENT_BYTES) \
-		+ K3_KDA_CONV_WINDOW_BYTES)
+// THREE NAMES, THREE USES, ONE SUM. The kernel addresses the outer-product
+// slot alone - the convolution windows are separate pools with their own
+// strides, because LmCausalConvKernel indexes them by channels * kernel
+// and an interleaved slot cannot be reached by base + index * stride. The SLOT
+// constant is what the delta rule and the replay fold are handed; the sum is
+// what a capacity plan budgets per sequence per layer.
+#define K3_KDA_STATE_SLOT_BYTES \
+	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * K3_KDA_STATE_ELEMENT_BYTES)
+#define K3_KDA_STATE_BYTES (K3_KDA_STATE_SLOT_BYTES + K3_KDA_CONV_WINDOW_BYTES)
+// Layer counts by kind, so per-layer pool arithmetic has one source. 69 + 24.
+#define K3_KDA_LAYER_COUNT (K3_LAYERS - K3_MLA_LAYER_COUNT)
+#define K3_MLA_LAYER_COUNT ((K3_LAYERS / 4u) + 1u)
 
 // 1-INDEXED IN THE CONFIG, 0-INDEXED HERE. full_attn_layers is
 // {4,8,...,92} plus 93; subtract one and that is {3,7,...,91} plus 92. So the

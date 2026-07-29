@@ -172,7 +172,7 @@ GLM52_ENABLE_CUDA_GRAPH_REPLAY=1
 The validator and CUDA path then use the exact PP13 stage-slice plan:
 
 ```text
-SparkGlm52ResidentDecodeStageBackendSubmitStageSlice
+SparkResidentDecodeStageBackendSubmitStageSlice
 SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSlice
 built-in exact PP13 AOT dispatch table
 ```

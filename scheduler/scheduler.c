@@ -1,13 +1,13 @@
-#include "sparkpipe/spark_glm52_scheduler.h"
+#include "sparkpipe/spark_scheduler.h"
 
 #include <string.h>
 
 static uint32_t SparkGlm52SchedulerNormalizeQuantizationMode(
     uint32_t quantization_mode)
 {
-    if (quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_AUTO)
+    if (quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_AUTO)
     {
-        return SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
+        return SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
     }
     return quantization_mode;
 }
@@ -15,10 +15,10 @@ static uint32_t SparkGlm52SchedulerNormalizeQuantizationMode(
 static uint32_t SparkGlm52SchedulerQuantizationModeIsSupported(
     uint32_t quantization_mode)
 {
-    return quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_AUTO ||
-        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
-        quantization_mode == SPARK_GLM52_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
+    return quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_AUTO ||
+        quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
+        quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
+        quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT;
 }
 
 static uint32_t SparkGlm52SchedulerMinimumU32(
@@ -36,7 +36,7 @@ static uint32_t SparkGlm52SchedulerMaximumU32(
 }
 
 static uint32_t SparkGlm52SchedulerRequestIsDecode(
-    const SparkGlm52SchedulerRequest *request);
+    const SparkSchedulerRequest *request);
 
 static uint32_t SparkGlm52SchedulerRoundDownToMultiple(
     uint32_t value,
@@ -61,9 +61,9 @@ static uint32_t SparkGlm52SchedulerCeilDivideU32(
 }
 
 static uint64_t SparkGlm52SchedulerStageCostNs(
-    const uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t final_stage_extra_cost_ns,
-    const SparkGlm52StagePlanStage *stage)
+    const SparkStagePlanStage *stage)
 {
     uint64_t stage_cost_ns;
     uint32_t layer_index;
@@ -77,7 +77,7 @@ static uint64_t SparkGlm52SchedulerStageCostNs(
     {
         stage_cost_ns += layer_cost_ns[layer_index];
     }
-    if ((stage->flags & SPARK_GLM52_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN) != 0u)
+    if ((stage->flags & SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN) != 0u)
     {
         stage_cost_ns += final_stage_extra_cost_ns;
     }
@@ -89,7 +89,7 @@ static uint32_t SparkGlm52SchedulerNormalizeQueueDepthPerSpark(
 {
     if (queue_depth_per_spark == 0u)
     {
-        return SPARK_GLM52_SCHEDULER_DEFAULT_QUEUE_DEPTH_PER_SPARK;
+        return SPARK_SCHEDULER_DEFAULT_QUEUE_DEPTH_PER_SPARK;
     }
     return queue_depth_per_spark;
 }
@@ -99,7 +99,7 @@ static uint32_t SparkGlm52SchedulerNormalizeMeasuredProfileId(
 {
     if (measured_profile_id == 0u)
     {
-        return SPARK_GLM52_STAGE_PLAN_MEASURED_PROFILE_20260701;
+        return SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701;
     }
     return measured_profile_id;
 }
@@ -113,7 +113,7 @@ static uint32_t SparkGlm52SchedulerNormalizeMaxPrefillTokensPerStep(
     if (max_prefill_tokens_per_step == 0u)
     {
         normalized_token_count =
-            SPARK_GLM52_SCHEDULER_DEFAULT_MAX_PREFILL_TOKENS_PER_STEP;
+            SPARK_SCHEDULER_DEFAULT_MAX_PREFILL_TOKENS_PER_STEP;
     }
     else
     {
@@ -130,49 +130,49 @@ static uint32_t SparkGlm52SchedulerConfigurationFlagsAreValid(
     uint32_t configuration_flags)
 {
     return (configuration_flags &
-        ~SPARK_GLM52_SCHEDULER_CONFIGURATION_KNOWN_FLAGS) == 0u;
+        ~SPARK_SCHEDULER_CONFIGURATION_KNOWN_FLAGS) == 0u;
 }
 
 static uint32_t SparkGlm52SchedulerPromptCacheIsEnabled(
-    const SparkGlm52Scheduler *scheduler)
+    const SparkScheduler *scheduler)
 {
     return (scheduler->configuration_flags &
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_PREFIX_CACHE) != 0u;
+        SPARK_SCHEDULER_CONFIGURATION_FLAG_PREFIX_CACHE) != 0u;
 }
 
 static uint32_t SparkGlm52SchedulerCrossSequencePrefixReuseIsEnabled(
-    const SparkGlm52Scheduler *scheduler)
+    const SparkScheduler *scheduler)
 {
     return (scheduler->configuration_flags &
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE) != 0u;
+        SPARK_SCHEDULER_CONFIGURATION_FLAG_CROSS_SEQUENCE_PREFIX_REUSE) != 0u;
 }
 
 static uint32_t SparkGlm52SchedulerChunkedPrefillIsEnabled(
-    const SparkGlm52Scheduler *scheduler)
+    const SparkScheduler *scheduler)
 {
     return (scheduler->configuration_flags &
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CHUNKED_PREFILL) != 0u;
+        SPARK_SCHEDULER_CONFIGURATION_FLAG_CHUNKED_PREFILL) != 0u;
 }
 
 static uint32_t SparkGlm52SchedulerCudaGraphPaddingIsEnabled(
-    const SparkGlm52Scheduler *scheduler)
+    const SparkScheduler *scheduler)
 {
     return (scheduler->configuration_flags &
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_CUDAGRAPH_PADDING) != 0u;
+        SPARK_SCHEDULER_CONFIGURATION_FLAG_CUDAGRAPH_PADDING) != 0u;
 }
 
 static uint32_t SparkGlm52SchedulerMeasuredDecodeBucketSelectionIsEnabled(
-    const SparkGlm52Scheduler *scheduler)
+    const SparkScheduler *scheduler)
 {
     return (scheduler->configuration_flags &
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_MEASURED_DECODE_BUCKET_SELECTION) != 0u;
+        SPARK_SCHEDULER_CONFIGURATION_FLAG_MEASURED_DECODE_BUCKET_SELECTION) != 0u;
 }
 
 static SparkStatus SparkGlm52SchedulerBuildMeasuredPlanAndCosts(
-    const SparkGlm52Scheduler *scheduler,
+    const SparkScheduler *scheduler,
     uint32_t batch_bucket,
-    SparkGlm52StagePlan *stage_plan,
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    SparkStagePlan *stage_plan,
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     SparkStatus status;
@@ -183,7 +183,7 @@ static SparkStatus SparkGlm52SchedulerBuildMeasuredPlanAndCosts(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    status = SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+    status = SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -195,7 +195,7 @@ static SparkStatus SparkGlm52SchedulerBuildMeasuredPlanAndCosts(
         return status;
     }
 
-    return SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
+    return SparkStagePlanLoadMeasuredCostProfileForQuantization(
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -204,8 +204,8 @@ static SparkStatus SparkGlm52SchedulerBuildMeasuredPlanAndCosts(
 }
 
 static uint64_t SparkGlm52SchedulerPlanCriticalPathNs(
-    const SparkGlm52StagePlan *stage_plan,
-    const uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT],
+    const SparkStagePlan *stage_plan,
+    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t final_stage_extra_cost_ns,
     uint32_t prefill_block_count)
 {
@@ -237,13 +237,13 @@ static uint64_t SparkGlm52SchedulerPlanCriticalPathNs(
 }
 
 static SparkStatus SparkGlm52SchedulerSelectDecodeBatchBucket(
-    const SparkGlm52Scheduler *scheduler,
+    const SparkScheduler *scheduler,
     uint32_t active_sequence_count,
     uint32_t *batch_bucket_out,
     uint32_t *minimal_batch_bucket_out)
 {
     static const uint32_t candidate_buckets[] = {
-        SPARK_GLM52_STAGE_PLAN_BATCH_BUCKETS
+        SPARK_STAGE_PLAN_BATCH_BUCKETS
     };
     uint64_t best_critical_path_ns;
     uint32_t best_bucket;
@@ -256,7 +256,7 @@ static SparkStatus SparkGlm52SchedulerSelectDecodeBatchBucket(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    status = SparkGlm52StagePlanSelectBatchBucket(
+    status = SparkStagePlanSelectBatchBucket(
         active_sequence_count,
         &minimal_bucket);
     if (status != SPARK_STATUS_OK)
@@ -266,7 +266,7 @@ static SparkStatus SparkGlm52SchedulerSelectDecodeBatchBucket(
 
     *minimal_batch_bucket_out = minimal_bucket;
     if (!SparkGlm52SchedulerMeasuredDecodeBucketSelectionIsEnabled(scheduler) ||
-        active_sequence_count <= SPARK_GLM52_STAGE_PLAN_BUCKET_B16)
+        active_sequence_count <= SPARK_STAGE_PLAN_BUCKET_B16)
     {
         *batch_bucket_out = minimal_bucket;
         return SPARK_STATUS_OK;
@@ -278,8 +278,8 @@ static SparkStatus SparkGlm52SchedulerSelectDecodeBatchBucket(
          candidate_index < (uint32_t)(sizeof(candidate_buckets) / sizeof(candidate_buckets[0]));
          ++candidate_index)
     {
-        SparkGlm52StagePlan candidate_stage_plan;
-        uint64_t candidate_layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT];
+        SparkStagePlan candidate_stage_plan;
+        uint64_t candidate_layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
         uint64_t candidate_final_stage_extra_cost_ns;
         uint64_t candidate_critical_path_ns;
         uint32_t candidate_bucket;
@@ -320,8 +320,8 @@ static SparkStatus SparkGlm52SchedulerSelectDecodeBatchBucket(
 }
 
 static SparkStatus SparkGlm52SchedulerSelectRequestBatchBucket(
-    const SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerRequest *request,
+    const SparkScheduler *scheduler,
+    const SparkSchedulerRequest *request,
     uint32_t *batch_bucket_out,
     uint32_t *minimal_batch_bucket_out)
 {
@@ -341,7 +341,7 @@ static SparkStatus SparkGlm52SchedulerSelectRequestBatchBucket(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    return SparkGlm52StagePlanSelectBatchBucket(
+    return SparkStagePlanSelectBatchBucket(
         request->active_sequence_count,
         batch_bucket_out) == SPARK_STATUS_OK
             ? ((*minimal_batch_bucket_out = *batch_bucket_out), SPARK_STATUS_OK)
@@ -349,14 +349,14 @@ static SparkStatus SparkGlm52SchedulerSelectRequestBatchBucket(
 }
 
 static uint32_t SparkGlm52SchedulerPrefillDecodeInterleaveIsEnabled(
-    const SparkGlm52Scheduler *scheduler)
+    const SparkScheduler *scheduler)
 {
     return (scheduler->configuration_flags &
-        SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_PREFILL_DECODE_INTERLEAVE) != 0u;
+        SPARK_SCHEDULER_CONFIGURATION_FLAG_PREFILL_DECODE_INTERLEAVE) != 0u;
 }
 
-void SparkGlm52SchedulerSetPrefillDemand(
-    SparkGlm52Scheduler *scheduler,
+void SparkSchedulerSetPrefillDemand(
+    SparkScheduler *scheduler,
     uint32_t prefill_demand)
 {
     if (scheduler == 0)
@@ -365,7 +365,7 @@ void SparkGlm52SchedulerSetPrefillDemand(
 }
 
 static uint32_t SparkGlm52SchedulerStageHasCapacity(
-    const SparkGlm52Scheduler *scheduler,
+    const SparkScheduler *scheduler,
     uint32_t spark_index,
     uint32_t request_is_prefill)
 {
@@ -395,7 +395,7 @@ static uint32_t SparkGlm52SchedulerStageHasCapacity(
 }
 
 static uint32_t SparkGlm52SchedulerDecodeBypassIsActive(
-    const SparkGlm52Scheduler *scheduler)
+    const SparkScheduler *scheduler)
 {
     uint32_t spark_index;
 
@@ -414,23 +414,23 @@ static uint32_t SparkGlm52SchedulerDecodeBypassIsActive(
 }
 
 static uint32_t SparkGlm52SchedulerRequestIsPrefill(
-    const SparkGlm52SchedulerRequest *request)
+    const SparkSchedulerRequest *request)
 {
-    return (request->flags & SPARK_GLM52_SCHEDULER_REQUEST_FLAG_PREFILL) != 0u;
+    return (request->flags & SPARK_SCHEDULER_REQUEST_FLAG_PREFILL) != 0u;
 }
 
 static uint32_t SparkGlm52SchedulerRequestIsDecode(
-    const SparkGlm52SchedulerRequest *request)
+    const SparkSchedulerRequest *request)
 {
-    return (request->flags & SPARK_GLM52_SCHEDULER_REQUEST_FLAG_DECODE) != 0u;
+    return (request->flags & SPARK_SCHEDULER_REQUEST_FLAG_DECODE) != 0u;
 }
 
 static SparkStatus SparkGlm52SchedulerLookupCachedPrefixTokenCount(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerRequest *request,
+    SparkScheduler *scheduler,
+    const SparkSchedulerRequest *request,
     uint32_t *cached_prefix_token_count_out)
 {
-    SparkGlm52PrefixCacheLookup lookup;
+    SparkPrefixCacheLookup lookup;
     SparkStatus status;
 
     if (cached_prefix_token_count_out == 0)
@@ -444,7 +444,7 @@ static SparkStatus SparkGlm52SchedulerLookupCachedPrefixTokenCount(
     {
         return SPARK_STATUS_OK;
     }
-    status = SparkGlm52PrefixCacheProbePrompt(
+    status = SparkPrefixCacheProbePrompt(
         scheduler->prefix_cache,
         request->sequence_id,
         request->prompt_token_ids,
@@ -459,22 +459,22 @@ static SparkStatus SparkGlm52SchedulerLookupCachedPrefixTokenCount(
 }
 
 static SparkStatus SparkGlm52SchedulerReservePrompt(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerRequest *request,
+    SparkScheduler *scheduler,
+    const SparkSchedulerRequest *request,
     uint32_t token_count,
-    SparkGlm52PrefixCacheReservation *reservation)
+    SparkPrefixCacheReservation *reservation)
 {
     if (SparkGlm52SchedulerCrossSequencePrefixReuseIsEnabled(scheduler) != 0u)
-        return SparkGlm52PrefixCacheReservePrompt(
+        return SparkPrefixCacheReservePrompt(
             scheduler->prefix_cache,request->sequence_id,
             request->prompt_token_ids,token_count,reservation);
-    return SparkGlm52PrefixCacheReserveSequencePrompt(
+    return SparkPrefixCacheReserveSequencePrompt(
         scheduler->prefix_cache,request->sequence_id,
         request->prompt_token_ids,token_count,reservation);
 }
 
 static uint32_t SparkGlm52SchedulerEffectiveComputedPromptTokenCount(
-    const SparkGlm52SchedulerRequest *request,
+    const SparkSchedulerRequest *request,
     uint32_t cached_prefix_token_count)
 {
     return SparkGlm52SchedulerMaximumU32(
@@ -483,8 +483,8 @@ static uint32_t SparkGlm52SchedulerEffectiveComputedPromptTokenCount(
 }
 
 static uint32_t SparkGlm52SchedulerRequestMaxPrefillTokensPerStep(
-    const SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerRequest *request)
+    const SparkScheduler *scheduler,
+    const SparkSchedulerRequest *request)
 {
     uint32_t max_prefill_tokens_per_step;
 
@@ -502,8 +502,8 @@ static uint32_t SparkGlm52SchedulerRequestMaxPrefillTokensPerStep(
 }
 
 static uint32_t SparkGlm52SchedulerScheduledPrefillTokenCount(
-    const SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerRequest *request,
+    const SparkScheduler *scheduler,
+    const SparkSchedulerRequest *request,
     uint32_t computed_prompt_token_count)
 {
     uint32_t remaining_prompt_token_count;
@@ -537,7 +537,7 @@ static uint32_t SparkGlm52SchedulerScheduledPrefillTokenCount(
 }
 
 static uint32_t SparkGlm52SchedulerPrefillBlockCount(
-    const SparkGlm52Scheduler *scheduler,
+    const SparkScheduler *scheduler,
     uint32_t prompt_token_count)
 {
     if (prompt_token_count == 0u)
@@ -550,8 +550,8 @@ static uint32_t SparkGlm52SchedulerPrefillBlockCount(
 }
 
 static uint32_t SparkGlm52SchedulerBuildDecisionFlags(
-    const SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerRequest *request,
+    const SparkScheduler *scheduler,
+    const SparkSchedulerRequest *request,
     uint32_t batch_bucket,
     uint32_t cached_prefix_token_count,
     uint32_t scheduled_prompt_token_count,
@@ -563,42 +563,42 @@ static uint32_t SparkGlm52SchedulerBuildDecisionFlags(
     decision_flags = 0u;
     if (SparkGlm52SchedulerRequestIsDecode(request))
     {
-        decision_flags |= SPARK_GLM52_SCHEDULER_DECISION_FLAG_DECODE_STEP;
+        decision_flags |= SPARK_SCHEDULER_DECISION_FLAG_DECODE_STEP;
         if (decode_bypass_active != 0u)
         {
             decision_flags |=
-                SPARK_GLM52_SCHEDULER_DECISION_FLAG_DECODE_BYPASS_PREFILL;
+                SPARK_SCHEDULER_DECISION_FLAG_DECODE_BYPASS_PREFILL;
         }
     }
     if (SparkGlm52SchedulerRequestIsPrefill(request))
     {
-        decision_flags |= SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_STEP;
+        decision_flags |= SPARK_SCHEDULER_DECISION_FLAG_PREFILL_STEP;
         if (SparkGlm52SchedulerPrefillDecodeInterleaveIsEnabled(scheduler) &&
             scheduler->queue_depth_per_spark > 1u)
         {
             decision_flags |=
-                SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_RESERVED_DECODE_SLOT;
+                SPARK_SCHEDULER_DECISION_FLAG_PREFILL_RESERVED_DECODE_SLOT;
         }
         if (remaining_prompt_token_count_after_step == 0u)
         {
             decision_flags |=
-                SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_FINAL_CHUNK;
+                SPARK_SCHEDULER_DECISION_FLAG_PREFILL_FINAL_CHUNK;
         }
         if (scheduled_prompt_token_count != 0u &&
             remaining_prompt_token_count_after_step != 0u)
         {
-            decision_flags |= SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_CHUNK;
+            decision_flags |= SPARK_SCHEDULER_DECISION_FLAG_PREFILL_CHUNK;
         }
         if (cached_prefix_token_count != 0u)
         {
             decision_flags |=
-                SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFIX_CACHE_USED;
+                SPARK_SCHEDULER_DECISION_FLAG_PREFIX_CACHE_USED;
         }
     }
     if (SparkGlm52SchedulerCudaGraphPaddingIsEnabled(scheduler) &&
         request->active_sequence_count < batch_bucket)
     {
-        decision_flags |= SPARK_GLM52_SCHEDULER_DECISION_FLAG_CUDAGRAPH_PADDING;
+        decision_flags |= SPARK_SCHEDULER_DECISION_FLAG_CUDAGRAPH_PADDING;
     }
     return decision_flags;
 }
@@ -609,54 +609,54 @@ static uint32_t SparkGlm52SchedulerBuildDispatchFlags(
     uint32_t dispatch_flags;
 
     dispatch_flags = 0u;
-    if ((decision_flags & SPARK_GLM52_SCHEDULER_DECISION_FLAG_DECODE_STEP) != 0u)
+    if ((decision_flags & SPARK_SCHEDULER_DECISION_FLAG_DECODE_STEP) != 0u)
     {
-        dispatch_flags |= SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_DECODE;
+        dispatch_flags |= SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_DECODE;
     }
-    if ((decision_flags & SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_STEP) != 0u)
+    if ((decision_flags & SPARK_SCHEDULER_DECISION_FLAG_PREFILL_STEP) != 0u)
     {
-        dispatch_flags |= SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_PREFILL;
+        dispatch_flags |= SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_PREFILL;
     }
-    if ((decision_flags & SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_CHUNK) != 0u)
+    if ((decision_flags & SPARK_SCHEDULER_DECISION_FLAG_PREFILL_CHUNK) != 0u)
     {
-        dispatch_flags |= SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_PREFILL_CHUNK;
-    }
-    if ((decision_flags &
-         SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_FINAL_CHUNK) != 0u)
-    {
-        dispatch_flags |=
-            SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_PREFILL_FINAL_CHUNK;
+        dispatch_flags |= SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_PREFILL_CHUNK;
     }
     if ((decision_flags &
-         SPARK_GLM52_SCHEDULER_DECISION_FLAG_CUDAGRAPH_PADDING) != 0u)
+         SPARK_SCHEDULER_DECISION_FLAG_PREFILL_FINAL_CHUNK) != 0u)
     {
         dispatch_flags |=
-            SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_CUDAGRAPH_PADDING;
+            SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_PREFILL_FINAL_CHUNK;
     }
     if ((decision_flags &
-         SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_RESERVED_DECODE_SLOT) != 0u)
+         SPARK_SCHEDULER_DECISION_FLAG_CUDAGRAPH_PADDING) != 0u)
     {
         dispatch_flags |=
-            SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_PREFILL_RESERVED_DECODE_SLOT;
+            SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_CUDAGRAPH_PADDING;
     }
     if ((decision_flags &
-         SPARK_GLM52_SCHEDULER_DECISION_FLAG_DECODE_BYPASS_PREFILL) != 0u)
+         SPARK_SCHEDULER_DECISION_FLAG_PREFILL_RESERVED_DECODE_SLOT) != 0u)
     {
         dispatch_flags |=
-            SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_DECODE_BYPASS_PREFILL;
+            SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_PREFILL_RESERVED_DECODE_SLOT;
     }
     if ((decision_flags &
-         SPARK_GLM52_SCHEDULER_DECISION_FLAG_MEASURED_DECODE_BUCKET) != 0u)
+         SPARK_SCHEDULER_DECISION_FLAG_DECODE_BYPASS_PREFILL) != 0u)
     {
         dispatch_flags |=
-            SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_MEASURED_DECODE_BUCKET;
+            SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_DECODE_BYPASS_PREFILL;
+    }
+    if ((decision_flags &
+         SPARK_SCHEDULER_DECISION_FLAG_MEASURED_DECODE_BUCKET) != 0u)
+    {
+        dispatch_flags |=
+            SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_MEASURED_DECODE_BUCKET;
     }
     return dispatch_flags;
 }
 
 static SparkStatus SparkGlm52SchedulerReject(
-    SparkGlm52Scheduler *scheduler,
-    SparkGlm52SchedulerDecision *decision,
+    SparkScheduler *scheduler,
+    SparkSchedulerDecision *decision,
     SparkStatus rejected_status)
 {
     if (decision != 0)
@@ -671,29 +671,29 @@ static SparkStatus SparkGlm52SchedulerReject(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52SchedulerValidateConfiguration(const SparkGlm52SchedulerConfiguration *configuration)
+static SparkStatus SparkGlm52SchedulerValidateConfiguration(const SparkSchedulerConfiguration *configuration)
 {
     if (configuration == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
-    if (configuration->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        configuration->descriptor_bytes != SPARK_GLM52_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES ||
-        configuration->spark_count != SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT ||
+    if (configuration->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        configuration->descriptor_bytes != SPARK_SCHEDULER_CONFIGURATION_DESCRIPTOR_BYTES ||
+        configuration->spark_count != SPARK_SCHEDULER_MAX_SPARK_COUNT ||
         configuration->reserved != 0u ||
         configuration->configuration_flags == 0u ||
         configuration->prefix_cache_block_tokens == 0u ||
         !SparkGlm52SchedulerQuantizationModeIsSupported(configuration->quantization_mode) ||
         !SparkGlm52SchedulerConfigurationFlagsAreValid(configuration->configuration_flags))
         return SPARK_STATUS_INVALID_ARGUMENT;
-    if ((configuration->configuration_flags & SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_PREFIX_CACHE) != 0u)
+    if ((configuration->configuration_flags & SPARK_SCHEDULER_CONFIGURATION_FLAG_PREFIX_CACHE) != 0u)
     {
         if (configuration->prefix_cache == 0 ||
-            configuration->prefix_cache->abi_version != SPARK_GLM52_PREFIX_CACHE_ABI_VERSION ||
-            configuration->prefix_cache->descriptor_bytes != SPARK_GLM52_PREFIX_CACHE_DESCRIPTOR_BYTES ||
+            configuration->prefix_cache->abi_version != SPARK_PREFIX_CACHE_ABI_VERSION ||
+            configuration->prefix_cache->descriptor_bytes != SPARK_PREFIX_CACHE_DESCRIPTOR_BYTES ||
             configuration->prefix_cache->block_token_count != configuration->prefix_cache_block_tokens ||
             configuration->prefix_cache->entries == 0 ||
             configuration->prefix_cache->sequence_bindings == 0)
             return SPARK_STATUS_INVALID_ARGUMENT;
-        if ((configuration->configuration_flags & SPARK_GLM52_SCHEDULER_CONFIGURATION_FLAG_KV_CACHE_REQUIRED) != 0u &&
+        if ((configuration->configuration_flags & SPARK_SCHEDULER_CONFIGURATION_FLAG_KV_CACHE_REQUIRED) != 0u &&
             configuration->prefix_cache->kv_cache_arena == 0)
             return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -701,8 +701,8 @@ static SparkStatus SparkGlm52SchedulerValidateConfiguration(const SparkGlm52Sche
 }
 
 static SparkStatus SparkGlm52SchedulerValidateRequest(
-    const SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerRequest *request)
+    const SparkScheduler *scheduler,
+    const SparkSchedulerRequest *request)
 {
     uint32_t is_decode;
     uint32_t is_prefill;
@@ -713,10 +713,10 @@ static SparkStatus SparkGlm52SchedulerValidateRequest(
     }
     is_decode = SparkGlm52SchedulerRequestIsDecode(request);
     is_prefill = SparkGlm52SchedulerRequestIsPrefill(request);
-    if (request->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        request->descriptor_bytes != SPARK_GLM52_SCHEDULER_REQUEST_DESCRIPTOR_BYTES ||
+    if (request->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        request->descriptor_bytes != SPARK_SCHEDULER_REQUEST_DESCRIPTOR_BYTES ||
         request->reserved != 0u ||
-        (request->flags & ~SPARK_GLM52_SCHEDULER_REQUEST_KNOWN_FLAGS) != 0u ||
+        (request->flags & ~SPARK_SCHEDULER_REQUEST_KNOWN_FLAGS) != 0u ||
         request->active_sequence_count == 0u ||
         is_decode == is_prefill ||
         (is_decode && request->prompt_token_count != 0u) ||
@@ -742,9 +742,9 @@ static SparkStatus SparkGlm52SchedulerValidateRequest(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52SchedulerInitialize(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerConfiguration *configuration)
+SparkStatus SparkSchedulerInitialize(
+    SparkScheduler *scheduler,
+    const SparkSchedulerConfiguration *configuration)
 {
     uint32_t queue_depth_per_spark;
     uint32_t measured_profile_id;
@@ -778,9 +778,9 @@ SparkStatus SparkGlm52SchedulerInitialize(
             prefix_cache_block_tokens);
 
     memset(scheduler, 0, sizeof(*scheduler));
-    scheduler->abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
-    scheduler->descriptor_bytes = SPARK_GLM52_SCHEDULER_DESCRIPTOR_BYTES;
-    scheduler->spark_count = SPARK_GLM52_SCHEDULER_MAX_SPARK_COUNT;
+    scheduler->abi_version = SPARK_SCHEDULER_ABI_VERSION;
+    scheduler->descriptor_bytes = SPARK_SCHEDULER_DESCRIPTOR_BYTES;
+    scheduler->spark_count = SPARK_SCHEDULER_MAX_SPARK_COUNT;
     scheduler->queue_depth_per_spark = queue_depth_per_spark;
     scheduler->measured_profile_id = measured_profile_id;
     scheduler->quantization_mode = quantization_mode;
@@ -791,8 +791,8 @@ SparkStatus SparkGlm52SchedulerInitialize(
     return SPARK_STATUS_OK;
 }
 
-uint32_t SparkGlm52SchedulerSelectPipelineBatchWidth(
-    const SparkGlm52Scheduler *scheduler,
+uint32_t SparkSchedulerSelectPipelineBatchWidth(
+    const SparkScheduler *scheduler,
     uint32_t active_request_count,
     uint32_t batch_capacity)
 {
@@ -816,12 +816,12 @@ uint32_t SparkGlm52SchedulerSelectPipelineBatchWidth(
 }
 
 static SparkStatus SparkGlm52SchedulerEstimateDecodeChunkNs(
-    const SparkGlm52Scheduler *scheduler,
+    const SparkScheduler *scheduler,
     uint32_t execution_row_count,
     uint64_t *estimated_work_ns_out)
 {
-    SparkGlm52StagePlan stage_plan;
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT];
+    SparkStagePlan stage_plan;
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     uint32_t batch_bucket;
     uint32_t minimal_batch_bucket;
@@ -857,7 +857,7 @@ static SparkStatus SparkGlm52SchedulerEstimateDecodeChunkNs(
 }
 
 static SparkStatus SparkGlm52SchedulerSumDecodeChunkWorkNs(
-    const SparkGlm52Scheduler *scheduler,
+    const SparkScheduler *scheduler,
     uint32_t logical_sequence_count,
     uint32_t rows_per_sequence,
     uint32_t maximum_sequences_per_chunk,
@@ -901,8 +901,8 @@ static SparkStatus SparkGlm52SchedulerSumDecodeChunkWorkNs(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52SchedulerEstimateDecodeWorkNs(
-    const SparkGlm52Scheduler *scheduler,
+SparkStatus SparkSchedulerEstimateDecodeWorkNs(
+    const SparkScheduler *scheduler,
     uint32_t logical_sequence_count,
     uint32_t rows_per_sequence,
     uint32_t execution_row_capacity,
@@ -913,12 +913,12 @@ SparkStatus SparkGlm52SchedulerEstimateDecodeWorkNs(
     SparkStatus status;
 
     if (scheduler == 0 || estimated_work_ns_out == 0 ||
-        scheduler->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        scheduler->descriptor_bytes != SPARK_GLM52_SCHEDULER_DESCRIPTOR_BYTES)
+        scheduler->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        scheduler->descriptor_bytes != SPARK_SCHEDULER_DESCRIPTOR_BYTES)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkGlm52StagePlanExecutionChunkShape(
+    status = SparkStagePlanExecutionChunkShape(
         logical_sequence_count,
         rows_per_sequence,
         execution_row_capacity,
@@ -937,12 +937,12 @@ SparkStatus SparkGlm52SchedulerEstimateDecodeWorkNs(
         estimated_work_ns_out);
 }
 
-SparkStatus SparkGlm52SchedulerAdmit(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerRequest *request,
-    SparkGlm52SchedulerDecision *decision)
+SparkStatus SparkSchedulerAdmit(
+    SparkScheduler *scheduler,
+    const SparkSchedulerRequest *request,
+    SparkSchedulerDecision *decision)
 {
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     uint64_t stage_cost_ns;
     uint64_t stage_service_time_ns;
@@ -959,16 +959,16 @@ SparkStatus SparkGlm52SchedulerAdmit(
     uint32_t decision_flags;
     uint32_t decode_bypass_active;
     uint32_t dispatch_flags;
-    SparkGlm52PrefixCacheReservation prefix_cache_reservation;
-    SparkGlm52PrefixCachePromptHash prefix_cache_parent_hash;
+    SparkPrefixCacheReservation prefix_cache_reservation;
+    SparkPrefixCachePromptHash prefix_cache_parent_hash;
     SparkStatus status;
 
     if (scheduler == 0 || request == 0 || decision == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (scheduler->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        scheduler->descriptor_bytes != SPARK_GLM52_SCHEDULER_DESCRIPTOR_BYTES)
+    if (scheduler->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        scheduler->descriptor_bytes != SPARK_SCHEDULER_DESCRIPTOR_BYTES)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -980,8 +980,8 @@ SparkStatus SparkGlm52SchedulerAdmit(
     }
 
     memset(decision, 0, sizeof(*decision));
-    decision->abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
-    decision->descriptor_bytes = SPARK_GLM52_SCHEDULER_DECISION_DESCRIPTOR_BYTES;
+    decision->abi_version = SPARK_SCHEDULER_ABI_VERSION;
+    decision->descriptor_bytes = SPARK_SCHEDULER_DECISION_DESCRIPTOR_BYTES;
     decision->quantization_mode = scheduler->quantization_mode;
     decision->spark_count = scheduler->spark_count;
 
@@ -1059,13 +1059,13 @@ SparkStatus SparkGlm52SchedulerAdmit(
         {
             memset(&prefix_cache_reservation, 0, sizeof(prefix_cache_reservation));
             prefix_cache_reservation.abi_version =
-                SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
+                SPARK_PREFIX_CACHE_ABI_VERSION;
             prefix_cache_reservation.descriptor_bytes =
-                SPARK_GLM52_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES;
+                SPARK_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES;
             prefix_cache_reservation.physical_block_indices =
                 decision->kv_physical_block_indices;
             prefix_cache_reservation.physical_block_capacity =
-                SPARK_GLM52_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
+                SPARK_SCHEDULER_KV_BLOCK_TABLE_CAPACITY;
             status = SparkGlm52SchedulerReservePrompt(
                 scheduler,
                 request,
@@ -1092,7 +1092,7 @@ SparkStatus SparkGlm52SchedulerAdmit(
         decode_bypass_active);
     if (measured_decode_bucket_selected != 0u)
     {
-        decision_flags |= SPARK_GLM52_SCHEDULER_DECISION_FLAG_MEASURED_DECODE_BUCKET;
+        decision_flags |= SPARK_SCHEDULER_DECISION_FLAG_MEASURED_DECODE_BUCKET;
     }
     dispatch_flags = SparkGlm52SchedulerBuildDispatchFlags(decision_flags);
 
@@ -1135,19 +1135,19 @@ SparkStatus SparkGlm52SchedulerAdmit(
         if (computed_prompt_token_count == 0u)
         {
             decision->prefix_cache_parent_hash =
-                SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH;
+                SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
         }
         else
         {
-            status = SparkGlm52PrefixCacheHashPromptTokens(
+            status = SparkPrefixCacheHashPromptTokens(
                 scheduler->prefix_cache_block_tokens,
-                SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH,
+                SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,
                 request->prompt_token_ids,
                 computed_prompt_token_count,
                 &prefix_cache_parent_hash);
             if (status != SPARK_STATUS_OK)
             {
-                SparkGlm52PrefixCacheCancelReservation(
+                SparkPrefixCacheCancelReservation(
                     scheduler->prefix_cache,
                     request->sequence_id,
                     prefix_cache_reservation.reservation_epoch);
@@ -1219,12 +1219,12 @@ SparkStatus SparkGlm52SchedulerAdmit(
         scheduler->prefix_cache_hit_token_count +=
             (uint64_t)request->active_sequence_count *
             (uint64_t)cached_prefix_token_count;
-        if ((decision_flags & SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_CHUNK) != 0u)
+        if ((decision_flags & SPARK_SCHEDULER_DECISION_FLAG_PREFILL_CHUNK) != 0u)
         {
             scheduler->chunked_prefill_count += 1u;
         }
         if ((decision_flags &
-             SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_RESERVED_DECODE_SLOT) != 0u)
+             SPARK_SCHEDULER_DECISION_FLAG_PREFILL_RESERVED_DECODE_SLOT) != 0u)
         {
             scheduler->interleaved_prefill_admission_count += 1u;
         }
@@ -1241,12 +1241,12 @@ SparkStatus SparkGlm52SchedulerAdmit(
         scheduler->scheduled_decode_token_count +=
             decision->total_scheduled_token_count;
         if ((decision_flags &
-             SPARK_GLM52_SCHEDULER_DECISION_FLAG_DECODE_BYPASS_PREFILL) != 0u)
+             SPARK_SCHEDULER_DECISION_FLAG_DECODE_BYPASS_PREFILL) != 0u)
         {
             scheduler->decode_bypass_admission_count += 1u;
         }
         if ((decision_flags &
-             SPARK_GLM52_SCHEDULER_DECISION_FLAG_MEASURED_DECODE_BUCKET) != 0u)
+             SPARK_SCHEDULER_DECISION_FLAG_MEASURED_DECODE_BUCKET) != 0u)
         {
             scheduler->measured_decode_bucket_selection_count += 1u;
             scheduler->measured_decode_bucket_padding_token_count +=
@@ -1256,9 +1256,9 @@ SparkStatus SparkGlm52SchedulerAdmit(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52SchedulerComplete(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerDecision *decision)
+SparkStatus SparkSchedulerComplete(
+    SparkScheduler *scheduler,
+    const SparkSchedulerDecision *decision)
 {
     uint32_t stage_index;
     uint32_t spark_index;
@@ -1267,10 +1267,10 @@ SparkStatus SparkGlm52SchedulerComplete(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (scheduler->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        scheduler->descriptor_bytes != SPARK_GLM52_SCHEDULER_DESCRIPTOR_BYTES ||
-        decision->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        decision->descriptor_bytes != SPARK_GLM52_SCHEDULER_DECISION_DESCRIPTOR_BYTES ||
+    if (scheduler->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        scheduler->descriptor_bytes != SPARK_SCHEDULER_DESCRIPTOR_BYTES ||
+        decision->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        decision->descriptor_bytes != SPARK_SCHEDULER_DECISION_DESCRIPTOR_BYTES ||
         decision->accepted == 0u ||
         decision->stage_count == 0u ||
         decision->stage_count > scheduler->spark_count)
@@ -1294,13 +1294,13 @@ SparkStatus SparkGlm52SchedulerComplete(
         scheduler->spark_inflight_counts[spark_index] -= 1u;
     }
     if ((decision->decision_flags &
-            SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_STEP) != 0u &&
+            SPARK_SCHEDULER_DECISION_FLAG_PREFILL_STEP) != 0u &&
         SparkGlm52SchedulerPromptCacheIsEnabled(scheduler) &&
         decision->cache_commit_token_count_after_step != 0u)
     {
         SparkStatus status;
 
-        status = SparkGlm52PrefixCacheCommitReservation(
+        status = SparkPrefixCacheCommitReservation(
             scheduler->prefix_cache,
             decision->sequence_id,
             decision->prefix_cache_reservation_epoch);
@@ -1314,17 +1314,17 @@ SparkStatus SparkGlm52SchedulerComplete(
 }
 
 static SparkStatus SparkGlm52SchedulerValidateAcceptedDecision(
-    const SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerDecision *decision)
+    const SparkScheduler *scheduler,
+    const SparkSchedulerDecision *decision)
 {
     if (scheduler == 0 || decision == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (scheduler->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        scheduler->descriptor_bytes != SPARK_GLM52_SCHEDULER_DESCRIPTOR_BYTES ||
-        decision->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        decision->descriptor_bytes != SPARK_GLM52_SCHEDULER_DECISION_DESCRIPTOR_BYTES ||
+    if (scheduler->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        scheduler->descriptor_bytes != SPARK_SCHEDULER_DESCRIPTOR_BYTES ||
+        decision->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        decision->descriptor_bytes != SPARK_SCHEDULER_DECISION_DESCRIPTOR_BYTES ||
         decision->accepted == 0u ||
         decision->stage_count == 0u ||
         decision->stage_count > scheduler->spark_count)
@@ -1335,8 +1335,8 @@ static SparkStatus SparkGlm52SchedulerValidateAcceptedDecision(
 }
 
 static SparkStatus SparkGlm52SchedulerReleaseDecisionInflight(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerDecision *decision)
+    SparkScheduler *scheduler,
+    const SparkSchedulerDecision *decision)
 {
     uint32_t stage_index;
 
@@ -1361,9 +1361,9 @@ static SparkStatus SparkGlm52SchedulerReleaseDecisionInflight(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52SchedulerCancel(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerDecision *decision)
+SparkStatus SparkSchedulerCancel(
+    SparkScheduler *scheduler,
+    const SparkSchedulerDecision *decision)
 {
     SparkStatus status;
 
@@ -1378,11 +1378,11 @@ SparkStatus SparkGlm52SchedulerCancel(
         return status;
     }
     if ((decision->decision_flags &
-            SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_STEP) != 0u &&
+            SPARK_SCHEDULER_DECISION_FLAG_PREFILL_STEP) != 0u &&
         SparkGlm52SchedulerPromptCacheIsEnabled(scheduler) &&
         decision->prefix_cache_reservation_epoch != 0u)
     {
-        status = SparkGlm52PrefixCacheCancelReservation(
+        status = SparkPrefixCacheCancelReservation(
             scheduler->prefix_cache,
             decision->sequence_id,
             decision->prefix_cache_reservation_epoch);
@@ -1397,8 +1397,8 @@ SparkStatus SparkGlm52SchedulerCancel(
 
 
 static void SparkGlm52SchedulerRejectPrefillBatch(
-    SparkGlm52SchedulerPrefillBatchDecision *batch_decision,
-    const SparkGlm52SchedulerPrefillBatchRequest *batch_request,
+    SparkSchedulerPrefillBatchDecision *batch_decision,
+    const SparkSchedulerPrefillBatchRequest *batch_request,
     SparkStatus rejected_status)
 {
     if (batch_decision == 0)
@@ -1406,9 +1406,9 @@ static void SparkGlm52SchedulerRejectPrefillBatch(
         return;
     }
     memset(batch_decision, 0, sizeof(*batch_decision));
-    batch_decision->abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    batch_decision->abi_version = SPARK_SCHEDULER_ABI_VERSION;
     batch_decision->descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_PREFILL_BATCH_DECISION_DESCRIPTOR_BYTES;
+        SPARK_SCHEDULER_PREFILL_BATCH_DECISION_DESCRIPTOR_BYTES;
     batch_decision->accepted = 0u;
     batch_decision->rejected_status = rejected_status;
     if (batch_request != 0)
@@ -1418,8 +1418,8 @@ static void SparkGlm52SchedulerRejectPrefillBatch(
 }
 
 static SparkStatus SparkGlm52SchedulerValidatePrefillBatchRequest(
-    const SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerPrefillBatchRequest *batch_request)
+    const SparkScheduler *scheduler,
+    const SparkSchedulerPrefillBatchRequest *batch_request)
 {
     uint32_t request_index;
 
@@ -1427,12 +1427,12 @@ static SparkStatus SparkGlm52SchedulerValidatePrefillBatchRequest(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (batch_request->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
+    if (batch_request->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
         batch_request->descriptor_bytes !=
-            SPARK_GLM52_SCHEDULER_PREFILL_BATCH_REQUEST_DESCRIPTOR_BYTES ||
+            SPARK_SCHEDULER_PREFILL_BATCH_REQUEST_DESCRIPTOR_BYTES ||
         batch_request->reserved != 0u ||
         batch_request->request_count == 0u ||
-        batch_request->request_count > SPARK_GLM52_SCHEDULER_MAX_BATCH_REQUEST_COUNT ||
+        batch_request->request_count > SPARK_SCHEDULER_MAX_BATCH_REQUEST_COUNT ||
         batch_request->requests == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1441,7 +1441,7 @@ static SparkStatus SparkGlm52SchedulerValidatePrefillBatchRequest(
          request_index < batch_request->request_count;
          ++request_index)
     {
-        const SparkGlm52SchedulerRequest *request;
+        const SparkSchedulerRequest *request;
         SparkStatus status;
 
         request = &batch_request->requests[request_index];
@@ -1460,21 +1460,21 @@ static SparkStatus SparkGlm52SchedulerValidatePrefillBatchRequest(
 }
 
 static void SparkGlm52SchedulerInitializePrefillBatchLane(
-    SparkGlm52SchedulerPrefillBatchLane *lane,
-    const SparkGlm52SchedulerRequest *request,
+    SparkSchedulerPrefillBatchLane *lane,
+    const SparkSchedulerRequest *request,
     uint32_t request_index,
     uint32_t active_sequence_offset,
     uint32_t cached_prefix_token_count,
     uint32_t computed_prompt_token_count,
     uint32_t scheduled_prompt_token_count,
     uint32_t prefix_cache_block_tokens,
-    const SparkGlm52PrefixCacheReservation *prefix_cache_reservation,
+    const SparkPrefixCacheReservation *prefix_cache_reservation,
     uint64_t prefix_cache_parent_hash)
 {
     memset(lane, 0, sizeof(*lane));
-    lane->abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    lane->abi_version = SPARK_SCHEDULER_ABI_VERSION;
     lane->descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_PREFILL_BATCH_LANE_DESCRIPTOR_BYTES;
+        SPARK_SCHEDULER_PREFILL_BATCH_LANE_DESCRIPTOR_BYTES;
     lane->request_index = request_index;
     lane->active_sequence_offset = active_sequence_offset;
     lane->active_sequence_count = request->active_sequence_count;
@@ -1512,8 +1512,8 @@ static void SparkGlm52SchedulerInitializePrefillBatchLane(
 }
 
 static SparkStatus SparkGlm52SchedulerCancelAcceptedPrefillBatchReservations(
-    SparkGlm52Scheduler *scheduler,
-    SparkGlm52SchedulerPrefillBatchDecision *batch_decision)
+    SparkScheduler *scheduler,
+    SparkSchedulerPrefillBatchDecision *batch_decision)
 {
     uint32_t lane_index;
 
@@ -1525,7 +1525,7 @@ static SparkStatus SparkGlm52SchedulerCancelAcceptedPrefillBatchReservations(
          lane_index < batch_decision->packed_request_count;
          ++lane_index)
     {
-        SparkGlm52SchedulerPrefillBatchLane *lane;
+        SparkSchedulerPrefillBatchLane *lane;
         SparkStatus status;
 
         lane = &batch_decision->lanes[lane_index];
@@ -1533,7 +1533,7 @@ static SparkStatus SparkGlm52SchedulerCancelAcceptedPrefillBatchReservations(
         {
             continue;
         }
-        status = SparkGlm52PrefixCacheCancelReservation(
+        status = SparkPrefixCacheCancelReservation(
             scheduler->prefix_cache,
             lane->sequence_id,
             lane->prefix_cache_reservation_epoch);
@@ -1545,12 +1545,12 @@ static SparkStatus SparkGlm52SchedulerCancelAcceptedPrefillBatchReservations(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerPrefillBatchRequest *batch_request,
-    SparkGlm52SchedulerPrefillBatchDecision *batch_decision)
+SparkStatus SparkSchedulerAdmitPrefillBatch(
+    SparkScheduler *scheduler,
+    const SparkSchedulerPrefillBatchRequest *batch_request,
+    SparkSchedulerPrefillBatchDecision *batch_decision)
 {
-    uint64_t layer_cost_ns[SPARK_GLM52_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     uint64_t stage_cost_ns;
     uint64_t stage_service_time_ns;
@@ -1568,7 +1568,7 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
     uint32_t total_cached_prefix_token_count;
     uint32_t total_pending_physical_block_count;
     uint64_t total_scheduled_token_count;
-    SparkGlm52StagePlan stage_plan;
+    SparkStagePlan stage_plan;
     SparkStatus status;
 
     if (batch_decision == 0)
@@ -1576,13 +1576,13 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     memset(batch_decision, 0, sizeof(*batch_decision));
-    batch_decision->abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    batch_decision->abi_version = SPARK_SCHEDULER_ABI_VERSION;
     batch_decision->descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_PREFILL_BATCH_DECISION_DESCRIPTOR_BYTES;
+        SPARK_SCHEDULER_PREFILL_BATCH_DECISION_DESCRIPTOR_BYTES;
 
     if (scheduler == 0 ||
-        scheduler->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        scheduler->descriptor_bytes != SPARK_GLM52_SCHEDULER_DESCRIPTOR_BYTES)
+        scheduler->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        scheduler->descriptor_bytes != SPARK_SCHEDULER_DESCRIPTOR_BYTES)
     {
         SparkGlm52SchedulerRejectPrefillBatch(
             batch_decision,
@@ -1607,14 +1607,14 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
     packed_request_count = 0u;
     for (request_index = 0u;
          request_index < batch_request->request_count &&
-             packed_request_count < SPARK_GLM52_SCHEDULER_MAX_PACKED_REQUEST_COUNT;
+             packed_request_count < SPARK_SCHEDULER_MAX_PACKED_REQUEST_COUNT;
          ++request_index)
     {
-        const SparkGlm52SchedulerRequest *request;
+        const SparkSchedulerRequest *request;
 
         request = &batch_request->requests[request_index];
         if (active_sequence_count + request->active_sequence_count >
-            SPARK_GLM52_SCHEDULER_MAX_PACKED_REQUEST_COUNT)
+            SPARK_SCHEDULER_MAX_PACKED_REQUEST_COUNT)
         {
             break;
         }
@@ -1630,7 +1630,7 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
         return SPARK_STATUS_OK;
     }
 
-    status = SparkGlm52StagePlanSelectBatchBucket(
+    status = SparkStagePlanSelectBatchBucket(
         active_sequence_count,
         &batch_bucket);
     if (status != SPARK_STATUS_OK)
@@ -1642,7 +1642,7 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
         return SPARK_STATUS_OK;
     }
 
-    status = SparkGlm52StagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+    status = SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -1658,7 +1658,7 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
         return SPARK_STATUS_OK;
     }
 
-    status = SparkGlm52StagePlanLoadMeasuredCostProfileForQuantization(
+    status = SparkStagePlanLoadMeasuredCostProfileForQuantization(
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -1704,9 +1704,9 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
          request_index < packed_request_count;
          ++request_index)
     {
-        const SparkGlm52SchedulerRequest *request;
-        SparkGlm52PrefixCacheReservation prefix_cache_reservation;
-        SparkGlm52PrefixCachePromptHash prefix_cache_parent_hash;
+        const SparkSchedulerRequest *request;
+        SparkPrefixCacheReservation prefix_cache_reservation;
+        SparkPrefixCachePromptHash prefix_cache_parent_hash;
         uint32_t cached_prefix_token_count;
         uint32_t computed_prompt_token_count;
         uint32_t scheduled_prompt_token_count;
@@ -1752,9 +1752,9 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
 
         memset(&prefix_cache_reservation, 0, sizeof(prefix_cache_reservation));
         prefix_cache_reservation.abi_version =
-            SPARK_GLM52_PREFIX_CACHE_ABI_VERSION;
+            SPARK_PREFIX_CACHE_ABI_VERSION;
         prefix_cache_reservation.descriptor_bytes =
-            SPARK_GLM52_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES;
+            SPARK_PREFIX_CACHE_RESERVATION_DESCRIPTOR_BYTES;
         status = SparkGlm52SchedulerReservePrompt(
             scheduler,
             request,
@@ -1774,19 +1774,19 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
 
         if (computed_prompt_token_count == 0u)
         {
-            parent_hash = SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH;
+            parent_hash = SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH;
         }
         else
         {
-            status = SparkGlm52PrefixCacheHashPromptTokens(
+            status = SparkPrefixCacheHashPromptTokens(
                 scheduler->prefix_cache_block_tokens,
-                SPARK_GLM52_PREFIX_CACHE_EMPTY_PARENT_HASH,
+                SPARK_PREFIX_CACHE_EMPTY_PARENT_HASH,
                 request->prompt_token_ids,
                 computed_prompt_token_count,
                 &prefix_cache_parent_hash);
             if (status != SPARK_STATUS_OK)
             {
-                SparkGlm52PrefixCacheCancelReservation(
+                SparkPrefixCacheCancelReservation(
                     scheduler->prefix_cache,
                     request->sequence_id,
                     prefix_cache_reservation.reservation_epoch);
@@ -1836,33 +1836,33 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
     }
 
     graph_sequence_padding_count = batch_bucket - active_sequence_count;
-    decision_flags = SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_STEP |
-        SPARK_GLM52_SCHEDULER_DECISION_FLAG_ADAPTIVE_PREFILL_PACK;
+    decision_flags = SPARK_SCHEDULER_DECISION_FLAG_PREFILL_STEP |
+        SPARK_SCHEDULER_DECISION_FLAG_ADAPTIVE_PREFILL_PACK;
     if (any_remaining_prompt_tokens != 0u)
     {
-        decision_flags |= SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_CHUNK;
+        decision_flags |= SPARK_SCHEDULER_DECISION_FLAG_PREFILL_CHUNK;
     }
     else
     {
-        decision_flags |= SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_FINAL_CHUNK;
+        decision_flags |= SPARK_SCHEDULER_DECISION_FLAG_PREFILL_FINAL_CHUNK;
     }
     if (total_cached_prefix_token_count != 0u)
     {
-        decision_flags |= SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFIX_CACHE_USED;
+        decision_flags |= SPARK_SCHEDULER_DECISION_FLAG_PREFIX_CACHE_USED;
     }
     if (graph_sequence_padding_count != 0u &&
         SparkGlm52SchedulerCudaGraphPaddingIsEnabled(scheduler))
     {
-        decision_flags |= SPARK_GLM52_SCHEDULER_DECISION_FLAG_CUDAGRAPH_PADDING;
+        decision_flags |= SPARK_SCHEDULER_DECISION_FLAG_CUDAGRAPH_PADDING;
     }
     if (SparkGlm52SchedulerPrefillDecodeInterleaveIsEnabled(scheduler) &&
         scheduler->queue_depth_per_spark > 1u)
     {
         decision_flags |=
-            SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_RESERVED_DECODE_SLOT;
+            SPARK_SCHEDULER_DECISION_FLAG_PREFILL_RESERVED_DECODE_SLOT;
     }
     dispatch_flags = SparkGlm52SchedulerBuildDispatchFlags(decision_flags) |
-        SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_ADAPTIVE_PREFILL_PACK;
+        SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_ADAPTIVE_PREFILL_PACK;
 
     batch_decision->accepted = 1u;
     batch_decision->rejected_status = SPARK_STATUS_OK;
@@ -1877,9 +1877,9 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
     stage_plan = batch_decision->stage_decision.stage_plan;
     memset(&batch_decision->stage_decision, 0, sizeof(batch_decision->stage_decision));
     batch_decision->stage_decision.stage_plan = stage_plan;
-    batch_decision->stage_decision.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    batch_decision->stage_decision.abi_version = SPARK_SCHEDULER_ABI_VERSION;
     batch_decision->stage_decision.descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_DECISION_DESCRIPTOR_BYTES;
+        SPARK_SCHEDULER_DECISION_DESCRIPTOR_BYTES;
     batch_decision->stage_decision.accepted = 1u;
     batch_decision->stage_decision.batch_bucket = batch_bucket;
     batch_decision->stage_decision.quantization_mode = scheduler->quantization_mode;
@@ -1943,12 +1943,12 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
     scheduler->admitted_count += 1u;
     scheduler->scheduled_prefill_token_count += total_scheduled_token_count;
     scheduler->prefix_cache_hit_token_count += total_cached_prefix_token_count;
-    if ((decision_flags & SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_CHUNK) != 0u)
+    if ((decision_flags & SPARK_SCHEDULER_DECISION_FLAG_PREFILL_CHUNK) != 0u)
     {
         scheduler->chunked_prefill_count += 1u;
     }
     if ((decision_flags &
-         SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_RESERVED_DECODE_SLOT) != 0u)
+         SPARK_SCHEDULER_DECISION_FLAG_PREFILL_RESERVED_DECODE_SLOT) != 0u)
     {
         scheduler->interleaved_prefill_admission_count += 1u;
     }
@@ -1963,25 +1963,25 @@ SparkStatus SparkGlm52SchedulerAdmitPrefillBatch(
 }
 
 static SparkStatus SparkGlm52SchedulerValidateAcceptedPrefillBatchDecision(
-    const SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerPrefillBatchDecision *batch_decision)
+    const SparkScheduler *scheduler,
+    const SparkSchedulerPrefillBatchDecision *batch_decision)
 {
     if (scheduler == 0 || batch_decision == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (scheduler->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        scheduler->descriptor_bytes != SPARK_GLM52_SCHEDULER_DESCRIPTOR_BYTES ||
-        batch_decision->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
+    if (scheduler->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        scheduler->descriptor_bytes != SPARK_SCHEDULER_DESCRIPTOR_BYTES ||
+        batch_decision->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
         batch_decision->descriptor_bytes !=
-            SPARK_GLM52_SCHEDULER_PREFILL_BATCH_DECISION_DESCRIPTOR_BYTES ||
+            SPARK_SCHEDULER_PREFILL_BATCH_DECISION_DESCRIPTOR_BYTES ||
         batch_decision->accepted == 0u ||
         batch_decision->packed_request_count == 0u ||
         batch_decision->packed_request_count >
-            SPARK_GLM52_SCHEDULER_MAX_PACKED_REQUEST_COUNT ||
+            SPARK_SCHEDULER_MAX_PACKED_REQUEST_COUNT ||
         batch_decision->stage_decision.accepted == 0u ||
         (batch_decision->decision_flags &
-            SPARK_GLM52_SCHEDULER_DECISION_FLAG_ADAPTIVE_PREFILL_PACK) == 0u)
+            SPARK_SCHEDULER_DECISION_FLAG_ADAPTIVE_PREFILL_PACK) == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -1994,13 +1994,13 @@ static SparkStatus SparkGlm52SchedulerValidateAcceptedPrefillBatchDecision(
 // and which counter records it, so those are the parameters and the retirement
 // is written once.
 typedef SparkStatus (*SparkGlm52SchedulerReservationFunction)(
-    SparkGlm52PrefixCache *prefix_cache,
+    SparkPrefixCache *prefix_cache,
     uint64_t sequence_id,
     uint64_t reservation_epoch);
 
 static SparkStatus SparkGlm52SchedulerRetirePrefillBatch(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerPrefillBatchDecision *batch_decision,
+    SparkScheduler *scheduler,
+    const SparkSchedulerPrefillBatchDecision *batch_decision,
     SparkGlm52SchedulerReservationFunction settle_reservation,
     uint64_t *retire_counter)
 {
@@ -2025,7 +2025,7 @@ static SparkStatus SparkGlm52SchedulerRetirePrefillBatch(
          lane_index < batch_decision->packed_request_count;
          ++lane_index)
     {
-        const SparkGlm52SchedulerPrefillBatchLane *lane;
+        const SparkSchedulerPrefillBatchLane *lane;
 
         lane = &batch_decision->lanes[lane_index];
         if (lane->prefix_cache_reservation_epoch == 0u)
@@ -2045,32 +2045,32 @@ static SparkStatus SparkGlm52SchedulerRetirePrefillBatch(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52SchedulerCompletePrefillBatch(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerPrefillBatchDecision *batch_decision)
+SparkStatus SparkSchedulerCompletePrefillBatch(
+    SparkScheduler *scheduler,
+    const SparkSchedulerPrefillBatchDecision *batch_decision)
 {
     return SparkGlm52SchedulerRetirePrefillBatch(
         scheduler,
         batch_decision,
-        SparkGlm52PrefixCacheCommitReservation,
+        SparkPrefixCacheCommitReservation,
         &scheduler->completed_count);
 }
 
-SparkStatus SparkGlm52SchedulerCancelPrefillBatch(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerPrefillBatchDecision *batch_decision)
+SparkStatus SparkSchedulerCancelPrefillBatch(
+    SparkScheduler *scheduler,
+    const SparkSchedulerPrefillBatchDecision *batch_decision)
 {
     return SparkGlm52SchedulerRetirePrefillBatch(
         scheduler,
         batch_decision,
-        SparkGlm52PrefixCacheCancelReservation,
+        SparkPrefixCacheCancelReservation,
         &scheduler->kv_block_cancel_count);
 }
 
 
-SparkStatus SparkGlm52SchedulerBuildPrefillBatchKvBlockTables(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerPrefillBatchDecision *batch_decision,
+SparkStatus SparkSchedulerBuildPrefillBatchKvBlockTables(
+    SparkScheduler *scheduler,
+    const SparkSchedulerPrefillBatchDecision *batch_decision,
     uint32_t *physical_block_indices,
     uint32_t lane_stride,
     uint32_t lane_capacity,
@@ -2105,14 +2105,14 @@ SparkStatus SparkGlm52SchedulerBuildPrefillBatchKvBlockTables(
          lane_index < batch_decision->packed_request_count;
          ++lane_index)
     {
-        const SparkGlm52SchedulerPrefillBatchLane *lane;
+        const SparkSchedulerPrefillBatchLane *lane;
 
         lane = &batch_decision->lanes[lane_index];
         if (lane->sequence_id == 0u || lane->kv_block_table_token_count == 0u)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        status = SparkGlm52PrefixCacheBuildPhysicalBlockTable(
+        status = SparkPrefixCacheBuildPhysicalBlockTable(
             scheduler->prefix_cache,
             lane->sequence_id,
             lane->kv_block_table_token_count,
@@ -2127,9 +2127,9 @@ SparkStatus SparkGlm52SchedulerBuildPrefillBatchKvBlockTables(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52SchedulerBuildKvBlockTable(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerDecision *decision,
+SparkStatus SparkSchedulerBuildKvBlockTable(
+    SparkScheduler *scheduler,
+    const SparkSchedulerDecision *decision,
     uint32_t *physical_block_indices,
     uint32_t physical_block_capacity,
     uint32_t *physical_block_count_out)
@@ -2143,11 +2143,11 @@ SparkStatus SparkGlm52SchedulerBuildKvBlockTable(
     }
     if (!SparkGlm52SchedulerPromptCacheIsEnabled(scheduler) ||
         (decision->decision_flags &
-            SPARK_GLM52_SCHEDULER_DECISION_FLAG_PREFILL_STEP) == 0u)
+            SPARK_SCHEDULER_DECISION_FLAG_PREFILL_STEP) == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    return SparkGlm52PrefixCacheBuildPhysicalBlockTable(
+    return SparkPrefixCacheBuildPhysicalBlockTable(
         scheduler->prefix_cache,
         decision->sequence_id,
         decision->kv_block_table_token_count,
@@ -2156,16 +2156,16 @@ SparkStatus SparkGlm52SchedulerBuildKvBlockTable(
         physical_block_count_out);
 }
 
-SparkStatus SparkGlm52SchedulerReleaseSequence(
-    SparkGlm52Scheduler *scheduler,
+SparkStatus SparkSchedulerReleaseSequence(
+    SparkScheduler *scheduler,
     uint64_t sequence_id)
 {
     if (scheduler == 0 || sequence_id == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (scheduler->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        scheduler->descriptor_bytes != SPARK_GLM52_SCHEDULER_DESCRIPTOR_BYTES)
+    if (scheduler->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        scheduler->descriptor_bytes != SPARK_SCHEDULER_DESCRIPTOR_BYTES)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -2173,21 +2173,21 @@ SparkStatus SparkGlm52SchedulerReleaseSequence(
     {
         return SPARK_STATUS_OK;
     }
-    return SparkGlm52PrefixCacheReleaseSequence(
+    return SparkPrefixCacheReleaseSequence(
         scheduler->prefix_cache,
         sequence_id);
 }
 
 static void SparkGlm52SchedulerInitializePackedRequest(
-    SparkGlm52SchedulerPackedRequest *packed_request,
+    SparkSchedulerPackedRequest *packed_request,
     uint32_t request_index,
     uint32_t active_sequence_offset,
-    const SparkGlm52SchedulerRequest *request)
+    const SparkSchedulerRequest *request)
 {
     memset(packed_request, 0, sizeof(*packed_request));
-    packed_request->abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    packed_request->abi_version = SPARK_SCHEDULER_ABI_VERSION;
     packed_request->descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_PACKED_REQUEST_DESCRIPTOR_BYTES;
+        SPARK_SCHEDULER_PACKED_REQUEST_DESCRIPTOR_BYTES;
     packed_request->request_index = request_index;
     packed_request->active_sequence_offset = active_sequence_offset;
     packed_request->active_sequence_count = request->active_sequence_count;
@@ -2197,8 +2197,8 @@ static void SparkGlm52SchedulerInitializePackedRequest(
 }
 
 static SparkStatus SparkGlm52SchedulerValidateDecodeBatchRequest(
-    const SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerBatchRequest *batch_request)
+    const SparkScheduler *scheduler,
+    const SparkSchedulerBatchRequest *batch_request)
 {
     uint32_t request_index;
 
@@ -2206,12 +2206,12 @@ static SparkStatus SparkGlm52SchedulerValidateDecodeBatchRequest(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (batch_request->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
+    if (batch_request->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
         batch_request->descriptor_bytes !=
-            SPARK_GLM52_SCHEDULER_BATCH_REQUEST_DESCRIPTOR_BYTES ||
+            SPARK_SCHEDULER_BATCH_REQUEST_DESCRIPTOR_BYTES ||
         batch_request->reserved != 0u ||
         batch_request->request_count == 0u ||
-        batch_request->request_count > SPARK_GLM52_SCHEDULER_MAX_BATCH_REQUEST_COUNT ||
+        batch_request->request_count > SPARK_SCHEDULER_MAX_BATCH_REQUEST_COUNT ||
         batch_request->requests == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -2239,8 +2239,8 @@ static SparkStatus SparkGlm52SchedulerValidateDecodeBatchRequest(
 }
 
 static void SparkGlm52SchedulerRejectDecodeBatch(
-    SparkGlm52SchedulerBatchDecision *batch_decision,
-    const SparkGlm52SchedulerBatchRequest *batch_request,
+    SparkSchedulerBatchDecision *batch_decision,
+    const SparkSchedulerBatchRequest *batch_request,
     SparkStatus rejected_status)
 {
     if (batch_decision == 0)
@@ -2248,9 +2248,9 @@ static void SparkGlm52SchedulerRejectDecodeBatch(
         return;
     }
     memset(batch_decision, 0, sizeof(*batch_decision));
-    batch_decision->abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    batch_decision->abi_version = SPARK_SCHEDULER_ABI_VERSION;
     batch_decision->descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_BATCH_DECISION_DESCRIPTOR_BYTES;
+        SPARK_SCHEDULER_BATCH_DECISION_DESCRIPTOR_BYTES;
     batch_decision->accepted = 0u;
     batch_decision->rejected_status = rejected_status;
     if (batch_request != 0)
@@ -2259,12 +2259,12 @@ static void SparkGlm52SchedulerRejectDecodeBatch(
     }
 }
 
-SparkStatus SparkGlm52SchedulerAdmitDecodeBatch(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerBatchRequest *batch_request,
-    SparkGlm52SchedulerBatchDecision *batch_decision)
+SparkStatus SparkSchedulerAdmitDecodeBatch(
+    SparkScheduler *scheduler,
+    const SparkSchedulerBatchRequest *batch_request,
+    SparkSchedulerBatchDecision *batch_decision)
 {
-    SparkGlm52SchedulerRequest aggregate_request;
+    SparkSchedulerRequest aggregate_request;
     SparkStatus status;
     uint32_t request_index;
     uint32_t active_sequence_offset;
@@ -2276,13 +2276,13 @@ SparkStatus SparkGlm52SchedulerAdmitDecodeBatch(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     memset(batch_decision, 0, sizeof(*batch_decision));
-    batch_decision->abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    batch_decision->abi_version = SPARK_SCHEDULER_ABI_VERSION;
     batch_decision->descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_BATCH_DECISION_DESCRIPTOR_BYTES;
+        SPARK_SCHEDULER_BATCH_DECISION_DESCRIPTOR_BYTES;
 
     if (scheduler == 0 ||
-        scheduler->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
-        scheduler->descriptor_bytes != SPARK_GLM52_SCHEDULER_DESCRIPTOR_BYTES)
+        scheduler->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
+        scheduler->descriptor_bytes != SPARK_SCHEDULER_DESCRIPTOR_BYTES)
     {
         SparkGlm52SchedulerRejectDecodeBatch(
             batch_decision,
@@ -2308,14 +2308,14 @@ SparkStatus SparkGlm52SchedulerAdmitDecodeBatch(
     active_sequence_count = 0u;
     for (request_index = 0u;
          request_index < batch_request->request_count &&
-             packed_request_count < SPARK_GLM52_SCHEDULER_MAX_PACKED_REQUEST_COUNT;
+             packed_request_count < SPARK_SCHEDULER_MAX_PACKED_REQUEST_COUNT;
          ++request_index)
     {
-        const SparkGlm52SchedulerRequest *request;
+        const SparkSchedulerRequest *request;
 
         request = &batch_request->requests[request_index];
         if (request->active_sequence_count >
-            SPARK_GLM52_SCHEDULER_MAX_PACKED_REQUEST_COUNT)
+            SPARK_SCHEDULER_MAX_PACKED_REQUEST_COUNT)
         {
             SparkGlm52SchedulerRejectDecodeBatch(
                 batch_decision,
@@ -2324,7 +2324,7 @@ SparkStatus SparkGlm52SchedulerAdmitDecodeBatch(
             return SPARK_STATUS_OK;
         }
         if (active_sequence_count + request->active_sequence_count >
-            SPARK_GLM52_SCHEDULER_MAX_PACKED_REQUEST_COUNT)
+            SPARK_SCHEDULER_MAX_PACKED_REQUEST_COUNT)
         {
             break;
         }
@@ -2347,13 +2347,13 @@ SparkStatus SparkGlm52SchedulerAdmitDecodeBatch(
     }
 
     memset(&aggregate_request, 0, sizeof(aggregate_request));
-    aggregate_request.abi_version = SPARK_GLM52_SCHEDULER_ABI_VERSION;
+    aggregate_request.abi_version = SPARK_SCHEDULER_ABI_VERSION;
     aggregate_request.descriptor_bytes =
-        SPARK_GLM52_SCHEDULER_REQUEST_DESCRIPTOR_BYTES;
+        SPARK_SCHEDULER_REQUEST_DESCRIPTOR_BYTES;
     aggregate_request.active_sequence_count = active_sequence_count;
-    aggregate_request.flags = SPARK_GLM52_SCHEDULER_REQUEST_FLAG_DECODE;
+    aggregate_request.flags = SPARK_SCHEDULER_REQUEST_FLAG_DECODE;
 
-    status = SparkGlm52SchedulerAdmit(
+    status = SparkSchedulerAdmit(
         scheduler,
         &aggregate_request,
         &batch_decision->stage_decision);
@@ -2389,20 +2389,20 @@ SparkStatus SparkGlm52SchedulerAdmitDecodeBatch(
         batch_decision->stage_decision.graph_sequence_padding_count;
     batch_decision->decision_flags =
         batch_decision->stage_decision.decision_flags |
-        SPARK_GLM52_SCHEDULER_DECISION_FLAG_ADAPTIVE_DECODE_PACK;
+        SPARK_SCHEDULER_DECISION_FLAG_ADAPTIVE_DECODE_PACK;
     batch_decision->total_scheduled_token_count =
         batch_decision->stage_decision.total_scheduled_token_count;
     batch_decision->estimated_critical_path_ns =
         batch_decision->stage_decision.estimated_critical_path_ns;
 
     batch_decision->stage_decision.decision_flags |=
-        SPARK_GLM52_SCHEDULER_DECISION_FLAG_ADAPTIVE_DECODE_PACK;
+        SPARK_SCHEDULER_DECISION_FLAG_ADAPTIVE_DECODE_PACK;
     for (request_index = 0u;
          request_index < batch_decision->stage_decision.stage_count;
          ++request_index)
     {
         batch_decision->stage_decision.dispatch_stages[request_index].dispatch_flags |=
-            SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_ADAPTIVE_DECODE_PACK;
+            SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_ADAPTIVE_DECODE_PACK;
     }
 
     scheduler->adaptive_decode_pack_admission_count += 1u;
@@ -2412,38 +2412,38 @@ SparkStatus SparkGlm52SchedulerAdmitDecodeBatch(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52SchedulerCompleteDecodeBatch(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerBatchDecision *batch_decision)
+SparkStatus SparkSchedulerCompleteDecodeBatch(
+    SparkScheduler *scheduler,
+    const SparkSchedulerBatchDecision *batch_decision)
 {
     if (batch_decision == 0 ||
-        batch_decision->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
+        batch_decision->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
         batch_decision->descriptor_bytes !=
-            SPARK_GLM52_SCHEDULER_BATCH_DECISION_DESCRIPTOR_BYTES ||
+            SPARK_SCHEDULER_BATCH_DECISION_DESCRIPTOR_BYTES ||
         batch_decision->accepted == 0u ||
         batch_decision->packed_request_count == 0u ||
         (batch_decision->decision_flags &
-            SPARK_GLM52_SCHEDULER_DECISION_FLAG_ADAPTIVE_DECODE_PACK) == 0u)
+            SPARK_SCHEDULER_DECISION_FLAG_ADAPTIVE_DECODE_PACK) == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    return SparkGlm52SchedulerComplete(
+    return SparkSchedulerComplete(
         scheduler,
         &batch_decision->stage_decision);
 }
 
-SparkStatus SparkGlm52SchedulerCancelDecodeBatch(
-    SparkGlm52Scheduler *scheduler,
-    const SparkGlm52SchedulerBatchDecision *batch_decision)
+SparkStatus SparkSchedulerCancelDecodeBatch(
+    SparkScheduler *scheduler,
+    const SparkSchedulerBatchDecision *batch_decision)
 {
     if (batch_decision == 0 ||
-        batch_decision->abi_version != SPARK_GLM52_SCHEDULER_ABI_VERSION ||
+        batch_decision->abi_version != SPARK_SCHEDULER_ABI_VERSION ||
         batch_decision->descriptor_bytes !=
-            SPARK_GLM52_SCHEDULER_BATCH_DECISION_DESCRIPTOR_BYTES ||
+            SPARK_SCHEDULER_BATCH_DECISION_DESCRIPTOR_BYTES ||
         batch_decision->accepted == 0u ||
         batch_decision->packed_request_count == 0u ||
         (batch_decision->decision_flags &
-            SPARK_GLM52_SCHEDULER_DECISION_FLAG_ADAPTIVE_DECODE_PACK) == 0u)
+            SPARK_SCHEDULER_DECISION_FLAG_ADAPTIVE_DECODE_PACK) == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

@@ -64,7 +64,7 @@ struct LmLowRankScratch
 	uint8_t *compressed_codes;
 	uint8_t *compressed_scales;
 	const uint32_t *dense_row_offset;
-	const uint32_t *dense_tile_prefix;
+	uint32_t *dense_tile_prefix;
 };
 
 // hidden -> down -> norm -> up.
@@ -143,7 +143,7 @@ struct LmAbsorbedOutputs
 };
 
 template<class Format>
-static int32_t LmAbsorbedProject(const LmAbsorbedWeights *weights, const LmAbsorbedOutputs *out, const uint16_t *input_bf16, const uint8_t *input_codes, const float *input_scales, const uint32_t *dense_row_offset, const uint32_t *dense_tile_prefix, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t LmAbsorbedProject(const LmAbsorbedWeights *weights, const LmAbsorbedOutputs *out, const uint16_t *input_bf16, const uint8_t *input_codes, const float *input_scales, const uint32_t *dense_row_offset, uint32_t *dense_tile_prefix, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
 {
 	struct { const void *weight; const void *scale; uint16_t *out; uint32_t width; } pass[4] = {
 		{ weights->query_latent_weight, weights->query_latent_scale, out->query_latent_bf16, weights->query_latent_dimension },

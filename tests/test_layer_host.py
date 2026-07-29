@@ -147,7 +147,9 @@ def main():
     for row in range(rows):
         candidates = []
         for source in range(sources - 1):
-            base = (row * (sources - 1) + source) * channels
+            # [source][row][channels]: the layout the driver's bank store writes
+            # and the only one stable while the source count grows.
+            base = (source * rows + row) * channels
             candidates.append(v["bank"][base:base + channels])
         candidates.append(v["partial"][row * channels:(row + 1) * channels])
         scores = []

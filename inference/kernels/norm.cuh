@@ -430,7 +430,7 @@ void LmCopyRowsKernel(const uint16_t *__restrict__ source_bf16, uint16_t *__rest
 // is what the reference does at run time: norm.weight * proj.weight.squeeze(0).
 template<uint32_t THREADS, uint32_t MAX_SOURCES>
 __global__ __launch_bounds__(THREADS, 1)
-void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const uint16_t *__restrict__ score_weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t dimension, float epsilon)
+void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__restrict__ partial_bf16, const uint16_t *__restrict__ score_weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t sources, uint32_t rows, uint32_t dimension, float epsilon)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	__shared__ float score[MAX_SOURCES];
@@ -438,11 +438,19 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 	uint32_t row = blockIdx.x,source,index;
 	float running_max = -INFINITY,running_sum = 0.0f;
 	// The partial sum is the last candidate; the bank holds the rest.
+	//
+	// THE BANK IS [source][row][dimension], WHICH IS THE ONLY LAYOUT THAT CAN BE
+	// STABLE. The writer stores one completed block for every row at a time, so
+	// its natural stride is rows - and a [row][source] layout would need a row
+	// stride equal to the source count, which GROWS as blocks close: a bank
+	// written when three sources existed would be re-read wrongly when there are
+	// five. This kernel read [row][sources-1] and the driver wrote [source][row];
+	// the two agreed at one row and at no other batch size.
 	for (source = 0u; source < sources; ++source)
 	{
 		const uint16_t *values = source + 1u == sources
 			? partial_bf16 + ((uint64_t)row * dimension)
-			: bank_bf16 + ((((uint64_t)row * (sources - 1u)) + source) * dimension);
+			: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
 		float square = 0.0f,dot = 0.0f,inverse;
 		for (index = threadIdx.x; index < dimension; index += THREADS)
 		{
@@ -482,9 +490,27 @@ void LmAttnResKernel(const uint16_t *__restrict__ bank_bf16, const uint16_t *__r
 		{
 			const uint16_t *values = source + 1u == sources
 				? partial_bf16 + ((uint64_t)row * dimension)
-				: bank_bf16 + ((((uint64_t)row * (sources - 1u)) + source) * dimension);
+				: bank_bf16 + ((((uint64_t)source * rows) + row) * dimension);
 			total += weight[source] * LmBf16ToFloat(values[index]);
 		}
 		output_bf16[((uint64_t)row * dimension) + index] = LmFloatToBf16(total);
 	}
+}
+
+// Gather rows by a source map: destination row r is source row map[r]. The
+// route expansion for a weight-only expert GEMM - the quantiser used to do
+// this implicitly on its way to MXFP4, and with activations staying BF16 the
+// expansion is the whole job. A null map is a straight copy by index.
+template<uint32_t THREADS>
+__global__ void LmGatherRowsKernel(const uint16_t *__restrict__ source_bf16, const uint32_t *__restrict__ source_row_map, uint16_t *__restrict__ destination_bf16, uint32_t rows, uint32_t dimension)
+{
+	uint32_t row = blockIdx.y,element = (blockIdx.x * THREADS) + threadIdx.x;
+	uint32_t source_row;
+	uint64_t from,to;
+	if ( row >= rows || element >= dimension )
+		return;
+	source_row = source_row_map != 0 ? source_row_map[row] : row;
+	from = ((uint64_t)source_row * dimension) + element;
+	to = ((uint64_t)row * dimension) + element;
+	destination_bf16[to] = source_bf16[from];
 }

@@ -25,20 +25,20 @@ The final stage remains anchored to the production timing evidence:
 
 ### Exact six-layer AOT stage launcher
 
-`SparkGlm52ResidentDecodeStageExactStageSlicePlan` is now ABI v2 and carries a production AOT launch callback:
+`SparkResidentDecodeStageExactStageSlicePlan` is now ABI v2 and carries a production AOT launch callback:
 
 ```c
 void *launch_function;
 void *opaque_state;
 ```
 
-`SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSlice` validates the exact `stage_index * 6` layer range, B16/B32/B64 batch bucket, device-only hidden handoff, exact final-stage placement, optional Q/KV branch overlap resources, and the AOT callback when the plan advertises `SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH`.
+`SparkGlm52Sm121RequiredDecodeStageLaunchExactPp13StageSlice` validates the exact `stage_index * 6` layer range, B16/B32/B64 batch bucket, device-only hidden handoff, exact final-stage placement, optional Q/KV branch overlap resources, and the AOT callback when the plan advertises `SPARK_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH`.
 
 When the callback is present, the exact six-layer stage is launched through that stage-specific path and captured as one stage-level CUDA graph. When the callback is absent, the validated fallback still executes the six resident layer contexts inside one exact-stage graph path.
 
 ### Paged/chunked prefill attention
 
-`SparkGlm52ResidentDecodeStagePagedPrefillPlan` is now ABI v2 and includes prompt Q, rotated Q/rope, first-block offsets, and prompt attention output pointers. `SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill` now supports `SPARK_GLM52_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_PAGED_ATTENTION` and launches an online-softmax paged attention kernel over the prompt chunk using vLLM-style block-table metadata.
+`SparkResidentDecodeStagePagedPrefillPlan` is now ABI v2 and includes prompt Q, rotated Q/rope, first-block offsets, and prompt attention output pointers. `SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill` now supports `SPARK_RESIDENT_DECODE_STAGE_BULK_PREFILL_CAPABILITY_PAGED_ATTENTION` and launches an online-softmax paged attention kernel over the prompt chunk using vLLM-style block-table metadata.
 
 The scheduler-side chunked prefill and prefix-cache accounting remain block aligned. The CUDA side can now consume the same metadata instead of being limited to metadata staging and prompt-hidden copies.
 
@@ -73,15 +73,15 @@ New scheduler accounting records interleaved prefill admissions and decode bypas
 
 ### Prefix-cache block manager
 
-Added `SparkGlm52PrefixCache`, a block-level prefix cache manager with prompt block hashing, parent-hash chaining, block lookup, block commit, per-sequence release, reference counts, and LRU-style reusable victim selection. Lookup intentionally keeps the last prompt token scheduled for recomputation when the full prompt hits cache.
+Added `SparkPrefixCache`, a block-level prefix cache manager with prompt block hashing, parent-hash chaining, block lookup, block commit, per-sequence release, reference counts, and LRU-style reusable victim selection. Lookup intentionally keeps the last prompt token scheduled for recomputation when the full prompt hits cache.
 
 ### MoE and final-stage fusion hooks
 
 The exact PP13 plan advertises optional stage-level MoE fusion and final-token tail fusion capabilities:
 
 ```c
-SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_FUSED_STAGE_MOE
-SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_FUSED_FINAL_TOKEN_TAIL
+SPARK_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_FUSED_STAGE_MOE
+SPARK_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_FUSED_FINAL_TOKEN_TAIL
 ```
 
 The exact-stage validator requires the corresponding callback pointers when those capabilities are set. The built-in final-stage fallback also fuses restricted argmax, MTP draft argmax, and MTP verify/commit into one CUDA kernel, with an external final-tail callback available for an AOT final-stage implementation.

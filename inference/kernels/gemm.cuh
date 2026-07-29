@@ -32,6 +32,7 @@
 // bucket, and rounding is one-directional: up wastes mma throughput on padded
 // rows, which is free here; down costs bandwidth, which is not.
 
+#include "inference/kernels/formats/bf16.cuh"
 #include "inference/kernels/tile.cuh"
 #include <stdint.h>
 
@@ -51,9 +52,32 @@ struct LmGemmArguments
 	const void *tensor_map_b;
 	const float *scale_a;
 	const float *scale_b;
+	// The weight-only path: E8M0 codes as shipped, [group][neuron][k_group]
+	// row-major with scale_groups codes per neuron. Pre-expanding to FP32 costs
+	// 17.6 percent of expert bandwidth for a value exp2f decodes in one
+	// instruction; the checkpoint's bytes stream as the checkpoint packed them.
+	const uint8_t *scale_b_e8m0;
+	uint32_t scale_groups;
+	// A caller that pre-priced the grouped tile table for this launch's tile
+	// heights sets this; the launcher then makes no prefix launch. The dense
+	// case never needs either - the kernel derives one group's two values.
+	uint32_t prefix_built;
 	const uint32_t *group_row_offset;
-	const uint32_t *group_tile_prefix;
+	// FILLED BY THE LAUNCHER, NOT THE CALLER. Tile counts depend on this
+	// launch's tile height and neuron width, so one caller-built prefix cannot
+	// serve two GEMMs of different output widths - and it was serving twenty.
+	// The caller provides group_count + 1 words of device scratch; the launcher
+	// prices them for the launch it is about to make.
+	uint32_t *group_tile_prefix;
 	void *output_bf16;
+	// Optional second life for the result: the epilogue ADDS it into this
+	// buffer (read-modify-write; single writer per element by tile
+	// ownership, stream-ordered against other producers). accumulate ==
+	// output means the output itself accumulates. This is how a module's
+	// final projection folds the AttnRes partial add - and the shared
+	// expert's sum - into the store it was already making: one fewer
+	// kernel, one fewer full-width read, per fused add.
+	void *accumulate_bf16;
 	uint32_t group_count;
 	uint32_t input_dimension;
 	uint32_t output_dimension;
@@ -113,6 +137,8 @@ static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4
 {
 	const uint32_t n_frags = TILE_N / WARPS / Format::kMmaN;
 	uint16_t *output = (uint16_t *)args.output_bf16;
+	uint16_t *accumulate = (uint16_t *)args.accumulate_bf16;
+	uint64_t at;
 	uint32_t i,e,mi,ni,row,column;
 	for (i = 0u; i < count; ++i)
 	{
@@ -125,8 +151,15 @@ static __device__ void LmGemmStore(const LmGemmArguments &args, float (*total)[4
 				+ LmMmaAccumulatorColumn(lane,e);
 			if ( row >= row_limit || column >= args.output_dimension )
 				continue;
-			output[((uint64_t)row * args.output_dimension) + column] =
-				LmFloatToBf16(total[i][e]);
+			at = ((uint64_t)row * args.output_dimension) + column;
+			if ( accumulate != 0 )
+			{
+				float sum = LmBf16ToFloat(accumulate[at]) + total[i][e];
+				accumulate[at] = LmFloatToBf16(sum);
+				if ( accumulate == output )
+					continue;
+			}
+			output[at] = LmFloatToBf16(total[i][e]);
 		}
 	}
 }
@@ -174,28 +207,40 @@ void LmGemmKernel(__grid_constant__ const LmGemmArguments args, LmTileSource sou
 	const uint32_t count = (TILE_M / Format::kMmaM) * (TILE_N / WARPS / Format::kMmaN);
 	const uint32_t neuron_tiles = (args.output_dimension + TILE_N - 1u) / TILE_N;
 	const uint32_t k_tiles = args.input_dimension / TILE_K;
-	const uint32_t tile_bytes = LmTileBytes(1u,TILE_K,Format::kStoredBits);
+	// ONE GROUP NEEDS NO TABLE. A dense GEMM's tile count is two values both
+	// derivable from the arguments, and reading them from memory cost a
+	// prefix-kernel launch per projection - about twenty per layer, seven
+	// hundred per token, pure latency at batch one on a machine where the
+	// decode step is already launch-bound. The grouped case keeps the table,
+	// which the route build now writes.
+	const uint32_t dense_rows = args.group_count == 1u
+		? args.group_row_offset[1] - args.group_row_offset[0] : 0u;
+	const uint32_t dense_tiles = args.group_count == 1u
+		? ((dense_rows + TILE_M - 1u) / TILE_M) * neuron_tiles : 0u;
 	float total[(TILE_M / Format::kMmaM) * (TILE_N / WARPS / Format::kMmaN)][4];
 	uint32_t warp = threadIdx.x / LM_WARP_LANES,lane = threadIdx.x % LM_WARP_LANES;
 	uint32_t tile,group,in_group,row_base,row_limit,neuron_base,k,stage,ahead,total_tiles;
 	LmPipelineInitialise<STAGES>(barrier,WARPS * LM_WARP_LANES);
-	total_tiles = LmTotalTiles(args.group_tile_prefix,args.group_count);
+	total_tiles = args.group_count == 1u ? dense_tiles
+		: LmTotalTiles(args.group_tile_prefix,args.group_count);
 	for (tile = blockIdx.x; tile < total_tiles; tile += gridDim.x)
 	{
-		group = LmGroupOfTile(args.group_tile_prefix,args.group_count,tile);
-		in_group = tile - args.group_tile_prefix[group];
+		group = args.group_count == 1u ? 0u
+			: LmGroupOfTile(args.group_tile_prefix,args.group_count,tile);
+		in_group = args.group_count == 1u ? tile
+			: tile - args.group_tile_prefix[group];
 		row_base = args.group_row_offset[group] + ((in_group / neuron_tiles) * TILE_M);
 		row_limit = args.group_row_offset[group + 1u];
 		neuron_base = (in_group % neuron_tiles) * TILE_N;
 		LmGemmZero(total,count);
 		for (stage = 0u; stage + 1u < STAGES && stage < k_tiles; ++stage)
-			LmPipelineProduce(&source_a,&source_b,stage_a[stage],stage_b[stage],&barrier[stage],row_base,neuron_base,stage * tile_bytes,group,grouped);
+			LmPipelineProduce(&source_a,&source_b,stage_a[stage],stage_b[stage],&barrier[stage],row_base,neuron_base,stage,group,grouped);
 		for (k = 0u; k < k_tiles; ++k)
 		{
 			stage = LmPipelineStage(k,STAGES);
 			ahead = LmPipelineAhead(k,STAGES);
 			if ( ahead < k_tiles )
-				LmPipelineProduce(&source_a,&source_b,stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier[ahead % STAGES],row_base,neuron_base,ahead * tile_bytes,group,grouped);
+				LmPipelineProduce(&source_a,&source_b,stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier[ahead % STAGES],row_base,neuron_base,ahead,group,grouped);
 			LmMbarrierWait(&barrier[stage],LmPipelinePhase(k,STAGES));
 			LmGemmConsume<Format,TILE_M,TILE_N,TILE_K,WARPS>(total,stage_a[stage],stage_b[stage],
 				args.scale_a + (k * (TILE_K / (Format::kScaleGroup ? Format::kScaleGroup : TILE_K))),
@@ -207,4 +252,175 @@ void LmGemmKernel(__grid_constant__ const LmGemmArguments args, LmTileSource sou
 		__syncthreads();
 	}
 	LmPipelineRelease<STAGES>(barrier);
+}
+
+// -- weight-only: BF16 activations against a quantised weight stream ---------
+//
+// The recipe Kimi K3 ships: input_activations null, weights MXFP4 group 32.
+// The activation operand is BF16 as produced, unquantised and unscaled; the
+// weight operand decodes through its Format with an E8M0 code fetched from the
+// scale plane as shipped. One kernel body again, because the only asymmetry a
+// weight-only GEMM has is width and scale - the mma, the pipeline and the
+// store are the symmetric kernel's, and a second copy of those is how the old
+// tree came to hold seven GEMMs.
+
+template<class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES>
+static __host__ __device__ constexpr uint32_t LmGemmWeightOnlySharedBytes(void)
+{
+	return((STAGES * LmTileBytes(TILE_M,TILE_K,LmBf16Format::kStoredBits))
+		+ (STAGES * LmTileBytes(TILE_N,TILE_K,FormatB::kStoredBits))
+		+ (STAGES * 8u));
+}
+
+// The scale fetch happens here, per fragment, from the E8M0 plane: the two
+// adjacent k of a fragment always share a group (group >= 2, asserted), and
+// the plane pointer arrives already offset to this tile's expert, neuron base
+// and K tile, so the index is local rows by local groups.
+template<class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t WARPS>
+static __device__ void LmGemmWeightOnlyConsume(float (*total)[4], const uint8_t *stage_a, const uint8_t *stage_b, const uint8_t *scale_tile, uint32_t scale_groups, uint32_t warp, uint32_t lane)
+{
+	static_assert(FormatB::kScaleGroup >= 2u,
+		"a weight-only format carries a scale plane; a group below 2 splits a fragment");
+	static_assert(FormatB::kMmaM == LmBf16Format::kMmaM
+		&& FormatB::kMmaN == LmBf16Format::kMmaN
+		&& FormatB::kMmaK == LmBf16Format::kMmaK,
+		"both operands must agree on the mma the fragments feed");
+	const uint32_t m_frags = TILE_M / LmBf16Format::kMmaM;
+	const uint32_t n_frags = TILE_N / WARPS / LmBf16Format::kMmaN;
+	const uint32_t pitch_a = LmTileBytes(1u,TILE_K,LmBf16Format::kStoredBits);
+	const uint32_t pitch_b = LmTileBytes(1u,TILE_K,FormatB::kStoredBits);
+	const uint32_t steps = TILE_K / LmBf16Format::kMmaK;
+	uint32_t step,mi,ni,neuron,k_base,k_local,reg;
+	uint32_t a[4],b[2];
+	uint64_t scale_index_cache = ~0ull;
+	float scale_cache = 0.0f;
+	for (step = 0u; step < steps; ++step)
+	{
+		k_base = step * LmBf16Format::kMmaK;
+		for (mi = 0u; mi < m_frags; ++mi)
+		{
+			for (reg = 0u; reg < 4u; ++reg)
+				a[reg] = LmBf16Format::Fragment(stage_a,
+					(mi * LmBf16Format::kMmaM) + LmBf16Format::OperandARow(lane,reg),
+					k_base + LmBf16Format::OperandAK(lane,reg),pitch_a,0.0f);
+			for (ni = 0u; ni < n_frags; ++ni)
+			{
+				neuron = (warp * (TILE_N / WARPS)) + (ni * FormatB::kMmaN);
+				for (reg = 0u; reg < 2u; ++reg)
+				{
+					uint64_t scale_at;
+					k_local = k_base + FormatB::OperandBK(lane,reg);
+					scale_at = (((uint64_t)neuron + FormatB::OperandBRow(lane))
+						* scale_groups) + (k_local / FormatB::kScaleGroup);
+					// One exp2f per group per thread, not one per fragment:
+					// the same E8M0 byte prices several k-steps and the SFU
+					// need not repeat itself.
+					if ( scale_at != scale_index_cache )
+					{
+						scale_index_cache = scale_at;
+						scale_cache = FormatB::ScaleDecode(scale_tile[scale_at]);
+					}
+					b[reg] = FormatB::Fragment(stage_b,
+						neuron + FormatB::OperandBRow(lane),k_local,pitch_b,
+						scale_cache);
+				}
+				LmMmaBf16(total[(mi * n_frags) + ni],a,b);
+			}
+		}
+	}
+}
+
+template<class FormatB, uint32_t TILE_M, uint32_t TILE_N, uint32_t TILE_K, uint32_t STAGES, uint32_t WARPS>
+__global__ __launch_bounds__(WARPS * LM_WARP_LANES, 1)
+void LmGemmWeightOnlyKernel(__grid_constant__ const LmGemmArguments args, LmTileSource source_a, LmTileSource source_b, bool grouped)
+{
+	static_assert(LmTileKIsSwizzleable(TILE_K,LmBf16Format::kStoredBits),"the BF16 activation pitch must be a whole swizzle span");
+	static_assert(LmTileKIsSwizzleable(TILE_K,FormatB::kStoredBits),"the weight pitch must be a whole swizzle span");
+	static_assert(TILE_M % LmBf16Format::kMmaM == 0u && TILE_N % (WARPS * FormatB::kMmaN) == 0u,"tile is not a whole number of mma fragments");
+	static_assert(TILE_K % LmBf16Format::kMmaK == 0u,"tile depth is not a whole number of mma steps");
+	extern __shared__ __align__(LM_TMA_ALIGNMENT_BYTES) uint8_t lm_shared[];
+	const uint32_t a_bytes = LmTileBytes(TILE_M,TILE_K,LmBf16Format::kStoredBits);
+	const uint32_t b_bytes = LmTileBytes(TILE_N,TILE_K,FormatB::kStoredBits);
+	uint8_t (*stage_a)[LmTileBytes(TILE_M,TILE_K,LmBf16Format::kStoredBits)] =
+		(uint8_t (*)[LmTileBytes(TILE_M,TILE_K,LmBf16Format::kStoredBits)])lm_shared;
+	uint8_t (*stage_b)[LmTileBytes(TILE_N,TILE_K,FormatB::kStoredBits)] =
+		(uint8_t (*)[LmTileBytes(TILE_N,TILE_K,FormatB::kStoredBits)])(lm_shared + (STAGES * a_bytes));
+	uint64_t *barrier = (uint64_t *)(lm_shared + (STAGES * (a_bytes + b_bytes)));
+	const uint32_t count = (TILE_M / LmBf16Format::kMmaM) * (TILE_N / WARPS / LmBf16Format::kMmaN);
+	const uint32_t neuron_tiles = (args.output_dimension + TILE_N - 1u) / TILE_N;
+	const uint32_t k_tiles = args.input_dimension / TILE_K;
+	const uint32_t tile_groups = TILE_K / FormatB::kScaleGroup;
+	// ONE GROUP NEEDS NO TABLE. A dense GEMM's tile count is two values both
+	// derivable from the arguments, and reading them from memory cost a
+	// prefix-kernel launch per projection - about twenty per layer, seven
+	// hundred per token, pure latency at batch one on a machine where the
+	// decode step is already launch-bound. The grouped case keeps the table,
+	// which the route build now writes.
+	const uint32_t dense_rows = args.group_count == 1u
+		? args.group_row_offset[1] - args.group_row_offset[0] : 0u;
+	const uint32_t dense_tiles = args.group_count == 1u
+		? ((dense_rows + TILE_M - 1u) / TILE_M) * neuron_tiles : 0u;
+
+	float total[(TILE_M / LmBf16Format::kMmaM) * (TILE_N / WARPS / LmBf16Format::kMmaN)][4];
+	uint32_t warp = threadIdx.x / LM_WARP_LANES,lane = threadIdx.x % LM_WARP_LANES;
+	uint32_t tile,group,in_group,row_base,row_limit,neuron_base,k,stage,ahead,total_tiles;
+	const uint8_t *scale_plane;
+	LmPipelineInitialise<STAGES>(barrier,WARPS * LM_WARP_LANES);
+	total_tiles = args.group_count == 1u ? dense_tiles
+		: LmTotalTiles(args.group_tile_prefix,args.group_count);
+	for (tile = blockIdx.x; tile < total_tiles; tile += gridDim.x)
+	{
+		group = args.group_count == 1u ? 0u
+			: LmGroupOfTile(args.group_tile_prefix,args.group_count,tile);
+		in_group = args.group_count == 1u ? tile
+			: tile - args.group_tile_prefix[group];
+		row_base = args.group_row_offset[group] + ((in_group / neuron_tiles) * TILE_M);
+		row_limit = args.group_row_offset[group + 1u];
+		neuron_base = (in_group % neuron_tiles) * TILE_N;
+		// This tile's slice of the E8M0 plane: expert, then neuron base, in a
+		// [group][neuron][k_group] layout whose row stride is args.scale_groups.
+		scale_plane = args.scale_b_e8m0
+			+ ((((uint64_t)group * args.output_dimension) + neuron_base)
+				* args.scale_groups);
+		LmGemmZero(total,count);
+		for (stage = 0u; stage + 1u < STAGES && stage < k_tiles; ++stage)
+			LmPipelineProduce(&source_a,&source_b,stage_a[stage],stage_b[stage],&barrier[stage],row_base,neuron_base,stage,group,grouped);
+		for (k = 0u; k < k_tiles; ++k)
+		{
+			stage = LmPipelineStage(k,STAGES);
+			ahead = LmPipelineAhead(k,STAGES);
+			if ( ahead < k_tiles )
+				LmPipelineProduce(&source_a,&source_b,stage_a[ahead % STAGES],stage_b[ahead % STAGES],&barrier[ahead % STAGES],row_base,neuron_base,ahead,group,grouped);
+			LmMbarrierWait(&barrier[stage],LmPipelinePhase(k,STAGES));
+			LmGemmWeightOnlyConsume<FormatB,TILE_M,TILE_N,TILE_K,WARPS>(total,
+				stage_a[stage],stage_b[stage],
+				scale_plane + ((uint64_t)k * tile_groups),args.scale_groups,
+				warp,lane);
+			__syncthreads();
+		}
+		LmGemmStore<LmBf16Format,TILE_M,TILE_N,WARPS>(args,total,count,row_base,row_limit,neuron_base,warp,lane);
+		__syncthreads();
+	}
+	LmPipelineRelease<STAGES>(barrier);
+}
+
+// Price this launch's tiles from the row offsets: tiles for group g are
+// ceil(rows_g / tile_m) * neuron_tiles, prefixed. Serial over the groups by
+// one thread - 897 additions is not a scan problem - and launched by the GEMM
+// launcher on the same stream, so the GEMM's binary search reads a prefix
+// built for exactly its own geometry.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmGemmTilePrefixKernel(const uint32_t *__restrict__ group_row_offset, uint32_t group_count, uint32_t tile_m, uint32_t neuron_tiles, uint32_t *__restrict__ tile_prefix)
+{
+	uint32_t index,rows,total = 0u;
+	if ( threadIdx.x != 0u || blockIdx.x != 0u )
+		return;
+	for (index = 0u; index < group_count; ++index)
+	{
+		rows = group_row_offset[index + 1u] - group_row_offset[index];
+		tile_prefix[index] = total;
+		total += ((rows + tile_m - 1u) / tile_m) * neuron_tiles;
+	}
+	tile_prefix[group_count] = total;
 }

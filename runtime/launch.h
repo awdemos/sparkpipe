@@ -82,7 +82,11 @@
 typedef struct LmLaunchShape
 {
 	uint32_t tokens,top_k,expert_count,input_dimension,output_dimension;
-	uint32_t stored_bits,tile_n,tile_k,stages;
+	// stored_bits sizes the WEIGHT operand; stored_bits_a the activation, and
+	// zero means symmetric. Weight-only formats stream BF16 activations against
+	// sub-byte weights, and one width for both was the assumption that priced
+	// that path out of the planner.
+	uint32_t stored_bits,stored_bits_a,tile_n,tile_k,stages;
 }
 LmLaunchShape;
 
@@ -123,12 +127,25 @@ static uint32_t LmLaunchSelectTile(uint32_t peak_rows)
 	return(64u);
 }
 
+// The grouped tile height as a pure function of the batch shape, so a layer
+// can price its expert tile tables in the route build and skip the prefix
+// launches. This IS the planner's choice - one truth, exported.
+static uint32_t LmLaunchGroupedTileM(uint32_t tokens, uint32_t top_k, uint32_t expert_count)
+{
+	LmLaunchShape shape = { 0 };
+	shape.tokens = tokens;
+	shape.top_k = top_k;
+	shape.expert_count = expert_count;
+	return(LmLaunchSelectTile(LmLaunchPeakRowsPerGroup(&shape)));
+}
+
 // Shared memory the kernel will carve, matching LmGemmSharedBytes exactly. Kept
 // as arithmetic rather than a call into the template so the host can size a
 // pool without instantiating a kernel.
 static uint32_t LmLaunchSharedBytes(const LmLaunchShape *shape, uint32_t tile_m)
 {
-	uint32_t a = (tile_m * shape->tile_k * shape->stored_bits) / 8u;
+	uint32_t bits_a = shape->stored_bits_a != 0u ? shape->stored_bits_a : shape->stored_bits;
+	uint32_t a = (tile_m * shape->tile_k * bits_a) / 8u;
 	uint32_t b = (shape->tile_n * shape->tile_k * shape->stored_bits) / 8u;
 	return((shape->stages * (a + b)) + (shape->stages * 8u));
 }
@@ -152,7 +169,7 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 	// the two meet is here. Every K extent in the three drivers today is a
 	// multiple of 256, which is why it has never bitten, but INT7 tiles at 256
 	// rather than 128 and the two models without a layer.cuh are unwritten.
-	// GLM52_QK_NOPE_DIM and MIMO25_HEAD_DIM are already 192 and would silently
+	// two models' 192-wide head dims exist in this tree today and would silently
 	// compute nothing at all under INT7: 192 / 256 == 0 tiles.
 	if ( (shape->input_dimension % shape->tile_k) != 0u )
 		return(LM_LAUNCH_ERR_SHAPE);
@@ -164,6 +181,11 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 	pitch = (shape->tile_k * shape->stored_bits) / 8u;
 	plan->swizzle_span = LmSwizzleSpanFor(pitch);
 	if ( plan->swizzle_span == 0u )
+		return(LM_LAUNCH_ERR_MAP);
+	// The activation pitch must be swizzleable in its own right when the widths
+	// differ; the weight span above does not vouch for it.
+	if ( shape->stored_bits_a != 0u
+		&& LmSwizzleSpanFor((shape->tile_k * shape->stored_bits_a) / 8u) == 0u )
 		return(LM_LAUNCH_ERR_MAP);
 	// Persistent grid: one CTA per SM, sized to the machine rather than the
 	// problem, so a short group never leaves an SM idle behind a long one. The

@@ -2,49 +2,49 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "sparkpipe/spark_glm52_long_context.h"
+#include "sparkpipe/spark_long_context.h"
 
 static void SparkTestLongContextDefaultPolicyIsBounded(void)
 {
-    SparkGlm52LongContextPolicy policy;
+    SparkLongContextPolicy policy;
 
-    SparkGlm52LongContextInitializeDefaultPolicy(&policy);
-    assert(SparkGlm52LongContextValidatePolicy(&policy) == SPARK_STATUS_OK);
-    assert(policy.max_context_tokens == SPARK_GLM52_LONG_CONTEXT_DEFAULT_MAX_CONTEXT_TOKENS);
+    SparkLongContextInitializeDefaultPolicy(&policy);
+    assert(SparkLongContextValidatePolicy(&policy) == SPARK_STATUS_OK);
+    assert(policy.max_context_tokens == SPARK_LONG_CONTEXT_DEFAULT_MAX_CONTEXT_TOKENS);
     assert(policy.selected_token_capacity == 2048u);
     assert(policy.maximum_decode_scan_token_count == 2048u);
     assert((policy.policy_flags &
-        SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_REQUIRE_BOUNDED_DECODE) != 0u);
+        SPARK_LONG_CONTEXT_POLICY_FLAG_REQUIRE_BOUNDED_DECODE) != 0u);
 }
 
 static void SparkTestLongContextBuildsBoundedDecodeSelectionFor256k(void)
 {
-    SparkGlm52LongContextPolicy policy;
-    SparkGlm52LongContextDecodePlan decode_plan;
+    SparkLongContextPolicy policy;
+    SparkLongContextDecodePlan decode_plan;
     uint32_t selected_token_indices[
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY];
+        SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY];
     uint32_t token_index;
     uint32_t saw_last_context_token;
 
-    SparkGlm52LongContextInitializeDefaultPolicy(&policy);
+    SparkLongContextInitializeDefaultPolicy(&policy);
     memset(selected_token_indices, 0, sizeof(selected_token_indices));
 
-    assert(SparkGlm52LongContextBuildDecodeSelection(
+    assert(SparkLongContextBuildDecodeSelection(
         &policy,
         262144u,
         selected_token_indices,
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY,
+        SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY,
         &decode_plan) == SPARK_STATUS_OK);
 
     assert((decode_plan.flags &
-        SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_FLAG_BOUNDED_SELECTION) != 0u);
+        SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_BOUNDED_SELECTION) != 0u);
     assert((decode_plan.flags &
-        SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_FLAG_LONG_CONTEXT) != 0u);
+        SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_LONG_CONTEXT) != 0u);
     assert((decode_plan.flags &
-        SPARK_GLM52_LONG_CONTEXT_DECODE_PLAN_FLAG_CONTEXT_TRUNCATED) != 0u);
+        SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_CONTEXT_TRUNCATED) != 0u);
     assert(decode_plan.context_token_count == 262144u);
     assert(decode_plan.selected_token_count ==
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY);
+        SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY);
     assert(decode_plan.selected_block_count < decode_plan.kv_block_count_for_context);
     assert(decode_plan.selected_block_count <= 2048u);
     assert(decode_plan.avoided_full_scan_token_reads > 250000u);
@@ -66,19 +66,19 @@ static void SparkTestLongContextBuildsBoundedDecodeSelectionFor256k(void)
 
 static void SparkTestLongContextBuildsChunkedPrefillPlanFor256k(void)
 {
-    SparkGlm52LongContextPolicy policy;
-    SparkGlm52LongContextPrefillPlan prefill_plan;
+    SparkLongContextPolicy policy;
+    SparkLongContextPrefillPlan prefill_plan;
 
-    SparkGlm52LongContextInitializeDefaultPolicy(&policy);
-    assert(SparkGlm52LongContextBuildPrefillPlan(
+    SparkLongContextInitializeDefaultPolicy(&policy);
+    assert(SparkLongContextBuildPrefillPlan(
         &policy,
         262144u,
         256u,
         &prefill_plan) == SPARK_STATUS_OK);
     assert((prefill_plan.flags &
-        SPARK_GLM52_LONG_CONTEXT_PREFILL_PLAN_FLAG_CHUNKED_PREFILL) != 0u);
+        SPARK_LONG_CONTEXT_PREFILL_PLAN_FLAG_CHUNKED_PREFILL) != 0u);
     assert((prefill_plan.flags &
-        SPARK_GLM52_LONG_CONTEXT_PREFILL_PLAN_FLAG_LONG_CONTEXT) != 0u);
+        SPARK_LONG_CONTEXT_PREFILL_PLAN_FLAG_LONG_CONTEXT) != 0u);
     assert(prefill_plan.prefill_chunk_count == 1024u);
     assert(prefill_plan.kv_block_count_for_prompt == 16384u);
     assert(prefill_plan.total_prompt_token_visits == 262144u);
@@ -86,28 +86,28 @@ static void SparkTestLongContextBuildsChunkedPrefillPlanFor256k(void)
 
 static void SparkTestLongContextFullScanRequiresExplicitUnsafePolicy(void)
 {
-    SparkGlm52LongContextPolicy policy;
-    SparkGlm52LongContextDecodePlan decode_plan;
+    SparkLongContextPolicy policy;
+    SparkLongContextDecodePlan decode_plan;
     uint32_t selected_token_indices[
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY];
+        SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY];
 
-    SparkGlm52LongContextInitializeDefaultPolicy(&policy);
-    policy.policy_mode = SPARK_GLM52_LONG_CONTEXT_POLICY_MODE_FULL_CONTEXT_SCAN;
+    SparkLongContextInitializeDefaultPolicy(&policy);
+    policy.policy_mode = SPARK_LONG_CONTEXT_POLICY_MODE_FULL_CONTEXT_SCAN;
     policy.policy_flags &=
-        ~SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_REQUIRE_BOUNDED_DECODE;
-    assert(SparkGlm52LongContextBuildDecodeSelection(
+        ~SPARK_LONG_CONTEXT_POLICY_FLAG_REQUIRE_BOUNDED_DECODE;
+    assert(SparkLongContextBuildDecodeSelection(
         &policy,
         262144u,
         selected_token_indices,
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY,
+        SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY,
         &decode_plan) == SPARK_STATUS_INVALID_ARGUMENT);
 
-    policy.policy_flags |= SPARK_GLM52_LONG_CONTEXT_POLICY_FLAG_ALLOW_FULL_CONTEXT_SCAN;
-    assert(SparkGlm52LongContextBuildDecodeSelection(
+    policy.policy_flags |= SPARK_LONG_CONTEXT_POLICY_FLAG_ALLOW_FULL_CONTEXT_SCAN;
+    assert(SparkLongContextBuildDecodeSelection(
         &policy,
         262144u,
         selected_token_indices,
-        SPARK_GLM52_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY,
+        SPARK_LONG_CONTEXT_DEFAULT_SELECTED_TOKEN_CAPACITY,
         &decode_plan) == SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 

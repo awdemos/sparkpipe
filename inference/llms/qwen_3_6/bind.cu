@@ -7,7 +7,7 @@
 // plausible-looking plumbing".
 //
 // So this file does NOT invent a Qwen node context. glm5_2 binds from
-// SparkGlm52ResidentDecodeStageNodeContext, a struct the host already fills
+// SparkResidentDecodeStageNodeContext, a struct the host already fills
 // because a glm5_2 pack format exists. No qwen pack format exists, and writing
 // one from the layer's requirements would be guessing at what a packer will
 // produce. The weights arrive here as an explicit per-layer table instead -

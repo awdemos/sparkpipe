@@ -54,7 +54,7 @@ static const void *resolve_no_norm(void *context, const char *name, uint32_t lay
 
 int main(void)
 {
-	SparkGlm52ResidentDecodeStageNodeContext context;
+	SparkResidentDecodeStageNodeContext context;
 	uint32_t bound, missing;
 
 	printf("weight binding\n\nthe table\n");

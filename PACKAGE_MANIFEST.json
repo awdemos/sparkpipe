@@ -13562,7 +13562,7 @@
       "size_bytes": 4232
     },
     {
-      "path": "model-families/glm52/include/sparkpipe/spark_glm52_stage_plan.h",
+      "path": "model-families/glm52/include/sparkpipe/spark_stage_plan.h",
       "sha256": "3421493f4c6a8b4c075dd38c6b143be042df4e3e1a26def28ff6762391ddc1e4",
       "size_bytes": 7610
     },

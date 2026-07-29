@@ -101,17 +101,34 @@ def entry_points(model):
     unity = LLMS / model / "unity.cu"
     if not unity.exists():
         return set()
-    return set(re.findall(r'extern "C" int32_t (\w+)', unity.read_text()))
+    exports = set(re.findall(r'extern "C" int32_t (\w+)', unity.read_text()))
+    # A kind is also implemented if the model's slice dispatch names its layer
+    # function: kimi_k3's per-kind INT7 exports were deleted when the recipe
+    # made INT7 uninstantiable, and the real entry points are the K3LayerKda /
+    # K3LayerMla arms K3LaunchAttentionHalf selects between. An export table
+    # that only reads unity.cu would force dead C wrappers back into existence
+    # to satisfy a gate, which is the tail wagging the dog.
+    for part in sorted(unity.parent.glob("slice.cuh")):
+        exports |= set(re.findall(r"return\((\w+)<", part.read_text()))
+    return exports
 
 
 def driver_dispatches(model):
     """A driver exists and reads the layer kind. Compiling is not enough: a
     driver that ignores LAYER_KIND and runs one path for every layer is exactly
-    what deepseek_v4 would look like if someone wrote it a bind.cu today."""
+    what deepseek_v4 would look like if someone wrote it a bind.cu today.
+
+    The driver is bind.cu plus whatever slice header it includes: kimi_k3's
+    loop moved to slice.cuh precisely so a host harness can execute it, and a
+    gate that only reads bind.cu would push the dispatch back into the one
+    file a CPU cannot compile."""
     bind = LLMS / model / "bind.cu"
     if not bind.exists():
         return None
-    return "LAYER_KIND" in bind.read_text()
+    driver = bind.read_text()
+    for part in sorted((LLMS / model).glob("slice.cuh")):
+        driver += part.read_text()
+    return "LAYER_KIND" in driver
 
 
 def main():

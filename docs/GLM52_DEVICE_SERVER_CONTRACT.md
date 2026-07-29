@@ -36,7 +36,7 @@ server.
 
 HELLO 1, HELLO_ACK 2, SUBMIT_WORK 3, SUBMIT_RESULT 4, COMPLETION 5, QUERY 6,
 STATS 7, SHUTDOWN 8, ERROR 9, SUBMIT_PREFILL 10, SUBMIT_DECODE 11. The wire
-structs in `include/sparkpipe/spark_glm52_cuda_resident_ipc.h` are the device
+structs in `include/sparkpipe/spark_cuda_resident_ipc.h` are the device
 ABI. The header abi_version gates lockstep; mismatches fail loudly.
 
 Known gaps, to be batched into the next planned device deploy, never shipped

@@ -76,7 +76,7 @@ _Static_assert(
 	"FP8 MoE pack header wire size mismatch");
 #endif
 
-typedef struct SparkGlm52ResidentDecodeStageFp8MoeResidentBinding
+typedef struct SparkResidentDecodeStageFp8MoeResidentBinding
 {
 	uint32_t abi_version;
 	uint32_t layer_index;
@@ -88,9 +88,9 @@ typedef struct SparkGlm52ResidentDecodeStageFp8MoeResidentBinding
 	void *workspace;
 	uint32_t workspace_owned;
 	uint32_t backend_kind;
-} SparkGlm52ResidentDecodeStageFp8MoeResidentBinding;
+} SparkResidentDecodeStageFp8MoeResidentBinding;
 
-typedef struct SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateInfo
+typedef struct SparkResidentDecodeStageFp8MoeResidentBindingCreateInfo
 {
 	uint32_t abi_version;
 	uint32_t layer_index;
@@ -99,14 +99,14 @@ typedef struct SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateInfo
 	const char *pack_path;
 	void *external_workspace;
 	uint64_t external_workspace_bytes;
-} SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateInfo;
+} SparkResidentDecodeStageFp8MoeResidentBindingCreateInfo;
 
-SparkStatus SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateFromPackFile(
-	SparkGlm52ResidentDecodeStageFp8MoeResidentBinding *binding,
-	const SparkGlm52ResidentDecodeStageFp8MoeResidentBindingCreateInfo *create_info);
+SparkStatus SparkResidentDecodeStageFp8MoeResidentBindingCreateFromPackFile(
+	SparkResidentDecodeStageFp8MoeResidentBinding *binding,
+	const SparkResidentDecodeStageFp8MoeResidentBindingCreateInfo *create_info);
 
-void SparkGlm52ResidentDecodeStageFp8MoeResidentBindingDestroy(
-	SparkGlm52ResidentDecodeStageFp8MoeResidentBinding *binding);
+void SparkResidentDecodeStageFp8MoeResidentBindingDestroy(
+	SparkResidentDecodeStageFp8MoeResidentBinding *binding);
 
 #ifdef __cplusplus
 }

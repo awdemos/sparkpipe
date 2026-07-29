@@ -36,13 +36,13 @@ static SparkStatus SparkGlm52TextPromptValidateSubmitRequest(
 }
 
 SparkStatus SparkGlm52RequestApiSubmitTextPrompt(
-    SparkGlm52RequestApi *api,
+    SparkRequestApi *api,
     const SparkTokenizer *tokenizer,
     const SparkGlm52TextPromptSubmitRequest *request,
     SparkGlm52TextPromptSubmitResult *result)
 {
     SparkTokenizerEncoding encoding;
-    SparkGlm52RequestApiSubmitRequest submit_request;
+    SparkRequestApiSubmitRequest submit_request;
     SparkStatus status;
 
     if (result != 0)
@@ -98,8 +98,8 @@ SparkStatus SparkGlm52RequestApiSubmitTextPrompt(
     }
 
     memset(&submit_request, 0, sizeof(submit_request));
-    submit_request.abi_version = SPARK_GLM52_REQUEST_API_ABI_VERSION;
-    submit_request.descriptor_bytes = SPARK_GLM52_REQUEST_API_SUBMIT_DESCRIPTOR_BYTES;
+    submit_request.abi_version = SPARK_REQUEST_API_ABI_VERSION;
+    submit_request.descriptor_bytes = SPARK_REQUEST_API_SUBMIT_DESCRIPTOR_BYTES;
     submit_request.flags = request->request_flags;
     submit_request.priority = request->priority;
     submit_request.prompt_token_count = result->required_prompt_token_count;
@@ -110,10 +110,10 @@ SparkStatus SparkGlm52RequestApiSubmitTextPrompt(
     submit_request.sequence_id = request->sequence_id;
     submit_request.prompt_token_ids = request->prompt_token_storage;
 
-    status = SparkGlm52RequestApiSubmit(api, &submit_request, &result->request_handle);
+    status = SparkRequestApiSubmit(api, &submit_request, &result->request_handle);
     if (status != SPARK_STATUS_OK)
     {
-        result->request_handle = SPARK_GLM52_REQUEST_API_INVALID_HANDLE;
+        result->request_handle = SPARK_REQUEST_API_INVALID_HANDLE;
         return status;
     }
     return SPARK_STATUS_OK;

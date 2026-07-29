@@ -70,6 +70,18 @@ run "k3 quant recipe"      "python3 tests/test_k3_quant_recipe.py"
 # first successful run, and catches the shared-expert overwrite by seeing the
 # routed value missing from the output rather than by reading the source.
 run "k3 layer on host"     "python3 tests/test_k3_layer_host.py"
+run "k3 slice on host"     "python3 tests/test_k3_slice_host.py"
+run "k3 engine on host"    "python3 tests/test_k3_engine.py"
+run "k3 pack"              "python3 tests/test_k3_pack.py"
+run "k3 tp shard"          "python3 tests/test_k3_shard.py"
+run "k3 shard table"       "python3 tests/test_k3_shard_table.py"
+run "k3 stage doorway"     "gcc -Iinclude -Imodel-families/k3/include -Imodel-families/glm52/include -DNDEBUG -c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_validation.c -o /tmp/g_k3v.o"
+run "stage module + model"  "gcc -Iinclude -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source -Imodel-families/glm52/include -DNDEBUG -c inference/stage/module.c -o /tmp/g_mod.o && gcc -Iinclude -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source -Imodel-families/glm52/include -DNDEBUG -c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_validation.c -o /tmp/g_val.o"
+run "k3 kv seam"          "gcc -O2 -Wall -Wextra -Iinclude -Imodel-families/glm52/include -Imodel-families/k3/include -o /tmp/g_k3kv tests/test_k3_kv_cache.c cache/kv_cache.c && /tmp/g_k3kv"
+run "state pool"          "gcc -O2 -Wall -Wextra -I. -o /tmp/g_sp tests/test_state_pool.c && /tmp/g_sp"
+run "k3 kv geometry"      "python3 tests/test_k3_kv_geometry.py"
+run "fast defaults"        "python3 tests/test_fast_defaults.py"
+run "dry naming law"       "python3 tests/test_dry_law.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run "grouped topk builds"  "sh tools/build_grouped_topk.sh"

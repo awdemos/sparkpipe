@@ -3,7 +3,7 @@
 
 #include <stdint.h>
 
-#include "sparkpipe/spark_glm52_request_api.h"
+#include "sparkpipe/spark_request_api.h"
 #include "sparkpipe/spark_status.h"
 #include "sparkpipe/spark_tokenizer.h"
 
@@ -49,7 +49,7 @@ void SparkGlm52TextPromptGetDefaultSubmitRequest(
     SparkGlm52TextPromptSubmitRequest *request);
 
 SparkStatus SparkGlm52RequestApiSubmitTextPrompt(
-    SparkGlm52RequestApi *api,
+    SparkRequestApi *api,
     const SparkTokenizer *tokenizer,
     const SparkGlm52TextPromptSubmitRequest *request,
     SparkGlm52TextPromptSubmitResult *result);

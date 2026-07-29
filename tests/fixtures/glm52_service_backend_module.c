@@ -1,19 +1,19 @@
 #include <string.h>
 
-#include "sparkpipe/spark_glm52_service_backend.h"
+#include "sparkpipe/spark_service_backend.h"
 #include "sparkpipe/spark_glm52_model.h"
 
 static SparkStatus SparkTestServiceBackendInitialize(
-	const SparkGlm52ServiceBackendConfiguration *configuration,
+	const SparkServiceBackendConfiguration *configuration,
 	void **backend_state)
 {
 	static uint32_t State;
 
 	if (configuration == 0 || backend_state == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (configuration->abi_version != SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION ||
+	if (configuration->abi_version != SPARK_SERVICE_BACKEND_ABI_VERSION ||
 		configuration->descriptor_bytes !=
-			SPARK_GLM52_SERVICE_BACKEND_CONFIGURATION_BYTES)
+			SPARK_SERVICE_BACKEND_CONFIGURATION_BYTES)
 		return SPARK_STATUS_ABI_MISMATCH;
 	*backend_state = &State;
 	return SPARK_STATUS_OK;
@@ -26,13 +26,13 @@ static void SparkTestServiceBackendDestroy(void *backend_state)
 
 static SparkStatus SparkTestServiceBackendGetView(
 	void *backend_state,
-	SparkGlm52ServiceBackendView *view)
+	SparkServiceBackendView *view)
 {
 	if (backend_state == 0 || view == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	memset(view,0,sizeof(*view));
-	view->abi_version = SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION;
-	view->descriptor_bytes = SPARK_GLM52_SERVICE_BACKEND_VIEW_BYTES;
+	view->abi_version = SPARK_SERVICE_BACKEND_ABI_VERSION;
+	view->descriptor_bytes = SPARK_SERVICE_BACKEND_VIEW_BYTES;
 	view->runtime_initialized = 1u;
 	view->local_control_ready = 1u;
 	view->configured_kv_context_limit_tokens =
@@ -41,7 +41,7 @@ static SparkStatus SparkTestServiceBackendGetView(
 	view->adaptive_decode_batch_width = 1u;
 	view->decode_batch_capacity = 1u;
 	view->prefill_wave_token_count = 16u;
-	view->service = (SparkGlm52ServiceRuntime *)(uintptr_t)0x1000u;
+	view->service = (SparkServiceRuntime *)(uintptr_t)0x1000u;
 	view->release_id = "test-release";
 	view->release_git_commit = "test-commit";
 	view->release_generation = 1u;
@@ -52,7 +52,7 @@ static SparkStatus SparkTestServiceBackendGetView(
 static SparkStatus SparkTestServiceBackendPump(
 	void *backend_state,
 	uint32_t max_dispatch_steps,
-	SparkGlm52ServiceStats *stats_out)
+	SparkServiceStats *stats_out)
 {
 	if (backend_state == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
@@ -64,7 +64,7 @@ static SparkStatus SparkTestServiceBackendPump(
 
 static SparkStatus SparkTestServiceBackendGetPollDescriptors(
 	void *backend_state,
-	SparkGlm52ServiceBackendPollDescriptor *descriptors,
+	SparkServiceBackendPollDescriptor *descriptors,
 	uint32_t descriptor_capacity,
 	uint32_t *descriptor_count_out)
 {
@@ -76,11 +76,11 @@ static SparkStatus SparkTestServiceBackendGetPollDescriptors(
 	return SPARK_STATUS_OK;
 }
 
-static const SparkGlm52ServiceBackendInterface SparkTestServiceBackendInterface =
+static const SparkServiceBackendInterface SparkTestServiceBackendInterface =
 {
-	SPARK_GLM52_SERVICE_BACKEND_ABI_VERSION,
-	SPARK_GLM52_SERVICE_BACKEND_INTERFACE_BYTES,
-	SPARK_GLM52_SERVICE_BACKEND_REQUIRED_PRODUCTION_CAPS,
+	SPARK_SERVICE_BACKEND_ABI_VERSION,
+	SPARK_SERVICE_BACKEND_INTERFACE_BYTES,
+	SPARK_SERVICE_BACKEND_REQUIRED_PRODUCTION_CAPS,
 	0u,
 	SparkTestServiceBackendInitialize,
 	SparkTestServiceBackendDestroy,
@@ -89,7 +89,7 @@ static const SparkGlm52ServiceBackendInterface SparkTestServiceBackendInterface 
 	SparkTestServiceBackendGetPollDescriptors
 };
 
-const SparkGlm52ServiceBackendInterface *SparkGlm52ServiceBackendGetInterface(void)
+const SparkServiceBackendInterface *SparkServiceBackendGetInterface(void)
 {
 	return &SparkTestServiceBackendInterface;
 }

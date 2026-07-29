@@ -21,11 +21,11 @@ The SM121 required CUDA path now contains a compiled dispatch table for every ex
 
 The selected launcher checks the exact stage index, first layer, six-layer count, batch bucket, active sequence count, and final-token stage, then runs the six layers through an unrolled built-in exact-stage body under the stage-level graph capture/replay path.
 
-Runtime KV block tables remain connected through this path. If a dispatch carries a `SparkGlm52KvBlockTableView`, each layer receives the execution-time physical KV block table selected by the scheduler/request API.
+Runtime KV block tables remain connected through this path. If a dispatch carries a `SparkKvBlockTableView`, each layer receives the execution-time physical KV block table selected by the scheduler/request API.
 
 ## No fake AOT
 
-A plan advertising `SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH` without either a real external launch function or the built-in exact PP13 AOT capability is now rejected during resident module validation.
+A plan advertising `SPARK_RESIDENT_DECODE_STAGE_STAGE_SLICE_CAPABILITY_AOT_STAGE_LAUNCH` without either a real external launch function or the built-in exact PP13 AOT capability is now rejected during resident module validation.
 
 `SPARK_GLM52_RESIDENT_DECODE_STAGE_STAGE_SLICE_PRODUCTION_PP13_CAPABILITIES` now means the built-in exact PP13 AOT path, not a set of required-but-unimplemented fused callbacks.
 

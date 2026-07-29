@@ -70,39 +70,39 @@ NON_GLM_MODEL_PREFIXES = (
 )
 REQUIRED_SYMBOLIC_DEFINES = {
     "model-families/glm52/src/spark_glm52_ring_service_backend.c": {
-        "SPARK_GLM52_RING_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY":
-            "SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT",
-        "SPARK_GLM52_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY":
-            "SPARK_GLM52_RING_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY",
-        "SPARK_GLM52_RING_SERVICE_BACKEND_DEFAULT_LOGICAL_BLOCK_COUNT":
-            "SPARK_GLM52_RING_SERVICE_BACKEND_GPU_BLOCK_COUNT",
+        "SPARK_RING_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY":
+            "SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT",
+        "SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY":
+            "SPARK_RING_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY",
+        "SPARK_RING_SERVICE_BACKEND_DEFAULT_LOGICAL_BLOCK_COUNT":
+            "SPARK_RING_SERVICE_BACKEND_GPU_BLOCK_COUNT",
     },
-    "model-families/glm52/include/sparkpipe/spark_glm52_ring_runtime.h": {
-        "SPARK_GLM52_RING_RUNTIME_STAGE_COUNT":
-            "SPARK_GLM52_STAGE_PLAN_CURRENT_SPARK_COUNT",
-        "SPARK_GLM52_RING_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE":
+    "include/sparkpipe/spark_ring_runtime.h": {
+        "SPARK_RING_RUNTIME_STAGE_COUNT":
+            "SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT",
+        "SPARK_RING_RUNTIME_BF16_HIDDEN_BYTES_PER_SEQUENCE":
             "SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES",
-        "SPARK_GLM52_RING_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE":
+        "SPARK_RING_RUNTIME_INDEXSHARE_SIDEBAND_BYTES_PER_SEQUENCE":
             "SPARK_GLM52_MODEL_DSA_SELECTED_INDEX_BYTES",
     },
-    "model-families/glm52/include/sparkpipe/spark_glm52_production_topology.h": {
-        "SPARK_GLM52_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT":
+    "include/sparkpipe/spark_production_topology.h": {
+        "SPARK_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT":
             "SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER",
-        "SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT":
+        "SPARK_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT":
             "SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT",
-        "SPARK_GLM52_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET":
+        "SPARK_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET":
             "SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET",
     },
-    "model-families/glm52/include/sparkpipe/spark_glm52_request_api.h": {
-        "SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT":
+    "include/sparkpipe/spark_request_api.h": {
+        "SPARK_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT":
             "SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT",
     },
     "modules/glm52_resident_decode_stage/include/sparkpipe/"
     "spark_glm52_resident_decode_stage_firmware.h": {
-        "SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_MOE_SCALE_BLOCK_SIZE":
+        "SPARK_RESIDENT_DECODE_STAGE_FP8_MOE_SCALE_BLOCK_SIZE":
             "SPARK_GLM52_MODEL_FP8_SCALE_BLOCK",
-        "SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_ROUTED_STAGE_SLICE_LAYER_COUNT":
-            "SPARK_GLM52_STAGE_PLAN_MAX_ROUTED_LAYERS_PER_STAGE",
+        "SPARK_RESIDENT_DECODE_STAGE_MAX_ROUTED_STAGE_SLICE_LAYER_COUNT":
+            "SPARK_STAGE_PLAN_MAX_ROUTED_LAYERS_PER_STAGE",
     },
 }
 SIZE_ARGUMENTS_BY_CALL = {
@@ -297,7 +297,7 @@ def main():
         for match in final_event_pattern.finditer(text):
             final_event_definitions.append(str(path.relative_to(ROOT)))
     if final_event_definitions != [
-            "model-families/glm52/include/sparkpipe/spark_glm52_ring_runtime.h"]:
+            "include/sparkpipe/spark_ring_runtime.h"]:
         violations.append(
             "RING final-event wire type is not single-source: " +
             ", ".join(final_event_definitions))
@@ -326,8 +326,8 @@ def main():
     if re.search(
             r"if \(state->mtp_enabled != 0u\)\s*"
             r"request_api_configuration\.configuration_flags \|=\s*"
-            r"SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT \|\s*"
-            r"SPARK_GLM52_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;",
+            r"SPARK_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT \|\s*"
+            r"SPARK_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;",
             backend_text) is None:
         violations.append("MTP backend does not force MTP request scheduling")
     residentd_text = (
@@ -339,7 +339,7 @@ def main():
         violations.append("resident decode drops the attached control generation")
     if re.search(
             r"kv_logical_block_capacity\s*<\s*"
-            r"SPARK_GLM52_RING_SERVICE_BACKEND_GPU_BLOCK_COUNT",
+            r"SPARK_RING_SERVICE_BACKEND_GPU_BLOCK_COUNT",
             backend_text):
         violations.append(
             "attached KV geometry is coupled to the local compile-time pool")
@@ -349,12 +349,12 @@ def main():
             backend_text) is None:
         violations.append("attached KV geometry can silently default")
     service_pump = backend_text.find(
-        "service_status = SparkGlm52ServicePump(")
+        "service_status = SparkServicePump(")
     release_pump = backend_text.find(
-        "release_status = SparkGlm52RingServiceBackendPumpSequenceReleases(",
+        "release_status = SparkRingServiceBackendPumpSequenceReleases(",
         service_pump)
     work_flush = backend_text.find(
-        "work_status = SparkGlm52RingServiceBackendPumpWorkOutput(",
+        "work_status = SparkRingServiceBackendPumpWorkOutput(",
         release_pump)
     if (service_pump < 0 or release_pump < 0 or work_flush < 0 or
             "SparkGlm52RingServiceBackendDrainSequenceReleases" in backend_text):

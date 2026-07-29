@@ -10,7 +10,7 @@ The required SM121 CUDA module now contains a built-in quantized projection laun
 - `SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_NVFP4_E2M1_ROW_MAJOR`
 - `SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_MXFP4_E2M1_ROW_MAJOR`
 
-The launcher consumes `SparkGlm52ResidentDecodeStageQuantizedLinearView` from `linear_plan->custom_state`. FP8 plans use the built-in FlashInfer/CUTLASS SM120 groupwise scaled GEMM path:
+The launcher consumes `SparkResidentDecodeStageQuantizedLinearView` from `linear_plan->custom_state`. FP8 plans use the built-in FlashInfer/CUTLASS SM120 groupwise scaled GEMM path:
 
 ```text
 BF16 activation

@@ -1,6 +1,6 @@
 // Shared-prefix admission against the KV state production actually runs.
 //
-// SparkGlm52RingWorkControlKvState owns block identity, residency, backing and
+// SparkRingWorkControlKvState owns block identity, residency, backing and
 // the share refcount in one place. A B8 chat batch presenting one prefix must
 // therefore produce ONE physical block per shared logical block and eight
 // directory entries pointing at it, not eight physical blocks.
@@ -14,7 +14,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_glm52_model.h"
-#include "sparkpipe/spark_glm52_ring_work_control.h"
+#include "sparkpipe/spark_ring_work_control.h"
 
 #define SPARK_TEST_SHARED_ROWS 8u
 #define SPARK_TEST_BLOCK_TOKENS 64u
@@ -28,24 +28,24 @@ typedef struct SparkTestSharedStorage
 	uint32_t physical_blocks[SPARK_TEST_SHARED_ROWS * SPARK_TEST_LANE_STRIDE];
 	uint32_t lane_counts[SPARK_TEST_SHARED_ROWS];
 	uint8_t block_states[SPARK_TEST_PHYSICAL_BLOCKS];
-	SparkGlm52RingKvKey block_keys[SPARK_TEST_PHYSICAL_BLOCKS];
+	SparkRingKvKey block_keys[SPARK_TEST_PHYSICAL_BLOCKS];
 	uint64_t block_last_used_epochs[SPARK_TEST_PHYSICAL_BLOCKS];
 	uint32_t block_pin_counts[SPARK_TEST_PHYSICAL_BLOCKS];
-	SparkGlm52RingWorkControlKvDirectoryEntry
+	SparkRingWorkControlKvDirectoryEntry
 		directory_entries[SPARK_TEST_INDEX_CAPACITY];
-	SparkGlm52RingWorkControlKvBlockEntry
+	SparkRingWorkControlKvBlockEntry
 		block_entries[SPARK_TEST_INDEX_CAPACITY];
-	SparkGlm52RingKvKey lane_block_keys[
+	SparkRingKvKey lane_block_keys[
 		SPARK_TEST_SHARED_ROWS * SPARK_TEST_LANE_STRIDE];
 } SparkTestSharedStorage;
 
 static SparkTestSharedStorage storage;
 
-static void SparkTestSharedInitializeState(SparkGlm52RingWorkControlKvState *state,uint32_t lane_count)
+static void SparkTestSharedInitializeState(SparkRingWorkControlKvState *state,uint32_t lane_count)
 {
 	memset(&storage,0,sizeof(storage));
-	assert(SparkGlm52RingWorkControlInitializeKvState(state,lane_count,SPARK_TEST_LANE_STRIDE,SPARK_TEST_BLOCK_TOKENS,SPARK_TEST_PHYSICAL_BLOCKS,SPARK_TEST_INDEX_CAPACITY,SPARK_TEST_INDEX_CAPACITY,storage.physical_blocks,storage.lane_counts,storage.block_states,storage.block_keys,storage.block_last_used_epochs,storage.directory_entries,storage.block_entries) == SPARK_STATUS_OK);
-	assert(SparkGlm52RingWorkControlConfigureKvPins(state,storage.block_pin_counts) == SPARK_STATUS_OK);
+	assert(SparkRingWorkControlInitializeKvState(state,lane_count,SPARK_TEST_LANE_STRIDE,SPARK_TEST_BLOCK_TOKENS,SPARK_TEST_PHYSICAL_BLOCKS,SPARK_TEST_INDEX_CAPACITY,SPARK_TEST_INDEX_CAPACITY,storage.physical_blocks,storage.lane_counts,storage.block_states,storage.block_keys,storage.block_last_used_epochs,storage.directory_entries,storage.block_entries) == SPARK_STATUS_OK);
+	assert(SparkRingWorkControlConfigureKvPins(state,storage.block_pin_counts) == SPARK_STATUS_OK);
 }
 
 // Every lane presents the same prefix digest for the same logical block, which
@@ -57,23 +57,23 @@ static void SparkTestSharedPublishPrefixKeys(uint32_t lane_count,uint32_t shared
 	for (lane_index = 0u; lane_index < lane_count; ++lane_index)
 	{
 		for (block_index = 0u; block_index < shared_block_count; ++block_index)
-			storage.lane_block_keys[(lane_index * SPARK_TEST_LANE_STRIDE) + block_index] = SparkGlm52RingWorkControlContentKey(0xA5A5000000000000ull + block_index,0x5A5A000000000000ull + block_index);
+			storage.lane_block_keys[(lane_index * SPARK_TEST_LANE_STRIDE) + block_index] = SparkRingWorkControlContentKey(0xA5A5000000000000ull + block_index,0x5A5A000000000000ull + block_index);
 	}
 }
 
-static void SparkTestSharedInitializePacket(SparkGlm52RingWorkControlPacket *packet,uint32_t lane_count,uint32_t context_token_count)
+static void SparkTestSharedInitializePacket(SparkRingWorkControlPacket *packet,uint32_t lane_count,uint32_t context_token_count)
 {
 	uint32_t lane_index;
 	memset(packet,0,sizeof(*packet));
-	packet->magic = SPARK_GLM52_RING_WORK_CONTROL_PACKET_MAGIC;
-	packet->abi_version = SPARK_GLM52_RING_WORK_CONTROL_ABI_VERSION;
-	packet->control_generation = SPARK_GLM52_RING_WORK_CONTROL_STANDALONE_GENERATION;
+	packet->magic = SPARK_RING_WORK_CONTROL_PACKET_MAGIC;
+	packet->abi_version = SPARK_RING_WORK_CONTROL_ABI_VERSION;
+	packet->control_generation = SPARK_RING_WORK_CONTROL_STANDALONE_GENERATION;
 	packet->active_sequence_count = lane_count;
 	packet->lane_count = lane_count;
 	packet->rows_per_lane = 1u;
 	packet->execution_row_count = lane_count;
-	packet->execution_batch_bucket = SPARK_GLM52_STAGE_PLAN_BUCKET_B16;
-	packet->descriptor_bytes = SparkGlm52RingWorkControlCalculatePacketBytes(lane_count);
+	packet->execution_batch_bucket = SPARK_STAGE_PLAN_BUCKET_B16;
+	packet->descriptor_bytes = SparkRingWorkControlCalculatePacketBytes(lane_count);
 	packet->request_id = 1u;
 	packet->sequence_id = 1000u;
 	packet->new_token_count = 1u;
@@ -91,7 +91,7 @@ static void SparkTestSharedInitializePacket(SparkGlm52RingWorkControlPacket *pac
 	}
 }
 
-static uint32_t SparkTestSharedDistinctPhysicalBlocks(const SparkGlm52RingWorkControlKvState *state,uint32_t lane_count,uint32_t block_index)
+static uint32_t SparkTestSharedDistinctPhysicalBlocks(const SparkRingWorkControlKvState *state,uint32_t lane_count,uint32_t block_index)
 {
 	uint32_t lane_index,other_index,distinct_count;
 	distinct_count = 0u;
@@ -112,18 +112,18 @@ static uint32_t SparkTestSharedDistinctPhysicalBlocks(const SparkGlm52RingWorkCo
 // and the divergent tail stays private to every row.
 static void SparkTestSharedPrefixCollapses(void)
 {
-	SparkGlm52RingWorkControlPacket packet;
-	SparkGlm52RingWorkControlKvState state;
-	SparkGlm52KvBlockTableView view;
+	SparkRingWorkControlPacket packet;
+	SparkRingWorkControlKvState state;
+	SparkKvBlockTableView view;
 	uint32_t block_index,context_token_count,expected_block_count;
 	context_token_count = (SPARK_TEST_SHARED_BLOCKS * SPARK_TEST_BLOCK_TOKENS) + 1u;
 	expected_block_count = SPARK_TEST_SHARED_BLOCKS + 1u;
 	SparkTestSharedInitializeState(&state,SPARK_TEST_SHARED_ROWS);
 	SparkTestSharedPublishPrefixKeys(SPARK_TEST_SHARED_ROWS,SPARK_TEST_SHARED_BLOCKS);
-	assert(SparkGlm52RingWorkControlConfigureKvSharing(&state,storage.lane_block_keys,SPARK_TEST_LANE_STRIDE) == SPARK_STATUS_OK);
+	assert(SparkRingWorkControlConfigureKvSharing(&state,storage.lane_block_keys,SPARK_TEST_LANE_STRIDE) == SPARK_STATUS_OK);
 	SparkTestSharedInitializePacket(&packet,SPARK_TEST_SHARED_ROWS,context_token_count);
-	packet.flags = SPARK_GLM52_RING_WORK_CONTROL_FLAG_PREFILL;
-	assert(SparkGlm52RingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
+	packet.flags = SPARK_RING_WORK_CONTROL_FLAG_PREFILL;
+	assert(SparkRingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
 	for (block_index = 0u; block_index < SPARK_TEST_SHARED_BLOCKS; ++block_index)
 		assert(SparkTestSharedDistinctPhysicalBlocks(&state,SPARK_TEST_SHARED_ROWS,block_index) == 1u);
 	assert(SparkTestSharedDistinctPhysicalBlocks(&state,SPARK_TEST_SHARED_ROWS,SPARK_TEST_SHARED_BLOCKS) == SPARK_TEST_SHARED_ROWS);
@@ -138,26 +138,26 @@ static void SparkTestSharedPrefixCollapses(void)
 // Releasing a sequence must not free a block another sequence still names.
 static void SparkTestSharedReleaseIsRefcounted(void)
 {
-	SparkGlm52RingWorkControlPacket packet;
-	SparkGlm52RingWorkControlKvState state;
-	SparkGlm52KvBlockTableView view;
+	SparkRingWorkControlPacket packet;
+	SparkRingWorkControlKvState state;
+	SparkKvBlockTableView view;
 	uint32_t lane_index,context_token_count,expected_block_count,shared_physical_block;
 	context_token_count = (SPARK_TEST_SHARED_BLOCKS * SPARK_TEST_BLOCK_TOKENS) + 1u;
 	expected_block_count = SPARK_TEST_SHARED_BLOCKS + 1u;
 	SparkTestSharedInitializeState(&state,SPARK_TEST_SHARED_ROWS);
 	SparkTestSharedPublishPrefixKeys(SPARK_TEST_SHARED_ROWS,SPARK_TEST_SHARED_BLOCKS);
-	assert(SparkGlm52RingWorkControlConfigureKvSharing(&state,storage.lane_block_keys,SPARK_TEST_LANE_STRIDE) == SPARK_STATUS_OK);
+	assert(SparkRingWorkControlConfigureKvSharing(&state,storage.lane_block_keys,SPARK_TEST_LANE_STRIDE) == SPARK_STATUS_OK);
 	SparkTestSharedInitializePacket(&packet,SPARK_TEST_SHARED_ROWS,context_token_count);
-	packet.flags = SPARK_GLM52_RING_WORK_CONTROL_FLAG_PREFILL;
-	assert(SparkGlm52RingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
+	packet.flags = SPARK_RING_WORK_CONTROL_FLAG_PREFILL;
+	assert(SparkRingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
 	shared_physical_block = state.physical_block_indices[0u];
 	for (lane_index = 0u; lane_index + 1u < SPARK_TEST_SHARED_ROWS; ++lane_index)
 	{
-		assert(SparkGlm52RingWorkControlReleaseSequence(&state,1000u + lane_index,expected_block_count) == SPARK_STATUS_OK);
-		assert(SparkGlm52RingWorkControlKvKeyEqual(state.physical_block_keys[shared_physical_block],SparkGlm52RingWorkControlContentKey(0xA5A5000000000000ull,0x5A5A000000000000ull)) != 0u);
+		assert(SparkRingWorkControlReleaseSequence(&state,1000u + lane_index,expected_block_count) == SPARK_STATUS_OK);
+		assert(SparkRingWorkControlKvKeyEqual(state.physical_block_keys[shared_physical_block],SparkRingWorkControlContentKey(0xA5A5000000000000ull,0x5A5A000000000000ull)) != 0u);
 	}
 	assert(state.block_entry_count == SPARK_TEST_SHARED_BLOCKS + 1u);
-	assert(SparkGlm52RingWorkControlReleaseSequence(&state,1000u + lane_index,expected_block_count) == SPARK_STATUS_OK);
+	assert(SparkRingWorkControlReleaseSequence(&state,1000u + lane_index,expected_block_count) == SPARK_STATUS_OK);
 	assert(state.block_entry_count == 0u);
 	assert(state.directory_entry_count == 0u);
 	assert(state.allocated_physical_block_count == 0u);
@@ -170,7 +170,7 @@ static void SparkTestSharedReleaseIsRefcounted(void)
 // the whole legal draft range because it is the load-bearing invariant.
 static void SparkTestSharedFrontierExcludesDrafts(void)
 {
-	SparkGlm52RingWorkControlPacket packet;
+	SparkRingWorkControlPacket packet;
 	uint64_t frontier,block_end_token;
 	uint32_t draft_count,block_index,last_committed_block;
 	SparkTestSharedInitializePacket(&packet,1u,SPARK_TEST_SHARED_BLOCKS * SPARK_TEST_BLOCK_TOKENS);
@@ -178,7 +178,7 @@ static void SparkTestSharedFrontierExcludesDrafts(void)
 	{
 		packet.lanes[0u].mtp_draft_token_count = draft_count;
 		packet.lanes[0u].speculative_token_count = draft_count;
-		frontier = SparkGlm52RingWorkControlKvCommittedFrontier(&packet.lanes[0u]);
+		frontier = SparkRingWorkControlKvCommittedFrontier(&packet.lanes[0u]);
 		assert(frontier == (uint64_t)packet.lanes[0u].context_token_count - (2u * draft_count));
 		last_committed_block = draft_count == 0u ? SPARK_TEST_SHARED_BLOCKS : SPARK_TEST_SHARED_BLOCKS - 1u;
 		for (block_index = 0u; block_index < SPARK_TEST_SHARED_BLOCKS; ++block_index)
@@ -192,7 +192,7 @@ static void SparkTestSharedFrontierExcludesDrafts(void)
 	packet.lanes[0u].mtp_draft_token_count = SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT;
 	packet.lanes[0u].speculative_token_count = SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT;
 	packet.lanes[0u].context_token_count = 1u;
-	assert(SparkGlm52RingWorkControlKvCommittedFrontier(&packet.lanes[0u]) == 0u);
+	assert(SparkRingWorkControlKvCommittedFrontier(&packet.lanes[0u]) == 0u);
 	printf("  committed frontier excludes every draft-bearing block\n");
 }
 
@@ -200,24 +200,24 @@ static void SparkTestSharedFrontierExcludesDrafts(void)
 // publishes content, so the bytes are never recomputed.
 static void SparkTestSharedPromotionKeepsBytes(void)
 {
-	SparkGlm52RingWorkControlPacket packet;
-	SparkGlm52RingWorkControlKvState state;
-	SparkGlm52KvBlockTableView view;
+	SparkRingWorkControlPacket packet;
+	SparkRingWorkControlKvState state;
+	SparkKvBlockTableView view;
 	uint32_t private_physical_block,shared_physical_block,context_token_count;
 	context_token_count = (SPARK_TEST_SHARED_BLOCKS * SPARK_TEST_BLOCK_TOKENS) + 1u;
 	SparkTestSharedInitializeState(&state,SPARK_TEST_SHARED_ROWS);
 	SparkTestSharedInitializePacket(&packet,1u,context_token_count);
-	packet.flags = SPARK_GLM52_RING_WORK_CONTROL_FLAG_PREFILL;
-	assert(SparkGlm52RingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
+	packet.flags = SPARK_RING_WORK_CONTROL_FLAG_PREFILL;
+	assert(SparkRingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
 	private_physical_block = state.physical_block_indices[0u];
 	assert(state.block_entry_count == SPARK_TEST_SHARED_BLOCKS + 1u);
 	SparkTestSharedPublishPrefixKeys(1u,SPARK_TEST_SHARED_BLOCKS);
-	assert(SparkGlm52RingWorkControlConfigureKvSharing(&state,storage.lane_block_keys,SPARK_TEST_LANE_STRIDE) == SPARK_STATUS_OK);
-	assert(SparkGlm52RingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
+	assert(SparkRingWorkControlConfigureKvSharing(&state,storage.lane_block_keys,SPARK_TEST_LANE_STRIDE) == SPARK_STATUS_OK);
+	assert(SparkRingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
 	shared_physical_block = state.physical_block_indices[0u];
 	assert(shared_physical_block == private_physical_block);
 	assert(state.block_entry_count == SPARK_TEST_SHARED_BLOCKS + 1u);
-	assert(SparkGlm52RingWorkControlKvKeyEqual(state.physical_block_keys[shared_physical_block],SparkGlm52RingWorkControlContentKey(0xA5A5000000000000ull,0x5A5A000000000000ull)) != 0u);
+	assert(SparkRingWorkControlKvKeyEqual(state.physical_block_keys[shared_physical_block],SparkRingWorkControlContentKey(0xA5A5000000000000ull,0x5A5A000000000000ull)) != 0u);
 	printf("  promotion rekeys block %u in place, no recompute\n",shared_physical_block);
 }
 
@@ -225,13 +225,13 @@ static void SparkTestSharedPromotionKeepsBytes(void)
 // in, because they occupy disjoint halves of the key space.
 static void SparkTestSharedKeyDomainsAreDisjoint(void)
 {
-	SparkGlm52RingKvKey private_key,content_key;
+	SparkRingKvKey private_key,content_key;
 	uint32_t index;
 	for (index = 0u; index < 4096u; ++index)
 	{
-		private_key = SparkGlm52RingWorkControlPrivateKey(1u + index,index);
-		content_key = SparkGlm52RingWorkControlContentKey(private_key.low,private_key.high);
-		assert(SparkGlm52RingWorkControlKvKeyEqual(private_key,content_key) == 0u);
+		private_key = SparkRingWorkControlPrivateKey(1u + index,index);
+		content_key = SparkRingWorkControlContentKey(private_key.low,private_key.high);
+		assert(SparkRingWorkControlKvKeyEqual(private_key,content_key) == 0u);
 		assert((private_key.low != 0u) || (private_key.high != 0u));
 		assert((content_key.low != 0u) || (content_key.high != 0u));
 	}

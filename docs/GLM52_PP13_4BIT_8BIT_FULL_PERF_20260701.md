@@ -9,14 +9,14 @@ The resident decode-stage firmware now has an explicit model-quantization contra
 - `SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT`
 - `SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT`
 
-`AUTO` remains accepted for compatibility, but production contexts can set `SPARK_GLM52_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION` to reject ambiguous contexts.
+`AUTO` remains accepted for compatibility, but production contexts can set `SPARK_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION` to reject ambiguous contexts.
 
 ## 4-bit path
 
 The 4-bit path uses NVFP4/MXFP4 projection-plan modes instead of pretending that raw BF16 projection pointers exist:
 
 - raw Q/KV/O projection modes accept quantized prebound tensor-core plans;
-- the CUDA reference fallback can decode NVFP4/MXFP4 packed nibbles through `SparkGlm52ResidentDecodeStageQuantizedLinearView`;
+- the CUDA reference fallback can decode NVFP4/MXFP4 packed nibbles through `SparkResidentDecodeStageQuantizedLinearView`;
 - routed NVFP4 layers remain bound to the existing FlashInfer B12x fused-MoE plan;
 - module validation rejects an FP8-routed layer under the NVFP4 model-quantization mode.
 

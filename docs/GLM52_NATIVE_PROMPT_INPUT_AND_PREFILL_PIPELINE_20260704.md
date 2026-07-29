@@ -27,7 +27,7 @@ The GLM52 chat helper in `sparkpipe_glm52_tokenize` renders the current lightwei
 The runtime now has a C prompt pipeline pump:
 
 ```text
-include/sparkpipe/spark_glm52_prompt_pipeline.h
+include/sparkpipe/spark_prompt_pipeline.h
 src/spark_glm52_prompt_pipeline.c
 ```
 
@@ -35,17 +35,17 @@ It owns the scheduler loop shape that should replace Python one-token feeding:
 
 ```text
 SparkGlm52RequestApiSubmitTextPrompt(...)
-SparkGlm52PromptPipelineRun(...)
-    SparkGlm52RequestApiScheduleNext(...)
+SparkPromptPipelineRun(...)
+    SparkRequestApiScheduleNext(...)
     if prefill:
-        SparkGlm52RequestApiDescribePrefillDispatch(...)
-        SparkGlm52RequestApiCopyPrefillDispatchTokenIds(...)
-        SparkGlm52RequestApiBuildDispatchKvBlockTableView(...)
+        SparkRequestApiDescribePrefillDispatch(...)
+        SparkRequestApiCopyPrefillDispatchTokenIds(...)
+        SparkRequestApiBuildDispatchKvBlockTableView(...)
         prefill_function(context, prefill_dispatch)
-        SparkGlm52RequestApiCompleteDispatch(...)
+        SparkRequestApiCompleteDispatch(...)
     if decode/verify:
         decode_function(context, dispatch)
-        SparkGlm52RequestApiCompleteDispatch(...)
+        SparkRequestApiCompleteDispatch(...)
 ```
 
 The callback boundary is intentionally narrow. Sparkring only has to plug the production CUDA callback into `prefill_function` and the existing fast PP13 decode callback into `decode_function`.
@@ -126,7 +126,7 @@ The prompt pipeline pump added here is deliberately callback-based so Sparkring 
 ## Remaining handoff gates
 
 1. Build the new `.cu` prompt-prefill helpers with real `nvcc` on Spark2.
-2. Plug `SparkGlm52PromptPipelineRun` into the server / direct runner loop.
+2. Plug `SparkPromptPipelineRun` into the server / direct runner loop.
 3. Bind the CUDA prefill callback to the stage-slice bulk prefill launcher.
 4. Validate C tokenizer output against the exact GLM-5.2 tokenizer for non-chat and chat prompts.
 5. Measure prefill throughput by chunk size and prefix length, then set the production chunk bucket policy.

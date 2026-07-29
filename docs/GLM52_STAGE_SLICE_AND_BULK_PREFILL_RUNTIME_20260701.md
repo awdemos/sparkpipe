@@ -6,14 +6,14 @@ problems that were still visible after the B32/B64 final validation fix.
 ## Stage-slice submit path
 
 The resident decode-stage module can now be initialized with a
-`SparkGlm52ResidentDecodeStageSliceNodeContext`.  The slice context owns an
-ordered array of per-layer `SparkGlm52ResidentDecodeStageNodeContext` pointers
+`SparkResidentDecodeStageSliceNodeContext`.  The slice context owns an
+ordered array of per-layer `SparkResidentDecodeStageNodeContext` pointers
 and submits the whole slice through one backend completion path.
 
 The CUDA backend entry point is:
 
 ```text
-SparkGlm52ResidentDecodeStageBackendSubmitStageSlice
+SparkResidentDecodeStageBackendSubmitStageSlice
 ```
 
 The SM121 required CUDA entry point is:
@@ -58,9 +58,9 @@ module then validates the request against the attached bulk-prefill plan.
 The resident firmware now exposes:
 
 ```text
-SparkGlm52ResidentDecodeStageBulkPrefillPlan
-SparkGlm52ResidentDecodeStageBackendSubmitBulkPrefill
-SparkGlm52ResidentDecodeStageBackendSubmitStageSliceBulkPrefill
+SparkResidentDecodeStageBulkPrefillPlan
+SparkResidentDecodeStageBackendSubmitBulkPrefill
+SparkResidentDecodeStageBackendSubmitStageSliceBulkPrefill
 SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill
 ```
 
@@ -75,12 +75,12 @@ launching only the first layer.
 
 ## Stage-plan and scheduler guardrails
 
-`SparkGlm52StagePlanValidate` now encodes the current GLM-5.2 cut rules used by
+`SparkStagePlanValidate` now encodes the current GLM-5.2 cut rules used by
 the validator: 78 total layers, dense prefix layers 0-2, routed stages starting
 at layer 3, routed slices of 1..8 layers, contiguous coverage, and exactly one
 final-token stage.
 
-`SparkGlm52StagePlanBuildBalanced` chooses contiguous stages from measured
+`SparkStagePlanBuildBalanced` chooses contiguous stages from measured
 per-layer costs while respecting the routed-layer-per-stage limit.  The same
 module also has the B16/B32/B64 bucket selector for production scheduler code.
 The production maximum stage count is now the current spark count: 13.

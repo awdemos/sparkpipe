@@ -69,7 +69,7 @@ using Glm52Kv = LmKvLatent<GLM52_KV_BITS, GLM52_LATENT, GLM52_ROPE_DIM, GLM52_KV
 struct Glm52LayerBuffers
 {
 	const uint32_t *dense_row_offset;      /* {0, rows} */
-	const uint32_t *dense_tile_prefix;     /* {0, tiles} */
+	uint32_t *dense_tile_prefix;     /* launcher-priced scratch, group_count + 1 */
 	// weights, bound once by the host
 	const void *attn_norm_weight;
 	// The attention projection is FOUR linears in absorbed form, not one. An

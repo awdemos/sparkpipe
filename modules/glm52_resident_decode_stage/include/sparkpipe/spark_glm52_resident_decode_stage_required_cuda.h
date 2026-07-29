@@ -12,7 +12,7 @@ extern "C" {
     "spark.glm52.sm121.required_decode_stage.b12x_fused.v1"
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageInitialize(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context);
+    const SparkResidentDecodeStageNodeContext *node_context);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedTensorCoreLinearPlan(
     SparkGlm52ResidentDecodeStageLinearPlan *linear_plan);
@@ -406,8 +406,8 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageBindFp8MoeGroupedExternalBackendPl
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedExternalBackend(
     const SparkGlm52ResidentDecodeStageFp8MoePlan *fp8_moe_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t active_sequence_count,
     void *cuda_stream);
 
@@ -419,8 +419,8 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageBindFp8MoeGroupedReferencePlan(
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedReference(
     const SparkGlm52ResidentDecodeStageFp8MoePlan *fp8_moe_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t active_sequence_count,
     void *cuda_stream);
 
@@ -437,7 +437,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageBindDsaKvFragmentTransportPlan(
     SparkGlm52ResidentDecodeStageDsaKvFragmentTransportPlan *transport_plan);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaSelectedBlockBuild(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStageNodeContext *node_context,
     const uint32_t *selected_token_indices,
     const uint32_t *context_lengths,
     const uint32_t *positions,
@@ -492,14 +492,14 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageWaitForDsaSelectedKvFragmentPrefet
     void *consumer_cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareExportSelectedTokens(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStageNodeContext *node_context,
     uint32_t source_layer_index,
     void *selected_token_sideband,
     uint32_t active_sequence_count,
     void *cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareImportSelectedTokens(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStageNodeContext *node_context,
     const void *selected_token_sideband,
     uint32_t source_layer_index,
     uint32_t active_sequence_count,
@@ -568,8 +568,8 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareScoreTopk(
     void *cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchDsaIndexShareDecodeSelection(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t active_sequence_count,
     void *cuda_stream);
 
@@ -605,72 +605,72 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFullVocabGreedy(
     void *cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunch(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
+    const SparkKvBlockTableView *runtime_kv_block_table,
     void *cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
-    const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    const SparkResidentDecodeStageStageSlicePlan *stage_slice_plan,
+    const SparkResidentDecodeStageNodeContext *const *layer_node_contexts,
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    const SparkKvBlockTableView *runtime_kv_block_table,
+    const SparkResidentDecodeStageFrameContext *frame_context,
     void *cuda_stream,
     void *backend_completion);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchExactRingStageSlice(
-    const SparkGlm52ResidentDecodeStageStageSlicePlan *stage_slice_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    const SparkResidentDecodeStageStageSlicePlan *stage_slice_plan,
+    const SparkResidentDecodeStageNodeContext *const *layer_node_contexts,
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t final_token_stage,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    const SparkKvBlockTableView *runtime_kv_block_table,
+    const SparkResidentDecodeStageFrameContext *frame_context,
     void *cuda_stream,
     void *backend_completion);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
+    const SparkKvBlockTableView *runtime_kv_block_table,
+    const SparkResidentDecodeStagePrefillFrameView *prefill_frame_view,
     void *cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchPagedChunkPrefill(
-    const SparkGlm52ResidentDecodeStageBulkPrefillPlan *bulk_prefill_plan,
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkResidentDecodeStageBulkPrefillPlan *bulk_prefill_plan,
+    const SparkResidentDecodeStageNodeContext *node_context,
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
+    const SparkKvBlockTableView *runtime_kv_block_table,
+    const SparkResidentDecodeStagePrefillFrameView *prefill_frame_view,
     void *cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPrefill(
-    const SparkGlm52ResidentDecodeStageNodeContext *const *layer_node_contexts,
+    const SparkResidentDecodeStageNodeContext *const *layer_node_contexts,
     uint32_t layer_count,
     uint32_t pipeline_slot_index,
     uint32_t active_sequence_count,
     uint32_t prompt_token_offset,
     uint32_t prompt_token_count,
-    const SparkGlm52KvBlockTableView *runtime_kv_block_table,
-    const SparkGlm52ResidentDecodeStagePrefillFrameView *prefill_frame_view,
+    const SparkKvBlockTableView *runtime_kv_block_table,
+    const SparkResidentDecodeStagePrefillFrameView *prefill_frame_view,
     void *cuda_stream);
 
 void SparkGlm52Sm121RequiredDecodeStageQuiesce(
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context);
+    const SparkResidentDecodeStageNodeContext *node_context);
 
 #ifdef __cplusplus
 }

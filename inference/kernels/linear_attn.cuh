@@ -251,96 +251,104 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 // is a parameter rather than assumed to be one.
 template<uint32_t THREADS, uint32_t KEY_DIM, uint32_t VALUE_DIM>
 __global__ __launch_bounds__(THREADS, 1)
-void LmDeltaRuleDecodeKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t rows)
+void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ query_bf16, const uint16_t *__restrict__ key_bf16, const uint16_t *__restrict__ value_bf16, const float *__restrict__ forget_gate, const float *__restrict__ write_gate, uint16_t *__restrict__ output_bf16, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t sequences, uint32_t commit)
 {
+	// ONE KERNEL FOR DECODE, PREFILL AND VERIFY. The recurrence is serial in
+	// the token and parallel in nothing else a batch offers, so the run is the
+	// unit: this block owns one sequence's rows for one head, loads the state
+	// into shared memory once, streams the run through it, and touches the
+	// global slot again only if commit says the run really happened. Decode is
+	// a run of one - a null sequence_row_begin means row i IS sequence i - and
+	// a run of T is bit-identical to T decode calls, because the state lives in
+	// shared memory at exactly the BF16 width the slot stores between calls.
+	// That equivalence is a gate, not a comment.
+	//
+	// Verify is the third caller: DSpark scores a drafted block by running it
+	// forward, and a draft must not advance what the sequence remembers.
+	// commit == 0 computes every output and abandons the state.
+	__shared__ uint16_t state_s[KEY_DIM * VALUE_DIM];
 	__shared__ float shared_key[KEY_DIM];
 	__shared__ float shared_predicted[VALUE_DIM];
-	uint32_t row = blockIdx.x,head = blockIdx.y,index,element;
+	uint32_t sequence = blockIdx.x,head = blockIdx.y,index,element,row,begin,end,flat;
 	uint16_t *state;
 	float beta;
-	if ( row >= rows || head >= key_heads )
+	if ( sequence >= sequences || head >= key_heads )
 		return;
+	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
+	end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
+	if ( sequence_row_count != 0 )
+		end = begin + sequence_row_count[sequence];
 	// One slot per sequence, never paged: the state does not grow, so its
 	// address is the sequence's slot base plus this head's slice.
 	state = (uint16_t *)(state_pool
-		+ ((uint64_t)state_index[row] * slot_bytes)
+		+ ((uint64_t)state_index[sequence] * slot_bytes)
 		+ ((uint64_t)head * KEY_DIM * VALUE_DIM * 2u));
-	// PER HEAD PER CHANNEL. This read was forget_gate[(row * key_heads) + head],
-	// one scalar per head, which cannot express Kimi K3's channel-wise decay -
-	// its retention factor is a d_k vector produced by a low-rank projection.
-	// Qwen 3.6's gated DeltaNet is the same shape, so widening it serves both.
-	// A per-head caller passes a vector with every channel equal.
-	forget_gate += (((uint64_t)row * key_heads) + head) * KEY_DIM;
-	beta = write_gate[(row * key_heads) + head];
-	for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
-		shared_key[index] = LmBf16ToFloat(key_bf16[(((uint64_t)row * key_heads) + head) * KEY_DIM + index]);
-	for (index = threadIdx.x; index < VALUE_DIM; index += THREADS)
-		shared_predicted[index] = 0.0f;
-	__syncthreads();
-	// predicted = S^T k. Each thread owns a set of value columns and walks the
-	// key dimension, so the state read is contiguous per thread.
-	// THE PREDICTION READS THE DECAYED STATE, NOT THE STATE.
-	//
-	// Report eq. 1 is S = (I - b k k^T) Diag(a) S + b k v^T. Expanding:
-	//
-	//     S = Diag(a) S + b k (v^T - k^T Diag(a) S)
-	//
-	// so the term subtracted from v is k^T (Diag(a) S) - the retention factor
-	// applies BEFORE the prediction, not only to the state that survives it.
-	// FlashKDA folds it into the key instead, k_decayed = k * exp(g_cumsum),
-	// then v - k_decayed @ S.T; the same product, written the other way round.
-	//
-	// This loop read the raw state. Every output stayed finite and plausible
-	// and the delta correction was computed against a memory the model had
-	// already decided to forget, by a factor that varies per key channel.
-	for (element = threadIdx.x; element < VALUE_DIM; element += THREADS)
+	for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
+		state_s[flat] = state[flat];
+	for (row = begin; row < end; ++row)
 	{
-		float total = 0.0f;
-		for (index = 0u; index < KEY_DIM; ++index)
-			total += LmBf16ToFloat(state[(index * VALUE_DIM) + element])
-				* shared_key[index] * forget_gate[index];
-		shared_predicted[element] = total;
-	}
-	__syncthreads();
-	// S = alpha*S + beta*(v - predicted) k^T, and o = S^T q with the UPDATED
-	// state. Updating first is not an optimisation detail: the token must attend
-	// to its own value, exactly as a softmax token attends to its own key.
-	{
-		uint32_t value_head = head * value_heads_per_key;
-		uint64_t value_base =
-			(((uint64_t)row * key_heads * value_heads_per_key) + value_head) * VALUE_DIM;
-		uint32_t flat;
-		// FLAT OVER THE WHOLE OUTER PRODUCT. Every (key channel, value element)
-		// pair is independent - the update reads state[i][e] and writes
-		// state[i][e] and nothing else - so this was a serial loop over KEY_DIM
-		// for no reason, 128 sequential steps each using VALUE_DIM threads.
-		// At K3's shape that is 128 iterations at half occupancy on a 256-thread
-		// block, where one pass at full occupancy does the same work.
-		//
-		// Consecutive threads still take consecutive elements within a row, so
-		// the coalescing the old shape had is preserved: flat / VALUE_DIM is the
-		// channel and flat % VALUE_DIM the element, and the fast axis is the one
-		// that is contiguous in memory.
-		for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
+		// PER HEAD PER CHANNEL. This read was one scalar per head, which cannot
+		// express Kimi K3's channel-wise decay - its retention factor is a d_k
+		// vector from a low-rank projection. Qwen 3.6's gated DeltaNet is the
+		// same shape, so the width serves both; a per-head caller passes a
+		// vector with every channel equal.
+		const float *forget = forget_gate + ((((uint64_t)row * key_heads) + head) * KEY_DIM);
+		beta = write_gate[(row * key_heads) + head];
+		for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
+			shared_key[index] = LmBf16ToFloat(key_bf16[(((uint64_t)row * key_heads) + head) * KEY_DIM + index]);
+		for (index = threadIdx.x; index < VALUE_DIM; index += THREADS)
+			shared_predicted[index] = 0.0f;
+		__syncthreads();
+		// predicted = S^T k, against the DECAYED state. Report eq. 1 expands to
+		// S = Diag(a) S + b k (v^T - k^T Diag(a) S): the retention factor
+		// applies BEFORE the prediction, not only to the state that survives
+		// it. FlashKDA folds it into the key instead - the same product,
+		// written the other way round.
+		for (element = threadIdx.x; element < VALUE_DIM; element += THREADS)
 		{
-			uint32_t channel = flat / VALUE_DIM,element_index = flat % VALUE_DIM;
-			float v = LmBf16ToFloat(value_bf16[value_base + element_index]);
-			float previous = LmBf16ToFloat(state[flat]);
-			state[flat] = LmFloatToBf16(
-				(forget_gate[channel] * previous)
-				+ (beta * (v - shared_predicted[element_index]) * shared_key[channel]));
+			float total = 0.0f;
+			for (index = 0u; index < KEY_DIM; ++index)
+				total += LmBf16ToFloat(state_s[(index * VALUE_DIM) + element])
+					* shared_key[index] * forget[index];
+			shared_predicted[element] = total;
 		}
+		__syncthreads();
+		// S = alpha*S + beta*(v - predicted) k^T, and o = S^T q with the
+		// UPDATED state. Updating first is not an optimisation detail: the
+		// token attends to its own value, exactly as a softmax token attends
+		// to its own key. Flat over the whole outer product - every
+		// (channel, element) pair independent, consecutive threads on the
+		// contiguous axis.
+		{
+			uint32_t value_head = head * value_heads_per_key;
+			uint64_t value_base =
+				(((uint64_t)row * key_heads * value_heads_per_key) + value_head) * VALUE_DIM;
+			for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
+			{
+				uint32_t channel = flat / VALUE_DIM,element_index = flat % VALUE_DIM;
+				float v = LmBf16ToFloat(value_bf16[value_base + element_index]);
+				float previous = LmBf16ToFloat(state_s[flat]);
+				state_s[flat] = LmFloatToBf16(
+					(forget[channel] * previous)
+					+ (beta * (v - shared_predicted[element_index]) * shared_key[channel]));
+			}
+		}
+		__syncthreads();
+		for (element = threadIdx.x; element < VALUE_DIM; element += THREADS)
+		{
+			float total = 0.0f;
+			for (index = 0u; index < KEY_DIM; ++index)
+				total += LmBf16ToFloat(state_s[(index * VALUE_DIM) + element])
+					* LmBf16ToFloat(query_bf16[(((uint64_t)row * key_heads) + head) * KEY_DIM + index]);
+			output_bf16[(((uint64_t)row * key_heads) + head) * VALUE_DIM + element] =
+				LmFloatToBf16(total);
+		}
+		__syncthreads();
 	}
-	__syncthreads();
-	for (element = threadIdx.x; element < VALUE_DIM; element += THREADS)
-	{
-		float total = 0.0f;
-		for (index = 0u; index < KEY_DIM; ++index)
-			total += LmBf16ToFloat(state[(index * VALUE_DIM) + element])
-				* LmBf16ToFloat(query_bf16[(((uint64_t)row * key_heads) + head) * KEY_DIM + index]);
-		output_bf16[(((uint64_t)row * key_heads) + head) * VALUE_DIM + element] =
-			LmFloatToBf16(total);
-	}
+	if ( commit == 0u )
+		return;
+	for (flat = threadIdx.x; flat < KEY_DIM * VALUE_DIM; flat += THREADS)
+		state[flat] = state_s[flat];
 }
 
 // Short causal convolution over the last KERNEL tokens, per channel.
@@ -359,33 +367,58 @@ enum LmConvActivation
 	LM_CONV_SWISH = 1
 };
 
-template<uint32_t THREADS, uint32_t KERNEL, LmConvActivation ACTIVATION>
+template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION>
 __global__ __launch_bounds__(THREADS, 1)
-void LmCausalConvDecodeKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t rows)
+void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit)
 {
-	uint32_t row = blockIdx.x,channel = (blockIdx.y * THREADS) + threadIdx.x,tap;
+	// ONE KERNEL FOR DECODE, PREFILL AND VERIFY. A sequence's rows are a run -
+	// contiguous, positions ascending - and the window walks the run with the
+	// taps held in registers, touching the slot once on the way in and, when
+	// commit says so, once on the way out. Decode is a run of one: a null
+	// sequence_row_begin means row i IS sequence i, which keeps every decode
+	// call site's data exactly as it was. Verify is a run that must not
+	// advance what the sequence remembers: commit zero computes every output
+	// and abandons the window, which is the whole difference between
+	// speculating about tokens and having accepted them.
+	uint32_t sequence = blockIdx.x,channel = (blockIdx.y * THREADS) + threadIdx.x;
+	uint32_t begin,end,row,tap;
+	uint16_t taps[KERNEL];
 	uint16_t *slot;
-	float total = 0.0f;
-	if ( row >= rows || channel >= channels )
+	if ( sequence >= sequences || channel >= channels )
 		return;
-	slot = window + ((uint64_t)state_index[row] * channels * KERNEL);
-	// Shift the window and admit the new token. A ring buffer would avoid the
-	// shift, but KERNEL is 4 and a ring needs a per-sequence head index that
-	// every reader has to agree on - the shift is three moves and no state.
-	for (tap = 0u; tap + 1u < KERNEL; ++tap)
-		slot[(channel * KERNEL) + tap] = slot[(channel * KERNEL) + tap + 1u];
-	slot[(channel * KERNEL) + KERNEL - 1u] =
-		input_bf16[((uint64_t)row * channels) + channel];
+	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
+	end = sequence_row_begin != 0 ? sequence_row_begin[sequence + 1u] : sequence + 1u;
+	// A fold replays only the ACCEPTED prefix of a verify run: the slab keeps
+	// its stride, the run keeps its begin, and the count says how much of it
+	// really happened. Null means the whole run, which is every other caller.
+	if ( sequence_row_count != 0 )
+		end = begin + sequence_row_count[sequence];
+	slot = window + ((uint64_t)state_index[sequence] * channels * KERNEL);
 	for (tap = 0u; tap < KERNEL; ++tap)
-		total += LmBf16ToFloat(slot[(channel * KERNEL) + tap])
-			* LmBf16ToFloat(weight_bf16[(channel * KERNEL) + tap]);
-	// SWISH, NOT NOTHING. FlashKDA's projections are
-	// L2Norm(Swish(ShortConv(Wx))) for q and k and Swish(ShortConv(Wx)) for v;
-	// the reference builds ShortConvolution with activation='silu'. A
-	// convolution that returns its raw sum runs and is a different model, so
-	// the activation is a template parameter with no default - a caller has to
-	// say which it wants.
-	if ( ACTIVATION == LM_CONV_SWISH )
-		total = total * (1.0f / (1.0f + __expf(-total)));
-	output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
+		taps[tap] = slot[(channel * KERNEL) + tap];
+	for (row = begin; row < end; ++row)
+	{
+		float total = 0.0f;
+		// Shift the window and admit the new token. A ring buffer would avoid
+		// the shift, but KERNEL is 4 and a ring needs a head index every reader
+		// agrees on - the shift is three register moves and no state.
+		for (tap = 0u; tap + 1u < KERNEL; ++tap)
+			taps[tap] = taps[tap + 1u];
+		taps[KERNEL - 1u] = input_bf16[((uint64_t)row * channels) + channel];
+		for (tap = 0u; tap < KERNEL; ++tap)
+			total += LmBf16ToFloat(taps[tap])
+				* LmBf16ToFloat(weight_bf16[(channel * KERNEL) + tap]);
+		// SWISH, NOT NOTHING. FlashKDA's projections are
+		// L2Norm(Swish(ShortConv(Wx))) for q and k and Swish(ShortConv(Wx)) for
+		// v; the reference builds ShortConvolution with activation='silu'. A
+		// convolution that returns its raw sum runs and is a different model, so
+		// the activation is a template parameter with no default.
+		if ( ACTIVATION == LM_CONV_SWISH )
+			total = total * (1.0f / (1.0f + __expf(-total)));
+		output_bf16[((uint64_t)row * channels) + channel] = LmFloatToBf16(total);
+	}
+	if ( commit == 0u )
+		return;
+	for (tap = 0u; tap < KERNEL; ++tap)
+		slot[(channel * KERNEL) + tap] = taps[tap];
 }

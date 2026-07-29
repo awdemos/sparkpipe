@@ -55,7 +55,7 @@ time and reproduces live B1 exactly (4.0 vs 4.05 token/s) while keeping all
 
 1. `RequiredPreparedActiveRows` now returns the padded batch bucket for all
    cublasLt plans, f32 and bf16 alike:
-   `min(SparkGlm52StagePlanSelectBatchBucketValue(active), maximum)`.
+   `min(SparkStagePlanSelectBatchBucketValue(active), maximum)`.
    Bucket floor is 16, so the prepared shape changes only on bucket
    transitions, which also removes the per-dispatch descriptor+autotune
    re-prepare that bf16 plans previously paid whenever the adaptive cohort

@@ -85,7 +85,7 @@ Run one release-agent instance for each role on every rank, or let systemd launc
 The control daemon talks to residentd over a local Unix stream socket using fixed binary messages from:
 
 ```text
-include/sparkpipe/spark_glm52_cuda_resident_ipc.h
+include/sparkpipe/spark_cuda_resident_ipc.h
 ```
 
 Current messages:

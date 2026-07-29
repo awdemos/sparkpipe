@@ -12,6 +12,7 @@
 #include "runtime/gemm.cuh"
 #include "runtime/launch.h"
 #include "inference/kernels/norm.cuh"
+#include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
@@ -34,11 +35,7 @@ using K3GlobalKv = LmKvLatent<K3_KV_BITS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM, 
 // did and could not see it - the same one-line failure qwen_3_6's driver hit,
 // which is a sign the alias belongs beside the layer in every model.
 
-#define K3_LAYER_THREADS 256u
-#define K3_LAYER_TILE_N 128u
-#define K3_LAYER_STAGES 2u
-#define K3_LAYER_WARPS 8u
-#define K3_HEAD_TILE 1024u
+#include "inference/llms/kimi_k3/launch_shape.h"
 
 // KDA widths. 96 heads at 128 for q, k and v alike.
 #define K3_KDA_QK_DIM (K3_KDA_HEADS * K3_KDA_KEY_DIM)
@@ -62,15 +59,15 @@ using K3GlobalKv = LmKvLatent<K3_KV_BITS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM, 
 // and the value half into the output projection - but they need DIFFERENT
 // WEIGHTS, and that is a pack-time transformation, not a runtime one.
 //
-// THE PACKER OWES TWO FOLDS, and they are the reason mla_kv_b_weight has no
-// call site in this file:
+// THE PACKER OWES ONE FOLD:
 //
-//   q_up      absorb the nope half of kv_b:  hidden -> heads * 512, then
-//             concatenate the 64 unrotated slice -> heads * 576
-//   o_proj    absorb the value half of kv_b:  heads * 512 -> hidden
+//   q_up      absorb the nope half of kv_b:  q_lora -> heads * 512, then
+//             concatenate the 64 unrotated rows -> heads * 576
 //
-// Until the packer does that, mla_q_up_weight and mla_out_weight here are named
-// for the absorbed tensors and no checkpoint provides them directly.
+// The VALUE half is NOT absorbed into o_proj: the gate is elementwise in
+// v-space and does not commute with the fold, which is why kv_b_value is its
+// own per-head table and mla_out_weight is o_proj exactly as shipped.
+// tools/k3_pack.py performs the one fold and the split.
 #define K3_MLA_Q_DIM (K3_MLA_HEADS * (K3_KV_LORA_RANK + K3_QK_UNROTATED_DIM))
 #define K3_MLA_KV_A_DIM (K3_KV_LORA_RANK + K3_QK_UNROTATED_DIM)
 #define K3_MLA_KV_B_DIM (K3_MLA_HEADS * (K3_QK_NOPE_DIM + K3_V_HEAD_DIM))
@@ -150,8 +147,13 @@ struct K3LayerBuffers
 	const float *kda_decay_bias;
 	const float *kda_head_log_scale;
 	const void *kda_beta_weight;
-	const void *kda_gate_weight;
-	const void *kda_gate_scale;
+	// THE GATE IS LOW-RANK, LIKE THE DECAY. g_a_proj takes the hidden to the
+	// 128-wide head dim and g_b_proj takes that to heads * head_dim; one fused
+	// matrix would be a rank-128 product materialised at 176 MB per layer -
+	// 12 GB of weights and 3.5 ms of bandwidth per token, for arithmetic the
+	// bottleneck already does in 6 MB. Two projections, like f_a and f_b.
+	const void *kda_gate_down_weight;
+	const void *kda_gate_up_weight;
 	const void *kda_out_norm_weight;
 	const void *kda_out_weight;
 	const void *kda_out_scale;
@@ -165,11 +167,12 @@ struct K3LayerBuffers
 	const void *mla_kv_a_weight;
 	const void *mla_kv_a_scale;
 	const void *mla_kv_a_norm_weight;
-	const void *mla_kv_b_weight;
 	const void *mla_kv_b_value_weight;
 	const void *mla_kv_b_scale;
-	const void *mla_gate_weight;
-	const void *mla_gate_scale;
+	// Low-rank, exactly like the KDA gate: g_a to head_dim, g_b to
+	// heads * v_head. One fused matrix exists in no checkpoint.
+	const void *mla_gate_down_weight;
+	const void *mla_gate_up_weight;
 	const void *mla_out_weight;
 	const void *mla_out_scale;
 
@@ -196,7 +199,6 @@ struct K3LayerBuffers
 	const void *dense_down_scale;
 
 	uint16_t *hidden_bf16;
-	uint16_t *residual_bf16;
 	uint16_t *normed_bf16;
 	uint16_t *query_bf16;
 	uint16_t *key_bf16;
@@ -214,12 +216,32 @@ struct K3LayerBuffers
 	uint16_t *attnres_partial_bf16;
 	const void *attnres_attn_weight;
 	const void *attnres_mlp_weight;
+	// Model-level, not per-layer: the reference's _apply_output_attn_res runs
+	// once after the last layer, with its own fused pseudo-query, and its output
+	// is what the final norm and the head consume. Per-layer weights arrive
+	// through K3BindLayer; this one lives here because there is exactly one.
+	const void *attnres_out_weight;
 	uint16_t *kda_beta_logit;
 	float *kda_write_gate_out;
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
-	uint8_t *packed_activation;
-	uint8_t *packed_scale;
+	uint16_t *route_gather_bf16;
+	// Rows sorted by sequence, sequence_row_begin a prefix of length
+	// sequences + 1: sequence s owns rows [begin[s], begin[s+1]). Null means
+	// identity - row i is sequence i - which is every pure-decode step. The
+	// KDA state index is per SEQUENCE under this contract, not per row.
+	const uint32_t *sequence_row_begin;
+	// DSpark verify keeps each row's raw KDA inputs so the fold can replay the
+	// accepted prefix with the same kernels that would have committed it:
+	// pre-conv q/k/v, the decay logits and the beta logits, one slab per KDA
+	// layer strided like the step's rows. Null outside a verify step. Storing
+	// PRE-conv rather than post keeps the slab honest about what state needs -
+	// the conv windows are state too, and only their inputs can advance them.
+	uint16_t *replay_conv_q;
+	uint16_t *replay_conv_k;
+	uint16_t *replay_conv_v;
+	uint16_t *replay_decay_logit;
+	uint16_t *replay_beta_logit;
 
 	// The recurrent half. Fixed per sequence, never grows with context.
 	uint8_t *kda_state_pool;
@@ -227,11 +249,6 @@ struct K3LayerBuffers
 	uint16_t *kda_k_window;
 	uint16_t *kda_v_window;
 	const uint32_t *kda_state_index;
-	// WRITE STRENGTH ARRIVES ACTIVATED. The report has beta = Sigmoid(W_beta x)
-	// and FlashKDA applies that sigmoid inside its kernel; LmDeltaRuleDecodeKernel
-	// reads this array as-is, so whoever fills it owes the sigmoid. No kernel
-	// here does it yet - that is the one piece of the KDA path still on the host.
-	const float *kda_write_gate;
 	float *kda_retention;
 
 	LmKvView cache;
@@ -239,75 +256,54 @@ struct K3LayerBuffers
 	const uint32_t *context_length;
 	const uint32_t *positions;
 	const uint32_t *dense_row_offset;
-	const uint32_t *dense_tile_prefix;
-	const uint32_t *route_expert;
-	const uint32_t *route_packed_row;
-	const uint32_t *route_source_token;
+	uint32_t *dense_tile_prefix;
+	uint32_t *route_expert;
+	uint32_t *route_packed_row;
+	uint32_t *route_source_token;
 	const float *route_weight;
-	const uint32_t *group_row_offset;
-	const uint32_t *group_tile_prefix;
+	uint32_t *group_row_offset;
+	uint32_t *group_tile_prefix;
+	uint32_t *group_tile_prefix_down;
 	float *head_candidate_score;
 	uint32_t *head_candidate_token;
 	uint32_t *output_token;
 	float *output_score;
 };
 
-// THE ROUTE MAP IS A PARAMETER, NOT A NULL.
-//
-// This hardcoded a null source_row_map, so packed row r read source row r. For
-// the routed experts that is wrong twice: packed_rows is rows * top_k, so rows
-// at or above `rows` read past the end of the latent buffer, and no row is
-// route-expanded - every expert consumed whichever activation happened to sit
-// at its packed index. glm52 passes route_source_token here and this did not.
-// AN UNQUANTISED FORMAT HAS NO GROUPS AND MUST NOT BE ASKED FOR ANY.
-//
-// LmBf16Format declares kScaleGroup zero, correctly - there is nothing to
-// group. This function divided a width by it. Every non-expert projection in
-// K3 went through here the moment the quantisation recipe put attention,
-// the router and the latent projections on BF16, which is 20 call sites
-// dividing by zero.
-//
-// Found by tests/host_cuda/k3_layer_host.cu on its first successful run, which
-// is the entire argument for a harness that executes a layer rather than its
-// kernels: every kernel here is correct, and the layer faulted immediately.
-template<class Format>
-static void K3Quantise(const K3LayerBuffers *b, const uint16_t *source, const uint32_t *source_row_map, uint32_t rows, uint32_t width, cudaStream_t stream)
-{
-	// IF CONSTEXPR, NOT IF. A runtime guard still instantiates the template
-	// below it, so the kernel's static_assert fired for every BF16 projection
-	// even though none of them would have run the launch. The branch has to be
-	// discarded at compile time, which is what constexpr does and what a plain
-	// if cannot.
-	if constexpr ( Format::kScaleGroup == 0u )
-		return;
-	else
-	LM_LAUNCH((LmQuantiseRowsKernel<Format,K3_LAYER_THREADS>),
-		dim3(rows,width / Format::kScaleGroup), K3_LAYER_THREADS,
-		(Format::kScaleGroup + 8u) * sizeof(float), stream,
-		source,source_row_map,b->packed_activation,b->packed_scale,rows,width);
-}
-
 // One projection: quantise, GEMM, done. The KDA path does this five times and
 // writing it out five times is how a scale pointer comes to describe the wrong
 // buffer.
 template<class Format>
-static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const void *weight, const void *weight_scale, uint16_t *destination, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const void *weight, const void *weight_scale, uint16_t *destination, uint16_t *accumulate, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
 {
 	LmGemmArguments gemm;
-	K3Quantise<Format>(b,source,0,rows,input_dimension,stream);
+	// EVERY PROJECTION THROUGH HERE IS UNQUANTISED. The checkpoint's ignore
+	// list keeps attention, latent projections, shared experts, routers and the
+	// head out of the 4-bit grid, and activations are never quantised at all -
+	// input_activations is null. A Format with a scale group reaching this
+	// helper is a recipe violation, caught at compile time rather than by a
+	// packed buffer nothing filled.
+	static_assert(Format::kScaleGroup == 0u,
+		"K3Project carries the unquantised projections; experts go weight-only");
 	memset(&gemm,0,sizeof(gemm));
-	// An unquantised format feeds the GEMM the rows themselves; there is no
-	// packed buffer, and pointing at one that was never filled is how a skipped
-	// quantise turns into silently reading uninitialised memory.
-	gemm.scale_a = Format::kScaleGroup == 0u ? 0 : (const float *)b->packed_scale;
 	gemm.scale_b = (const float *)weight_scale;
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = destination;
+	gemm.accumulate_bf16 = accumulate;
 	return(LmGemmLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,Format::kScaleGroup == 0u ? (const void *)source
-			: (const void *)b->packed_activation,weight,rows,rows,1u,1u,
+		&gemm,source,weight,rows,rows,1u,1u,
 		input_dimension,output_dimension,multiprocessors,false,stream));
+}
+
+// The common case: the result has one home. The accumulate tail exists for
+// the module-output projections, whose result ALSO folds into the AttnRes
+// partial in the epilogue - the separate add kernel and its full-width
+// re-read never happen.
+template<class Format>
+static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const void *weight, const void *weight_scale, uint16_t *destination, uint32_t rows, uint32_t input_dimension, uint32_t output_dimension, uint32_t multiprocessors, cudaStream_t stream)
+{
+	return(K3Project<Format>(b,source,weight,weight_scale,destination,(uint16_t *)0,rows,input_dimension,output_dimension,multiprocessors,stream));
 }
 
 // EVERY PROJECTION HERE IS BF16 AND ONLY THE ROUTED EXPERTS TAKE Format.
@@ -325,48 +321,55 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 // attention with self_attention_res_proj and before the MLP with mlp_res_proj.
 // One call with one weight would run and would be a different model - the two
 // retrievals are asking different questions of the same bank.
-static void K3AttnRes(const K3LayerBuffers *b, const void *score_weight, uint32_t layer, uint32_t rows, cudaStream_t stream)
+static void K3AttnRes(const K3LayerBuffers *b, const void *score_weight, uint32_t sources, uint32_t rows, cudaStream_t stream)
 {
-	// Blocks completed so far, plus the embedding at b_0, plus the partial.
-	uint32_t sources = (layer / K3_ATTNRES_BLOCK_SIZE) + 2u;
+	// The caller counts the candidates, because the two retrievals in a layer
+	// disagree at block boundaries: the attention side runs BEFORE the append
+	// and sees the old bank, the MLP side runs after and sees the new entry.
+	// One formula here served both and double-counted at every boundary layer -
+	// worse, the partial being appended was also the last candidate, so the
+	// same vector scored twice.
 	if ( sources > K3_ATTNRES_MAX_SOURCES )
 		sources = K3_ATTNRES_MAX_SOURCES;
 	LM_LAUNCH((LmAttnResKernel<K3_LAYER_THREADS,K3_ATTNRES_MAX_SOURCES>),
 		rows, K3_LAYER_THREADS, 0, stream,
 		b->attnres_bank_bf16,b->attnres_partial_bf16,
-		(const uint16_t *)score_weight,b->hidden_bf16,sources,K3_HIDDEN,
+		(const uint16_t *)score_weight,b->hidden_bf16,sources,rows,K3_HIDDEN,
 		K3_RMS_EPSILON);
 }
 
-// Fold this layer's output into the block in progress, and close the block if
-// this was its last layer.
-//
-// THE PARTIAL IS A SUM, NOT THE LAST OUTPUT. b_n is the sum over the block's
-// layers - the report writes it as a sum and the reference accumulates - so a
-// layer that assigned here would make every block representation the output of
-// its final layer alone.
-static void K3AttnResAccumulate(const K3LayerBuffers *b, uint32_t layer, uint32_t rows, cudaStream_t stream)
+// The pieces the driver sequences the partial with. Three verbs, because the
+// reference uses exactly three: the partial RESTARTS from the attention output
+// on a block-boundary layer (prefix_sum = None, then = a), ACCUMULATES a module
+// output otherwise (prefix_sum += a, += m), and is BANKED when a block closes.
+// Reusing an add as a copy banks twice the value; reusing an add as a restart
+// carries the previous block's sum into the next - both run and both are a
+// different model.
+static void K3PartialSet(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows, cudaStream_t stream)
 {
-	uint32_t block = layer / K3_ATTNRES_BLOCK_SIZE;
+	LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
+		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
+		K3_LAYER_THREADS, 0, stream,
+		value,b->attnres_partial_bf16,rows,K3_HIDDEN);
+}
+
+static void K3PartialAdd(const K3LayerBuffers *b, const uint16_t *value, uint32_t rows, cudaStream_t stream)
+{
 	LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>),
 		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
 		K3_LAYER_THREADS, 0, stream,
-		b->attnres_partial_bf16,b->hidden_bf16,b->attnres_partial_bf16,
-		rows,K3_HIDDEN);
-	if ( (layer + 1u) % K3_ATTNRES_BLOCK_SIZE != 0u )
-		return;
-	// Close the block: the partial becomes bank entry block+1, because entry 0
-	// is the embedding. A COPY, not an add - the first version passed the
-	// partial as both operands of LmAddRowsKernel, which banks twice the value
-	// and produces activations that look entirely reasonable.
-	//
-	// The partial is not cleared. The reference carries it forward as the
-	// prefix sum, so the next block's candidates include everything before it.
+		b->attnres_partial_bf16,value,b->attnres_partial_bf16,rows,K3_HIDDEN);
+}
+
+static void K3BankStore(const K3LayerBuffers *b, uint32_t slot, uint32_t rows, cudaStream_t stream)
+{
+	// [source][row][hidden], the layout LmAttnResKernel reads. Slot 0 is the
+	// embedding, banked by the driver at layer 0 from the incoming hidden.
 	LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>),
 		dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows),
 		K3_LAYER_THREADS, 0, stream,
 		b->attnres_partial_bf16,
-		b->attnres_bank_bf16 + ((uint64_t)(block + 1u) * rows * K3_HIDDEN),
+		b->attnres_bank_bf16 + ((uint64_t)slot * rows * K3_HIDDEN),
 		rows,K3_HIDDEN);
 }
 
@@ -381,11 +384,16 @@ static void K3AttnResAccumulate(const K3LayerBuffers *b, uint32_t layer, uint32_
 //     S    = (I - beta k k^T) Diag(a) S + beta k v^T
 //     y    = W_o[ sigmoid(W_g x) * RMSNorm(S^T q) ]
 template<class Format>
-static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
+	// THE INPUT IS THE RETRIEVAL, ALONE. Under AttnRes there is no residual
+	// stream to fold in: the reference computes input_layernorm(h) where h is
+	// what the retrieval produced (or the raw stream at layer 0), and the
+	// stream itself advances only by the module-output adds the driver makes.
+	// Folding a residual here normed stream-plus-retrieval, a different model.
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
-		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_q_weight,b->kda_q_scale,
 		b->query_bf16,rows,K3_HIDDEN,K3_KDA_QK_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -398,15 +406,28 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 		b->value_bf16,rows,K3_HIDDEN,K3_KDA_V_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	// THE VERIFY STEP KEEPS ITS RAW INPUTS. The convolutions below overwrite
+	// q, k and v in place, so this is the last moment the pre-conv rows exist -
+	// and they are exactly what a fold needs to advance the windows and the
+	// delta state over whatever prefix the sampler accepts.
+	if ( b->replay_conv_q != 0 )
+	{
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			b->query_bf16,b->replay_conv_q,rows,K3_KDA_QK_DIM);
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			b->key_bf16,b->replay_conv_k,rows,K3_KDA_QK_DIM);
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			b->value_bf16,b->replay_conv_v,rows,K3_KDA_V_DIM);
+	}
 	// THREE CONVOLUTIONS, NOT ONE, EACH WITH ITS OWN WINDOW. q, k and v are
 	// separate ShortConvolution modules in the reference; sharing a window
 	// between them would mix three token streams into one and still run.
-	LM_LAUNCH((LmCausalConvDecodeKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(rows,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_q_window,b->kda_state_index,b->query_bf16, (const uint16_t *)b->kda_q_conv_weight,b->query_bf16,K3_KDA_QK_DIM,rows);
-	LM_LAUNCH((LmCausalConvDecodeKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(rows,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_k_window,b->kda_state_index,b->key_bf16, (const uint16_t *)b->kda_k_conv_weight,b->key_bf16,K3_KDA_QK_DIM,rows);
-	LM_LAUNCH((LmCausalConvDecodeKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(rows,(K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_v_window,b->kda_state_index,b->value_bf16, (const uint16_t *)b->kda_v_conv_weight,b->value_bf16,K3_KDA_V_DIM,rows);
+	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_q_window,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16, (const uint16_t *)b->kda_q_conv_weight,b->query_bf16,K3_KDA_QK_DIM,sequences,commit);
+	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_k_window,b->kda_state_index,b->sequence_row_begin,0,b->key_bf16, (const uint16_t *)b->kda_k_conv_weight,b->key_bf16,K3_KDA_QK_DIM,sequences,commit);
+	LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_v_window,b->kda_state_index,b->sequence_row_begin,0,b->value_bf16, (const uint16_t *)b->kda_v_conv_weight,b->value_bf16,K3_KDA_V_DIM,sequences,commit);
 	// q and k only. The value is not normalised.
 	LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
 		b->query_bf16,K3_KDA_HEADS,rows,K3_RMS_EPSILON);
@@ -424,6 +445,9 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 		b->decay_logit_bf16,rows,K3_KDA_KEY_DIM,K3_KDA_QK_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	if ( b->replay_decay_logit != 0 )
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
+			b->decay_logit_bf16,b->replay_decay_logit,rows,K3_KDA_QK_DIM);
 	LM_LAUNCH((LmBoundedDecayKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
 		b->decay_logit_bf16,b->kda_decay_bias,b->kda_head_log_scale, b->kda_retention,K3_KDA_HEADS,K3_KDA_GATE_LOWER_BOUND,rows);
 	// BETA IS COMPUTED HERE. It was read raw from kda_write_gate, which nothing
@@ -435,23 +459,30 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 		(uint16_t *)b->kda_beta_logit,rows,K3_HIDDEN,K3_KDA_HEADS,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
+	if ( b->replay_beta_logit != 0 )
+		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3(1u,rows), K3_LAYER_THREADS, 0, stream,
+			(const uint16_t *)b->kda_beta_logit,b->replay_beta_logit,rows,K3_KDA_HEADS);
 	LM_LAUNCH((LmSigmoidRowsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		(const uint16_t *)b->kda_beta_logit,b->kda_write_gate_out,K3_KDA_HEADS);
-	LM_LAUNCH((LmDeltaRuleDecodeKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
-		b->kda_state_pool,K3_KDA_STATE_BYTES,b->kda_state_index,b->query_bf16,b->key_bf16, b->value_bf16,b->kda_retention,b->kda_write_gate_out,b->attention_out_bf16, K3_KDA_HEADS,1u,rows);
+	LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(sequences,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
+		b->kda_state_pool,K3_KDA_STATE_SLOT_BYTES,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,b->kda_retention,b->kda_write_gate_out,b->attention_out_bf16, K3_KDA_HEADS,1u,sequences,commit);
 	// RMSNORM BEFORE THE GATE, AND ONLY HERE. Report eq. 6 normalises the
 	// recurrent output head-wise before gating; eq. 7 gates the MLA output with
 	// no normalisation at all. The two paths differ in exactly this step.
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>), dim3(rows * K3_KDA_HEADS), K3_LAYER_THREADS, (K3_KDA_VALUE_DIM + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,0,(const uint16_t *)b->kda_out_norm_weight, 0,b->attention_out_bf16,K3_KDA_VALUE_DIM,K3_KDA_VALUE_DIM,K3_RMS_EPSILON);
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_gate_weight,b->kda_gate_scale,
-		b->gate_bf16,rows,K3_HIDDEN,K3_KDA_V_DIM,multiprocessors,stream);
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_gate_down_weight,0,
+		b->latent_bf16,rows,K3_HIDDEN,K3_KDA_KEY_DIM,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->kda_gate_up_weight,0,
+		b->gate_bf16,rows,K3_KDA_KEY_DIM,K3_KDA_V_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->attention_out_bf16,b->gate_bf16,K3_KDA_V_DIM);
 	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->kda_out_weight,b->kda_out_scale,
-		b->attention_out_bf16,rows,K3_KDA_V_DIM,K3_HIDDEN,multiprocessors,stream));
+		b->attention_out_bf16,partial_accumulate,rows,K3_KDA_V_DIM,K3_HIDDEN,multiprocessors,stream));
 }
 
 // Gated MLA, 24 of 93 including the last layer of the backbone.
@@ -460,11 +491,16 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t multi
 // No rope kernel is called anywhere on this path, which is why unity.cu no
 // longer instantiates one.
 template<class Format, class Geometry>
-static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t context, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
+	// THE INPUT IS THE RETRIEVAL, ALONE. Under AttnRes there is no residual
+	// stream to fold in: the reference computes input_layernorm(h) where h is
+	// what the retrieval produced (or the raw stream at layer 0), and the
+	// stream itself advances only by the module-output adds the driver makes.
+	// Folding a residual here normed stream-plus-retrieval, a different model.
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
-		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_q_down_weight,b->mla_q_down_scale,
 		b->latent_bf16,rows,K3_HIDDEN,K3_Q_LORA_RANK,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -489,33 +525,46 @@ static int32_t K3LayerMla(const K3LayerBuffers *b, uint32_t rows, uint32_t conte
 		b->kv_slot_bf16,0,(const uint16_t *)b->mla_kv_a_norm_weight, 0,b->kv_slot_bf16,K3_KV_LORA_RANK,K3_MLA_KV_A_DIM,K3_LORA_RMS_EPSILON);
 	LM_LAUNCH((LmKvStoreKernel<Geometry,K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, Geometry::kSlotBytes / 2u);
-	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>), dim3(rows,K3_MLA_HEADS), K3_LAYER_THREADS, 0, stream,
-		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,K3_MLA_HEADS,K3_MLA_QK_SCALE,b->attention_out_bf16,0);
+	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,K3_ATTN_THREADS,K3_KV_LORA_RANK,K3_QK_UNROTATED_DIM>), dim3(rows,K3_MLA_HEADS), K3_ATTN_THREADS, 0, stream,
+		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,K3_MLA_HEADS,K3_MLA_QK_SCALE,b->attention_out_bf16,b->positions);
 	(void)context;
+	// PREFILL IS THAT ONE ARGUMENT. The kernel skips any cached position past
+	// row_position[row], so a chunk of rows at ascending positions attends
+	// causally over everything stored - including itself and the rest of the
+	// chunk, which LmKvStoreKernel put there in this same stream order. Decode
+	// is unchanged: every stored position is at or before the row's own, and
+	// the guard admits them all. The contract the driver owes:
+	// context_length[sequence] counts ALL stored rows, the chunk included.
 	// BACK TO V-SPACE BEFORE THE GATE. The attention output is heads * kv_lora;
 	// kv_b_value maps each head's 512 to its 128. Absorbing this into o_proj
 	// would be algebraically fine and is not an option: the gate is elementwise
 	// and does not commute with the fold, the checkpoint has no latent-space
 	// gate tensor, and on GB10 it would cost 55 ms a token in weight reads to
 	// save 46 us of arithmetic. See LmPerHeadProjectKernel.
+	// A DISTINCT DESTINATION, NOT IN PLACE. Per head this projects 512 in to
+	// 128 out, so an in-place call has head h's input bytes overwritten by the
+	// outputs of blocks 4h..4h+3 - each block stages its own input to shared
+	// first, but block scheduling across SMs is unordered, so heads 0..23 race.
+	// The one-thread host shim executes blocks in ascending order and can never
+	// see it, which its own header lists as exactly the class it cannot catch.
+	// value_bf16 is idle on the MLA path and is sized at heads * 128.
 	LM_LAUNCH((LmPerHeadProjectKernel<K3_LAYER_THREADS,K3_KV_LORA_RANK,K3_V_HEAD_DIM>), dim3(rows,K3_MLA_HEADS), K3_LAYER_THREADS, 0, stream,
-		b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight, b->attention_out_bf16,K3_MLA_HEADS,rows);
-	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_weight,b->mla_gate_scale,
-		b->gate_bf16,rows,K3_HIDDEN,K3_MLA_OUT_DIM,multiprocessors,stream);
+		b->attention_out_bf16,(const uint16_t *)b->mla_kv_b_value_weight, b->value_bf16,K3_MLA_HEADS,rows);
+	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->mla_gate_down_weight,0,
+		b->latent_bf16,rows,K3_HIDDEN,K3_V_HEAD_DIM,multiprocessors,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->mla_gate_up_weight,0,
+		b->gate_bf16,rows,K3_V_HEAD_DIM,K3_MLA_OUT_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// No RMSNorm here - eq. 7 gates the raw attention output, unlike KDA's eq. 6
-	// which normalises first.
-	//
-	// THE GATE WIDTH FOLLOWS THE FORM. The reference gates at heads * v_head_dim
-	// because its attention output is reconstructed; in the absorbed form the
-	// output is heads * LATENT, so the gate projection must be too. Same gate,
-	// different width, and mla_gate_weight is sized from K3_MLA_OUT_DIM for
-	// exactly that reason.
+	// which normalises first. The gate is the checkpoint's g_proj, unchanged, at
+	// heads * v_head_dim.
 	LM_LAUNCH((LmOutputGateKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		b->attention_out_bf16,b->gate_bf16,K3_MLA_OUT_DIM);
-	return(K3Project<LmBf16Format>(b,b->attention_out_bf16,b->mla_out_weight,b->mla_out_scale,
-		b->attention_out_bf16,rows,K3_MLA_OUT_DIM,K3_HIDDEN,multiprocessors,stream));
+		b->value_bf16,b->gate_bf16,K3_MLA_OUT_DIM);
+	return(K3Project<LmBf16Format>(b,b->value_bf16,b->mla_out_weight,b->mla_out_scale,
+		b->attention_out_bf16,partial_accumulate,rows,K3_MLA_OUT_DIM,K3_HIDDEN,multiprocessors,stream));
 }
 
 // Stable LatentMoE, on every layer. Report eq. 11.
@@ -528,8 +577,12 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 {
 	LmGemmArguments gemm;
 	int32_t status;
+	// THE INPUT IS THE MLP-SIDE RETRIEVAL, IN hidden_bf16 - not the attention
+	// output. The driver ran K3AttnRes over the post-attention partial before
+	// calling this; reading attention_out here would compute the retrieval and
+	// then ignore it, which is what this file did.
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
-		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+		b->hidden_bf16,0,(const uint16_t *)b->mlp_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	// THE ROUTER RUNS ON THE FULL HIDDEN AND NOT IN THE QUANTISED FORMAT.
 	// modeling_kimi_linear.py casts both the token and the router weight to
 	// float32 before the linear, and the report's quantisation section lists MoE
@@ -545,20 +598,36 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// RENORMALISE is true because moe_renormalize is set, and the per-expert
 	// bias is e_score_correction_bias, frozen at inference.
 	LM_LAUNCH((LmTopkSmallKernel<K3_LAYER_THREADS,K3_TOP_K,true>), rows, K3_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
-		0,K3_EXPERTS,(uint32_t *)b->route_expert, (float *)b->route_weight,b->router_bias,(const uint16_t *)b->router_logits);
+		0,K3_EXPERTS,b->route_expert, (float *)b->route_weight,b->router_bias,(const uint16_t *)b->router_logits);
+	// FROM CHOICES TO PACKED ORDER, ON DEVICE. The top-k lives here; a host
+	// cannot pack what it cannot see without a sync on the hot path, and until
+	// this call nothing packed it at all - every harness filled the arrays by
+	// hand, which is the precise shape of a driver that cannot exist.
+	LM_LAUNCH((LmRouteBuildKernel<K3_LAYER_THREADS,K3_EXPERTS>), 1u, K3_LAYER_THREADS, 0, stream,
+		b->route_expert,packed_rows,K3_TOP_K,b->group_row_offset, b->route_packed_row,b->route_source_token,
+		LmLaunchGroupedTileM(packed_rows,K3_TOP_K,K3_EXPERTS), (K3_EXPERT_INTERMEDIATE * 2u + K3_LAYER_TILE_N - 1u) / K3_LAYER_TILE_N,b->group_tile_prefix, (K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_TILE_N - 1u) / K3_LAYER_TILE_N,b->group_tile_prefix_down);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 		b->latent_bf16,rows,K3_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	K3Quantise<Format>(b,b->latent_bf16,b->route_source_token,packed_rows,K3_ROUTED_EXPERT_HIDDEN,stream);
+	// THE ROUTE EXPANSION IS A BF16 GATHER, NOT A QUANTISE. input_activations
+	// is null: the checkpoint quantises weights and says nothing about
+	// activations, so the expert GEMMs stream BF16 rows against MXFP4 weights
+	// with the E8M0 plane decoded in the load. The quantiser this replaced was
+	// doing the expansion implicitly on its way to a grid the recipe forbids.
+	LM_LAUNCH((LmGatherRowsKernel<K3_LAYER_THREADS>),
+		dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,packed_rows),
+		K3_LAYER_THREADS, 0, stream,
+		b->latent_bf16,b->route_source_token,b->route_gather_bf16,
+		packed_rows,K3_ROUTED_EXPERT_HIDDEN);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->expert_w1_scale;
+	gemm.scale_b_e8m0 = (const uint8_t *)b->expert_w1_scale;
 	gemm.group_row_offset = b->group_row_offset;
 	gemm.group_tile_prefix = b->group_tile_prefix;
+	gemm.prefix_built = 1u;
 	gemm.output_bf16 = b->gate_up_bf16;
-	status = LmGemmLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->expert_w1_weight,packed_rows,packed_rows,
+	status = LmGemmWeightOnlyLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+		&gemm,b->route_gather_bf16,b->expert_w1_weight,packed_rows,packed_rows,
 		K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE * 2u,
 		multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -567,11 +636,13 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// the gate branch and 25 the up branch, and swapping them runs.
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), packed_rows, K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,K3_EXPERT_INTERMEDIATE, K3_SITU_BETA,K3_SITU_LINEAR_BETA);
-	K3Quantise<Format>(b,b->intermediate_bf16,0,packed_rows,K3_EXPERT_INTERMEDIATE,stream);
-	gemm.scale_b = (const float *)b->expert_w2_scale;
+	// The SiTU output is already expert-major: no gather, no quantise, the
+	// rows feed the down-projection as they are.
+	gemm.scale_b_e8m0 = (const uint8_t *)b->expert_w2_scale;
+	gemm.group_tile_prefix = b->group_tile_prefix_down;
 	gemm.output_bf16 = b->gate_up_bf16;
-	status = LmGemmLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->expert_w2_weight,packed_rows,packed_rows,
+	status = LmGemmWeightOnlyLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+		&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,packed_rows,
 		K3_TOP_K,K3_EXPERTS,K3_EXPERT_INTERMEDIATE,K3_ROUTED_EXPERT_HIDDEN,
 		multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -597,7 +668,7 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, (K3_ROUTED_EXPERT_HIDDEN + 8u) * sizeof(float), stream,
 		b->latent_bf16,0,(const uint16_t *)b->routed_norm_weight, 0,b->latent_bf16,K3_ROUTED_EXPERT_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->latent_bf16,b->routed_up_weight,b->routed_up_scale,
-		b->hidden_bf16,rows,K3_ROUTED_EXPERT_HIDDEN,K3_HIDDEN,multiprocessors,stream);
+		b->hidden_bf16,b->attnres_partial_bf16,rows,K3_ROUTED_EXPERT_HIDDEN,K3_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	// The two shared experts run on the pre-projection hidden at full width and
@@ -617,13 +688,15 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// LmAddRowsKernel was written for this - its comment says "for a shared
 	// expert's contribution, which is added rather than weighted because it has
 	// no gate" - and had never been called.
+	// THE PARTIAL IS THE ONLY LIVE READER. Post-MLP hidden feeds nothing -
+	// the next layer's first act is a retrieval that replaces it - so both
+	// halves of the module output fold straight into the partial in their
+	// own epilogues: routed above, shared here. The AddRows that summed
+	// them into hidden, and the slice's PartialAdd that read the sum back,
+	// are both gone, and so is a full-width round trip per MoE layer.
 	status = K3Project<LmBf16Format>(b,b->intermediate_bf16,b->shared_w2_weight,b->shared_w2_scale,
-		b->shared_out_bf16,rows,K3_SHARED_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	LM_LAUNCH((LmAddRowsKernel<K3_LAYER_THREADS>), dim3((K3_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-		b->hidden_bf16,b->shared_out_bf16,b->hidden_bf16,rows,K3_HIDDEN);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+		b->shared_out_bf16,b->attnres_partial_bf16,rows,K3_SHARED_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream);
+	return(status);
 }
 
 // The dense MLP, layer 0 only. first_k_dense_replace is 1: K3 has exactly one
@@ -637,8 +710,12 @@ template<class Format>
 static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
+	// THE INPUT IS THE MLP-SIDE RETRIEVAL, IN hidden_bf16 - not the attention
+	// output. The driver ran K3AttnRes over the post-attention partial before
+	// calling this; reading attention_out here would compute the retrieval and
+	// then ignore it, which is what this file did.
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
-		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+		b->hidden_bf16,0,(const uint16_t *)b->mlp_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->dense_gate_up_weight,
 		b->dense_gate_up_scale,b->gate_up_bf16,rows,K3_HIDDEN,
 		K3_DENSE_INTERMEDIATE * 2u,multiprocessors,stream);
@@ -646,9 +723,10 @@ static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 		return(status);
 	LM_LAUNCH((LmSituMulKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,K3_DENSE_INTERMEDIATE, K3_SITU_BETA,K3_SITU_LINEAR_BETA);
+	// the dense layer's module output folds into the partial the same way
 	return(K3Project<LmBf16Format>(b,b->intermediate_bf16,b->dense_down_weight,
-		b->dense_down_scale,b->hidden_bf16,rows,K3_DENSE_INTERMEDIATE,K3_HIDDEN,
-		multiprocessors,stream));
+		b->dense_down_scale,b->hidden_bf16,b->attnres_partial_bf16,rows,
+		K3_DENSE_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream));
 }
 
 static int32_t K3Head(const K3LayerBuffers *b, const void *head_norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, cudaStream_t stream)

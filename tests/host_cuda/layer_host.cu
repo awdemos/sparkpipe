@@ -136,10 +136,16 @@ int main(void)
 	for (index = 0u; index < ROWS * TOP_K; ++index)
 		printf("rweight %.9g\n", (double)route_weight[index]);
 
-	// short convolution with Swish, one block per (row, channel group)
-	LM_HOST_LAUNCH(dim3(ROWS, CHANNELS),
-		(LmCausalConvDecodeKernel<THREADS, CONV_KERNEL, LM_CONV_SWISH>(
-			window, state_index, conv_in, conv_w, conv_out, CHANNELS, ROWS)));
+	// short convolution with Swish, the three rows as ONE RUN. The reference
+	// below this gate has always flowed the window across the rows - and the
+	// old per-row-block kernel only matched it because a one-thread host runs
+	// blocks in ascending order. On a device those blocks raced the slot. The
+	// run kernel makes the flowing semantics the actual contract: one
+	// sequence, one block per channel group, the taps in registers.
+	static uint32_t conv_run_begin[2] = { 0u, ROWS };
+	LM_HOST_LAUNCH(dim3(1u, CHANNELS),
+		(LmCausalConvKernel<THREADS, CONV_KERNEL, LM_CONV_SWISH>(
+			window, state_index, conv_run_begin, 0, conv_in, conv_w, conv_out, CHANNELS, 1u, 1u)));
 	Emit("convout", conv_out, ROWS * CHANNELS);
 
 	LM_HOST_LAUNCH(dim3(ROWS, HEADS),
@@ -170,7 +176,7 @@ int main(void)
 
 	LM_HOST_LAUNCH(dim3(ROWS),
 		(LmAttnResKernel<THREADS, 16u>(
-			bank, partial, attnres_w, attnres_out, SOURCES, CHANNELS, 1e-5f)));
+			bank, partial, attnres_w, attnres_out, SOURCES, ROWS, CHANNELS, 1e-5f)));
 	Emit("attnresout", attnres_out, ROWS * CHANNELS);
 	return 0;
 }

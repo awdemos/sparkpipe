@@ -67,16 +67,31 @@ def main():
                   "the checkpoint sets input_activations null")
             failures += 1
 
-    # the expert GEMMs must still be reachable by Format, or nothing is quantised
-    # K3Project is generic - its body says LmGemmLaunch<Format> and its CALLERS
-    # choose the format. Counting its single call site as a quantised GEMM
-    # flagged correct code, which is the false positive that teaches a reader to
-    # skip the gate. Only direct launches outside the helper count.
+    # the expert GEMMs must be WEIGHT-ONLY launches of the Format: BF16
+    # activations against the quantised stream, E8M0 decoded in the load. A
+    # symmetric LmGemmLaunch<Format> would quantise the activations again, so
+    # its count outside the helper must be zero, not two.
     helper = re.search(r"static int32_t K3Project\b.*?\n\}", text, re.S)
     outside = text.replace(helper.group(0), "") if helper else text
-    expert_gemms = len(re.findall(r"LmGemmLaunch<Format", outside))
+    expert_gemms = len(re.findall(r"LmGemmWeightOnlyLaunch<Format", outside))
     if expert_gemms != 2:
-        print(f"  FAIL {expert_gemms} expert GEMMs take Format, expected 2")
+        print(f"  FAIL {expert_gemms} weight-only expert GEMMs take Format, "
+              f"expected 2")
+        failures += 1
+    symmetric = len(re.findall(r"LmGemmLaunch<Format", outside))
+    if symmetric != 0:
+        print(f"  FAIL {symmetric} symmetric GEMMs take Format; a symmetric "
+              f"launch quantises the activations the checkpoint leaves alone")
+        failures += 1
+    if "K3Quantise" in text:
+        print("  FAIL an activation quantiser still exists in the layer; the "
+              "recipe has no place for one")
+        failures += 1
+    # and the route expansion must be the BF16 gather, or the first expert GEMM
+    # reads rows that were never expanded
+    if "LmGatherRowsKernel" not in text:
+        print("  FAIL the route expansion gather is missing; the quantiser "
+              "used to do it implicitly")
         failures += 1
     # and Format must be the checkpoint's, not something else 4-bit
     bind = BIND.read_text()

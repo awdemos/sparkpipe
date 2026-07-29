@@ -17,8 +17,8 @@ Prefill bucket selection is unchanged. Small decode batches up to B16 keep the m
 When the selected decode bucket differs from the minimal capacity bucket, the scheduler sets:
 
 ```c
-SPARK_GLM52_SCHEDULER_DECISION_FLAG_MEASURED_DECODE_BUCKET
-SPARK_GLM52_SCHEDULER_DISPATCH_STAGE_FLAG_MEASURED_DECODE_BUCKET
+SPARK_SCHEDULER_DECISION_FLAG_MEASURED_DECODE_BUCKET
+SPARK_SCHEDULER_DISPATCH_STAGE_FLAG_MEASURED_DECODE_BUCKET
 ```
 
 It also increments:

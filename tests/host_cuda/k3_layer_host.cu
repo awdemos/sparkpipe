@@ -76,18 +76,20 @@ struct LmHostRecorderFormat
 #define ROWS 2u
 #define ROUTES (ROWS * K3_TOP_K)
 
-static uint16_t hidden[ROWS * K3_HIDDEN], residual[ROWS * K3_HIDDEN];
+static uint16_t hidden[ROWS * K3_HIDDEN];
 static uint16_t normed[ROWS * K3_HIDDEN], attention_out[ROWS * K3_HIDDEN];
 static uint16_t shared_out[ROWS * K3_HIDDEN];
 static uint16_t latent[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
+static uint16_t route_gather[ROUTES * K3_ROUTED_EXPERT_HIDDEN];
 static uint16_t gate_up[ROUTES * K3_SHARED_INTERMEDIATE * 2u];
 static uint16_t intermediate[ROUTES * K3_SHARED_INTERMEDIATE];
 static uint16_t norm_weight[K3_HIDDEN];
-static uint8_t packed_activation[ROUTES * K3_HIDDEN * 2u];
-static uint8_t packed_scale[ROUTES * K3_HIDDEN];
 static float router_logits[ROWS * K3_EXPERTS], router_bias[K3_EXPERTS];
 static float route_weight[ROUTES];
 static uint32_t route_expert[ROUTES], route_packed[ROUTES], route_source[ROUTES];
+static uint32_t group_offsets[K3_EXPERTS + 1u], group_tiles[K3_EXPERTS + 1u];
+static uint32_t group_tiles_down[K3_EXPERTS + 1u];
+static uint32_t dense_offsets[2], dense_tiles[2];
 
 int main(void)
 {
@@ -96,26 +98,29 @@ int main(void)
 	memset(&b, 0, sizeof(b));
 	for (index = 0u; index < K3_HIDDEN; ++index)
 		norm_weight[index] = LmFloatToBf16(1.0f);
+	// hidden is the MLP-side retrieval under AttnRes - the driver writes it
+	// there before calling the layer, and the layer's first norm reads it
+	// alone. residual_bf16 no longer exists: the stream advances only by the
+	// driver's explicit partial adds.
 	for (index = 0u; index < ROWS * K3_HIDDEN; ++index)
-	{
 		hidden[index] = LmFloatToBf16(0.01f * (float)(index % 17));
-		residual[index] = LmFloatToBf16(0.005f * (float)(index % 11));
-	}
 	for (index = 0u; index < ROUTES; ++index)
 	{
-		route_packed[index] = index;
-		route_source[index] = index / K3_TOP_K;
 		route_weight[index] = 1.0f / (float)K3_TOP_K;
 	}
-	b.hidden_bf16 = hidden; b.residual_bf16 = residual; b.normed_bf16 = normed;
+	b.hidden_bf16 = hidden; b.normed_bf16 = normed;
 	b.attention_out_bf16 = attention_out; b.shared_out_bf16 = shared_out;
 	b.latent_bf16 = latent; b.gate_up_bf16 = gate_up;
+	b.route_gather_bf16 = route_gather;
 	b.intermediate_bf16 = intermediate;
-	b.packed_activation = packed_activation; b.packed_scale = packed_scale;
 	b.mlp_norm_weight = norm_weight; b.routed_norm_weight = norm_weight;
 	b.router_logits = router_logits; b.router_bias = router_bias;
 	b.route_expert = route_expert; b.route_weight = route_weight;
 	b.route_packed_row = route_packed; b.route_source_token = route_source;
+	b.group_row_offset = group_offsets; b.group_tile_prefix = group_tiles;
+	b.group_tile_prefix_down = group_tiles_down;
+	dense_offsets[0] = 0u; dense_offsets[1] = ROWS;
+	b.dense_row_offset = dense_offsets; b.dense_tile_prefix = dense_tiles;
 
 	// bisect the fault: report before each launch the layer makes
 	printf("start\n"); fflush(stdout);

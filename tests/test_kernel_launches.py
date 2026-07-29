@@ -93,10 +93,48 @@ def split_arguments(text):
     return out
 
 
+def in_place_per_head():
+    """A per-head projection that shrinks its rows cannot run in place.
+
+    LmPerHeadProjectKernel writes head h's OUT_DIM at the position head
+    4h's IN_DIM occupies, so with one buffer as both operands the outputs of
+    blocks 4h..4h+3 overwrite head h's input - a scheduling race the
+    one-thread host shim executes in ascending block order and can never see.
+    Textual identity of the first and third kernel arguments is the whole
+    check: it is exactly the call that was wrong, and no correct call looks
+    like it.
+    """
+    failures = 0
+    for directory in CALLER_GLOBS:
+        for root, _, files in os.walk(os.path.join(ROOT, directory)):
+            for name in files:
+                if not name.endswith((".cu", ".cuh")):
+                    continue
+                path = os.path.join(root, name)
+                text = re.sub(r"//[^\n]*", "", open(path, errors="replace").read())
+                flat = re.sub(r"\s+", " ", text)
+                for match in re.finditer(r"LM_LAUNCH\(", flat):
+                    depth, index = 1, match.end()
+                    while depth and index < len(flat):
+                        depth += flat[index] == "("
+                        depth -= flat[index] == ")"
+                        index += 1
+                    arguments = split_arguments(flat[match.end():index - 1])
+                    if "LmPerHeadProjectKernel" not in arguments[0]:
+                        continue
+                    kernel_args = arguments[5:]
+                    if len(kernel_args) >= 3 and kernel_args[0] == kernel_args[2]:
+                        print(f"  FAIL {os.path.relpath(path, ROOT)}: "
+                              f"LmPerHeadProjectKernel in place on "
+                              f"'{kernel_args[0]}'; heads race their inputs")
+                        failures += 1
+    return failures
+
+
 def main():
     kernels = kernel_signatures()
     sites = call_sites()
-    failures = 0
+    failures = in_place_per_head()
     checked_grid = checked_names = 0
     for path, name, grid, arguments in sites:
         if name not in kernels:

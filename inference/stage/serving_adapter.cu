@@ -23,7 +23,7 @@ extern "C" int32_t Glm52StageSlice(const void *node_context, void *layer_buffers
     void *stream);
 
 /* Queried once from the device rather than assumed. The ring size changes. */
-static uint32_t SparkGlm52ResidentDecodeStageMultiprocessorCount(void)
+static uint32_t SparkResidentDecodeStageMultiprocessorCount(void)
 {
     static uint32_t cached = 0u;
     int count = 0;
@@ -90,10 +90,10 @@ static void SparkGlm52ServingAdapterFreeHost(void *pointer)
     }
 }
 
-static const SparkGlm52ResidentDecodeStagePipelineSlot *SparkGlm52ServingAdapterPipelineSlot(
-    const SparkGlm52ResidentDecodeStageServingAdapter *adapter)
+static const SparkResidentDecodeStagePipelineSlot *SparkGlm52ServingAdapterPipelineSlot(
+    const SparkResidentDecodeStageServingAdapter *adapter)
 {
-    const SparkGlm52ResidentDecodeStageNodeContext *node_context;
+    const SparkResidentDecodeStageNodeContext *node_context;
 
     if (adapter == 0 || adapter->layer_node_contexts == 0 ||
         adapter->layer_count == 0u)
@@ -265,7 +265,7 @@ __global__ static void SparkGlm52ServingAdapterGatherDecodeEmbeddingKernel(
 }
 
 static SparkStatus SparkGlm52ServingAdapterValidateKvCoverage(
-    const SparkGlm52KvBlockTableView *kv_block_table,
+    const SparkKvBlockTableView *kv_block_table,
     uint32_t lane_index,
     uint32_t position)
 {
@@ -273,9 +273,9 @@ static SparkStatus SparkGlm52ServingAdapterValidateKvCoverage(
     uint32_t physical_block_index;
 
     if (kv_block_table == 0 ||
-        kv_block_table->abi_version != SPARK_GLM52_KV_CACHE_ABI_VERSION ||
+        kv_block_table->abi_version != SPARK_KV_CACHE_ABI_VERSION ||
         kv_block_table->descriptor_bytes !=
-            SPARK_GLM52_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES ||
+            SPARK_KV_BLOCK_TABLE_VIEW_DESCRIPTOR_BYTES ||
         kv_block_table->block_token_count == 0u ||
         kv_block_table->physical_block_indices == 0 ||
         kv_block_table->host_physical_block_indices == 0 ||
@@ -301,9 +301,9 @@ static SparkStatus SparkGlm52ServingAdapterValidateKvCoverage(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageServingAdapterInitialize(
-    SparkGlm52ResidentDecodeStageServingAdapter *adapter,
-    const SparkGlm52ResidentDecodeStageServingAdapterConfiguration *configuration)
+SparkStatus SparkResidentDecodeStageServingAdapterInitialize(
+    SparkResidentDecodeStageServingAdapter *adapter,
+    const SparkResidentDecodeStageServingAdapterConfiguration *configuration)
 {
     uint64_t metadata_token_count;
     uint64_t hidden_bytes;
@@ -311,11 +311,11 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterInitialize(
 
     if (adapter == 0 || configuration == 0 ||
         configuration->abi_version !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_ABI_VERSION ||
+            SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_ABI_VERSION ||
         configuration->descriptor_bytes !=
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_CONFIGURATION_DESCRIPTOR_BYTES ||
+            SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_CONFIGURATION_DESCRIPTOR_BYTES ||
         (configuration->flags &
-            ~SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_KNOWN_FLAGS) != 0u ||
+            ~SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_KNOWN_FLAGS) != 0u ||
         configuration->maximum_active_sequence_count == 0u ||
         configuration->maximum_prompt_token_count == 0u ||
         configuration->vocabulary_size == 0u ||
@@ -332,9 +332,9 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterInitialize(
 
     memset(adapter,0,sizeof(*adapter));
     adapter->abi_version =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_ABI_VERSION;
+        SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_ABI_VERSION;
     adapter->descriptor_bytes =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_DESCRIPTOR_BYTES;
+        SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_DESCRIPTOR_BYTES;
     adapter->flags = configuration->flags;
     adapter->pipeline_slot_index = configuration->pipeline_slot_index;
     adapter->maximum_active_sequence_count =
@@ -357,7 +357,7 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterInitialize(
                 cudaStreamNonBlocking));
         if (status != SPARK_STATUS_OK)
         {
-            SparkGlm52ResidentDecodeStageServingAdapterDestroy(adapter);
+            SparkResidentDecodeStageServingAdapterDestroy(adapter);
             return status;
         }
         adapter->owns_cuda_stream = 1u;
@@ -393,7 +393,7 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterInitialize(
         status = SparkGlm52ServingAdapterHostAlloc(
             &adapter->host_mtp_committed_token_ids,
             adapter->maximum_active_sequence_count *
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE);
+                SPARK_RESIDENT_DECODE_STAGE_MAX_SPECULATIVE_ROWS_PER_LANE);
     if (status == SPARK_STATUS_OK)
         status = SparkGlm52ServingAdapterDeviceAlloc(
             (void **)&adapter->device_prefill_token_ids,
@@ -448,19 +448,19 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterInitialize(
             hidden_bytes);
     if (status != SPARK_STATUS_OK)
     {
-        SparkGlm52ResidentDecodeStageServingAdapterDestroy(adapter);
+        SparkResidentDecodeStageServingAdapterDestroy(adapter);
         return status;
     }
     if (SparkGlm52ServingAdapterPipelineSlot(adapter) == 0)
     {
-        SparkGlm52ResidentDecodeStageServingAdapterDestroy(adapter);
+        SparkResidentDecodeStageServingAdapterDestroy(adapter);
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     return SPARK_STATUS_OK;
 }
 
-void SparkGlm52ResidentDecodeStageServingAdapterDestroy(
-    SparkGlm52ResidentDecodeStageServingAdapter *adapter)
+void SparkResidentDecodeStageServingAdapterDestroy(
+    SparkResidentDecodeStageServingAdapter *adapter)
 {
     if (adapter == 0)
     {
@@ -492,24 +492,24 @@ void SparkGlm52ResidentDecodeStageServingAdapterDestroy(
     memset(adapter,0,sizeof(*adapter));
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageServingAdapterPrefill(
+SparkStatus SparkResidentDecodeStageServingAdapterPrefill(
     void *context,
-    const SparkGlm52PromptPipelinePrefillDispatch *prefill_dispatch)
+    const SparkPromptPipelinePrefillDispatch *prefill_dispatch)
 {
-    SparkGlm52ResidentDecodeStageServingAdapter *adapter;
-    SparkGlm52ResidentDecodeStagePrefillFrameView prefill_view;
-    const SparkGlm52RequestApiPrefillDispatchView *request_view;
+    SparkResidentDecodeStageServingAdapter *adapter;
+    SparkResidentDecodeStagePrefillFrameView prefill_view;
+    const SparkRequestApiPrefillDispatchView *request_view;
     cudaStream_t stream;
     uint32_t lane_index;
     uint64_t word_count;
     uint32_t block_count;
     SparkStatus status;
 
-    adapter = (SparkGlm52ResidentDecodeStageServingAdapter *)context;
+    adapter = (SparkResidentDecodeStageServingAdapter *)context;
     if (adapter == 0 || prefill_dispatch == 0 ||
-        prefill_dispatch->abi_version != SPARK_GLM52_PROMPT_PIPELINE_ABI_VERSION ||
+        prefill_dispatch->abi_version != SPARK_PROMPT_PIPELINE_ABI_VERSION ||
         prefill_dispatch->descriptor_bytes !=
-            SPARK_GLM52_PROMPT_PIPELINE_PREFILL_DISPATCH_DESCRIPTOR_BYTES ||
+            SPARK_PROMPT_PIPELINE_PREFILL_DISPATCH_DESCRIPTOR_BYTES ||
         prefill_dispatch->prefill_view == 0 ||
         prefill_dispatch->host_token_ids == 0 ||
         prefill_dispatch->kv_block_table_view == 0 ||
@@ -524,7 +524,7 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterPrefill(
     request_view = prefill_dispatch->prefill_view;
     for (lane_index = 0u; lane_index < request_view->lane_count; ++lane_index)
     {
-        const SparkGlm52RequestApiPrefillDispatchLaneView *lane;
+        const SparkRequestApiPrefillDispatchLaneView *lane;
         uint32_t token_index;
         uint32_t last_position;
 
@@ -648,9 +648,9 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterPrefill(
 
     memset(&prefill_view,0,sizeof(prefill_view));
     prefill_view.abi_version =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION;
+        SPARK_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION;
     prefill_view.descriptor_bytes =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_DESCRIPTOR_BYTES;
+        SPARK_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_DESCRIPTOR_BYTES;
     prefill_view.active_sequence_count = prefill_dispatch->lane_count;
     prefill_view.prompt_token_offset = prefill_dispatch->prompt_token_offset;
     prefill_view.prompt_token_count = prefill_dispatch->prompt_token_count;
@@ -681,7 +681,7 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterPrefill(
         return status;
     }
     if ((adapter->flags &
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_SYNCHRONIZE_AFTER_LAUNCH) != 0u)
+            SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_SYNCHRONIZE_AFTER_LAUNCH) != 0u)
     {
         return SparkGlm52ServingAdapterCudaStatus(cudaStreamSynchronize(stream));
     }
@@ -690,18 +690,18 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterPrefill(
 
 
 static uint32_t SparkGlm52ServingAdapterDecodeDispatchIsMtpVerify(
-    const SparkGlm52ServingDecodeDispatch *decode_dispatch)
+    const SparkServingDecodeDispatch *decode_dispatch)
 {
     return decode_dispatch != 0 &&
         decode_dispatch->dispatch_kind ==
-            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
+            SPARK_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
         decode_dispatch->request_dispatch != 0 &&
         (decode_dispatch->request_dispatch->flags &
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u;
+            SPARK_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u;
 }
 
 static SparkStatus SparkGlm52ServingAdapterUploadMtpDraftBudgets(
-    SparkGlm52ResidentDecodeStageServingAdapter *adapter,
+    SparkResidentDecodeStageServingAdapter *adapter,
     uint32_t active_sequence_count,
     uint32_t mtp_budget,
     cudaStream_t stream)
@@ -710,7 +710,7 @@ static SparkStatus SparkGlm52ServingAdapterUploadMtpDraftBudgets(
 
     if (adapter == 0 || active_sequence_count == 0u ||
         active_sequence_count > adapter->maximum_active_sequence_count ||
-        mtp_budget > SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT)
+        mtp_budget > SPARK_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -732,10 +732,10 @@ static SparkStatus SparkGlm52ServingAdapterUploadMtpDraftBudgets(
 }
 
 static SparkStatus SparkGlm52ServingAdapterLaunchDecodeStep(
-    SparkGlm52ResidentDecodeStageServingAdapter *adapter,
-    const SparkGlm52ServingDecodeDispatch *decode_dispatch,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
-    const SparkGlm52ResidentDecodeStageFrameContext *frame_context,
+    SparkResidentDecodeStageServingAdapter *adapter,
+    const SparkServingDecodeDispatch *decode_dispatch,
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
+    const SparkResidentDecodeStageFrameContext *frame_context,
     uint32_t step_index,
     cudaStream_t stream)
 {
@@ -757,7 +757,7 @@ static SparkStatus SparkGlm52ServingAdapterLaunchDecodeStep(
          lane_index < decode_dispatch->active_sequence_count;
          ++lane_index)
     {
-        const SparkGlm52RequestApiDecodeDispatchLaneView *lane;
+        const SparkRequestApiDecodeDispatchLaneView *lane;
         uint32_t token_id;
         uint32_t sequence_position;
 
@@ -888,20 +888,20 @@ static SparkStatus SparkGlm52ServingAdapterLaunchDecodeStep(
                   sequence's length would run the dense path over a context the
                   budget cannot cover. */
                adapter->host_max_context_length,
-               SparkGlm52ResidentDecodeStageMultiprocessorCount(),
+               SparkResidentDecodeStageMultiprocessorCount(),
                stream) == 0
            ? SPARK_STATUS_OK
            : SPARK_STATUS_INTERNAL_ERROR;
 }
 
 static SparkStatus SparkGlm52ServingAdapterDecodeMtpVerify(
-    SparkGlm52ResidentDecodeStageServingAdapter *adapter,
-    const SparkGlm52ServingDecodeDispatch *decode_dispatch,
-    SparkGlm52ServingDecodeResult *decode_result,
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot,
+    SparkResidentDecodeStageServingAdapter *adapter,
+    const SparkServingDecodeDispatch *decode_dispatch,
+    SparkServingDecodeResult *decode_result,
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot,
     cudaStream_t stream)
 {
-    SparkGlm52ResidentDecodeStageFrameContext frame_context;
+    SparkResidentDecodeStageFrameContext frame_context;
     uint32_t step_index;
     uint32_t lane_index;
     uint32_t verifier_token_count;
@@ -916,7 +916,7 @@ static SparkStatus SparkGlm52ServingAdapterDecodeMtpVerify(
     }
 
     verifier_token_count = decode_dispatch->speculative_token_count;
-    if (verifier_token_count > SPARK_GLM52_SERVING_MAX_DECODE_TOKENS_PER_LANE)
+    if (verifier_token_count > SPARK_SERVING_MAX_DECODE_TOKENS_PER_LANE)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -933,12 +933,12 @@ static SparkStatus SparkGlm52ServingAdapterDecodeMtpVerify(
 
     memset(&frame_context, 0, sizeof(frame_context));
     frame_context.abi_version =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
+        SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
     frame_context.descriptor_bytes =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES;
+        SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES;
     frame_context.flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE |
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS;
+        SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE |
+        SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS;
     frame_context.kv_block_table = decode_dispatch->kv_block_table_view;
     frame_context.mtp_draft_token_budgets =
         adapter->device_mtp_draft_token_budgets;
@@ -996,14 +996,14 @@ static SparkStatus SparkGlm52ServingAdapterDecodeMtpVerify(
     return SPARK_STATUS_OK;
 }
 
-SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
+SparkStatus SparkResidentDecodeStageServingAdapterDecode(
     void *context,
-    const SparkGlm52ServingDecodeDispatch *decode_dispatch,
-    SparkGlm52ServingDecodeResult *decode_result)
+    const SparkServingDecodeDispatch *decode_dispatch,
+    SparkServingDecodeResult *decode_result)
 {
-    SparkGlm52ResidentDecodeStageServingAdapter *adapter;
-    const SparkGlm52ResidentDecodeStagePipelineSlot *pipeline_slot;
-    SparkGlm52ResidentDecodeStageFrameContext frame_context;
+    SparkResidentDecodeStageServingAdapter *adapter;
+    const SparkResidentDecodeStagePipelineSlot *pipeline_slot;
+    SparkResidentDecodeStageFrameContext frame_context;
     cudaStream_t stream;
     uint32_t lane_index;
     uint32_t draft_index;
@@ -1011,11 +1011,11 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
     uint32_t mtp_budget;
     SparkStatus status;
 
-    adapter = (SparkGlm52ResidentDecodeStageServingAdapter *)context;
+    adapter = (SparkResidentDecodeStageServingAdapter *)context;
     if (adapter == 0 || decode_dispatch == 0 || decode_result == 0 ||
-        decode_dispatch->abi_version != SPARK_GLM52_SERVING_ENGINE_ABI_VERSION ||
+        decode_dispatch->abi_version != SPARK_SERVING_ENGINE_ABI_VERSION ||
         decode_dispatch->descriptor_bytes !=
-            SPARK_GLM52_SERVING_DECODE_DISPATCH_DESCRIPTOR_BYTES ||
+            SPARK_SERVING_DECODE_DISPATCH_DESCRIPTOR_BYTES ||
         decode_dispatch->decode_view == 0 ||
         decode_dispatch->kv_block_table_view == 0 ||
         decode_dispatch->active_sequence_count == 0u ||
@@ -1025,9 +1025,9 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (decode_dispatch->dispatch_kind !=
-            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
+            SPARK_REQUEST_API_DISPATCH_KIND_DECODE_BATCH &&
         decode_dispatch->dispatch_kind !=
-            SPARK_GLM52_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+            SPARK_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -1055,24 +1055,24 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
             stream);
     }
     if (decode_dispatch->dispatch_kind !=
-        SPARK_GLM52_REQUEST_API_DISPATCH_KIND_DECODE_BATCH)
+        SPARK_REQUEST_API_DISPATCH_KIND_DECODE_BATCH)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
     mtp_commit_active =
         (decode_dispatch->request_dispatch->flags &
-            SPARK_GLM52_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u;
+            SPARK_REQUEST_API_DISPATCH_FLAG_MTP_COMMIT) != 0u;
     mtp_budget = 0u;
     if (mtp_commit_active != 0u)
     {
         static_assert(
-            SPARK_GLM52_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,
+            SPARK_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT ==
+                SPARK_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT,
             "request api and firmware MTP draft token counts must match");
         mtp_budget = decode_dispatch->request_dispatch->mtp_draft_token_budget;
         if (mtp_budget == 0u ||
-            mtp_budget > SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT ||
+            mtp_budget > SPARK_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT ||
             pipeline_slot->mtp_draft_token_ids == 0)
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
@@ -1091,12 +1091,12 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
 
     memset(&frame_context, 0, sizeof(frame_context));
     frame_context.abi_version =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
+        SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_ABI_VERSION;
     frame_context.descriptor_bytes =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES;
+        SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_DESCRIPTOR_BYTES;
     frame_context.flags =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE |
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS;
+        SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_KV_BLOCK_TABLE |
+        SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MTP_DRAFT_BUDGETS;
     frame_context.kv_block_table = decode_dispatch->kv_block_table_view;
     frame_context.mtp_draft_token_budgets =
         adapter->device_mtp_draft_token_budgets;
@@ -1132,7 +1132,7 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
                 adapter->host_mtp_committed_token_ids,
                 pipeline_slot->mtp_draft_token_ids,
                 (size_t)decode_dispatch->active_sequence_count *
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
+                    SPARK_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT *
                     sizeof(uint32_t),
                 cudaMemcpyDeviceToHost,
                 stream));
@@ -1164,7 +1164,7 @@ SparkStatus SparkGlm52ResidentDecodeStageServingAdapterDecode(
                 decode_result->token_ids[lane_index][draft_index + 1u] =
                     adapter->host_mtp_committed_token_ids[
                         ((uint64_t)lane_index *
-                         SPARK_GLM52_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT) +
+                         SPARK_RESIDENT_DECODE_STAGE_MTP_DRAFT_TOKEN_COUNT) +
                         draft_index];
             }
             decode_result->token_counts[lane_index] = mtp_budget + 1u;

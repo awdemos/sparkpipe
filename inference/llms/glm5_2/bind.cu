@@ -27,7 +27,7 @@
 // Absorbed is chosen when query_latent_weight is present, because that weight
 // only exists in a pack whose up-projections were folded at pack time - so the
 // presence of the tensor IS the decision, and there is nothing to configure.
-static void Glm52BindAbsorbed(const SparkGlm52ResidentDecodeStageNodeContext *node, LmAbsorbedWeights *out)
+static void Glm52BindAbsorbed(const SparkResidentDecodeStageNodeContext *node, LmAbsorbedWeights *out)
 {
 	out->query_latent_weight = node->query_latent_weight_bf16;
 	out->query_latent_scale = 0;
@@ -48,7 +48,7 @@ static void Glm52BindAbsorbed(const SparkGlm52ResidentDecodeStageNodeContext *no
 // architecture, not binding - the context carries pointers, config.h carries
 // shapes, and mixing them is how a rank ends up read from a struct that never
 // set it.
-static void Glm52BindRaw(const SparkGlm52ResidentDecodeStageNodeContext *node, LmLowRankWeights *query, LmLowRankWeights *kv)
+static void Glm52BindRaw(const SparkResidentDecodeStageNodeContext *node, LmLowRankWeights *query, LmLowRankWeights *kv)
 {
 	query->down_weight = node->raw_query_a_weight_fp8_e4m3;
 	query->down_scale = node->raw_query_a_weight_scale_inv_f32;
@@ -78,7 +78,7 @@ static void Glm52BindRaw(const SparkGlm52ResidentDecodeStageNodeContext *node, L
 // recomputed here - recomputing it is how a change to the pack layout produces a
 // silent off-by-one-layer, which reads as the model being slightly wrong rather
 // than as a binding error.
-static int32_t Glm52BindLayer(const SparkGlm52ResidentDecodeStageNodeContext *node, uint32_t layer_index, Glm52LayerBuffers *out)
+static int32_t Glm52BindLayer(const SparkResidentDecodeStageNodeContext *node, uint32_t layer_index, Glm52LayerBuffers *out)
 {
 	if ( node == 0 || out == 0 || layer_index >= GLM52_LAYERS )
 		return(LM_LAUNCH_ERR_SHAPE);
@@ -106,7 +106,7 @@ static int32_t Glm52BindLayer(const SparkGlm52ResidentDecodeStageNodeContext *no
 // defect 8 - every layer was routed, including the three that have no experts.
 // GLM52_FIRST_ROUTED_LAYER is what decides, and it is checked per layer rather
 // than assumed from the rank, because a rank's slice can straddle the boundary.
-static int32_t Glm52LaunchSlice(const SparkGlm52ResidentDecodeStageNodeContext *node, Glm52LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
+static int32_t Glm52LaunchSlice(const SparkResidentDecodeStageNodeContext *node, Glm52LayerBuffers *buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, cudaStream_t stream)
 {
 	uint32_t offset,layer,layer_in_group;
 	int32_t status;
@@ -150,7 +150,7 @@ extern "C" int32_t Glm52StageSlicePrefill(const void *node_context, void *layer_
 	Glm52LayerBuffers *buffers = (Glm52LayerBuffers *)layer_buffers;
 	buffers->row_positions = row_positions;
 	return(Glm52LaunchSlice(
-		(const SparkGlm52ResidentDecodeStageNodeContext *)node_context,
+		(const SparkResidentDecodeStageNodeContext *)node_context,
 		buffers,first_layer,layer_count,rows,packed_rows,context,
 		multiprocessors,(cudaStream_t)stream));
 }
@@ -158,7 +158,7 @@ extern "C" int32_t Glm52StageSlicePrefill(const void *node_context, void *layer_
 extern "C" int32_t Glm52StageSlice(const void *node_context, void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows, uint32_t context, uint32_t multiprocessors, void *stream)
 {
 	return(Glm52LaunchSlice(
-		(const SparkGlm52ResidentDecodeStageNodeContext *)node_context,
+		(const SparkResidentDecodeStageNodeContext *)node_context,
 		(Glm52LayerBuffers *)layer_buffers,
 		first_layer,layer_count,rows,packed_rows,context,multiprocessors,
 		(cudaStream_t)stream));

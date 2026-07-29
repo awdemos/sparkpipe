@@ -72,9 +72,9 @@ struct Dsv4LayerBuffers
 	uint32_t *route_source_token;
 	uint32_t *route_packed_row;
 	const uint32_t *dense_row_offset;
-	const uint32_t *dense_tile_prefix;
+	uint32_t *dense_tile_prefix;
 	const uint32_t *group_row_offset;
-	const uint32_t *group_tile_prefix;
+	uint32_t *group_tile_prefix;
 
 	LmKvView cache;
 	const uint32_t *sequence_of_row;
