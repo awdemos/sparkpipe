@@ -85,10 +85,8 @@ static uint32_t SparkSchedulerNormalizeQueueDepthPerSpark(
 static uint32_t SparkSchedulerNormalizeMeasuredProfileId(
     uint32_t measured_profile_id)
 {
-    if (measured_profile_id == 0u)
-    {
-        return SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701;
-    }
+    // Zero is the uniform-estimated profile now - an explicit choice
+    // for families without measurements, never silently upgraded.
     return measured_profile_id;
 }
 
@@ -171,6 +169,28 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
+    if (scheduler->measured_profile_id ==
+        SPARK_STAGE_PLAN_PROFILE_UNIFORM_ESTIMATED)
+    {
+        status = SparkStagePlanLoadUniformCostProfile(
+            &scheduler->stage_geometry,
+            scheduler->estimated_layer_cost_ns,
+            scheduler->estimated_final_stage_extra_cost_ns,
+            layer_cost_ns,
+            final_stage_extra_cost_ns_out);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        return SparkStagePlanBuildBalancedWithFinalCost(
+            &scheduler->stage_geometry,
+            layer_cost_ns,
+            *final_stage_extra_cost_ns_out,
+            SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT,
+            stage_plan,
+            0,
+            0u);
+    }
     status = SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
         &scheduler->stage_geometry,
         scheduler->measured_profile_id,
@@ -749,6 +769,13 @@ SparkStatus SparkSchedulerInitialize(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     status = SparkSchedulerValidateConfiguration(configuration);
+    if (status == SPARK_STATUS_OK &&
+        configuration->measured_profile_id ==
+            SPARK_STAGE_PLAN_PROFILE_UNIFORM_ESTIMATED &&
+        configuration->estimated_layer_cost_ns == 0u)
+    {
+        status = SPARK_STATUS_INVALID_ARGUMENT;
+    }
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -758,7 +785,7 @@ SparkStatus SparkSchedulerInitialize(
         configuration->queue_depth_per_spark);
     if (configuration->stage_geometry.layer_count == 0u ||
         configuration->stage_geometry.layer_count > SPARK_STAGE_PLAN_MAX_LAYER_COUNT ||
-        configuration->stage_geometry.first_routed_layer >= configuration->stage_geometry.layer_count)
+        configuration->stage_geometry.first_routed_layer > configuration->stage_geometry.layer_count)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -775,6 +802,9 @@ SparkStatus SparkSchedulerInitialize(
 
     memset(scheduler, 0, sizeof(*scheduler));
     scheduler->stage_geometry = configuration->stage_geometry;
+    scheduler->estimated_layer_cost_ns = configuration->estimated_layer_cost_ns;
+    scheduler->estimated_final_stage_extra_cost_ns =
+        configuration->estimated_final_stage_extra_cost_ns;
     scheduler->abi_version = SPARK_SCHEDULER_ABI_VERSION;
     scheduler->descriptor_bytes = SPARK_SCHEDULER_DESCRIPTOR_BYTES;
     scheduler->spark_count = SPARK_SCHEDULER_MAX_SPARK_COUNT;

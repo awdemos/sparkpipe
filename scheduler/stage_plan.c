@@ -670,6 +670,33 @@ static SparkStatus SparkStagePlanBuildMeasuredB64RingExact(
         error_buffer_bytes);
 }
 
+SparkStatus SparkStagePlanLoadUniformCostProfile(
+    const SparkStagePlanGeometry *geometry,
+    uint64_t layer_cost_ns_estimate,
+    uint64_t final_stage_extra_cost_ns_estimate,
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
+    uint64_t *final_stage_extra_cost_ns_out)
+{
+    uint32_t layer_index;
+
+    if (geometry == 0 || layer_cost_ns == 0 ||
+        final_stage_extra_cost_ns_out == 0 ||
+        layer_cost_ns_estimate == 0u ||
+        geometry->layer_count == 0u ||
+        geometry->layer_count > SPARK_STAGE_PLAN_MAX_LAYER_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (layer_index = 0u;
+         layer_index < geometry->layer_count;
+         ++layer_index)
+    {
+        layer_cost_ns[layer_index] = layer_cost_ns_estimate;
+    }
+    *final_stage_extra_cost_ns_out = final_stage_extra_cost_ns_estimate;
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkStagePlanLoadMeasuredCostProfileForQuantization(
     const SparkStagePlanGeometry *geometry,
     uint32_t measured_profile_id,

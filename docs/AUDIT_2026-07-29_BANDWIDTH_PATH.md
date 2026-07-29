@@ -122,3 +122,15 @@ today. UNVERIFIED = not read this pass.
 - K3 path: **three named gaps (K1 ingress, K2 cost tables, K3 execute)**
   — K2 is the cheap surprise this audit adds to the known board, and
   it comes first.
+
+## Addendum (same day): Qwen 3.6 joins debug distance, K2 closed
+The uniform-estimated cost profile (SPARK_STAGE_PLAN_PROFILE_UNIFORM_
+ESTIMATED = 0, explicit and validated, never silently upgraded) gives
+any measurement-less family an admissible scheduler: LoadUniformCost
+Profile fills geometry->layer_count entries from a wiring-supplied
+estimate and the balanced builder does the rest. test_uniform_profile_
+admit proves it with qwen's dense geometry {64,64} - decode ADMITTED,
+thirteen balanced stages. K2 is closed for K3 and qwen alike; both now
+wait only on their execute rungs. Speed model for qwen BF16 lives in
+docs/QWEN36_BF16_SPEED.md. Dense geometry convention: first_routed ==
+layer_count means no routed layers; the scheduler validates <= now.

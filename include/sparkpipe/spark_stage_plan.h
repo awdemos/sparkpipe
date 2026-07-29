@@ -30,6 +30,10 @@ typedef struct SparkStagePlanGeometry
 #define SPARK_STAGE_PLAN_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkStagePlan))
 #define SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701 20260701u
+// Profile zero: no measurements yet for this family. The scheduler
+// builds a balanced plan from one uniform per-layer estimate that the
+// wiring supplies - the bring-up admission path for every new model.
+#define SPARK_STAGE_PLAN_PROFILE_UNIFORM_ESTIMATED 0u
 
 #define SPARK_STAGE_PLAN_QUANTIZATION_AUTO 0u
 #define SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT 1u
@@ -168,6 +172,13 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
     SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes);
+
+SparkStatus SparkStagePlanLoadUniformCostProfile(
+    const SparkStagePlanGeometry *geometry,
+    uint64_t layer_cost_ns_estimate,
+    uint64_t final_stage_extra_cost_ns_estimate,
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
+    uint64_t *final_stage_extra_cost_ns_out);
 
 SparkStatus SparkStagePlanLoadMeasuredCostProfile(
     const SparkStagePlanGeometry *geometry,
