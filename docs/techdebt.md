@@ -22,6 +22,43 @@ leaves silently.
 - **State pool admission wiring.** `SparkStatePool` exists and is gated;
   the scheduler does not yet price 434 MB/sequence at admission.
 
+## Solutions/(codesize^2) - the measured gap and the plan (2026-07-29)
+
+Census: ~90K product lines + 34.7K test lines. DRY-law debt: 3,667
+budgeted glm refs across 57 common paths. The end-state is ~300
+irreducible refs (dimension tables only). Ranked removal path:
+
+1. **The drafter seam** (~1,450 refs: api/request.c 637,
+   draft_backend.cu 600, scheduler/speculation.c 213). DSpark carries
+   glm dspark payload TYPES through common request/scheduler paths.
+   Same recipe as the validation tier: neutral payload envelope in the
+   common ABI (size + alignment), model module owns the contents,
+   linker resolves. Erases 40% of all debt and ~2-3K lines of
+   glm marshaling.
+2. **FrameContext payload config-flow** (149 + 96 refs) - the A4
+   remainder below; same envelope mechanism as (1), do together.
+3. **W8LUT deletion** (deprecated; 173 refs, 10 files, ~800 lines:
+   plan family in firmware header, stagepack branches, checks).
+4. **Seam-include tier** (~600 refs: http_server 224, prefix_cache 214,
+   scheduler 174 are mostly glm header includes + constants that fall
+   out once (1) and (2) land).
+5. Dead complexity: 4 "was deleted" Makefile error stanzas,
+   legacy_entry.cu (42 lines), --dspark compat no-op flag.
+6. B-tier templates (LmHead 0.93x5, LmDenseMlp 0.98x4, expert_queue
+   17 hits, pack_common): ~400-700 lines.
+
+Post-plan: ~85K product lines, debt ~300, same solutions - the metric
+roughly doubles. Items (1)+(2) are one A4-part-two-scale surgery.
+
+## Model swap (16x single-tenant by mode)
+
+K3 (1.6 TB) + GLM-class (~0.4 TB) cannot be co-resident with useful KV
+(2.0 TB vs 2.0 TB capacity). Swap = drain + parallel NVMe load of ~100
+GB/node: 14-20 s at 5-7 GB/s local NVMe, plus arena re-init. Target
+<20 s via pack mmap + JIT residency warm path; orchestration (drain,
+load, announce) is scheduler work. Big-batch workloads run the smaller
+resident model; K3 owns B1-B8 interactive with shared-prefix reuse.
+
 ## Stage seam completion (A4 remainder)
 
 - **FrameContext payload config-flow.** The common stage header still
