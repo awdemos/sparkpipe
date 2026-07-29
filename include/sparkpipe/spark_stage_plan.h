@@ -221,4 +221,12 @@ SparkStatus SparkStagePlanExecutionChunkShape(
 }
 #endif
 
+
+static inline uint32_t SparkRoutedLayerCountForRange(uint32_t first_layer_index, uint32_t layer_count, uint32_t first_routed_layer, uint32_t total_layer_count)
+{
+	uint32_t range_end = first_layer_index + layer_count;
+	uint32_t routed_begin = first_layer_index > first_routed_layer ? first_layer_index : first_routed_layer;
+	uint32_t routed_end = range_end < total_layer_count ? range_end : total_layer_count;
+	return routed_end <= routed_begin ? 0u : routed_end - routed_begin;
+}
 #endif

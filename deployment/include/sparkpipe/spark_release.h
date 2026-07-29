@@ -162,4 +162,6 @@ SparkStatus SparkReleaseFormatResolvedCommandLine(
 }
 #endif
 
+
+SparkStatus SparkReleaseEnsureParentDirectory(const char *path);
 #endif

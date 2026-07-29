@@ -48,17 +48,6 @@ static uint32_t SparkGlm52SchedulerRoundDownToMultiple(
     return value - (value % multiple);
 }
 
-static uint32_t SparkSchedulerCeilDivideU32(
-    uint32_t numerator,
-    uint32_t denominator)
-{
-    if (denominator == 0u)
-    {
-        return 0u;
-    }
-    return (numerator + denominator - 1u) / denominator;
-}
-
 static uint64_t SparkSchedulerStageCostNs(
     const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
     uint64_t final_stage_extra_cost_ns,
@@ -543,7 +532,7 @@ static uint32_t SparkSchedulerPrefillBlockCount(
     {
         return 1u;
     }
-    return SparkSchedulerCeilDivideU32(
+    return SparkCeilDivU32(
         prompt_token_count,
         scheduler->prefix_cache_block_tokens);
 }

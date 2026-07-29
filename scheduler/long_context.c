@@ -9,17 +9,6 @@ static uint32_t SparkGlm52LongContextMinimumU32(
     return left < right ? left : right;
 }
 
-static uint32_t SparkGlm52LongContextCeilDivideU32(
-    uint32_t numerator,
-    uint32_t denominator)
-{
-    if (denominator == 0u)
-    {
-        return 0u;
-    }
-    return (numerator + denominator - 1u) / denominator;
-}
-
 static uint32_t SparkGlm52LongContextNormalizeFlags(
     uint32_t policy_flags)
 {
@@ -255,7 +244,7 @@ static void SparkGlm52LongContextInitializeDecodePlan(
     decode_plan->context_token_count = context_token_count;
     decode_plan->selected_token_capacity = selected_token_capacity;
     decode_plan->kv_block_token_count = policy->block_token_count;
-    decode_plan->kv_block_count_for_context = SparkGlm52LongContextCeilDivideU32(
+    decode_plan->kv_block_count_for_context = SparkCeilDivU32(
         context_token_count,
         policy->block_token_count);
     decode_plan->maximum_decode_scan_token_count =
@@ -376,7 +365,7 @@ static SparkStatus SparkGlm52LongContextBuildFullSelection(
         selected_token_capacity);
     decode_plan->selected_token_count = context_token_count;
     decode_plan->padded_token_count = selected_token_capacity - context_token_count;
-    decode_plan->selected_block_count = SparkGlm52LongContextCeilDivideU32(
+    decode_plan->selected_block_count = SparkCeilDivU32(
         context_token_count,
         policy->block_token_count);
     decode_plan->estimated_attention_token_reads = context_token_count;
@@ -577,7 +566,7 @@ SparkStatus SparkLongContextBuildPrefillPlan(
         SPARK_LONG_CONTEXT_PREFILL_PLAN_DESCRIPTOR_BYTES;
     prefill_plan->prompt_token_count = prompt_token_count;
     prefill_plan->max_prefill_tokens_per_step = max_prefill_tokens_per_step;
-    prefill_plan->prefill_chunk_count = SparkGlm52LongContextCeilDivideU32(
+    prefill_plan->prefill_chunk_count = SparkCeilDivU32(
         prompt_token_count,
         max_prefill_tokens_per_step);
     prefill_plan->final_chunk_token_count = prompt_token_count %
@@ -587,7 +576,7 @@ SparkStatus SparkLongContextBuildPrefillPlan(
         prefill_plan->final_chunk_token_count = max_prefill_tokens_per_step;
     }
     prefill_plan->kv_block_token_count = normalized_policy.block_token_count;
-    prefill_plan->kv_block_count_for_prompt = SparkGlm52LongContextCeilDivideU32(
+    prefill_plan->kv_block_count_for_prompt = SparkCeilDivU32(
         prompt_token_count,
         normalized_policy.block_token_count);
     prefill_plan->total_prompt_token_visits = (uint64_t)prompt_token_count;

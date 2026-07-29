@@ -60,7 +60,7 @@ GLM_BUDGET = {
     "cache/kv_cache.c": (9, "kv-cache seam (A3)"),
     "cache/prefix_cache.c": (27, "kv-cache seam (A3)"),
     "cache/store/stage_kv_client.c": (1, "seam includes"),
-    "scheduler/long_context.c": (52, "seam includes"),
+    "scheduler/long_context.c": (47, "seam includes"),
     "scheduler/scheduler.c": (4, "seam includes"),
     "scheduler/stage_plan.c": (0, "seam includes"),
     "scheduler/work_control.c": (9, "seam includes"),

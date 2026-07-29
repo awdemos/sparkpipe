@@ -12,26 +12,6 @@ static const uint32_t SparkGlm52RingRuntimeDefaultLayerCounts[
     6u, 6u, 6u, 6u, 6u, 6u
 };
 
-static SparkStatus SparkRingRuntimeReport(
-    char *error_buffer,
-    uint32_t error_buffer_bytes,
-    SparkStatus status,
-    const char *message)
-{
-    if (error_buffer != 0 && error_buffer_bytes != 0u)
-    {
-        if (message == 0)
-        {
-            error_buffer[0] = '\0';
-        }
-        else
-        {
-            (void)snprintf(error_buffer, error_buffer_bytes, "%s", message);
-        }
-    }
-    return status;
-}
-
 uint32_t SparkRingRuntimeDsaCandidateBucket(
     uint32_t context_token_count)
 {
@@ -218,7 +198,7 @@ SparkStatus SparkRingRuntimeBuildFixedStagePlan(
 {
     if (stage_plan == 0)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -275,7 +255,7 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
              SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT) ||
         port_base > (65535u - SPARK_RING_RUNTIME_STAGE_COUNT))
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -329,7 +309,7 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
             shape_config.first_layer_index != rank_plan->first_layer_index ||
             shape_config.layer_count != rank_plan->layer_count)
         {
-            return SparkRingRuntimeReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_VALIDATION_FAILED,
@@ -439,7 +419,7 @@ SparkStatus SparkRingRuntimeBuildShapeRankPlan(
     status = SparkRingRuntimeShapeNodeConfig(shape, &shape_config);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             status,
@@ -481,7 +461,7 @@ SparkStatus SparkRingRuntimeBuildShapeRankPlan(
         sizeof(rank_plan->host_name));
     if (status != SPARK_STATUS_OK)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             status,
@@ -585,7 +565,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
 
     if (rank_plan == 0)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -600,7 +580,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
     status = SparkRingRuntimeShapeNodeConfig(&shape, &shape_config);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             status,
@@ -641,7 +621,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
             ((uint64_t)SPARK_RING_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
              (uint64_t)rank_plan->execution_row_capacity))
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -652,7 +632,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
         status = SparkHiddenTransportValidateEndpoint(&rank_plan->input_endpoint);
         if (status != SPARK_STATUS_OK)
         {
-            return SparkRingRuntimeReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 status,
@@ -664,7 +644,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
         status = SparkHiddenTransportValidateEndpoint(&rank_plan->output_endpoint);
         if (status != SPARK_STATUS_OK)
         {
-            return SparkRingRuntimeReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 status,
@@ -681,7 +661,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    return SparkRingRuntimeReport(
+    return SparkReportError(
         error_buffer,
         error_buffer_bytes,
         SPARK_STATUS_OK,
@@ -782,7 +762,7 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
     }
     if (pack_root == 0 || pack_root[0] == '\0')
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -798,7 +778,7 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
         selected_manifest_index = 1u;
     else
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -817,7 +797,7 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
     }
     if (!SparkRingRuntimePathIsPresent(manifest_path))
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_NOT_FOUND,
@@ -837,7 +817,7 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         if (SparkRingRuntimePathIsPresent(foreign_manifest_path))
         {
-            return SparkRingRuntimeReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_MODULE_NOT_VALIDATED,
@@ -866,14 +846,14 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
         }
         if (!SparkRingRuntimePathIsPresent(pack_path))
         {
-            return SparkRingRuntimeReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_NOT_FOUND,
                 "resident MoE layer pack is missing");
         }
     }
-    return SparkRingRuntimeReport(
+    return SparkReportError(
         error_buffer,
         error_buffer_bytes,
         SPARK_STATUS_OK,
@@ -892,7 +872,7 @@ SparkStatus SparkRingRuntimeBuildFinalEventRoute(
     if (route == 0 ||
         port_base > (65535u - SPARK_RING_RUNTIME_FINAL_EVENT_PORT_OFFSET))
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -958,13 +938,13 @@ SparkStatus SparkRingRuntimeValidateFinalEventRoute(
         strcmp(route->route_name,
             "10.10.100.22_to_10.10.100.10_final_events") != 0)
     {
-        return SparkRingRuntimeReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
             "RING final event route is invalid");
     }
-    return SparkRingRuntimeReport(
+    return SparkReportError(
         error_buffer,
         error_buffer_bytes,
         SPARK_STATUS_OK,

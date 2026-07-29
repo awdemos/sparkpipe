@@ -62,3 +62,31 @@ gateway/node. The naming law and the size gate enforce the edges' cost.
 
 Rule reaffirmed: model drivers are never size cuts. The audits above
 touch machinery only.
+
+## Cross-module duplication — measured, answered (2026-07-29)
+
+The instrument: every function >=8 lines across the non-test tree
+(1,931 of them), token-bucket prefilter, difflib ratio >=0.82,
+union-find clustering, ranked by duplicated lines. THE ANSWER TO THE
+QUESTION: the largest cross-module duplication cluster in the entire
+codebase is 46 lines. There is no large overlapped functionality
+waiting to be decomposed - the modules are DRY at scale, and the
+naming campaign was cosmetics over an already-shared core.
+
+What the instrument did find, and what happened to each:
+- EXTRACTED (six shares, ~150 duplicated lines retired, every caller
+  retargeted): SparkReportError and SparkCeilDivU32/U64 into
+  spark_status.h (3 and 4 copies at 0.97+); the protected-block scan
+  into spark_kv_cache.h (both caches); SparkRoutedLayerCountForRange
+  into spark_stage_plan.h parameterized by the two model values its
+  copies hard-coded; the release tool now calls the library's
+  EnsureParentDirectory; the release copy now wraps the runtime's
+  read + atomic-write primitives instead of re-implementing the dance.
+- KEPT BY RULE: the five per-model Head wrappers and the DenseMlp pair
+  (11-30 lines each, 0.88-0.93) are the thin-driver pattern working -
+  model drivers parameterize the shared kernels, and that thinness IS
+  the design. The node-daemon transport-open twins stay per the
+  earlier 86-line verdict: a shared unit costs more than it saves.
+- SKIPPED WITH REASON: the serving/service PopEvent pair (26L, 0.88)
+  pops different event structs; a generic ring-pop macro would trade
+  two readable functions for one clever one.

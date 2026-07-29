@@ -6,40 +6,6 @@
 
 #define SPARK_STAGE_PLAN_UNREACHABLE_COST (UINT64_MAX / 4u)
 
-static SparkStatus SparkStagePlanReport(
-    char *error_buffer,
-    uint32_t error_buffer_bytes,
-    SparkStatus status,
-    const char *message)
-{
-    if (error_buffer != 0 && error_buffer_bytes != 0u)
-    {
-        if (message == 0)
-        {
-            error_buffer[0] = '\0';
-        }
-        else
-        {
-            (void)snprintf(error_buffer, error_buffer_bytes, "%s", message);
-        }
-    }
-    return status;
-}
-
-static uint32_t SparkStagePlanMinimumU32(
-    uint32_t left,
-    uint32_t right)
-{
-    return left < right ? left : right;
-}
-
-static uint32_t SparkStagePlanMaximumU32(
-    uint32_t left,
-    uint32_t right)
-{
-    return left > right ? left : right;
-}
-
 static SparkStatus SparkStagePlanNormalizeQuantizationMode(
     uint32_t quantization_mode,
     uint32_t *normalized_quantization_mode_out)
@@ -61,28 +27,6 @@ static SparkStatus SparkStagePlanNormalizeQuantizationMode(
         return SPARK_STATUS_OK;
     }
     return SPARK_STATUS_INVALID_ARGUMENT;
-}
-
-static uint32_t SparkStagePlanRoutedLayerCountForRange(
-    uint32_t first_layer_index,
-    uint32_t layer_count)
-{
-    uint32_t range_end;
-    uint32_t routed_begin;
-    uint32_t routed_end;
-
-    range_end = first_layer_index + layer_count;
-    routed_begin = SparkStagePlanMaximumU32(
-        first_layer_index,
-        SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER);
-    routed_end = SparkStagePlanMinimumU32(
-        range_end,
-        SPARK_STAGE_PLAN_LAYER_COUNT);
-    if (routed_end <= routed_begin)
-    {
-        return 0u;
-    }
-    return routed_end - routed_begin;
 }
 
 static uint32_t SparkStagePlanLayerRangeIsValid(
@@ -111,9 +55,11 @@ static uint32_t SparkStagePlanLayerRangeIsValid(
     {
         return 0u;
     }
-    routed_layer_count = SparkStagePlanRoutedLayerCountForRange(
-        first_layer_index,
-        layer_count);
+    routed_layer_count = SparkRoutedLayerCountForRange(
+first_layer_index,
+layer_count,
+SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER,
+SPARK_STAGE_PLAN_LAYER_COUNT);
     return routed_layer_count <=
         SPARK_STAGE_PLAN_MAX_ROUTED_LAYERS_PER_STAGE;
 }
@@ -183,7 +129,7 @@ SparkStatus SparkStagePlanBuildFromLayerCounts(
     if (layer_counts == 0 || stage_plan == 0 || stage_count == 0u ||
         stage_count > SPARK_STAGE_PLAN_MAX_STAGE_COUNT)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -198,7 +144,7 @@ SparkStatus SparkStagePlanBuildFromLayerCounts(
             layer_counts[stage_index] >
                 SPARK_STAGE_PLAN_LAYER_COUNT - first_layer_index)
         {
-            return SparkStagePlanReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,
@@ -228,7 +174,7 @@ SparkStatus SparkStagePlanValidate(
 
     if (stage_plan == 0)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -237,7 +183,7 @@ SparkStatus SparkStagePlanValidate(
     if (stage_plan->abi_version != SPARK_STAGE_PLAN_ABI_VERSION ||
         stage_plan->descriptor_bytes != SPARK_STAGE_PLAN_DESCRIPTOR_BYTES)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_ABI_MISMATCH,
@@ -246,7 +192,7 @@ SparkStatus SparkStagePlanValidate(
     if (stage_plan->stage_count == 0u ||
         stage_plan->stage_count > SPARK_STAGE_PLAN_MAX_STAGE_COUNT)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -262,7 +208,7 @@ SparkStatus SparkStagePlanValidate(
         stage = &stage_plan->stages[stage_index];
         if ((stage->flags & ~SPARK_STAGE_PLAN_STAGE_KNOWN_FLAGS) != 0u)
         {
-            return SparkStagePlanReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,
@@ -270,7 +216,7 @@ SparkStatus SparkStagePlanValidate(
         }
         if (stage->first_layer_index != expected_first_layer_index)
         {
-            return SparkStagePlanReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,
@@ -280,7 +226,7 @@ SparkStatus SparkStagePlanValidate(
                 stage->first_layer_index,
                 stage->layer_count))
         {
-            return SparkStagePlanReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,
@@ -291,7 +237,7 @@ SparkStatus SparkStagePlanValidate(
             ++final_stage_count;
             if (stage_index + 1u != stage_plan->stage_count)
             {
-                return SparkStagePlanReport(
+                return SparkReportError(
                     error_buffer,
                     error_buffer_bytes,
                     SPARK_STATUS_INVALID_ARGUMENT,
@@ -300,7 +246,7 @@ SparkStatus SparkStagePlanValidate(
         }
         else if ((stage->flags & SPARK_STAGE_PLAN_STAGE_FLAG_OUTPUT_HIDDEN) == 0u)
         {
-            return SparkStagePlanReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,
@@ -312,7 +258,7 @@ SparkStatus SparkStagePlanValidate(
 
     if (expected_first_layer_index != SPARK_STAGE_PLAN_LAYER_COUNT)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -320,13 +266,13 @@ SparkStatus SparkStagePlanValidate(
     }
     if (final_stage_count != 1u)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
             "stage plan must contain exactly one final-token stage");
     }
-    return SparkStagePlanReport(
+    return SparkReportError(
         error_buffer,
         error_buffer_bytes,
         SPARK_STATUS_OK,
@@ -356,7 +302,7 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
     if (layer_cost_ns == 0 || stage_plan == 0 || stage_count == 0u ||
         stage_count > SPARK_STAGE_PLAN_MAX_STAGE_COUNT)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -370,7 +316,7 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
     {
         if (layer_cost_ns[layer_index] == 0u)
         {
-            return SparkStagePlanReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INVALID_ARGUMENT,
@@ -380,7 +326,7 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
             prefix_cost_ns[layer_index] + layer_cost_ns[layer_index];
         if (prefix_cost_ns[layer_index + 1u] < prefix_cost_ns[layer_index])
         {
-            return SparkStagePlanReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_CAPACITY_EXCEEDED,
@@ -451,7 +397,7 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
     if (best_cost[stage_count][SPARK_STAGE_PLAN_LAYER_COUNT] ==
         SPARK_STAGE_PLAN_UNREACHABLE_COST)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_CAPACITY_EXCEEDED,
@@ -466,7 +412,7 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
         split_layer_index = best_split[stage_index][current_layer_index];
         if (split_layer_index == UINT32_MAX)
         {
-            return SparkStagePlanReport(
+            return SparkReportError(
                 error_buffer,
                 error_buffer_bytes,
                 SPARK_STATUS_INTERNAL_ERROR,
@@ -685,7 +631,7 @@ static SparkStatus SparkStagePlanBuildMeasuredB64RingExact(
 
     if (stage_plan == 0)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_INVALID_ARGUMENT,
@@ -809,7 +755,7 @@ SparkStatus SparkStagePlanBuildMeasuredBalancedForQuantization(
         &final_stage_extra_cost_ns);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             status,
@@ -858,7 +804,7 @@ SparkStatus SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
         &normalized_quantization_mode);
     if (status != SPARK_STATUS_OK)
     {
-        return SparkStagePlanReport(
+        return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             status,

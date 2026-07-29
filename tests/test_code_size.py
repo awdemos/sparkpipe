@@ -7,7 +7,7 @@ one context window) at once, and reasoning quality follows."""
 import subprocess, sys
 from pathlib import Path
 
-CEILING = 104952  # lines; only goes down
+CEILING = 104759  # lines; only goes down
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

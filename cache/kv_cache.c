@@ -13,17 +13,6 @@ static uint64_t SparkKvCacheMulU64(
     return left * right;
 }
 
-static uint64_t SparkKvCacheCeilDivU64(
-    uint64_t numerator,
-    uint64_t denominator)
-{
-    if (denominator == 0u)
-    {
-        return 0u;
-    }
-    return (numerator + denominator - 1u) / denominator;
-}
-
 static SparkStatus SparkKvCacheCheckedMulU64(
     uint64_t left,
     uint64_t right,
@@ -134,7 +123,7 @@ static SparkStatus SparkKvCacheCalculateAttentionBytesPerTokenLayer(
             element_count =
                 (uint64_t)request->latent_dimension +
                 (uint64_t)request->rope_dimension;
-            scale_count = SparkKvCacheCeilDivU64(
+            scale_count = SparkCeilDivU64(
                 element_count,
                 (uint64_t)request->fp8_scale_block_size);
             *bytes_per_token_per_layer_out =
@@ -149,7 +138,7 @@ static SparkStatus SparkKvCacheCalculateAttentionBytesPerTokenLayer(
             element_count =
                 (uint64_t)request->latent_dimension +
                 (uint64_t)request->rope_dimension;
-            scale_count = SparkKvCacheCeilDivU64(
+            scale_count = SparkCeilDivU64(
                 element_count,
                 (uint64_t)request->fp8_scale_block_size);
             *bytes_per_token_per_layer_out =
@@ -157,7 +146,7 @@ static SparkStatus SparkKvCacheCalculateAttentionBytesPerTokenLayer(
             element_count =
                 (uint64_t)request->head_count *
                 (uint64_t)request->qk_nope_head_dimension;
-            scale_count = SparkKvCacheCeilDivU64(
+            scale_count = SparkCeilDivU64(
                 element_count,
                 (uint64_t)request->fp8_scale_block_size);
             *bytes_per_token_per_layer_out +=
@@ -165,7 +154,7 @@ static SparkStatus SparkKvCacheCalculateAttentionBytesPerTokenLayer(
             element_count =
                 (uint64_t)request->head_count *
                 (uint64_t)request->value_head_dimension;
-            scale_count = SparkKvCacheCeilDivU64(
+            scale_count = SparkCeilDivU64(
                 element_count,
                 (uint64_t)request->fp8_scale_block_size);
             *bytes_per_token_per_layer_out +=
@@ -442,7 +431,7 @@ SparkStatus SparkKvCacheEstimateCapacity(
             (uint64_t)request->index_key_bytes_per_scalar;
     }
 
-    block_count_per_context = SparkKvCacheCeilDivU64(
+    block_count_per_context = SparkCeilDivU64(
         (uint64_t)request->context_token_count,
         (uint64_t)request->block_token_count);
     bytes_per_block_per_layer =
@@ -784,31 +773,6 @@ SparkStatus SparkKvCacheArenaReleaseBlockReference(
 }
 
 
-static uint32_t SparkKvCacheProtectedBlockListContainsBlock(
-    const uint32_t *protected_physical_block_indices,
-    uint32_t protected_physical_block_count,
-    uint32_t physical_block_index)
-{
-    uint32_t protected_block_index;
-
-    if (protected_physical_block_count != 0u &&
-        protected_physical_block_indices == 0)
-    {
-        return 0u;
-    }
-    for (protected_block_index = 0u;
-         protected_block_index < protected_physical_block_count;
-         ++protected_block_index)
-    {
-        if (protected_physical_block_indices[protected_block_index] ==
-            physical_block_index)
-        {
-            return 1u;
-        }
-    }
-    return 0u;
-}
-
 static uint32_t SparkKvCachePrefetchPlanContainsBlock(
     const SparkKvCachePrefetchPlan *prefetch_plan,
     uint32_t physical_block_index)
@@ -841,7 +805,7 @@ static uint32_t SparkKvCacheBlockIsProtectedFromResidentEviction(
     return SparkKvCachePrefetchPlanContainsBlock(
             prefetch_plan,
             physical_block_index) ||
-        SparkKvCacheProtectedBlockListContainsBlock(
+        SparkKvProtectedBlockListContainsBlock(
             protected_physical_block_indices,
             protected_physical_block_count,
             physical_block_index);

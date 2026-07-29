@@ -20,17 +20,6 @@ static uint32_t SparkPrefixCacheRoundDownToMultiple(
     return value - (value % multiple);
 }
 
-static uint32_t SparkPrefixCacheCeilDivideU32(
-    uint32_t numerator,
-    uint32_t denominator)
-{
-    if (denominator == 0u)
-    {
-        return 0u;
-    }
-    return (numerator + denominator - 1u) / denominator;
-}
-
 static uint32_t SparkPrefixCacheMaximumReusableTokenCount(
     const SparkPrefixCache *cache,
     uint32_t token_count)
@@ -1410,31 +1399,6 @@ SparkStatus SparkPrefixCacheProtectPromptLookahead(
 #define SPARK_GLM52_PREFIX_CACHE_REUSE_SCORE_REFERENCE_WEIGHT 1000000000000ull
 #define SPARK_GLM52_PREFIX_CACHE_REUSE_SCORE_TOKEN_DEPTH_WEIGHT 1024ull
 
-static uint32_t SparkPrefixCacheHardProtectedBlockListContainsBlock(
-    const uint32_t *hard_protected_physical_block_indices,
-    uint32_t hard_protected_physical_block_count,
-    uint32_t physical_block_index)
-{
-    uint32_t protected_block_index;
-
-    if (hard_protected_physical_block_count != 0u &&
-        hard_protected_physical_block_indices == 0)
-    {
-        return 0u;
-    }
-    for (protected_block_index = 0u;
-         protected_block_index < hard_protected_physical_block_count;
-         ++protected_block_index)
-    {
-        if (hard_protected_physical_block_indices[protected_block_index] ==
-            physical_block_index)
-        {
-            return 1u;
-        }
-    }
-    return 0u;
-}
-
 static const SparkPrefixCacheEntry *SparkPrefixCacheFindResidentEntryForPhysicalBlock(
     const SparkPrefixCache *cache,
     uint32_t physical_block_index)
@@ -1599,7 +1563,7 @@ static SparkStatus SparkPrefixCacheSelectResidentReuseScoreVictim(
         block = &cache->kv_cache_arena->blocks[physical_block_index];
         if ((block->flags & SPARK_KV_CACHE_BLOCK_FLAG_ALLOCATED) == 0u ||
             (block->flags & SPARK_KV_CACHE_BLOCK_FLAG_RESIDENT) == 0u ||
-            SparkPrefixCacheHardProtectedBlockListContainsBlock(
+            SparkKvProtectedBlockListContainsBlock(
                 hard_protected_physical_block_indices,
                 hard_protected_physical_block_count,
                 physical_block_index))
@@ -1826,7 +1790,7 @@ static SparkStatus SparkPrefixCacheReservePromptInternal(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    block_count = SparkPrefixCacheCeilDivideU32(
+    block_count = SparkCeilDivU32(
         token_count,
         cache->block_token_count);
     if (reservation->physical_block_indices != 0 &&
@@ -2155,7 +2119,7 @@ SparkStatus SparkPrefixCacheEnsureSequenceTokenCapacity(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    block_count = SparkPrefixCacheCeilDivideU32(
+    block_count = SparkCeilDivU32(
         token_count,
         cache->block_token_count);
     short_binding = 0;
@@ -2327,7 +2291,7 @@ SparkStatus SparkPrefixCacheBuildPhysicalBlockTable(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    block_count = SparkPrefixCacheCeilDivideU32(
+    block_count = SparkCeilDivU32(
         token_count,
         cache->block_token_count);
     if (physical_block_capacity < block_count)
@@ -2382,7 +2346,7 @@ SparkStatus SparkPrefixCacheBuildSequencePrefetchSources(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    block_count = SparkPrefixCacheCeilDivideU32(
+    block_count = SparkCeilDivU32(
         token_count,
         cache->block_token_count);
     if (source_block_capacity < block_count)
@@ -2445,7 +2409,7 @@ SparkStatus SparkPrefixCacheProbeSequenceResidency(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    block_count = SparkPrefixCacheCeilDivideU32(
+    block_count = SparkCeilDivU32(
         token_count,
         cache->block_token_count);
     token_offset = 0u;

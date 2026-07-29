@@ -538,28 +538,6 @@ static uint32_t SparkResidentDecodeStageMaximumU32(
     return left > right ? left : right;
 }
 
-static uint32_t SparkResidentDecodeStageRoutedLayerCountForRange(
-    uint32_t first_layer_index,
-    uint32_t layer_count)
-{
-    uint32_t range_end;
-    uint32_t routed_begin;
-    uint32_t routed_end;
-
-    range_end = first_layer_index + layer_count;
-    routed_begin = SparkResidentDecodeStageMaximumU32(
-        first_layer_index,
-        SPARK_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER);
-    routed_end = SparkResidentDecodeStageMinimumU32(
-        range_end,
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT);
-    if (routed_end <= routed_begin)
-    {
-        return 0u;
-    }
-    return routed_end - routed_begin;
-}
-
 static bool SparkResidentDecodeStageSliceLayerRangeIsUsable(
     uint32_t first_layer_index,
     uint32_t layer_count)
@@ -588,9 +566,11 @@ static bool SparkResidentDecodeStageSliceLayerRangeIsUsable(
         return false;
     }
 
-    routed_layer_count = SparkResidentDecodeStageRoutedLayerCountForRange(
-        first_layer_index,
-        layer_count);
+    routed_layer_count = SparkRoutedLayerCountForRange(
+first_layer_index,
+layer_count,
+SPARK_RESIDENT_DECODE_STAGE_FIRST_ROUTED_LAYER,
+SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT);
     return routed_layer_count <=
         SPARK_RESIDENT_DECODE_STAGE_MAX_ROUTED_STAGE_SLICE_LAYER_COUNT;
 }
