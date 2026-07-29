@@ -49,7 +49,7 @@ static uint32_t SparkGlm52SchedulerRoundDownToMultiple(
 }
 
 static uint64_t SparkSchedulerStageCostNs(
-    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t final_stage_extra_cost_ns,
     const SparkStagePlanStage *stage)
 {
@@ -160,7 +160,7 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
     const SparkScheduler *scheduler,
     uint32_t batch_bucket,
     SparkStagePlan *stage_plan,
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     SparkStatus status;
@@ -172,6 +172,7 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
     }
 
     status = SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -184,6 +185,7 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
     }
 
     return SparkStagePlanLoadMeasuredCostProfileForQuantization(
+        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -193,7 +195,7 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
 
 static uint64_t SparkSchedulerPlanCriticalPathNs(
     const SparkStagePlan *stage_plan,
-    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t final_stage_extra_cost_ns,
     uint32_t prefill_block_count)
 {
@@ -267,7 +269,7 @@ static SparkStatus SparkSchedulerSelectDecodeBatchBucket(
          ++candidate_index)
     {
         SparkStagePlan candidate_stage_plan;
-        uint64_t candidate_layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+        uint64_t candidate_layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
         uint64_t candidate_final_stage_extra_cost_ns;
         uint64_t candidate_critical_path_ns;
         uint32_t candidate_bucket;
@@ -809,7 +811,7 @@ static SparkStatus SparkSchedulerEstimateDecodeChunkNs(
     uint64_t *estimated_work_ns_out)
 {
     SparkStagePlan stage_plan;
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     uint32_t batch_bucket;
     uint32_t minimal_batch_bucket;
@@ -930,7 +932,7 @@ SparkStatus SparkSchedulerAdmit(
     const SparkSchedulerRequest *request,
     SparkSchedulerDecision *decision)
 {
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     uint64_t stage_cost_ns;
     uint64_t stage_service_time_ns;
@@ -1538,7 +1540,7 @@ SparkStatus SparkSchedulerAdmitPrefillBatch(
     const SparkSchedulerPrefillBatchRequest *batch_request,
     SparkSchedulerPrefillBatchDecision *batch_decision)
 {
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     uint64_t stage_cost_ns;
     uint64_t stage_service_time_ns;
@@ -1631,6 +1633,7 @@ SparkStatus SparkSchedulerAdmitPrefillBatch(
     }
 
     status = SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -1647,6 +1650,7 @@ SparkStatus SparkSchedulerAdmitPrefillBatch(
     }
 
     status = SparkStagePlanLoadMeasuredCostProfileForQuantization(
+        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,

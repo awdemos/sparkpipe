@@ -46,3 +46,13 @@ SparkStatus SparkResidentDecodeStageModelValidateSliceNodeContext(const SparkRes
 	*first_node_context = slice_node_context->layer_node_contexts[0u];
 	return SparkResidentDecodeStageModelValidateNodeContext(*first_node_context);
 }
+
+SparkStatus SparkResidentDecodeStageModelValidateFrameTaps(const SparkResidentDecodeStageFrameContext *frame_context)
+{
+	// K3 has no drafter hidden taps; a frame claiming them is malformed.
+	if ( frame_context == 0 )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if ( (frame_context->flags & SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MODEL_HIDDEN_TAPS) != 0u )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return SPARK_STATUS_OK;
+}

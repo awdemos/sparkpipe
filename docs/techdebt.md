@@ -220,3 +220,11 @@ call (ct's), then the node twin-init similarity pass.
 - Mooncake KV tier under multi-day eviction pressure.
 - 16-node ring stability at sustained B≥256 (thermals, RDMA retransmit
   behavior at 267 ms step cadence).
+
+## Scheduler geometry parameterization (multi-model)
+scheduler.c reads glm layer geometry directly (include + constants) as
+of the geometry-parameter change; its cost tables and loop bounds are
+glm-shaped. The stage-plan and topology tiers already take
+SparkStagePlanGeometry at runtime. The scheduler is next: thread the
+same geometry through its Build entries and cost-profile loops, then
+drop the glm include. Until then the law counts it honestly.

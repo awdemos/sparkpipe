@@ -30,7 +30,7 @@ static SparkStatus SparkProductionTopologyFindStageForLayer(
     uint32_t stage_index;
 
     if (stage_plan == 0 || stage_index_out == 0 ||
-        layer_index >= SPARK_STAGE_PLAN_LAYER_COUNT)
+        layer_index >= SparkStagePlanTotalLayerCount(stage_plan))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -171,7 +171,7 @@ uint32_t SparkDsaIndexShareSourceLayer(uint32_t layer_index)
 {
     uint32_t adjusted_layer_index;
 
-    if (layer_index >= SPARK_STAGE_PLAN_LAYER_COUNT)
+    if (layer_index >= SPARK_STAGE_PLAN_MAX_LAYER_COUNT)
     {
         return UINT32_MAX;
     }
@@ -197,7 +197,7 @@ SparkStatus SparkDsaIndexShareFindGroupEndLayerExclusive(
     uint32_t source_layer_index;
 
     if (group_end_layer_exclusive_out == 0 ||
-        layer_index >= SPARK_STAGE_PLAN_LAYER_COUNT)
+        layer_index >= SPARK_STAGE_PLAN_MAX_LAYER_COUNT)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
@@ -211,12 +211,13 @@ SparkStatus SparkDsaIndexShareFindGroupEndLayerExclusive(
             SparkProductionTopologyMinimumU32(
                 source_layer_index +
                     SPARK_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT,
-                SPARK_STAGE_PLAN_LAYER_COUNT);
+                SPARK_STAGE_PLAN_MAX_LAYER_COUNT);
     }
     return SPARK_STATUS_OK;
 }
 
 SparkStatus SparkProductionTopologyBuild(
+    const SparkStagePlanGeometry *geometry,
     const SparkStagePlan *stage_plan,
     uint32_t active_sequence_capacity,
     uint32_t selected_token_count,
@@ -244,6 +245,7 @@ SparkStatus SparkProductionTopologyBuild(
             "production topology arguments are invalid");
     }
     status = SparkStagePlanValidate(
+        geometry,
         stage_plan,
         error_buffer,
         error_buffer_bytes);
@@ -270,7 +272,7 @@ SparkStatus SparkProductionTopologyBuild(
             "failed to initialize topology stages");
     }
     for (source_layer_index = 0u;
-         source_layer_index < SPARK_STAGE_PLAN_LAYER_COUNT;
+         source_layer_index < geometry->layer_count;
          source_layer_index += 1u)
     {
         if (SparkDsaIndexShareSourceLayer(source_layer_index) !=
@@ -284,7 +286,7 @@ SparkStatus SparkProductionTopologyBuild(
                     SPARK_PRODUCTION_TOPOLOGY_FIRST_FULL_INDEXER_LAYER_COUNT
                     ? SPARK_PRODUCTION_TOPOLOGY_INDEXSHARE_GROUP_LAYER_COUNT
                     : 1u),
-            SPARK_STAGE_PLAN_LAYER_COUNT);
+            SPARK_STAGE_PLAN_MAX_LAYER_COUNT);
         status = SparkProductionTopologyFindStageForLayer(
             stage_plan,
             source_layer_index,
@@ -496,7 +498,7 @@ SparkStatus SparkProductionTopologyValidate(
          ++sideband_index)
     {
         sideband = &topology->indexshare_sidebands[sideband_index];
-        if (sideband->source_layer_index >= SPARK_STAGE_PLAN_LAYER_COUNT ||
+        if (sideband->source_layer_index >= SPARK_STAGE_PLAN_MAX_LAYER_COUNT ||
             sideband->export_stage_index >= topology->stage_count ||
             sideband->import_stage_index >= topology->stage_count ||
             sideband->export_stage_index >= sideband->import_stage_index ||
@@ -527,7 +529,7 @@ SparkStatus SparkProductionTopologyValidate(
             continue;
         }
         if (sideband->group_end_layer_exclusive >
-                SPARK_STAGE_PLAN_LAYER_COUNT ||
+                SPARK_STAGE_PLAN_MAX_LAYER_COUNT ||
             sideband->source_layer_index >=
                 sideband->first_imported_consumer_layer_index ||
             sideband->first_imported_consumer_layer_index >=

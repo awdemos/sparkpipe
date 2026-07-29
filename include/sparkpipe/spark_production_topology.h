@@ -100,6 +100,7 @@ SparkStatus SparkDsaIndexShareFindGroupEndLayerExclusive(
     uint32_t *group_end_layer_exclusive_out);
 
 SparkStatus SparkProductionTopologyBuild(
+    const SparkStagePlanGeometry *geometry,
     const SparkStagePlan *stage_plan,
     uint32_t active_sequence_capacity,
     uint32_t selected_token_count,

@@ -21,7 +21,7 @@ static inline SparkGlm52DsparkSpeculator *SparkRequestModelSpec(const SparkReque
 	return (SparkGlm52DsparkSpeculator *)api->model_speculator;
 }
 
-uint32_t SparkRequestModelDsparkSpeculationIsEnabled(
+uint32_t SparkRequestModelSpeculationIsEnabled(
     const SparkRequestApi *api)
 {
     return (api->configuration_flags &
@@ -35,7 +35,7 @@ static SparkStatus SparkRequestModelGetSlotDsparkDraft(
     const SparkRequestApiSlot *slot,
     SparkGlm52DsparkDraftResult *draft_result)
 {
-    if (!SparkRequestModelDsparkSpeculationIsEnabled(api) ||
+    if (!SparkRequestModelSpeculationIsEnabled(api) ||
         slot == 0 || draft_result == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
@@ -220,94 +220,14 @@ uint32_t SparkRequestModelMtpOutranksPlainDecode(
     }
 }
 
-SparkStatus SparkRequestModelResolveMtpTreeVerifierTokens(
-    const uint32_t *candidate_token_ids,
-    const uint32_t *verifier_token_ids,
-    SparkGlm52DsparkVerifyResult *verify_result,
-    uint32_t *resolution_path_id_out)
-{
-    SparkMtpTreeResolution resolution;
-    SparkStatus status;
-    if (candidate_token_ids == 0 || verifier_token_ids == 0 ||
-        verify_result == 0 || resolution_path_id_out == 0)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    status = SparkMtpTreeResolve(
-        candidate_token_ids,verifier_token_ids,&resolution);
-    if (status != SPARK_STATUS_OK)
-        return status;
-    memset(verify_result,0,sizeof(*verify_result));
-    verify_result->abi_version = SPARK_GLM52_DSPARK_ABI_VERSION;
-    verify_result->descriptor_bytes =
-        SPARK_GLM52_DSPARK_VERIFY_RESULT_DESCRIPTOR_BYTES;
-    verify_result->proposed_token_count =
-        SPARK_MODEL_MTP_TREE_CANDIDATE_COUNT;
-    verify_result->accepted_draft_token_count =
-        resolution.accepted_token_count;
-    verify_result->committed_token_count = resolution.committed_token_count;
-    verify_result->flags = SPARK_GLM52_DSPARK_VERIFY_RESULT_FLAG_REJECTED;
-    verify_result->fallback_token_id =
-        verifier_token_ids[resolution.fallback_row_index];
-    *resolution_path_id_out = resolution.path_id;
-    return SPARK_STATUS_OK;
-}
 
-SparkStatus SparkRequestModelReleaseSlotSequence(
-    SparkRequestApi *api,
-    SparkRequestApiSlot *slot)
-{
-    SparkStatus status;
 
-    if (slot->sequence_id == 0u)
-    {
-        return SPARK_STATUS_OK;
-    }
-    if (SparkRequestModelDsparkSpeculationIsEnabled(api))
-    {
-        status = SparkGlm52DsparkCancelSequence(
-            SparkRequestModelSpec(api),
-            slot->sequence_id);
-        if (status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND)
-        {
-            return status;
-        }
-    }
-    status = SparkSchedulerReleaseSequence(api->scheduler, slot->sequence_id);
-    if (status == SPARK_STATUS_OK)
-    {
-        slot->sequence_id = 0u;
-    }
-    return status;
-}
-
-void SparkRequestModelRestoreRetriedDecodeCounters(
-    SparkRequestApi *api,
-    const SparkRequestApiDispatch *dispatch)
-{
-    api->running_request_count -= dispatch->request_count;
-    api->scheduled_decode_dispatch_count -= 1u;
-    if (dispatch->kind !=
-        SPARK_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
-    {
-        return;
-    }
-    if ((dispatch->flags &
-            SPARK_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
-    {
-        api->mtp_verify_dispatch_count -= 1u;
-    }
-    else
-    {
-        api->dspark_verify_dispatch_count -= 1u;
-    }
-}
 
 uint32_t SparkRequestModelSlotCanSpeculate(
     const SparkRequestApi *api,
     const SparkRequestApiSlot *slot)
 {
-    if (!SparkRequestModelDsparkSpeculationIsEnabled(api) || slot == 0)
+    if (!SparkRequestModelSpeculationIsEnabled(api) || slot == 0)
     {
         return 0u;
     }
