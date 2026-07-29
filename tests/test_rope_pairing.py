@@ -29,6 +29,7 @@ EXPECTED = {
                     "the compressor sub-module"),
     "glm5_2": ("LM_ROPE_HALF_SPLIT", "half-split, the tree's original convention"),
     "qwen_3_6": ("LM_ROPE_HALF_SPLIT", "Qwen3.6 partial rotary over the head suffix"),
+    "mimo_2_5": ("LM_ROPE_HALF_SPLIT", "MiMo 2.5"),
     # K3 applies NO rope. modeling_kimi_linear.py sets rotary_emb = None, asserts
     # use_nope, and splits q_rot/k_rot out only to concatenate them back
     # unrotated. Position is carried by KDA's decay instead, which is how it

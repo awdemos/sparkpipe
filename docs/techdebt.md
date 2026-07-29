@@ -28,6 +28,10 @@ Census: ~90K product lines + 34.7K test lines. DRY-law debt: 3,667
 budgeted glm refs across 57 common paths. The end-state is ~300
 irreducible refs (dimension tables only). Ranked removal path:
 
+RULE: model drivers are never size cuts. Every potential frontier
+open-source target keeps its driver; a driver is a solution, and the
+metric's numerator moves first.
+
 0. **The size gate is live** (tests/test_code_size.py): non-test lines,
    ceiling only descends. Current 106.5K. Realistic architecture-stable
    floor ~60K lines (~500K tokens - whole codebase in one large-context

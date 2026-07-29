@@ -13,6 +13,7 @@ laptop instead.
 
 The stricter number is INT7's, which tiles at 256 rather than 128 - and INT7
 is the format the tree is built around. A width that is a clean multiple of
+128 can still be wrong under INT7. GLM52_QK_NOPE_DIM and MIMO25_HEAD_DIM are
 both 192 and would produce zero tiles at TILE_K=256; neither reaches a GEMM
 today, and this gate is what notices if one starts to.
 """

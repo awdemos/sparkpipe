@@ -218,6 +218,7 @@ compile coverage is itself gated, so a hole found once stays closed.
 | GLM 5.5 | driver on release | expected to inherit the glm module wholesale with a new geometry header — that expectation is a test of the seam |
 | DeepSeek V4 GA | driver at parity | MLA + DSA index cache at GA scale |
 | Qwen 3.8 | driver on release | dense+MoE hybrid, mixed-layer cohort math |
+| MiMo 2.5+ | driver at parity | SWA cache tier, compact-model fast path |
 
 One serving stack, N model drivers. That sentence is the acceptance
 criterion for the architecture (`docs/MODULE_MAP.md`); every model added

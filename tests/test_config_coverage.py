@@ -74,6 +74,7 @@ EXEMPT = {
     "GLM52_WEIGHT_LAYERS": "used by the host packer, not by kernels",
     "QWEN36_VOCAB": "same",
     "K3_VOCAB": "same",
+    "MIMO25_ROPE_HALF": "derived; LmRopePerHeadKernel computes the half internally",
     "DSV4_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
     "DSV4_KV_HEADS": "one KV head is what makes the cache a latent; the geometry "
                      "carries it, not the sequence",
@@ -85,6 +86,7 @@ EXEMPT = {
     "GLM52_MXFP4_GROUP": "MXFP4 is a supported format with no checkpoint using it",
     "GLM52_FP8_SCALE_BLOCK": "the format trait carries its own group size",
     "GLM52_NVFP4_GROUP": "same",
+    "MIMO25_RMS_EPSILON": "passed by the host, not named in unity.cu",
     "QWEN36_MTP_LAYERS": "speculation not driven yet",
     # glm5_2, with the reason each is not referenced by layer.cuh
     "GLM52_LAYERS": "the layer loop is the host's; layer.cuh is one layer",
@@ -114,6 +116,8 @@ def main() -> int:
             if path.is_file() and path.name != "config.h":
                 corpus += path.read_text(encoding="utf-8", errors="ignore")
         # A constant consumed by a sibling macro in the same header IS used, once
+        # something calls that macro. MIMO25_ATTENTION_PERIOD is read only by
+        # MIMO25_LAYER_KIND, which bind.cu evaluates; excluding config.h from the
         # corpus made it look dead and would have bought an exemption for a
         # constant that is genuinely load-bearing. Only the bodies count - the
         # left-hand side of a #define is a declaration, not a use.
