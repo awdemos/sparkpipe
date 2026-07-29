@@ -83,6 +83,13 @@ GB/node: 14-20 s at 5-7 GB/s local NVMe, plus arena re-init. Target
 load, announce) is scheduler work. Big-batch workloads run the smaller
 resident model; K3 owns B1-B8 interactive with shared-prefix reuse.
 
+## Architecture audits (from MODULE_MAP v2, 2026-07-29)
+
+Six measured questions, ~7K lines of stake, listed in docs/MODULE_MAP.md.
+Order of attack: serving_engine supersession check first (read the pump,
+diff the loops), then tcp.cu's demotion, then the tools reclassification
+call (ct's), then the node twin-init similarity pass.
+
 ## Stage seam completion (A4 remainder)
 
 - **FrameContext payload config-flow.** The common stage header still
