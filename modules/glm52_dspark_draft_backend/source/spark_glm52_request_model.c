@@ -4,7 +4,7 @@
 // them against the real speculator. The opaque configuration pointer is
 // cast back to its concrete type here and nowhere else.
 #include <string.h>
-#include "sparkpipe/spark_request_api.h"
+#include "sparkpipe/spark_request_model.h"
 #include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_mtp_tree.h"
 

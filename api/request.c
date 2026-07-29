@@ -32,28 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// model seam entries - defined in the drafter module, resolved at link
-uint32_t SparkRequestModelSlotCanSpeculate(const SparkRequestApi *api, const SparkRequestApiSlot *slot);
-uint32_t SparkRequestModelSpeculatorIsValid(const struct SparkRequestModelSpeculator *speculator);
-SparkStatus SparkRequestModelGetDraft(SparkRequestApi *api, uint64_t sequence_id, SparkRequestModelDraftResult *result);
-SparkStatus SparkRequestModelMarkVerifierTapsReady(SparkRequestApi *api, uint64_t request_id, uint64_t sequence_id, uint64_t sequence_position, uint64_t *tap_generation_out);
-uint32_t SparkRequestModelDefaultSpeculativeTokenCount(const SparkRequestApi *api);
-SparkStatus SparkRequestModelCompleteVerify(SparkRequestApi *api, uint64_t sequence_id, const SparkRequestModelVerifyResult *verify_result);
-SparkStatus SparkRequestModelResolveVerifierTokens(const uint32_t *draft_token_ids, uint32_t draft_token_count, const uint32_t *verifier_token_ids, uint32_t verifier_token_count, SparkRequestModelVerifyResult *verify_result);
-SparkStatus SparkRequestModelPrepareDraftForSlot(SparkRequestApi *api, SparkRequestApiSlot *slot);
-SparkStatus SparkRequestModelCancelSequence(SparkRequestApi *api, uint64_t sequence_id);
-uint32_t SparkRequestModelDsparkSpeculationIsEnabled(
-    const SparkRequestApi *api);
-SparkStatus SparkRequestModelGetSlotSpeculativeDraft(
-    SparkRequestApi *api,
-    const SparkRequestApiSlot *slot,
-    uint32_t preferred_source,
-    SparkRequestModelDraftResult *draft_result,
-    uint32_t *source_out);
-uint32_t SparkRequestModelMtpOutranksPlainDecode(
-    const SparkRequestApi *api,
-    uint32_t plain_request_count,
-    uint32_t mtp_request_count);
+#include "sparkpipe/spark_request_model.h"
 
 static SparkStatus SparkRequestApiReleaseSlotSequence(
     SparkRequestApi *api,
@@ -65,7 +44,7 @@ static SparkStatus SparkRequestApiReleaseSlotSequence(
     {
         return SPARK_STATUS_OK;
     }
-    if (SparkRequestModelDsparkSpeculationIsEnabled(api))
+    if (SparkRequestModelSpeculationIsEnabled(api))
     {
         status = SparkRequestModelCancelSequence(
             api,
@@ -1792,7 +1771,7 @@ static SparkStatus SparkRequestApiPendingSpeculativeTokenCount(
         *speculative_token_count_out = slot->mtp_draft_token_count;
         return SPARK_STATUS_OK;
     }
-    if (!SparkRequestModelDsparkSpeculationIsEnabled(api))
+    if (!SparkRequestModelSpeculationIsEnabled(api))
     {
         return SPARK_STATUS_NOT_FOUND;
     }
@@ -4295,7 +4274,7 @@ static SparkStatus SparkRequestApiScheduleSpeculativeVerifyBatch(
         first_slot,
         (api->configuration_flags &
             SPARK_REQUEST_API_CONFIGURATION_FLAG_PREFER_DSPARK_SPECULATION) != 0u &&
-            SparkRequestModelDsparkSpeculationIsEnabled(api)
+            SparkRequestModelSpeculationIsEnabled(api)
             ? SPARK_REQUEST_MODEL_SPECULATIVE_SOURCE_DRAFTER
             : 0u,
         &leader_draft,
@@ -6663,7 +6642,7 @@ SparkStatus SparkRequestApiCancelDispatch(
             {
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
-            if (SparkRequestModelDsparkSpeculationIsEnabled(api))
+            if (SparkRequestModelSpeculationIsEnabled(api))
             {
                 (void)SparkRequestModelCancelSequence(
                     api,
@@ -6792,7 +6771,7 @@ SparkStatus SparkRequestApiFinishRequestGeneration(
     }
 
     if (slot->state == SPARK_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY &&
-        SparkRequestModelDsparkSpeculationIsEnabled(api))
+        SparkRequestModelSpeculationIsEnabled(api))
     {
         status = SparkRequestModelCancelSequence(
             api,

@@ -5,7 +5,7 @@
 // gate holds this file and the glm provider to the same extern set, so
 // the seam cannot grow on one side without the other noticing.
 #include <stdint.h>
-#include "sparkpipe/spark_request_api.h"
+#include "sparkpipe/spark_request_model.h"
 
 uint32_t SparkRequestModelSpeculationIsEnabled(const SparkRequestApi *api)
 {

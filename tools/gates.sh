@@ -80,6 +80,8 @@ run "k3 stage doorway"     "gcc -Iinclude -Imodel-families/k3/include -Imodel-fa
 run "mimo25 stage doorway"  "gcc -Iinclude -DNDEBUG -c modules/mimo25_resident_decode_stage/source/spark_mimo25_resident_decode_stage_validation.c -o /tmp/g_mimo25v.o"
 run "qwen36 stage doorway"  "gcc -Iinclude -DNDEBUG -c modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_validation.c -o /tmp/g_qwen36v.o"
 run "dsv4 stage doorway"  "gcc -Iinclude -DNDEBUG -c modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_validation.c -o /tmp/g_dsv4v.o"
+run "family conformance"   "python3 tests/test_model_families.py"
+run "null seam link+run"   "make -s build/test_null_seam_link && ./build/test_null_seam_link"
 run "seam symbol parity"   "sh tools/seam_parity.sh"
 run "stage module + model"  "gcc -Iinclude -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source -Imodel-families/glm52/include -DNDEBUG -c inference/stage/module.c -o /tmp/g_mod.o && gcc -Iinclude -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source -Imodel-families/glm52/include -DNDEBUG -c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_validation.c -o /tmp/g_val.o"
 run "k3 kv seam"          "gcc -O2 -Wall -Wextra -Iinclude -Imodel-families/glm52/include -Imodel-families/k3/include -o /tmp/g_k3kv tests/test_k3_kv_cache.c cache/kv_cache.c && /tmp/g_k3kv"
