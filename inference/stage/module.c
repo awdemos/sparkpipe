@@ -26,6 +26,7 @@
 // build links exactly one definition of these; the common module asks the
 // questions and the model answers them. See rules.mk: MODULE_FAMILY was
 // always the seam.
+SparkStatus SparkResidentDecodeStageModelValidateFrameTaps(const SparkResidentDecodeStageFrameContext *frame_context);
 SparkStatus SparkResidentDecodeStageModelValidateNodeContext(const SparkResidentDecodeStageNodeContext *node_context);
 SparkStatus SparkResidentDecodeStageModelValidateSliceNodeContext(const SparkResidentDecodeStageSliceNodeContext *slice_node_context, const SparkResidentDecodeStageNodeContext **first_node_context);
 
@@ -240,7 +241,7 @@ static SPARK_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkResidentDecodeStag
 }
 
 static SPARK_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkResidentDecodeStageNativeQuantizedProjectionWorkspaceBytes(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
+    const SparkResidentDecodeStageLinearPlan *linear_plan,
     uint32_t weight_format)
 {
     uint64_t element_count;
@@ -1442,29 +1443,12 @@ static SparkStatus SparkResidentDecodeStageValidateDsparkHiddenTapFrameContext(
     uint32_t tap_index;
 
     if ((frame_context->flags &
-            SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS) ==
+            SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MODEL_HIDDEN_TAPS) ==
         0u)
     {
         return SPARK_STATUS_OK;
     }
-    if (frame_context->dspark_hidden_tap_lane_stride_bytes <
-            SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES ||
-        SparkResidentDecodeStageValidateDsparkHiddenTapPlanInline(
-            frame_context->dspark_hidden_tap_plan) != SPARK_STATUS_OK)
-    {
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    }
-    output_count = 0u;
-    for (tap_index = 0u;
-         tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT;
-         ++tap_index)
-    {
-        if (frame_context->dspark_hidden_tap_output_bf16[tap_index] != 0)
-            output_count += 1u;
-    }
-    if (output_count != 0u && output_count != SPARK_GLM52_DSPARK_AUX_LAYER_COUNT)
-        return SPARK_STATUS_INVALID_ARGUMENT;
-    return SPARK_STATUS_OK;
+    return SparkResidentDecodeStageModelValidateFrameTaps(frame_context);
 }
 
 static SparkStatus SparkResidentDecodeStageExtractFrameContext(

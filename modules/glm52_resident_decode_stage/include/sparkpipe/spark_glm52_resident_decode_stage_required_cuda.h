@@ -15,17 +15,17 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageInitialize(
     const SparkResidentDecodeStageNodeContext *node_context);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedTensorCoreLinearPlan(
-    SparkGlm52ResidentDecodeStageLinearPlan *linear_plan);
+    SparkResidentDecodeStageLinearPlan *linear_plan);
 
 uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateBlackwellNativeQuantizedTensorCoreWorkspaceBytes(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan);
+    const SparkResidentDecodeStageLinearPlan *linear_plan);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedProjectionPlans(
-    SparkGlm52ResidentDecodeStageLinearPlan *linear_plans,
+    SparkResidentDecodeStageLinearPlan *linear_plans,
     uint32_t linear_plan_count);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageBindBlackwellQuantizedRegularLinearPlans(
-    SparkGlm52ResidentDecodeStageLinearPlan *linear_plans,
+    SparkResidentDecodeStageLinearPlan *linear_plans,
     uint32_t linear_plan_count);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8E4m3ActivationQuantize(
@@ -150,11 +150,11 @@ uint64_t SparkGlm52Sm121RequiredDecodeStageCalculateFp8E4m3ActivationLinearBacke
     uint64_t backend_workspace_bytes);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearScaledGemmBackend(
-    SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
+    SparkResidentDecodeStageLinearPlan *linear_plan,
     const SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend *backend);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageBindFp8E4m3LinearPlansScaledGemmBackend(
-    SparkGlm52ResidentDecodeStageLinearPlan *linear_plans,
+    SparkResidentDecodeStageLinearPlan *linear_plans,
     uint32_t linear_plan_count,
     const SparkGlm52Sm121RequiredDecodeStageFp8ScaledGemmBackend *backend);
 
@@ -421,7 +421,7 @@ SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchFp8MoeGroupedReference(
     void *cuda_stream);
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageLaunchBlackwellQuantizedTensorCoreLinearPlan(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
+    const SparkResidentDecodeStageLinearPlan *linear_plan,
     const void *input,
     const void *weight,
     void *output,

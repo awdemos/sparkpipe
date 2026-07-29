@@ -19,7 +19,7 @@
 
 static void SparkTestGlm52ResidentDecodeStageLinearPlanPreparedRowContract(void)
 {
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plan;
+    SparkResidentDecodeStageLinearPlan linear_plan;
     memset(&linear_plan, 0, sizeof(linear_plan));
     linear_plan.maximum_active_sequence_count = 7u;
     assert(SparkGlm52ResidentDecodeStageLinearPlanRequiredPreparedActiveRows(
@@ -607,7 +607,7 @@ static void SparkTestInitializePrefillFrameContext(
 
 
 static SparkStatus SparkTestQuantizedProjectionLaunchPlaceholder(
-    const SparkGlm52ResidentDecodeStageLinearPlan *linear_plan,
+    const SparkResidentDecodeStageLinearPlan *linear_plan,
     const void *input,
     const void *weight,
     void *output,
@@ -624,7 +624,7 @@ static SparkStatus SparkTestQuantizedProjectionLaunchPlaceholder(
 }
 
 static void SparkTestInitializeQuantizedRawProjectionPlans(
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+    SparkResidentDecodeStageLinearPlan linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT],
     uint32_t plan_kind)
 {
@@ -694,7 +694,7 @@ static void SparkTestInitializeQuantizedRawProjectionPlans(
 
 
 static void SparkTestAttachQuantizedDenseMlpPlans(
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+    SparkResidentDecodeStageLinearPlan linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT],
     uint32_t plan_kind,
     uint32_t intermediate_dimension)
@@ -731,7 +731,7 @@ static void SparkTestAttachQuantizedDenseMlpPlans(
 }
 
 static void SparkTestInitializeRouterLinearPlan(
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+    SparkResidentDecodeStageLinearPlan linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT])
 {
     uint32_t plan_index;
@@ -771,7 +771,7 @@ static void SparkTestInitializeRouterLinearPlan(
 }
 
 static void SparkTestAttachRouterLinearPlan(
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+    SparkResidentDecodeStageLinearPlan linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT])
 {
     linear_plans[
@@ -844,7 +844,7 @@ static uint32_t SparkTestQuantizedScaleBlockForWeightFormat(uint32_t weight_form
 }
 
 static void SparkTestAttachBuiltInQuantizedRawProjectionViews(
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+    SparkResidentDecodeStageLinearPlan linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT],
     SparkResidentDecodeStageQuantizedLinearView quantized_views[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT])
@@ -916,7 +916,7 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInQuantizedProjectionValidatio
     SparkResidentDecodeStagePipelineSlot pipeline_slots[2];
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
     SparkResidentDecodeStageNodeContext node_context;
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+    SparkResidentDecodeStageLinearPlan linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
     SparkResidentDecodeStageQuantizedLinearView quantized_views[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
@@ -1002,7 +1002,7 @@ static void SparkTestGlm52ResidentDecodeStageNvfp4ModelVariantValidation(void)
     SparkResidentDecodeStagePipelineSlot pipeline_slots[2];
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
     SparkResidentDecodeStageNodeContext node_context;
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+    SparkResidentDecodeStageLinearPlan linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
     SparkFirmwareModuleConfiguration configuration;
@@ -1323,7 +1323,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8ModelVariantValidation(void)
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
     SparkResidentDecodeStageNodeContext node_context;
     SparkGlm52ResidentDecodeStageFp8MoePlan fp8_moe_plan;
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+    SparkResidentDecodeStageLinearPlan linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
     SparkFirmwareModuleConfiguration configuration;
@@ -1485,7 +1485,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8ModelVariantValidation(void)
     SparkResidentDecodeStagePipelineSlot pipeline_slots[2];
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
     SparkResidentDecodeStageNodeContext node_context;
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+    SparkResidentDecodeStageLinearPlan linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
     SparkGlm52ResidentDecodeStageTestCompletionState completion_state;
     SparkFirmwareModuleConfiguration configuration;
@@ -2886,7 +2886,7 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeValidation(void
     SparkResidentDecodeStageNodeContext node_contexts[6];
     SparkResidentDecodeStageStageSlicePlan stage_slice_plan;
     SparkResidentDecodeStageExactStageSlicePlan exact_stage_slice_plan;
-    SparkGlm52ResidentDecodeStageLinearPlan router_linear_plans[
+    SparkResidentDecodeStageLinearPlan router_linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
     SparkGlm52ResidentDecodeStageFp8MoePlan fp8_moe_plan;
     const SparkResidentDecodeStageNodeContext *layer_node_contexts[6];
@@ -3018,7 +3018,7 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInFusedStageMoeB12xValidation(
     SparkResidentDecodeStageNodeContext node_contexts[6];
     SparkResidentDecodeStageStageSlicePlan stage_slice_plan;
     SparkResidentDecodeStageExactStageSlicePlan exact_stage_slice_plan;
-    SparkGlm52ResidentDecodeStageLinearPlan router_linear_plans[
+    SparkResidentDecodeStageLinearPlan router_linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
     SparkResidentDecodeStageQuantizedLinearView quantized_views[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
@@ -3590,7 +3590,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8DenseMlpPlanValidation(void)
     SparkResidentDecodeStagePipelineSlot pipeline_slots[2];
     SparkGlm52ResidentDecodeStageFakeStream fake_streams[2];
     SparkResidentDecodeStageNodeContext node_context;
-    SparkGlm52ResidentDecodeStageLinearPlan linear_plans[
+    SparkResidentDecodeStageLinearPlan linear_plans[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];
     SparkResidentDecodeStageQuantizedLinearView quantized_views[
         SPARK_RESIDENT_DECODE_STAGE_LINEAR_PLAN_COUNT];

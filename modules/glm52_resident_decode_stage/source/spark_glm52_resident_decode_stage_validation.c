@@ -1541,3 +1541,21 @@ SparkStatus SparkResidentDecodeStageModelValidateSliceNodeContext(
     *first_node_context = reference_node_context;
     return SPARK_STATUS_OK;
 }
+
+SparkStatus SparkResidentDecodeStageModelValidateFrameTaps(const SparkResidentDecodeStageFrameContext *frame_context)
+{
+	const SparkGlm52DsparkHiddenTapPlan *plan;
+	uint32_t tap_index,output_count;
+	plan = (const SparkGlm52DsparkHiddenTapPlan *)frame_context->model_hidden_tap_plan;
+	if ( frame_context->model_hidden_tap_lane_stride_bytes < SPARK_GLM52_MODEL_HIDDEN_BF16_BYTES || SparkResidentDecodeStageValidateDsparkHiddenTapPlanInline(plan) != SPARK_STATUS_OK )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	output_count = 0u;
+	for (tap_index = 0u; tap_index < SPARK_GLM52_DSPARK_AUX_LAYER_COUNT; ++tap_index)
+	{
+		if ( frame_context->model_hidden_tap_output_bf16[tap_index] != 0 )
+			output_count += 1u;
+	}
+	if ( output_count != 0u && output_count != SPARK_GLM52_DSPARK_AUX_LAYER_COUNT )
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	return SPARK_STATUS_OK;
+}

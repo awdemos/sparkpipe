@@ -218,7 +218,7 @@ SparkStatus SparkResidentDecodeStageBackendSubmitStageSlice(
     fake_stream->last_dspark_hidden_tap_frame_context_active =
         frame_context != 0 &&
         (frame_context->flags &
-            SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_DSPARK_HIDDEN_TAPS) != 0u
+            SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_MODEL_HIDDEN_TAPS) != 0u
             ? 1u
             : 0u;
     fake_stream->last_dspark_hidden_tap_frame_context = frame_context;
