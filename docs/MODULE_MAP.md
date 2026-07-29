@@ -25,11 +25,12 @@ gateway/node. The naming law and the size gate enforce the edges' cost.
 
 ## Architecture audits — where the big gains hide (measured, questioned)
 
-1. **`api/serving_engine.c` (2,500 lines): possibly a superseded engine.**
-   Its header carries the shared dispatch types the whole stack uses; the
-   .c is included only by itself and the pipesim tool. QUESTION: did the
-   node backend pump replace this engine's loop? If yes: types stay in
-   the header, the engine merges into pipesim or dies. Stake: −2.0K.
+1. **`api/serving_engine.c` (2,500 lines): NOT superseded — resolved.**
+   The backend pump calls it (5 sites): one engine, two harnesses —
+   production pump and pipesim. That is good architecture, kept. The
+   residual question is only whether the engine↔pump seam carries
+   duplicate state bookkeeping; audit by reading the 5 call sites.
+   Stake revised: ~−0.3K at most.
 2. **`api/service.c` (1,489 lines): residentd's private request layer.**
    Single consumer. QUESTION: is the layer earning its API surface, or
    is it residentd's internals wearing a module costume? Stake: −0.5K
