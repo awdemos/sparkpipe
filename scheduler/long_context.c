@@ -2,14 +2,14 @@
 
 #include <string.h>
 
-static uint32_t SparkGlm52LongContextMinimumU32(
+static uint32_t SparkLongContextMinimumU32(
     uint32_t left,
     uint32_t right)
 {
     return left < right ? left : right;
 }
 
-static uint32_t SparkGlm52LongContextNormalizeFlags(
+static uint32_t SparkLongContextNormalizeFlags(
     uint32_t policy_flags)
 {
     if (policy_flags == 0u)
@@ -19,7 +19,7 @@ static uint32_t SparkGlm52LongContextNormalizeFlags(
     return policy_flags;
 }
 
-static uint32_t SparkGlm52LongContextNormalizeSelectedTokenCapacity(
+static uint32_t SparkLongContextNormalizeSelectedTokenCapacity(
     uint32_t selected_token_capacity)
 {
     if (selected_token_capacity == 0u)
@@ -29,7 +29,7 @@ static uint32_t SparkGlm52LongContextNormalizeSelectedTokenCapacity(
     return selected_token_capacity;
 }
 
-static uint32_t SparkGlm52LongContextNormalizeBlockTokenCount(
+static uint32_t SparkLongContextNormalizeBlockTokenCount(
     uint32_t block_token_count)
 {
     if (block_token_count == 0u)
@@ -39,7 +39,7 @@ static uint32_t SparkGlm52LongContextNormalizeBlockTokenCount(
     return block_token_count;
 }
 
-static uint32_t SparkGlm52LongContextNormalizeMaxContextTokens(
+static uint32_t SparkLongContextNormalizeMaxContextTokens(
     uint32_t max_context_tokens)
 {
     if (max_context_tokens == 0u)
@@ -49,7 +49,7 @@ static uint32_t SparkGlm52LongContextNormalizeMaxContextTokens(
     return max_context_tokens;
 }
 
-static uint32_t SparkGlm52LongContextNormalizeRecentTokenCount(
+static uint32_t SparkLongContextNormalizeRecentTokenCount(
     uint32_t recent_token_count)
 {
     if (recent_token_count == 0u)
@@ -59,7 +59,7 @@ static uint32_t SparkGlm52LongContextNormalizeRecentTokenCount(
     return recent_token_count;
 }
 
-static uint32_t SparkGlm52LongContextNormalizeSinkTokenCount(
+static uint32_t SparkLongContextNormalizeSinkTokenCount(
     uint32_t sink_token_count)
 {
     if (sink_token_count == 0u)
@@ -69,7 +69,7 @@ static uint32_t SparkGlm52LongContextNormalizeSinkTokenCount(
     return sink_token_count;
 }
 
-static uint32_t SparkGlm52LongContextNormalizeStrideSampleTokenCount(
+static uint32_t SparkLongContextNormalizeStrideSampleTokenCount(
     uint32_t stride_sample_token_count)
 {
     if (stride_sample_token_count == 0u)
@@ -79,7 +79,7 @@ static uint32_t SparkGlm52LongContextNormalizeStrideSampleTokenCount(
     return stride_sample_token_count;
 }
 
-static uint32_t SparkGlm52LongContextNormalizeMaximumDecodeScanTokenCount(
+static uint32_t SparkLongContextNormalizeMaximumDecodeScanTokenCount(
     uint32_t maximum_decode_scan_token_count,
     uint32_t selected_token_capacity)
 {
@@ -90,7 +90,7 @@ static uint32_t SparkGlm52LongContextNormalizeMaximumDecodeScanTokenCount(
     return maximum_decode_scan_token_count;
 }
 
-static uint32_t SparkGlm52LongContextNormalizePrefillChunkTokenCount(
+static uint32_t SparkLongContextNormalizePrefillChunkTokenCount(
     uint32_t prefill_chunk_token_count)
 {
     if (prefill_chunk_token_count == 0u)
@@ -100,7 +100,7 @@ static uint32_t SparkGlm52LongContextNormalizePrefillChunkTokenCount(
     return prefill_chunk_token_count;
 }
 
-static uint32_t SparkGlm52LongContextNormalizeLongContextThreshold(
+static uint32_t SparkLongContextNormalizeLongContextThreshold(
     uint32_t long_context_threshold_token_count)
 {
     if (long_context_threshold_token_count == 0u)
@@ -110,12 +110,12 @@ static uint32_t SparkGlm52LongContextNormalizeLongContextThreshold(
     return long_context_threshold_token_count;
 }
 
-static void SparkGlm52LongContextNormalizePolicyCopy(
+static void SparkLongContextNormalizePolicyCopy(
     const SparkLongContextPolicy *input_policy,
     SparkLongContextPolicy *normalized_policy)
 {
     *normalized_policy = *input_policy;
-    normalized_policy->policy_flags = SparkGlm52LongContextNormalizeFlags(
+    normalized_policy->policy_flags = SparkLongContextNormalizeFlags(
         normalized_policy->policy_flags);
     if (normalized_policy->policy_mode == 0u)
     {
@@ -123,32 +123,32 @@ static void SparkGlm52LongContextNormalizePolicyCopy(
             SPARK_LONG_CONTEXT_POLICY_MODE_BOUNDED_WINDOW;
     }
     normalized_policy->max_context_tokens =
-        SparkGlm52LongContextNormalizeMaxContextTokens(
+        SparkLongContextNormalizeMaxContextTokens(
             normalized_policy->max_context_tokens);
     normalized_policy->selected_token_capacity =
-        SparkGlm52LongContextNormalizeSelectedTokenCapacity(
+        SparkLongContextNormalizeSelectedTokenCapacity(
             normalized_policy->selected_token_capacity);
     normalized_policy->block_token_count =
-        SparkGlm52LongContextNormalizeBlockTokenCount(
+        SparkLongContextNormalizeBlockTokenCount(
             normalized_policy->block_token_count);
     normalized_policy->recent_token_count =
-        SparkGlm52LongContextNormalizeRecentTokenCount(
+        SparkLongContextNormalizeRecentTokenCount(
             normalized_policy->recent_token_count);
     normalized_policy->sink_token_count =
-        SparkGlm52LongContextNormalizeSinkTokenCount(
+        SparkLongContextNormalizeSinkTokenCount(
             normalized_policy->sink_token_count);
     normalized_policy->stride_sample_token_count =
-        SparkGlm52LongContextNormalizeStrideSampleTokenCount(
+        SparkLongContextNormalizeStrideSampleTokenCount(
             normalized_policy->stride_sample_token_count);
     normalized_policy->maximum_decode_scan_token_count =
-        SparkGlm52LongContextNormalizeMaximumDecodeScanTokenCount(
+        SparkLongContextNormalizeMaximumDecodeScanTokenCount(
             normalized_policy->maximum_decode_scan_token_count,
             normalized_policy->selected_token_capacity);
     normalized_policy->prefill_chunk_token_count =
-        SparkGlm52LongContextNormalizePrefillChunkTokenCount(
+        SparkLongContextNormalizePrefillChunkTokenCount(
             normalized_policy->prefill_chunk_token_count);
     normalized_policy->long_context_threshold_token_count =
-        SparkGlm52LongContextNormalizeLongContextThreshold(
+        SparkLongContextNormalizeLongContextThreshold(
             normalized_policy->long_context_threshold_token_count);
 }
 
@@ -191,7 +191,7 @@ SparkStatus SparkLongContextValidatePolicy(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    SparkGlm52LongContextNormalizePolicyCopy(policy, &normalized_policy);
+    SparkLongContextNormalizePolicyCopy(policy, &normalized_policy);
     if ((normalized_policy.policy_flags &
             ~SPARK_LONG_CONTEXT_POLICY_KNOWN_FLAGS) != 0u ||
         normalized_policy.max_context_tokens == 0u ||
@@ -231,7 +231,7 @@ SparkStatus SparkLongContextValidatePolicy(
     return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52LongContextInitializeDecodePlan(
+static void SparkLongContextInitializeDecodePlan(
     SparkLongContextDecodePlan *decode_plan,
     const SparkLongContextPolicy *policy,
     uint32_t context_token_count,
@@ -255,7 +255,7 @@ static void SparkGlm52LongContextInitializeDecodePlan(
     }
 }
 
-static uint32_t SparkGlm52LongContextAppendUniqueToken(
+static uint32_t SparkLongContextAppendUniqueToken(
     uint32_t *selected_token_indices,
     uint32_t selected_token_capacity,
     uint32_t *selected_token_count,
@@ -283,7 +283,7 @@ static uint32_t SparkGlm52LongContextAppendUniqueToken(
     return 1u;
 }
 
-static uint32_t SparkGlm52LongContextCountUniqueBlocks(
+static uint32_t SparkLongContextCountUniqueBlocks(
     const uint32_t *selected_token_indices,
     uint32_t selected_token_count,
     uint32_t block_token_count)
@@ -328,7 +328,7 @@ static uint32_t SparkGlm52LongContextCountUniqueBlocks(
     return block_count;
 }
 
-static void SparkGlm52LongContextPadSelection(
+static void SparkLongContextPadSelection(
     uint32_t *selected_token_indices,
     uint32_t selected_token_count,
     uint32_t selected_token_capacity)
@@ -341,7 +341,7 @@ static void SparkGlm52LongContextPadSelection(
     }
 }
 
-static SparkStatus SparkGlm52LongContextBuildFullSelection(
+static SparkStatus SparkLongContextBuildFullSelection(
     const SparkLongContextPolicy *policy,
     uint32_t context_token_count,
     uint32_t *selected_token_indices,
@@ -359,7 +359,7 @@ static SparkStatus SparkGlm52LongContextBuildFullSelection(
     {
         selected_token_indices[token_index] = token_index;
     }
-    SparkGlm52LongContextPadSelection(
+    SparkLongContextPadSelection(
         selected_token_indices,
         context_token_count,
         selected_token_capacity);
@@ -388,7 +388,7 @@ static SparkStatus SparkGlm52LongContextBuildFullSelection(
     return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52LongContextBuildBoundedSelection(
+static void SparkLongContextBuildBoundedSelection(
     const SparkLongContextPolicy *policy,
     uint32_t context_token_count,
     uint32_t *selected_token_indices,
@@ -412,17 +412,17 @@ static void SparkGlm52LongContextBuildBoundedSelection(
     if ((policy->policy_flags &
             SPARK_LONG_CONTEXT_POLICY_FLAG_INCLUDE_SINK_TOKENS) != 0u)
     {
-        sink_count = SparkGlm52LongContextMinimumU32(
+        sink_count = SparkLongContextMinimumU32(
             policy->sink_token_count,
             context_token_count);
-        sink_count = SparkGlm52LongContextMinimumU32(
+        sink_count = SparkLongContextMinimumU32(
             sink_count,
             selected_token_capacity);
         for (token_index = 0u;
              token_index < sink_count;
              ++token_index)
         {
-            SparkGlm52LongContextAppendUniqueToken(
+            SparkLongContextAppendUniqueToken(
                 selected_token_indices,
                 selected_token_capacity,
                 &selected_token_count,
@@ -434,10 +434,10 @@ static void SparkGlm52LongContextBuildBoundedSelection(
             SPARK_LONG_CONTEXT_POLICY_FLAG_INCLUDE_RECENT_TOKENS) != 0u &&
         selected_token_count < selected_token_capacity)
     {
-        recent_count = SparkGlm52LongContextMinimumU32(
+        recent_count = SparkLongContextMinimumU32(
             policy->recent_token_count,
             selected_token_capacity - selected_token_count);
-        recent_count = SparkGlm52LongContextMinimumU32(
+        recent_count = SparkLongContextMinimumU32(
             recent_count,
             context_token_count);
     }
@@ -459,10 +459,10 @@ static void SparkGlm52LongContextBuildBoundedSelection(
         middle_token_count != 0u &&
         selected_token_count < selected_token_capacity)
     {
-        stride_count = SparkGlm52LongContextMinimumU32(
+        stride_count = SparkLongContextMinimumU32(
             policy->stride_sample_token_count,
             selected_token_capacity - selected_token_count);
-        stride_count = SparkGlm52LongContextMinimumU32(
+        stride_count = SparkLongContextMinimumU32(
             stride_count,
             middle_token_count);
         for (token_index = 0u;
@@ -480,7 +480,7 @@ static void SparkGlm52LongContextBuildBoundedSelection(
             {
                 selected_middle_token = middle_end - 1u;
             }
-            SparkGlm52LongContextAppendUniqueToken(
+            SparkLongContextAppendUniqueToken(
                 selected_token_indices,
                 selected_token_capacity,
                 &selected_token_count,
@@ -492,21 +492,21 @@ static void SparkGlm52LongContextBuildBoundedSelection(
          token_index < context_token_count && selected_token_count < selected_token_capacity;
          ++token_index)
     {
-        SparkGlm52LongContextAppendUniqueToken(
+        SparkLongContextAppendUniqueToken(
             selected_token_indices,
             selected_token_capacity,
             &selected_token_count,
             token_index);
     }
 
-    SparkGlm52LongContextPadSelection(
+    SparkLongContextPadSelection(
         selected_token_indices,
         selected_token_count,
         selected_token_capacity);
     decode_plan->flags |= SPARK_LONG_CONTEXT_DECODE_PLAN_FLAG_BOUNDED_SELECTION;
     decode_plan->selected_token_count = selected_token_count;
     decode_plan->padded_token_count = selected_token_capacity - selected_token_count;
-    decode_plan->selected_block_count = SparkGlm52LongContextCountUniqueBlocks(
+    decode_plan->selected_block_count = SparkLongContextCountUniqueBlocks(
         selected_token_indices,
         selected_token_count,
         policy->block_token_count);
@@ -549,7 +549,7 @@ SparkStatus SparkLongContextBuildPrefillPlan(
     {
         return status;
     }
-    SparkGlm52LongContextNormalizePolicyCopy(policy, &normalized_policy);
+    SparkLongContextNormalizePolicyCopy(policy, &normalized_policy);
     if (prompt_token_count > normalized_policy.max_context_tokens &&
         (normalized_policy.policy_flags &
             SPARK_LONG_CONTEXT_POLICY_FLAG_FAIL_ON_CONTEXT_OVERFLOW) != 0u)
@@ -613,7 +613,7 @@ SparkStatus SparkLongContextBuildDecodeSelection(
     {
         return status;
     }
-    SparkGlm52LongContextNormalizePolicyCopy(policy, &normalized_policy);
+    SparkLongContextNormalizePolicyCopy(policy, &normalized_policy);
     if (selected_token_capacity > normalized_policy.selected_token_capacity)
     {
         selected_token_capacity = normalized_policy.selected_token_capacity;
@@ -624,7 +624,7 @@ SparkStatus SparkLongContextBuildDecodeSelection(
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
     }
-    SparkGlm52LongContextInitializeDecodePlan(
+    SparkLongContextInitializeDecodePlan(
         decode_plan,
         &normalized_policy,
         context_token_count,
@@ -638,7 +638,7 @@ SparkStatus SparkLongContextBuildDecodeSelection(
         {
             return SPARK_STATUS_INVALID_ARGUMENT;
         }
-        return SparkGlm52LongContextBuildFullSelection(
+        return SparkLongContextBuildFullSelection(
             &normalized_policy,
             context_token_count,
             selected_token_indices,
@@ -649,7 +649,7 @@ SparkStatus SparkLongContextBuildDecodeSelection(
     if (context_token_count <= selected_token_capacity &&
         context_token_count <= normalized_policy.maximum_decode_scan_token_count)
     {
-        return SparkGlm52LongContextBuildFullSelection(
+        return SparkLongContextBuildFullSelection(
             &normalized_policy,
             context_token_count,
             selected_token_indices,
@@ -657,7 +657,7 @@ SparkStatus SparkLongContextBuildDecodeSelection(
             decode_plan);
     }
 
-    SparkGlm52LongContextBuildBoundedSelection(
+    SparkLongContextBuildBoundedSelection(
         &normalized_policy,
         context_token_count,
         selected_token_indices,
