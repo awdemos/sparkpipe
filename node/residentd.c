@@ -281,26 +281,6 @@ static void SparkCudaResidentdInitializeConfiguration(
     configuration->dspark_maximum_context_token_count = 2048u;
 }
 
-static int32_t SparkCudaResidentdParseU64(
-    const char *text,
-    uint64_t *value_out)
-{
-    uint64_t value;
-    uint32_t index;
-
-    if (text == 0 || text[0] == '\0' || value_out == 0)
-        return -1;
-    value = 0u;
-    for (index = 0u; text[index] != '\0'; ++index)
-    {
-        if (text[index] < '0' || text[index] > '9')
-            return -2;
-        value = (value * 10u) + (uint32_t)(text[index] - '0');
-    }
-    *value_out = value;
-    return 0;
-}
-
 #include <stddef.h>
 #include "sparkpipe/spark_options.h"
 
@@ -2295,6 +2275,7 @@ static void SparkCudaResidentdPrintReady(
 static void SparkCudaResidentdUsage(const char *program)
 {
     fprintf(stderr,
+        "usage: %s --rank n --socket path --model-quantization fp8|nvfp4 --moe-pack-root dir --stagepack-root dir --transport-so path --driver-so path --node-context-builder-so path --embedding-pack path [--mtp] [--dspark --dspark-manifest path --dspark-config path --dspark-safetensors path --dspark-max-context n] [--program name] [--node-target target] [--max-active n] [--kv-pool-tokens n] [--kv-nvme-path path --kv-nvme-blocks n --kv-nvme-batch-blocks n | --kv-store-module path --kv-store-service addr --kv-store-ipc-socket path --kv-store-blocks n --kv-store-batch-blocks n --kv-store-workers n --kv-store-lookahead n --kv-store-model-fingerprint n --kv-store-layout-fingerprint n --kv-store-client-memory n --kv-store-local-buffer n] [--port-base n]\n",
         program);
 }
 
