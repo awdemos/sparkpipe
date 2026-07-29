@@ -1,6 +1,7 @@
 #ifndef SPARKPIPE_SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRMWARE_H
 #define SPARKPIPE_SPARK_GLM52_RESIDENT_DECODE_STAGE_FIRMWARE_H
 
+#include <math.h>
 #include "sparkpipe/spark_resident_decode_stage.h"
 #include "sparkpipe/spark_glm52_model.h"
 #include <stdbool.h>
