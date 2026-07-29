@@ -20,7 +20,7 @@ archive: $(BACKEND_ARCHIVE)
 $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
 
-$(BACKEND_OBJECT): $(REPOSITORY_ROOT)/inference/stage/draft_backend.cu include/sparkpipe/spark_glm52_dspark_draft_backend.h | $(BUILD_DIRECTORY)
+$(BACKEND_OBJECT): source/spark_glm52_dspark_draft_backend.cu include/sparkpipe/spark_glm52_dspark_draft_backend.h | $(BUILD_DIRECTORY)
 	$(NVCC) -arch=$(CUDA_ARCH) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -c $< -o $@
 
 $(BACKEND_ARCHIVE): $(BACKEND_OBJECT)
