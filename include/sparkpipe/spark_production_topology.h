@@ -93,10 +93,11 @@ typedef struct SparkProductionTopology
         SPARK_PRODUCTION_TOPOLOGY_MAX_INDEXSHARE_SIDEBANDS];
 } SparkProductionTopology;
 
-uint32_t SparkDsaIndexShareSourceLayer(uint32_t layer_index);
+uint32_t SparkDsaIndexShareSourceLayer(uint32_t layer_index, uint32_t total_layer_count);
 
 SparkStatus SparkDsaIndexShareFindGroupEndLayerExclusive(
     uint32_t layer_index,
+    uint32_t total_layer_count,
     uint32_t *group_end_layer_exclusive_out);
 
 SparkStatus SparkProductionTopologyBuild(

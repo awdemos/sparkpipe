@@ -282,7 +282,8 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY := \
     build/glm52_resident_decode_stage_test
 GLM52_RESIDENT_DECODE_STAGE_TEST_OBJECTS := \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_resident_decode_stage_module.o \
-    $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/glm52_resident_decode_stage_fake_backend.o
+    $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/glm52_resident_decode_stage_fake_backend.o \
+    $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_stage_validation.o
 GLM52_RESIDENT_DECODE_STAGE_TEST_DEPENDENCIES := \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_OBJECTS:.o=.d)
 GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
@@ -573,6 +574,8 @@ $(TEST_VALIDATOR): tests/fixtures/module_validator.c | build
 
 
 $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_resident_decode_stage_module.o: inference/stage/module.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_backend.h | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
+	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
+$(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_stage_validation.o: modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_validation.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_backend.h | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/glm52_resident_decode_stage_fake_backend.o: tests/fixtures/glm52_resident_decode_stage_fake_backend.c tests/fixtures/glm52_resident_decode_stage_fake_backend.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_backend.h | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)

@@ -75,7 +75,7 @@ GLM_BUDGET = {
     "runtime/pack/stagepack.c": (57, "stagepack format (pack decision)"),
     "deployment/src/spark_release.c": (14, "seam includes"),
     "inference/stage/dispatch.cu": (12, "stage firmware (A4)"),
-    "inference/stage/module.c": (31, "drafter wiring (glm data); stage firmware (A4)"),
+    "inference/stage/module.c": (6, "drafter wiring (glm data); stage firmware (A4)"),
     "inference/stage/runner.c": (20, "stage firmware (A4)"),
     "inference/stage/serving_adapter.cu": (25, "stage firmware (A4)"),
 }
