@@ -179,9 +179,9 @@ typedef enum SparkGlm52ResidentDecodeStageLinearPlanKind
 typedef enum SparkGlm52ResidentDecodeStageLinearWeightFormat
 {
     SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_BF16 = 0,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3 = 1,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1 = 2,
-    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1 = 3
+    SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3 = 1,
+    SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1 = 2,
+    SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1 = 3
 } SparkGlm52ResidentDecodeStageLinearWeightFormat;
 
 // What remains after A4 part one: the glm DIMENSION TIER. The stage's node
@@ -208,7 +208,7 @@ typedef enum SparkGlm52ResidentDecodeStageLinearWeightFormat
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK SPARK_GLM52_MODEL_FP8_SCALE_BLOCK
-#define SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS
+#define SPARK_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS SPARK_GLM52_MODEL_CACHE_TOKEN_ELEMENTS
 #define SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_COUNT SPARK_GLM52_MODEL_LAYER_COUNT
 
 // THE PLAN-USABILITY HELPERS. Shared by the validation tier (glm's own
@@ -221,7 +221,7 @@ static inline bool SparkGlm52ResidentDecodeStageB12xMoeDispatchPlanIsRequiredFor
     const SparkResidentDecodeStageNodeContext *node_context)
 {
     return node_context->layer_progression_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK;
+        SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK;
 }
 
 static inline bool SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(
@@ -435,17 +435,17 @@ static inline uint32_t SparkGlm52ResidentDecodeStageLinearPlanExpectedScaleBlock
     uint32_t weight_format)
 {
     if (weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
+        SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
     {
         return SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK;
     }
     if (weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1)
+        SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1)
     {
         return SPARK_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE;
     }
     if (weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1)
+        SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1)
     {
         return SPARK_RESIDENT_DECODE_STAGE_MXFP4_GROUP_SIZE;
     }
@@ -458,17 +458,17 @@ static inline uint32_t SparkGlm52ResidentDecodeStageLinearPlanExpectedWeightForm
     if (plan_kind ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR)
     {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
+        return SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
     }
     if (plan_kind ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_NVFP4_E2M1_ROW_MAJOR)
     {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1;
+        return SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1;
     }
     if (plan_kind ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_MXFP4_E2M1_ROW_MAJOR)
     {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1;
+        return SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1;
     }
     return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_BF16;
 }
@@ -596,7 +596,7 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTen
         return false;
     }
     if (view->weight_format ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
+            SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
     {
         if ((view->storage_output_dimension %
                 SPARK_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT) != 0u)
@@ -613,7 +613,7 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTen
         (uint64_t)view->input_dimension *
         (uint64_t)view->storage_output_dimension;
     required_payload_bytes = view->weight_format ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
+            SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
         ? weight_element_count
         : SparkResidentDecodeStageDivideRoundUpU64(
             weight_element_count,
@@ -626,7 +626,7 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTen
         view->scale_block_size);
     scale_element_count = input_scale_block_count * output_scale_block_count;
     required_scale_bytes = view->weight_format ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
+            SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
         ? scale_element_count * (uint64_t)sizeof(float)
         : scale_element_count;
 
@@ -661,10 +661,10 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasQuantizedProjection
     required_tensor_core_plan_kind =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_UNUSED;
     if (node_context->projection_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3)
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_FP8_E4M3)
     {
         if (node_context->projection_backend_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT)
+            SPARK_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_CUBLASLT)
         {
             return linear_plan->plan_kind ==
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_CUBLASLT_FP8_E4M3_ROW_MAJOR;
@@ -673,13 +673,13 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasQuantizedProjection
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR;
     }
     else if (node_context->projection_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_NVFP4_E2M1)
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_NVFP4_E2M1)
     {
         required_tensor_core_plan_kind =
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_NVFP4_E2M1_ROW_MAJOR;
     }
     else if (node_context->projection_mode ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_MXFP4_E2M1)
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_MXFP4_E2M1)
     {
         required_tensor_core_plan_kind =
             SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_MXFP4_E2M1_ROW_MAJOR;

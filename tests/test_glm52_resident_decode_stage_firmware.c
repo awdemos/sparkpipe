@@ -429,7 +429,7 @@ static void SparkTestGlm52ResidentDecodeStageDsaIndexShareFullRequiresScoreInput
         pipeline_slots,
         fake_streams);
     node_context.sparse_index_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL;
+        SPARK_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_FULL;
     node_context.layer_index = 4u;
     node_context.dsa_indexshare_source_layer_index = 4u;
     node_context.dsa_indexshare_group_end_layer_exclusive = 8u;
@@ -500,7 +500,7 @@ static void SparkTestGlm52ResidentDecodeStageDsaIndexShareFullRequiresScoreInput
 
     node_context.index_key_norm_bias_bf16 = Bf16ScoreStorage;
     node_context.sparse_index_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED;
+        SPARK_RESIDENT_DECODE_STAGE_SPARSE_INDEX_DSA_INDEXSHARE_SHARED;
     node_context.key_index_cache_bf16 = 0;
     module_state = 0;
     assert(SparkResidentDecodeStageInitialize(
@@ -808,17 +808,17 @@ static uint32_t SparkTestQuantizedWeightFormatForPlanKind(uint32_t plan_kind)
     if (plan_kind ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR)
     {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
+        return SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3;
     }
     if (plan_kind ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_NVFP4_E2M1_ROW_MAJOR)
     {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1;
+        return SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1;
     }
     if (plan_kind ==
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_MXFP4_E2M1_ROW_MAJOR)
     {
-        return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1;
+        return SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1;
     }
     return SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_BF16;
 }
@@ -826,17 +826,17 @@ static uint32_t SparkTestQuantizedWeightFormatForPlanKind(uint32_t plan_kind)
 static uint32_t SparkTestQuantizedScaleBlockForWeightFormat(uint32_t weight_format)
 {
     if (weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
+        SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3)
     {
         return SPARK_GLM52_RESIDENT_DECODE_STAGE_FP8_SCALE_BLOCK;
     }
     if (weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1)
+        SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_NVFP4_E2M1)
     {
         return SPARK_RESIDENT_DECODE_STAGE_NVFP4_GROUP_SIZE;
     }
     if (weight_format ==
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1)
+        SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_MXFP4_E2M1)
     {
         return SPARK_RESIDENT_DECODE_STAGE_MXFP4_GROUP_SIZE;
     }
@@ -884,7 +884,7 @@ static void SparkTestAttachBuiltInQuantizedRawProjectionViews(
             linear_plans[plan_index].output_dimension;
         quantized_views[plan_index].storage_output_dimension =
             weight_format ==
-                    SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
+                    SPARK_RESIDENT_DECODE_STAGE_LINEAR_WEIGHT_FORMAT_FP8_E4M3
                 ? ((linear_plans[plan_index].output_dimension +
                     SPARK_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT - 1u) /
                     SPARK_RESIDENT_DECODE_STAGE_FP8_SCALED_GEMM_OUTPUT_ALIGNMENT) *
@@ -936,11 +936,11 @@ static void SparkTestGlm52ResidentDecodeStageBuiltInQuantizedProjectionValidatio
         linear_plans,
         quantized_views);
     node_context.projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_NVFP4_E2M1;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_NVFP4_E2M1;
     node_context.projection_backend_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
     node_context.model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
     node_context.reserved_execution_flags |=
         SPARK_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
     node_context.linear_plans = linear_plans;
@@ -1017,11 +1017,11 @@ static void SparkTestGlm52ResidentDecodeStageNvfp4ModelVariantValidation(void)
         linear_plans,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_NVFP4_E2M1_ROW_MAJOR);
     node_context.projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_NVFP4_E2M1;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_NVFP4_E2M1;
     node_context.projection_backend_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
     node_context.model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
     node_context.reserved_execution_flags |=
         SPARK_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
     node_context.linear_plans = linear_plans;
@@ -1050,7 +1050,7 @@ static void SparkTestGlm52ResidentDecodeStageNvfp4ModelVariantValidation(void)
     SparkResidentDecodeStageDestroy(module_state);
 
     node_context.model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
     module_state = 0;
     assert(SparkResidentDecodeStageInitialize(
         &configuration,
@@ -1058,7 +1058,7 @@ static void SparkTestGlm52ResidentDecodeStageNvfp4ModelVariantValidation(void)
         &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
 
     node_context.model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
     linear_plans[SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_RAW_QUERY_A].custom_launch_function =
         0;
     module_state = 0;
@@ -1081,9 +1081,9 @@ static void SparkTestGlm52ResidentDecodeStageNvfp4ModelVariantValidation(void)
         linear_plans,
         SPARK_GLM52_RESIDENT_DECODE_STAGE_LINEAR_PLAN_TENSOR_CORE_FP8_E4M3_ROW_MAJOR);
     node_context.projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_NVFP4_E2M1;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_NVFP4_E2M1;
     node_context.model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
     module_state = 0;
     assert(SparkResidentDecodeStageInitialize(
         &configuration,
@@ -1163,7 +1163,7 @@ static void SparkTestInitializeFp8KvCachePlan(
     fp8_kv_cache_plan->maximum_active_sequence_count = 8u;
     fp8_kv_cache_plan->cache_token_capacity = 128u;
     fp8_kv_cache_plan->cache_token_elements =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
+        SPARK_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
     fp8_kv_cache_plan->key_nope_elements =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HEAD_COUNT *
         SPARK_GLM52_RESIDENT_DECODE_STAGE_QK_NOPE_HEAD_DIMENSION;
@@ -1186,13 +1186,13 @@ static void SparkPrepareFp8ResidentDecodeStageNodeContext(
     const SparkGlm52ResidentDecodeStageFp8MoePlan *fp8_moe_plan)
 {
     node_context->projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_FP8_E4M3;
     node_context->layer_progression_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK;
+        SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK;
     node_context->mlp_execution_mode =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
     node_context->model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
     node_context->reserved_execution_flags |=
         SPARK_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
     node_context->moe_expert_count =
@@ -1294,15 +1294,15 @@ static void SparkPrepareNvfp4B12xResidentDecodeStageNodeContext(
     const SparkGlm52ResidentDecodeStageB12xMoeDispatchPlan *b12x_dispatch_plan)
 {
     node_context->projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_NVFP4_E2M1;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_NVFP4_E2M1;
     node_context->projection_backend_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
     node_context->layer_progression_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK;
+        SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK;
     node_context->mlp_execution_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE;
+        SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FLASHINFER_B12X_MOE;
     node_context->model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
     node_context->reserved_execution_flags |=
         SPARK_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
     node_context->moe_expert_count =
@@ -1369,7 +1369,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8ModelVariantValidation(void)
     SparkResidentDecodeStageDestroy(module_state);
 
     node_context.model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_NVFP4_4BIT;
     module_state = 0;
     assert(SparkResidentDecodeStageInitialize(
         &configuration,
@@ -1377,7 +1377,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8ModelVariantValidation(void)
         &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
 
     node_context.model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
     fp8_moe_plan.launch_function = 0;
     module_state = 0;
     assert(SparkResidentDecodeStageInitialize(
@@ -1466,7 +1466,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8ModelVariantValidation(void)
     SparkResidentDecodeStageNodeContext *node_context,
 {
     node_context->projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_BF16;
     node_context->layer_progression_mode =
     node_context->mlp_execution_mode =
     node_context->model_quantization_mode =
@@ -1522,16 +1522,16 @@ static void SparkTestGlm52ResidentDecodeStageFp8ModelVariantValidation(void)
         &module_state) == SPARK_STATUS_OK);
     SparkResidentDecodeStageDestroy(module_state);
     node_context.projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_FP8_E4M3;
     module_state = 0;
     assert(SparkResidentDecodeStageInitialize(
         &configuration,
         &host_services,
         &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
     node_context.projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_BF16;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_BF16;
     node_context.model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
     module_state = 0;
     assert(SparkResidentDecodeStageInitialize(
         &configuration,
@@ -3308,7 +3308,7 @@ static void SparkTestGlm52ResidentDecodeStagePagedBulkPrefillPlanWithoutLaunchFu
     paged_prefill_plan.hidden_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_HIDDEN_DIMENSION;
     paged_prefill_plan.cache_token_elements =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
+        SPARK_RESIDENT_DECODE_STAGE_CACHE_TOKEN_ELEMENTS;
     paged_prefill_plan.prompt_positions = PromptPositions;
     paged_prefill_plan.prompt_slot_mapping = PromptSlotMapping;
     paged_prefill_plan.prompt_context_lengths = PromptContextLengths;
@@ -3615,17 +3615,17 @@ static void SparkTestGlm52ResidentDecodeStageFp8DenseMlpPlanValidation(void)
         quantized_views);
 
     node_context.projection_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_RAW_GLM_FP8_E4M3;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_FP8_E4M3;
     node_context.projection_backend_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
+        SPARK_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE;
     node_context.layer_progression_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP;
+        SPARK_RESIDENT_DECODE_STAGE_LAYER_DENSE_BF16_MLP;
     node_context.dense_intermediate_dimension =
         SPARK_GLM52_RESIDENT_DECODE_STAGE_DENSE_INTERMEDIATE_DIMENSION;
     node_context.mlp_execution_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE;
+        SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE;
     node_context.model_quantization_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
+        SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
     node_context.reserved_execution_flags |=
         SPARK_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_MODEL_QUANTIZATION;
     node_context.linear_plans = linear_plans;
@@ -3739,7 +3739,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
     node_context.key_nope_cache_bf16 = 0;
     node_context.value_cache_bf16 = 0;
     node_context.attention_execution_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+        SPARK_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
     module_state = 0;
     assert(SparkResidentDecodeStageInitialize(
         &configuration,
@@ -3749,7 +3749,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
     SparkResidentDecodeStageDestroy(module_state);
 
     node_context.attention_execution_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
+        SPARK_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
     node_context.reserved_execution_flags |=
         SPARK_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_TILED_ONLINE_ATTENTION;
     module_state = 0;
@@ -3758,7 +3758,7 @@ static void SparkTestGlm52ResidentDecodeStageFp8KvCachePlanValidation(void)
         &host_services,
         &module_state) == SPARK_STATUS_INVALID_ARGUMENT);
     node_context.attention_execution_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+        SPARK_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
     node_context.reserved_execution_flags &=
         ~SPARK_RESIDENT_DECODE_STAGE_EXECUTION_REQUIRE_TILED_ONLINE_ATTENTION;
 
@@ -3786,7 +3786,7 @@ static void SparkTestGlm52ResidentDecodeStageAbsorbedLatentCacheValidation(void)
         pipeline_slots,
         fake_streams);
     node_context.attention_execution_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
+        SPARK_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT;
     node_context.key_nope_cache_bf16 = 0;
     node_context.value_cache_bf16 = 0;
     memset(&completion_state, 0, sizeof(completion_state));
@@ -3810,7 +3810,7 @@ static void SparkTestGlm52ResidentDecodeStageAbsorbedLatentCacheValidation(void)
     SparkResidentDecodeStageDestroy(module_state);
 
     node_context.attention_execution_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
+        SPARK_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_TILED_ONLINE_SOFTMAX;
     module_state = 0;
     assert(SparkResidentDecodeStageInitialize(
         &configuration,
