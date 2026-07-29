@@ -4,6 +4,23 @@ The diff between README.md and `git HEAD`. Ledger order: an item leaves this
 file by landing with a gate, or by being struck from the README. Nothing
 leaves silently.
 
+## K3 correctness blockers (fail closed; reference: sglang kimi_k3.py)
+
+Sparkdev's checkpoint-backed probe exposed four production blockers.
+Each must FAIL CLOSED until fixed - wrong-but-running K3 output is worse
+than no K3 output:
+- **fp32 checkpoint tensors read as bf16** (loader/pack tier): A_log,
+  dt_bias, norms are fp32 in the checkpoint; the bind path must type
+  them or refuse.
+- **KDA recurrent state stored bf16 in kernels** while the contract
+  (K3_KDA_STATE_ELEMENT_BYTES = 4) says f32. f32 is the correctness
+  baseline; bf16 remains a SEPARATE validated-later optimization.
+- **A_log[128] -> 96-head narrowing** absent: the checkpoint carries 128
+  heads' worth; the authoritative slice must be explicit in the loader
+  with a named constant, not implied.
+- **KDA-side query scaling** unverified (MLA's K3_MLA_QK_SCALE is wired;
+  the KDA path's q treatment must match the reference semantics).
+
 ## K3 path to first token
 
 - **K3 stage execute.** The K3 module answers the two validation questions
@@ -130,6 +147,12 @@ call (ct's), then the node twin-init similarity pass.
   positions route to overlapping experts, verify rows share weight reads
   and B=1 speculation turns real (~x1.5 hypothesis). Measure from route
   logs at bring-up.
+- **E8M0 scale-plane codec** (from the compression study): tile-
+  addressable delta+pack, in-kernel decode on the existing scale-cache
+  path. ~60-65 GB capacity + ~4% ceiling throughput. Design from
+  sparkdev's bits/element numbers when the full sweep lands.
+- **Compressed NVMe packs**: ~11% off the 15-20 s model swap, zero
+  runtime cost. Rides the pack format decision.
 - **Route-log collection deploy.** 24-byte wire format and the
   Bonferroni-corrected analysis exist; the collector runs when Sparks are
   back (August window).
