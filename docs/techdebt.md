@@ -68,7 +68,12 @@ metric's numerator moves first.
    gateway, so existing clients point at sparkpipe unmodified.
 6. Dead complexity: 4 "was deleted" Makefile error stanzas,
    legacy_entry.cu (42 lines), --dspark compat no-op flag.
-7. B-tier templates (LmHead 0.93x5, LmDenseMlp 0.98x4, expert_queue
+7. **Option-table argument parser** (from node-twin anatomy): a shared
+   declarative parser (name, kind, destination) replaces the twinned
+   if-strcmp chains in rank_daemon (147L) and residentd (270L), and any
+   tool that wants it. Net ~−250L, complexity down. Non-RDMA note: TCP
+   transport deleted; RDMA-less development uses soft-RoCE (rxe).
+8. B-tier templates (LmHead 0.93x5, LmDenseMlp 0.98x4, expert_queue
    17 hits, pack_common): ~400-700 lines.
 
 Post-plan: ~85K product lines, debt ~300, same solutions - the metric

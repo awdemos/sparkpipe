@@ -120,7 +120,6 @@ GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS := $(B12X_ADAPTER_ARCHIVE) $(B
 endif
 GLM52_RING_NODE_CONTEXT_BUILDER_LINK_ARGS ?= $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_RING_NODE_CONTEXT_BUILDER_DEFAULT_LINK_ARGS))
 GLM52_RING_NODE_CONTEXT_BUILDER := build/libglm52_ring_node_context_builder.$(SHARED_LIBRARY_EXT)
-HIDDEN_TRANSPORT_TCP_CUDA := build/libhidden_transport_tcp_cuda.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_HOST_RDMA := build/libhidden_transport_spark_host_rdma_verbs.$(SHARED_LIBRARY_EXT)
 HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA := build/libhidden_transport_spark_gpudirect_rdma_verbs.$(SHARED_LIBRARY_EXT)
 
@@ -351,7 +350,6 @@ MODEL_COMMON_LINK_TARGETS := \
     build/test_kv_mooncake \
     build/test_tp_collective \
     build/test_tokenizer \
-    $(HIDDEN_TRANSPORT_TCP_CUDA) \
     $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA) \
     $(HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA)
 GLM52_LINK_TARGETS := \
@@ -463,14 +461,10 @@ $(GLM52_RING_SERVICE_BACKEND): node/backend.c inference/stage/runner.c modules/g
 
 glm52_ring_service_backend: $(GLM52_RING_SERVICE_BACKEND)
 
-$(HIDDEN_TRANSPORT_TCP_CUDA): ring/transport/tcp.cu $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-		echo "hidden_transport_tcp_cuda skipped: nvcc unavailable"; \
 	else \
-		$(NVCC) $(NVCCFLAGS) $(SHARED_LIBRARY_FLAGS) -Xcompiler -fPIC -Xcompiler -pthread $(MODEL_COMMON_INCLUDE_FLAGS) ring/transport/tcp.cu $(COMMON_LIBRARY) $(LDFLAGS) -L$(CUDA_HOME)/lib64 -lcudart -ldl -lpthread -o $@; \
 	fi
 
-hidden_transport_tcp_cuda: $(HIDDEN_TRANSPORT_TCP_CUDA)
 
 $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \

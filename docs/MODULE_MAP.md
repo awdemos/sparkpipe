@@ -37,19 +37,26 @@ gateway/node. The naming law and the size gate enforce the edges' cost.
    protocol, a real domain distinct from request.c's user-request
    slots. Tested by its own gate. Future nicety only: a name that says
    protocol.
-3. **`ring/transport/tcp.cu` (1,225 lines): DORMANT — decision is
-   ct's.** No in-repo selector reaches it and no test exercises it;
-   only the contract string in the header names it. Deployment configs
-   outside the repo may still select it. Delete (stake −1.2K) or keep
-   as the documented non-RDMA bring-up path — owner's call.
+3. **`ring/transport/tcp.cu`: RESOLVED — deleted.** No selector, no
+   test, and RDMA is universal on target hardware; memlink covers
+   single-host, soft-RoCE (rxe) covers RDMA-less development. A
+   fallback nothing can reach is not a fallback. −1,225 lines; the
+   contract string went with it so the absence is loud.
 4. **Analysis tools: RESOLVED — reclassified.** Ruling: studies and
    analyses are the tests category. The four analysis binaries and the
    K3 expert-subspace study live in tests/studies/ now; the Makefile
    follows; the denominator dropped 1,241 lines the honest way.
-5. **node twins: RESOLVED — not worth its plumbing.** The similarity
-   pass found 5 twinned functions totaling 86 lines above 0.70. A
-   shared unit would cost more indirection than it saves. The twins are
-   shallow; the two-process split stands documented and untouched.
+5. **node twins: RESOLVED, with a precise anatomy.** rank_daemon
+   (3,088L/79 fns) is the ring-side bridge: transport to peers,
+   connection to the local residentd, driver load, work-control pump.
+   residentd (2,658L/55 fns) is the CUDA owner: node contexts, decode
+   work packets, the client protocol, submit execution, stats. Shared
+   POSTURE (daemon boilerplate ~450L combined: init, wake pipes,
+   transport open, event wait, print-ready) — not shared WORK (~5.2K
+   role-specific). An 80% parameterization does not exist to extract.
+   The one real extraction: both ApplyArgument fns are if-strcmp
+   chains (147L + 270L); a declarative option-table parser would make
+   each a table, net ~−250L and LESS complexity. Queued in techdebt.
 6. **`deployment/` (2.9K)**: release tooling. Earns its keep only if
    releases use it; audit at first release.
 
