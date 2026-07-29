@@ -81,6 +81,7 @@ run "k3 kv seam"          "gcc -O2 -Wall -Wextra -Iinclude -Imodel-families/glm5
 run "state pool"          "gcc -O2 -Wall -Wextra -I. -o /tmp/g_sp tests/test_state_pool.c && /tmp/g_sp"
 run "k3 kv geometry"      "python3 tests/test_k3_kv_geometry.py"
 run "fast defaults"        "python3 tests/test_fast_defaults.py"
+run "code size"           "python3 tests/test_code_size.py"
 run "dry naming law"       "python3 tests/test_dry_law.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.

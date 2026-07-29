@@ -61,11 +61,9 @@ TYPED_FIELD_CALLS = {"ALLOC_FIELD", "ALLOC_FIELD_MAPPED", "ZERO_FIELD"}
 NON_GLM_MODEL_PREFIXES = (
     "model-families/dsv4/",
     "model-families/k3/",
-    "model-families/mimo25/",
     "model-families/qwen36/",
     "modules/dsv4_",
     "modules/k3_",
-    "modules/mimo25_",
     "modules/qwen36_",
 )
 REQUIRED_SYMBOLIC_DEFINES = {

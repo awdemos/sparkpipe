@@ -12,7 +12,7 @@ tables those seams read. Each is budgeted EXACTLY, per file, with its reason:
 a new reference fails, and a reference removed fails too until the budget is
 lowered - the table stays truthful in both directions, which is the whole
 point of a ledger. Any other model token in a common path - k3, kimi, qwen,
-dsv4, mimo - has no budget at all: those models were born after the law.
+dsv4 - has no budget at all: those models were born after the law.
 """
 import re
 import sys
@@ -82,7 +82,7 @@ GLM_BUDGET = {
     "inference/stage/serving_adapter.cu": (112, "stage firmware (A4)"),
 }
 
-FORBIDDEN = re.compile(r"kimi|_k3_|K3[A-Z]|k3_|qwen|dsv4|mimo25|Qwen36|Dsv4|Mimo25",
+FORBIDDEN = re.compile(r"kimi|_k3_|K3[A-Z]|k3_|qwen|dsv4|Qwen36|Dsv4",
                        re.IGNORECASE)
 GLM = re.compile(r"[Gg]lm52|GLM52")
 

@@ -57,7 +57,6 @@ int main(void){
   printf("== %s ==  (measured: B64~100 B128~107 B256~208 ms)\n", glm.name);
   stage(&glm,64); stage(&glm,128); stage(&glm,256);
   drv_t fam[4]={
-    {"mimo25",4096,48,8,37.75e6,2048,152576,(13568.0+8192.0)*4096.0,(192.0+128.0)*2.0,16384,1,1.0,0},
     {"dsv4",4096,43,6,37.75e6,2048,129280,(32768.0+4096.0)*4096.0,576.0,0,0,1.0,0},
     {"qwen36",5120,64,0,0,0,248320,(4.0*256.0*2.0+5120.0)*5120.0,4.0*256.0*2.0,15360,64,1.0,0},
     {"k3",7168,72,8,19.6e6,2048,163840,(32768.0+7168.0)*7168.0,576.0,18432,1,0.5,1},
@@ -68,7 +67,6 @@ int main(void){
     stage(&fam[i],1); stage(&fam[i],64); stage(&fam[i],128);
   }
   printf("\nPer-driver lever (from the dominant term):\n");
-  printf("  mimo25  MoE-bandwidth  -> NVFP4 experts halves the 27ms MoE term\n");
   printf("  dsv4    QKVO-compute   -> retile the 6.5-TFLOPS WMMA (no byte fix helps)\n");
   printf("  qwen36  ATTENTION      -> KV compression / absorbed-MLA byte cut (NOT dense/MoE)\n");
   printf("  k3      QKVO-compute   -> WMMA retile; confirm geometry first\n");

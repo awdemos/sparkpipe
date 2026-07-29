@@ -28,7 +28,18 @@ Census: ~90K product lines + 34.7K test lines. DRY-law debt: 3,667
 budgeted glm refs across 57 common paths. The end-state is ~300
 irreducible refs (dimension tables only). Ranked removal path:
 
-1. **The drafter seam** (~1,450 refs: api/request.c 637,
+0. **The size gate is live** (tests/test_code_size.py): non-test lines,
+   ceiling only descends. Current 106.5K. Realistic architecture-stable
+   floor ~60K lines (~500K tokens - whole codebase in one large-context
+   window, which is the point); the <100K-token ideal implies a different
+   product.
+1. **The drafter seam - measured, and it is a rewrite, not an extraction**
+   (map 2026-07-29): 174 of 176 functions in api/request.c touch
+   glm/dspark symbols - 7,059 of 7,205 lines. The surgery re-founds the
+   request API on neutral dispatch/verify types with a model payload
+   envelope; glm's wire builders become module source behind the linker
+   seam. Expected: ~4.5K generic + ~1.8K glm module, net -1K lines,
+   -600 refs, and the seam K3's drafter walks through. (~1,450 refs: api/request.c 637,
    draft_backend.cu 600, scheduler/speculation.c 213). DSpark carries
    glm dspark payload TYPES through common request/scheduler paths.
    Same recipe as the validation tier: neutral payload envelope in the
@@ -42,9 +53,12 @@ irreducible refs (dimension tables only). Ranked removal path:
 4. **Seam-include tier** (~600 refs: http_server 224, prefix_cache 214,
    scheduler 174 are mostly glm header includes + constants that fall
    out once (1) and (2) land).
-5. Dead complexity: 4 "was deleted" Makefile error stanzas,
+5. **api/compat_api.c: 833-line cut candidate.** No OpenAI-style routes;
+   sole reference is http_gateway.h. Confirm no external caller, then
+   delete whole. (Decision: ct.)
+6. Dead complexity: 4 "was deleted" Makefile error stanzas,
    legacy_entry.cu (42 lines), --dspark compat no-op flag.
-6. B-tier templates (LmHead 0.93x5, LmDenseMlp 0.98x4, expert_queue
+7. B-tier templates (LmHead 0.93x5, LmDenseMlp 0.98x4, expert_queue
    17 hits, pack_common): ~400-700 lines.
 
 Post-plan: ~85K product lines, debt ~300, same solutions - the metric

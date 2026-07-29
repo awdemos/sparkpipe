@@ -68,9 +68,6 @@ int main(void)
 			(unsigned long long)(blocks * 64u),
 			(unsigned long long)(blocks * 64u / 8192u));
 		expect(blocks > 14000000ULL, "1 TB holds over 14 million blocks");
-		partition.slot_bytes = 6144u;                /* MiMo 2.5 SWA, no latent */
-		printf("      the same TB at MiMo 2.5's 6144-byte slot: %llu blocks\n",
-			(unsigned long long)LmCacheBlocksAvailable(&partition));
 	}
 
 	printf("\nsharing is a reference count, not a copy\n");
