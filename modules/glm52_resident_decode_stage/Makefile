@@ -41,6 +41,7 @@ endif
 endif
 BUILD_DIRECTORY := $(REPOSITORY_ROOT)/build/modules/glm52_resident_decode_stage
 HOST_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module.o
+VALIDATION_OBJECT = $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_glm52_validation.o
 CUDA_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda.o
 REQUIRED_STAGE_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_sm121_required_decode_stage.o
 B12X_MOE_PLAN_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_b12x_moe_plan.o
@@ -142,6 +143,11 @@ $(HOST_OBJECT): $(REPOSITORY_ROOT)/inference/stage/module.c | $(BUILD_DIRECTORY)
 		-DNDEBUG -DSPARK_GLM52_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
 		-fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
+$(VALIDATION_OBJECT): source/spark_glm52_resident_decode_stage_validation.c | $(BUILD_DIRECTORY)
+	$(CC) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource $(CFLAGS) \
+		-DNDEBUG -DSPARK_GLM52_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
+		-fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
+
 $(CUDA_OBJECT): $(REPOSITORY_ROOT)/inference/stage/dispatch.cu | $(BUILD_DIRECTORY)
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
@@ -174,7 +180,7 @@ $(SERVING_ADAPTER_OBJECT): $(REPOSITORY_ROOT)/inference/stage/serving_adapter.cu
 	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(MODULE_ARCHIVE): $(HOST_OBJECT) $(CUDA_OBJECT) $(REQUIRED_STAGE_OBJECT) $(B12X_MOE_PLAN_OBJECT) $(FP8_MOE_PLAN_OBJECT) $(W8LUT_MOE_PLAN_OBJECT) $(LINEAR_PLAN_OBJECT) $(SERVING_ADAPTER_OBJECT)
+$(MODULE_ARCHIVE): $(HOST_OBJECT) $(VALIDATION_OBJECT) $(CUDA_OBJECT) $(REQUIRED_STAGE_OBJECT) $(B12X_MOE_PLAN_OBJECT) $(FP8_MOE_PLAN_OBJECT) $(W8LUT_MOE_PLAN_OBJECT) $(LINEAR_PLAN_OBJECT) $(SERVING_ADAPTER_OBJECT)
 	rm -f $@
 	$(AR) rcs $@ $^
 

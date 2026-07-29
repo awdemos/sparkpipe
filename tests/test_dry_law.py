@@ -30,7 +30,7 @@ GLM_BUDGET = {
     "include/sparkpipe/spark_http_gateway.h": (2, "compat surface"),
     "include/sparkpipe/spark_long_context.h": (5, "model header (glm data)"),
     "include/sparkpipe/spark_mtp_tree.h": (3, "model header (glm data)"),
-    "include/sparkpipe/spark_resident_decode_stage.h": (152, "weight/plan config-flow pending (A4)"),
+    "include/sparkpipe/spark_resident_decode_stage.h": (149, "weight/plan config-flow pending (A4)"),
     "include/sparkpipe/spark_prefix_cache.h": (3, "kv-cache seam (A3)"),
     "include/sparkpipe/spark_production_topology.h": (7, "drafter wiring (glm data); model header (glm data)"),
     "include/sparkpipe/spark_prompt_pipeline.h": (3, "kv-cache seam (A3)"),
@@ -78,7 +78,7 @@ GLM_BUDGET = {
     "inference/stage/dispatch.cu": (12, "stage firmware (A4)"),
     "inference/stage/draft_backend.cu": (600, "drafter wiring (glm data)"),
     "inference/stage/legacy_entry.cu": (6, "stage firmware (A4)"),
-    "inference/stage/module.c": (382, "drafter wiring (glm data); stage firmware (A4)"),
+    "inference/stage/module.c": (96, "drafter wiring (glm data); stage firmware (A4)"),
     "inference/stage/runner.c": (20, "stage firmware (A4)"),
     "inference/stage/serving_adapter.cu": (112, "stage firmware (A4)"),
 }

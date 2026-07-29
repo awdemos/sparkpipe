@@ -1,14 +1,41 @@
 #ifndef SPARKPIPE_SPARK_RESIDENT_DECODE_STAGE_H
 #define SPARKPIPE_SPARK_RESIDENT_DECODE_STAGE_H
 
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdint.h>
 
 #include "sparkpipe/spark_module_abi.h"
-#include "sparkpipe/spark_glm52_kv_cache.h"
+#include "sparkpipe/spark_kv_cache.h"
+// The two includes below are the named debt: FrameContext still embeds
+// glm dspark tap plans and a flashinfer MoE recipe. Config-flow pending.
 #include "sparkpipe/spark_glm52_dspark.h"
+#include "sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h"
+
+
+// Stage utility tier: alignment and rounding, used by machinery and by
+// every model module. Header-inline so the module and its model sources
+// share one definition with zero link surface.
+static inline bool SparkResidentDecodeStagePointerIsAligned(
+    const void *pointer,
+    uintptr_t required_alignment)
+{
+    return pointer != 0 &&
+        ((uintptr_t)pointer % required_alignment) == 0u;
+}
+
+static inline uint64_t SparkResidentDecodeStageDivideRoundUpU64(
+    uint64_t value,
+    uint64_t divisor)
+{
+    if (divisor == 0u)
+    {
+        return 0u;
+    }
+    return (value + divisor - 1u) / divisor;
+}
 #include "sparkpipe/spark_stage_plan.h"
 #include "sparkpipe/spark_hidden_transport.h"
-#include "sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -339,10 +366,6 @@ extern "C" {
 #define SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_EXPONENT_ALIGNMENT_BYTES 2u
 #define SPARK_RESIDENT_DECODE_STAGE_W8LUT_MOE_WORKSPACE_ALIGNMENT_BYTES 256u
 
-#define SPARK_RESIDENT_DECODE_STAGE_MODULE_ID \
-    "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b1024.rv256.mtp6.v1"
-#define SPARK_RESIDENT_DECODE_STAGE_TARGET \
-    "cuda.sm121.glm52.resident_decode_stage.bf16"
 
 #define SPARK_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_ABI_VERSION 1u
 #define SPARK_RESIDENT_DECODE_STAGE_PREFILL_FRAME_VIEW_DESCRIPTOR_BYTES \
@@ -1246,5 +1269,18 @@ SparkStatus SparkResidentDecodeStageLaunchW8lutMoe(
 #ifdef __cplusplus
 }
 #endif
+
+static inline bool SparkResidentDecodeStagePointerIsAligned(
+    const void *pointer,
+    uintptr_t required_alignment);
+
+static inline bool SparkResidentDecodeStageExecutionFlagIsSet(
+    const SparkResidentDecodeStageNodeContext *node_context,
+    uint32_t execution_flag)
+{
+    return (node_context->reserved_execution_flags & execution_flag) != 0u;
+}
+
+
 
 #endif
