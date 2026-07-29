@@ -172,7 +172,7 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
     }
 
     status = SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
-        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
+        &scheduler->stage_geometry,
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -185,7 +185,7 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
     }
 
     return SparkStagePlanLoadMeasuredCostProfileForQuantization(
-        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
+        &scheduler->stage_geometry,
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -756,6 +756,13 @@ SparkStatus SparkSchedulerInitialize(
 
     queue_depth_per_spark = SparkSchedulerNormalizeQueueDepthPerSpark(
         configuration->queue_depth_per_spark);
+    if (configuration->stage_geometry.layer_count == 0u ||
+        configuration->stage_geometry.layer_count > SPARK_STAGE_PLAN_MAX_LAYER_COUNT ||
+        configuration->stage_geometry.first_routed_layer >= configuration->stage_geometry.layer_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    scheduler->stage_geometry = configuration->stage_geometry;
     measured_profile_id = SparkSchedulerNormalizeMeasuredProfileId(
         configuration->measured_profile_id);
     quantization_mode = SparkSchedulerNormalizeQuantizationMode(
@@ -1633,7 +1640,7 @@ SparkStatus SparkSchedulerAdmitPrefillBatch(
     }
 
     status = SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
-        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
+        &scheduler->stage_geometry,
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -1650,7 +1657,7 @@ SparkStatus SparkSchedulerAdmitPrefillBatch(
     }
 
     status = SparkStagePlanLoadMeasuredCostProfileForQuantization(
-        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
+        &scheduler->stage_geometry,
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,

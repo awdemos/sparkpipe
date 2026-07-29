@@ -10,6 +10,7 @@
 #include "sparkpipe/spark_glm52_resident_decode_stage_firmware.h"
 #include "sparkpipe/spark_glm52_resident_decode_stage_linear_plan.h"
 #include "sparkpipe/spark_scheduler.h"
+#include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_hidden_transport.h"
 #include "sparkpipe/spark_module_library.h"
 #include "sparkpipe/spark_orchestrator.h"
@@ -157,6 +158,8 @@ static void SparkTestInitializePrefillBridgeFixture(
     scheduler_configuration.prefix_cache_block_tokens =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     scheduler_configuration.prefix_cache = &fixture->prefix_cache;
+    scheduler_configuration.stage_geometry.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
+    scheduler_configuration.stage_geometry.first_routed_layer = SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER;
     assert(SparkSchedulerInitialize(
         &fixture->scheduler,
         &scheduler_configuration) == SPARK_STATUS_OK);

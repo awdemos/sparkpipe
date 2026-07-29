@@ -2363,6 +2363,8 @@ static SparkStatus SparkRingServiceBackendInitializeScheduler(
 			"SPARKPIPE_DISABLE_PREFIX_REUSE\n");
 	}
 	scheduler_configuration.prefix_cache = &state->prefix_cache;
+	scheduler_configuration.stage_geometry.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
+	scheduler_configuration.stage_geometry.first_routed_layer = SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER;
 	return SparkSchedulerInitialize(
 		&state->scheduler,
 		&scheduler_configuration);
