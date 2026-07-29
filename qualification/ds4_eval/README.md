@@ -12,9 +12,11 @@ protocol are pinned at
 |---|---|---:|---:|---:|---:|---:|---|
 | Kimi K3 | Kimi coding API, temperature 1.0, 16,000-token limit | 23/25 | 21/25 | 21/25 | 16/17 | **81/92** | [`runs/kimi-k3-api-20260728`](runs/kimi-k3-api-20260728/) |
 
-This is the highest result for which this repository retains the complete run.
-It is not claimed as an all-time record because the earlier project results
-were not archived.
+This is the highest result for which this repository retains and independently
+validates the complete run. It is not claimed as an official or directly
+comparable all-time record because the recovered project runs below used
+different fixture revisions, inference protocols, quantizations, and execution
+topologies.
 
 For context, a separately published DeepSeek V4 Flash 4Expert Q4_K run reports
 80/92 (AIME 20/25, GPQA 22/25, SuperGPQA 22/25, COMPSEC 16/17). SparkPipe does
@@ -22,18 +24,39 @@ not retain that run's responses, and it is not treated as a locally audited
 entry. See the
 [pinned model-card report](https://huggingface.co/cloudyu/DeepSeek-V4-Flash-4Expert-GGUF/blob/39a195539a9ad27a28dc70b86f32a1d8651af929/README.md#gguf-evaluation-report--4expert-q4_k-gguf-by-ds4-eval).
 
-## Historical runs awaiting artifact recovery
+## Recovered project results
 
-The project previously evaluated these models, but no numeric score file or
-exact response archive was found in SparkPipe history, local worktrees,
-downloaded snapshots, or upstream `ds4` history:
+These records were recovered from fixed commits in
+[`experiencenow-ai/ds4_on_spark`](https://github.com/experiencenow-ai/ds4_on_spark).
+They preserve project history, but they are not a single apples-to-apples
+ranking.
 
-- Qwen 3.6 27B — remembered as the prior project high score.
-- Gemma — remembered as a competitive result.
-- DeepSeek V4 — remembered as part of the comparison set.
+| Model | Execution | GPQA | SuperGPQA | AIME2025 | COMPSEC | Overall | Evidence |
+|---|---|---:|---:|---:|---:|---:|---|
+| `deepseek-v4-flash` served alias | vLLM MXFP4 TP=2, temperature 0, top-p 1, seed 1, concurrency 8, 16,000-token limit | 21/25 | 20/25 | 21/25 | 16/17 | **78/92** | External exact [`JSONL`](https://github.com/experiencenow-ai/ds4_on_spark/blob/0dd28c579ac45ee16b5b3bd24a5f7aebbe87ad38/fixtures/pipeline_quality/vllm-mxfp4-tp2-ds4-eval-20260523T0315Z.jsonl) and [`trace`](https://github.com/experiencenow-ai/ds4_on_spark/blob/0dd28c579ac45ee16b5b3bd24a5f7aebbe87ad38/fixtures/pipeline_quality/vllm-mxfp4-tp2-ds4-eval-20260523T0315Z.trace.txt) |
+| `Qwen/Qwen3.6-27B-FP8` | vLLM; run settings not retained | — | — | — | — | **76/92** | [`Profile assertion`](https://github.com/experiencenow-ai/ds4_on_spark/blob/56d95807e16196cf6f385db0b4de6a17bdb4c77d/v2/profiles/models/qwen3_6_27b_fp8_efficient.json) only |
+| DeepSeek V4 Flash, checkpoint unbound | antirez IQ2XXS PP=1 CUDA, seed 1, 16,000-token limit | 20/25 | 22/25 | 15/25 | 16/17 | **73/92** | External exact [`JSONL`](https://github.com/experiencenow-ai/ds4_on_spark/blob/0dd28c579ac45ee16b5b3bd24a5f7aebbe87ad38/fixtures/pipeline_quality/lane-d-pp1-redo-20260521T0412Z.jsonl) and [`trace`](https://github.com/experiencenow-ai/ds4_on_spark/blob/0dd28c579ac45ee16b5b3bd24a5f7aebbe87ad38/fixtures/pipeline_quality/lane-d-pp1-redo-20260521T0412Z.trace.txt.gz) |
+| `google/gemma-4-31B-it` | DS4 API PP8, temperature 0, thinking off, 4,096-token limit | 18/25 | 20/25 | 18/25 | 16/17 | **72/92** | [`Summary snapshot`](https://github.com/experiencenow-ai/ds4_on_spark/blob/4ee9061bc59f9f913eef5f5e9277df7a330c09fa/v2/profiles/validation/gemma4_ds4_eval_20260606.json) only |
+| `google/gemma-4-26B-A4B-it` | DS4 API PP8, temperature 0, thinking off, 4,096-token limit | 17/25 | 21/25 | 16/25 | 15/17 | **69/92** | [`Summary snapshot`](https://github.com/experiencenow-ai/ds4_on_spark/blob/4ee9061bc59f9f913eef5f5e9277df7a330c09fa/v2/profiles/validation/gemma4_ds4_eval_20260606.json) only |
+| `google/gemma-4-12B-it` | DS4 API PP8, temperature 0, thinking off, 4,096-token limit | 17/25 | 18/25 | 11/25 | 17/17 | **63/92** | [`Summary snapshot`](https://github.com/experiencenow-ai/ds4_on_spark/blob/4ee9061bc59f9f913eef5f5e9277df7a330c09fa/v2/profiles/validation/gemma4_ds4_eval_20260606.json) only |
 
-Do not fill in their scores from memory. Add them to the retained table only
-when the original summary or response trace is recovered.
+The DeepSeek rows retain all 92 generated texts and response traces outside this
+repository, but SparkPipe has not imported or independently regraded them.
+Their records do not bind the exact model checkpoint revision. The Qwen record
+retains no family breakdown, run command, fixture revision, or raw responses.
+The Gemma snapshot retains settings and aggregate and family scores, but its raw
+`/private/tmp/ds4_bench` response directories were not committed. Summary and
+profile assertions cannot be independently regraded.
+
+The current Kimi archive pins `ds4_eval.c` SHA-256
+`19545bf6c0a55cb91b7e3120344ec69ad4cfb5c87cf91e82ec4191a590013f23`.
+The fixture present at the Gemma snapshot commit hashes to
+`138ae8bcb92503a4ff8bd8dd5607fb0b58af118cb34f5ab3e9d89c92e615c22a`,
+but all 92 cases match the Kimi fixture on source, ID, domain, title, question,
+choices, and answer. The Qwen assertion does not identify its fixture. Its
+76/92 score selected the repository's default efficient local mechanical-work
+profile, but it is not evidence of an overall prior best: the differently
+configured DeepSeek 78/92 run predates and outscores it.
 
 ## Kimi K3 archive
 
