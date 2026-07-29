@@ -239,3 +239,10 @@ glm-shaped. The stage-plan and topology tiers already take
 SparkStagePlanGeometry at runtime. The scheduler is next: thread the
 same geometry through its Build entries and cost-profile loops, then
 drop the glm include. Until then the law counts it honestly.
+
+## Scheduler homed in the glm library (packaging)
+sources.mk places scheduler/ under the glm host sources, so the
+model-neutral scheduler ships inside libglm52_host. Post-geometry it
+belongs in the model-common library; the move is link-line churn
+across every target and waits for a quiet moment. The uniform-profile
+admit test links glm_host solely for this packaging reason.

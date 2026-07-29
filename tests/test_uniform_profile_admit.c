@@ -42,10 +42,7 @@ int main(void)
 	request.abi_version = SPARK_SCHEDULER_ABI_VERSION;
 	request.descriptor_bytes = (uint32_t)sizeof(request);
 	request.flags = SPARK_SCHEDULER_REQUEST_FLAG_DECODE;
-	request.sequence_id = 1u;
 	request.active_sequence_count = 8u;
-	request.prompt_token_count = 1024u;
-	request.computed_prompt_token_count = 1024u;
 	memset(&decision, 0, sizeof(decision));
 	assert(SparkSchedulerAdmit(&scheduler, &request, &decision) ==
 		SPARK_STATUS_OK);

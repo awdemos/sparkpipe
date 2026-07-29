@@ -85,6 +85,7 @@ run "topology behavior"    "make -s build/test_glm52_production_topology && ./bu
 run "request api behavior"  "make -s build/test_glm52_request_api && ./build/test_glm52_request_api"
 run "service behavior"      "make -s build/test_glm52_service && ./build/test_glm52_service"
 run "prompt pipeline runs"  "make -s build/test_glm52_prompt_pipeline && ./build/test_glm52_prompt_pipeline"
+run "uniform-profile admit"  "make -s build/test_uniform_profile_admit && ./build/test_uniform_profile_admit"
 run "family conformance"   "python3 tests/test_model_families.py"
 run "null seam link+run"   "make -s build/test_null_seam_link && ./build/test_null_seam_link"
 run "seam symbol parity"   "sh tools/seam_parity.sh"

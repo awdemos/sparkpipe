@@ -46,15 +46,20 @@ static uint32_t SparkStagePlanLayerRangeIsValid(
         return 0u;
     }
     range_end = first_layer_index + layer_count;
-    if (first_layer_index != 0u &&
-        first_layer_index < geometry->first_routed_layer)
+    // The dense prefix stays whole in stage zero - a rule that only
+    // means something when a routed region exists. A fully dense model
+    // (first_routed == layer_count) may cut anywhere.
+    if (geometry->first_routed_layer < geometry->layer_count)
     {
-        return 0u;
-    }
-    if (range_end < geometry->first_routed_layer &&
-        range_end != geometry->first_routed_layer)
-    {
-        return 0u;
+        if (first_layer_index != 0u &&
+            first_layer_index < geometry->first_routed_layer)
+        {
+            return 0u;
+        }
+        if (range_end < geometry->first_routed_layer)
+        {
+            return 0u;
+        }
     }
     routed_layer_count = SparkRoutedLayerCountForRange(
 first_layer_index,
@@ -402,14 +407,14 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
         }
     }
 
-    if (best_cost[stage_count][SPARK_STAGE_PLAN_MAX_LAYER_COUNT] ==
+    if (best_cost[stage_count][geometry->layer_count] ==
         SPARK_STAGE_PLAN_UNREACHABLE_COST)
     {
         return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_CAPACITY_EXCEEDED,
-            "stage count cannot satisfy GLM-5.2 cut rules");
+            "stage count cannot satisfy the cut rules");
     }
 
     SparkStagePlanReset(stage_plan);
