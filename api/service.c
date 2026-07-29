@@ -3,7 +3,7 @@
 #include <limits.h>
 #include <string.h>
 
-static uint32_t SparkGlm52ServiceNormalizeFlags(
+static uint32_t SparkServiceNormalizeFlags(
     uint32_t flags)
 {
     if (flags == 0u)
@@ -13,7 +13,7 @@ static uint32_t SparkGlm52ServiceNormalizeFlags(
     return flags;
 }
 
-static uint32_t SparkGlm52ServiceNormalizePumpDispatchSteps(
+static uint32_t SparkServiceNormalizePumpDispatchSteps(
     uint32_t default_pump_dispatch_steps)
 {
     if (default_pump_dispatch_steps == 0u)
@@ -23,7 +23,7 @@ static uint32_t SparkGlm52ServiceNormalizePumpDispatchSteps(
     return default_pump_dispatch_steps;
 }
 
-static uint64_t SparkGlm52ServiceNormalizeRequestIdBase(
+static uint64_t SparkServiceNormalizeRequestIdBase(
     uint64_t request_id_base)
 {
     if (request_id_base == 0u)
@@ -33,7 +33,7 @@ static uint64_t SparkGlm52ServiceNormalizeRequestIdBase(
     return request_id_base;
 }
 
-static void SparkGlm52ServiceInitializeClientSession(
+static void SparkServiceInitializeClientSession(
     SparkServiceClientSession *client_session)
 {
     memset(client_session, 0, sizeof(*client_session));
@@ -44,7 +44,7 @@ static void SparkGlm52ServiceInitializeClientSession(
     client_session->client_hash_next = SPARK_SERVICE_NO_HASH_SLOT;
 }
 
-static void SparkGlm52ServiceInitializeRequestMap(
+static void SparkServiceInitializeRequestMap(
     SparkServiceRequestMap *request_map)
 {
     memset(request_map, 0, sizeof(*request_map));
@@ -58,7 +58,7 @@ static void SparkGlm52ServiceInitializeRequestMap(
         SPARK_SERVICE_NO_HASH_SLOT;
 }
 
-static uint32_t SparkGlm52ServiceHash64(
+static uint32_t SparkServiceHash64(
     uint64_t value,
     uint32_t slot_count)
 {
@@ -71,7 +71,7 @@ static uint32_t SparkGlm52ServiceHash64(
     return (uint32_t)(hash % slot_count);
 }
 
-static uint32_t SparkGlm52ServiceHashClientRequest(
+static uint32_t SparkServiceHashClientRequest(
     SparkServiceClientId client_id,
     SparkServiceRequestId client_request_id)
 {
@@ -79,12 +79,12 @@ static uint32_t SparkGlm52ServiceHashClientRequest(
 
     hash = client_id ^ (client_request_id + 0x9e3779b97f4a7c15ull +
         (client_id << 6u) + (client_id >> 2u));
-    return SparkGlm52ServiceHash64(
+    return SparkServiceHash64(
         hash,
         SPARK_SERVICE_REQUEST_MAP_HASH_SLOTS);
 }
 
-static uint32_t SparkGlm52ServiceClientIndex(
+static uint32_t SparkServiceClientIndex(
     const SparkServiceRuntime *service,
     const SparkServiceClientSession *client_session)
 {
@@ -109,7 +109,7 @@ static uint32_t SparkGlm52ServiceClientIndex(
     return (uint32_t)client_index;
 }
 
-static uint32_t SparkGlm52ServiceRequestMapIndex(
+static uint32_t SparkServiceRequestMapIndex(
     const SparkServiceRuntime *service,
     const SparkServiceRequestMap *request_map)
 {
@@ -132,7 +132,7 @@ static uint32_t SparkGlm52ServiceRequestMapIndex(
     return (uint32_t)request_index;
 }
 
-static void SparkGlm52ServiceInitializeEvent(
+static void SparkServiceInitializeEvent(
     SparkServiceEvent *event)
 {
     memset(event, 0, sizeof(*event));
@@ -140,7 +140,7 @@ static void SparkGlm52ServiceInitializeEvent(
     event->descriptor_bytes = SPARK_SERVICE_EVENT_DESCRIPTOR_BYTES;
 }
 
-static SparkStatus SparkGlm52ServiceValidateRuntime(
+static SparkStatus SparkServiceValidateRuntime(
     SparkServiceRuntime *service)
 {
     if (service == 0 ||
@@ -156,27 +156,27 @@ static SparkStatus SparkGlm52ServiceValidateRuntime(
     return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52ServiceInsertClientHash(
+static void SparkServiceInsertClientHash(
     SparkServiceRuntime *service,
     SparkServiceClientSession *client_session)
 {
     uint32_t client_index;
     uint32_t hash_slot;
 
-    client_index = SparkGlm52ServiceClientIndex(service, client_session);
+    client_index = SparkServiceClientIndex(service, client_session);
     if (client_index == SPARK_SERVICE_NO_HASH_SLOT ||
         client_session->client_id == 0u)
     {
         return;
     }
-    hash_slot = SparkGlm52ServiceHash64(
+    hash_slot = SparkServiceHash64(
         client_session->client_id,
         SPARK_SERVICE_CLIENT_HASH_SLOTS);
     client_session->client_hash_next = service->client_hash_heads[hash_slot];
     service->client_hash_heads[hash_slot] = client_index;
 }
 
-static void SparkGlm52ServiceRemoveClientHash(
+static void SparkServiceRemoveClientHash(
     SparkServiceRuntime *service,
     SparkServiceClientSession *client_session)
 {
@@ -185,13 +185,13 @@ static void SparkGlm52ServiceRemoveClientHash(
     uint32_t current_index;
     uint32_t previous_index;
 
-    client_index = SparkGlm52ServiceClientIndex(service, client_session);
+    client_index = SparkServiceClientIndex(service, client_session);
     if (client_index == SPARK_SERVICE_NO_HASH_SLOT ||
         client_session->client_id == 0u)
     {
         return;
     }
-    hash_slot = SparkGlm52ServiceHash64(
+    hash_slot = SparkServiceHash64(
         client_session->client_id,
         SPARK_SERVICE_CLIENT_HASH_SLOTS);
     current_index = service->client_hash_heads[hash_slot];
@@ -219,25 +219,25 @@ static void SparkGlm52ServiceRemoveClientHash(
     }
 }
 
-static void SparkGlm52ServiceInsertRequestMapHash(
+static void SparkServiceInsertRequestMapHash(
     SparkServiceRuntime *service,
     SparkServiceRequestMap *request_map)
 {
     uint32_t request_index;
     uint32_t hash_slot;
 
-    request_index = SparkGlm52ServiceRequestMapIndex(service, request_map);
+    request_index = SparkServiceRequestMapIndex(service, request_map);
     if (request_index == SPARK_SERVICE_NO_HASH_SLOT)
     {
         return;
     }
-    hash_slot = SparkGlm52ServiceHashClientRequest(
+    hash_slot = SparkServiceHashClientRequest(
         request_map->client_id,
         request_map->client_request_id);
     request_map->client_request_hash_next =
         service->client_request_hash_heads[hash_slot];
     service->client_request_hash_heads[hash_slot] = request_index;
-    hash_slot = SparkGlm52ServiceHash64(
+    hash_slot = SparkServiceHash64(
         request_map->serving_request_handle,
         SPARK_SERVICE_REQUEST_MAP_HASH_SLOTS);
     request_map->serving_handle_hash_next =
@@ -245,7 +245,7 @@ static void SparkGlm52ServiceInsertRequestMapHash(
     service->serving_handle_hash_heads[hash_slot] = request_index;
 }
 
-static void SparkGlm52ServiceRemoveRequestMapHash(
+static void SparkServiceRemoveRequestMapHash(
     SparkServiceRuntime *service,
     SparkServiceRequestMap *request_map)
 {
@@ -254,12 +254,12 @@ static void SparkGlm52ServiceRemoveRequestMapHash(
     uint32_t current_index;
     uint32_t previous_index;
 
-    request_index = SparkGlm52ServiceRequestMapIndex(service, request_map);
+    request_index = SparkServiceRequestMapIndex(service, request_map);
     if (request_index == SPARK_SERVICE_NO_HASH_SLOT)
     {
         return;
     }
-    hash_slot = SparkGlm52ServiceHashClientRequest(
+    hash_slot = SparkServiceHashClientRequest(
         request_map->client_id,
         request_map->client_request_id);
     current_index = service->client_request_hash_heads[hash_slot];
@@ -280,7 +280,7 @@ static void SparkGlm52ServiceRemoveRequestMapHash(
         current_index =
             service->request_maps[current_index].client_request_hash_next;
     }
-    hash_slot = SparkGlm52ServiceHash64(
+    hash_slot = SparkServiceHash64(
         request_map->serving_request_handle,
         SPARK_SERVICE_REQUEST_MAP_HASH_SLOTS);
     current_index = service->serving_handle_hash_heads[hash_slot];
@@ -305,7 +305,7 @@ static void SparkGlm52ServiceRemoveRequestMapHash(
     request_map->serving_handle_hash_next = SPARK_SERVICE_NO_HASH_SLOT;
 }
 
-static SparkServiceClientSession *SparkGlm52ServiceFindClient(
+static SparkServiceClientSession *SparkServiceFindClient(
     SparkServiceRuntime *service,
     SparkServiceClientId client_id)
 {
@@ -316,7 +316,7 @@ static SparkServiceClientSession *SparkGlm52ServiceFindClient(
     {
         return 0;
     }
-    hash_slot = SparkGlm52ServiceHash64(
+    hash_slot = SparkServiceHash64(
         client_id,
         SPARK_SERVICE_CLIENT_HASH_SLOTS);
     client_index = service->client_hash_heads[hash_slot];
@@ -336,7 +336,7 @@ static SparkServiceClientSession *SparkGlm52ServiceFindClient(
     return 0;
 }
 
-static SparkServiceClientSession *SparkGlm52ServiceFindFreeClient(
+static SparkServiceClientSession *SparkServiceFindFreeClient(
     SparkServiceRuntime *service)
 {
     uint32_t client_index;
@@ -354,7 +354,7 @@ static SparkServiceClientSession *SparkGlm52ServiceFindFreeClient(
     return 0;
 }
 
-static SparkServiceRequestMap *SparkGlm52ServiceFindFreeRequestMap(
+static SparkServiceRequestMap *SparkServiceFindFreeRequestMap(
     SparkServiceRuntime *service)
 {
     uint32_t request_index;
@@ -372,7 +372,7 @@ static SparkServiceRequestMap *SparkGlm52ServiceFindFreeRequestMap(
     return 0;
 }
 
-static SparkServiceRequestMap *SparkGlm52ServiceFindRequestMapByClientRequest(
+static SparkServiceRequestMap *SparkServiceFindRequestMapByClientRequest(
     SparkServiceRuntime *service,
     SparkServiceClientId client_id,
     SparkServiceRequestId client_request_id)
@@ -384,7 +384,7 @@ static SparkServiceRequestMap *SparkGlm52ServiceFindRequestMapByClientRequest(
     {
         return 0;
     }
-    hash_slot = SparkGlm52ServiceHashClientRequest(client_id, client_request_id);
+    hash_slot = SparkServiceHashClientRequest(client_id, client_request_id);
     request_index = service->client_request_hash_heads[hash_slot];
     while (request_index != SPARK_SERVICE_NO_HASH_SLOT &&
            request_index < service->request_map_capacity)
@@ -403,7 +403,7 @@ static SparkServiceRequestMap *SparkGlm52ServiceFindRequestMapByClientRequest(
     return 0;
 }
 
-static SparkServiceRequestMap *SparkGlm52ServiceFindRequestMapByServingHandle(
+static SparkServiceRequestMap *SparkServiceFindRequestMapByServingHandle(
     SparkServiceRuntime *service,
     SparkServingRequestHandle serving_request_handle)
 {
@@ -414,7 +414,7 @@ static SparkServiceRequestMap *SparkGlm52ServiceFindRequestMapByServingHandle(
     {
         return 0;
     }
-    hash_slot = SparkGlm52ServiceHash64(
+    hash_slot = SparkServiceHash64(
         serving_request_handle,
         SPARK_SERVICE_REQUEST_MAP_HASH_SLOTS);
     request_index = service->serving_handle_hash_heads[hash_slot];
@@ -434,7 +434,7 @@ static SparkServiceRequestMap *SparkGlm52ServiceFindRequestMapByServingHandle(
     return 0;
 }
 
-static uint32_t SparkGlm52ServiceEventRingFreeCount(
+static uint32_t SparkServiceEventRingFreeCount(
     const SparkServiceRuntime *service)
 {
     if (service == 0 || service->event_ring_capacity < service->event_count)
@@ -444,7 +444,7 @@ static uint32_t SparkGlm52ServiceEventRingFreeCount(
     return service->event_ring_capacity - service->event_count;
 }
 
-static SparkStatus SparkGlm52ServicePushEvent(
+static SparkStatus SparkServicePushEvent(
     SparkServiceRuntime *service,
     const SparkServiceEvent *event)
 {
@@ -463,7 +463,7 @@ static SparkStatus SparkGlm52ServicePushEvent(
     return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ServicePushClientEvent(
+static SparkStatus SparkServicePushClientEvent(
     SparkServiceRuntime *service,
     SparkServiceClientId client_id,
     uint32_t event_kind,
@@ -471,14 +471,14 @@ static SparkStatus SparkGlm52ServicePushClientEvent(
 {
     SparkServiceEvent event;
 
-    SparkGlm52ServiceInitializeEvent(&event);
+    SparkServiceInitializeEvent(&event);
     event.kind = event_kind;
     event.status = status;
     event.client_id = client_id;
-    return SparkGlm52ServicePushEvent(service, &event);
+    return SparkServicePushEvent(service, &event);
 }
 
-static uint32_t SparkGlm52ServiceMapServingEventKind(
+static uint32_t SparkServiceMapServingEventKind(
     uint32_t serving_event_kind)
 {
     switch (serving_event_kind)
@@ -518,14 +518,14 @@ static uint32_t SparkGlm52ServiceMapServingEventKind(
     }
 }
 
-static SparkStatus SparkGlm52ServiceForwardServingEvent(
+static SparkStatus SparkServiceForwardServingEvent(
     SparkServiceRuntime *service,
     const SparkServingEvent *serving_event)
 {
     SparkServiceRequestMap *request_map;
     SparkServiceEvent service_event;
 
-    request_map = SparkGlm52ServiceFindRequestMapByServingHandle(
+    request_map = SparkServiceFindRequestMapByServingHandle(
         service,
         serving_event->request_handle);
     if (request_map == 0)
@@ -533,8 +533,8 @@ static SparkStatus SparkGlm52ServiceForwardServingEvent(
         return SPARK_STATUS_NOT_FOUND;
     }
 
-    SparkGlm52ServiceInitializeEvent(&service_event);
-    service_event.kind = SparkGlm52ServiceMapServingEventKind(serving_event->kind);
+    SparkServiceInitializeEvent(&service_event);
+    service_event.kind = SparkServiceMapServingEventKind(serving_event->kind);
     service_event.flags = serving_event->flags;
     service_event.status = serving_event->status;
     service_event.token_id = serving_event->token_id;
@@ -555,7 +555,7 @@ static SparkStatus SparkGlm52ServiceForwardServingEvent(
         SparkServiceClientSession *client_session;
 
         request_map->state = SPARK_SERVICE_REQUEST_STATE_COMPLETED;
-        client_session = SparkGlm52ServiceFindClient(service, request_map->client_id);
+        client_session = SparkServiceFindClient(service, request_map->client_id);
         if (client_session != 0)
         {
             client_session->completed_request_count += 1u;
@@ -566,10 +566,10 @@ static SparkStatus SparkGlm52ServiceForwardServingEvent(
         request_map->state = SPARK_SERVICE_REQUEST_STATE_CANCELLED;
     }
 
-    return SparkGlm52ServicePushEvent(service, &service_event);
+    return SparkServicePushEvent(service, &service_event);
 }
 
-static void SparkGlm52ServiceReleaseCompletedMappingsIfRequested(
+static void SparkServiceReleaseCompletedMappingsIfRequested(
     SparkServiceRuntime *service)
 {
     uint32_t request_index;
@@ -589,13 +589,13 @@ static void SparkGlm52ServiceReleaseCompletedMappingsIfRequested(
         if (request_map->state == SPARK_SERVICE_REQUEST_STATE_COMPLETED ||
             request_map->state == SPARK_SERVICE_REQUEST_STATE_CANCELLED)
         {
-            SparkGlm52ServiceRemoveRequestMapHash(service, request_map);
-            SparkGlm52ServiceInitializeRequestMap(request_map);
+            SparkServiceRemoveRequestMapHash(service, request_map);
+            SparkServiceInitializeRequestMap(request_map);
         }
     }
 }
 
-static SparkStatus SparkGlm52ServiceDrainServingEvents(
+static SparkStatus SparkServiceDrainServingEvents(
     SparkServiceRuntime *service)
 {
     SparkStatus final_status;
@@ -606,7 +606,7 @@ static SparkStatus SparkGlm52ServiceDrainServingEvents(
         SparkServingEvent serving_event;
         SparkStatus status;
 
-        if (SparkGlm52ServiceEventRingFreeCount(service) == 0u)
+        if (SparkServiceEventRingFreeCount(service) == 0u)
         {
             final_status = SPARK_STATUS_BUSY;
             break;
@@ -623,7 +623,7 @@ static SparkStatus SparkGlm52ServiceDrainServingEvents(
             final_status = status;
             break;
         }
-        status = SparkGlm52ServiceForwardServingEvent(service, &serving_event);
+        status = SparkServiceForwardServingEvent(service, &serving_event);
         if (status == SPARK_STATUS_NOT_FOUND)
         {
             continue;
@@ -635,11 +635,11 @@ static SparkStatus SparkGlm52ServiceDrainServingEvents(
         }
         service->stats.forwarded_event_count += 1u;
     }
-    SparkGlm52ServiceReleaseCompletedMappingsIfRequested(service);
+    SparkServiceReleaseCompletedMappingsIfRequested(service);
     return final_status;
 }
 
-static void SparkGlm52ServiceRefreshStats(
+static void SparkServiceRefreshStats(
     SparkServiceRuntime *service)
 {
     uint32_t client_index;
@@ -686,7 +686,7 @@ static void SparkGlm52ServiceRefreshStats(
         &stats->serving_stats);
 }
 
-static SparkStatus SparkGlm52ServiceValidateConfiguration(
+static SparkStatus SparkServiceValidateConfiguration(
     const SparkServiceConfiguration *configuration)
 {
     uint32_t flags;
@@ -698,7 +698,7 @@ static SparkStatus SparkGlm52ServiceValidateConfiguration(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    flags = SparkGlm52ServiceNormalizeFlags(configuration->flags);
+    flags = SparkServiceNormalizeFlags(configuration->flags);
     if ((flags & ~SPARK_SERVICE_CONFIGURATION_KNOWN_FLAGS) != 0u ||
         configuration->serving_engine == 0 ||
         configuration->serving_engine->abi_version !=
@@ -810,7 +810,7 @@ SparkStatus SparkServiceInitialize(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkGlm52ServiceValidateConfiguration(configuration);
+    status = SparkServiceValidateConfiguration(configuration);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -819,11 +819,11 @@ SparkStatus SparkServiceInitialize(
     memset(service, 0, sizeof(*service));
     service->abi_version = SPARK_SERVICE_ABI_VERSION;
     service->descriptor_bytes = SPARK_SERVICE_RUNTIME_DESCRIPTOR_BYTES;
-    service->flags = SparkGlm52ServiceNormalizeFlags(configuration->flags);
+    service->flags = SparkServiceNormalizeFlags(configuration->flags);
     service->default_pump_dispatch_steps =
-        SparkGlm52ServiceNormalizePumpDispatchSteps(
+        SparkServiceNormalizePumpDispatchSteps(
             configuration->default_pump_dispatch_steps);
-    service->next_generated_request_id = SparkGlm52ServiceNormalizeRequestIdBase(
+    service->next_generated_request_id = SparkServiceNormalizeRequestIdBase(
         configuration->request_id_base);
     service->next_generated_client_id = 1u;
     service->serving_engine = configuration->serving_engine;
@@ -854,22 +854,22 @@ SparkStatus SparkServiceInitialize(
          client_index < service->client_session_capacity;
          ++client_index)
     {
-        SparkGlm52ServiceInitializeClientSession(
+        SparkServiceInitializeClientSession(
             &service->client_sessions[client_index]);
     }
     for (request_index = 0u;
          request_index < service->request_map_capacity;
          ++request_index)
     {
-        SparkGlm52ServiceInitializeRequestMap(&service->request_maps[request_index]);
+        SparkServiceInitializeRequestMap(&service->request_maps[request_index]);
     }
     for (event_index = 0u;
          event_index < service->event_ring_capacity;
          ++event_index)
     {
-        SparkGlm52ServiceInitializeEvent(&service->event_ring[event_index]);
+        SparkServiceInitializeEvent(&service->event_ring[event_index]);
     }
-    SparkGlm52ServiceRefreshStats(service);
+    SparkServiceRefreshStats(service);
     return SPARK_STATUS_OK;
 }
 
@@ -881,12 +881,12 @@ SparkStatus SparkServiceRegisterClient(
     SparkServiceClientSession *client_session;
     SparkStatus status;
 
-    status = SparkGlm52ServiceValidateRuntime(service);
+    status = SparkServiceValidateRuntime(service);
     if (status != SPARK_STATUS_OK || client_id_out == 0)
     {
         return status == SPARK_STATUS_OK ? SPARK_STATUS_INVALID_ARGUMENT : status;
     }
-    client_session = SparkGlm52ServiceFindFreeClient(service);
+    client_session = SparkServiceFindFreeClient(service);
     if (client_session == 0)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -898,14 +898,14 @@ SparkStatus SparkServiceRegisterClient(
         service->next_generated_client_id = 1u;
     }
     client_session->user_cookie = user_cookie;
-    SparkGlm52ServiceInsertClientHash(service, client_session);
+    SparkServiceInsertClientHash(service, client_session);
     *client_id_out = client_session->client_id;
-    status = SparkGlm52ServicePushClientEvent(
+    status = SparkServicePushClientEvent(
         service,
         client_session->client_id,
         SPARK_SERVICE_EVENT_KIND_CLIENT_CONNECTED,
         SPARK_STATUS_OK);
-    SparkGlm52ServiceRefreshStats(service);
+    SparkServiceRefreshStats(service);
     return status;
 }
 
@@ -917,12 +917,12 @@ SparkStatus SparkServiceDisconnectClient(
     uint32_t request_index;
     SparkStatus status;
 
-    status = SparkGlm52ServiceValidateRuntime(service);
+    status = SparkServiceValidateRuntime(service);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    client_session = SparkGlm52ServiceFindClient(service, client_id);
+    client_session = SparkServiceFindClient(service, client_id);
     if (client_session == 0)
     {
         return SPARK_STATUS_NOT_FOUND;
@@ -943,18 +943,18 @@ SparkStatus SparkServiceDisconnectClient(
             request_map->state = SPARK_SERVICE_REQUEST_STATE_CANCELLED;
         }
     }
-    SparkGlm52ServiceRemoveClientHash(service, client_session);
-    SparkGlm52ServiceInitializeClientSession(client_session);
-    status = SparkGlm52ServicePushClientEvent(
+    SparkServiceRemoveClientHash(service, client_session);
+    SparkServiceInitializeClientSession(client_session);
+    status = SparkServicePushClientEvent(
         service,
         client_id,
         SPARK_SERVICE_EVENT_KIND_CLIENT_DISCONNECTED,
         SPARK_STATUS_OK);
-    SparkGlm52ServiceRefreshStats(service);
+    SparkServiceRefreshStats(service);
     return status;
 }
 
-static SparkStatus SparkGlm52ServiceReserveRequestMap(
+static SparkStatus SparkServiceReserveRequestMap(
     SparkServiceRuntime *service,
     SparkServiceClientId client_id,
     SparkServiceRequestId client_request_id,
@@ -962,7 +962,7 @@ static SparkStatus SparkGlm52ServiceReserveRequestMap(
 {
     SparkServiceRequestMap *request_map;
 
-    if (SparkGlm52ServiceFindClient(service, client_id) == 0)
+    if (SparkServiceFindClient(service, client_id) == 0)
     {
         return SPARK_STATUS_NOT_FOUND;
     }
@@ -970,14 +970,14 @@ static SparkStatus SparkGlm52ServiceReserveRequestMap(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    if (SparkGlm52ServiceFindRequestMapByClientRequest(
+    if (SparkServiceFindRequestMapByClientRequest(
             service,
             client_id,
             client_request_id) != 0)
     {
         return SPARK_STATUS_DUPLICATE;
     }
-    request_map = SparkGlm52ServiceFindFreeRequestMap(service);
+    request_map = SparkServiceFindFreeRequestMap(service);
     if (request_map == 0)
     {
         return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -986,7 +986,7 @@ static SparkStatus SparkGlm52ServiceReserveRequestMap(
     return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52ServiceFillSubmitResult(
+static void SparkServiceFillSubmitResult(
     const SparkServiceRequestMap *request_map,
     const SparkServingSubmitResult *serving_result,
     SparkServiceSubmitResult *result)
@@ -1020,7 +1020,7 @@ SparkStatus SparkServiceSubmitTokenIds(
     SparkServiceClientSession *client_session;
     SparkStatus status;
 
-    status = SparkGlm52ServiceValidateRuntime(service);
+    status = SparkServiceValidateRuntime(service);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1034,7 +1034,7 @@ SparkStatus SparkServiceSubmitTokenIds(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkGlm52ServiceReserveRequestMap(
+    status = SparkServiceReserveRequestMap(
         service,
         request->client_id,
         request->client_request_id,
@@ -1070,16 +1070,16 @@ SparkStatus SparkServiceSubmitTokenIds(
     request_map->serving_request_id = serving_result.request_id;
     request_map->sequence_id = serving_result.sequence_id;
     request_map->serving_request_handle = serving_result.request_handle;
-    SparkGlm52ServiceInsertRequestMapHash(service, request_map);
-    client_session = SparkGlm52ServiceFindClient(service, request->client_id);
+    SparkServiceInsertRequestMapHash(service, request_map);
+    client_session = SparkServiceFindClient(service, request->client_id);
     if (client_session != 0)
     {
         client_session->accepted_request_count += 1u;
     }
     service->stats.submitted_request_count += 1u;
     service->stats.accepted_request_count += 1u;
-    SparkGlm52ServiceFillSubmitResult(request_map, &serving_result, result);
-    SparkGlm52ServiceRefreshStats(service);
+    SparkServiceFillSubmitResult(request_map, &serving_result, result);
+    SparkServiceRefreshStats(service);
     return SPARK_STATUS_OK;
 }
 
@@ -1094,7 +1094,7 @@ SparkStatus SparkServiceSubmitText(
     SparkServiceClientSession *client_session;
     SparkStatus status;
 
-    status = SparkGlm52ServiceValidateRuntime(service);
+    status = SparkServiceValidateRuntime(service);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1109,7 +1109,7 @@ SparkStatus SparkServiceSubmitText(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    status = SparkGlm52ServiceReserveRequestMap(
+    status = SparkServiceReserveRequestMap(
         service,
         request->client_id,
         request->client_request_id,
@@ -1146,16 +1146,16 @@ SparkStatus SparkServiceSubmitText(
     request_map->serving_request_id = serving_result.request_id;
     request_map->sequence_id = serving_result.sequence_id;
     request_map->serving_request_handle = serving_result.request_handle;
-    SparkGlm52ServiceInsertRequestMapHash(service, request_map);
-    client_session = SparkGlm52ServiceFindClient(service, request->client_id);
+    SparkServiceInsertRequestMapHash(service, request_map);
+    client_session = SparkServiceFindClient(service, request->client_id);
     if (client_session != 0)
     {
         client_session->accepted_request_count += 1u;
     }
     service->stats.submitted_request_count += 1u;
     service->stats.accepted_request_count += 1u;
-    SparkGlm52ServiceFillSubmitResult(request_map, &serving_result, result);
-    SparkGlm52ServiceRefreshStats(service);
+    SparkServiceFillSubmitResult(request_map, &serving_result, result);
+    SparkServiceRefreshStats(service);
     return SPARK_STATUS_OK;
 }
 
@@ -1361,12 +1361,12 @@ SparkStatus SparkServiceCancelRequest(
     SparkServiceRequestMap *request_map;
     SparkStatus status;
 
-    status = SparkGlm52ServiceValidateRuntime(service);
+    status = SparkServiceValidateRuntime(service);
     if (status != SPARK_STATUS_OK)
     {
         return status;
     }
-    request_map = SparkGlm52ServiceFindRequestMapByClientRequest(
+    request_map = SparkServiceFindRequestMapByClientRequest(
         service,
         client_id,
         client_request_id);
@@ -1382,7 +1382,7 @@ SparkStatus SparkServiceCancelRequest(
         return status;
     }
     request_map->state = SPARK_SERVICE_REQUEST_STATE_CANCELLED;
-    SparkGlm52ServiceRefreshStats(service);
+    SparkServiceRefreshStats(service);
     return SPARK_STATUS_OK;
 }
 
@@ -1396,7 +1396,7 @@ SparkStatus SparkServicePump(
     SparkStatus drain_status;
     SparkServingStats serving_stats;
 
-    status = SparkGlm52ServiceValidateRuntime(service);
+    status = SparkServiceValidateRuntime(service);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1404,11 +1404,11 @@ SparkStatus SparkServicePump(
     if ((service->flags &
             SPARK_SERVICE_CONFIGURATION_FLAG_DRAIN_ENGINE_EVENTS_BEFORE_PUMP) != 0u)
     {
-        drain_status = SparkGlm52ServiceDrainServingEvents(service);
+        drain_status = SparkServiceDrainServingEvents(service);
         if (drain_status != SPARK_STATUS_OK && drain_status != SPARK_STATUS_BUSY)
         {
             service->stats.last_status = drain_status;
-            SparkGlm52ServiceRefreshStats(service);
+            SparkServiceRefreshStats(service);
             if (stats_out != 0)
             {
                 *stats_out = service->stats;
@@ -1426,7 +1426,7 @@ SparkStatus SparkServicePump(
         dispatch_steps,
         &serving_stats);
     service->stats.engine_pump_count += 1u;
-    drain_status = SparkGlm52ServiceDrainServingEvents(service);
+    drain_status = SparkServiceDrainServingEvents(service);
     if (drain_status != SPARK_STATUS_OK && drain_status != SPARK_STATUS_BUSY)
     {
         status = drain_status;
@@ -1437,7 +1437,7 @@ SparkStatus SparkServicePump(
         status = SPARK_STATUS_OK;
     }
     service->stats.last_status = status;
-    SparkGlm52ServiceRefreshStats(service);
+    SparkServiceRefreshStats(service);
     if (stats_out != 0)
     {
         *stats_out = service->stats;
@@ -1451,7 +1451,7 @@ SparkStatus SparkServicePopEvent(
 {
     SparkStatus status;
 
-    status = SparkGlm52ServiceValidateRuntime(service);
+    status = SparkServiceValidateRuntime(service);
     if (status != SPARK_STATUS_OK || event_out == 0)
     {
         return status == SPARK_STATUS_OK ? SPARK_STATUS_INVALID_ARGUMENT : status;
@@ -1461,14 +1461,14 @@ SparkStatus SparkServicePopEvent(
         return SPARK_STATUS_NOT_FOUND;
     }
     *event_out = service->event_ring[service->event_read_index];
-    SparkGlm52ServiceInitializeEvent(&service->event_ring[service->event_read_index]);
+    SparkServiceInitializeEvent(&service->event_ring[service->event_read_index]);
     service->event_read_index += 1u;
     if (service->event_read_index == service->event_ring_capacity)
     {
         service->event_read_index = 0u;
     }
     service->event_count -= 1u;
-    SparkGlm52ServiceRefreshStats(service);
+    SparkServiceRefreshStats(service);
     return SPARK_STATUS_OK;
 }
 
@@ -1478,12 +1478,12 @@ SparkStatus SparkServiceGetStats(
 {
     SparkStatus status;
 
-    status = SparkGlm52ServiceValidateRuntime(service);
+    status = SparkServiceValidateRuntime(service);
     if (status != SPARK_STATUS_OK || stats_out == 0)
     {
         return status == SPARK_STATUS_OK ? SPARK_STATUS_INVALID_ARGUMENT : status;
     }
-    SparkGlm52ServiceRefreshStats(service);
+    SparkServiceRefreshStats(service);
     *stats_out = service->stats;
     return SPARK_STATUS_OK;
 }
