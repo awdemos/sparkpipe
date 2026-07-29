@@ -31,24 +31,25 @@ gateway/node. The naming law and the size gate enforce the edges' cost.
    residual question is only whether the engine↔pump seam carries
    duplicate state bookkeeping; audit by reading the 5 call sites.
    Stake revised: ~−0.3K at most.
-2. **`api/service.c` (1,489 lines): residentd's private request layer.**
-   Single consumer. QUESTION: is the layer earning its API surface, or
-   is it residentd's internals wearing a module costume? Stake: −0.5K
-   by merge, plus one fewer public header.
-3. **`ring/transport/tcp.cu` (1,225 lines): the fallback nobody runs.**
-   sparkring is RDMA end-to-end. QUESTION: does TCP serve anything but
-   development on non-RDMA hosts? If dev-only: demote behind a build
-   flag or delete and document the loss. Stake: −1.2K.
-4. **`tools/sparkpipe_glm52_{pipesim,batchplane_model,kv_jit_budget}` +
-   `family_cost_model`: analyses, not product.** They answer questions;
-   they do not serve tokens. QUESTION for the metric's owner: reclassify
-   as studies (test-adjacent, exempt) or keep as product? Stake: ~2.5K
-   off the denominator by honest reclassification.
-5. **node duplication between rank_daemon and residentd** (3.1K + 2.7K,
-   near-identical include sets): the two-process split is intentional
-   (residency survives pump restarts) — but their setup/teardown tiers
-   look twinned. QUESTION: how many lines are the same init written
-   twice? Measure with a similarity pass before touching.
+2. **`api/service.c`: RESOLVED — keeper.** Reading the vocabulary
+   settled it: ClientSession, FrameHeader, EventFrame, Cancel,
+   Disconnect, GetStats — this is residentd's control-plane wire
+   protocol, a real domain distinct from request.c's user-request
+   slots. Tested by its own gate. Future nicety only: a name that says
+   protocol.
+3. **`ring/transport/tcp.cu` (1,225 lines): DORMANT — decision is
+   ct's.** No in-repo selector reaches it and no test exercises it;
+   only the contract string in the header names it. Deployment configs
+   outside the repo may still select it. Delete (stake −1.2K) or keep
+   as the documented non-RDMA bring-up path — owner's call.
+4. **Analysis tools: RESOLVED — reclassified.** Ruling: studies and
+   analyses are the tests category. The four analysis binaries and the
+   K3 expert-subspace study live in tests/studies/ now; the Makefile
+   follows; the denominator dropped 1,241 lines the honest way.
+5. **node twins: RESOLVED — not worth its plumbing.** The similarity
+   pass found 5 twinned functions totaling 86 lines above 0.70. A
+   shared unit would cost more indirection than it saves. The twins are
+   shallow; the two-process split stands documented and untouched.
 6. **`deployment/` (2.9K)**: release tooling. Earns its keep only if
    releases use it; audit at first release.
 
