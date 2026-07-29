@@ -60,7 +60,30 @@ metric's numerator moves first.
    floor ~60K lines (~500K tokens - whole codebase in one large-context
    window, which is the point); the <100K-token ideal implies a different
    product.
-1. **The drafter seam - measured, and it is a rewrite, not an extraction**
+1. **The envelope, designed (2026-07-29, third measurement pass).** Two
+   customers fell without it: speculation.c was the drafter's unwired
+   dispatch policy (877L, zero callers) - homed into the drafter
+   module; the gateway's 43 Glm52Gateway fns were 39 parts costume,
+   4 parts payload. What remains is the true core and one design:
+
+   THE SLOT MODEL-STATE ENVELOPE. request.c's slot struct carries
+   glm-typed draft/verify fields; 30 functions touch them; 8 are
+   zero-closure but ALL are bound by the slot type living inside
+   request.c. Design: the slot gains one member -
+   `SparkRequestModelState { alignas(16) uint8_t bytes[SPARK_REQUEST_MODEL_STATE_BYTES]; }`
+   - and the glm module defines the real struct with a static_assert
+   fit, owning the 12 seam entries as neutral externs
+   (SparkRequestApiModelSlotCanSpeculate, ...PrepareDraft,
+   ...PendingTokens, ...ScheduleVerifyBatch, ...FinishVerify,
+   ...DiscardDraft, ...Release, ...RetryCounters x2, ...DraftAccess x3)
+   plus the schedulers' remaining touches as accessor calls. One
+   surgery, ~182 refs in request.c + the stage FrameContext's 149+96
+   by the same stroke (its dspark tap-plan array and flashinfer recipe
+   become the stage's model-frame blob). Sequencing: slot envelope
+   first (request), frame envelope second (stage), http_server's 4
+   payload fns ride whichever side owns them.
+
+1b. **The old scare figure, retired**
    (map 2026-07-29, sharpened same day): the EXTERNAL request API is
    already fully neutral - zero glm-named functions called from outside
    request.c, header 537 lines / 2 refs. The debt is implementation-
