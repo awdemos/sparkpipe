@@ -53,6 +53,10 @@ leaves silently.
   bring-up.
 - **P2: async release FIFO wire verification.** Fire-and-forget release
   assumes resident FIFO ordering; verify on the wire, not in the comment.
+- **Consecutive-token routing overlap (DSpark at B=1).** If adjacent
+  positions route to overlapping experts, verify rows share weight reads
+  and B=1 speculation turns real (~x1.5 hypothesis). Measure from route
+  logs at bring-up.
 - **Route-log collection deploy.** 24-byte wire format and the
   Bonferroni-corrected analysis exist; the collector runs when Sparks are
   back (August window).

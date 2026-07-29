@@ -128,3 +128,21 @@ Prefill agg tok/s (2048 chunks): PP16 11.8K > TP2xPP8 10.2K > TP4xPP4 6.1K
 DSpark: ~x1.9 effective at full sweep (verify rows ride paid weight reads);
   ~x1.0 at B=1 on top-8-of-384. Measured column replaces all of this at
   bring-up.
+
+
+## Expert precombination study (measured, 2026-07-29)
+
+Kimi-K3 HF weights, layer 5, w2, 16 experts, MXFP4 dequantized, sketch
+rank 256/expert. Shared-basis hypothesis W_e ~ A C_e B + delta: REJECTED.
+  shared MEAN energy: 6.3% (min 6.0%)
+  shared COLUMN space: r=64 6.9% / r=128 13.1% / r=256 24.2% /
+                       r=512 42.3% / r=1024 67.6%   (rows: same +1-2%)
+  single-expert own spectrum: top-64 7.9%, top-512 46.1%
+The cross-expert shared basis at r=512 captures LESS than one expert's
+own top-512: column spaces are mutually ~random. MXFP4-native training
+left no linear redundancy to precombine. Bytes floor stands at ~59
+GB/token B=1 (moe_intermediate corrected 4096 -> 3072 from config.json;
+expert = 35 MB; all decode estimates improve ~13%). Config also confirms
+every serving-tier geometry number our drift gates hold: hidden 7168,
+93 layers, MLA schedule [every 4th + last], kda 96x128, conv 4,
+kv_lora 512, rope 64.
