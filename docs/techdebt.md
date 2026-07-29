@@ -38,7 +38,12 @@ metric's numerator moves first.
    window, which is the point); the <100K-token ideal implies a different
    product.
 1. **The drafter seam - measured, and it is a rewrite, not an extraction**
-   (map 2026-07-29): 174 of 176 functions in api/request.c touch
+   (map 2026-07-29, sharpened same day): the EXTERNAL request API is
+   already fully neutral - zero glm-named functions called from outside
+   request.c, header 537 lines / 2 refs. The debt is implementation-
+   internal: of 157 glm-NAMED internal functions, 129 had model-agnostic
+   bodies and are renamed already; 28 carry real glm payload (dspark
+   plans, verify wiring) and await the envelope. 174 of 176 functions in api/request.c touch
    glm/dspark symbols - 7,059 of 7,205 lines. The surgery re-founds the
    request API on neutral dispatch/verify types with a model payload
    envelope; glm's wire builders become module source behind the linker
@@ -57,9 +62,10 @@ metric's numerator moves first.
 4. **Seam-include tier** (~600 refs: http_server 224, prefix_cache 214,
    scheduler 174 are mostly glm header includes + constants that fall
    out once (1) and (2) land).
-5. **api/compat_api.c: 833-line cut candidate.** No OpenAI-style routes;
-   sole reference is http_gateway.h. Confirm no external caller, then
-   delete whole. (Decision: ct.)
+5. **API compatibility surfaces (KEEPER, and an endpoint feature).**
+   compat_api.c is the chat-template/text-request foundation. Endpoint:
+   OpenAI-compatible and Anthropic-Messages-compatible wire APIs on the
+   gateway, so existing clients point at sparkpipe unmodified.
 6. Dead complexity: 4 "was deleted" Makefile error stanzas,
    legacy_entry.cu (42 lines), --dspark compat no-op flag.
 7. B-tier templates (LmHead 0.93x5, LmDenseMlp 0.98x4, expert_queue

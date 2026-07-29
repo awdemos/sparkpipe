@@ -54,7 +54,7 @@ GLM_BUDGET = {
     "api/compat_api.c": (136, "compat surface; template data"),
     "api/gateway/http_server.c": (224, "seam includes"),
     "api/http_gateway.c": (49, "seam includes"),
-    "api/request.c": (637, "drafter wiring (glm data); kv-cache seam (A3)"),
+    "api/request.c": (182, "drafter wiring (glm data); kv-cache seam (A3)"),
     "api/service.c": (105, "seam includes"),
     "api/serving_engine.c": (138, "seam includes"),
     "cache/kv_cache.c": (9, "kv-cache seam (A3)"),
