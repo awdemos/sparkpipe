@@ -141,7 +141,7 @@ typedef struct SparkRingServiceBackendState
 	SparkGlm52DsparkSpeculator dspark_speculator;
 	SparkGlm52DsparkModelContract dspark_model_contract;
 	SparkGlm52DsparkSequenceState *dspark_sequence_states;
-	uint32_t dspark_enabled;
+	uint32_t speculation_enabled;
 	uint32_t mtp_enabled;
 	uint32_t kv_logical_block_capacity;
 	uint32_t kv_physical_block_capacity;
@@ -2436,7 +2436,7 @@ static SparkStatus SparkRingServiceBackendInitializeDspark(
 	SparkGlm52DsparkSpeculatorConfiguration configuration;
 	SparkStatus status;
 
-	if (state->dspark_enabled == 0u)
+	if (state->speculation_enabled == 0u)
 		return SPARK_STATUS_OK;
 	status = SparkGlm52DsparkBuildDefaultModelContract(
 		&state->dspark_model_contract);
@@ -2478,7 +2478,7 @@ static SparkStatus SparkRingServiceBackendInitializeRequestApi(
 		request_api_configuration.configuration_flags |=
 			SPARK_REQUEST_API_CONFIGURATION_FLAG_MTP_COMMIT |
 			SPARK_REQUEST_API_CONFIGURATION_FLAG_MTP_FORCE_ENABLE;
-	if (state->dspark_enabled != 0u)
+	if (state->speculation_enabled != 0u)
 	{
 		request_api_configuration.configuration_flags |=
 			SPARK_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE;
@@ -3002,7 +3002,7 @@ static SparkStatus SparkRingServiceBackendInitialize(
 	state->final_event_listen_fd = -1;
 	state->final_event_socket_fd = -1;
 	state->work_output_socket_fd = -1;
-	state->dspark_enabled = (configuration->flags &
+	state->speculation_enabled = (configuration->flags &
 		SPARK_SERVICE_BACKEND_CONFIGURATION_FLAG_DSPARK) != 0u;
 	state->mtp_enabled = (configuration->flags &
 		SPARK_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP) != 0u;
@@ -3102,7 +3102,7 @@ static SparkStatus SparkRingServiceBackendInitialize(
 		"cudagraph_padding=on measured_buckets=on\n",
 		getenv("SPARKPIPE_DISABLE_PREFIX_REUSE") == 0 ? "on" : "OFF",
 		getenv("SPARKPIPE_RELEASE_SYNC_AWAIT") == 0 ? "async" : "SYNC",
-		state->dspark_enabled != 0u ? "on" : "OFF",
+		state->speculation_enabled != 0u ? "on" : "OFF",
 		state->mtp_enabled != 0u ? "on" : "off(opt-in)");
 	return SPARK_STATUS_OK;
 }
@@ -3171,7 +3171,7 @@ static SparkStatus SparkRingServiceBackendGetView(
 	view->transport_capability_flags =
 		state->transport_library.transport_interface.capability_flags;
 	view->speculation_configuration_flags =
-		(state->dspark_enabled != 0u ?
+		(state->speculation_enabled != 0u ?
 			SPARK_SERVICE_BACKEND_CONFIGURATION_FLAG_DSPARK : 0u) |
 		(state->mtp_enabled != 0u ?
 			SPARK_SERVICE_BACKEND_CONFIGURATION_FLAG_MTP : 0u);

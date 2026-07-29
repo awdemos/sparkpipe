@@ -52,7 +52,7 @@ GLM_BUDGET = {
     "serving/spark_ring_node_context_builder.c": (2, "seam includes"),
     "serving/spark_service_backend.c": (2, "seam includes"),
     "api/compat_api.c": (136, "compat surface; template data"),
-    "api/gateway/http_server.c": (79, "seam includes"),
+    "api/gateway/http_server.c": (4, "seam includes"),
     "api/http_gateway.c": (49, "seam includes"),
     "api/request.c": (62, "drafter wiring (glm data); kv-cache seam (A3)"),
     "api/service.c": (105, "seam includes"),

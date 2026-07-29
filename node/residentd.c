@@ -89,7 +89,7 @@ typedef struct SparkCudaResidentdConfiguration
     uint32_t kv_store_lookahead_packet_count;
     uint32_t port_base;
     uint32_t model_quantization_mode;
-    uint32_t dspark_enabled;
+    uint32_t speculation_enabled;
 	uint32_t mtp_enabled;
     uint32_t dspark_maximum_context_token_count;
     uint64_t cuda_generation;
@@ -303,7 +303,7 @@ static const SparkOption spark_cuda_residentd_options[] =
 	{ "--driver-so", SPARK_OPTION_STRING, -10, (uint16_t)offsetof(SparkCudaResidentdConfiguration, driver_path), SPARK_OPTION_NO_SET_FLAG },
 	{ "--node-context-builder-so", SPARK_OPTION_STRING, -11, (uint16_t)offsetof(SparkCudaResidentdConfiguration, node_context_builder_shared_object_path), SPARK_OPTION_NO_SET_FLAG },
 	{ "--embedding-pack", SPARK_OPTION_STRING, -12, (uint16_t)offsetof(SparkCudaResidentdConfiguration, embedding_pack_path), SPARK_OPTION_NO_SET_FLAG },
-	{ "--dspark", SPARK_OPTION_FLAG, -1, (uint16_t)offsetof(SparkCudaResidentdConfiguration, dspark_enabled), SPARK_OPTION_NO_SET_FLAG },
+	{ "--dspark", SPARK_OPTION_FLAG, -1, (uint16_t)offsetof(SparkCudaResidentdConfiguration, speculation_enabled), SPARK_OPTION_NO_SET_FLAG },
 	{ "--mtp", SPARK_OPTION_FLAG, -1, (uint16_t)offsetof(SparkCudaResidentdConfiguration, mtp_enabled), SPARK_OPTION_NO_SET_FLAG },
 	{ "--dspark-safetensors", SPARK_OPTION_STRING, -15, (uint16_t)offsetof(SparkCudaResidentdConfiguration, dspark_safetensors_path), SPARK_OPTION_NO_SET_FLAG },
 	{ "--dspark-manifest", SPARK_OPTION_STRING, -17, (uint16_t)offsetof(SparkCudaResidentdConfiguration, dspark_manifest_path), SPARK_OPTION_NO_SET_FLAG },
@@ -390,7 +390,7 @@ static SparkStatus SparkCudaResidentdValidateConfiguration(
             configuration->rank_index);
         configuration->socket_path = default_socket_path;
     }
-    if (configuration->dspark_enabled != 0u &&
+    if (configuration->speculation_enabled != 0u &&
         configuration->rank_index == SPARK_RING_RUNTIME_STAGE_COUNT - 1u &&
         (configuration->dspark_manifest_path == 0 ||
          configuration->dspark_config_path == 0 ||
@@ -931,7 +931,7 @@ static SparkStatus SparkCudaResidentdBuildNodeContext(
     builder_configuration.stagepack_root = configuration->stagepack_root;
     builder_configuration.embedding_pack_path = configuration->embedding_pack_path;
     builder_configuration.node_target = configuration->node_target;
-    if (configuration->dspark_enabled != 0u)
+    if (configuration->speculation_enabled != 0u)
     {
         builder_configuration.flags |=
             SPARK_RING_NODE_CONTEXT_BUILDER_CONFIGURATION_FLAG_DSPARK;
