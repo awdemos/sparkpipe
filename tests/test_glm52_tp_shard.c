@@ -19,7 +19,7 @@ static void SparkTestTpShardSpec(SparkGlm52StagePackTensorSpec *spec,const char 
 	spec->dtype = "BF16";
 }
 
-static void SparkTestTpShardShape(SparkGlm52TpShapeDescriptor *shape,uint32_t degree,uint32_t rank)
+static void SparkTestTpShardShape(SparkTpShapeDescriptor *shape,uint32_t degree,uint32_t rank)
 {
 	memset(shape,0,sizeof(*shape));
 	shape->abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
@@ -29,10 +29,10 @@ static void SparkTestTpShardShape(SparkGlm52TpShapeDescriptor *shape,uint32_t de
 	shape->pp_stage_index = 0u;
 }
 
-static void SparkTestTpShardGeometry(SparkGlm52TpModelGeometry *geometry)
+static void SparkTestTpShardGeometry(SparkTpModelGeometry *geometry)
 {
 	memset(geometry,0,sizeof(*geometry));
-	SparkGlm52TpModelGeometryFromModel(geometry);
+	SparkTpModelGeometryFromModel(geometry);
 }
 
 static void SparkTestTpShardClassification(void)
@@ -68,7 +68,7 @@ static void SparkTestTpShardClassification(void)
 static void SparkTestTpShardTilingExactness(void)
 {
 	SparkGlm52StagePackTensorSpec spec;
-	SparkGlm52TpModelGeometry geometry;
+	SparkTpModelGeometry geometry;
 	uint64_t next_offset,total_bytes,full_bytes;
 	uint32_t rank_index;
 	SparkTestTpShardSpec(&spec,"model.layers.3.self_attn.q_b_proj.weight",16384u,1536u);
@@ -78,8 +78,8 @@ static void SparkTestTpShardTilingExactness(void)
 	total_bytes = 0u;
 	for (rank_index = 0u; rank_index < 4u; ++rank_index)
 	{
-		SparkGlm52TpShapeDescriptor shape;
-		SparkGlm52TpShardView view;
+		SparkTpShapeDescriptor shape;
+		SparkTpShardView view;
 		SparkTestTpShardShape(&shape,4u,rank_index);
 		assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_OK);
 		assert(view.split_dimension == 0u);
@@ -98,9 +98,9 @@ static void SparkTestTpShardTilingExactness(void)
 static void SparkTestTpShardInputDimHeads(void)
 {
 	SparkGlm52StagePackTensorSpec spec;
-	SparkGlm52TpShapeDescriptor shape;
-	SparkGlm52TpModelGeometry geometry;
-	SparkGlm52TpShardView view;
+	SparkTpShapeDescriptor shape;
+	SparkTpModelGeometry geometry;
+	SparkTpShardView view;
 	SparkTestTpShardSpec(&spec,"model.layers.3.self_attn.o_proj.weight",SPARK_GLM52_MODEL_HIDDEN_DIMENSION,SPARK_GLM52_MODEL_ATTENTION_PROJECTION_DIMENSION);
 	SparkTestTpShardShape(&shape,8u,5u);
 	SparkTestTpShardGeometry(&geometry);
@@ -116,9 +116,9 @@ static void SparkTestTpShardInputDimHeads(void)
 static void SparkTestTpShardReplicated(void)
 {
 	SparkGlm52StagePackTensorSpec spec;
-	SparkGlm52TpShapeDescriptor shape;
-	SparkGlm52TpModelGeometry geometry;
-	SparkGlm52TpShardView view;
+	SparkTpShapeDescriptor shape;
+	SparkTpModelGeometry geometry;
+	SparkTpShardView view;
 	SparkTestTpShardSpec(&spec,"model.layers.3.self_attn.kv_a_proj_with_mqa.weight",SPARK_GLM52_MODEL_KV_A_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
 	SparkTestTpShardShape(&shape,4u,2u);
 	SparkTestTpShardGeometry(&geometry);
@@ -133,9 +133,9 @@ static void SparkTestTpShardReplicated(void)
 static void SparkTestTpShardDegreeOneCompat(void)
 {
 	SparkGlm52StagePackTensorSpec spec;
-	SparkGlm52TpShapeDescriptor shape;
-	SparkGlm52TpModelGeometry geometry;
-	SparkGlm52TpShardView view;
+	SparkTpShapeDescriptor shape;
+	SparkTpModelGeometry geometry;
+	SparkTpShardView view;
 	SparkTestTpShardSpec(&spec,"some.future.tensor.weight",100u,200u);
 	SparkTestTpShardShape(&shape,1u,0u);
 	SparkTestTpShardGeometry(&geometry);
@@ -146,9 +146,9 @@ static void SparkTestTpShardDegreeOneCompat(void)
 static void SparkTestTpShardFailsClosed(void)
 {
 	SparkGlm52StagePackTensorSpec spec;
-	SparkGlm52TpShapeDescriptor shape;
-	SparkGlm52TpModelGeometry geometry;
-	SparkGlm52TpShardView view;
+	SparkTpShapeDescriptor shape;
+	SparkTpModelGeometry geometry;
+	SparkTpShardView view;
 	SparkTestTpShardSpec(&spec,"model.layers.0.mlp.gate_proj.weight",SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
 	SparkTestTpShardGeometry(&geometry);
 	// Degrees that do not divide the model are rejected outright.
@@ -158,7 +158,7 @@ static void SparkTestTpShardFailsClosed(void)
 	SparkTestTpShardShape(&shape,16u,0u);
 	{
 		SparkGlm52StagePackTensorSpec sixteen_spec;
-		SparkGlm52TpShardView sixteen_view;
+		SparkTpShardView sixteen_view;
 		SparkTestTpShardSpec(&sixteen_spec,"model.layers.0.mlp.gate_proj.weight",SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION,SPARK_GLM52_MODEL_HIDDEN_DIMENSION);
 		assert(SparkGlm52TpShardComputeView(&sixteen_spec,&shape,&geometry,&sixteen_view) == SPARK_STATUS_OK);
 		assert(sixteen_view.element_extent == 768u);
@@ -188,9 +188,9 @@ static void SparkTestTpShardFailsClosed(void)
 static void SparkTestTpShardGeometryHash(void)
 {
 	SparkGlm52StagePackTensorSpec spec;
-	SparkGlm52TpShapeDescriptor shape_a,shape_b;
-	SparkGlm52TpModelGeometry geometry;
-	SparkGlm52TpShardView view_a,view_b;
+	SparkTpShapeDescriptor shape_a,shape_b;
+	SparkTpModelGeometry geometry;
+	SparkTpShardView view_a,view_b;
 	uint64_t hash_a,hash_b,hash_a_repeat;
 	SparkTestTpShardSpec(&spec,"model.layers.3.self_attn.q_b_proj.weight",16384u,1536u);
 	SparkTestTpShardGeometry(&geometry);
@@ -265,8 +265,8 @@ static void SparkTestTpShardWriteFixture(uint16_t *gate,uint32_t gate_elements,u
 static void SparkTestTpShardRoundTrip(void)
 {
 	SparkGlm52StagePackTensorSpec gate_spec,down_spec;
-	SparkGlm52TpModelGeometry geometry;
-	SparkGlm52TpShardView view;
+	SparkTpModelGeometry geometry;
+	SparkTpShardView view;
 	uint16_t gate[32],down[32];
 	uint16_t shard_a[16],shard_b[16],rebuilt[32];
 	uint32_t rank_index,row_index,element_index;
@@ -279,7 +279,7 @@ static void SparkTestTpShardRoundTrip(void)
 	// 4..7, and the concatenation is the original tensor.
 	for (rank_index = 0u; rank_index < 2u; ++rank_index)
 	{
-		SparkGlm52TpShapeDescriptor shape;
+		SparkTpShapeDescriptor shape;
 		uint16_t *target = rank_index == 0u ? shard_a : shard_b;
 		SparkTestTpShardShape(&shape,2u,rank_index);
 		assert(SparkGlm52TpShardReadTensor(SPARK_TEST_TP_SHARD_ROOT,&gate_spec,&shape,&geometry,target,16u * sizeof(uint16_t),&view) == SPARK_STATUS_OK);
@@ -292,7 +292,7 @@ static void SparkTestTpShardRoundTrip(void)
 	// outer row, and interleaving the chunks rebuilds the original rows.
 	for (rank_index = 0u; rank_index < 2u; ++rank_index)
 	{
-		SparkGlm52TpShapeDescriptor shape;
+		SparkTpShapeDescriptor shape;
 		uint16_t *target = rank_index == 0u ? shard_a : shard_b;
 		SparkTestTpShardShape(&shape,2u,rank_index);
 		assert(SparkGlm52TpShardReadTensor(SPARK_TEST_TP_SHARD_ROOT,&down_spec,&shape,&geometry,target,16u * sizeof(uint16_t),&view) == SPARK_STATUS_OK);
@@ -308,14 +308,14 @@ static void SparkTestTpShardRoundTrip(void)
 	assert(memcmp(rebuilt,down,sizeof(down)) == 0);
 	// Degree one returns the whole tensor from the same entry point.
 	{
-		SparkGlm52TpShapeDescriptor shape;
+		SparkTpShapeDescriptor shape;
 		SparkTestTpShardShape(&shape,1u,0u);
 		assert(SparkGlm52TpShardReadTensor(SPARK_TEST_TP_SHARD_ROOT,&gate_spec,&shape,&geometry,rebuilt,32u * sizeof(uint16_t),&view) == SPARK_STATUS_OK);
 		assert(memcmp(rebuilt,gate,sizeof(gate)) == 0);
 	}
 	// A wrong destination size fails closed before any byte is read.
 	{
-		SparkGlm52TpShapeDescriptor shape;
+		SparkTpShapeDescriptor shape;
 		SparkTestTpShardShape(&shape,2u,0u);
 		assert(SparkGlm52TpShardReadTensor(SPARK_TEST_TP_SHARD_ROOT,&gate_spec,&shape,&geometry,shard_a,15u * sizeof(uint16_t),&view) == SPARK_STATUS_INVALID_ARGUMENT);
 	}
@@ -325,8 +325,8 @@ static void SparkTestTpShardRoundTrip(void)
 // hardcodes, proving the initializer and the authoritative constants agree.
 static void SparkTestTpShardModelGeometry(void)
 {
-	SparkGlm52TpModelGeometry from_model,reference;
-	SparkGlm52TpModelGeometryFromModel(&from_model);
+	SparkTpModelGeometry from_model,reference;
+	SparkTpModelGeometryFromModel(&from_model);
 	SparkTestTpShardGeometry(&reference);
 	assert(memcmp(&from_model,&reference,sizeof(reference)) == 0);
 }

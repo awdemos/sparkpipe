@@ -55,7 +55,7 @@ static SparkStatus SparkGlm52StagePlanNormalizeQuantizationMode(
         return SPARK_STATUS_OK;
     }
     if (quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-        quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
+        quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
     {
         *normalized_quantization_mode_out = quantization_mode;
         return SPARK_STATUS_OK;
@@ -868,7 +868,7 @@ SparkStatus SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
         batch_bucket >= SPARK_STAGE_PLAN_BUCKET_B64 &&
         SparkStagePlanBatchBucketIsSupported(batch_bucket) != 0u &&
         (normalized_quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-         normalized_quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
+         normalized_quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT))
     {
         return SparkGlm52StagePlanBuildMeasuredB64RingExact(
             stage_plan,

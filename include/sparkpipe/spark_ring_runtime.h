@@ -204,7 +204,7 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
 // fixed host table by linear node index, so shapes needing more nodes than
 // the table lists fail closed until the table grows with the hardware.
 SparkStatus SparkRingRuntimeBuildShapeRankPlan(
-    const SparkGlm52TpShapeDescriptor *shape,
+    const SparkTpShapeDescriptor *shape,
     uint32_t logical_lane_capacity,
     uint32_t port_base,
     uint32_t tp_port_base,

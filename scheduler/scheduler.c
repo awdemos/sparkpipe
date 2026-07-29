@@ -17,7 +17,7 @@ static uint32_t SparkSchedulerQuantizationModeIsSupported(
 {
     return quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_AUTO ||
         quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-        quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT ||
+        quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
 }
 
 static uint32_t SparkSchedulerMinimumU32(

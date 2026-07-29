@@ -295,13 +295,6 @@ static SparkStatus SparkGlm52StagePackValidateQuantizedContract(
 	return status;
 }
 
-	const char *stagepack_root,
-{
-	return SparkGlm52StagePackValidateQuantizedContract(
-		stagepack_root,
-		"format",
-}
-
 SparkStatus SparkGlm52StagePackValidateNvfp4Contract(
 	const char *stagepack_root,
 	const char *nvfp4_pack_root)

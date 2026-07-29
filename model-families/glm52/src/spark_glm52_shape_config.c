@@ -21,15 +21,15 @@ static uint64_t SparkGlm52ShapeHashBytes(uint64_t hash,const void *data,uint32_t
 }
 
 SparkStatus SparkGlm52ShapeDeriveNodeConfig(
-	const SparkGlm52TpShapeDescriptor *shape,
-	const SparkGlm52TpModelGeometry *geometry,
+	const SparkTpShapeDescriptor *shape,
+	const SparkTpModelGeometry *geometry,
 	const SparkGlm52ShapeModelInputs *inputs,
 	SparkGlm52ShapeNodeConfig *config_out)
 {
 	uint64_t hash;
 	if (shape == 0 || geometry == 0 || inputs == 0 || config_out == 0 ||
-		shape->abi_version != SPARK_GLM52_TP_SHARD_ABI_VERSION ||
-		geometry->abi_version != SPARK_GLM52_TP_SHARD_ABI_VERSION ||
+		shape->abi_version != SPARK_TP_SHARD_ABI_VERSION ||
+		geometry->abi_version != SPARK_TP_SHARD_ABI_VERSION ||
 		inputs->abi_version != SPARK_GLM52_SHAPE_CONFIG_ABI_VERSION)
 		return SPARK_STATUS_INVALID_ARGUMENT;
 	if (shape->tp_degree != 1u && shape->tp_degree != 2u &&
@@ -90,7 +90,7 @@ static SparkStatus SparkGlm52ShapeAppendShardFile(FILE *data_stream,const void *
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus SparkGlm52ShapeAppendIndexEntry(FILE *index_stream,const SparkGlm52StagePackTensorSpec *spec,const SparkGlm52TpShardView *view,uint64_t file_offset,uint32_t first_entry)
+static SparkStatus SparkGlm52ShapeAppendIndexEntry(FILE *index_stream,const SparkGlm52StagePackTensorSpec *spec,const SparkTpShardView *view,uint64_t file_offset,uint32_t first_entry)
 {
 	uint32_t dimension_index;
 	if (fprintf(index_stream,"%s\n    \"%s\": {\n      \"file\": \"node_tensors.bin\",\n      \"dtype\": \"%s\",\n      \"shape\": [",
@@ -113,8 +113,8 @@ static SparkStatus SparkGlm52ShapeAppendIndexEntry(FILE *index_stream,const Spar
 SparkStatus SparkGlm52ShapeWriteNodeStagePack(
 	const char *full_stagepack_root,
 	const char *node_stagepack_root,
-	const SparkGlm52TpShapeDescriptor *shape,
-	const SparkGlm52TpModelGeometry *geometry,
+	const SparkTpShapeDescriptor *shape,
+	const SparkTpModelGeometry *geometry,
 	const SparkGlm52StagePackTensorSpec *specs,
 	uint32_t spec_count,
 	void *scratch,
@@ -152,7 +152,7 @@ SparkStatus SparkGlm52ShapeWriteNodeStagePack(
 	file_offset = 0u;
 	for (spec_index = 0u; status == SPARK_STATUS_OK && spec_index < spec_count; ++spec_index)
 	{
-		SparkGlm52TpShardView view;
+		SparkTpShardView view;
 		uint64_t entry_offset = file_offset;
 		status = SparkGlm52TpShardComputeView(&specs[spec_index],shape,geometry,&view);
 		if (status != SPARK_STATUS_OK)

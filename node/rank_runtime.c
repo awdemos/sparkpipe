@@ -75,9 +75,37 @@ SparkStatus SparkRingRuntimeParseQuantizationMode(
     else if (strcmp(name,"nvfp4") == 0)
         *quantization_mode_out =
             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
+    else
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    return SPARK_STATUS_OK;
+}
+
+const char *SparkRingRuntimeQuantizationModeName(
+    uint32_t quantization_mode)
+{
     if (quantization_mode ==
-            SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT ||
-        quantization_mode ==
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+        return "fp8";
+    if (quantization_mode ==
+        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
+        return "nvfp4";
+    return 0;
+}
+
+SparkStatus SparkRingRuntimeValidateFp8PlanCounts(
+    uint32_t quantization_mode,
+    uint32_t bound_plan_count,
+    uint32_t expected_plan_count)
+{
+    if (quantization_mode ==
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT)
+    {
+        return expected_plan_count != 0u &&
+            bound_plan_count == expected_plan_count
+            ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }
+    if (quantization_mode ==
+        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
     {
         return bound_plan_count == 0u && expected_plan_count == 0u
             ? SPARK_STATUS_OK : SPARK_STATUS_MODULE_NOT_VALIDATED;
@@ -99,8 +127,6 @@ SparkStatus SparkRingRuntimeExpectedMoeBackendKind(
         SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
         *backend_kind_out =
             SPARK_RING_RUNTIME_MOE_BACKEND_NVFP4_B12X;
-    else if (quantization_mode ==
-        *backend_kind_out =
     else
         return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
@@ -156,7 +182,7 @@ static void SparkRingRuntimeInitializeEndpoint(
         (uint64_t)SPARK_RING_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
         (uint64_t)endpoint->max_active_sequence_count;
     endpoint->transport_module_id =
-        SPARK_HIDDEN_TRANSPORT_TCP_CUDA_HOST_MODULE_ID;
+        SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_MODULE_ID;
     endpoint->route_name = route_name;
 }
 
@@ -164,13 +190,13 @@ static void SparkRingRuntimeInitializeEndpoint(
 // the geometry and inputs so the plan, the sharder, and the packs cannot
 // disagree. The latent KV element is one byte, the FP8 latent cache.
 static SparkStatus SparkRingRuntimeShapeNodeConfig(
-    const SparkGlm52TpShapeDescriptor *shape,
+    const SparkTpShapeDescriptor *shape,
     SparkGlm52ShapeNodeConfig *config)
 {
-    SparkGlm52TpModelGeometry geometry;
+    SparkTpModelGeometry geometry;
     SparkGlm52ShapeModelInputs inputs;
 
-    SparkGlm52TpModelGeometryFromModel(&geometry);
+    SparkTpModelGeometryFromModel(&geometry);
     memset(&inputs, 0, sizeof(inputs));
     inputs.abi_version = SPARK_GLM52_SHAPE_CONFIG_ABI_VERSION;
     inputs.total_layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
@@ -246,8 +272,7 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
         (quantization_mode !=
              SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT &&
          quantization_mode !=
-             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT &&
-         quantization_mode !=
+             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT) ||
         port_base > (65535u - SPARK_RING_RUNTIME_STAGE_COUNT))
     {
         return SparkRingRuntimeReport(
@@ -291,10 +316,10 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
     rank_plan->pp_stage_index = rank_index;
     rank_plan->tp_collective_listen_port = 0u;
     {
-        SparkGlm52TpShapeDescriptor shape;
+        SparkTpShapeDescriptor shape;
         SparkGlm52ShapeNodeConfig shape_config;
         memset(&shape, 0, sizeof(shape));
-        shape.abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+        shape.abi_version = SPARK_TP_SHARD_ABI_VERSION;
         shape.tp_degree = 1u;
         shape.tp_rank = 0u;
         shape.pp_stage_count = SPARK_RING_RUNTIME_STAGE_COUNT;
@@ -394,7 +419,7 @@ SparkStatus SparkRingRuntimeBuildRankPlan(
 }
 
 SparkStatus SparkRingRuntimeBuildShapeRankPlan(
-    const SparkGlm52TpShapeDescriptor *shape,
+    const SparkTpShapeDescriptor *shape,
     uint32_t logical_lane_capacity,
     uint32_t port_base,
     uint32_t tp_port_base,
@@ -554,7 +579,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    SparkGlm52TpShapeDescriptor shape;
+    SparkTpShapeDescriptor shape;
     SparkGlm52ShapeNodeConfig shape_config;
     SparkStatus status;
 
@@ -567,7 +592,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
             "RING rank plan is null");
     }
     memset(&shape, 0, sizeof(shape));
-    shape.abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+    shape.abi_version = SPARK_TP_SHARD_ABI_VERSION;
     shape.tp_degree = rank_plan->tp_degree;
     shape.tp_rank = rank_plan->tp_rank;
     shape.pp_stage_count = rank_plan->pp_stage_count;
@@ -611,8 +636,7 @@ SparkStatus SparkRingRuntimeValidateRankPlan(
         (rank_plan->quantization_mode !=
              SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT &&
          rank_plan->quantization_mode !=
-             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT &&
-         rank_plan->quantization_mode !=
+             SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT) ||
         rank_plan->max_packet_bytes !=
             ((uint64_t)SPARK_RING_RUNTIME_LAYER_MAJOR_TRANSPORT_BYTES_PER_ROW *
              (uint64_t)rank_plan->execution_row_capacity))
@@ -718,15 +742,6 @@ SparkStatus SparkRingRuntimeBuildMoePackPath(
             layer_index,
             shape_tag);
     }
-    else if (quantization_mode ==
-    {
-        written = snprintf(
-            pack_path,
-            pack_path_bytes,
-            pack_root,
-            layer_index,
-            shape_tag);
-    }
     else
     {
         pack_path[0] = '\0';
@@ -782,7 +797,13 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
         SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT)
         selected_manifest_index = 1u;
     else
-        selected_manifest_index = 2u;
+    {
+        return SparkRingRuntimeReport(
+            error_buffer,
+            error_buffer_bytes,
+            SPARK_STATUS_INVALID_ARGUMENT,
+            "MoE pack manifest: unknown quantization mode");
+    }
     manifest_name = manifest_names[selected_manifest_index];
     written = snprintf(
         manifest_path,

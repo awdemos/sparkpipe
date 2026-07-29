@@ -208,152 +208,43 @@ static void SparkRingDaemonSetStatusError(
         message,(int32_t)status);
 }
 
+#include <stddef.h>
+#include "sparkpipe/spark_options.h"
+
+static const SparkOption spark_ring_daemon_options[] =
+{
+	{ "--rank", SPARK_OPTION_U32, -1, (uint16_t)offsetof(SparkRingDaemonConfig, rank_index), (uint16_t)offsetof(SparkRingDaemonConfig, rank_is_set) },
+	{ "--moe-pack-root", SPARK_OPTION_STRING, -2, (uint16_t)offsetof(SparkRingDaemonConfig, moe_pack_root), SPARK_OPTION_NO_SET_FLAG },
+	{ "--model-quantization", SPARK_OPTION_QUANT, -14, (uint16_t)offsetof(SparkRingDaemonConfig, model_quantization_mode), SPARK_OPTION_NO_SET_FLAG },
+	{ "--stagepack-root", SPARK_OPTION_STRING, -3, (uint16_t)offsetof(SparkRingDaemonConfig, stagepack_root), SPARK_OPTION_NO_SET_FLAG },
+	{ "--transport-so", SPARK_OPTION_STRING, -4, (uint16_t)offsetof(SparkRingDaemonConfig, transport_shared_object_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--driver-so", SPARK_OPTION_STRING, -5, (uint16_t)offsetof(SparkRingDaemonConfig, driver_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--node-context-builder-so", SPARK_OPTION_STRING, -6, (uint16_t)offsetof(SparkRingDaemonConfig, node_context_builder_shared_object_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--embedding-pack", SPARK_OPTION_STRING, -7, (uint16_t)offsetof(SparkRingDaemonConfig, embedding_pack_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--cuda-resident-socket", SPARK_OPTION_STRING, -7, (uint16_t)offsetof(SparkRingDaemonConfig, cuda_resident_socket_path), SPARK_OPTION_NO_SET_FLAG },
+	{ "--program", SPARK_OPTION_STRING, -8, (uint16_t)offsetof(SparkRingDaemonConfig, program_name), SPARK_OPTION_NO_SET_FLAG },
+	{ "--node-target", SPARK_OPTION_STRING, -8, (uint16_t)offsetof(SparkRingDaemonConfig, node_target), SPARK_OPTION_NO_SET_FLAG },
+	{ "--max-active", SPARK_OPTION_U32, -9, (uint16_t)offsetof(SparkRingDaemonConfig, max_active_sequence_count), SPARK_OPTION_NO_SET_FLAG },
+	{ "--port-base", SPARK_OPTION_U32, -10, (uint16_t)offsetof(SparkRingDaemonConfig, port_base), SPARK_OPTION_NO_SET_FLAG },
+	{ "--final-event-bind", SPARK_OPTION_STRING, -11, (uint16_t)offsetof(SparkRingDaemonConfig, final_event_bind_address), SPARK_OPTION_NO_SET_FLAG },
+	{ "--final-event-return-host", SPARK_OPTION_STRING, -12, (uint16_t)offsetof(SparkRingDaemonConfig, final_event_return_host), SPARK_OPTION_NO_SET_FLAG },
+	{ "--own-final-event", SPARK_OPTION_FLAG, -1, (uint16_t)offsetof(SparkRingDaemonConfig, own_final_event), SPARK_OPTION_NO_SET_FLAG },
+	{ "--transport-busy-poll", SPARK_OPTION_FLAG, -1, (uint16_t)offsetof(SparkRingDaemonConfig, transport_busy_poll), SPARK_OPTION_NO_SET_FLAG },
+};
+
 static int32_t SparkRingDaemonApplyArgument(
     SparkRingDaemonConfig *configuration,
     int argc,
     char **argv,
     int32_t *index)
 {
-    uint32_t parsed;
-
-    if (strcmp(argv[*index],"--rank") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkNetParseU32(argv[*index + 1],&parsed) < 0)
-            return -1;
-        configuration->rank_index = parsed;
-        configuration->rank_is_set = 1u;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--moe-pack-root") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -2;
-        configuration->moe_pack_root = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--model-quantization") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkRingRuntimeParseQuantizationMode(
-                argv[*index + 1],&configuration->model_quantization_mode) !=
-                SPARK_STATUS_OK)
-            return -14;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--stagepack-root") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -3;
-        configuration->stagepack_root = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--transport-so") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -4;
-        configuration->transport_shared_object_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--driver-so") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -5;
-        configuration->driver_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--node-context-builder-so") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -6;
-        configuration->node_context_builder_shared_object_path =
-            argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--embedding-pack") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -7;
-        configuration->embedding_pack_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--cuda-resident-socket") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -7;
-        configuration->cuda_resident_socket_path = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--program") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -8;
-        configuration->program_name = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--node-target") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -8;
-        configuration->node_target = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--max-active") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkNetParseU32(argv[*index + 1],&parsed) < 0)
-            return -9;
-        configuration->max_active_sequence_count = parsed;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--port-base") == 0)
-    {
-        if ((*index + 1) >= argc ||
-            SparkNetParseU32(argv[*index + 1],&parsed) < 0)
-            return -10;
-        configuration->port_base = parsed;
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--final-event-bind") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -11;
-        configuration->final_event_bind_address = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--final-event-return-host") == 0)
-    {
-        if ((*index + 1) >= argc)
-            return -12;
-        configuration->final_event_return_host = argv[*index + 1];
-        *index += 1;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--own-final-event") == 0)
-    {
-        configuration->own_final_event = 1u;
-        return 0;
-    }
-    if (strcmp(argv[*index],"--transport-busy-poll") == 0)
-    {
-        configuration->transport_busy_poll = 1u;
-        return 0;
-    }
-    return -13;
+	int32_t status;
+	status = SparkOptionsApply(spark_ring_daemon_options,
+		(uint32_t)(sizeof(spark_ring_daemon_options) / sizeof(spark_ring_daemon_options[0])),
+		configuration, argc, argv, index);
+	if (status <= 0)
+		return status;
+	return -1;
 }
 
 static int32_t SparkRingDaemonParseArguments(

@@ -47,8 +47,6 @@ SparkStatus SparkGlm52StagePackResolveTensor(
 	const SparkGlm52StagePackTensorSpec *spec,
 	SparkGlm52StagePackTensorRegion *region);
 
-	const char *stagepack_root,
-
 SparkStatus SparkGlm52StagePackValidateNvfp4Contract(
 	const char *stagepack_root,
 	const char *nvfp4_pack_root);

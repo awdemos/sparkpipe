@@ -264,7 +264,7 @@ static void SparkTestGlm52RingRuntimeFinalEventRoute(void)
 static void SparkTestRingRuntimeShapePlans(void)
 {
     SparkRingRuntimeRankPlan plan;
-    SparkGlm52TpShapeDescriptor shape;
+    SparkTpShapeDescriptor shape;
     char error_buffer[256];
     char pack_path[512];
     assert(SparkRingRuntimeBuildRankPlan(
@@ -275,7 +275,7 @@ static void SparkTestRingRuntimeShapePlans(void)
     assert(plan.pp_stage_count == 13u && plan.pp_stage_index == 5u);
     assert(plan.shape_configuration_hash != 0u);
     memset(&shape,0,sizeof(shape));
-    shape.abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+    shape.abi_version = SPARK_TP_SHARD_ABI_VERSION;
     shape.tp_degree = 4u;
     shape.tp_rank = 2u;
     shape.pp_stage_count = 3u;
