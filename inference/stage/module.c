@@ -212,7 +212,7 @@ static bool SparkResidentDecodeStageMlpExecutionUsesQuantizedPlan(
     return node_context->mlp_execution_mode ==
             SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_PREBOUND_QUANTIZED_TENSOR_CORE ||
         node_context->mlp_execution_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
+            SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
 }
 
 static SPARK_RESIDENT_DECODE_STAGE_MAYBE_UNUSED uint64_t SparkResidentDecodeStageAlignUpU64(
@@ -764,7 +764,7 @@ static bool SparkResidentDecodeStageLayerSupportsBuiltInFusedStageMoe(
         SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK)
     {
         return node_context->mlp_execution_mode ==
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE &&
+                SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE &&
             SparkGlm52ResidentDecodeStageRouterLinearPlanIsProductionFast(
                 node_context) &&
             SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(node_context);

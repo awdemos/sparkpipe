@@ -54,7 +54,7 @@ static SparkStatus SparkGlm52CompatAppendJsonString(
     return status;
 }
 
-static SparkStatus SparkGlm52CompatReadOptionalUInt32(
+static SparkStatus SparkCompatReadOptionalUInt32(
     const SparkJsonDocument *document,
     int32_t root_token_index,
     const char *member_name,
@@ -594,7 +594,7 @@ static SparkStatus SparkGlm52CompatPrepareCommon(
     request->text[0] = '\0';
     request->thinking_token_budget = 0u;
     request->chat_template_flags = SPARK_GLM52_COMPAT_DEFAULT_CHAT_FLAGS;
-    status = SparkGlm52CompatReadOptionalUInt32(
+    status = SparkCompatReadOptionalUInt32(
         document,
         root_token_index,
         "priority",
@@ -602,7 +602,7 @@ static SparkStatus SparkGlm52CompatPrepareCommon(
         0);
     if ( status != SPARK_STATUS_OK )
         return status;
-    status = SparkGlm52CompatReadOptionalUInt32(
+    status = SparkCompatReadOptionalUInt32(
         document,
         root_token_index,
         "max_tokens",
@@ -610,7 +610,7 @@ static SparkStatus SparkGlm52CompatPrepareCommon(
         0);
     if ( status != SPARK_STATUS_OK )
         return status;
-    status = SparkGlm52CompatReadOptionalUInt32(
+    status = SparkCompatReadOptionalUInt32(
         document,
         root_token_index,
         "max_completion_tokens",
@@ -620,7 +620,7 @@ static SparkStatus SparkGlm52CompatPrepareCommon(
         return status;
     thinking_budget = 0u;
     thinking_budget_alias = 0u;
-    status = SparkGlm52CompatReadOptionalUInt32(
+    status = SparkCompatReadOptionalUInt32(
         document,
         root_token_index,
         "thinking_budget_tokens",
@@ -628,7 +628,7 @@ static SparkStatus SparkGlm52CompatPrepareCommon(
         &thinking_budget_present);
     if ( status != SPARK_STATUS_OK )
         return status;
-    status = SparkGlm52CompatReadOptionalUInt32(
+    status = SparkCompatReadOptionalUInt32(
         document,
         root_token_index,
         "thinking_token_budget",

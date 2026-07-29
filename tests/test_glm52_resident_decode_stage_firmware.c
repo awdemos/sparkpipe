@@ -1190,7 +1190,7 @@ static void SparkPrepareFp8ResidentDecodeStageNodeContext(
     node_context->layer_progression_mode =
         SPARK_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK;
     node_context->mlp_execution_mode =
-        SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
+        SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE;
     node_context->model_quantization_mode =
         SPARK_RESIDENT_DECODE_STAGE_MODEL_QUANTIZATION_FP8_E4M3_8BIT;
     node_context->reserved_execution_flags |=

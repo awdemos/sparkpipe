@@ -728,7 +728,7 @@ static SparkStatus SparkExpectedTensorBytes(
     return SPARK_STATUS_OK;
 }
 
-static void SparkGlm52UpdateSha256U64(
+static void SparkUpdateSha256U64(
     SparkSha256Context *context,
     uint64_t value)
 {
@@ -802,8 +802,8 @@ static SparkStatus SparkSampleTensorBodySegment(
         return SparkSetToolError(SPARK_STATUS_IO_ERROR, error_buffer, error_buffer_bytes, "could not seek tensor body %s", path);
     }
     SparkSha256Update(&samples->hash_context, tensor_name, strlen(tensor_name) + 1u);
-    SparkGlm52UpdateSha256U64(&samples->hash_context, segment_offset);
-    SparkGlm52UpdateSha256U64(&samples->hash_context, segment_bytes);
+    SparkUpdateSha256U64(&samples->hash_context, segment_offset);
+    SparkUpdateSha256U64(&samples->hash_context, segment_bytes);
     remaining_bytes = segment_bytes;
     segment_nonzero_bytes = 0u;
     while (remaining_bytes != 0u)

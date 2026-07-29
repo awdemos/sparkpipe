@@ -952,7 +952,7 @@ static SparkStatus SparkValidateGlm52ResidentDecodeStageLayerPointers(
             node_context->dense_intermediate_dimension !=
                 SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_INTERMEDIATE_DIMENSION ||
             node_context->mlp_execution_mode !=
-                SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE ||
+                SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE ||
             node_context->projection_mode !=
                 SPARK_RESIDENT_DECODE_STAGE_PROJECTION_RAW_FP8_E4M3 ||
             !SparkResidentDecodeStagePointerIsAligned(
@@ -1023,7 +1023,7 @@ SparkStatus SparkResidentDecodeStageModelValidateNodeContext(
         node_context->projection_backend_mode >
             SPARK_RESIDENT_DECODE_STAGE_PROJECTION_BACKEND_PREBOUND_TENSOR_CORE ||
         node_context->mlp_execution_mode >
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE ||
+            SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE ||
         node_context->attention_execution_mode >
             SPARK_RESIDENT_DECODE_STAGE_ATTENTION_EXECUTION_ABSORBED_LATENT ||
         !SparkResidentDecodeStageModelQuantizationModeIsSupported(
@@ -1209,7 +1209,7 @@ SparkStatus SparkResidentDecodeStageModelValidateNodeContext(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     if (node_context->mlp_execution_mode ==
-            SPARK_GLM52_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE &&
+            SPARK_RESIDENT_DECODE_STAGE_MLP_EXECUTION_FP8_EXPERT_TENSOR_CORE &&
         !SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(node_context))
     {
         SparkResidentDecodeStageReportValidationFailure(
