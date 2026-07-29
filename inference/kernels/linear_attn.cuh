@@ -413,9 +413,9 @@ enum LmConvActivation
 	LM_CONV_SWISH = 1
 };
 
-template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION>
+template<uint32_t THREADS, uint32_t KERNEL, uint32_t ACTIVATION, class Weight>
 __global__ __launch_bounds__(THREADS, 1)
-void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit)
+void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restrict__ state_index, const uint32_t *__restrict__ sequence_row_begin, const uint32_t *__restrict__ sequence_row_count, const uint16_t *__restrict__ input_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ output_bf16, uint32_t channels, uint32_t sequences, uint32_t commit)
 {
 	// ONE KERNEL FOR DECODE, PREFILL AND VERIFY. A sequence's rows are a run -
 	// contiguous, positions ascending - and the window walks the run with the
@@ -453,7 +453,7 @@ void LmCausalConvKernel(uint16_t *__restrict__ window, const uint32_t *__restric
 		taps[KERNEL - 1u] = input_bf16[((uint64_t)row * channels) + channel];
 		for (tap = 0u; tap < KERNEL; ++tap)
 			total += LmBf16ToFloat(taps[tap])
-				* LmBf16ToFloat(weight_bf16[(channel * KERNEL) + tap]);
+				* LmScalarToFloat(weight[(channel * KERNEL) + tap]);
 		// SWISH, NOT NOTHING. FlashKDA's projections are
 		// L2Norm(Swish(ShortConv(Wx))) for q and k and Swish(ShortConv(Wx)) for
 		// v; the reference builds ShortConvolution with activation='silu'. A

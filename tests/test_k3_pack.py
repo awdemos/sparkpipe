@@ -47,7 +47,7 @@ def write_safetensors(path, tensors):
             handle.write(blob)
 
 
-def mini_checkpoint(root, poison_scale=False, latent=32, inter=32):
+def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=32, inter=32):
     hidden, vocab = 32, 64
     q_lora, kv_lora, rope, nope, v_head, heads = 16, 32, 8, 16, 32, 2
     kda_heads, kda_head = 2, 32
@@ -82,15 +82,19 @@ def mini_checkpoint(root, poison_scale=False, latent=32, inter=32):
         if kind == "linear_attention":
             for proj in "qkv":
                 t[a + proj + "_proj.weight"] = ("BF16", bf16((kda_dim, hidden)))
-                t[a + proj + "_conv1d.weight"] = ("BF16", bf16((kda_dim, 1, 4)))
+                t[a + proj + "_conv1d.weight"] = (
+                    "F32", rng.standard_normal((kda_dim, 1, 4)).astype(np.float32))
             t[a + "f_a_proj.weight"] = ("BF16", bf16((kda_head, hidden)))
             t[a + "f_b_proj.weight"] = ("BF16", bf16((kda_dim, kda_head)))
             t[a + "dt_bias"] = ("F32", rng.standard_normal(kda_dim).astype(np.float32))
-            t[a + "A_log"] = ("F32", rng.standard_normal(kda_heads).astype(np.float32))
+            if bad_fp32 and layer == 0:
+                t[a + "dt_bias"] = ("BF16", bf16((kda_dim,)))
+            t[a + "A_log"] = ("F32", rng.standard_normal(128).astype(np.float32))
             t[a + "b_proj.weight"] = ("BF16", bf16((kda_heads, hidden)))
             t[a + "g_a_proj.weight"] = ("BF16", bf16((kda_head, hidden)))
             t[a + "g_b_proj.weight"] = ("BF16", bf16((kda_dim, kda_head)))
-            t[a + "o_norm.weight"] = ("BF16", bf16((kda_head,)))
+            t[a + "o_norm.weight"] = (
+                "F32", rng.standard_normal(kda_head).astype(np.float32))
             t[a + "o_proj.weight"] = ("BF16", bf16((hidden, kda_dim)))
         else:
             t[a + "q_a_proj.weight"] = ("BF16", bf16((q_lora, hidden)))
@@ -163,6 +167,20 @@ def main():
         if tensor(p + "expert_w1_scale") != want:
             print("  FAIL the E8M0 plane is not [expert][neuron][k_group]")
             failures += 1
+        a = p + "self_attn."
+        for packed, source in (
+                ("kda_q_conv_weight", "q_conv1d.weight"),
+                ("kda_k_conv_weight", "k_conv1d.weight"),
+                ("kda_v_conv_weight", "v_conv1d.weight"),
+                ("kda_decay_bias", "dt_bias"),
+                ("kda_out_norm_weight", "o_norm.weight")):
+            if tensor(p + packed) != src[a + source][1].tobytes():
+                print(f"  FAIL {packed} is not bit-preserved FP32")
+                failures += 1
+        if tensor(p + "kda_head_log_scale") != \
+                src[a + "A_log"][1][:2].tobytes():
+            print("  FAIL A_log was not explicitly narrowed to runtime heads")
+            failures += 1
         # q-fold on layer 1
         p = "model.layers.1."
         heads, nope, rope, v_head, kv_lora, q_lora = 2, 16, 8, 32, 32, 16
@@ -194,6 +212,15 @@ def main():
         if not np.array_equal(
                 np.frombuffer(tensor(p + "attnres_attn_weight"), np.uint16), want):
             print("  FAIL the res-norm gamma did not fold into the score rows")
+            failures += 1
+        for name in list(root.iterdir()):
+            if name.suffix == ".pack" or name.name.endswith(".payload"):
+                name.unlink()
+        mini_checkpoint(root, bad_fp32=True)
+        run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
+                              str(root), str(out)], capture_output=True, text=True)
+        if run.returncode == 0 or "expected F32" not in run.stdout:
+            print("  FAIL a BF16 dt_bias was not refused")
             failures += 1
         # a poisoned scale must be a loud failure, not a packed NaN
         for name in list(root.iterdir()):

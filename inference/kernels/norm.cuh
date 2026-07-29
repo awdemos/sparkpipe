@@ -76,7 +76,7 @@ static __device__ float LmBlockMax(float value, float *shared)
 // One pass, not two. The sum of squares and the normalised store both need the
 // row, and staging it in shared costs hidden*4 bytes against a second global
 // read of hidden*2 - which is why the row is staged rather than re-read.
-template<uint32_t THREADS>
+template<uint32_t THREADS, class Weight>
 __global__ __launch_bounds__(THREADS, 1)
 // ROW STRIDE IS EXPLICIT AND HAS NO DEFAULT.
 //
@@ -88,7 +88,7 @@ __global__ __launch_bounds__(THREADS, 1)
 //
 // No default argument: a caller that means dimension says dimension, because a
 // stride that fills itself in is the same silent-drift pattern as an ifndef.
-void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ residual_bf16, const uint16_t *__restrict__ weight_bf16, uint16_t *__restrict__ residual_out_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
+void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const uint16_t *__restrict__ residual_bf16, const Weight *__restrict__ weight, uint16_t *__restrict__ residual_out_bf16, uint16_t *__restrict__ output_bf16, uint32_t dimension, uint32_t row_stride, float epsilon)
 {
 	extern __shared__ float lm_norm_shared[];
 	float *row = lm_norm_shared;
@@ -110,7 +110,7 @@ void LmFusedResidualRmsNormKernel(const uint16_t *__restrict__ input_bf16, const
 	scale = rsqrtf((total / (float)dimension) + epsilon);
 	for (index = threadIdx.x; index < dimension; index += THREADS)
 		output_bf16[base + index] =
-			LmFloatToBf16(row[index] * scale * LmBf16ToFloat(weight_bf16[index]));
+			LmFloatToBf16(row[index] * scale * LmScalarToFloat(weight[index]));
 }
 
 // SiLU(gate) * up.

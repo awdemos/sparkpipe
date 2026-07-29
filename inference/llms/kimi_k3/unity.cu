@@ -37,7 +37,8 @@ template __global__ void LmGemmKernel<LmFp8, 16u, K3_TILE_N, 128u, K3_STAGES, K3
 template __global__ void LmGemmKernel<LmFp8, 32u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmMxfp4, 16u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmMxfp4, 32u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
+template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
+template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS,float>(const uint16_t *, const uint16_t *, const float *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 // No rope instantiation. K3 is NoPE - the reference sets rotary_emb to None and
 // carries the qk_rope slice through unrotated. This line built a rope kernel for
@@ -60,7 +61,7 @@ template __global__ void LmDeltaRuleKernel<K3_THREADS, K3_KDA_KEY_DIM, K3_KDA_VA
 // The rest of the KDA path, none of which unity built: the short convolution
 // with its Swish, the L2 normalisation of q and k, the bounded decay mapping,
 // the output gate, and SiTU on every MLP.
-template __global__ void LmCausalConvKernel<K3_THREADS, K3_KDA_CONV_KERNEL, LM_CONV_SWISH>(uint16_t *, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t);
+template __global__ void LmCausalConvKernel<K3_THREADS, K3_KDA_CONV_KERNEL, LM_CONV_SWISH,float>(uint16_t *, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmL2NormalisePerHeadKernel<K3_THREADS, K3_KDA_KEY_DIM>(uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmBoundedDecayKernel<K3_THREADS, K3_KDA_KEY_DIM>(const uint16_t *, const float *, const float *, float *, uint32_t, float, uint32_t);
 template __global__ void LmOutputGateKernel<K3_THREADS>(uint16_t *, const uint16_t *, uint32_t);

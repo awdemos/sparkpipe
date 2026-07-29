@@ -42,9 +42,9 @@ struct K3LayerWeights
 	const void *kda_k_scale;
 	const void *kda_v_weight;
 	const void *kda_v_scale;
-	const void *kda_q_conv_weight;
-	const void *kda_k_conv_weight;
-	const void *kda_v_conv_weight;
+	const float *kda_q_conv_weight;
+	const float *kda_k_conv_weight;
+	const float *kda_v_conv_weight;
 	const void *kda_decay_down_weight;
 	const void *kda_decay_up_weight;
 	const float *kda_decay_bias;
@@ -52,7 +52,7 @@ struct K3LayerWeights
 	const void *kda_beta_weight;
 	const void *kda_gate_down_weight;
 	const void *kda_gate_up_weight;
-	const void *kda_out_norm_weight;
+	const float *kda_out_norm_weight;
 	const void *kda_out_weight;
 	const void *kda_out_scale;
 
@@ -390,12 +390,12 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 			continue;
 		K3BindLayer(&weights[layer - first_layer],buffers);
 		K3BindLayerState(state,layer,buffers);
-		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-			buffers->kda_q_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_q, (const uint16_t *)buffers->kda_q_conv_weight,buffers->query_bf16,K3_KDA_QK_DIM,sequences,1u);
-		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-			buffers->kda_k_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_k, (const uint16_t *)buffers->kda_k_conv_weight,buffers->key_bf16,K3_KDA_QK_DIM,sequences,1u);
-		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH>), dim3(sequences,(K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
-			buffers->kda_v_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_v, (const uint16_t *)buffers->kda_v_conv_weight,buffers->value_bf16,K3_KDA_V_DIM,sequences,1u);
+		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+			buffers->kda_q_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_q,buffers->kda_q_conv_weight,buffers->query_bf16,K3_KDA_QK_DIM,sequences,1u);
+		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+			buffers->kda_k_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_k,buffers->kda_k_conv_weight,buffers->key_bf16,K3_KDA_QK_DIM,sequences,1u);
+		LM_LAUNCH((LmCausalConvKernel<K3_LAYER_THREADS,K3_KDA_CONV_KERNEL,LM_CONV_SWISH,float>), dim3(sequences,(K3_KDA_V_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS), K3_LAYER_THREADS, 0, stream,
+			buffers->kda_v_window,buffers->kda_state_index,verify_row_begin,accepted,buffers->replay_conv_v,buffers->kda_v_conv_weight,buffers->value_bf16,K3_KDA_V_DIM,sequences,1u);
 		LM_LAUNCH((LmL2NormalisePerHeadKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(slab_rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
 			buffers->key_bf16,K3_KDA_HEADS,slab_rows,K3_RMS_EPSILON);
 		LM_LAUNCH((LmBoundedDecayKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(slab_rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,

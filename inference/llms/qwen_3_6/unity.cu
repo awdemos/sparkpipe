@@ -33,7 +33,7 @@ static_assert(QWEN36_LAYER_IS_LINEAR(0) && !QWEN36_LAYER_IS_LINEAR(3),
 template __global__ void LmGemmKernel<LmFp8, 16u, QWEN36_TILE_N, 128u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmFp8, 32u, QWEN36_TILE_N, 128u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
 template __global__ void LmGemmKernel<LmFp8, 64u, QWEN36_TILE_N, 128u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmFusedResidualRmsNormKernel<QWEN36_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
+template __global__ void LmFusedResidualRmsNormKernel<QWEN36_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<QWEN36_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, QWEN36_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmRopePerHeadKernel<QWEN36_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
@@ -43,7 +43,7 @@ template __global__ void LmSplitQkvKernel<QWEN36_THREADS>(const uint16_t *, LmQk
 // The state and the convolution window share one non-growing slot, which is why
 // QWEN36_GDN_STATE_BYTES is their sum and kernels/kv.cuh sizes the pool from it.
 template __global__ void LmDeltaRuleKernel<QWEN36_THREADS, QWEN36_GDN_KEY_DIM, QWEN36_GDN_VALUE_DIM>(uint8_t *, uint32_t, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t, uint32_t);
-template __global__ void LmCausalConvKernel<QWEN36_THREADS, QWEN36_GDN_CONV_KERNEL, LM_CONV_SWISH>(uint16_t *, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t);
+template __global__ void LmCausalConvKernel<QWEN36_THREADS, QWEN36_GDN_CONV_KERNEL, LM_CONV_SWISH,uint16_t>(uint16_t *, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmKvStoreKernel<Qwen36FullKv, QWEN36_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
 template __global__ void LmHeadCandidateKernel<QWEN36_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmHeadCommitKernel<QWEN36_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);

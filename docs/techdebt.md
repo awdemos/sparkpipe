@@ -9,17 +9,14 @@ leaves silently.
 Sparkdev's checkpoint-backed probe exposed four production blockers.
 Each must FAIL CLOSED until fixed - wrong-but-running K3 output is worse
 than no K3 output:
-- **fp32 checkpoint tensors read as bf16** (loader/pack tier): A_log,
-  dt_bias, norms are fp32 in the checkpoint; the bind path must type
-  them or refuse.
+- ~~fp32 checkpoint tensors read as bf16~~ FIXED: the packer requires and
+  bit-preserves FP32 for A_log, dt_bias, o_norm and all three short-convolution
+  weights; the layer tables and kernels carry those types explicitly.
 - ~~KDA state bf16~~ FIXED: both state kernels hold and store fp32,
   the delta tile is dynamic shared (64 KB), harness pools resized. The
   bf16-state OPTIMIZATION remains a separate validated-later line.
-- **A_log[128] -> 96-head narrowing**: contract constant
-  K3_KDA_A_LOG_SOURCE_HEADS landed with a static_assert; the loader
-  slice itself lands with bind. Original note: the checkpoint carries 128
-  heads' worth; the authoritative slice must be explicit in the loader
-  with a named constant, not implied.
+- ~~A_log[128] -> 96-head narrowing~~ FIXED: the packer requires the
+  128-element checkpoint shape and emits only the first runtime-head entries.
 - ~~KDA query scaling~~ IDENTIFIED AND FIXED: the reference runs
   use_qk_l2norm_in_kernel=True - q and k are L2-normalized in kernel.
   Implemented in the delta kernel AND the replay fold (which must

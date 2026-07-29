@@ -60,6 +60,16 @@ static __device__ __forceinline__ float LmBf16ToFloat(uint16_t value)
 	return(__uint_as_float((uint32_t)value << 16u));
 }
 
+static __device__ __forceinline__ float LmScalarToFloat(uint16_t value)
+{
+	return(LmBf16ToFloat(value));
+}
+
+static __device__ __forceinline__ float LmScalarToFloat(float value)
+{
+	return(value);
+}
+
 // Round to nearest even. A plain 16-bit truncation biases every value toward
 // zero by up to one ulp; across 78 layers that accumulates and is invisible in
 // any single-layer comparison.

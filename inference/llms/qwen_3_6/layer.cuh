@@ -124,7 +124,7 @@ static int32_t Qwen36LayerAttention(const Qwen36LayerBuffers *b, uint32_t rows, 
 	LmGemmArguments gemm;
 	LmQkvLayout layout;
 	int32_t status;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS,uint16_t>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
@@ -174,7 +174,7 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 	LmGemmArguments gemm;
 	LmQkvLayout layout;
 	int32_t status;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS,uint16_t>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
@@ -213,7 +213,7 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 	// Identity runs: a null prefix means row i is sequence i, which is what
 	// decode is. Qwen's driver has not brought this model to prefill yet; when
 	// it does, the prefix is the only argument that changes.
-	LM_LAUNCH((LmCausalConvKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_CONV_KERNEL,LM_CONV_SWISH>), dim3(rows,(QWEN36_GDN_QKV_DIM + QWEN36_LAYER_THREADS - 1u) / QWEN36_LAYER_THREADS), QWEN36_LAYER_THREADS, 0, stream,
+	LM_LAUNCH((LmCausalConvKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_CONV_KERNEL,LM_CONV_SWISH,uint16_t>), dim3(rows,(QWEN36_GDN_QKV_DIM + QWEN36_LAYER_THREADS - 1u) / QWEN36_LAYER_THREADS), QWEN36_LAYER_THREADS, 0, stream,
 		b->gdn_conv_window,b->gdn_state_index,0,0,b->key_bf16, (const uint16_t *)b->gdn_conv_weight,b->key_bf16,QWEN36_GDN_QK_DIM,rows,1u);
 	LM_LAUNCH((LmDeltaRuleKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>), dim3(rows,QWEN36_GDN_KEY_HEADS), QWEN36_LAYER_THREADS, (uint32_t)(QWEN36_GDN_KEY_DIM * QWEN36_GDN_VALUE_DIM * sizeof(float)), stream,
 		b->gdn_state_pool,QWEN36_GDN_STATE_BYTES,b->gdn_state_index,0,0,b->query_bf16,b->key_bf16,b->value_bf16, b->gdn_forget_gate,b->gdn_write_gate,b->attention_out_bf16, QWEN36_GDN_KEY_HEADS,QWEN36_GDN_VALUE_PER_KEY,rows,1u);
@@ -233,7 +233,7 @@ static int32_t Qwen36LayerDenseMlp(const Qwen36LayerBuffers *b, uint32_t rows, u
 {
 	LmGemmArguments gemm;
 	int32_t status;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS,uint16_t>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
@@ -260,7 +260,7 @@ static int32_t Qwen36LayerDenseMlp(const Qwen36LayerBuffers *b, uint32_t rows, u
 static int32_t Qwen36Head(const Qwen36LayerBuffers *b, const void *head_norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, cudaStream_t stream)
 {
 	uint32_t tiles = (vocabulary + QWEN36_HEAD_TILE - 1u) / QWEN36_HEAD_TILE;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
+	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS,uint16_t>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,0,(const uint16_t *)head_norm_weight, 0,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
 	LM_LAUNCH((LmHeadCandidateKernel<QWEN36_LAYER_THREADS,QWEN36_HEAD_TILE>), dim3(tiles,rows), QWEN36_LAYER_THREADS, 0, stream,
 		b->normed_bf16,(const uint16_t *)head_weight,token_ids, b->head_candidate_score,b->head_candidate_token,rows,QWEN36_HIDDEN,vocabulary);

@@ -110,7 +110,7 @@ template __global__ void LmGemmKernel<LmNvfp4, 64u, GLM52_TILE_N, 128u, GLM52_ST
 // passed at the call, not baked in: the old decode stage's RmsNormKernel was 62
 // lines carrying seven SPARK_GLM52_MODEL_* references, none of which changed
 // what it computed.
-template __global__ void LmFusedResidualRmsNormKernel<GLM52_NORM_THREADS>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
+template __global__ void LmFusedResidualRmsNormKernel<GLM52_NORM_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<GLM52_NORM_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmQuantiseRowsKernel<LmInt7, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
