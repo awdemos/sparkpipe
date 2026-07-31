@@ -246,3 +246,10 @@ model-neutral scheduler ships inside libglm52_host. Post-geometry it
 belongs in the model-common library; the move is link-line churn
 across every target and waits for a quiet moment. The uniform-profile
 admit test links glm_host solely for this packaging reason.
+
+## Dual-rail transport (feature, from the CRS switch topology)
+Two independent 100G fabrics, one per Spark port. Transport grows
+rail-striped sends (even chunks rail A, odd rail B), per-rail
+completion, and per-rail byte counters so the 50/50 split is measured.
+Doubles the comm term; see docs/TP16_DUAL_RAIL_SPEED.md for where
+that binds.
