@@ -19,6 +19,8 @@
 // Relocated from the common stage header: glm plan vocabulary that no
 // common path names. The frame's tap members are opaque there; the
 // concrete plan type and the tap-count mirror live here.
+typedef char SparkGlm52StageMtpDraftMirrorAssert[
+    (SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT <= SPARK_RESIDENT_DECODE_STAGE_MTP_MAX_DRAFT_TOKENS) ? 1 : -1];
 typedef char SparkGlm52StageTapCountMirrorAssert[
     (SPARK_GLM52_MODEL_DSPARK_AUX_LAYER_COUNT == SPARK_STAGE_MODEL_MAX_HIDDEN_TAPS) ? 1 : -1];
 #define SPARK_RESIDENT_DECODE_STAGE_DSA_KV_FRAGMENT_TRANSPORT_PLAN_DESCRIPTOR_BYTES \
@@ -697,4 +699,15 @@ static inline bool SparkGlm52ResidentDecodeStageLinearPlanHasQuantizedProjection
         SparkGlm52ResidentDecodeStageLinearPlanHasBuiltInQuantizedTensorCoreState(
             linear_plan);
 }
+
+static inline uint32_t SparkResidentDecodeStageEffectiveKvBlockTokenCount(
+    const SparkResidentDecodeStageNodeContext *node_context)
+{
+    if (node_context->kv_block_token_count != 0u)
+    {
+        return node_context->kv_block_token_count;
+    }
+    return SPARK_RESIDENT_DECODE_STAGE_BLOCK_TOKENS;
+}
+
 #endif

@@ -282,7 +282,8 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY := \
     build/glm52_resident_decode_stage_test
 GLM52_RESIDENT_DECODE_STAGE_TEST_OBJECTS := \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_resident_decode_stage_module.o \
-    $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/glm52_resident_decode_stage_fake_backend.o
+    $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/glm52_resident_decode_stage_fake_backend.o \
+    $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_stage_validation.o
 GLM52_RESIDENT_DECODE_STAGE_TEST_DEPENDENCIES := \
     $(GLM52_RESIDENT_DECODE_STAGE_TEST_OBJECTS:.o=.d)
 GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
@@ -359,15 +360,26 @@ GLM52_LINK_TARGETS := \
     build/test_model_description \
     $(GLM52_RING_SERVICE_BACKEND) \
     $(GLM52_RING_NODE_CONTEXT_BUILDER)
+NULL_REQUEST_MODEL_OBJECT := build/obj/serving/spark_request_model_null.o
+
+$(NULL_REQUEST_MODEL_OBJECT): serving/spark_request_model_null.c include/sparkpipe/spark_request_api.h
+	@mkdir -p $(dir $@)
+	$(CC) -I. -Iinclude -Imodel-families/glm52/include -std=c11 -Wall -Wextra -Werror -O3 -g -c serving/spark_request_model_null.c -o $@
+
+build/test_null_seam_link: tests/test_null_seam_link.c $(NULL_REQUEST_MODEL_OBJECT) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) -I. -Iinclude -Imodel-families/glm52/include -std=c11 -Wall -Wextra -Werror -O3 -g -pthread tests/test_null_seam_link.c $(NULL_REQUEST_MODEL_OBJECT) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -o $@
+
 QWEN36_LINK_TARGETS := build/test_qwen36_work_control
+
+
 DEPLOYMENT_LINK_TARGETS := build/sparkpipe_release_manager build/test_release
 
 $(MODEL_COMMON_LINK_TARGETS): COMMON_LIBRARY = $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 $(MODEL_COMMON_LINK_TARGETS): $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 $(GLM52_LINK_TARGETS): COMMON_LIBRARY = $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 $(GLM52_LINK_TARGETS): $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-$(QWEN36_LINK_TARGETS): COMMON_LIBRARY = $(QWEN36_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
-$(QWEN36_LINK_TARGETS): $(QWEN36_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+$(QWEN36_LINK_TARGETS): COMMON_LIBRARY = $(QWEN36_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(NULL_REQUEST_MODEL_OBJECT)
+$(QWEN36_LINK_TARGETS): $(QWEN36_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(NULL_REQUEST_MODEL_OBJECT)
 $(DEPLOYMENT_LINK_TARGETS): COMMON_LIBRARY = $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 $(DEPLOYMENT_LINK_TARGETS): $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
 
@@ -563,6 +575,8 @@ $(TEST_VALIDATOR): tests/fixtures/module_validator.c | build
 
 $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_resident_decode_stage_module.o: inference/stage/module.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_backend.h | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
+$(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/spark_glm52_stage_validation.o: modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_validation.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_backend.h | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
+	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/glm52_resident_decode_stage_fake_backend.o: tests/fixtures/glm52_resident_decode_stage_fake_backend.c tests/fixtures/glm52_resident_decode_stage_fake_backend.h modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_firmware.h modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_backend.h | $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
 	$(CC) $(CPPFLAGS) -Itests/fixtures -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source $(CFLAGS) -fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
@@ -570,6 +584,12 @@ $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)/glm52_resident_decode_stage_fake_b
 $(GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE): $(GLM52_RESIDENT_DECODE_STAGE_TEST_OBJECTS)
 	rm -f $@
 	$(AR) rcs $@ $^
+
+build/test_uniform_profile_admit: tests/test_uniform_profile_admit.c $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_hybrid_kv_arithmetic: tests/test_hybrid_kv_arithmetic.c $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) -Itests -Imodel-families/k3/include -Imodel-families/qwen36/include $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_json: tests/test_json.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

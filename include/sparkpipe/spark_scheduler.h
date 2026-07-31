@@ -106,6 +106,13 @@ typedef struct SparkSchedulerConfiguration
     uint32_t spark_count;
     uint32_t queue_depth_per_spark;
     uint32_t measured_profile_id;
+    // The model's layer geometry - stage planning and cost profiles read
+    // this instead of any compiled-in family.
+    SparkStagePlanGeometry stage_geometry;
+    // Used only when measured_profile_id is PROFILE_UNIFORM_ESTIMATED:
+    // one per-layer cost estimate for the family, wiring-supplied.
+    uint64_t estimated_layer_cost_ns;
+    uint64_t estimated_final_stage_extra_cost_ns;
     uint32_t quantization_mode;
     uint32_t max_prefill_tokens_per_step;
     uint32_t prefix_cache_block_tokens;
@@ -292,6 +299,9 @@ typedef struct SparkSchedulerPrefillBatchDecision
 
 typedef struct SparkScheduler
 {
+    SparkStagePlanGeometry stage_geometry;
+    uint64_t estimated_layer_cost_ns;
+    uint64_t estimated_final_stage_extra_cost_ns;
     uint32_t abi_version;
     uint32_t descriptor_bytes;
     uint32_t spark_count;

@@ -2288,7 +2288,7 @@ static SparkStatus SparkRingServiceBackendInitializeKvArena(
 		state->kv_logical_block_capacity;
 	kv_configuration.block_token_count =
 		SPARK_RING_SERVICE_BACKEND_KV_BLOCK_TOKENS;
-	kv_configuration.layer_count = SPARK_STAGE_PLAN_LAYER_COUNT;
+	kv_configuration.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
 	kv_configuration.kv_head_count = 8u;
 	kv_configuration.head_dim = 128u;
 	kv_configuration.bytes_per_scalar = (uint32_t)sizeof(uint16_t);
@@ -2363,6 +2363,8 @@ static SparkStatus SparkRingServiceBackendInitializeScheduler(
 			"SPARKPIPE_DISABLE_PREFIX_REUSE\n");
 	}
 	scheduler_configuration.prefix_cache = &state->prefix_cache;
+	scheduler_configuration.stage_geometry.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
+	scheduler_configuration.stage_geometry.first_routed_layer = SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER;
 	return SparkSchedulerInitialize(
 		&state->scheduler,
 		&scheduler_configuration);

@@ -398,10 +398,27 @@ SparkStatus SparkKvCacheEstimateCapacity(
         request->context_token_count == 0u ||
         request->block_token_count == 0u ||
         request->layer_count == 0u ||
-        request->latent_dimension == 0u ||
-        request->rope_dimension == 0u ||
         request->bytes_per_scalar == 0u ||
         request->cache_bytes_per_rank == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    // Layout-conditional shape requirements: the compressed layouts
+    // carry a latent and a rope slice; the full layouts carry heads.
+    // Demanding the MLA pair from everyone rejected every full-layout
+    // family with correct zeros.
+    if (request->layout == SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED ||
+        request->layout == SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED_FP8_E4M3)
+    {
+        if (request->latent_dimension == 0u ||
+            request->rope_dimension == 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+    }
+    else if (request->head_count == 0u ||
+        request->qk_nope_head_dimension == 0u ||
+        request->value_head_dimension == 0u)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }

@@ -32,39 +32,90 @@
 #include <stdlib.h>
 #include <string.h>
 
-// model seam entries - defined in the drafter module, resolved at link
-uint32_t SparkRequestModelSlotCanSpeculate(const SparkRequestApi *api, const SparkRequestApiSlot *slot);
-uint32_t SparkRequestModelSpeculatorIsValid(const struct SparkRequestModelSpeculator *speculator);
-SparkStatus SparkRequestModelGetDraft(SparkRequestApi *api, uint64_t sequence_id, SparkRequestModelDraftResult *result);
-SparkStatus SparkRequestModelMarkVerifierTapsReady(SparkRequestApi *api, uint64_t request_id, uint64_t sequence_id, uint64_t sequence_position, uint64_t *tap_generation_out);
-uint32_t SparkRequestModelDefaultSpeculativeTokenCount(const SparkRequestApi *api);
-SparkStatus SparkRequestModelCompleteVerify(SparkRequestApi *api, uint64_t sequence_id, const SparkRequestModelVerifyResult *verify_result);
-SparkStatus SparkRequestModelResolveVerifierTokens(const uint32_t *draft_token_ids, uint32_t draft_token_count, const uint32_t *verifier_token_ids, uint32_t verifier_token_count, SparkRequestModelVerifyResult *verify_result);
-SparkStatus SparkRequestModelPrepareDraftForSlot(SparkRequestApi *api, SparkRequestApiSlot *slot);
-SparkStatus SparkRequestModelCancelSequence(SparkRequestApi *api, uint64_t sequence_id);
-uint32_t SparkRequestModelDsparkSpeculationIsEnabled(
-    const SparkRequestApi *api);
-SparkStatus SparkRequestModelGetSlotSpeculativeDraft(
+#include "sparkpipe/spark_request_model.h"
+
+static SparkStatus SparkRequestApiReleaseSlotSequence(
     SparkRequestApi *api,
-    const SparkRequestApiSlot *slot,
-    uint32_t preferred_source,
-    SparkRequestModelDraftResult *draft_result,
-    uint32_t *source_out);
-uint32_t SparkRequestModelMtpOutranksPlainDecode(
-    const SparkRequestApi *api,
-    uint32_t plain_request_count,
-    uint32_t mtp_request_count);
-SparkStatus SparkRequestModelReleaseSlotSequence(
+    SparkRequestApiSlot *slot)
+{
+    SparkStatus status;
+
+    if (slot->sequence_id == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (SparkRequestModelSpeculationIsEnabled(api))
+    {
+        status = SparkRequestModelCancelSequence(
+            api,
+            slot->sequence_id);
+        if (status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND)
+        {
+            return status;
+        }
+    }
+    status = SparkSchedulerReleaseSequence(api->scheduler, slot->sequence_id);
+    if (status == SPARK_STATUS_OK)
+    {
+        slot->sequence_id = 0u;
+    }
+    return status;
+}
+
+static void SparkRequestApiRestoreRetriedDecodeCounters(
     SparkRequestApi *api,
-    SparkRequestApiSlot *slot);
-SparkStatus SparkRequestModelResolveMtpTreeVerifierTokens(
+    const SparkRequestApiDispatch *dispatch)
+{
+    api->running_request_count -= dispatch->request_count;
+    api->scheduled_decode_dispatch_count -= 1u;
+    if (dispatch->kind !=
+        SPARK_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH)
+    {
+        return;
+    }
+    if ((dispatch->flags &
+            SPARK_REQUEST_API_DISPATCH_FLAG_MTP_SPECULATIVE_VERIFY) != 0u)
+    {
+        api->mtp_verify_dispatch_count -= 1u;
+    }
+    else
+    {
+        api->dspark_verify_dispatch_count -= 1u;
+    }
+}
+
+static SparkStatus SparkRequestApiResolveMtpTreeVerifierTokens(
     const uint32_t *candidate_token_ids,
     const uint32_t *verifier_token_ids,
     SparkRequestModelVerifyResult *verify_result,
-    uint32_t *resolution_path_id_out);
-void SparkRequestModelRestoreRetriedDecodeCounters(
-    SparkRequestApi *api,
-    const SparkRequestApiDispatch *dispatch);
+    uint32_t *resolution_path_id_out)
+{
+    SparkMtpTreeResolution resolution;
+    SparkStatus status;
+    if (candidate_token_ids == 0 || verifier_token_ids == 0 ||
+        verify_result == 0 || resolution_path_id_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkMtpTreeResolve(
+        candidate_token_ids,verifier_token_ids,&resolution);
+    if (status != SPARK_STATUS_OK)
+        return status;
+    memset(verify_result,0,sizeof(*verify_result));
+    verify_result->abi_version = SPARK_REQUEST_MODEL_ABI_VERSION;
+    verify_result->descriptor_bytes =
+        SPARK_REQUEST_MODEL_VERIFY_RESULT_DESCRIPTOR_BYTES;
+    verify_result->proposed_token_count =
+        SPARK_MODEL_MTP_TREE_CANDIDATE_COUNT;
+    verify_result->accepted_draft_token_count =
+        resolution.accepted_token_count;
+    verify_result->committed_token_count = resolution.committed_token_count;
+    verify_result->flags = SPARK_REQUEST_MODEL_VERIFY_RESULT_FLAG_REJECTED;
+    verify_result->fallback_token_id =
+        verifier_token_ids[resolution.fallback_row_index];
+    *resolution_path_id_out = resolution.path_id;
+    return SPARK_STATUS_OK;
+}
 
 
 static uint32_t SparkRequestApiNormalizeConfigurationFlags(
@@ -821,10 +872,6 @@ static uint32_t SparkRequestApiMinimumU32(
     uint32_t left,
     uint32_t right);
 
-static uint32_t SparkRequestApiRoundDownToMultiple(
-    uint32_t value,
-    uint32_t multiple);
-
 static uint32_t SparkRequestApiPrefillCachedBlocksAreResident(
     SparkRequestApi *api,
     const SparkRequestApiSlot *slot,
@@ -1197,12 +1244,12 @@ static uint32_t SparkGlm52RequestApiBuildBestPrefixFamilyChoice(
 
         maximum_family_prefix_token_count = reusable_prefix_token_count +
             scheduled_prompt_token_count;
-        maximum_family_prefix_token_count = SparkRequestApiRoundDownToMultiple(
+        maximum_family_prefix_token_count = SparkRoundDownToMultipleU32(
             SparkRequestApiMinimumU32(
                 maximum_family_prefix_token_count,
                 slot->prompt_token_count),
             block_token_count);
-        prefix_token_count = SparkRequestApiRoundDownToMultiple(
+        prefix_token_count = SparkRoundDownToMultipleU32(
             reusable_prefix_token_count + block_token_count,
             block_token_count);
         if (prefix_token_count <= reusable_prefix_token_count)
@@ -1588,16 +1635,6 @@ static uint32_t SparkRequestApiMaximumU32(
     return left > right ? left : right;
 }
 
-static uint32_t SparkRequestApiRoundDownToMultiple(
-    uint32_t value,
-    uint32_t multiple)
-{
-    if (multiple == 0u)
-    {
-        return 0u;
-    }
-    return value - (value % multiple);
-}
 
 static uint32_t SparkRequestApiCountCommonPrefixTokens(
     const SparkRequestApiSlot *left,
@@ -1644,7 +1681,7 @@ static uint32_t SparkRequestApiSharedCachePrefixTokenCount(
     common_prefix_token_count = SparkRequestApiCountCommonPrefixTokens(
         left,
         right);
-    common_prefix_token_count = SparkRequestApiRoundDownToMultiple(
+    common_prefix_token_count = SparkRoundDownToMultipleU32(
         common_prefix_token_count,
         block_token_count);
     if (common_prefix_token_count <= SparkRequestApiMaximumU32(
@@ -1720,7 +1757,7 @@ static SparkStatus SparkRequestApiPendingSpeculativeTokenCount(
         *speculative_token_count_out = slot->mtp_draft_token_count;
         return SPARK_STATUS_OK;
     }
-    if (!SparkRequestModelDsparkSpeculationIsEnabled(api))
+    if (!SparkRequestModelSpeculationIsEnabled(api))
     {
         return SPARK_STATUS_NOT_FOUND;
     }
@@ -4223,7 +4260,7 @@ static SparkStatus SparkRequestApiScheduleSpeculativeVerifyBatch(
         first_slot,
         (api->configuration_flags &
             SPARK_REQUEST_API_CONFIGURATION_FLAG_PREFER_DSPARK_SPECULATION) != 0u &&
-            SparkRequestModelDsparkSpeculationIsEnabled(api)
+            SparkRequestModelSpeculationIsEnabled(api)
             ? SPARK_REQUEST_MODEL_SPECULATIVE_SOURCE_DRAFTER
             : 0u,
         &leader_draft,
@@ -5517,7 +5554,7 @@ SparkStatus SparkRequestApiResolveSpeculativeVerifyDispatch(
             {
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
-            status = SparkRequestModelResolveMtpTreeVerifierTokens(
+            status = SparkRequestApiResolveMtpTreeVerifierTokens(
                 dispatch->speculative_draft_token_ids[request_index],
                 &verifier_token_ids[(uint64_t)request_index * lane_stride],
                 &verify_result,
@@ -6444,7 +6481,7 @@ SparkStatus SparkRequestApiRetryDecodeDispatch(
         return status;
     }
     SparkRequestApiRestoreRetriedDecodeSlots(api,dispatch);
-    SparkRequestModelRestoreRetriedDecodeCounters(api,dispatch);
+    SparkRequestApiRestoreRetriedDecodeCounters(api,dispatch);
     return SPARK_STATUS_OK;
 }
 
@@ -6490,7 +6527,7 @@ SparkStatus SparkRequestApiCancelDispatch(
             api->running_request_count -= 1u;
             slot->state = SPARK_REQUEST_API_STATE_CANCELLED;
             api->cancelled_request_count += 1u;
-            status = SparkRequestModelReleaseSlotSequence(api, slot);
+            status = SparkRequestApiReleaseSlotSequence(api, slot);
             if (status != SPARK_STATUS_OK)
             {
                 return status;
@@ -6524,7 +6561,7 @@ SparkStatus SparkRequestApiCancelDispatch(
             api->running_request_count -= 1u;
             slot->state = SPARK_REQUEST_API_STATE_CANCELLED;
             api->cancelled_request_count += 1u;
-            status = SparkRequestModelReleaseSlotSequence(api, slot);
+            status = SparkRequestApiReleaseSlotSequence(api, slot);
             if (status != SPARK_STATUS_OK)
             {
                 return status;
@@ -6558,7 +6595,7 @@ SparkStatus SparkRequestApiCancelDispatch(
             api->running_request_count -= 1u;
             slot->state = SPARK_REQUEST_API_STATE_CANCELLED;
             api->cancelled_request_count += 1u;
-            status = SparkRequestModelReleaseSlotSequence(api, slot);
+            status = SparkRequestApiReleaseSlotSequence(api, slot);
             if (status != SPARK_STATUS_OK)
             {
                 return status;
@@ -6591,7 +6628,7 @@ SparkStatus SparkRequestApiCancelDispatch(
             {
                 return SPARK_STATUS_INVALID_ARGUMENT;
             }
-            if (SparkRequestModelDsparkSpeculationIsEnabled(api))
+            if (SparkRequestModelSpeculationIsEnabled(api))
             {
                 (void)SparkRequestModelCancelSequence(
                     api,
@@ -6600,7 +6637,7 @@ SparkStatus SparkRequestApiCancelDispatch(
             api->running_request_count -= 1u;
             slot->state = SPARK_REQUEST_API_STATE_CANCELLED;
             api->cancelled_request_count += 1u;
-            status = SparkRequestModelReleaseSlotSequence(api, slot);
+            status = SparkRequestApiReleaseSlotSequence(api, slot);
             if (status != SPARK_STATUS_OK)
             {
                 return status;
@@ -6720,7 +6757,7 @@ SparkStatus SparkRequestApiFinishRequestGeneration(
     }
 
     if (slot->state == SPARK_REQUEST_API_STATE_READY_SPECULATIVE_VERIFY &&
-        SparkRequestModelDsparkSpeculationIsEnabled(api))
+        SparkRequestModelSpeculationIsEnabled(api))
     {
         status = SparkRequestModelCancelSequence(
             api,
@@ -6774,7 +6811,7 @@ SparkStatus SparkRequestApiCancelRequest(
     }
     slot->state = SPARK_REQUEST_API_STATE_CANCELLED;
     api->cancelled_request_count += 1u;
-    return SparkRequestModelReleaseSlotSequence(api, slot);
+    return SparkRequestApiReleaseSlotSequence(api, slot);
 }
 
 SparkStatus SparkRequestApiReleaseCompletedRequest(
@@ -6799,7 +6836,7 @@ SparkStatus SparkRequestApiReleaseCompletedRequest(
     {
         return SPARK_STATUS_BUSY;
     }
-    status = SparkRequestModelReleaseSlotSequence(api, slot);
+    status = SparkRequestApiReleaseSlotSequence(api, slot);
     if (status != SPARK_STATUS_OK)
     {
         return status;

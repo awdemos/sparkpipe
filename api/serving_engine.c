@@ -24,25 +24,7 @@ static uint32_t SparkServingNormalizeOutputTokenBudget(
     return output_token_budget;
 }
 
-static uint32_t SparkServingNormalizeMaxContextTokens(
-    uint32_t max_context_tokens)
-{
-    if (max_context_tokens == 0u)
-    {
-        return SPARK_SERVING_DEFAULT_MAX_CONTEXT_TOKENS;
-    }
-    return max_context_tokens;
-}
 
-static uint64_t SparkServingNormalizeRequestIdBase(
-    uint64_t request_id_base)
-{
-    if (request_id_base == 0u)
-    {
-        return SPARK_SERVING_DEFAULT_REQUEST_ID_BASE;
-    }
-    return request_id_base;
-}
 
 static uint32_t SparkServingEventRingSafetyMargin(void)
 {
@@ -437,9 +419,9 @@ SparkStatus SparkServingEngineInitialize(
         configuration->default_output_token_budget);
     engine->default_max_prefill_tokens_per_step =
         configuration->default_max_prefill_tokens_per_step;
-    engine->max_context_tokens = SparkServingNormalizeMaxContextTokens(
+    engine->max_context_tokens = SparkNormalizeMaxContextTokens(SPARK_SERVING_DEFAULT_MAX_CONTEXT_TOKENS, 
         configuration->max_context_tokens);
-    engine->next_generated_request_id = SparkServingNormalizeRequestIdBase(
+    engine->next_generated_request_id = SparkNormalizeRequestIdBase(SPARK_SERVING_DEFAULT_REQUEST_ID_BASE, 
         configuration->request_id_base);
     engine->request_api = configuration->request_api;
     engine->tokenizer = configuration->tokenizer;

@@ -205,6 +205,7 @@ SparkStatus SparkRingRuntimeBuildFixedStagePlan(
             "stage plan is null");
     }
     return SparkStagePlanBuildFromLayerCounts(
+        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
         SparkGlm52RingRuntimeDefaultLayerCounts,
         SPARK_RING_RUNTIME_STAGE_COUNT,
         stage_plan,
@@ -828,7 +829,7 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
          layer_index < rank_plan->first_layer_index + rank_plan->layer_count;
          ++layer_index)
     {
-        if (layer_index < SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER)
+        if (layer_index < SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER)
         {
             continue;
         }

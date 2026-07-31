@@ -7,6 +7,7 @@
 #include "sparkpipe/spark_mtp_tree.h"
 #include "sparkpipe/spark_glm52_text_prompt.h"
 #include "sparkpipe/spark_request_api.h"
+#include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_tokenizer.h"
 
 #define SPARK_TEST_REQUEST_SLOT_COUNT 32u
@@ -334,6 +335,8 @@ static void SparkTestInitializeFixture(
     scheduler_configuration.prefix_cache_block_tokens =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     scheduler_configuration.prefix_cache = &fixture->prefix_cache;
+    scheduler_configuration.stage_geometry.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
+    scheduler_configuration.stage_geometry.first_routed_layer = SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER;
     assert(SparkSchedulerInitialize(
         &fixture->scheduler,
         &scheduler_configuration) == SPARK_STATUS_OK);
@@ -437,6 +440,8 @@ static void SparkTestInitializeFixtureWithAsyncMemoryBackend(
     scheduler_configuration.prefix_cache_block_tokens =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     scheduler_configuration.prefix_cache = &fixture->prefix_cache;
+    scheduler_configuration.stage_geometry.layer_count = SPARK_GLM52_MODEL_LAYER_COUNT;
+    scheduler_configuration.stage_geometry.first_routed_layer = SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER;
     assert(SparkSchedulerInitialize(
         &fixture->scheduler,
         &scheduler_configuration) == SPARK_STATUS_OK);
@@ -509,7 +514,7 @@ static void SparkTestEnableDsparkSpeculation(
     fixture->dspark_capture.next_token_id = 140000u;
     fixture->api.configuration_flags |=
         SPARK_REQUEST_API_CONFIGURATION_FLAG_DSPARK_SPECULATIVE_DECODE;
-    fixture->api.dspark_speculator = &fixture->dspark_speculator;
+    fixture->api.model_speculator = (struct SparkRequestModelSpeculator *)&fixture->dspark_speculator;
 }
 
 static void SparkTestInitializeSubmitRequest(

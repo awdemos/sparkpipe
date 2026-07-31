@@ -90,3 +90,45 @@ What the instrument did find, and what happened to each:
 - SKIPPED WITH REASON: the serving/service PopEvent pair (26L, 0.88)
   pops different event structs; a generic ring-pop macro would trade
   two readable functions for one clever one.
+
+## Provider policy: how a family joins the request tier (2026-07-29)
+
+The request-model seam has exactly one contract
+(include/sparkpipe/spark_request_model.h, twelve entries) and a
+provider is any object that defines all twelve - the symbol-parity
+gate diffs providers against each other so the set cannot drift. A
+family chooses its provider at link time:
+
+- A family WITH a drafter implements the contract in its own module
+  the way glm52 does (spark_glm52_request_model.c in the drafter
+  module, compiled into the glm host library), casting the opaque
+  configuration speculator to its concrete type in exactly one inline.
+- A family WITHOUT a drafter links build/obj/serving/
+  spark_request_model_null.o - the null provider - and the request
+  tier runs plain decode with every speculative path fail-closed.
+  test_null_seam_link is the standing proof this works with zero
+  model objects.
+- Never both: two providers in one link is a duplicate-symbol error
+  by design, which is the mechanism that makes the choice explicit.
+
+Stage geometry is the same shape at a different tier: the scheduler,
+stage plan, and topology take SparkStagePlanGeometry at runtime, and
+the wiring tier (the daemon or test that initializes them) passes its
+family's values as literals. A new family therefore needs: a firmware
+config under inference/llms/, a host geometry header under
+model-families/, a stage doorway module with the three validation
+externs (fail-closed until its execute path lands), a provider choice,
+and geometry at its wiring sites. The family conformance gate checks
+the first three; the linker enforces the fourth; the scheduler's
+initialize validation catches a forgotten fifth.
+
+### Instrument re-run after the multi-model surgery (2026-07-29, later)
+1,937 functions, 22 pairs at 0.85+, every one under seventeen lines.
+Four micro-shares extracted to the spark_status.h annex - the FNV hash,
+round-down-to-multiple beside its ceil-div siblings, and the two
+normalize clamps with their default values parameterized so policy
+stays at the call site while the mechanism is shared. The daemon
+attach-builder pair stays by the posture rule. The stage-mode helper
+that survived in both module.c and validation.c is a firmware-header
+inline now. The ceiling holds: no cluster anywhere reaches twenty
+lines.

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "sparkpipe/spark_production_topology.h"
+#include "sparkpipe/spark_glm52_model.h"
 
 #define SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY 64u
 
@@ -53,30 +54,34 @@ static void SparkTestGlm52IndexShareSchedule(void)
 {
     uint32_t group_end_layer_exclusive;
 
-    assert(SparkDsaIndexShareSourceLayer(0u) == 0u);
-    assert(SparkDsaIndexShareSourceLayer(1u) == 1u);
-    assert(SparkDsaIndexShareSourceLayer(2u) == 2u);
-    assert(SparkDsaIndexShareSourceLayer(3u) == 2u);
-    assert(SparkDsaIndexShareSourceLayer(5u) == 2u);
-    assert(SparkDsaIndexShareSourceLayer(6u) == 6u);
-    assert(SparkDsaIndexShareSourceLayer(9u) == 6u);
-    assert(SparkDsaIndexShareSourceLayer(10u) == 10u);
-    assert(SparkDsaIndexShareSourceLayer(77u) == 74u);
-    assert(SparkDsaIndexShareSourceLayer(78u) == UINT32_MAX);
+    assert(SparkDsaIndexShareSourceLayer(0u, SPARK_GLM52_MODEL_LAYER_COUNT) == 0u);
+    assert(SparkDsaIndexShareSourceLayer(1u, SPARK_GLM52_MODEL_LAYER_COUNT) == 1u);
+    assert(SparkDsaIndexShareSourceLayer(2u, SPARK_GLM52_MODEL_LAYER_COUNT) == 2u);
+    assert(SparkDsaIndexShareSourceLayer(3u, SPARK_GLM52_MODEL_LAYER_COUNT) == 2u);
+    assert(SparkDsaIndexShareSourceLayer(5u, SPARK_GLM52_MODEL_LAYER_COUNT) == 2u);
+    assert(SparkDsaIndexShareSourceLayer(6u, SPARK_GLM52_MODEL_LAYER_COUNT) == 6u);
+    assert(SparkDsaIndexShareSourceLayer(9u, SPARK_GLM52_MODEL_LAYER_COUNT) == 6u);
+    assert(SparkDsaIndexShareSourceLayer(10u, SPARK_GLM52_MODEL_LAYER_COUNT) == 10u);
+    assert(SparkDsaIndexShareSourceLayer(77u, SPARK_GLM52_MODEL_LAYER_COUNT) == 74u);
+    assert(SparkDsaIndexShareSourceLayer(78u, SPARK_GLM52_MODEL_LAYER_COUNT) == UINT32_MAX);
     assert(SparkDsaIndexShareFindGroupEndLayerExclusive(
         0u,
+        SPARK_GLM52_MODEL_LAYER_COUNT,
         &group_end_layer_exclusive) == SPARK_STATUS_OK);
     assert(group_end_layer_exclusive == 1u);
     assert(SparkDsaIndexShareFindGroupEndLayerExclusive(
         3u,
+        SPARK_GLM52_MODEL_LAYER_COUNT,
         &group_end_layer_exclusive) == SPARK_STATUS_OK);
     assert(group_end_layer_exclusive == 6u);
     assert(SparkDsaIndexShareFindGroupEndLayerExclusive(
         77u,
+        SPARK_GLM52_MODEL_LAYER_COUNT,
         &group_end_layer_exclusive) == SPARK_STATUS_OK);
     assert(group_end_layer_exclusive == 78u);
     assert(SparkDsaIndexShareFindGroupEndLayerExclusive(
         78u,
+        SPARK_GLM52_MODEL_LAYER_COUNT,
         &group_end_layer_exclusive) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
@@ -89,6 +94,7 @@ static void SparkTestGlm52ProductionTopologyRingSideband(void)
 
     SparkTestInitializeRingStagePlan(&stage_plan);
     assert(SparkProductionTopologyBuild(
+        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
         &stage_plan,
         SPARK_TEST_GLM52_TOPOLOGY_ACTIVE_SEQUENCE_CAPACITY,
         SPARK_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT,
@@ -195,6 +201,7 @@ static void SparkTestGlm52ProductionTopologyRejectsBadDimensions(void)
 
     SparkTestInitializeRingStagePlan(&stage_plan);
     assert(SparkProductionTopologyBuild(
+        &(const SparkStagePlanGeometry){SPARK_GLM52_MODEL_LAYER_COUNT, SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER},
         &stage_plan,
         0u,
         SPARK_PRODUCTION_TOPOLOGY_SELECTED_TOKEN_COUNT,

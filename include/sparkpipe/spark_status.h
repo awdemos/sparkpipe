@@ -64,4 +64,51 @@ static inline uint64_t SparkCeilDivU64(uint64_t numerator, uint64_t denominator)
 	return denominator == 0u ? 0u : (numerator + denominator - 1u) / denominator;
 }
 
+
+static inline uint64_t SparkHashBytes(uint64_t hash,const void *data,uint32_t data_bytes)
+{
+	const uint8_t *bytes = (const uint8_t *)data;
+	uint32_t byte_index;
+	for (byte_index = 0u; byte_index < data_bytes; ++byte_index)
+	{
+		hash ^= bytes[byte_index];
+		hash *= 1099511628211u;
+	}
+	return hash;
+}
+
+static inline uint64_t SparkNormalizeRequestIdBase(
+    uint64_t default_base,
+    
+    uint64_t request_id_base)
+{
+    if (request_id_base == 0u)
+    {
+        return default_base;
+    }
+    return request_id_base;
+}
+
+static inline uint32_t SparkRoundDownToMultipleU32(
+    uint32_t value,
+    uint32_t multiple)
+{
+    if (multiple == 0u)
+    {
+        return 0u;
+    }
+    return value - (value % multiple);
+}
+
+static inline uint32_t SparkNormalizeMaxContextTokens(
+    uint32_t default_max,
+    uint32_t max_context_tokens)
+{
+    if (max_context_tokens == 0u)
+    {
+        return default_max;
+    }
+    return max_context_tokens;
+}
+
 #endif

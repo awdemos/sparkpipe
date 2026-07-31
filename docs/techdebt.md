@@ -220,3 +220,29 @@ call (ct's), then the node twin-init similarity pass.
 - Mooncake KV tier under multi-day eviction pressure.
 - 16-node ring stability at sustained B≥256 (thermals, RDMA retransmit
   behavior at 267 ms step cadence).
+
+## Scheduler geometry parameterization (multi-model) - DONE 2026-07-29
+Geometry lives in SparkSchedulerConfiguration, validated and cached at
+initialize; the four plan-build sites read the cache; backend wires glm
+values. scheduler.c names no model.
+
+## Envelope-era latent test refresh
+test_glm52_request_api (and siblings) predate the slot envelope: they
+name SparkGlm52Dspark* types directly and are not suite-gated, so the
+breakage is latent. Refresh them against spark_request_model.h and add
+their compile lines to gates - the k3-doorway lesson, applied to tests.
+
+## Old scheduler geometry note (superseded)
+scheduler.c reads glm layer geometry directly (include + constants) as
+of the geometry-parameter change; its cost tables and loop bounds are
+glm-shaped. The stage-plan and topology tiers already take
+SparkStagePlanGeometry at runtime. The scheduler is next: thread the
+same geometry through its Build entries and cost-profile loops, then
+drop the glm include. Until then the law counts it honestly.
+
+## Scheduler homed in the glm library (packaging)
+sources.mk places scheduler/ under the glm host sources, so the
+model-neutral scheduler ships inside libglm52_host. Post-geometry it
+belongs in the model-common library; the move is link-line churn
+across every target and waits for a quiet moment. The uniform-profile
+admit test links glm_host solely for this packaging reason.

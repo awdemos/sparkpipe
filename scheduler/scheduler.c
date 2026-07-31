@@ -49,7 +49,7 @@ static uint32_t SparkGlm52SchedulerRoundDownToMultiple(
 }
 
 static uint64_t SparkSchedulerStageCostNs(
-    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t final_stage_extra_cost_ns,
     const SparkStagePlanStage *stage)
 {
@@ -85,10 +85,8 @@ static uint32_t SparkSchedulerNormalizeQueueDepthPerSpark(
 static uint32_t SparkSchedulerNormalizeMeasuredProfileId(
     uint32_t measured_profile_id)
 {
-    if (measured_profile_id == 0u)
-    {
-        return SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701;
-    }
+    // Zero is the uniform-estimated profile now - an explicit choice
+    // for families without measurements, never silently upgraded.
     return measured_profile_id;
 }
 
@@ -160,7 +158,7 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
     const SparkScheduler *scheduler,
     uint32_t batch_bucket,
     SparkStagePlan *stage_plan,
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     SparkStatus status;
@@ -171,7 +169,30 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
+    if (scheduler->measured_profile_id ==
+        SPARK_STAGE_PLAN_PROFILE_UNIFORM_ESTIMATED)
+    {
+        status = SparkStagePlanLoadUniformCostProfile(
+            &scheduler->stage_geometry,
+            scheduler->estimated_layer_cost_ns,
+            scheduler->estimated_final_stage_extra_cost_ns,
+            layer_cost_ns,
+            final_stage_extra_cost_ns_out);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        return SparkStagePlanBuildBalancedWithFinalCost(
+            &scheduler->stage_geometry,
+            layer_cost_ns,
+            *final_stage_extra_cost_ns_out,
+            SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT,
+            stage_plan,
+            0,
+            0u);
+    }
     status = SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+        &scheduler->stage_geometry,
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -184,6 +205,7 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
     }
 
     return SparkStagePlanLoadMeasuredCostProfileForQuantization(
+        &scheduler->stage_geometry,
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -193,7 +215,7 @@ static SparkStatus SparkSchedulerBuildMeasuredPlanAndCosts(
 
 static uint64_t SparkSchedulerPlanCriticalPathNs(
     const SparkStagePlan *stage_plan,
-    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t final_stage_extra_cost_ns,
     uint32_t prefill_block_count)
 {
@@ -267,7 +289,7 @@ static SparkStatus SparkSchedulerSelectDecodeBatchBucket(
          ++candidate_index)
     {
         SparkStagePlan candidate_stage_plan;
-        uint64_t candidate_layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+        uint64_t candidate_layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
         uint64_t candidate_final_stage_extra_cost_ns;
         uint64_t candidate_critical_path_ns;
         uint32_t candidate_bucket;
@@ -747,6 +769,13 @@ SparkStatus SparkSchedulerInitialize(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     status = SparkSchedulerValidateConfiguration(configuration);
+    if (status == SPARK_STATUS_OK &&
+        configuration->measured_profile_id ==
+            SPARK_STAGE_PLAN_PROFILE_UNIFORM_ESTIMATED &&
+        configuration->estimated_layer_cost_ns == 0u)
+    {
+        status = SPARK_STATUS_INVALID_ARGUMENT;
+    }
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -754,6 +783,12 @@ SparkStatus SparkSchedulerInitialize(
 
     queue_depth_per_spark = SparkSchedulerNormalizeQueueDepthPerSpark(
         configuration->queue_depth_per_spark);
+    if (configuration->stage_geometry.layer_count == 0u ||
+        configuration->stage_geometry.layer_count > SPARK_STAGE_PLAN_MAX_LAYER_COUNT ||
+        configuration->stage_geometry.first_routed_layer > configuration->stage_geometry.layer_count)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     measured_profile_id = SparkSchedulerNormalizeMeasuredProfileId(
         configuration->measured_profile_id);
     quantization_mode = SparkSchedulerNormalizeQuantizationMode(
@@ -766,6 +801,10 @@ SparkStatus SparkSchedulerInitialize(
             prefix_cache_block_tokens);
 
     memset(scheduler, 0, sizeof(*scheduler));
+    scheduler->stage_geometry = configuration->stage_geometry;
+    scheduler->estimated_layer_cost_ns = configuration->estimated_layer_cost_ns;
+    scheduler->estimated_final_stage_extra_cost_ns =
+        configuration->estimated_final_stage_extra_cost_ns;
     scheduler->abi_version = SPARK_SCHEDULER_ABI_VERSION;
     scheduler->descriptor_bytes = SPARK_SCHEDULER_DESCRIPTOR_BYTES;
     scheduler->spark_count = SPARK_SCHEDULER_MAX_SPARK_COUNT;
@@ -809,7 +848,7 @@ static SparkStatus SparkSchedulerEstimateDecodeChunkNs(
     uint64_t *estimated_work_ns_out)
 {
     SparkStagePlan stage_plan;
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     uint32_t batch_bucket;
     uint32_t minimal_batch_bucket;
@@ -930,7 +969,7 @@ SparkStatus SparkSchedulerAdmit(
     const SparkSchedulerRequest *request,
     SparkSchedulerDecision *decision)
 {
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     uint64_t stage_cost_ns;
     uint64_t stage_service_time_ns;
@@ -1538,7 +1577,7 @@ SparkStatus SparkSchedulerAdmitPrefillBatch(
     const SparkSchedulerPrefillBatchRequest *batch_request,
     SparkSchedulerPrefillBatchDecision *batch_decision)
 {
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     uint64_t stage_cost_ns;
     uint64_t stage_service_time_ns;
@@ -1631,6 +1670,7 @@ SparkStatus SparkSchedulerAdmitPrefillBatch(
     }
 
     status = SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+        &scheduler->stage_geometry,
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,
@@ -1647,6 +1687,7 @@ SparkStatus SparkSchedulerAdmitPrefillBatch(
     }
 
     status = SparkStagePlanLoadMeasuredCostProfileForQuantization(
+        &scheduler->stage_geometry,
         scheduler->measured_profile_id,
         batch_bucket,
         scheduler->quantization_mode,

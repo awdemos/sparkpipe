@@ -30,36 +30,42 @@ static SparkStatus SparkStagePlanNormalizeQuantizationMode(
 }
 
 static uint32_t SparkStagePlanLayerRangeIsValid(
+    const SparkStagePlanGeometry *geometry,
     uint32_t first_layer_index,
     uint32_t layer_count)
 {
     uint32_t range_end;
     uint32_t routed_layer_count;
 
-    if (layer_count == 0u || first_layer_index >= SPARK_STAGE_PLAN_LAYER_COUNT)
+    if (layer_count == 0u || first_layer_index >= geometry->layer_count)
     {
         return 0u;
     }
-    if (layer_count > SPARK_STAGE_PLAN_LAYER_COUNT - first_layer_index)
+    if (layer_count > geometry->layer_count - first_layer_index)
     {
         return 0u;
     }
     range_end = first_layer_index + layer_count;
-    if (first_layer_index != 0u &&
-        first_layer_index < SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER)
+    // The dense prefix stays whole in stage zero - a rule that only
+    // means something when a routed region exists. A fully dense model
+    // (first_routed == layer_count) may cut anywhere.
+    if (geometry->first_routed_layer < geometry->layer_count)
     {
-        return 0u;
-    }
-    if (range_end < SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER &&
-        range_end != SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER)
-    {
-        return 0u;
+        if (first_layer_index != 0u &&
+            first_layer_index < geometry->first_routed_layer)
+        {
+            return 0u;
+        }
+        if (range_end < geometry->first_routed_layer)
+        {
+            return 0u;
+        }
     }
     routed_layer_count = SparkRoutedLayerCountForRange(
 first_layer_index,
 layer_count,
-SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER,
-SPARK_STAGE_PLAN_LAYER_COUNT);
+geometry->first_routed_layer,
+geometry->layer_count);
     return routed_layer_count <=
         SPARK_STAGE_PLAN_MAX_ROUTED_LAYERS_PER_STAGE;
 }
@@ -89,6 +95,7 @@ static void SparkStagePlanReset(
 }
 
 static void SparkStagePlanAssignStageFlags(
+    const SparkStagePlanGeometry *geometry,
     SparkStagePlan *stage_plan)
 {
     uint32_t stage_index;
@@ -109,7 +116,7 @@ static void SparkStagePlanAssignStageFlags(
             stage->flags |= SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN;
         }
         if (stage->first_layer_index == 0u &&
-            stage->layer_count >= SPARK_STAGE_PLAN_FIRST_ROUTED_LAYER)
+            stage->layer_count >= geometry->first_routed_layer)
         {
             stage->flags |= SPARK_STAGE_PLAN_STAGE_FLAG_DENSE_PREFIX;
         }
@@ -117,6 +124,7 @@ static void SparkStagePlanAssignStageFlags(
 }
 
 SparkStatus SparkStagePlanBuildFromLayerCounts(
+    const SparkStagePlanGeometry *geometry,
     const uint32_t *layer_counts,
     uint32_t stage_count,
     SparkStagePlan *stage_plan,
@@ -142,7 +150,7 @@ SparkStatus SparkStagePlanBuildFromLayerCounts(
     {
         if (layer_counts[stage_index] == 0u ||
             layer_counts[stage_index] >
-                SPARK_STAGE_PLAN_LAYER_COUNT - first_layer_index)
+                geometry->layer_count - first_layer_index)
         {
             return SparkReportError(
                 error_buffer,
@@ -154,14 +162,16 @@ SparkStatus SparkStagePlanBuildFromLayerCounts(
         stage_plan->stages[stage_index].layer_count = layer_counts[stage_index];
         first_layer_index += layer_counts[stage_index];
     }
-    SparkStagePlanAssignStageFlags(stage_plan);
+    SparkStagePlanAssignStageFlags(geometry, stage_plan);
     return SparkStagePlanValidate(
+        geometry,
         stage_plan,
         error_buffer,
         error_buffer_bytes);
 }
 
 SparkStatus SparkStagePlanValidate(
+    const SparkStagePlanGeometry *geometry,
     const SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
@@ -223,6 +233,7 @@ SparkStatus SparkStagePlanValidate(
                 "stage layers are not contiguous");
         }
         if (!SparkStagePlanLayerRangeIsValid(
+        geometry,
                 stage->first_layer_index,
                 stage->layer_count))
         {
@@ -256,7 +267,7 @@ SparkStatus SparkStagePlanValidate(
         expected_first_layer_index = range_end;
     }
 
-    if (expected_first_layer_index != SPARK_STAGE_PLAN_LAYER_COUNT)
+    if (expected_first_layer_index != geometry->layer_count)
     {
         return SparkReportError(
             error_buffer,
@@ -280,6 +291,7 @@ SparkStatus SparkStagePlanValidate(
 }
 
 SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
+    const SparkStagePlanGeometry *geometry,
     const uint64_t *layer_cost_ns,
     uint64_t final_stage_extra_cost_ns,
     uint32_t stage_count,
@@ -287,11 +299,11 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    uint64_t prefix_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT + 1u];
+    uint64_t prefix_cost_ns[geometry->layer_count + 1u];
     uint64_t best_cost[SPARK_STAGE_PLAN_MAX_STAGE_COUNT + 1u]
-        [SPARK_STAGE_PLAN_LAYER_COUNT + 1u];
+        [geometry->layer_count + 1u];
     uint32_t best_split[SPARK_STAGE_PLAN_MAX_STAGE_COUNT + 1u]
-        [SPARK_STAGE_PLAN_LAYER_COUNT + 1u];
+        [geometry->layer_count + 1u];
     uint32_t current_layer_index;
     uint32_t layer_index;
     uint32_t split_layer_index;
@@ -311,7 +323,7 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
 
     prefix_cost_ns[0] = 0u;
     for (layer_index = 0u;
-         layer_index < SPARK_STAGE_PLAN_LAYER_COUNT;
+         layer_index < geometry->layer_count;
          ++layer_index)
     {
         if (layer_cost_ns[layer_index] == 0u)
@@ -339,7 +351,7 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
          ++stage_index)
     {
         for (layer_index = 0u;
-             layer_index <= SPARK_STAGE_PLAN_LAYER_COUNT;
+             layer_index <= geometry->layer_count;
              ++layer_index)
         {
             best_cost[stage_index][layer_index] =
@@ -352,7 +364,7 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
     for (stage_index = 1u; stage_index <= stage_count; ++stage_index)
     {
         for (layer_index = 1u;
-             layer_index <= SPARK_STAGE_PLAN_LAYER_COUNT;
+             layer_index <= geometry->layer_count;
              ++layer_index)
         {
             for (split_layer_index = 0u;
@@ -365,6 +377,7 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
                     continue;
                 }
                 if (!SparkStagePlanLayerRangeIsValid(
+        geometry,
                         split_layer_index,
                         layer_index - split_layer_index))
                 {
@@ -394,19 +407,19 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
         }
     }
 
-    if (best_cost[stage_count][SPARK_STAGE_PLAN_LAYER_COUNT] ==
+    if (best_cost[stage_count][geometry->layer_count] ==
         SPARK_STAGE_PLAN_UNREACHABLE_COST)
     {
         return SparkReportError(
             error_buffer,
             error_buffer_bytes,
             SPARK_STATUS_CAPACITY_EXCEEDED,
-            "stage count cannot satisfy GLM-5.2 cut rules");
+            "stage count cannot satisfy the cut rules");
     }
 
     SparkStagePlanReset(stage_plan);
     stage_plan->stage_count = stage_count;
-    current_layer_index = SPARK_STAGE_PLAN_LAYER_COUNT;
+    current_layer_index = geometry->layer_count;
     for (stage_index = stage_count; stage_index > 0u; --stage_index)
     {
         split_layer_index = best_split[stage_index][current_layer_index];
@@ -424,14 +437,16 @@ SparkStatus SparkStagePlanBuildBalancedWithFinalCost(
             current_layer_index - split_layer_index;
         current_layer_index = split_layer_index;
     }
-    SparkStagePlanAssignStageFlags(stage_plan);
+    SparkStagePlanAssignStageFlags(geometry, stage_plan);
     return SparkStagePlanValidate(
+        geometry,
         stage_plan,
         error_buffer,
         error_buffer_bytes);
 }
 
 SparkStatus SparkStagePlanBuildBalanced(
+    const SparkStagePlanGeometry *geometry,
     const uint64_t *layer_cost_ns,
     uint32_t stage_count,
     SparkStagePlan *stage_plan,
@@ -439,6 +454,7 @@ SparkStatus SparkStagePlanBuildBalanced(
     uint32_t error_buffer_bytes)
 {
     return SparkStagePlanBuildBalancedWithFinalCost(
+        geometry,
         layer_cost_ns,
         0u,
         stage_count,
@@ -451,7 +467,7 @@ static void SparkStagePlanStoreUniformSegmentCost(
     uint64_t segment_cost_ns,
     uint32_t first_layer_index,
     uint32_t layer_count,
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT])
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT])
 {
     uint64_t base_layer_cost_ns;
     uint64_t remainder_ns;
@@ -467,7 +483,7 @@ static void SparkStagePlanStoreUniformSegmentCost(
 }
 
 static SparkStatus SparkStagePlanLoadMeasuredB64CostProfile(
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     static const uint32_t first_layer_index[13] = {
@@ -506,7 +522,8 @@ static SparkStatus SparkStagePlanLoadMeasuredB64CostProfile(
 }
 
 static void SparkStagePlanScaleCostProfile(
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    const SparkStagePlanGeometry *geometry,
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns,
     uint32_t numerator,
     uint32_t denominator)
@@ -514,7 +531,7 @@ static void SparkStagePlanScaleCostProfile(
     uint32_t layer_index;
 
     for (layer_index = 0u;
-         layer_index < SPARK_STAGE_PLAN_LAYER_COUNT;
+         layer_index < geometry->layer_count;
          ++layer_index)
     {
         layer_cost_ns[layer_index] =
@@ -527,7 +544,7 @@ static void SparkStagePlanScaleCostProfile(
 }
 
 static SparkStatus SparkStagePlanLoadMeasuredB128CostProfile(
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     static const uint64_t stage_cost_ns[13] = {
@@ -560,8 +577,9 @@ static SparkStatus SparkStagePlanLoadMeasuredB128CostProfile(
 }
 
 static SparkStatus SparkStagePlanLoadEstimatedLargeBatchCostProfile(
+    const SparkStagePlanGeometry *geometry,
     uint32_t batch_bucket,
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     SparkStatus status;
@@ -579,6 +597,7 @@ static SparkStatus SparkStagePlanLoadEstimatedLargeBatchCostProfile(
         return status;
     }
     SparkStagePlanScaleCostProfile(
+        geometry,
         layer_cost_ns,
         final_stage_extra_cost_ns_out,
         batch_bucket,
@@ -587,7 +606,7 @@ static SparkStatus SparkStagePlanLoadEstimatedLargeBatchCostProfile(
 }
 
 static SparkStatus SparkStagePlanLoadMeasuredB32CostProfile(
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     static const uint64_t stage_cost_ns[13] = {
@@ -620,6 +639,7 @@ static SparkStatus SparkStagePlanLoadMeasuredB32CostProfile(
 }
 
 static SparkStatus SparkStagePlanBuildMeasuredB64RingExact(
+    const SparkStagePlanGeometry *geometry,
     SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
@@ -647,18 +667,47 @@ static SparkStatus SparkStagePlanBuildMeasuredB64RingExact(
             first_layer_index[stage_index];
         stage_plan->stages[stage_index].layer_count = 6u;
     }
-    SparkStagePlanAssignStageFlags(stage_plan);
+    SparkStagePlanAssignStageFlags(geometry, stage_plan);
     return SparkStagePlanValidate(
+        geometry,
         stage_plan,
         error_buffer,
         error_buffer_bytes);
 }
 
+SparkStatus SparkStagePlanLoadUniformCostProfile(
+    const SparkStagePlanGeometry *geometry,
+    uint64_t layer_cost_ns_estimate,
+    uint64_t final_stage_extra_cost_ns_estimate,
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
+    uint64_t *final_stage_extra_cost_ns_out)
+{
+    uint32_t layer_index;
+
+    if (geometry == 0 || layer_cost_ns == 0 ||
+        final_stage_extra_cost_ns_out == 0 ||
+        layer_cost_ns_estimate == 0u ||
+        geometry->layer_count == 0u ||
+        geometry->layer_count > SPARK_STAGE_PLAN_MAX_LAYER_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (layer_index = 0u;
+         layer_index < geometry->layer_count;
+         ++layer_index)
+    {
+        layer_cost_ns[layer_index] = layer_cost_ns_estimate;
+    }
+    *final_stage_extra_cost_ns_out = final_stage_extra_cost_ns_estimate;
+    return SPARK_STATUS_OK;
+}
+
 SparkStatus SparkStagePlanLoadMeasuredCostProfileForQuantization(
+    const SparkStagePlanGeometry *geometry,
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
     uint32_t quantization_mode,
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     uint32_t normalized_quantization_mode;
@@ -706,6 +755,7 @@ SparkStatus SparkStagePlanLoadMeasuredCostProfileForQuantization(
         SparkStagePlanBatchBucketIsSupported(batch_bucket) != 0u)
     {
         return SparkStagePlanLoadEstimatedLargeBatchCostProfile(
+        geometry,
             batch_bucket,
             layer_cost_ns,
             final_stage_extra_cost_ns_out);
@@ -721,12 +771,14 @@ SparkStatus SparkStagePlanLoadMeasuredCostProfileForQuantization(
 }
 
 SparkStatus SparkStagePlanLoadMeasuredCostProfile(
+    const SparkStagePlanGeometry *geometry,
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT],
     uint64_t *final_stage_extra_cost_ns_out)
 {
     return SparkStagePlanLoadMeasuredCostProfileForQuantization(
+        geometry,
         measured_profile_id,
         batch_bucket,
         SPARK_STAGE_PLAN_QUANTIZATION_AUTO,
@@ -735,6 +787,7 @@ SparkStatus SparkStagePlanLoadMeasuredCostProfile(
 }
 
 SparkStatus SparkStagePlanBuildMeasuredBalancedForQuantization(
+    const SparkStagePlanGeometry *geometry,
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
     uint32_t quantization_mode,
@@ -743,11 +796,12 @@ SparkStatus SparkStagePlanBuildMeasuredBalancedForQuantization(
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     SparkStatus status;
 
     status = SparkStagePlanLoadMeasuredCostProfileForQuantization(
+        geometry,
         measured_profile_id,
         batch_bucket,
         quantization_mode,
@@ -762,6 +816,7 @@ SparkStatus SparkStagePlanBuildMeasuredBalancedForQuantization(
             "measured stage-plan profile is unavailable");
     }
     return SparkStagePlanBuildBalancedWithFinalCost(
+        geometry,
         layer_cost_ns,
         final_stage_extra_cost_ns,
         stage_count,
@@ -771,6 +826,7 @@ SparkStatus SparkStagePlanBuildMeasuredBalancedForQuantization(
 }
 
 SparkStatus SparkStagePlanBuildMeasuredBalanced(
+    const SparkStagePlanGeometry *geometry,
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
     uint32_t stage_count,
@@ -779,6 +835,7 @@ SparkStatus SparkStagePlanBuildMeasuredBalanced(
     uint32_t error_buffer_bytes)
 {
     return SparkStagePlanBuildMeasuredBalancedForQuantization(
+        geometry,
         measured_profile_id,
         batch_bucket,
         SPARK_STAGE_PLAN_QUANTIZATION_AUTO,
@@ -789,6 +846,7 @@ SparkStatus SparkStagePlanBuildMeasuredBalanced(
 }
 
 SparkStatus SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+    const SparkStagePlanGeometry *geometry,
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
     uint32_t quantization_mode,
@@ -817,11 +875,13 @@ SparkStatus SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
          normalized_quantization_mode == SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT))
     {
         return SparkStagePlanBuildMeasuredB64RingExact(
+        geometry,
             stage_plan,
             error_buffer,
             error_buffer_bytes);
     }
     return SparkStagePlanBuildMeasuredBalancedForQuantization(
+        geometry,
         measured_profile_id,
         batch_bucket,
         normalized_quantization_mode,
@@ -832,6 +892,7 @@ SparkStatus SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
 }
 
 SparkStatus SparkStagePlanBuildCurrentSparkMeasuredBalanced(
+    const SparkStagePlanGeometry *geometry,
     uint32_t measured_profile_id,
     uint32_t batch_bucket,
     SparkStagePlan *stage_plan,
@@ -839,6 +900,7 @@ SparkStatus SparkStagePlanBuildCurrentSparkMeasuredBalanced(
     uint32_t error_buffer_bytes)
 {
     return SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+        geometry,
         measured_profile_id,
         batch_bucket,
         SPARK_STAGE_PLAN_QUANTIZATION_AUTO,
@@ -848,21 +910,23 @@ SparkStatus SparkStagePlanBuildCurrentSparkMeasuredBalanced(
 }
 
 SparkStatus SparkStagePlanBuildUniform(
+    const SparkStagePlanGeometry *geometry,
     uint32_t stage_count,
     SparkStagePlan *stage_plan,
     char *error_buffer,
     uint32_t error_buffer_bytes)
 {
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
     uint32_t layer_index;
 
     for (layer_index = 0u;
-         layer_index < SPARK_STAGE_PLAN_LAYER_COUNT;
+         layer_index < geometry->layer_count;
          ++layer_index)
     {
         layer_cost_ns[layer_index] = 1u;
     }
     return SparkStagePlanBuildBalanced(
+        geometry,
         layer_cost_ns,
         stage_count,
         stage_plan,
