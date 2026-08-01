@@ -97,27 +97,27 @@ all: archive variants
 # default-tuned object or vice versa.
 define SPARK_GLM52_BATCH_VARIANT_RULES
 $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module_b$(1).o: $(REPOSITORY_ROOT)/inference/stage/module.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+	$(CC) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
 		-DNDEBUG -DSPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES -DSPARK_BATCH_BUCKET=$(1) \
 		-fPIC -fvisibility=hidden -MMD -MP -c $$< -o $$@
 
 $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_glm52_validation_b$(1).o: source/spark_glm52_resident_decode_stage_validation.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+	$(CC) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
 		-DNDEBUG -DSPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES -DSPARK_BATCH_BUCKET=$(1) \
 		-fPIC -fvisibility=hidden -MMD -MP -c $$< -o $$@
 
 $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda_b$(1).o: $(REPOSITORY_ROOT)/inference/stage/dispatch.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-DSPARK_BATCH_BUCKET=$(1) \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $$< -o $$@
 
 $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_fp8_moe_plan_b$(1).o: source/spark_glm52_resident_decode_stage_fp8_moe_plan.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-DSPARK_BATCH_BUCKET=$(1) \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $$< -o $$@
 
 $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_serving_adapter_b$(1).o: $(REPOSITORY_ROOT)/inference/stage/serving_adapter.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-DSPARK_BATCH_BUCKET=$(1) \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $$< -o $$@
 
@@ -229,17 +229,17 @@ $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
 
 $(HOST_OBJECT): $(REPOSITORY_ROOT)/inference/stage/module.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+	$(CC) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
 		-DNDEBUG -DSPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
 		-fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(VALIDATION_OBJECT): source/spark_glm52_resident_decode_stage_validation.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+	$(CC) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
 		-DNDEBUG -DSPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
 		-fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(CUDA_OBJECT): $(REPOSITORY_ROOT)/inference/stage/dispatch.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
 # The required SM121 stage symbols (SparkGlm52Sm121RequiredDecodeStage*) are
@@ -248,11 +248,11 @@ $(CUDA_OBJECT): $(REPOSITORY_ROOT)/inference/stage/dispatch.cu | $(BUILD_DIRECTO
 # docs/GLM52_SM121_REQUIRED_CUDA_MODULE.md.
 
 $(FP8_MOE_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_fp8_moe_plan.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(SERVING_ADAPTER_OBJECT): $(REPOSITORY_ROOT)/inference/stage/serving_adapter.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(MODULE_ARCHIVE): $(HOST_OBJECT) $(VALIDATION_OBJECT) $(CUDA_OBJECT) $(FP8_MOE_PLAN_OBJECT) $(SERVING_ADAPTER_OBJECT)
@@ -260,7 +260,7 @@ $(MODULE_ARCHIVE): $(HOST_OBJECT) $(VALIDATION_OBJECT) $(CUDA_OBJECT) $(FP8_MOE_
 	$(AR) rcs $@ $^
 
 $(ARTIFACT_CHECK_TOOL): $(REPOSITORY_ROOT)/runtime/pack/artifact_check.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+	$(CC) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
 		$< $(REPOSITORY_ROOT)/build/libsparkpipe_compiler.a $(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
 		-ldl -o $@
 
