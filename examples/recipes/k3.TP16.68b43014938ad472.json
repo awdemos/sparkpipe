@@ -1,15 +1,15 @@
 {
-  "content_hash": "aa18231140d4499b",
+  "content_hash": "68b43014938ad472",
   "contract": {
     "path": "model_contracts/k3_authoritative.json",
     "sha256": "318d979200eb3c6784be6f932febe14832b48df53a1520a73af2f03bd39bb217"
   },
-  "datafile": "k3.TP13.aa18231140d4499b.json",
-  "degree": 13,
+  "datafile": "k3.TP16.68b43014938ad472.json",
+  "degree": 16,
   "family": "k3",
   "geometry_hash": "a51181eba5d37614",
   "kind": "sparkpipe.model_recipe",
-  "kv_entry_prefix": "k3.TP13.a51181eba5d37614/",
+  "kv_entry_prefix": "k3.TP16.a51181eba5d37614/",
   "kv_geometry": {
     "attention_period": 4,
     "global_phase": 3,
@@ -52,9 +52,12 @@
       "spark-09",
       "spark-10",
       "spark-11",
-      "spark-12"
+      "spark-12",
+      "spark-13",
+      "spark-14",
+      "spark-15"
     ],
-    "nodes": 13,
+    "nodes": 16,
     "source": "examples/topologies/dual_switch_16node_production.json"
   },
   "tp": {
@@ -66,19 +69,19 @@
         "slices": {
           "dense_down": [
             0,
-            33792
+            2112
           ],
           "dense_gate_up": [
             0,
-            67584
+            4224
           ],
           "embed_and_head": [
             0,
-            163840
+            10240
           ],
           "expert_w1": [
             0,
-            6144
+            384
           ],
           "expert_w2": [
             0,
@@ -86,67 +89,55 @@
           ],
           "heads_in:kda_out_weight": [
             0,
-            12288
+            768
           ],
           "heads_in:mla_out_weight": [
             0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            768
           ],
           "heads_out:kda_decay_up_weight": [
             0,
-            12288
+            768
           ],
           "heads_out:kda_gate_up_weight": [
             0,
-            12288
+            768
           ],
           "heads_out:kda_k_conv_weight": [
             0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            768
           ],
           "heads_out:kda_q_conv_weight": [
             0,
-            12288
+            768
           ],
-          "heads_out:kda_q_weight": [
+          "heads_out:kda_qkv_beta_weight": [
             0,
-            12288
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
             0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            768
           ],
           "heads_out:mla_gate_up_weight": [
             0,
-            12288
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
             0,
-            12288
+            768
           ],
           "heads_out:mla_q_up_weight": [
             0,
-            18432
+            1152
           ],
           "routed_down": [
             0,
-            3584
+            224
           ],
           "routed_up": [
             0,
-            3584
+            224
           ]
         }
       },
@@ -155,88 +146,76 @@
         "rank": 1,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            2112,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            4224,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            10240,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            384,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            768,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            768,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            768,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            768,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            768,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            768,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            2310,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            768,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            768,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            768,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            1152,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            224,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            224,
+            224
           ]
         }
       },
@@ -245,88 +224,76 @@
         "rank": 2,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            4224,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            8448,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            20480,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            768,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            1536,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            1536,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            1536,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            1536,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            1536,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            1536,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            4620,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            1536,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            1536,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            1536,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            2304,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            448,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            448,
+            224
           ]
         }
       },
@@ -335,88 +302,76 @@
         "rank": 3,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            6336,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            12672,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            30720,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            1152,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            2304,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            2304,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            2304,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            2304,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            2304,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            2304,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            6930,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            2304,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            2304,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            2304,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            3456,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            672,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            672,
+            224
           ]
         }
       },
@@ -425,88 +380,76 @@
         "rank": 4,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            8448,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            16896,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            40960,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            1536,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            3072,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            3072,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            3072,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            3072,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            3072,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            3072,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            9240,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            3072,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            3072,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            3072,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            4608,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            896,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            896,
+            224
           ]
         }
       },
@@ -515,88 +458,76 @@
         "rank": 5,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            10560,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            21120,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            51200,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            1920,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            3840,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            3840,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            3840,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            3840,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            3840,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            3840,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            11550,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            3840,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            3840,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            3840,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            5760,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            1120,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            1120,
+            224
           ]
         }
       },
@@ -605,88 +536,76 @@
         "rank": 6,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            12672,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            25344,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            61440,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            2304,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            4608,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            4608,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            4608,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            4608,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            4608,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            4608,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            13860,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            4608,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            4608,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            4608,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            6912,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            1344,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            1344,
+            224
           ]
         }
       },
@@ -695,88 +614,76 @@
         "rank": 7,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            14784,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            29568,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            71680,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            2688,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            5376,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            5376,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            5376,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            5376,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            5376,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            5376,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            16170,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            5376,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            5376,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            5376,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            8064,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            1568,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            1568,
+            224
           ]
         }
       },
@@ -785,88 +692,76 @@
         "rank": 8,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            16896,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            33792,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            81920,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            3072,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            6144,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            6144,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            6144,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            6144,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            6144,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            6144,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            18480,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            6144,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            6144,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            6144,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            9216,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            1792,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            1792,
+            224
           ]
         }
       },
@@ -875,88 +770,76 @@
         "rank": 9,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            19008,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            38016,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            92160,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            3456,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            6912,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            6912,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            6912,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            6912,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            6912,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            6912,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            20790,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            6912,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            6912,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            6912,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            10368,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            2016,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            2016,
+            224
           ]
         }
       },
@@ -965,88 +848,76 @@
         "rank": 10,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            21120,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            42240,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            102400,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            3840,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            7680,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            7680,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            7680,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            7680,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            7680,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            7680,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            23100,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            7680,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            7680,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            7680,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            11520,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            2240,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            2240,
+            224
           ]
         }
       },
@@ -1055,88 +926,76 @@
         "rank": 11,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            23232,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            46464,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            112640,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            4224,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            8448,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            8448,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            8448,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            8448,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            8448,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            8448,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            25410,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            8448,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            8448,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            8448,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            12672,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            2464,
+            224
           ],
           "routed_up": [
-            0,
-            3584
+            2464,
+            224
           ]
         }
       },
@@ -1145,88 +1004,310 @@
         "rank": 12,
         "slices": {
           "dense_down": [
-            0,
-            33792
+            25344,
+            2112
           ],
           "dense_gate_up": [
-            0,
-            67584
+            50688,
+            4224
           ],
           "embed_and_head": [
-            0,
-            163840
+            122880,
+            10240
           ],
           "expert_w1": [
-            0,
-            6144
+            4608,
+            384
           ],
           "expert_w2": [
             0,
             3072
           ],
           "heads_in:kda_out_weight": [
-            0,
-            12288
+            9216,
+            768
           ],
           "heads_in:mla_out_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_beta_weight": [
-            0,
-            96
+            9216,
+            768
           ],
           "heads_out:kda_decay_up_weight": [
-            0,
-            12288
+            9216,
+            768
           ],
           "heads_out:kda_gate_up_weight": [
-            0,
-            12288
+            9216,
+            768
           ],
           "heads_out:kda_k_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_k_weight": [
-            0,
-            12288
+            9216,
+            768
           ],
           "heads_out:kda_q_conv_weight": [
-            0,
-            12288
+            9216,
+            768
           ],
-          "heads_out:kda_q_weight": [
-            0,
-            12288
+          "heads_out:kda_qkv_beta_weight": [
+            27720,
+            2310
           ],
           "heads_out:kda_v_conv_weight": [
-            0,
-            12288
-          ],
-          "heads_out:kda_v_weight": [
-            0,
-            12288
+            9216,
+            768
           ],
           "heads_out:mla_gate_up_weight": [
-            0,
-            12288
+            9216,
+            768
           ],
           "heads_out:mla_kv_b_value_weight": [
-            0,
-            12288
+            9216,
+            768
           ],
           "heads_out:mla_q_up_weight": [
-            0,
-            18432
+            13824,
+            1152
           ],
           "routed_down": [
-            0,
-            3584
+            2688,
+            224
           ],
           "routed_up": [
+            2688,
+            224
+          ]
+        }
+      },
+      {
+        "node": "spark-13",
+        "rank": 13,
+        "slices": {
+          "dense_down": [
+            27456,
+            2112
+          ],
+          "dense_gate_up": [
+            54912,
+            4224
+          ],
+          "embed_and_head": [
+            133120,
+            10240
+          ],
+          "expert_w1": [
+            4992,
+            384
+          ],
+          "expert_w2": [
             0,
-            3584
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            9984,
+            768
+          ],
+          "heads_in:mla_out_weight": [
+            9984,
+            768
+          ],
+          "heads_out:kda_decay_up_weight": [
+            9984,
+            768
+          ],
+          "heads_out:kda_gate_up_weight": [
+            9984,
+            768
+          ],
+          "heads_out:kda_k_conv_weight": [
+            9984,
+            768
+          ],
+          "heads_out:kda_q_conv_weight": [
+            9984,
+            768
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            30030,
+            2310
+          ],
+          "heads_out:kda_v_conv_weight": [
+            9984,
+            768
+          ],
+          "heads_out:mla_gate_up_weight": [
+            9984,
+            768
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            9984,
+            768
+          ],
+          "heads_out:mla_q_up_weight": [
+            14976,
+            1152
+          ],
+          "routed_down": [
+            2912,
+            224
+          ],
+          "routed_up": [
+            2912,
+            224
+          ]
+        }
+      },
+      {
+        "node": "spark-14",
+        "rank": 14,
+        "slices": {
+          "dense_down": [
+            29568,
+            2112
+          ],
+          "dense_gate_up": [
+            59136,
+            4224
+          ],
+          "embed_and_head": [
+            143360,
+            10240
+          ],
+          "expert_w1": [
+            5376,
+            384
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            10752,
+            768
+          ],
+          "heads_in:mla_out_weight": [
+            10752,
+            768
+          ],
+          "heads_out:kda_decay_up_weight": [
+            10752,
+            768
+          ],
+          "heads_out:kda_gate_up_weight": [
+            10752,
+            768
+          ],
+          "heads_out:kda_k_conv_weight": [
+            10752,
+            768
+          ],
+          "heads_out:kda_q_conv_weight": [
+            10752,
+            768
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            32340,
+            2310
+          ],
+          "heads_out:kda_v_conv_weight": [
+            10752,
+            768
+          ],
+          "heads_out:mla_gate_up_weight": [
+            10752,
+            768
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            10752,
+            768
+          ],
+          "heads_out:mla_q_up_weight": [
+            16128,
+            1152
+          ],
+          "routed_down": [
+            3136,
+            224
+          ],
+          "routed_up": [
+            3136,
+            224
+          ]
+        }
+      },
+      {
+        "node": "spark-15",
+        "rank": 15,
+        "slices": {
+          "dense_down": [
+            31680,
+            2112
+          ],
+          "dense_gate_up": [
+            63360,
+            4224
+          ],
+          "embed_and_head": [
+            153600,
+            10240
+          ],
+          "expert_w1": [
+            5760,
+            384
+          ],
+          "expert_w2": [
+            0,
+            3072
+          ],
+          "heads_in:kda_out_weight": [
+            11520,
+            768
+          ],
+          "heads_in:mla_out_weight": [
+            11520,
+            768
+          ],
+          "heads_out:kda_decay_up_weight": [
+            11520,
+            768
+          ],
+          "heads_out:kda_gate_up_weight": [
+            11520,
+            768
+          ],
+          "heads_out:kda_k_conv_weight": [
+            11520,
+            768
+          ],
+          "heads_out:kda_q_conv_weight": [
+            11520,
+            768
+          ],
+          "heads_out:kda_qkv_beta_weight": [
+            34650,
+            2310
+          ],
+          "heads_out:kda_v_conv_weight": [
+            11520,
+            768
+          ],
+          "heads_out:mla_gate_up_weight": [
+            11520,
+            768
+          ],
+          "heads_out:mla_kv_b_value_weight": [
+            11520,
+            768
+          ],
+          "heads_out:mla_q_up_weight": [
+            17280,
+            1152
+          ],
+          "routed_down": [
+            3360,
+            224
+          ],
+          "routed_up": [
+            3360,
+            224
           ]
         }
       }
@@ -1245,8 +1326,7 @@
           "attnres_attn_weight",
           "attnres_mlp_weight",
           "kda_decay_bias",
-          "kda_decay_down_weight",
-          "kda_gate_down_weight",
+          "kda_decay_gate_down_weight",
           "kda_head_log_scale",
           "kda_out_norm_weight",
           "mla_gate_down_weight",
@@ -1271,9 +1351,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "163840 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 163840,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 10240,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -1291,28 +1371,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 96,
-          "status": "replicated"
-        },
-        "head_count": 96,
-        "instances_per_model": null,
-        "match": [
-          "kda_beta_weight"
-        ],
-        "name": "heads_out:kda_beta_weight",
-        "note": null,
-        "quant_group": null,
-        "scope": "per_layer",
-        "shard_class": "OUTPUT_DIM_HEADS",
-        "split": "output_heads",
-        "split_extent": 96
-      },
-      {
-        "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1329,9 +1390,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1348,9 +1409,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1367,28 +1428,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
-        },
-        "head_count": 96,
-        "instances_per_model": null,
-        "match": [
-          "kda_k_weight"
-        ],
-        "name": "heads_out:kda_k_weight",
-        "note": null,
-        "quant_group": null,
-        "scope": "per_layer",
-        "shard_class": "OUTPUT_DIM_HEADS",
-        "split": "output_heads",
-        "split_extent": 12288
-      },
-      {
-        "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1405,28 +1447,28 @@
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 2310,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
         "match": [
-          "kda_q_weight"
+          "kda_qkv_beta_weight"
         ],
-        "name": "heads_out:kda_q_weight",
+        "name": "heads_out:kda_qkv_beta_weight",
         "note": null,
         "quant_group": null,
         "scope": "per_layer",
         "shard_class": "OUTPUT_DIM_HEADS",
         "split": "output_heads",
-        "split_extent": 12288
+        "split_extent": 36960
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1443,28 +1485,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
-        },
-        "head_count": 96,
-        "instances_per_model": null,
-        "match": [
-          "kda_v_weight"
-        ],
-        "name": "heads_out:kda_v_weight",
-        "note": null,
-        "quant_group": null,
-        "scope": "per_layer",
-        "shard_class": "OUTPUT_DIM_HEADS",
-        "split": "output_heads",
-        "split_extent": 12288
-      },
-      {
-        "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1481,9 +1504,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1500,9 +1523,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 18432,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 1152,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1519,9 +1542,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1538,9 +1561,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "96 heads do not split 13 ways on whole head blocks",
-          "rows_per_rank": 12288,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 768,
+          "status": "sharded"
         },
         "head_count": 96,
         "instances_per_model": null,
@@ -1557,9 +1580,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "3584 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 3584,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 224,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -1576,9 +1599,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "3584 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 3584,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 224,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -1614,9 +1637,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "67584 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 67584,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 4224,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -1652,9 +1675,9 @@
       },
       {
         "degree_resolution": {
-          "reason": "33792 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 33792,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 2112,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": null,
@@ -1671,19 +1694,18 @@
       },
       {
         "degree_resolution": {
-          "reason": "6144 rows do not split 13 ways on whole rows/head-blocks",
-          "rows_per_rank": 6144,
-          "status": "replicated"
+          "reason": null,
+          "rows_per_rank": 384,
+          "status": "sharded"
         },
         "head_count": null,
         "instances_per_model": 82432,
         "match": [
-          "expert_w1_weight",
-          "expert_w1_scale"
+          "expert_w1_weight"
         ],
         "name": "expert_w1",
-        "note": "each expert's [gate; up] halves split; the scale plane's k_group columns follow",
-        "quant_group": 32,
+        "note": "V2: one interleaved weight+scale stream (no scale plane); each expert's [gate; up] halves split on whole 16-neuron cells, the co-tiled scale rows riding with their payload",
+        "quant_group": null,
         "scope": "per_expert_per_layer",
         "shard_class": "CONCAT_OUTPUT",
         "split": "concat_output",
@@ -1691,19 +1713,18 @@
       },
       {
         "degree_resolution": {
-          "reason": "3072 rows do not split 13 ways on whole rows/head-blocks",
+          "reason": "per-rank K 192 is not whole quantization groups of 128; a partial group cannot be sliced",
           "rows_per_rank": 3072,
           "status": "replicated"
         },
         "head_count": null,
         "instances_per_model": null,
         "match": [
-          "expert_w2_weight",
-          "expert_w2_scale"
+          "expert_w2_weight"
         ],
         "name": "expert_w2",
-        "note": "per-rank K must be whole MXFP4 groups or the scale plane cannot follow (k3_shard refuses the slice)",
-        "quant_group": 32,
+        "note": "V2: per-rank K must be whole 128-element interleave k-tiles (the grid coarsened V1's 32-element groups), so K3's 24 tiles admit TP 1/2/4/8 and k3_shard refuses TP16",
+        "quant_group": 128,
         "scope": "per_expert_per_layer",
         "shard_class": "INPUT_DIM",
         "split": "input",

@@ -161,6 +161,11 @@ def adapt_k3(c):
     kda_rows = kda["head_count"] * kda["key_dimension"]
     mla_q_rows = heads * qk_head
     mla_v_rows = heads * v_head
+    # the V2 fused q|k|v|beta tensor: per-head widths 128/128/128/1, one
+    # OUTPUT_DIM_HEADS class whose split extent is the summed section rows
+    qkvb_rows = (2 * kda["head_count"] * kda["key_dimension"] +
+                 kda["head_count"] * kda["value_dimension"] +
+                 kda["head_count"])
 
     def cls(name, match, shard_class, split, scope, extent, note=None,
             group=None, instances=None, head_count=None):
@@ -179,7 +184,7 @@ def adapt_k3(c):
             "OUTPUT_DIM", "output", "per_model", vocab),
     ]
     for field, (kind, _) in sorted(k3_shard.OUTPUT_HEADS.items()):
-        extent = {"kda": kda_rows, "kda_head1": kda["head_count"],
+        extent = {"kda": kda_rows, "kda_qkvb": qkvb_rows,
                   "mla_q": mla_q_rows, "mla_v": mla_v_rows}[kind]
         shard_classes.append(cls(
             f"heads_out:{field}", [field], "OUTPUT_DIM_HEADS", "output_heads",
@@ -206,15 +211,18 @@ def adapt_k3(c):
             "intermediate"),
         cls("dense_down", ["dense_down_weight"], "INPUT_DIM", "input",
             "per_layer", moe["dense_intermediate_dimension"]),
-        cls("expert_w1", ["expert_w1_weight", "expert_w1_scale"],
+        cls("expert_w1", sorted(k3_shard.EXPERT_CONCAT),
             "CONCAT_OUTPUT", "concat_output", "per_expert_per_layer",
-            2 * inter, "each expert's [gate; up] halves split; the scale "
-            "plane's k_group columns follow", group=32,
+            2 * inter, "V2: one interleaved weight+scale stream (no scale "
+            "plane); each expert's [gate; up] halves split on whole "
+            "16-neuron cells, the co-tiled scale rows riding with their "
+            "payload",
             instances=moe["routed_expert_count"] * (layers - first_routed)),
-        cls("expert_w2", ["expert_w2_weight", "expert_w2_scale"],
+        cls("expert_w2", sorted(k3_shard.EXPERT_INPUT),
             "INPUT_DIM", "input", "per_expert_per_layer", inter,
-            "per-rank K must be whole MXFP4 groups or the scale plane "
-            "cannot follow (k3_shard refuses the slice)", group=32),
+            "V2: per-rank K must be whole 128-element interleave k-tiles "
+            "(the grid coarsened V1's 32-element groups), so K3's 24 tiles "
+            "admit TP 1/2/4/8 and k3_shard refuses TP16", group=128),
     ]
     return {"layer_count": layers, "first_routed_layer": first_routed,
             "layer_costs": layer_costs,
@@ -642,8 +650,8 @@ def resolve_shard_classes(shard_classes, degree):
                 cls["degree_resolution"] = {
                     "status": "replicated", "rows_per_rank": extent,
                     "reason": f"per-rank K {per} is not whole quantization "
-                              f"groups of {cls['quant_group']}; the scale "
-                              f"plane cannot follow"}
+                              f"groups of {cls['quant_group']}; a partial "
+                              f"group cannot be sliced"}
             else:
                 cls["degree_resolution"] = {
                     "status": "sharded", "rows_per_rank": per,

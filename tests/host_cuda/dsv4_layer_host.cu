@@ -14,10 +14,9 @@
 //   the routed result must survive into hidden AND the shared expert must
 //     add to it: hidden == expert_out x sum(route weights) + shared_out,
 //     checked against the weights the router actually emitted rather than a
-//     constant, because the host shim runs one thread per block and the
-//     topk kernel's renormalise block reduction reads shared slots that
-//     only threads 1..255 would have written - a device-correct pattern
-//     the one-thread schedule cannot reproduce.
+//     constant, because the recorder format makes the router logits an
+//     index, not a distribution, and the emitted weights are what the
+//     finalize actually applied.
 //
 // The GEMM is a recorder reached through the include path; every other
 // kernel is the one that ships.
@@ -84,6 +83,11 @@ struct LmHostExpertFormat
 	}
 };
 
+// One thread per block, the schedule the shim (lm_host_cuda.cuh) actually
+// executes: at the device default of 256 the work loops cover every 256th
+// element and the topk renormalise reduction sums shared slots no thread
+// wrote, so the layer is instantiated at the width the harness runs.
+#define DSV4_LAYER_THREADS 1u
 #include "inference/llms/deepseek_v4/layer.cuh"
 
 // Two tokens, six routes each, four positions of context - small enough to

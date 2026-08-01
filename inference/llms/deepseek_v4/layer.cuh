@@ -29,7 +29,13 @@
 
 using Dsv4Kv = LmKvLatent<DSV4_KV_BITS, DSV4_HEAD_DIM, DSV4_ROPE_DIM, DSV4_KV_PAGE_SLOTS>;
 
+// Overridable because the host harnesses instantiate the layer at one thread:
+// the CPU shim's sequential schedule (tests/host_cuda/lm_host_cuda.cuh) is
+// only a valid execution of these kernels when the template width IS one.
+// Device builds take the default and nothing changes.
+#ifndef DSV4_LAYER_THREADS
 #define DSV4_LAYER_THREADS 256u
+#endif
 #define DSV4_LAYER_TILE_N 128u
 #define DSV4_LAYER_STAGES 2u
 #define DSV4_LAYER_WARPS 8u

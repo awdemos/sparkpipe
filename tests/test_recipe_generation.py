@@ -121,9 +121,8 @@ def test_tp_shard_coverage():
              set(k3_shard.OUTPUT_HEADS) | set(k3_shard.INPUT_HEADS) |
              set(k3_shard.OUTPUT_DIM) | set(k3_shard.INPUT_DIM) |
              set(k3_shard.CONCAT_OUTPUT) | set(k3_shard.INPUT_DIM_PLAIN) |
-             {"model.embed_tokens.weight", "lm_head.weight",
-              "expert_w1_weight", "expert_w1_scale",
-              "expert_w2_weight", "expert_w2_scale"})
+             set(k3_shard.EXPERT_CONCAT) | set(k3_shard.EXPERT_INPUT) |
+             {"model.embed_tokens.weight", "lm_head.weight"})
     missing = sorted(known - set(by_name))
     check(not missing, f"k3: slicer-known tensors missing from the recipe "
                        f"table: {missing}")

@@ -86,7 +86,15 @@ from pathlib import Path
 # examples/recipes/ set are excluded by construction. The balance of the
 # exact-count move is concurrent agents' in-flight growth, theirs to
 # account.
-CEILING = 124151
+# The K3 pack V2 shard wave teaches the TP tooling the V2 tensor names and
+# slice rules (tools/k3_shard.py +118: the fused q|k|v|beta per-section
+# head slice, the replicated decay|gate fusion, the interleaved expert
+# cell/k-tile splits with manifest repricing; tools/generate_recipe.py +8:
+# the scale-less expert classes and the 128-element k-tile group;
+# model-families/k3/.../spark_k3_tp_shard_table.h +4: the V2 suffixes) -
+# 130 lines. The balance of the exact-count move is concurrent agents'
+# in-flight growth, theirs to account.
+CEILING = 124292
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
