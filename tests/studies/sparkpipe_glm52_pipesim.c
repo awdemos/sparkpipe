@@ -100,10 +100,16 @@ static SparkStatus PipesimKvPrefetch(void *context, const SparkKvCachePrefetchPl
 	return SPARK_STATUS_OK;
 }
 
-static SparkStatus PipesimReleaseSequence(void *context, uint64_t request_id, uint64_t sequence_id, uint32_t token_count)
+static SparkStatus PipesimReleaseSequence(
+    void *context,
+    uint64_t request_id,
+    uint64_t request_generation,
+    uint64_t sequence_id,
+    uint32_t token_count)
 {
 	(void)context;
 	(void)request_id;
+	(void)request_generation;
 	(void)sequence_id;
 	(void)token_count;
 	return SPARK_STATUS_OK;
@@ -474,7 +480,8 @@ static void PipesimInitializeServing(PipesimFixture *fixture)
 			fprintf(stderr, "pipesim dspark init failed\n");
 			exit(4);
 		}
-		request_api_configuration.dspark_speculator = &fixture->dspark_speculator;
+		request_api_configuration.model_speculator =
+			(struct SparkRequestModelSpeculator *)&fixture->dspark_speculator;
 	}
 	request_api_configuration.decode_batch_target = PIPESIM_LANE_CAPACITY;
 	request_api_configuration.decode_execution_row_capacity = 1024u;

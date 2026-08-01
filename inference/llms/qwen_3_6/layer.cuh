@@ -105,16 +105,59 @@ struct Qwen36LayerBuffers
 	float *output_score;
 };
 
-// Quantise a row block and point the GEMM at it. Every projection below does
-// this same four-line dance, and writing it four times is how a scale pointer
-// ends up describing the wrong buffer.
 template<class Format>
-static void Qwen36Quantise(const Qwen36LayerBuffers *b, const uint16_t *source, uint32_t rows, uint32_t width, cudaStream_t stream)
+static const void *Qwen36PrepareInput(
+    const Qwen36LayerBuffers *buffers,
+    const uint16_t *source_bf16,
+    uint32_t row_count,
+    uint32_t input_dimension,
+    LmScaleTensor *scale_out,
+    cudaStream_t stream)
 {
-	LM_LAUNCH((LmQuantiseRowsKernel<Format,QWEN36_LAYER_THREADS>),
-		dim3(rows,width / Format::kScaleGroup), QWEN36_LAYER_THREADS,
-		(Format::kScaleGroup + 8u) * sizeof(float), stream,
-		source,0,b->packed_activation,b->packed_scale,rows,width);
+    if constexpr (Format::kScaleGroup == 0u)
+    {
+        *scale_out = LmScaleTensorNone();
+        return source_bf16;
+    }
+    else
+    {
+        LM_LAUNCH(
+            (LmQuantiseRowsKernel<Format, QWEN36_LAYER_THREADS>),
+            dim3(row_count, input_dimension / Format::kScaleGroup),
+            QWEN36_LAYER_THREADS,
+            (Format::kScaleGroup + 8u) * sizeof(float),
+            stream,
+            source_bf16,
+            0,
+            buffers->packed_activation,
+            buffers->packed_scale,
+            row_count,
+            input_dimension);
+        *scale_out = LmScaleTensorRowsUe4m3(
+            buffers->packed_scale,
+            row_count,
+            input_dimension,
+            Format::kScaleGroup);
+        return buffers->packed_activation;
+    }
+}
+
+template<class Format>
+static LmScaleTensor Qwen36WeightScale(
+    const void *scale_data,
+    uint32_t output_dimension,
+    uint32_t input_dimension)
+{
+    if constexpr (Format::kScaleGroup == 0u)
+        return LmScaleTensorNone();
+    else
+        return LmScaleTensorBlockF32(
+            scale_data,
+            1u,
+            output_dimension,
+            input_dimension,
+            Format::kScaleGroup,
+            Format::kScaleGroup);
 }
 
 // Full attention, one layer in four.
@@ -123,18 +166,20 @@ static int32_t Qwen36LayerAttention(const Qwen36LayerBuffers *b, uint32_t rows, 
 {
 	LmGemmArguments gemm;
 	LmQkvLayout layout;
+	const void *activation;
 	int32_t status;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS,uint16_t>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
-	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->qkv_scale;
+	activation = Qwen36PrepareInput<Format>(
+		b,b->normed_bf16,rows,QWEN36_HIDDEN,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->qkv_scale,QWEN36_ATTN_QKV_DIM,QWEN36_HIDDEN);
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->fused_qkv_bf16;
 	status = LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->qkv_weight,rows,rows,1u,1u,
+		&gemm,activation,b->qkv_weight,rows,rows,1u,1u,
 		QWEN36_HIDDEN,QWEN36_ATTN_QKV_DIM,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -155,13 +200,14 @@ static int32_t Qwen36LayerAttention(const Qwen36LayerBuffers *b, uint32_t rows, 
 		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, Geometry::kSlotBytes / 2u);
 	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,QWEN36_LAYER_THREADS,QWEN36_NOPE_DIM,QWEN36_ROPE_DIM>), dim3(rows,QWEN36_ATTN_HEADS), QWEN36_LAYER_THREADS, 0, stream,
 		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,QWEN36_ATTN_HEADS,QWEN36_QK_SCALE,b->attention_out_bf16,0);
-	Qwen36Quantise<Format>(b,b->attention_out_bf16,rows,QWEN36_Q_DIM,stream);
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->output_scale;
+	activation = Qwen36PrepareInput<Format>(
+		b,b->attention_out_bf16,rows,QWEN36_Q_DIM,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->output_scale,QWEN36_HIDDEN,QWEN36_Q_DIM);
 	gemm.output_bf16 = b->attention_out_bf16;
 	(void)context;
 	return(LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->output_weight,rows,rows,1u,1u,
+		&gemm,activation,b->output_weight,rows,rows,1u,1u,
 		QWEN36_Q_DIM,QWEN36_HIDDEN,sms,false,stream));
 }
 
@@ -173,18 +219,20 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 {
 	LmGemmArguments gemm;
 	LmQkvLayout layout;
+	const void *activation;
 	int32_t status;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS,uint16_t>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
-	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->gdn_in_scale;
+	activation = Qwen36PrepareInput<Format>(
+		b,b->normed_bf16,rows,QWEN36_HIDDEN,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->gdn_in_scale,QWEN36_GDN_QKV_DIM,QWEN36_HIDDEN);
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->fused_qkv_bf16;
 	status = LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->gdn_in_weight,rows,rows,1u,1u,
+		&gemm,activation,b->gdn_in_weight,rows,rows,1u,1u,
 		QWEN36_HIDDEN,QWEN36_GDN_QKV_DIM,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -217,12 +265,13 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 		b->gdn_conv_window,b->gdn_state_index,0,0,b->key_bf16, (const uint16_t *)b->gdn_conv_weight,b->key_bf16,QWEN36_GDN_QK_DIM,rows,1u);
 	LM_LAUNCH((LmDeltaRuleKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>), dim3(rows,QWEN36_GDN_KEY_HEADS), QWEN36_LAYER_THREADS, (uint32_t)(QWEN36_GDN_KEY_DIM * QWEN36_GDN_VALUE_DIM * sizeof(float)), stream,
 		b->gdn_state_pool,QWEN36_GDN_STATE_BYTES,b->gdn_state_index,0,0,b->query_bf16,b->key_bf16,b->value_bf16, b->gdn_forget_gate,b->gdn_write_gate,b->attention_out_bf16, QWEN36_GDN_KEY_HEADS,QWEN36_GDN_VALUE_PER_KEY,rows,1u);
-	Qwen36Quantise<Format>(b,b->attention_out_bf16,rows,QWEN36_GDN_V_DIM,stream);
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->gdn_out_scale;
+	activation = Qwen36PrepareInput<Format>(
+		b,b->attention_out_bf16,rows,QWEN36_GDN_V_DIM,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->gdn_out_scale,QWEN36_HIDDEN,QWEN36_GDN_V_DIM);
 	gemm.output_bf16 = b->attention_out_bf16;
 	return(LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->gdn_out_weight,rows,rows,1u,1u,
+		&gemm,activation,b->gdn_out_weight,rows,rows,1u,1u,
 		QWEN36_GDN_V_DIM,QWEN36_HIDDEN,sms,false,stream));
 }
 
@@ -232,28 +281,32 @@ template<class Format>
 static int32_t Qwen36LayerDenseMlp(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
 {
 	LmGemmArguments gemm;
+	const void *activation;
 	int32_t status;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS,uint16_t>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
-	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->dense_gate_up_scale;
+	activation = Qwen36PrepareInput<Format>(
+		b,b->normed_bf16,rows,QWEN36_HIDDEN,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->dense_gate_up_scale,QWEN36_FFN_INTERMEDIATE * 2u,QWEN36_HIDDEN);
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->gate_up_bf16;
 	status = LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->dense_gate_up_weight,rows,rows,1u,1u,
+		&gemm,activation,b->dense_gate_up_weight,rows,rows,1u,1u,
 		QWEN36_HIDDEN,QWEN36_FFN_INTERMEDIATE * 2u,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmSiluMulKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,QWEN36_FFN_INTERMEDIATE,true);
-	Qwen36Quantise<Format>(b,b->intermediate_bf16,rows,QWEN36_FFN_INTERMEDIATE,stream);
-	gemm.scale_b = (const float *)b->dense_down_scale;
+	activation = Qwen36PrepareInput<Format>(
+		b,b->intermediate_bf16,rows,QWEN36_FFN_INTERMEDIATE,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->dense_down_scale,QWEN36_HIDDEN,QWEN36_FFN_INTERMEDIATE);
 	gemm.output_bf16 = b->hidden_bf16;
 	return(LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->dense_down_weight,rows,rows,1u,1u,
+		&gemm,activation,b->dense_down_weight,rows,rows,1u,1u,
 		QWEN36_FFN_INTERMEDIATE,QWEN36_HIDDEN,sms,false,stream));
 }
 

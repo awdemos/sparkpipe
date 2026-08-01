@@ -9,6 +9,7 @@
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/formats/fp8.cuh"
+#include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/kernels/formats/int7.cuh"
 #include "inference/kernels/formats/bf16.cuh"
 #include "inference/llms/deepseek_v4/config.h"
@@ -21,9 +22,12 @@ static_assert(Dsv4Kv::kSlotBytes == 1152u, "512 + 64 latent elements at bf16");
 #define DSV4_WARPS 8u
 #define DSV4_THREADS 256u
 
-template __global__ void LmGemmKernel<LmFp8, 16u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8, 32u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8, 64u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmFp8, LmFp8, 16u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmFp8, LmFp8, 32u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmFp8, LmFp8, 64u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmFp8, LmMxfp4, 16u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmFp8, LmMxfp4, 32u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmFp8, LmMxfp4, 64u, DSV4_TILE_N, 128u, DSV4_STAGES, DSV4_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmFusedResidualRmsNormKernel<DSV4_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<DSV4_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
 template __global__ void LmQuantiseRowsKernel<LmFp8, DSV4_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
@@ -38,7 +42,8 @@ template __global__ void LmTopkGatherKernel<DSV4_THREADS>(const float *, uint32_
 template __global__ void LmMoeFinalizeKernel<DSV4_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmHeadCandidateKernel<DSV4_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmHeadCommitKernel<DSV4_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
-template __global__ void LmTopkSmallKernel<DSV4_THREADS, DSV4_TOP_K>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
+template __global__ void LmTopkSmallKernel<DSV4_THREADS, DSV4_TOP_K, true, 1u, 1u, LM_TOPK_SCORE_SQRT_SOFTPLUS>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *, float);
+template __global__ void LmRouteBuildKernel<DSV4_THREADS, DSV4_EXPERTS>(const uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t, uint32_t *);
 
 extern "C" int32_t Dsv4GemmFp8(LmGemmArguments *a, const void *x, const void *w,
 	uint32_t rows, uint32_t tokens, uint32_t groups, uint32_t k, uint32_t n,
@@ -52,9 +57,9 @@ extern "C" int32_t Dsv4LayerAttentionFp8(const Dsv4LayerBuffers *b, uint32_t row
 	return(Dsv4LayerAttention<LmFp8>(b,rows,context,sms,stream));
 }
 
-extern "C" int32_t Dsv4LayerMoeFp8(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
+extern "C" int32_t Dsv4LayerMoeCheckpointFp4(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
 {
-	return(Dsv4LayerMoe<LmFp8>(b,rows,packed_rows,sms,stream));
+	return(Dsv4LayerMoe<LmFp8,LmMxfp4>(b,rows,packed_rows,sms,stream));
 }
 
 extern "C" int32_t Dsv4HeadFullVocab(const Dsv4LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t stream)

@@ -10,15 +10,9 @@ MODEL_PATH = (
     ROOT / "examples" / "model_descriptions" /
     "glm52_resident_decode_stage_firmware.json"
 )
-ACTIVE_CUDA_SOURCES = (
-    ROOT / "modules" / "glm52_resident_decode_stage" / "source" /
-    "spark_glm52_ring_node_context_builder_cuda.cu",
-    ROOT / "modules" / "glm52_resident_decode_stage" / "source" /
-    "spark_glm52_resident_decode_stage_fp8_moe_plan.cu",
-    ROOT / "modules" / "glm52_resident_decode_stage" / "source" /
-    "spark_glm52_sm121_required_decode_stage.cu",
-    ROOT / "modules" / "glm52_resident_decode_stage" / "validation" /
-    "spark_glm52_resident_decode_stage_cuda_validation.cu",
+ACTIVE_CUDA_DIRECTORIES = (
+    ROOT / "inference" / "llms" / "glm5_2",
+    ROOT / "modules" / "glm52_resident_decode_stage",
 )
 FORBIDDEN_FLAGS = {
     "jit_kv_cache",
@@ -52,19 +46,20 @@ def main():
     assert flags.isdisjoint(FORBIDDEN_FLAGS)
     assert "current_spark_topology" not in model["metadata"]
 
-    health_source = (
-        ROOT / "model-families" / "glm52" / "src" / "spark_glm52_http_gateway.c"
-    ).read_text(encoding="utf-8")
-    backend_source = (
-        ROOT / "model-families" / "glm52" / "src" / "spark_glm52_ring_service_backend.c"
-    ).read_text(encoding="utf-8")
+    health_source = (ROOT / "api" / "http_gateway.c").read_text(encoding="utf-8")
+    backend_source = (ROOT / "node" / "backend.c").read_text(encoding="utf-8")
     assert "production_contract_flags" not in health_source
     assert "ring_control_ready" not in health_source
     assert "PRODUCTION_REQUIRED_FLAGS" not in backend_source
     assert '\\"accuracy_status\\":\\"NOT_MEASURED\\"' in health_source
     assert '\\"performance_status\\":\\"NOT_MEASURED\\"' in health_source
 
-    for source_path in ACTIVE_CUDA_SOURCES:
+    cuda_sources = []
+    for source_directory in ACTIVE_CUDA_DIRECTORIES:
+        cuda_sources.extend(sorted(source_directory.rglob("*.cu")))
+        cuda_sources.extend(sorted(source_directory.rglob("*.cuh")))
+    assert cuda_sources, "no GLM-5.2 CUDA sources found"
+    for source_path in cuda_sources:
         source = source_path.read_text(encoding="utf-8")
         assert POSITIVE_LATENCY.search(source) is None, source_path
 

@@ -46,6 +46,8 @@ KIND_VALUE = {
 NO_DRIVER = {
     "deepseek_v4": "three kinds and one entry point; a driver would have "
                    "nothing to dispatch to",
+    "deepseek_v4_pro": "Pro has sparse and high-compression schedules but no "
+                       "shipping execution module or dispatcher yet",
 }
 
 KNOWN_INCOMPLETE = {
@@ -58,42 +60,63 @@ KNOWN_INCOMPLETE = {
     ("deepseek_v4", "LM_LAYER_COMPRESSED"):
         "HCA is CSA at compression 128 with the other rope theta. Same missing "
         "call, plus DSV4_COMPRESS_ROPE_THETA is unreachable without it",
+    ("deepseek_v4_pro", "LM_LAYER_SPARSE"):
+        "Pro CSA needs a Pro-sized indexer, top-1024 selection and an explicit "
+        "Pro execution module",
+    ("deepseek_v4_pro", "LM_LAYER_COMPRESSED"):
+        "Pro HCA needs the compression-128 state, Pro geometry and an explicit "
+        "Pro execution module",
 }
 
 
 def selector_kinds(model):
-    """Evaluate the model's LAYER_KIND macro by COMPILING it, not by translating
-    it. The first version of this rewrote C ternaries into Python and produced
-    booleans where it meant enum values - a gate that emulates the thing it
-    checks is a second implementation that can disagree for its own reasons."""
+    """Evaluate the model's LAYER_KIND macro by compiling it.
+
+    The layer count is also read from the compiled configuration. Generated
+    contracts frequently define it through another macro, so parsing only a
+    decimal literal silently evaluated the wrong number of layers.
+    """
     config = LLMS / model / "config.h"
     text = config.read_text()
     prefix = re.search(r"#define\s+(\w+)_LAYER_KIND\(layer\)", text)
-    layers = re.search(r"#define\s+\w+_LAYERS\s+(\d+)u", text)
     if not prefix:
         return None, None
-    count = int(layers.group(1)) if layers else 64
+    layer_count_macro = f"{prefix.group(1)}_LAYERS"
     program = f"""#include <stdio.h>
 #include "inference/llms/{model}/config.h"
 int main(void)
 {{
-\tint layer;
-\tfor (layer = 0; layer < {count}; ++layer)
-\t\tprintf("%d\\n", (int){prefix.group(1)}_LAYER_KIND(layer));
-\treturn 0;
+    int layer;
+    printf("count=%u\\n", (unsigned){layer_count_macro});
+    for (layer = 0; layer < (int){layer_count_macro}; ++layer)
+        printf("%d\\n", (int){prefix.group(1)}_LAYER_KIND(layer));
+    return 0;
 }}
 """
     source = Path(tempfile.gettempdir()) / f"lk_{model}.c"
     binary = Path(tempfile.gettempdir()) / f"lk_{model}"
     source.write_text(program)
-    build = subprocess.run(["gcc", "-O0", f"-I{ROOT}", "-o", str(binary), str(source)],
-                           capture_output=True, text=True)
+    include_flags = [f"-I{ROOT}", f"-I{ROOT / 'include'}"]
+    include_flags.extend(
+        f"-I{path}"
+        for path in sorted((ROOT / "model-families").glob("*/include"))
+    )
+    build = subprocess.run(
+        ["gcc", "-O0", *include_flags, "-o", str(binary), str(source)],
+        capture_output=True,
+        text=True,
+    )
     if build.returncode != 0:
-        print(f"         {build.stderr.strip().splitlines()[-1] if build.stderr else 'compile failed'}")
-        return None, count
+        message = build.stderr.strip().splitlines()
+        print(f"         {message[-1] if message else 'compile failed'}")
+        return None, None
     run = subprocess.run([str(binary)], capture_output=True, text=True)
-    names = {v: k for k, v in KIND_VALUE.items()}
-    kinds = {names[int(line)] for line in run.stdout.split() if line}
+    lines = run.stdout.splitlines()
+    if run.returncode != 0 or not lines or not lines[0].startswith("count="):
+        return None, None
+    count = int(lines[0].split("=", 1)[1])
+    names = {value: name for name, value in KIND_VALUE.items()}
+    kinds = {names[int(line)] for line in lines[1:] if line}
     return kinds, count
 
 

@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <string.h>
 
+#include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_scheduler.h"
 
 static void SparkTestFillTokenIds(
@@ -97,6 +98,10 @@ static void SparkTestInitializeSchedulerConfiguration(
     configuration->quantization_mode = quantization_mode;
     configuration->configuration_flags =
         SPARK_SCHEDULER_CONFIGURATION_DEFAULT_FLAGS;
+    configuration->stage_geometry.layer_count =
+        SPARK_GLM52_MODEL_LAYER_COUNT;
+    configuration->stage_geometry.first_routed_layer =
+        SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER;
     configuration->prefix_cache_block_tokens =
         SPARK_SCHEDULER_PREFILL_BLOCK_TOKENS;
     configuration->prefix_cache = prefix_cache;
@@ -287,33 +292,6 @@ static void SparkTestGlm52SchedulerSupportsFp8AndPrefill(void)
     assert(SparkSchedulerReleaseSequence(&scheduler, 11u) == SPARK_STATUS_OK);
 }
 
-{
-    SparkPrefixCache cache;
-    SparkPrefixCacheEntry entries[128u];
-    SparkPrefixCacheSequenceBinding bindings[512u];
-    SparkSchedulerConfiguration configuration;
-    SparkScheduler scheduler;
-    SparkSchedulerRequest request;
-    SparkSchedulerDecision decision;
-
-    SparkTestInitializePrefixCache(&cache, entries, bindings, 128u, 512u);
-    SparkTestInitializeSchedulerConfiguration(
-        &configuration,
-        &cache);
-    assert(SparkSchedulerInitialize(
-        &scheduler,
-        &configuration) == SPARK_STATUS_OK);
-    SparkTestInitializeDecodeRequest(&request, 16u);
-    assert(SparkSchedulerAdmit(
-        &scheduler,
-        &request,
-        &decision) == SPARK_STATUS_OK);
-    assert(decision.accepted == 1u);
-    assert(decision.quantization_mode ==
-    assert(SparkSchedulerComplete(
-        &scheduler,
-        &decision) == SPARK_STATUS_OK);
-}
 
 static void SparkTestGlm52SchedulerUsesVllmStyleChunkedPrefill(void)
 {

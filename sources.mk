@@ -33,12 +33,14 @@ SPARKPIPE_RUNTIME_SOURCES := \
 # rather than what it is.
 SPARKPIPE_MODEL_COMMON_SOURCES := \
     ring/transport/hidden_transport.c \
+    ring/transport/fabric_topology.c \
     ring/transport/memlink.c \
     ring/transport/tp_collective.c \
     text/tokenizer.c \
     cache/store/kv_store.c \
     cache/store/stage_kv_client.c \
-    runtime/stage_module_common.c
+    runtime/stage_module_common.c \
+    runtime/work_transaction.c
 
 SPARKPIPE_GLM52_SOURCES := \
     api/compat_api.c \
@@ -71,6 +73,11 @@ SPARKPIPE_GLM52_SOURCES := \
     scheduler/work_control.c
 
 SPARKPIPE_QWEN36_SOURCES := \
+    model-families/qwen36/src/spark_qwen36_work_control.c
+
+SPARKPIPE_DSV4_SOURCES := \
+    model-families/dsv4/src/spark_dsv4_cache_plan.c \
+    model-families/dsv4/src/spark_dsv4_cache_arena.c
 
 SPARKPIPE_DEPLOYMENT_SOURCES := \
     deployment/src/spark_release.c

@@ -314,6 +314,45 @@ SparkStatus SparkStageModuleDeviceAllocateZeroed(
     return status;
 }
 
+void SparkStageModuleLedgerRollback(
+    SparkStageModuleLedger *ledger,
+    uint32_t allocation_count)
+{
+    uint32_t current_count;
+
+    if (ledger == 0 || allocation_count > ledger->device_allocation_count)
+    {
+        return;
+    }
+    current_count = ledger->device_allocation_count;
+    while (current_count > allocation_count)
+    {
+        uint32_t current_index;
+        void *allocation;
+        uint64_t allocation_bytes;
+
+        current_index = current_count - 1u;
+        allocation = ledger->device_allocations[current_index];
+        allocation_bytes = ledger->device_allocation_bytes[current_index];
+        if (allocation != 0)
+        {
+            (void)cudaFree(allocation);
+        }
+        ledger->device_allocations[current_index] = 0;
+        ledger->device_allocation_bytes[current_index] = 0u;
+        if (allocation_bytes <= ledger->device_bytes_resident)
+        {
+            ledger->device_bytes_resident -= allocation_bytes;
+        }
+        else
+        {
+            ledger->device_bytes_resident = 0u;
+        }
+        current_count = current_index;
+    }
+    ledger->device_allocation_count = allocation_count;
+}
+
 void SparkStageModuleLedgerRelease(SparkStageModuleLedger *ledger)
 {
     uint32_t allocation_index;

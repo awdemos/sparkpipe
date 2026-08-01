@@ -205,8 +205,8 @@ int main(void)
 	b.router_logits = router_logits; b.router_bias = router_bias;
 	b.route_expert = route_expert; b.route_weight = route_weight;
 	b.route_packed_row = route_packed; b.route_source_token = route_source;
-	b.group_row_offset = group_offsets; b.group_tile_prefix = group_tiles;
-	b.group_tile_prefix_down = group_tiles_down;
+	b.group_row_offset = group_offsets; b.group_tile_prefix_w1 = group_tiles;
+	b.group_tile_prefix_w2 = group_tiles_down;
 	dense_offsets[0] = 0u; dense_offsets[1] = ROWS;
 	b.dense_row_offset = dense_offsets; b.dense_tile_prefix = dense_tiles;
 	b.kda_state_index = state_index; b.sequence_of_row = sequence_of_row;
@@ -228,8 +228,9 @@ int main(void)
 	// kernels equivalent, so any difference here is the plumbing lying.
 	{
 		static uint16_t rq[2u * K3_KDA_QK_DIM], rk[2u * K3_KDA_QK_DIM];
-		static uint16_t rv[2u * K3_KDA_V_DIM], rd[2u * K3_KDA_QK_DIM];
-		static uint16_t rb[2u * K3_KDA_HEADS];
+		static uint16_t rv[2u * K3_KDA_V_DIM];
+		static float replay_retention[2u * K3_KDA_QK_DIM];
+		static float replay_write_gate[2u * K3_KDA_HEADS];
 		static uint8_t truth_state[sizeof(kda_state)];
 		static uint16_t truth_q[sizeof(q_window) / 2u], truth_k[sizeof(k_window) / 2u];
 		static uint16_t truth_v[sizeof(v_window) / 2u];
@@ -258,7 +259,8 @@ int main(void)
 		memset(k_window, 0, sizeof(k_window));
 		memset(v_window, 0, sizeof(v_window));
 		state.replay_conv_q = rq; state.replay_conv_k = rk; state.replay_conv_v = rv;
-		state.replay_decay = rd; state.replay_beta = rb;
+		state.replay_retention = replay_retention;
+		state.replay_write_gate = replay_write_gate;
 		static uint32_t two_run[2] = { 0u, 2u };
 		memcpy(hidden, hidden_saved, sizeof(hidden_saved));
 		lm_recorded_gemms.clear();
@@ -280,7 +282,7 @@ int main(void)
 				|| v_window[byte] != truth_v[byte] ) ++mismatch;
 		printf("fold_mismatch %u\n", mismatch);
 		state.replay_conv_q = 0; state.replay_conv_k = 0; state.replay_conv_v = 0;
-		state.replay_decay = 0; state.replay_beta = 0;
+		state.replay_retention = 0; state.replay_write_gate = 0;
 		memset(kda_state, 0, sizeof(kda_state));
 		memset(q_window, 0, sizeof(q_window));
 		memset(k_window, 0, sizeof(k_window));

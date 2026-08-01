@@ -60,6 +60,8 @@ struct LmLowRankWeights
 // projection would need, and the second GEMM reads it instead of the hidden.
 struct LmLowRankScratch
 {
+	uint8_t *input_codes;
+	uint8_t *input_scales;
 	uint16_t *compressed_bf16;
 	uint8_t *compressed_codes;
 	uint8_t *compressed_scales;
@@ -78,34 +80,192 @@ struct LmLowRankScratch
 // point, the compressed row is not a hidden state. Passing a residual here would
 // be adding a 2048-wide vector to something that is not the same tensor.
 template<class Format>
-static int32_t LmLowRankProject(const LmLowRankWeights *weights, const LmLowRankScratch *scratch, const uint16_t *input_bf16, uint16_t *output_bf16, uint32_t rows, uint32_t threads, uint32_t multiprocessors, cudaStream_t stream)
+static LmScaleTensor LmProjectionWeightScale(
+    const void *scale_data,
+    uint32_t output_dimension,
+    uint32_t input_dimension)
 {
-	LmGemmArguments gemm;
-	int32_t status;
-	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = 0;
-	gemm.scale_b = (const float *)weights->down_scale;
-	gemm.group_row_offset = scratch->dense_row_offset;
-	gemm.group_tile_prefix = scratch->dense_tile_prefix;
-	gemm.output_bf16 = scratch->compressed_bf16;
-	status = LmGemmLaunch<Format,128u,Format::kTileK,LM_PIPELINE_STAGES,8u>(
-		&gemm,input_bf16,weights->down_weight,rows,rows,1u,1u,
-		weights->input_dimension,weights->rank,multiprocessors,false,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	// No residual: the compressed row is not a hidden state and has nothing to
-	// add. The output is written back over the same buffer, which is safe
-	// because the norm reads a row before it writes it.
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<256u,uint16_t>), rows, threads, (weights->rank + 8u) * sizeof(float), stream,
-		scratch->compressed_bf16,0,(const uint16_t *)weights->norm_weight, 0,scratch->compressed_bf16,weights->rank,weights->rank,weights->norm_epsilon);
-	LM_LAUNCH((LmQuantiseRowsKernel<Format,256u>), dim3(rows,weights->rank / Format::kScaleGroup), threads, (Format::kScaleGroup + 8u) * sizeof(float), stream,
-		scratch->compressed_bf16,0,scratch->compressed_codes,scratch->compressed_scales, rows,weights->rank);
-	gemm.scale_a = (const float *)scratch->compressed_scales;
-	gemm.scale_b = (const float *)weights->up_scale;
-	gemm.output_bf16 = output_bf16;
-	return(LmGemmLaunch<Format,128u,Format::kTileK,LM_PIPELINE_STAGES,8u>(
-		&gemm,scratch->compressed_codes,weights->up_weight,rows,rows,1u,1u,
-		weights->rank,weights->output_dimension,multiprocessors,false,stream));
+    if constexpr (Format::kScaleGroup == 0u)
+    {
+        return scale_data == 0
+            ? LmScaleTensorNone()
+            : LmScaleTensorInvalid(LM_SCALE_ENCODING_NONE);
+    }
+    else
+    {
+        return LmScaleTensorBlockF32(
+            scale_data,
+            1u,
+            output_dimension,
+            input_dimension,
+            Format::kScaleGroup,
+            Format::kScaleGroup);
+    }
+}
+
+template<class Format>
+static const void *LmProjectionPrepareInput(
+    const uint16_t *input_bf16,
+    const uint32_t *source_row_map,
+    uint8_t *input_codes,
+    uint8_t *input_scales,
+    uint32_t rows,
+    uint32_t input_dimension,
+    uint32_t threads,
+    LmScaleTensor *scale_out,
+    cudaStream_t stream)
+{
+    if constexpr (Format::kScaleGroup == 0u)
+    {
+        *scale_out = LmScaleTensorNone();
+        return input_bf16;
+    }
+    else
+    {
+        if (input_codes == 0 || input_scales == 0 ||
+            (input_dimension % Format::kScaleGroup) != 0u)
+        {
+            *scale_out = LmScaleTensorInvalid(LM_SCALE_ENCODING_UE4M3);
+            return 0;
+        }
+        LM_LAUNCH(
+            (LmQuantiseRowsKernel<Format,256u>),
+            dim3(rows,input_dimension / Format::kScaleGroup),
+            threads,
+            (Format::kScaleGroup + 8u) * sizeof(float),
+            stream,
+            input_bf16,
+            source_row_map,
+            input_codes,
+            input_scales,
+            rows,
+            input_dimension);
+        *scale_out = LmScaleTensorRowsUe4m3(
+            input_scales,
+            rows,
+            input_dimension,
+            Format::kScaleGroup);
+        return input_codes;
+    }
+}
+
+// hidden -> down -> norm -> up.
+template<class Format>
+static int32_t LmLowRankProject(
+    const LmLowRankWeights *weights,
+    const LmLowRankScratch *scratch,
+    const uint16_t *input_bf16,
+    uint16_t *output_bf16,
+    uint32_t rows,
+    uint32_t threads,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    LmGemmArguments gemm;
+    const void *activation;
+    int32_t status;
+
+    if (weights == 0 || scratch == 0 || input_bf16 == 0 ||
+        output_bf16 == 0 || rows == 0u || weights->input_dimension == 0u ||
+        weights->rank == 0u || weights->output_dimension == 0u ||
+        scratch->compressed_bf16 == 0 ||
+        scratch->dense_row_offset == 0 || scratch->dense_tile_prefix == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+
+    memset(&gemm,0,sizeof(gemm));
+    activation = LmProjectionPrepareInput<Format>(
+        input_bf16,
+        0,
+        scratch->input_codes,
+        scratch->input_scales,
+        rows,
+        weights->input_dimension,
+        threads,
+        &gemm.scale_a,
+        stream);
+    if (activation == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    gemm.scale_b = LmProjectionWeightScale<Format>(
+        weights->down_scale,
+        weights->rank,
+        weights->input_dimension);
+    gemm.group_row_offset = scratch->dense_row_offset;
+    gemm.group_tile_prefix = scratch->dense_tile_prefix;
+    gemm.output_bf16 = scratch->compressed_bf16;
+    status = LmGemmLaunch<
+        Format,128u,Format::kTileK,LM_PIPELINE_STAGES,8u>(
+            &gemm,
+            activation,
+            weights->down_weight,
+            rows,
+            rows,
+            1u,
+            1u,
+            weights->input_dimension,
+            weights->rank,
+            multiprocessors,
+            false,
+            stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<256u,uint16_t>),
+        rows,
+        threads,
+        (weights->rank + 8u) * sizeof(float),
+        stream,
+        scratch->compressed_bf16,
+        0,
+        (const uint16_t *)weights->norm_weight,
+        0,
+        scratch->compressed_bf16,
+        weights->rank,
+        weights->rank,
+        weights->norm_epsilon);
+
+    memset(&gemm,0,sizeof(gemm));
+    activation = LmProjectionPrepareInput<Format>(
+        scratch->compressed_bf16,
+        0,
+        scratch->compressed_codes,
+        scratch->compressed_scales,
+        rows,
+        weights->rank,
+        threads,
+        &gemm.scale_a,
+        stream);
+    if (activation == 0)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    gemm.scale_b = LmProjectionWeightScale<Format>(
+        weights->up_scale,
+        weights->output_dimension,
+        weights->rank);
+    gemm.group_row_offset = scratch->dense_row_offset;
+    gemm.group_tile_prefix = scratch->dense_tile_prefix;
+    gemm.output_bf16 = output_bf16;
+    return LmGemmLaunch<
+        Format,128u,Format::kTileK,LM_PIPELINE_STAGES,8u>(
+            &gemm,
+            activation,
+            weights->up_weight,
+            rows,
+            rows,
+            1u,
+            1u,
+            weights->rank,
+            weights->output_dimension,
+            multiprocessors,
+            false,
+            stream);
 }
 
 // The absorbed form: four plain projections from the hidden state.
@@ -130,7 +290,8 @@ struct LmAbsorbedWeights
 	const void *kv_latent_scale;
 	uint32_t input_dimension;
 	uint32_t query_latent_dimension;
-	uint32_t rope_dimension;
+	uint32_t query_rope_dimension;
+	uint32_t key_rope_dimension;
 	uint32_t kv_latent_dimension;
 };
 
@@ -142,34 +303,134 @@ struct LmAbsorbedOutputs
 	uint16_t *kv_latent_bf16;
 };
 
-template<class Format>
-static int32_t LmAbsorbedProject(const LmAbsorbedWeights *weights, const LmAbsorbedOutputs *out, const uint16_t *input_bf16, const uint8_t *input_codes, const float *input_scales, const uint32_t *dense_row_offset, uint32_t *dense_tile_prefix, uint32_t rows, uint32_t multiprocessors, cudaStream_t stream)
+
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmJoinRowsKernel(
+    const uint16_t *__restrict__ left_bf16,
+    uint32_t left_dimension,
+    const uint16_t *__restrict__ right_bf16,
+    uint32_t right_dimension,
+    uint16_t *__restrict__ output_bf16,
+    uint32_t row_count)
 {
-	struct { const void *weight; const void *scale; uint16_t *out; uint32_t width; } pass[4] = {
-		{ weights->query_latent_weight, weights->query_latent_scale, out->query_latent_bf16, weights->query_latent_dimension },
-		{ weights->query_rope_weight,   weights->query_rope_scale,   out->query_rope_bf16,   weights->rope_dimension },
-		{ weights->key_rope_weight,     weights->key_rope_scale,     out->key_rope_bf16,     weights->rope_dimension },
-		{ weights->kv_latent_weight,    weights->kv_latent_scale,    out->kv_latent_bf16,    weights->kv_latent_dimension },
-	};
-	LmGemmArguments gemm;
-	int32_t status;
-	uint32_t index;
-	(void)input_bf16;
-	for (index = 0u; index < 4u; ++index)
-	{
-		memset(&gemm,0,sizeof(gemm));
-		gemm.scale_a = input_scales;
-		gemm.scale_b = (const float *)pass[index].scale;
-		gemm.group_row_offset = dense_row_offset;
-		gemm.group_tile_prefix = dense_tile_prefix;
-		gemm.output_bf16 = pass[index].out;
-		status = LmGemmLaunch<Format,128u,Format::kTileK,LM_PIPELINE_STAGES,8u>(
-			&gemm,input_codes,pass[index].weight,rows,rows,1u,1u,
-			weights->input_dimension,pass[index].width,multiprocessors,false,stream);
-		if ( status != LM_LAUNCH_OK )
-			return(status);
-	}
-	return(LM_LAUNCH_OK);
+    uint32_t row = blockIdx.x;
+    uint32_t output_dimension = left_dimension + right_dimension;
+    uint32_t column;
+
+    if (row >= row_count)
+    {
+        return;
+    }
+    for (column = threadIdx.x; column < output_dimension; column += THREADS)
+    {
+        if (column < left_dimension)
+        {
+            output_bf16[((uint64_t)row * output_dimension) + column] =
+                left_bf16[((uint64_t)row * left_dimension) + column];
+        }
+        else
+        {
+            uint32_t right_column = column - left_dimension;
+            output_bf16[((uint64_t)row * output_dimension) + column] =
+                right_bf16[((uint64_t)row * right_dimension) + right_column];
+        }
+    }
+}
+
+template<class Format>
+static int32_t LmAbsorbedProject(
+    const LmAbsorbedWeights *weights,
+    const LmAbsorbedOutputs *out,
+    const uint16_t *input_bf16,
+    const uint8_t *input_codes,
+    const LmScaleTensor *input_scale,
+    const uint32_t *dense_row_offset,
+    uint32_t *dense_tile_prefix,
+    uint32_t rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
+{
+    struct LmAbsorbedPass
+    {
+        const void *weight;
+        const void *scale;
+        uint16_t *output;
+        uint32_t width;
+    };
+    const LmAbsorbedPass pass[4] =
+    {
+        { weights->query_latent_weight, weights->query_latent_scale,
+            out->query_latent_bf16, weights->query_latent_dimension },
+        { weights->query_rope_weight, weights->query_rope_scale,
+            out->query_rope_bf16, weights->query_rope_dimension },
+        { weights->key_rope_weight, weights->key_rope_scale,
+            out->key_rope_bf16, weights->key_rope_dimension },
+        { weights->kv_latent_weight, weights->kv_latent_scale,
+            out->kv_latent_bf16, weights->kv_latent_dimension }
+    };
+    const void *activation;
+    LmGemmArguments gemm;
+    int32_t status;
+    uint32_t index;
+
+    if (weights == 0 || out == 0 || input_bf16 == 0 ||
+        dense_row_offset == 0 || dense_tile_prefix == 0 || rows == 0u)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    if constexpr (Format::kScaleGroup == 0u)
+    {
+        activation = input_bf16;
+    }
+    else
+    {
+        if (input_codes == 0 || input_scale == 0 ||
+            LmScaleTensorIsValid(input_scale) == 0u)
+        {
+            return LM_LAUNCH_ERR_SHAPE;
+        }
+        activation = input_codes;
+    }
+
+    for (index = 0u; index < 4u; ++index)
+    {
+        if (pass[index].weight == 0 || pass[index].output == 0 ||
+            pass[index].width == 0u)
+        {
+            return LM_LAUNCH_ERR_SHAPE;
+        }
+        memset(&gemm,0,sizeof(gemm));
+        gemm.scale_a = Format::kScaleGroup == 0u
+            ? LmScaleTensorNone()
+            : *input_scale;
+        gemm.scale_b = LmProjectionWeightScale<Format>(
+            pass[index].scale,
+            pass[index].width,
+            weights->input_dimension);
+        gemm.group_row_offset = dense_row_offset;
+        gemm.group_tile_prefix = dense_tile_prefix;
+        gemm.output_bf16 = pass[index].output;
+        status = LmGemmLaunch<
+            Format,128u,Format::kTileK,LM_PIPELINE_STAGES,8u>(
+                &gemm,
+                activation,
+                pass[index].weight,
+                rows,
+                rows,
+                1u,
+                1u,
+                weights->input_dimension,
+                pass[index].width,
+                multiprocessors,
+                false,
+                stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
+    }
+    return LM_LAUNCH_OK;
 }
 
 // -- fused QKV ------------------------------------------------------------------

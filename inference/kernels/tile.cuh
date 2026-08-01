@@ -124,15 +124,26 @@ static __device__ void LmPipelineRelease(uint64_t *barrier)
 // barrier never flips, so it is derived here from the same LmTileBytes the host
 // sizes shared memory with rather than passed in.
 
-struct LmTileSource
+struct LmTileGeometry
 {
-	const void *tensor_map;
 	uint32_t rows;
 	uint32_t depth;
 	uint32_t element_bits;
 };
 
-static __device__ __forceinline__ void LmPipelineProduce(const LmTileSource *a, const LmTileSource *b, void *stage_a, void *stage_b, uint64_t *barrier, uint32_t row_base, uint32_t neuron_base, uint32_t k_tile, uint32_t group_index, bool grouped)
+static __device__ __forceinline__ void LmPipelineProduce(
+    const LmTileGeometry *a,
+    const LmTileGeometry *b,
+    const void *tensor_map_a,
+    const void *tensor_map_b,
+    void *stage_a,
+    void *stage_b,
+    uint64_t *barrier,
+    uint32_t row_base,
+    uint32_t neuron_base,
+    uint32_t k_tile,
+    uint32_t group_index,
+    bool grouped)
 {
 	// THE K COORDINATE IS BYTES, PER OPERAND. Every descriptor is a UINT8
 	// tensor, so the x coordinate advances in bytes - and a BF16 activation
@@ -142,19 +153,19 @@ static __device__ __forceinline__ void LmPipelineProduce(const LmTileSource *a, 
 	// the K TILE INDEX and each operand prices its own stride.
 	uint32_t k_byte_a = k_tile * LmTileBytes(1u,a->depth,a->element_bits);
 	uint32_t k_byte_b = k_tile * LmTileBytes(1u,b->depth,b->element_bits);
-	if ( LmTmaElectOne() == false )
+	if ( threadIdx.x != 0u )
 		return;
 	LmMbarrierArriveExpect(barrier,
 		LmTileBytes(a->rows,a->depth,a->element_bits)
 		+ LmTileBytes(b->rows,b->depth,b->element_bits));
-	LmTmaLoad2d(stage_a,a->tensor_map,barrier,(int32_t)k_byte_a,(int32_t)row_base);
+	LmTmaLoad2d(stage_a,tensor_map_a,barrier,(int32_t)k_byte_a,(int32_t)row_base);
 	// Weights are expert-major, so one rank-3 descriptor covers every expert and
 	// the third coordinate selects. A dense GEMM is the same tensor with one
 	// group, which is why there is no separate dense staging path.
 	if ( grouped )
-		LmTmaLoad3d(stage_b,b->tensor_map,barrier,(int32_t)k_byte_b,(int32_t)neuron_base,(int32_t)group_index);
+		LmTmaLoad3d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base,(int32_t)group_index);
 	else
-		LmTmaLoad2d(stage_b,b->tensor_map,barrier,(int32_t)k_byte_b,(int32_t)neuron_base);
+		LmTmaLoad2d(stage_b,tensor_map_b,barrier,(int32_t)k_byte_b,(int32_t)neuron_base);
 }
 
 // -- grouped tile scheduling -------------------------------------------------

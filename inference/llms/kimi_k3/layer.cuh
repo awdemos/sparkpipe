@@ -234,17 +234,17 @@ struct K3LayerBuffers
 	// identity - row i is sequence i - which is every pure-decode step. The
 	// KDA state index is per SEQUENCE under this contract, not per row.
 	const uint32_t *sequence_row_begin;
-	// DSpark verify keeps each row's raw KDA inputs so the fold can replay the
-	// accepted prefix with the same kernels that would have committed it:
-	// pre-conv q/k/v, the decay logits and the beta logits, one slab per KDA
-	// layer strided like the step's rows. Null outside a verify step. Storing
-	// PRE-conv rather than post keeps the slab honest about what state needs -
-	// the conv windows are state too, and only their inputs can advance them.
+	// DSpark verify keeps the exact recurrent inputs needed to commit an
+	// accepted prefix: pre-convolution q/k/v rows plus the already transformed
+	// retention and write-gate values. The fold must not recompute either gate;
+	// approximate exponentials can drift even when two formulas look identical.
+	// Null pointers disable replay storage outside verification. Storing pre-conv
+	// q/k/v remains necessary because the three convolution windows are state.
 	uint16_t *replay_conv_q;
 	uint16_t *replay_conv_k;
 	uint16_t *replay_conv_v;
-	uint16_t *replay_decay_logit;
-	uint16_t *replay_beta_logit;
+	float *replay_retention;
+	float *replay_write_gate;
 
 	// The recurrent half. Fixed per sequence, never grows with context.
 	uint8_t *kda_state_pool;
@@ -263,10 +263,10 @@ struct K3LayerBuffers
 	uint32_t *route_expert;
 	uint32_t *route_packed_row;
 	uint32_t *route_source_token;
-	const float *route_weight;
+	float *route_weight;
 	uint32_t *group_row_offset;
-	uint32_t *group_tile_prefix;
-	uint32_t *group_tile_prefix_down;
+	uint32_t *group_tile_prefix_w1;
+	uint32_t *group_tile_prefix_w2;
 	float *head_candidate_score;
 	uint32_t *head_candidate_token;
 	uint32_t *output_token;
@@ -288,8 +288,11 @@ static int32_t K3Project(const K3LayerBuffers *b, const uint16_t *source, const 
 	// packed buffer nothing filled.
 	static_assert(Format::kScaleGroup == 0u,
 		"K3Project carries the unquantised projections; experts go weight-only");
+	if (weight_scale != 0)
+		return(LM_LAUNCH_ERR_SHAPE);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_b = (const float *)weight_scale;
+	gemm.scale_a = LmScaleTensorNone();
+	gemm.scale_b = LmScaleTensorNone();
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = destination;
@@ -448,11 +451,10 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 		b->decay_logit_bf16,rows,K3_KDA_KEY_DIM,K3_KDA_QK_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	if ( b->replay_decay_logit != 0 )
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3((K3_KDA_QK_DIM + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,rows), K3_LAYER_THREADS, 0, stream,
-			b->decay_logit_bf16,b->replay_decay_logit,rows,K3_KDA_QK_DIM);
+	float *retention = b->replay_retention != 0
+		? b->replay_retention : b->kda_retention;
 	LM_LAUNCH((LmBoundedDecayKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM>), dim3(rows,K3_KDA_HEADS), K3_LAYER_THREADS, 0, stream,
-		b->decay_logit_bf16,b->kda_decay_bias,b->kda_head_log_scale, b->kda_retention,K3_KDA_HEADS,K3_KDA_GATE_LOWER_BOUND,rows);
+		b->decay_logit_bf16,b->kda_decay_bias,b->kda_head_log_scale,retention,K3_KDA_HEADS,K3_KDA_GATE_LOWER_BOUND,rows);
 	// BETA IS COMPUTED HERE. It was read raw from kda_write_gate, which nothing
 	// filled - the comment said "still on the host" and no host exists. The
 	// reference is Sigmoid(W_beta x), per head, with the sigmoid inside the
@@ -462,13 +464,12 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 		(uint16_t *)b->kda_beta_logit,rows,K3_HIDDEN,K3_KDA_HEADS,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	if ( b->replay_beta_logit != 0 )
-		LM_LAUNCH((LmCopyRowsKernel<K3_LAYER_THREADS>), dim3(1u,rows), K3_LAYER_THREADS, 0, stream,
-			(const uint16_t *)b->kda_beta_logit,b->replay_beta_logit,rows,K3_KDA_HEADS);
+	float *write_gate = b->replay_write_gate != 0
+		? b->replay_write_gate : b->kda_write_gate_out;
 	LM_LAUNCH((LmSigmoidRowsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
-		(const uint16_t *)b->kda_beta_logit,b->kda_write_gate_out,K3_KDA_HEADS);
+		(const uint16_t *)b->kda_beta_logit,write_gate,K3_KDA_HEADS);
 	LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(sequences,K3_KDA_HEADS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)), stream,
-		b->kda_state_pool,K3_KDA_STATE_SLOT_BYTES,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,b->kda_retention,b->kda_write_gate_out,b->attention_out_bf16, K3_KDA_HEADS,1u,sequences,commit);
+		b->kda_state_pool,K3_KDA_STATE_SLOT_BYTES,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,retention,write_gate,b->attention_out_bf16, K3_KDA_HEADS,1u,sequences,commit);
 	// RMSNORM BEFORE THE GATE, AND ONLY HERE. Report eq. 6 normalises the
 	// recurrent output head-wise before gating; eq. 7 gates the MLA output with
 	// no normalisation at all. The two paths differ in exactly this step.
@@ -586,15 +587,19 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		K3_HIDDEN,K3_EXPERTS,multiprocessors,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LM_LAUNCH((LmTopkSmallKernel<K3_LAYER_THREADS,K3_TOP_K,true,1u,1u,true>), rows, K3_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
-		b->router_logits,K3_EXPERTS,b->route_expert, (float *)b->route_weight,b->router_bias,0);
+	LM_LAUNCH((LmTopkSmallKernel<K3_LAYER_THREADS,K3_TOP_K,true,1u,1u,LM_TOPK_SCORE_SIGMOID>), rows, K3_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
+		b->router_logits,K3_EXPERTS,b->route_expert,b->route_weight,b->router_bias,0,K3_ROUTED_SCALE);
 	// FROM CHOICES TO PACKED ORDER, ON DEVICE. The top-k lives here; a host
 	// cannot pack what it cannot see without a sync on the hot path, and until
 	// this call nothing packed it at all - every harness filled the arrays by
 	// hand, which is the precise shape of a driver that cannot exist.
-	LM_LAUNCH((LmRouteBuildKernel<K3_LAYER_THREADS,K3_EXPERTS>), 1u, K3_LAYER_THREADS, 0, stream,
-		b->route_expert,packed_rows,K3_TOP_K,b->group_row_offset, b->route_packed_row,b->route_source_token,
-		LmLaunchGroupedTileM(packed_rows,K3_TOP_K,K3_EXPERTS), (K3_EXPERT_INTERMEDIATE * 2u + K3_LAYER_TILE_N - 1u) / K3_LAYER_TILE_N,b->group_tile_prefix, (K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_TILE_N - 1u) / K3_LAYER_TILE_N,b->group_tile_prefix_down);
+	status = LmRouteBuild<K3_LAYER_THREADS,K3_EXPERTS>(
+		b->route_expert,rows,packed_rows,K3_TOP_K,b->group_row_offset,
+		b->route_packed_row,b->route_source_token,K3_EXPERT_INTERMEDIATE * 2u,
+		K3_ROUTED_EXPERT_HIDDEN,K3_LAYER_TILE_N,b->group_tile_prefix_w1,
+		b->group_tile_prefix_w2,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->routed_down_weight,b->routed_down_scale,
 		b->latent_bf16,rows,K3_HIDDEN,K3_ROUTED_EXPERT_HIDDEN,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -610,13 +615,21 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		b->latent_bf16,b->route_source_token,b->route_gather_bf16,
 		packed_rows,K3_ROUTED_EXPERT_HIDDEN);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_b_e8m0 = (const uint8_t *)b->expert_w1_scale;
+	gemm.scale_a = LmScaleTensorNone();
+	gemm.scale_b = LmScaleTensorBlockUe8m0(
+		b->expert_w1_scale,
+		K3_EXPERTS,
+		K3_EXPERT_INTERMEDIATE * 2u,
+		K3_ROUTED_EXPERT_HIDDEN,
+		1u,
+		K3_MXFP4_GROUP);
 	gemm.group_row_offset = b->group_row_offset;
-	gemm.group_tile_prefix = b->group_tile_prefix;
+	gemm.group_tile_prefix = b->group_tile_prefix_w1;
 	gemm.prefix_built = 1u;
 	gemm.output_bf16 = b->gate_up_bf16;
-	status = LmGemmWeightOnlyLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,b->route_gather_bf16,b->expert_w1_weight,packed_rows,packed_rows,
+	status = LmGemmWeightOnlyLaunch<
+		Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+		&gemm,b->route_gather_bf16,b->expert_w1_weight,packed_rows,rows,
 		K3_TOP_K,K3_EXPERTS,K3_ROUTED_EXPERT_HIDDEN,K3_EXPERT_INTERMEDIATE * 2u,
 		multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )
@@ -627,11 +640,18 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 		b->gate_up_bf16,b->intermediate_bf16,K3_EXPERT_INTERMEDIATE, K3_SITU_BETA,K3_SITU_LINEAR_BETA);
 	// The SiTU output is already expert-major: no gather, no quantise, the
 	// rows feed the down-projection as they are.
-	gemm.scale_b_e8m0 = (const uint8_t *)b->expert_w2_scale;
-	gemm.group_tile_prefix = b->group_tile_prefix_down;
+	gemm.scale_b = LmScaleTensorBlockUe8m0(
+		b->expert_w2_scale,
+		K3_EXPERTS,
+		K3_ROUTED_EXPERT_HIDDEN,
+		K3_EXPERT_INTERMEDIATE,
+		1u,
+		K3_MXFP4_GROUP);
+	gemm.group_tile_prefix = b->group_tile_prefix_w2;
 	gemm.output_bf16 = b->gate_up_bf16;
-	status = LmGemmWeightOnlyLaunch<Format,K3_LAYER_TILE_N,Format::kTileK,K3_LAYER_STAGES,K3_LAYER_WARPS>(
-		&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,packed_rows,
+	status = LmGemmWeightOnlyLaunch<
+		Format,K3_LAYER_TILE_N,K3_LAYER_STAGES,K3_LAYER_WARPS>(
+		&gemm,b->intermediate_bf16,b->expert_w2_weight,packed_rows,rows,
 		K3_TOP_K,K3_EXPERTS,K3_EXPERT_INTERMEDIATE,K3_ROUTED_EXPERT_HIDDEN,
 		multiprocessors,true,stream);
 	if ( status != LM_LAUNCH_OK )

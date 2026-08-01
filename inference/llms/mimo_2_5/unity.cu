@@ -40,12 +40,12 @@ static_assert(Mimo25SwaKv::kSlotBytes == 6144u, "8 heads, twice the slot");
 // 256 experts at top-8 is the same routing shape as GLM 5.2, so the tile
 // selector produces the same heights and these are the same instantiations.
 
-template __global__ void LmGemmKernel<LmFp8,  16u, MIMO25_TILE_N, 128u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8,  32u, MIMO25_TILE_N, 128u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8,  64u, MIMO25_TILE_N, 128u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt7, 16u, MIMO25_TILE_N, 256u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt7, 32u, MIMO25_TILE_N, 256u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt7, 64u, MIMO25_TILE_N, 256u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmFp8, LmFp8, 16u, MIMO25_TILE_N, 128u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmFp8, LmFp8, 32u, MIMO25_TILE_N, 128u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmFp8, LmFp8, 64u, MIMO25_TILE_N, 128u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmInt7, LmInt7, 16u, MIMO25_TILE_N, 256u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmInt7, LmInt7, 32u, MIMO25_TILE_N, 256u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmInt7, LmInt7, 64u, MIMO25_TILE_N, 256u, MIMO25_STAGES, MIMO25_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 
 template __global__ void LmFusedResidualRmsNormKernel<MIMO25_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<MIMO25_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
@@ -61,7 +61,8 @@ template __global__ void LmRopeKernel<MIMO25_THREADS>(uint16_t *, const uint32_t
 template __global__ void LmAttentionDecodeKernel<Mimo25FullKv, MIMO25_THREADS, MIMO25_HEAD_DIM, MIMO25_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 template __global__ void LmAttentionDecodeKernel<Mimo25SwaKv, MIMO25_THREADS, MIMO25_HEAD_DIM, MIMO25_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 
-template __global__ void LmTopkSmallKernel<MIMO25_THREADS, MIMO25_TOP_K>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
+template __global__ void LmTopkSmallKernel<MIMO25_THREADS, MIMO25_TOP_K, false, 1u, 1u, LM_TOPK_SCORE_IDENTITY>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *, float);
+template __global__ void LmRouteBuildKernel<MIMO25_THREADS, MIMO25_EXPERTS>(const uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t, uint32_t *);
 template __global__ void LmSplitQkvKernel<MIMO25_THREADS>(const uint16_t *, LmQkvLayout, uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
 template __global__ void LmRopePerHeadKernel<MIMO25_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
 template __global__ void LmKvStoreKernel<Mimo25FullKv, MIMO25_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);

@@ -15,7 +15,7 @@
 extern "C" {
 #endif
 
-#define SPARK_RING_RUNTIME_ABI_VERSION 5u
+#define SPARK_RING_RUNTIME_ABI_VERSION 6u
 #define SPARK_RING_RUNTIME_RANK_PLAN_DESCRIPTOR_BYTES \
     ((uint32_t)sizeof(SparkRingRuntimeRankPlan))
 #define SPARK_RING_RUNTIME_STAGE_COUNT \
@@ -163,6 +163,15 @@ typedef struct SparkRingRuntimeFinalEvent
     uint64_t sequence_id;
     uint64_t sequence_position;
     uint64_t service_time_ns;
+    uint64_t control_generation;
+    uint64_t transaction_id;
+    uint64_t dispatch_generation;
+    uint64_t request_generation;
+    uint64_t step_generation;
+    uint32_t step_chunk_index;
+    uint32_t step_chunk_count;
+    uint32_t transaction_phase;
+    uint32_t reserved_transaction;
 	uint32_t extension_flags;
 	uint32_t reserved0;
 	SparkGlm52DsparkDraftResult dspark_draft;

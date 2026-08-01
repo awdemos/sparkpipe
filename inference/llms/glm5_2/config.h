@@ -18,17 +18,18 @@
 
 #include <stdint.h>
 #include "inference/kernels/layer_kind.cuh"
+#include "sparkpipe/spark_glm52_model.h"
 
-#define GLM52_HIDDEN 6144u                     /* CONFIG hidden_size */
-#define GLM52_LAYERS 78u                       /* CONFIG num_hidden_layers */
-#define GLM52_FIRST_ROUTED_LAYER 3u            /* CONFIG first_k_dense_replace */
-#define GLM52_VOCAB 154880u                   /* CONFIG vocab_size */
+#define GLM52_HIDDEN SPARK_GLM52_MODEL_HIDDEN_DIMENSION
+#define GLM52_LAYERS SPARK_GLM52_MODEL_LAYER_COUNT
+#define GLM52_FIRST_ROUTED_LAYER SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER
+#define GLM52_VOCAB SPARK_GLM52_MODEL_OUTPUT_VOCAB_COUNT
 // The constrained-decoding subset. A caller with a grammar or a tool schema pays
 // this instead of the vocabulary: 256 tokens is 1.6 MB of embedding against
 // 1.9 GB, and it is exact rather than approximate.
-#define GLM52_RESTRICTED_VOCAB 256u                    /* CONFIG vocab_size */
-#define GLM52_RMS_EPSILON 1e-05f               /* CONFIG rms_norm_eps */
-#define GLM52_ROPE_THETA 8000000.0f            /* CONFIG rope_theta */
+#define GLM52_RESTRICTED_VOCAB SPARK_GLM52_MODEL_RESTRICTED_VOCAB_COUNT
+#define GLM52_RMS_EPSILON SPARK_GLM52_MODEL_RMS_NORM_EPSILON
+#define GLM52_ROPE_THETA SPARK_GLM52_MODEL_ROPE_THETA
 
 // -- attention: MLA with sparse selection ------------------------------------
 //
@@ -39,22 +40,23 @@
 // for negligible added compute, which is the right trade on a bandwidth-bound
 // machine.
 
-#define GLM52_ATTN_HEADS 64u                   /* CONFIG num_attention_heads */
-#define GLM52_LATENT 512u                      /* CONFIG kv_lora_rank */
-#define GLM52_ROPE_DIM 64u                     /* CONFIG qk_rope_head_dim */
-#define GLM52_QK_NOPE_DIM 192u                 /* CONFIG qk_nope_head_dim */
-#define GLM52_VALUE_DIM 256u                   /* CONFIG v_head_dim */
-#define GLM52_QUERY_A_DIM 2048u                /* CONFIG q_lora_rank */
+#define GLM52_ATTN_HEADS SPARK_GLM52_MODEL_HEAD_COUNT
+#define GLM52_LATENT SPARK_GLM52_MODEL_LATENT_DIMENSION
+#define GLM52_ROPE_DIM SPARK_GLM52_MODEL_ROPE_DIMENSION
+#define GLM52_QK_NOPE_DIM SPARK_GLM52_MODEL_QK_NOPE_HEAD_DIMENSION
+#define GLM52_VALUE_DIM SPARK_GLM52_MODEL_VALUE_HEAD_DIMENSION
+#define GLM52_QUERY_A_DIM SPARK_GLM52_MODEL_QUERY_A_DIMENSION
 
 // Sparse selection. The index pass scores all slots with a cheap low-rank head
 // and keeps the top GLM52_DSA_SELECTED; the full attention then reads only
 // those. Index state is shared across a group of layers, so the score is
 // computed once per group rather than once per layer.
-#define GLM52_DSA_SELECTED 2048u               /* CONFIG index_topk */
-#define GLM52_DSA_INDEX_HEADS 32u              /* CONFIG index_n_heads */
-#define GLM52_DSA_INDEX_DIM 128u               /* CONFIG index_head_dim */
-#define GLM52_DSA_SHARE_GROUP_LAYERS 4u        /* CONFIG index layer sharing period */
-#define GLM52_DSA_INDEX_EPSILON 1e-06f
+#define GLM52_DSA_SELECTED SPARK_GLM52_MODEL_DSA_SELECTED_TOKEN_COUNT
+#define GLM52_DSA_INDEX_HEADS SPARK_GLM52_MODEL_DSA_INDEX_HEAD_COUNT
+#define GLM52_DSA_INDEX_DIM SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION
+#define GLM52_DSA_QUERY_DIM (GLM52_DSA_INDEX_HEADS * GLM52_DSA_INDEX_DIM)
+#define GLM52_DSA_SHARE_GROUP_LAYERS SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT
+#define GLM52_DSA_INDEX_EPSILON SPARK_GLM52_MODEL_DSA_INDEX_NORM_EPSILON
 
 // -- MoE ---------------------------------------------------------------------
 //
@@ -63,12 +65,12 @@
 // bucket rather than fixed: at B1024 it is 32 rows, and a 16-row tile would
 // split every expert and double the weight stream.
 
-#define GLM52_EXPERTS 256u                     /* CONFIG n_routed_experts */
-#define GLM52_TOP_K 8u                         /* CONFIG num_experts_per_tok */
-#define GLM52_EXPERT_INTERMEDIATE 2048u        /* CONFIG moe_intermediate_size */
-#define GLM52_DENSE_INTERMEDIATE 12288u        /* CONFIG intermediate_size */
-#define GLM52_ROUTED_SCALE 2.5f                /* CONFIG routed_scaling_factor */
-#define GLM52_W1_COMPONENTS 2u                 /* gate and up, emitted together */
+#define GLM52_EXPERTS SPARK_GLM52_MODEL_MOE_EXPERT_COUNT
+#define GLM52_TOP_K SPARK_GLM52_MODEL_MOE_TOP_K
+#define GLM52_EXPERT_INTERMEDIATE SPARK_GLM52_MODEL_MOE_INTERMEDIATE_DIMENSION
+#define GLM52_DENSE_INTERMEDIATE SPARK_GLM52_MODEL_DENSE_INTERMEDIATE_DIMENSION
+#define GLM52_ROUTED_SCALE SPARK_GLM52_MODEL_MOE_ROUTED_SCALING_FACTOR
+#define GLM52_W1_COMPONENTS SPARK_GLM52_MODEL_MOE_W1_COMPONENT_COUNT
 
 // -- quantisation ------------------------------------------------------------
 //
@@ -77,14 +79,14 @@
 // depends on the element width. NVFP4 at 4 bits needs a 256-element K tile
 // where FP8 needs 128; kernels/tile.cuh asserts it.
 
-#define GLM52_FP8_SCALE_BLOCK 128u
-#define GLM52_NVFP4_GROUP 16u
-#define GLM52_MXFP4_GROUP 32u
+#define GLM52_FP8_SCALE_BLOCK SPARK_GLM52_MODEL_FP8_SCALE_BLOCK
+#define GLM52_NVFP4_GROUP SPARK_GLM52_MODEL_NVFP4_GROUP_SIZE
+#define GLM52_MXFP4_GROUP SPARK_GLM52_MODEL_MXFP4_GROUP_SIZE
 
 // -- speculative decode ------------------------------------------------------
 
-#define GLM52_MTP_DRAFT_TOKENS 6u
-#define GLM52_MTP_LAYER_INDEX GLM52_LAYERS
+#define GLM52_MTP_DRAFT_TOKENS SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT
+#define GLM52_MTP_LAYER_INDEX SPARK_GLM52_MODEL_MTP_LAYER_INDEX
 
 // -- KV geometry -------------------------------------------------------------
 //
@@ -114,7 +116,7 @@
 #define GLM52_ROUTED_LAYERS (GLM52_LAYERS - GLM52_FIRST_ROUTED_LAYER)
 #define GLM52_GATE_UP_DIM (GLM52_EXPERT_INTERMEDIATE * GLM52_W1_COMPONENTS)
 #define GLM52_LATENT_ROW (GLM52_LATENT + GLM52_ROPE_DIM)
-#define GLM52_WEIGHT_LAYERS (GLM52_LAYERS + 1u)
+#define GLM52_WEIGHT_LAYERS SPARK_GLM52_MODEL_WEIGHT_LAYER_COUNT
 
 // Rows one expert receives on average at a given batch. The GEMM tile height is
 // selected from this, so it is defined where the constants are rather than in

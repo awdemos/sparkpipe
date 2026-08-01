@@ -808,6 +808,26 @@ static void SparkTestKvCacheCapacityEstimatorAccountsForMlaCompression(void)
         SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS);
 }
 
+static void SparkTestKvJitSetIndexLayerCount(
+    SparkKvJitStageBudgetRequest *request)
+{
+    uint32_t schedule_layer;
+    uint32_t schedule_layer_end;
+
+    assert(request != 0);
+    request->index_key_layer_count = 0u;
+    schedule_layer_end = request->first_layer_index + request->layer_count;
+    for (schedule_layer = request->first_layer_index;
+         schedule_layer < schedule_layer_end;
+         ++schedule_layer)
+    {
+        if (SparkKvCacheDsaSourceLayer(schedule_layer) == schedule_layer)
+        {
+            request->index_key_layer_count += 1u;
+        }
+    }
+}
+
 static void SparkTestKvJitStageBudgetsMatchRingStorage(void)
 {
     SparkKvJitStageBudgetRequest request;
@@ -862,21 +882,8 @@ static void SparkTestKvJitStageBudgetsMatchRingStorage(void)
     request.bytes_per_scalar = sizeof(uint16_t);
     request.index_key_dimension = SPARK_GLM52_MODEL_DSA_INDEX_HEAD_DIMENSION;
     request.index_key_bytes_per_scalar = sizeof(uint16_t);
-    {
-        uint32_t schedule_layer;
-        request.index_key_layer_count = 0u;
-        for (schedule_layer = request.first_layer_index;
-            schedule_layer < request.first_layer_index + request.layer_count;
-            ++schedule_layer)
-        {
-            if (SparkKvCacheDsaSourceLayer(schedule_layer) == schedule_layer)
-            {
-                request.index_key_layer_count += 1u;
-            }
-        }
-    }
-
     request.first_layer_index = 0u;
+    SparkTestKvJitSetIndexLayerCount(&request);
     assert(SparkKvCacheCalculateJitStageBudget(
         &request, &budget) == SPARK_STATUS_OK);
     assert(budget.local_dsa_index_layer_count == 3u);
@@ -924,6 +931,7 @@ static void SparkTestKvJitStageBudgetsMatchRingStorage(void)
         SPARK_KV_CACHE_LAYOUT_MLA_COMPRESSED;
 
     request.first_layer_index = 6u;
+    SparkTestKvJitSetIndexLayerCount(&request);
     assert(SparkKvCacheCalculateJitStageBudget(
         &request, &budget) == SPARK_STATUS_OK);
     assert(budget.local_dsa_index_layer_count == 2u);
@@ -931,6 +939,7 @@ static void SparkTestKvJitStageBudgetsMatchRingStorage(void)
     assert(budget.nvme_record_bytes == 483328u);
 
     request.first_layer_index = 12u;
+    SparkTestKvJitSetIndexLayerCount(&request);
     assert(SparkKvCacheCalculateJitStageBudget(
         &request, &budget) == SPARK_STATUS_OK);
     assert(budget.local_dsa_index_layer_count == 1u);
@@ -938,6 +947,7 @@ static void SparkTestKvJitStageBudgetsMatchRingStorage(void)
     assert(budget.nvme_record_bytes == 466944u);
 
     request.first_layer_index = 72u;
+    SparkTestKvJitSetIndexLayerCount(&request);
     request.include_mtp_layer = 1u;
     assert(SparkKvCacheCalculateJitStageBudget(
         &request, &budget) == SPARK_STATUS_OK);
@@ -951,6 +961,7 @@ static void SparkTestKvJitStageBudgetsMatchRingStorage(void)
         UINT64_C(16911433728));
 
     request.first_layer_index = 66u;
+    SparkTestKvJitSetIndexLayerCount(&request);
     assert(SparkKvCacheCalculateJitStageBudget(
         &request, &budget) == SPARK_STATUS_INVALID_ARGUMENT);
 }

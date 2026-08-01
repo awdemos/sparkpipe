@@ -244,84 +244,107 @@ def write_manifest(root,manifest):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--template",required=True)
-    parser.add_argument("--output",required=True)
-    parser.add_argument("--release-id",required=True)
-    parser.add_argument("--git-commit",required=True)
-    parser.add_argument("--max-active",type=int)
-    parser.add_argument("--kv-pool-tokens",type=int)
-    parser.add_argument("--kv-logical-blocks",type=int,required=True)
+    parser.add_argument("--template", required=True)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--release-id", required=True)
+    parser.add_argument("--git-commit", required=True)
+    parser.add_argument("--max-active", type=int)
+    parser.add_argument("--kv-pool-tokens", type=int)
+    parser.add_argument("--kv-logical-blocks", type=int, required=True)
     parser.add_argument(
+        "--model-quantization",
+        choices=("fp8", "nvfp4"),
+        default="fp8",
+    )
     parser.add_argument("--stagepack-root")
     parser.add_argument("--moe-pack-root")
     decode_mode = parser.add_mutually_exclusive_group(required=True)
-    decode_mode.add_argument("--mtp",action="store_true")
-    decode_mode.add_argument("--plain-decode",action="store_true")
-    parser.add_argument("--dspark",action="store_true")
+    decode_mode.add_argument("--mtp", action="store_true")
+    decode_mode.add_argument("--plain-decode", action="store_true")
+    parser.add_argument("--dspark", action="store_true")
     parser.add_argument("--dspark-model-dir")
     parser.add_argument("--dspark-manifest")
-    parser.add_argument("--dspark-max-context",type=int,default=2048)
-    parser.add_argument("--without-diagnostics",action="store_true")
-    parser.add_argument("--role-env",action="append",default=[])
-    parser.add_argument("--role-env-unset",action="append",default=[])
-    parser.add_argument("--replace",action="append",default=[])
+    parser.add_argument("--dspark-max-context", type=int, default=2048)
+    parser.add_argument("--without-diagnostics", action="store_true")
+    parser.add_argument("--role-env", action="append", default=[])
+    parser.add_argument("--role-env-unset", action="append", default=[])
+    parser.add_argument("--replace", action="append", default=[])
     arguments = parser.parse_args()
     temporary = arguments.output + ".assembling." + str(os.getpid())
     if os.path.exists(arguments.output) or os.path.exists(temporary):
         raise SystemExit("release output already exists")
-    shutil.copytree(arguments.template,temporary)
-    manifest_path = os.path.join(temporary,"sparkpipe.json")
-    with open(manifest_path,"r",encoding="utf-8") as source:
-        manifest = json.load(source)
-    allowed = {entry["path"] for entry in manifest["files"]}
-    for replacement in arguments.replace:
-        relative,source = replacement.split("=",1)
-        if relative not in allowed:
-            raise SystemExit("replacement is not in manifest: " + relative)
-        if not os.path.isfile(source):
-            raise SystemExit("missing replacement: " + source)
-        shutil.copy2(source,os.path.join(temporary,relative))
-    manifest["release_id"] = arguments.release_id
-    manifest["git_commit"] = arguments.git_commit
-    manifest["generation"] = int(datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S"))
-    set_role_release_identity(manifest)
-    if arguments.max_active is not None:
-        if arguments.max_active < 1 or arguments.max_active > 1024:
-            raise SystemExit("max-active must be in 1..1024")
-        set_role_max_active(manifest,arguments.max_active)
-    if arguments.kv_pool_tokens is not None:
-        if arguments.kv_pool_tokens < 1:
-            raise SystemExit("kv-pool-tokens must be positive")
+
+    try:
+        shutil.copytree(arguments.template, temporary)
+        manifest_path = os.path.join(temporary, "sparkpipe.json")
+        with open(manifest_path, "r", encoding="utf-8") as source:
+            manifest = json.load(source)
+        allowed = {entry["path"] for entry in manifest["files"]}
+        for replacement_specification in arguments.replace:
+            try:
+                relative, source_path = replacement_specification.split("=", 1)
+            except ValueError as error:
+                raise SystemExit("replacement must be RELATIVE_PATH=SOURCE") from error
+            if relative not in allowed:
+                raise SystemExit("replacement is not in manifest: " + relative)
+            if not os.path.isfile(source_path):
+                raise SystemExit("missing replacement: " + source_path)
+            shutil.copy2(source_path, os.path.join(temporary, relative))
+
+        manifest["release_id"] = arguments.release_id
+        manifest["git_commit"] = arguments.git_commit
+        manifest["generation"] = int(
+            datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
+        )
+        set_role_release_identity(manifest)
+        if arguments.max_active is not None:
+            if arguments.max_active < 1 or arguments.max_active > 1024:
+                raise SystemExit("max-active must be in 1..1024")
+            set_role_max_active(manifest, arguments.max_active)
+        if arguments.kv_pool_tokens is not None:
+            if arguments.kv_pool_tokens < 1:
+                raise SystemExit("kv-pool-tokens must be positive")
+            set_role_argument(
+                manifest,
+                "ring_cuda_residentd",
+                "--kv-pool-tokens",
+                arguments.kv_pool_tokens,
+            )
+        if arguments.kv_logical_blocks < 1:
+            raise SystemExit("kv-logical-blocks must be positive")
         set_role_argument(
-            manifest,"ring_cuda_residentd","--kv-pool-tokens",
-            arguments.kv_pool_tokens)
-    if arguments.kv_logical_blocks < 1:
-        raise SystemExit("kv-logical-blocks must be positive")
-    set_role_argument(
-        manifest,"spark0_gateway","--kv-logical-blocks",
-        arguments.kv_logical_blocks)
-    remove_role_argument(
-        manifest,"spark0_gateway","--decode-batch-target")
-    set_model_arguments(
-        manifest,
-        arguments.model_quantization,
-        arguments.moe_pack_root,
-        arguments.stagepack_root)
-    set_role_switch(manifest,"spark0_gateway","--mtp",arguments.mtp)
-    set_role_switch(manifest,"ring_cuda_residentd","--mtp",arguments.mtp)
-    set_dspark_arguments(
-        manifest,
-        arguments.dspark,
-        arguments.dspark_model_dir,
-        arguments.dspark_manifest,
-        arguments.dspark_max_context)
-    set_runtime_diagnostics(manifest,not arguments.without_diagnostics)
-    for specification in arguments.role_env_unset:
-        unset_role_environment(manifest,specification)
-    for specification in arguments.role_env:
-        set_role_environment(manifest,specification)
-    write_manifest(temporary,manifest)
-    os.rename(temporary,arguments.output)
+            manifest,
+            "spark0_gateway",
+            "--kv-logical-blocks",
+            arguments.kv_logical_blocks,
+        )
+        remove_role_argument(manifest, "spark0_gateway", "--decode-batch-target")
+        set_model_arguments(
+            manifest,
+            arguments.model_quantization,
+            arguments.moe_pack_root,
+            arguments.stagepack_root,
+        )
+        set_role_switch(manifest, "spark0_gateway", "--mtp", arguments.mtp)
+        set_role_switch(manifest, "ring_cuda_residentd", "--mtp", arguments.mtp)
+        set_dspark_arguments(
+            manifest,
+            arguments.dspark,
+            arguments.dspark_model_dir,
+            arguments.dspark_manifest,
+            arguments.dspark_max_context,
+        )
+        set_runtime_diagnostics(manifest, not arguments.without_diagnostics)
+        for specification in arguments.role_env_unset:
+            unset_role_environment(manifest, specification)
+        for specification in arguments.role_env:
+            set_role_environment(manifest, specification)
+        write_manifest(temporary, manifest)
+        os.rename(temporary, arguments.output)
+    except BaseException:
+        if os.path.isdir(temporary):
+            shutil.rmtree(temporary)
+        raise
 
 
 if __name__ == "__main__":

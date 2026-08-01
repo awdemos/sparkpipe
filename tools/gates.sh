@@ -4,23 +4,24 @@
 # This exists because a previous run reported nine passing static_asserts from a
 # translation unit that had failed to compile: the echo was not gated on the
 # status. A gate that cannot fail is not a gate.
-ok=0; bad=0
+ok=0; bad=0; skipped=0
 run() {
 	if eval "$2" >/dev/null 2>&1
 	then printf "  %-26s PASS\n" "$1"; ok=$((ok+1))
 	else printf "  %-26s FAIL\n" "$1"; bad=$((bad+1))
 	fi
 }
-run "ptx capability gate"  "python3 tests/test_ptx_capability_gate.py"
+run_cuda() { if [ -x "${CUDA_HOME:-/opt/cuda}/bin/nvcc" ]; then run "$1" "$2"; else printf "  %-26s SKIP (nvcc unavailable)\n" "$1"; skipped=$((skipped+1)); fi; }
+run_cuda "ptx capability gate" "python3 tests/test_ptx_capability_gate.py"
 run "mma fragment mapping" "gcc -O2 -Wall -Wextra -o /tmp/g_f tests/test_mma_fragment_mapping.c && /tmp/g_f"
-run "model constants"      "gcc -O2 -Wall -Wextra -I. -o /tmp/g_c tests/test_model_constants.c && /tmp/g_c"
+run "model constants"      "gcc -O2 -Wall -Wextra -I. -Imodel-families/glm52/include -o /tmp/g_c tests/test_model_constants.c && /tmp/g_c"
 run "sub-byte packing"     "gcc -O2 -Wall -Wextra -o /tmp/g_p tests/test_pack.c && /tmp/g_p"
 run "free dequant"         "gcc -O2 -Wall -Wextra -o /tmp/g_d tests/test_dequant.c && /tmp/g_d"
 run "reference oracle"     "gcc -O2 -Wall -Wextra -Itests -o /tmp/g_r tests/test_reference.c -lm && /tmp/g_r"
 run "weight binding"       "gcc -O2 -Wall -Wextra -I. -Imodules/glm52_resident_decode_stage/include -Iinclude -Ideployment/include -Imodel-families/glm52/include -o /tmp/g_b tests/test_pack_bind.c && /tmp/g_b"
 run "sidebands"            "gcc -O2 -Wall -Wextra -I. -o /tmp/g_s tests/test_sideband.c && /tmp/g_s"
 run "kv cache"             "gcc -O2 -Wall -Wextra -I. -o /tmp/g_kv tests/test_cache.c && /tmp/g_kv"
-run "kv geometry"          "g++ -std=c++17 -fsyntax-only -Wall -Wextra -I. tests/test_kv_geometry.cc"
+run "kv geometry"          "g++ -std=c++17 -fsyntax-only -Wall -Wextra -I. -Imodel-families/glm52/include tests/test_kv_geometry.cc"
 run "workspace layout"     "gcc -O2 -Wall -Wextra -I. -o /tmp/g_w tests/test_group_gemm_workspace.c && /tmp/g_w"
 run "tensor map geometry"  "gcc -O2 -Wall -Wextra -I. -o /tmp/g_t tests/test_tensor_map_geometry.c && /tmp/g_t"
 run "tensor map encode"    "gcc -O2 -Wall -Wextra -I. -Itests/cuda_driver_stub -o /tmp/g_e tests/test_tensor_map_encode.c tests/cuda_driver_stub/stub.c && /tmp/g_e"
@@ -67,6 +68,8 @@ run "layer dataflow"       "python3 tests/test_layer_dataflow.py"
 # The checkpoint quantises the routed experts and nothing else, because only
 # they saw quantisation-aware training. Putting attention back on Format fails.
 run "k3 quant recipe"      "python3 tests/test_k3_quant_recipe.py"
+run "glm52 precision"      "python3 tests/test_glm52_quantized_cuda_contract.py"
+run "glm52 unity precision" "python3 tests/test_glm52_unity_precision_contract.py"
 # A whole layer, executed. Found a divide-by-zero in production code on its
 # first successful run, and catches the shared-expert overwrite by seeing the
 # routed value missing from the output rather than by reading the source.
@@ -83,6 +86,9 @@ run "dsv4 stage doorway"  "gcc -Iinclude -Wall -Werror -DNDEBUG -c modules/dsv4_
 run "stage firmware runs"  "make -s build/test_glm52_resident_decode_stage_firmware && ./build/test_glm52_resident_decode_stage_firmware"
 run "topology behavior"    "make -s build/test_glm52_production_topology && ./build/test_glm52_production_topology"
 run "request api behavior"  "make -s build/test_glm52_request_api && ./build/test_glm52_request_api"
+run "transaction ledger"    "make -s build/test_distributed_work && ./build/test_distributed_work"
+run "rank replay ownership" "make -s build/test_glm52_ring_rank_daemon && ./build/test_glm52_ring_rank_daemon"
+run "backend event ownership" "make -s build/test_ring_service_backend_transactions && ./build/test_ring_service_backend_transactions"
 run "service behavior"      "make -s build/test_glm52_service && ./build/test_glm52_service"
 run "prompt pipeline runs"  "make -s build/test_glm52_prompt_pipeline && ./build/test_glm52_prompt_pipeline"
 run "hybrid kv arithmetic"   "make -s build/test_hybrid_kv_arithmetic && ./build/test_hybrid_kv_arithmetic"
@@ -100,11 +106,11 @@ run "code size"           "python3 tests/test_code_size.py"
 run "dry naming law"       "python3 tests/test_dry_law.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
-run "grouped topk builds"  "sh tools/build_grouped_topk.sh"
-run "replay fold builds"   "sh tools/build_replay_fold.sh"
+run_cuda "grouped topk builds"  "sh tools/build_grouped_topk.sh"
+run_cuda "replay fold builds"   "sh tools/build_replay_fold.sh"
 run "kernel algorithms"    "python3 tests/test_kernel_algorithms.py"
 run "model contracts"      "python3 tests/test_model_driver_contracts.py"
-run "nvcc: sm_121a build"  "sh tools/build.sh"
+run_cuda "nvcc: sm_121a build"  "sh tools/build.sh"
 # The Makefile, which no gate covered. It did not parse: the reorganisation moved
 # twelve sources and $(patsubst src/%.c,...) returned the non-matching paths
 # UNCHANGED, so runtime/filesystem.c reached -include and make read a C file as a
@@ -115,5 +121,5 @@ run "makefile: test"       "make -n test"
 run "makefile: tools"      "make -n tools"
 run "makefile: backend"    "make -n glm52_ring_service_backend"
 run "every source exists"  "python3 tests/test_sources_exist.py"
-printf "  ---- %d pass, %d fail\n" "$ok" "$bad"
+printf "  ---- %d pass, %d skip, %d fail\n" "$ok" "$skipped" "$bad"
 [ "$bad" -eq 0 ]

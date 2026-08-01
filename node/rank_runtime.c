@@ -745,7 +745,7 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
     char pack_path[SPARK_RING_RUNTIME_PACK_PATH_BYTES];
     char manifest_path[SPARK_RING_RUNTIME_PACK_PATH_BYTES];
     char foreign_manifest_path[SPARK_RING_RUNTIME_PACK_PATH_BYTES];
-    const char *manifest_names[3];
+    const char *manifest_names[2];
     SparkStatus status;
     uint32_t layer_index;
     uint32_t manifest_index;
@@ -804,7 +804,7 @@ SparkStatus SparkRingRuntimeValidateStageMoePackFiles(
             SPARK_STATUS_NOT_FOUND,
             "resident MoE pack manifest is missing");
     }
-    for (manifest_index = 0u; manifest_index < 3u; ++manifest_index)
+    for (manifest_index = 0u; manifest_index < 2u; ++manifest_index)
     {
         if (manifest_index == selected_manifest_index)
             continue;

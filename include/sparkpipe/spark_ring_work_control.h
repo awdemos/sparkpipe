@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "sparkpipe/spark_distributed_work.h"
 #include "sparkpipe/spark_glm52_dspark.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_glm52_model.h"
@@ -15,7 +16,7 @@
 extern "C" {
 #endif
 
-#define SPARK_RING_WORK_CONTROL_ABI_VERSION 14u
+#define SPARK_RING_WORK_CONTROL_ABI_VERSION 16u
 #define SPARK_RING_WORK_CONTROL_PACKET_MAGIC 0x35574350u
 #define SPARK_RING_WORK_CONTROL_STANDALONE_GENERATION UINT64_C(1)
 #define SPARK_RING_WORK_CONTROL_PACKET_BYTES \
@@ -122,6 +123,8 @@ typedef struct SparkRingWorkControlKvPrefetchEntry
 typedef struct SparkRingWorkControlLane
 {
 	uint64_t request_id;
+	uint64_t request_generation;
+	uint64_t step_generation;
 	uint64_t sequence_id;
 	uint64_t sequence_position;
 	uint32_t request_slot_index;
@@ -147,6 +150,14 @@ typedef struct SparkRingWorkControlPacket
 	uint64_t sequence_position;
 	uint64_t deadline_time_ns;
 	uint64_t control_generation;
+	uint64_t transaction_id;
+	uint64_t dispatch_generation;
+	uint64_t request_generation;
+	uint64_t step_generation;
+	uint32_t step_chunk_index;
+	uint32_t step_chunk_count;
+	uint32_t transaction_phase;
+	uint32_t reserved_transaction;
 	uint32_t active_sequence_count;
 	uint32_t new_token_count;
 	uint32_t pipeline_slot;
@@ -216,6 +227,24 @@ typedef struct SparkRingWorkControlKvState
 	uint64_t share_admit_count;
 } SparkRingWorkControlKvState;
 
+uint32_t SparkRingWorkControlTransactionPhase(
+	const SparkRingWorkControlPacket *packet);
+uint64_t SparkRingWorkControlPacketFingerprint(
+	const SparkRingWorkControlPacket *packet);
+SparkStatus SparkRingWorkControlFinalizeTransaction(
+	SparkRingWorkControlPacket *packet,
+	uint64_t control_generation,
+	uint32_t step_chunk_index,
+	uint32_t step_chunk_count);
+SparkStatus SparkRingWorkControlSetTransactionIdentity(
+	SparkRingWorkControlPacket *packet,
+	uint64_t control_generation,
+	uint64_t transaction_id,
+	uint64_t dispatch_generation,
+	uint64_t step_generation);
+SparkStatus SparkRingWorkControlGetTransactionIdentity(
+	const SparkRingWorkControlPacket *packet,
+	SparkDistributedWorkIdentity *identity_out);
 SparkStatus SparkRingWorkControlValidatePacket(
 	const SparkRingWorkControlPacket *packet,
 	uint32_t max_active_sequence_count,

@@ -21,6 +21,7 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/topk.cuh"
+#include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/head.cuh"
 #include "inference/llms/mimo_2_5/config.h"
@@ -65,15 +66,16 @@ struct Mimo25LayerBuffers
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
 	uint16_t *expert_out_bf16;
-	uint16_t *router_logits;
+	float *router_logits;
 	uint32_t *route_expert;
 	float *route_weight;
 	uint32_t *route_source_token;
 	uint32_t *route_packed_row;
 	const uint32_t *dense_row_offset;
 	uint32_t *dense_tile_prefix;
-	const uint32_t *group_row_offset;
-	uint32_t *group_tile_prefix;
+	uint32_t *group_row_offset;
+	uint32_t *group_tile_prefix_w1;
+	uint32_t *group_tile_prefix_w2;
 
 	LmKvView cache;
 	const uint32_t *sequence_of_row;
@@ -85,6 +87,35 @@ struct Mimo25LayerBuffers
 	uint32_t *output_token;
 	float *output_score;
 };
+
+
+template<class Format>
+static LmScaleTensor Mimo25ActivationScale(
+    const void *scale_data,
+    uint32_t row_count,
+    uint32_t input_dimension)
+{
+    return LmScaleTensorRowsUe4m3(
+        scale_data,
+        row_count,
+        input_dimension,
+        Format::kScaleGroup);
+}
+
+template<class Format>
+static LmScaleTensor Mimo25WeightScale(
+    const void *scale_data,
+    uint32_t output_dimension,
+    uint32_t input_dimension)
+{
+    return LmScaleTensorBlockF32(
+        scale_data,
+        1u,
+        output_dimension,
+        input_dimension,
+        Format::kScaleGroup,
+        Format::kScaleGroup);
+}
 
 // Attention. The layer kind selects the projection width, the rope theta, the
 // KV geometry and whether the window applies - four things from one flag, which
@@ -100,8 +131,8 @@ static int32_t Mimo25LayerAttention(const Mimo25LayerBuffers *b, uint32_t rows, 
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>), dim3(rows,MIMO25_HIDDEN / Format::kScaleGroup), MIMO25_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,MIMO25_HIDDEN);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->qkv_scale;
+	gemm.scale_a = Mimo25ActivationScale<Format>(b->packed_scale,rows,MIMO25_HIDDEN);
+	gemm.scale_b = Mimo25WeightScale<Format>(b->qkv_scale,QKV_DIM,MIMO25_HIDDEN);
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->fused_qkv_bf16;
@@ -133,8 +164,8 @@ static int32_t Mimo25LayerAttention(const Mimo25LayerBuffers *b, uint32_t rows, 
 		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, window != 0u ? b->window_positions : 0,window,MIMO25_ATTN_HEADS, rsqrtf((float)MIMO25_HEAD_DIM),b->attention_out_bf16, 0);
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>), dim3(rows,MIMO25_O_INPUT_DIM / Format::kScaleGroup), MIMO25_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,0,b->packed_activation,b->packed_scale,rows,MIMO25_O_INPUT_DIM);
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->output_scale;
+	gemm.scale_a = Mimo25ActivationScale<Format>(b->packed_scale,rows,MIMO25_O_INPUT_DIM);
+	gemm.scale_b = Mimo25WeightScale<Format>(b->output_scale,MIMO25_HIDDEN,MIMO25_O_INPUT_DIM);
 	gemm.output_bf16 = b->attention_out_bf16;
 	(void)context;
 	return(LmGemmLaunch<Format,MIMO25_LAYER_TILE_N,Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
@@ -158,6 +189,8 @@ static int32_t Mimo25LayerMoe(const Mimo25LayerBuffers *b, uint32_t rows, uint32
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<MIMO25_LAYER_THREADS,uint16_t>), rows, MIMO25_LAYER_THREADS, (MIMO25_HIDDEN + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,MIMO25_HIDDEN,MIMO25_HIDDEN,MIMO25_RMS_EPSILON);
 	memset(&gemm,0,sizeof(gemm));
+	gemm.scale_a = LmScaleTensorNone();
+	gemm.scale_b = LmScaleTensorNone();
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_f32 = b->router_logits;
@@ -166,14 +199,21 @@ static int32_t Mimo25LayerMoe(const Mimo25LayerBuffers *b, uint32_t rows, uint32
 		MIMO25_HIDDEN,MIMO25_EXPERTS,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
-	LM_LAUNCH((LmTopkSmallKernel<MIMO25_LAYER_THREADS,MIMO25_TOP_K>), rows, MIMO25_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
-		(const float *)b->router_logits,MIMO25_EXPERTS,b->route_expert,b->route_weight,0,0);
+	LM_LAUNCH((LmTopkSmallKernel<MIMO25_LAYER_THREADS,MIMO25_TOP_K,false,1u,1u,LM_TOPK_SCORE_IDENTITY>), rows, MIMO25_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
+		b->router_logits,MIMO25_EXPERTS,b->route_expert,b->route_weight,0,0,1.0f);
+	status = LmRouteBuild<MIMO25_LAYER_THREADS,MIMO25_EXPERTS>(
+		b->route_expert,rows,packed_rows,MIMO25_TOP_K,b->group_row_offset,
+		b->route_packed_row,b->route_source_token,MIMO25_GATE_UP_DIM,MIMO25_HIDDEN,
+		MIMO25_LAYER_TILE_N,b->group_tile_prefix_w1,b->group_tile_prefix_w2,stream);
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>), dim3(packed_rows,MIMO25_HIDDEN / Format::kScaleGroup), MIMO25_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->normed_bf16,b->route_source_token,b->packed_activation,b->packed_scale, packed_rows,MIMO25_HIDDEN);
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->expert_w1_scale;
+	gemm.scale_a = Mimo25ActivationScale<Format>(b->packed_scale,packed_rows,MIMO25_HIDDEN);
+	gemm.scale_b = Mimo25WeightScale<Format>(b->expert_w1_scale,MIMO25_GATE_UP_DIM,MIMO25_HIDDEN);
 	gemm.group_row_offset = b->group_row_offset;
-	gemm.group_tile_prefix = b->group_tile_prefix;
+	gemm.group_tile_prefix = b->group_tile_prefix_w1;
+	gemm.prefix_built = 1u;
 	gemm.output_bf16 = b->gate_up_bf16;
 	status = LmGemmLaunch<Format,MIMO25_LAYER_TILE_N,Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
 		&gemm,b->packed_activation,b->expert_w1_weight,packed_rows,rows,MIMO25_TOP_K,
@@ -184,7 +224,9 @@ static int32_t Mimo25LayerMoe(const Mimo25LayerBuffers *b, uint32_t rows, uint32
 		b->gate_up_bf16,b->intermediate_bf16,MIMO25_EXPERT_INTERMEDIATE,true);
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>), dim3(packed_rows,MIMO25_EXPERT_INTERMEDIATE / Format::kScaleGroup), MIMO25_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->intermediate_bf16,0,b->packed_activation,b->packed_scale, packed_rows,MIMO25_EXPERT_INTERMEDIATE);
-	gemm.scale_b = (const float *)b->expert_w2_scale;
+	gemm.scale_a = Mimo25ActivationScale<Format>(b->packed_scale,packed_rows,MIMO25_EXPERT_INTERMEDIATE);
+	gemm.scale_b = Mimo25WeightScale<Format>(b->expert_w2_scale,MIMO25_HIDDEN,MIMO25_EXPERT_INTERMEDIATE);
+	gemm.group_tile_prefix = b->group_tile_prefix_w2;
 	gemm.output_bf16 = b->expert_out_bf16;
 	status = LmGemmLaunch<Format,MIMO25_LAYER_TILE_N,Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
 		&gemm,b->packed_activation,b->expert_w2_weight,packed_rows,rows,MIMO25_TOP_K,
@@ -206,8 +248,8 @@ static int32_t Mimo25LayerDenseMlp(const Mimo25LayerBuffers *b, uint32_t rows, u
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>), dim3(rows,MIMO25_HIDDEN / Format::kScaleGroup), MIMO25_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,MIMO25_HIDDEN);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->dense_gate_up_scale;
+	gemm.scale_a = Mimo25ActivationScale<Format>(b->packed_scale,rows,MIMO25_HIDDEN);
+	gemm.scale_b = Mimo25WeightScale<Format>(b->dense_gate_up_scale,MIMO25_DENSE_INTERMEDIATE * 2u,MIMO25_HIDDEN);
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->gate_up_bf16;
@@ -220,7 +262,8 @@ static int32_t Mimo25LayerDenseMlp(const Mimo25LayerBuffers *b, uint32_t rows, u
 		b->gate_up_bf16,b->intermediate_bf16,MIMO25_DENSE_INTERMEDIATE,true);
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>), dim3(rows,MIMO25_DENSE_INTERMEDIATE / Format::kScaleGroup), MIMO25_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->intermediate_bf16,0,b->packed_activation,b->packed_scale, rows,MIMO25_DENSE_INTERMEDIATE);
-	gemm.scale_b = (const float *)b->dense_down_scale;
+	gemm.scale_a = Mimo25ActivationScale<Format>(b->packed_scale,rows,MIMO25_DENSE_INTERMEDIATE);
+	gemm.scale_b = Mimo25WeightScale<Format>(b->dense_down_scale,MIMO25_HIDDEN,MIMO25_DENSE_INTERMEDIATE);
 	gemm.output_bf16 = b->hidden_bf16;
 	return(LmGemmLaunch<Format,MIMO25_LAYER_TILE_N,Format::kTileK,MIMO25_LAYER_STAGES,MIMO25_LAYER_WARPS>(
 		&gemm,b->packed_activation,b->dense_down_weight,rows,rows,MIMO25_TOP_K,1u,

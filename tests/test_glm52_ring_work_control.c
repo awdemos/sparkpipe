@@ -10,6 +10,122 @@
 #define SPARK_TEST_KV_PHYSICAL_BLOCK_CAPACITY 1024u
 #define SPARK_TEST_KV_DIRECTORY_CAPACITY 2048u
 
+static SparkStatus (*const SparkTestOriginalValidatePacket)(
+    const SparkRingWorkControlPacket *,
+    uint32_t,
+    uint32_t) = SparkRingWorkControlValidatePacket;
+static SparkStatus (*const SparkTestOriginalBuildHostKvBlockTable)(
+    const SparkRingWorkControlPacket *,
+    SparkRingWorkControlKvState *,
+    SparkKvBlockTableView *) = SparkRingWorkControlBuildHostKvBlockTable;
+static SparkStatus (*const SparkTestOriginalCommitHostKvBlockTable)(
+    const SparkRingWorkControlPacket *,
+    SparkRingWorkControlKvState *) = SparkRingWorkControlCommitHostKvBlockTable;
+static SparkStatus (*const SparkTestOriginalCollectKvPrefetchEntries)(
+    const SparkRingWorkControlPacket *,
+    uint32_t,
+    SparkRingWorkControlKvState *,
+    SparkRingWorkControlKvPrefetchEntry *,
+    uint32_t,
+    uint32_t *) = SparkRingWorkControlCollectKvPrefetchEntries;
+static SparkStatus (*const SparkTestOriginalReleasePacketSequences)(
+    const SparkRingWorkControlPacket *,
+    SparkRingWorkControlKvState *) = SparkRingWorkControlReleasePacketSequences;
+
+static void SparkTestRefreshWorkTransaction(
+    SparkRingWorkControlPacket *packet)
+{
+    uint32_t lane_index;
+    uint64_t control_generation;
+    uint32_t chunk_count;
+    uint32_t chunk_index;
+
+    if (packet == 0 || packet->lane_count == 0u ||
+        packet->lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT)
+        return;
+    for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
+    {
+        if (packet->lanes[lane_index].request_generation == 0u &&
+            packet->lanes[lane_index].request_id != 0u)
+            packet->lanes[lane_index].request_generation =
+                packet->lanes[lane_index].request_id + UINT64_C(1000000);
+    }
+    control_generation = packet->control_generation != 0u
+        ? packet->control_generation
+        : SPARK_RING_WORK_CONTROL_STANDALONE_GENERATION;
+    chunk_count = packet->step_chunk_count != 0u
+        ? packet->step_chunk_count : 1u;
+    chunk_index = packet->step_chunk_index < chunk_count
+        ? packet->step_chunk_index : 0u;
+    (void)SparkRingWorkControlFinalizeTransaction(
+        packet,control_generation,chunk_index,chunk_count);
+}
+
+static SparkStatus SparkTestValidatePacket(
+    const SparkRingWorkControlPacket *packet,
+    uint32_t max_active_sequence_count,
+    uint32_t max_pipeline_slot_count)
+{
+    SparkRingWorkControlPacket copy;
+
+    if (packet == 0)
+        return SparkTestOriginalValidatePacket(
+            packet,max_active_sequence_count,max_pipeline_slot_count);
+    copy = *packet;
+    SparkTestRefreshWorkTransaction(&copy);
+    return SparkTestOriginalValidatePacket(
+        &copy,max_active_sequence_count,max_pipeline_slot_count);
+}
+
+static SparkStatus SparkTestBuildHostKvBlockTable(
+    SparkRingWorkControlPacket *packet,
+    SparkRingWorkControlKvState *state,
+    SparkKvBlockTableView *view)
+{
+    SparkTestRefreshWorkTransaction(packet);
+    return SparkTestOriginalBuildHostKvBlockTable(packet,state,view);
+}
+
+static SparkStatus SparkTestCommitHostKvBlockTable(
+    SparkRingWorkControlPacket *packet,
+    SparkRingWorkControlKvState *state)
+{
+    SparkTestRefreshWorkTransaction(packet);
+    return SparkTestOriginalCommitHostKvBlockTable(packet,state);
+}
+
+static SparkStatus SparkTestCollectKvPrefetchEntries(
+    SparkRingWorkControlPacket *packets,
+    uint32_t packet_count,
+    SparkRingWorkControlKvState *state,
+    SparkRingWorkControlKvPrefetchEntry *entries,
+    uint32_t entry_capacity,
+    uint32_t *entry_count_out)
+{
+    uint32_t packet_index;
+
+    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+        SparkTestRefreshWorkTransaction(&packets[packet_index]);
+    return SparkTestOriginalCollectKvPrefetchEntries(
+        packets,packet_count,state,entries,entry_capacity,entry_count_out);
+}
+
+static SparkStatus SparkTestReleasePacketSequences(
+    SparkRingWorkControlPacket *packet,
+    SparkRingWorkControlKvState *state)
+{
+    SparkTestRefreshWorkTransaction(packet);
+    return SparkTestOriginalReleasePacketSequences(packet,state);
+}
+
+#define SparkRingWorkControlValidatePacket SparkTestValidatePacket
+#define SparkRingWorkControlBuildHostKvBlockTable SparkTestBuildHostKvBlockTable
+#define SparkRingWorkControlCommitHostKvBlockTable SparkTestCommitHostKvBlockTable
+#define SparkRingWorkControlCollectKvPrefetchEntries \
+    SparkTestCollectKvPrefetchEntries
+#define SparkRingWorkControlReleasePacketSequences \
+    SparkTestReleasePacketSequences
+
 typedef struct SparkTestWorkControlKvStorage
 {
 	uint32_t physical_blocks[
@@ -131,15 +247,20 @@ static void SparkTestInitializeWorkPacket(
 		 lane_index < packet->lane_count;
 		 ++lane_index)
 	{
+
 		packet->lanes[lane_index].request_id = packet->request_id + lane_index;
+		packet->lanes[lane_index].request_generation =
+			packet->lanes[lane_index].request_id + UINT64_C(1000000);
 		packet->lanes[lane_index].sequence_id = packet->sequence_id + lane_index;
 		packet->lanes[lane_index].sequence_position =
 			packet->sequence_position + lane_index;
 		packet->lanes[lane_index].request_slot_index = lane_index;
 		packet->lanes[lane_index].context_token_count =
 			packet->kv_block_table_token_count - lane_index;
+
 		packet->lanes[lane_index].input_token_id = packet->input_token_id;
 	}
+	SparkTestRefreshWorkTransaction(packet);
 }
 
 static void SparkTestPrefillPacketLanes(
@@ -981,10 +1102,13 @@ static void SparkTestGlm52RingWorkControlBuildDecodeBatch(void)
 	for (lane_index = 0u; lane_index < 4u; ++lane_index)
 	{
 		request_dispatch.request_ids[lane_index] = 100u + lane_index;
+		request_dispatch.request_handles[lane_index] = 1000u + lane_index;
 		request_dispatch.sequence_ids[lane_index] = 200u + lane_index;
 		decode_view.lanes[lane_index].request_index = lane_index;
 		decode_view.lanes[lane_index].request_id =
 			request_dispatch.request_ids[lane_index];
+		decode_view.lanes[lane_index].request_handle =
+			request_dispatch.request_handles[lane_index];
 		decode_view.lanes[lane_index].sequence_id =
 			request_dispatch.sequence_ids[lane_index];
 		decode_view.lanes[lane_index].sequence_position = 31u;
@@ -1046,11 +1170,14 @@ static void SparkTestGlm52RingWorkControlBuildPackedMtpVerify(void)
 	request_dispatch.decode_batch_decision.batch_bucket =
 		SPARK_STAGE_PLAN_BUCKET_B16;
 	request_dispatch.request_ids[0u] = 100u;
+	request_dispatch.request_handles[0u] = 1000u;
 	request_dispatch.sequence_ids[0u] = 200u;
 	memset(&decode_view,0,sizeof(decode_view));
 	decode_view.lane_count = 1u;
 	decode_view.lanes[0u].request_index = 0u;
 	decode_view.lanes[0u].request_id = request_dispatch.request_ids[0u];
+	decode_view.lanes[0u].request_handle =
+		request_dispatch.request_handles[0u];
 	decode_view.lanes[0u].sequence_id = request_dispatch.sequence_ids[0u];
 	decode_view.lanes[0u].sequence_position = 32u;
 	decode_view.lanes[0u].context_token_count = 33u;
@@ -1144,12 +1271,15 @@ static void SparkTestGlm52RingWorkControlBuildPrefillBatch(void)
 	for (lane_index = 0u; lane_index < 4u; ++lane_index)
 	{
 		request_dispatch.request_ids[lane_index] = 100u + lane_index;
+		request_dispatch.request_handles[lane_index] = 2000u + lane_index;
 		request_dispatch.sequence_ids[lane_index] = 200u + lane_index;
 		prefill_view.lanes[lane_index].request_index = lane_index;
 		prefill_view.lanes[lane_index].request_slot_index = lane_index;
 		prefill_view.lanes[lane_index].prompt_token_offset = 4u;
 		prefill_view.lanes[lane_index].prompt_token_count = 2u;
 		prefill_view.lanes[lane_index].request_id = 100u + lane_index;
+		prefill_view.lanes[lane_index].request_handle =
+			request_dispatch.request_handles[lane_index];
 		prefill_view.lanes[lane_index].sequence_id = 200u + lane_index;
 		token_ids[lane_index][0u] = 300u + lane_index;
 		token_ids[lane_index][1u] = 400u + lane_index;

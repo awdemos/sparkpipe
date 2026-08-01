@@ -20,8 +20,11 @@
 #include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/topk.cuh"
+#include "inference/kernels/route.cuh"
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/head.cuh"
+#include "inference/kernels/formats/fp8.cuh"
+#include "inference/kernels/formats/mxfp4.cuh"
 #include "inference/llms/deepseek_v4/config.h"
 
 using Dsv4Kv = LmKvLatent<DSV4_KV_BITS, DSV4_HEAD_DIM, DSV4_ROPE_DIM, DSV4_KV_PAGE_SLOTS>;
@@ -30,6 +33,48 @@ using Dsv4Kv = LmKvLatent<DSV4_KV_BITS, DSV4_HEAD_DIM, DSV4_ROPE_DIM, DSV4_KV_PA
 #define DSV4_LAYER_TILE_N 128u
 #define DSV4_LAYER_STAGES 2u
 #define DSV4_LAYER_WARPS 8u
+
+static LmScaleTensor Dsv4Fp8ActivationScale(
+    const void *scale_data,
+    uint32_t row_count,
+    uint32_t input_dimension)
+{
+    return LmScaleTensorRowsUe4m3(
+        scale_data,
+        row_count,
+        input_dimension,
+        LmFp8::kScaleGroup);
+}
+
+static LmScaleTensor Dsv4Fp8WeightScale(
+    const void *scale_data,
+    uint32_t group_count,
+    uint32_t output_dimension,
+    uint32_t input_dimension)
+{
+    return LmScaleTensorBlockF32(
+        scale_data,
+        group_count,
+        output_dimension,
+        input_dimension,
+        128u,
+        128u);
+}
+
+static LmScaleTensor Dsv4CheckpointFp4WeightScale(
+    const void *scale_data,
+    uint32_t group_count,
+    uint32_t output_dimension,
+    uint32_t input_dimension)
+{
+    return LmScaleTensorBlockUe8m0(
+        scale_data,
+        group_count,
+        output_dimension,
+        input_dimension,
+        1u,
+        LmMxfp4::kScaleGroup);
+}
 
 struct Dsv4LayerBuffers
 {
@@ -66,15 +111,16 @@ struct Dsv4LayerBuffers
 	uint16_t *intermediate_bf16;
 	uint16_t *expert_out_bf16;
 	uint16_t *shared_out_bf16;
-	uint16_t *router_logits;
+	float *router_logits;
 	uint32_t *route_expert;
 	float *route_weight;
 	uint32_t *route_source_token;
 	uint32_t *route_packed_row;
 	const uint32_t *dense_row_offset;
 	uint32_t *dense_tile_prefix;
-	const uint32_t *group_row_offset;
-	uint32_t *group_tile_prefix;
+	uint32_t *group_row_offset;
+	uint32_t *group_tile_prefix_w1;
+	uint32_t *group_tile_prefix_w2;
 
 	LmKvView cache;
 	const uint32_t *sequence_of_row;
@@ -121,8 +167,15 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(rows,DSV4_HIDDEN / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,DSV4_HIDDEN);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->kv_latent_scale;
+	gemm.scale_a = Dsv4Fp8ActivationScale(
+		b->packed_scale,
+		rows,
+		DSV4_HIDDEN);
+	gemm.scale_b = Dsv4Fp8WeightScale(
+		b->kv_latent_scale,
+		1u,
+		DSV4_HEAD_DIM + DSV4_ROPE_DIM,
+		DSV4_HIDDEN);
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->kv_slot_bf16;
@@ -142,16 +195,23 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 		LM_LAUNCH((LmSparseScoreKernel<Dsv4Kv,DSV4_LAYER_THREADS,DSV4_INDEX_DIM>), dim3(rows,context), DSV4_LAYER_THREADS, 0, stream,
 		b->query_bf16,b->cache,b->sequence_of_row,b->context_length, DSV4_INDEX_HEADS,b->selection_scores);
 		LM_LAUNCH((LmTopkHistogramKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, 0, stream,
-		b->selection_scores,context,DSV4_INDEX_TOP_K,(uint32_t *)b->head_candidate_score);
+		b->selection_scores,context,DSV4_INDEX_TOP_K,b->head_candidate_token);
 		LM_LAUNCH((LmTopkGatherKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, 0, stream,
-		b->selection_scores,context,DSV4_INDEX_TOP_K, (const uint32_t *)b->head_candidate_score,b->selected_positions,0);
+		b->selection_scores,context,DSV4_INDEX_TOP_K,b->head_candidate_token,b->selected_positions,0);
 	}
 	LM_LAUNCH((LmAttentionDecodeKernel<Dsv4Kv,DSV4_LAYER_THREADS,DSV4_HEAD_DIM,DSV4_ROPE_DIM>), dim3(rows,DSV4_ATTN_HEADS), DSV4_LAYER_THREADS, 0, stream,
 		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, sparse ? b->selected_positions : 0,sparse ? DSV4_INDEX_TOP_K : budget, DSV4_ATTN_HEADS,rsqrtf((float)DSV4_HEAD_DIM),b->attention_latent_bf16, 0);
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(rows,(DSV4_ATTN_HEADS * DSV4_HEAD_DIM) / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
 		b->attention_latent_bf16,0,b->packed_activation,b->packed_scale, rows,DSV4_ATTN_HEADS * DSV4_HEAD_DIM);
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->output_scale;
+	gemm.scale_a = Dsv4Fp8ActivationScale(
+		b->packed_scale,
+		rows,
+		DSV4_ATTN_HEADS * DSV4_HEAD_DIM);
+	gemm.scale_b = Dsv4Fp8WeightScale(
+		b->output_scale,
+		1u,
+		DSV4_HIDDEN,
+		DSV4_ATTN_HEADS * DSV4_HEAD_DIM);
 	gemm.output_bf16 = b->attention_out_bf16;
 	return(LmGemmLaunch<Format,DSV4_LAYER_TILE_N,Format::kTileK,DSV4_LAYER_STAGES,DSV4_LAYER_WARPS>(
 		&gemm,b->packed_activation,b->output_weight,rows,rows,DSV4_TOP_K,1u,
@@ -168,80 +228,353 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 //
 // It is computed on the same normed rows as the routed path, so the norm happens
 // once and both read it.
-template<class Format>
-static int32_t Dsv4LayerMoe(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
+template<class NonExpertFormat, class RoutedExpertWeightFormat>
+static int32_t Dsv4LayerMoe(
+    const Dsv4LayerBuffers *b,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t sms,
+    cudaStream_t stream)
 {
-	LmGemmArguments gemm;
-	int32_t status;
-	LM_LAUNCH((LmFusedResidualRmsNormKernel<DSV4_LAYER_THREADS,uint16_t>), rows, DSV4_LAYER_THREADS, (DSV4_HIDDEN + 8u) * sizeof(float), stream,
-		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,DSV4_HIDDEN,DSV4_HIDDEN,DSV4_RMS_EPSILON);
-	memset(&gemm,0,sizeof(gemm));
-	gemm.group_row_offset = b->dense_row_offset;
-	gemm.group_tile_prefix = b->dense_tile_prefix;
-	gemm.output_f32 = b->router_logits;
-	status = LmGemmLaunch<LmBf16Format,DSV4_LAYER_TILE_N,LmBf16Format::kTileK,DSV4_LAYER_STAGES,DSV4_LAYER_WARPS>(
-		&gemm,b->normed_bf16,b->router_weight,rows,rows,DSV4_TOP_K,1u,
-		DSV4_HIDDEN,DSV4_EXPERTS,sms,false,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	LM_LAUNCH((LmTopkSmallKernel<DSV4_LAYER_THREADS,DSV4_TOP_K>), rows, DSV4_LAYER_THREADS, 2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t), stream,
-		(const float *)b->router_logits,DSV4_EXPERTS,b->route_expert,b->route_weight,0,0);
-	// The shared expert, on the same normed rows, before the routed path
-	// overwrites the packed activation buffer with the expanded copy.
-	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(rows,DSV4_HIDDEN / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
-		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,DSV4_HIDDEN);
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->shared_w1_scale;
-	gemm.output_bf16 = b->gate_up_bf16;
-	status = LmGemmLaunch<Format,DSV4_LAYER_TILE_N,Format::kTileK,DSV4_LAYER_STAGES,DSV4_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->shared_w1_weight,rows,rows,DSV4_TOP_K,1u,
-		DSV4_HIDDEN,DSV4_SHARED_INTERMEDIATE * 2u,sms,false,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	LM_LAUNCH((LmSiluMulKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,b->intermediate_bf16,DSV4_SHARED_INTERMEDIATE,true);
-	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(rows,DSV4_SHARED_INTERMEDIATE / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
-		b->intermediate_bf16,0,b->packed_activation,b->packed_scale, rows,DSV4_SHARED_INTERMEDIATE);
-	gemm.scale_b = (const float *)b->shared_w2_scale;
-	gemm.output_bf16 = b->shared_out_bf16;
-	status = LmGemmLaunch<Format,DSV4_LAYER_TILE_N,Format::kTileK,DSV4_LAYER_STAGES,DSV4_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->shared_w2_weight,rows,rows,DSV4_TOP_K,1u,
-		DSV4_SHARED_INTERMEDIATE,DSV4_HIDDEN,sms,false,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	// The routed path. Expands into packed_rows, so it must come after the
-	// shared expert has finished with the un-expanded buffer.
-	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(packed_rows,DSV4_HIDDEN / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
-		b->normed_bf16,b->route_source_token,b->packed_activation,b->packed_scale, packed_rows,DSV4_HIDDEN);
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->expert_w1_scale;
-	gemm.group_row_offset = b->group_row_offset;
-	gemm.group_tile_prefix = b->group_tile_prefix;
-	gemm.output_bf16 = b->gate_up_bf16;
-	status = LmGemmLaunch<Format,DSV4_LAYER_TILE_N,Format::kTileK,DSV4_LAYER_STAGES,DSV4_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->expert_w1_weight,packed_rows,rows,DSV4_TOP_K,
-		DSV4_EXPERTS,DSV4_HIDDEN,DSV4_EXPERT_INTERMEDIATE * 2u,sms,true,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	LM_LAUNCH((LmSiluMulKernel<DSV4_LAYER_THREADS>), packed_rows, DSV4_LAYER_THREADS, 0, stream,
-		b->gate_up_bf16,b->intermediate_bf16,DSV4_EXPERT_INTERMEDIATE,true);
-	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(packed_rows,DSV4_EXPERT_INTERMEDIATE / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
-		b->intermediate_bf16,0,b->packed_activation,b->packed_scale, packed_rows,DSV4_EXPERT_INTERMEDIATE);
-	gemm.scale_b = (const float *)b->expert_w2_scale;
-	gemm.output_bf16 = b->expert_out_bf16;
-	status = LmGemmLaunch<Format,DSV4_LAYER_TILE_N,Format::kTileK,DSV4_LAYER_STAGES,DSV4_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->expert_w2_weight,packed_rows,rows,DSV4_TOP_K,
-		DSV4_EXPERTS,DSV4_EXPERT_INTERMEDIATE,DSV4_HIDDEN,sms,true,stream);
-	if ( status != LM_LAUNCH_OK )
-		return(status);
-	// Fold the routed outputs, then add the shared one. DSV4_ROUTED_SCALE
-	// multiplies the gates, which the host applies to route_weight - scaling
-	// after the sum is the same number only if the gates sum to one.
-	LM_LAUNCH((LmMoeFinalizeKernel<DSV4_LAYER_THREADS>), dim3((DSV4_HIDDEN + DSV4_LAYER_THREADS - 1u) / DSV4_LAYER_THREADS,rows), DSV4_LAYER_THREADS, 0, stream,
-		b->expert_out_bf16,b->route_packed_row,b->route_weight,b->hidden_bf16, rows,DSV4_TOP_K,DSV4_HIDDEN);
-	LM_LAUNCH((LmAddRowsKernel<DSV4_LAYER_THREADS>), dim3((DSV4_HIDDEN + DSV4_LAYER_THREADS - 1u) / DSV4_LAYER_THREADS,rows), DSV4_LAYER_THREADS, 0, stream,
-		b->hidden_bf16,b->shared_out_bf16,b->hidden_bf16,rows,DSV4_HIDDEN);
-	return(cudaPeekAtLastError() == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_LAUNCH);
+    LmGemmArguments gemm;
+    int32_t status;
+
+    static_assert(
+        NonExpertFormat::kScaleGroup == 128u,
+        "DeepSeek V4 dynamic activations use 128-element FP8 scale groups");
+    static_assert(
+        RoutedExpertWeightFormat::kScaleGroup == 32u,
+        "DeepSeek V4 checkpoint FP4 experts use 32-element UE8M0 groups");
+
+    LM_LAUNCH(
+        (LmFusedResidualRmsNormKernel<DSV4_LAYER_THREADS,uint16_t>),
+        rows,
+        DSV4_LAYER_THREADS,
+        (DSV4_HIDDEN + 8u) * sizeof(float),
+        stream,
+        b->attention_out_bf16,
+        b->residual_bf16,
+        (const uint16_t *)b->mlp_norm_weight,
+        b->residual_bf16,
+        b->normed_bf16,
+        DSV4_HIDDEN,
+        DSV4_HIDDEN,
+        DSV4_RMS_EPSILON);
+
+    memset(&gemm, 0, sizeof(gemm));
+    gemm.scale_a = LmScaleTensorNone();
+    gemm.scale_b = LmScaleTensorNone();
+    gemm.group_row_offset = b->dense_row_offset;
+    gemm.group_tile_prefix = b->dense_tile_prefix;
+    gemm.output_f32 = b->router_logits;
+    status = LmGemmLaunch<
+        LmBf16Format,
+        DSV4_LAYER_TILE_N,
+        LmBf16Format::kTileK,
+        DSV4_LAYER_STAGES,
+        DSV4_LAYER_WARPS>(
+            &gemm,
+            b->normed_bf16,
+            b->router_weight,
+            rows,
+            rows,
+            1u,
+            1u,
+            DSV4_HIDDEN,
+            DSV4_EXPERTS,
+            sms,
+            false,
+            stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmTopkSmallKernel<
+            DSV4_LAYER_THREADS,
+            DSV4_TOP_K,
+            true,
+            1u,
+            1u,
+            LM_TOPK_SCORE_SQRT_SOFTPLUS>),
+        rows,
+        DSV4_LAYER_THREADS,
+        2u * LM_TOPK_SMALL_LIMIT * sizeof(uint32_t),
+        stream,
+        b->router_logits,
+        DSV4_EXPERTS,
+        b->route_expert,
+        b->route_weight,
+        0,
+        0,
+        DSV4_ROUTED_SCALE);
+    status = LmRouteBuild<DSV4_LAYER_THREADS,DSV4_EXPERTS>(
+        b->route_expert,
+        rows,
+        packed_rows,
+        DSV4_TOP_K,
+        b->group_row_offset,
+        b->route_packed_row,
+        b->route_source_token,
+        DSV4_EXPERT_INTERMEDIATE * 2u,
+        DSV4_HIDDEN,
+        DSV4_LAYER_TILE_N,
+        b->group_tile_prefix_w1,
+        b->group_tile_prefix_w2,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmQuantiseRowsKernel<NonExpertFormat,DSV4_LAYER_THREADS>),
+        dim3(rows, DSV4_HIDDEN / NonExpertFormat::kScaleGroup),
+        DSV4_LAYER_THREADS,
+        (NonExpertFormat::kScaleGroup + 8u) * sizeof(float),
+        stream,
+        b->normed_bf16,
+        0,
+        b->packed_activation,
+        b->packed_scale,
+        rows,
+        DSV4_HIDDEN);
+    memset(&gemm, 0, sizeof(gemm));
+    gemm.scale_a = Dsv4Fp8ActivationScale(
+        b->packed_scale,
+        rows,
+        DSV4_HIDDEN);
+    gemm.scale_b = Dsv4Fp8WeightScale(
+        b->shared_w1_scale,
+        1u,
+        DSV4_SHARED_INTERMEDIATE * 2u,
+        DSV4_HIDDEN);
+    gemm.group_row_offset = b->dense_row_offset;
+    gemm.group_tile_prefix = b->dense_tile_prefix;
+    gemm.output_bf16 = b->gate_up_bf16;
+    status = LmGemmLaunch<
+        NonExpertFormat,
+        DSV4_LAYER_TILE_N,
+        NonExpertFormat::kTileK,
+        DSV4_LAYER_STAGES,
+        DSV4_LAYER_WARPS>(
+            &gemm,
+            b->packed_activation,
+            b->shared_w1_weight,
+            rows,
+            rows,
+            1u,
+            1u,
+            DSV4_HIDDEN,
+            DSV4_SHARED_INTERMEDIATE * 2u,
+            sms,
+            false,
+            stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmSiluMulKernel<DSV4_LAYER_THREADS>),
+        rows,
+        DSV4_LAYER_THREADS,
+        0,
+        stream,
+        b->gate_up_bf16,
+        b->intermediate_bf16,
+        DSV4_SHARED_INTERMEDIATE,
+        true);
+    LM_LAUNCH(
+        (LmQuantiseRowsKernel<NonExpertFormat,DSV4_LAYER_THREADS>),
+        dim3(
+            rows,
+            DSV4_SHARED_INTERMEDIATE / NonExpertFormat::kScaleGroup),
+        DSV4_LAYER_THREADS,
+        (NonExpertFormat::kScaleGroup + 8u) * sizeof(float),
+        stream,
+        b->intermediate_bf16,
+        0,
+        b->packed_activation,
+        b->packed_scale,
+        rows,
+        DSV4_SHARED_INTERMEDIATE);
+    gemm.scale_a = Dsv4Fp8ActivationScale(
+        b->packed_scale,
+        rows,
+        DSV4_SHARED_INTERMEDIATE);
+    gemm.scale_b = Dsv4Fp8WeightScale(
+        b->shared_w2_scale,
+        1u,
+        DSV4_HIDDEN,
+        DSV4_SHARED_INTERMEDIATE);
+    gemm.output_bf16 = b->shared_out_bf16;
+    status = LmGemmLaunch<
+        NonExpertFormat,
+        DSV4_LAYER_TILE_N,
+        NonExpertFormat::kTileK,
+        DSV4_LAYER_STAGES,
+        DSV4_LAYER_WARPS>(
+            &gemm,
+            b->packed_activation,
+            b->shared_w2_weight,
+            rows,
+            rows,
+            1u,
+            1u,
+            DSV4_SHARED_INTERMEDIATE,
+            DSV4_HIDDEN,
+            sms,
+            false,
+            stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmQuantiseRowsKernel<NonExpertFormat,DSV4_LAYER_THREADS>),
+        dim3(packed_rows, DSV4_HIDDEN / NonExpertFormat::kScaleGroup),
+        DSV4_LAYER_THREADS,
+        (NonExpertFormat::kScaleGroup + 8u) * sizeof(float),
+        stream,
+        b->normed_bf16,
+        b->route_source_token,
+        b->packed_activation,
+        b->packed_scale,
+        packed_rows,
+        DSV4_HIDDEN);
+    memset(&gemm, 0, sizeof(gemm));
+    gemm.scale_a = Dsv4Fp8ActivationScale(
+        b->packed_scale,
+        packed_rows,
+        DSV4_HIDDEN);
+    gemm.scale_b = Dsv4CheckpointFp4WeightScale(
+        b->expert_w1_scale,
+        DSV4_EXPERTS,
+        DSV4_EXPERT_INTERMEDIATE * 2u,
+        DSV4_HIDDEN);
+    gemm.group_row_offset = b->group_row_offset;
+    gemm.group_tile_prefix = b->group_tile_prefix_w1;
+    gemm.prefix_built = 1u;
+    gemm.output_bf16 = b->gate_up_bf16;
+    status = LmGemmLaunchAsymmetric<
+        NonExpertFormat,
+        RoutedExpertWeightFormat,
+        DSV4_LAYER_TILE_N,
+        NonExpertFormat::kTileK,
+        DSV4_LAYER_STAGES,
+        DSV4_LAYER_WARPS>(
+            &gemm,
+            b->packed_activation,
+            b->expert_w1_weight,
+            packed_rows,
+            rows,
+            DSV4_TOP_K,
+            DSV4_EXPERTS,
+            DSV4_HIDDEN,
+            DSV4_EXPERT_INTERMEDIATE * 2u,
+            sms,
+            true,
+            stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmSiluMulKernel<DSV4_LAYER_THREADS>),
+        packed_rows,
+        DSV4_LAYER_THREADS,
+        0,
+        stream,
+        b->gate_up_bf16,
+        b->intermediate_bf16,
+        DSV4_EXPERT_INTERMEDIATE,
+        true);
+    LM_LAUNCH(
+        (LmQuantiseRowsKernel<NonExpertFormat,DSV4_LAYER_THREADS>),
+        dim3(
+            packed_rows,
+            DSV4_EXPERT_INTERMEDIATE / NonExpertFormat::kScaleGroup),
+        DSV4_LAYER_THREADS,
+        (NonExpertFormat::kScaleGroup + 8u) * sizeof(float),
+        stream,
+        b->intermediate_bf16,
+        0,
+        b->packed_activation,
+        b->packed_scale,
+        packed_rows,
+        DSV4_EXPERT_INTERMEDIATE);
+    gemm.scale_a = Dsv4Fp8ActivationScale(
+        b->packed_scale,
+        packed_rows,
+        DSV4_EXPERT_INTERMEDIATE);
+    gemm.scale_b = Dsv4CheckpointFp4WeightScale(
+        b->expert_w2_scale,
+        DSV4_EXPERTS,
+        DSV4_HIDDEN,
+        DSV4_EXPERT_INTERMEDIATE);
+    gemm.group_tile_prefix = b->group_tile_prefix_w2;
+    gemm.output_bf16 = b->expert_out_bf16;
+    status = LmGemmLaunchAsymmetric<
+        NonExpertFormat,
+        RoutedExpertWeightFormat,
+        DSV4_LAYER_TILE_N,
+        NonExpertFormat::kTileK,
+        DSV4_LAYER_STAGES,
+        DSV4_LAYER_WARPS>(
+            &gemm,
+            b->packed_activation,
+            b->expert_w2_weight,
+            packed_rows,
+            rows,
+            DSV4_TOP_K,
+            DSV4_EXPERTS,
+            DSV4_EXPERT_INTERMEDIATE,
+            DSV4_HIDDEN,
+            sms,
+            true,
+            stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+
+    LM_LAUNCH(
+        (LmMoeFinalizeKernel<DSV4_LAYER_THREADS>),
+        dim3(
+            (DSV4_HIDDEN + DSV4_LAYER_THREADS - 1u) /
+                DSV4_LAYER_THREADS,
+            rows),
+        DSV4_LAYER_THREADS,
+        0,
+        stream,
+        b->expert_out_bf16,
+        b->route_packed_row,
+        b->route_weight,
+        b->hidden_bf16,
+        rows,
+        DSV4_TOP_K,
+        DSV4_HIDDEN);
+    LM_LAUNCH(
+        (LmAddRowsKernel<DSV4_LAYER_THREADS>),
+        dim3(
+            (DSV4_HIDDEN + DSV4_LAYER_THREADS - 1u) /
+                DSV4_LAYER_THREADS,
+            rows),
+        DSV4_LAYER_THREADS,
+        0,
+        stream,
+        b->hidden_bf16,
+        b->shared_out_bf16,
+        b->hidden_bf16,
+        rows,
+        DSV4_HIDDEN);
+    return cudaPeekAtLastError() == cudaSuccess
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
 }
 
 // -- output head ----------------------------------------------------------------

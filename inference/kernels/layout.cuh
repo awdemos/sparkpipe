@@ -58,3 +58,17 @@ static __host__ __device__ constexpr uint32_t LmPipelineSharedBytes(uint32_t til
 	return((stages * (LmTileBytes(tile_m,tile_k,element_bits)
 		+ LmTileBytes(tile_n,tile_k,element_bits))) + (stages * 8u));
 }
+
+static __host__ __device__ constexpr uint32_t LmPipelineSharedBytesSplit(
+    uint32_t tile_m,
+    uint32_t tile_n,
+    uint32_t tile_k,
+    uint32_t stages,
+    uint32_t activation_bits,
+    uint32_t weight_bits)
+{
+    return (stages *
+        (LmTileBytes(tile_m, tile_k, activation_bits) +
+         LmTileBytes(tile_n, tile_k, weight_bits))) +
+        (stages * 8u);
+}

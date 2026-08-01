@@ -196,6 +196,111 @@ void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, con
 	}
 }
 
+template<class Geometry, uint32_t THREADS, uint32_t LATENT, uint32_t ROPE>
+__global__ __launch_bounds__(THREADS, 1)
+void LmLatentAttentionDecodeKernel(
+    const uint16_t *__restrict__ query_latent_bf16,
+    const uint16_t *__restrict__ query_rope_bf16,
+    LmKvView cache,
+    const uint32_t *__restrict__ sequence_of_row,
+    const uint32_t *__restrict__ context_length,
+    const uint32_t *__restrict__ selected_positions,
+    uint32_t selected_count,
+    uint32_t heads,
+    float qk_scale,
+    uint16_t *__restrict__ output_bf16,
+    const uint32_t *__restrict__ row_position)
+{
+    static_assert(
+        LATENT <= 8u * THREADS,
+        "the latent must fit the per-thread accumulator");
+    __shared__ float reduction[THREADS / LM_WARP_LANES];
+    __shared__ float shared_query[LATENT + ROPE];
+    float accumulator[8];
+    uint32_t row = blockIdx.x;
+    uint32_t head = blockIdx.y;
+    uint32_t index;
+    uint32_t step;
+    uint32_t position_count;
+    uint32_t sequence = sequence_of_row[row];
+    uint64_t latent_base = ((uint64_t)row * heads + head) * LATENT;
+    uint64_t rope_base = ((uint64_t)row * heads + head) * ROPE;
+    float running_max = -INFINITY;
+    float running_sum = 0.0f;
+
+    for (index = 0u; index < 8u; ++index)
+    {
+        accumulator[index] = 0.0f;
+    }
+    for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
+    {
+        shared_query[index] = index < LATENT
+            ? LmBf16ToFloat(query_latent_bf16[latent_base + index])
+            : LmBf16ToFloat(query_rope_bf16[rope_base + index - LATENT]);
+    }
+    __syncthreads();
+
+    position_count = selected_positions != 0
+        ? selected_count
+        : context_length[sequence];
+    for (step = 0u; step < position_count; ++step)
+    {
+        uint32_t position = selected_positions != 0
+            ? selected_positions[(row * selected_count) + step]
+            : step;
+        const uint8_t *slot;
+        float score = 0.0f;
+        float scaled_previous;
+        float scaled_current;
+        float previous_max;
+
+        if (row_position != 0 && position > row_position[row])
+        {
+            continue;
+        }
+        slot = LmKvSlot<Geometry>(cache, sequence, position);
+        if (slot == 0)
+        {
+            continue;
+        }
+        for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
+        {
+            score += shared_query[index] *
+                LmBf16ToFloat(((const uint16_t *)slot)[index]);
+        }
+        score = LmBlockSum<THREADS>(score, reduction) * qk_scale;
+        previous_max = running_max;
+        running_max = fmaxf(running_max, score);
+        scaled_previous = __expf(previous_max - running_max);
+        scaled_current = __expf(score - running_max);
+        running_sum = (running_sum * scaled_previous) + scaled_current;
+        for (index = 0u; index < 8u; ++index)
+        {
+            uint32_t element = (index * THREADS) + threadIdx.x;
+
+            if (element < LATENT)
+            {
+                accumulator[index] =
+                    (accumulator[index] * scaled_previous) +
+                    (scaled_current *
+                        LmBf16ToFloat(((const uint16_t *)slot)[element]));
+            }
+        }
+    }
+    for (index = 0u; index < 8u; ++index)
+    {
+        uint32_t element = (index * THREADS) + threadIdx.x;
+
+        if (element < LATENT)
+        {
+            output_bf16[
+                (((uint64_t)row * heads) + head) * LATENT + element] =
+                LmFloatToBf16(
+                    accumulator[index] / fmaxf(running_sum, 1.0e-20f));
+        }
+    }
+}
+
 // -- sparse selection ----------------------------------------------------------
 //
 // Score every cached position with a low-rank index head and keep the top K.

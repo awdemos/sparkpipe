@@ -75,15 +75,15 @@ int main(void)
 	expect(plan.swizzle_span == 64u, "4-bit, 128-element tile is 64 bytes -> 64-byte span");
 
 	printf("\nshared memory is dynamic, so it may exceed the 48 KB static cap\n");
-	shape_for(&shape, 128u, 16u, 128u);
-	expect(LmLaunchPlanBuild(&shape, 48u, &plan) == LM_LAUNCH_OK, "BF16 plans");
+	shape_for(&shape, 1024u, 16u, 64u);
+	expect(LmLaunchPlanBuild(&shape, 48u, &plan) == LM_LAUNCH_OK, "BF16 plans at the production tile depth");
 	expect(plan.shared_bytes > 49152u, "and needs more than the static limit allows");
 	expect(plan.shared_bytes <= LM_SMEM_SM_TOTAL, "while fitting what the SM has");
 
 	printf("\neach format's declared TILE_K must be swizzleable at its stored width\n");
 	{
 		struct { const char *name; uint32_t bits; uint32_t tile_k; } table[] = {
-			{ "bf16", 16u, 128u }, { "fp8", 8u, 128u }, { "int8", 8u, 128u },
+			{ "bf16", 16u, 64u }, { "fp8", 8u, 128u }, { "int8", 8u, 128u },
 			{ "int7", 7u, 256u }, { "int6", 6u, 128u }, { "nvfp4", 4u, 128u },
 		};
 		uint32_t i;

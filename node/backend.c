@@ -25,6 +25,7 @@
 #include <sys/un.h>
 #include <unistd.h>
 
+#include "sparkpipe/spark_distributed_work.h"
 #include "sparkpipe/spark_driver_loader.h"
 #include "sparkpipe/spark_ring_node_context_builder.h"
 #include "sparkpipe/spark_cuda_resident_ipc.h"
@@ -90,6 +91,23 @@
 	(SPARK_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES + \
 	 (SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT * 256u * \
 	  (uint32_t)sizeof(uint32_t)))
+#define SPARK_RING_SERVICE_BACKEND_MODEL_COMPLETION_KNOWN_FLAGS \
+	(SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS | \
+	 SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS)
+
+typedef struct SparkRingServiceBackendLaneTransaction
+{
+	uint64_t control_generation;
+	uint64_t transaction_id;
+	uint64_t dispatch_generation;
+	uint64_t request_generation;
+	uint64_t sequence_position;
+	uint64_t step_generation;
+	uint32_t step_chunk_index;
+	uint32_t step_chunk_count;
+	uint32_t transaction_phase;
+	uint32_t reserved0;
+} SparkRingServiceBackendLaneTransaction;
 
 typedef struct SparkRingServiceBackendPendingDecode
 {
@@ -97,6 +115,10 @@ typedef struct SparkRingServiceBackendPendingDecode
 	uint32_t done_count;
 	uint64_t trace_submit_time_ns;
 	uint8_t lane_done[SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+	uint64_t lane_final_event_fingerprints[
+		SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
+	SparkRingServiceBackendLaneTransaction lane_transactions[
+		SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
 	uint8_t dspark_draft_valid[
 		SPARK_REQUEST_API_MAX_DISPATCH_REQUEST_COUNT];
 	SparkGlm52DsparkDraftResult dspark_drafts[
@@ -108,10 +130,18 @@ typedef struct SparkRingServiceBackendPendingDecode
 typedef struct SparkRingServiceBackendReleaseRecord
 {
 	uint64_t request_id;
+	uint64_t request_generation;
 	uint64_t sequence_id;
 	uint32_t token_count;
 	uint32_t reserved0;
 } SparkRingServiceBackendReleaseRecord;
+
+typedef struct SparkRingServiceBackendWorkOutputSlot
+{
+    uint8_t *packet_bytes;
+    uint32_t packet_bytes_count;
+    uint32_t reserved0;
+} SparkRingServiceBackendWorkOutputSlot;
 
 typedef union SparkGlm52RingServiceBackendResidentPayload
 {
@@ -176,7 +206,7 @@ typedef struct SparkRingServiceBackendState
 	SparkCudaResidentIpcReader cuda_resident_reader;
 	SparkGlm52RingServiceBackendResidentPayload cuda_resident_payload;
 	uint32_t cuda_resident_submit_capacity;
-	uint32_t cuda_resident_submit_credit;
+    SparkDistributedWorkCreditLedger credit_ledger;
 	uint8_t *cuda_resident_decode_payload;
 	uint32_t cuda_resident_decode_payload_capacity;
 	int32_t final_event_listen_fd;
@@ -188,11 +218,16 @@ typedef struct SparkRingServiceBackendState
 	uint64_t final_event_receive_error_count;
 	uint32_t last_final_event_token_count;
 	uint32_t last_final_event_token_ids[SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY];
-	SparkRingWorkControlPacket work_queue[
-		SPARK_RING_SERVICE_BACKEND_WORK_QUEUE_CAPACITY];
+    SparkRingServiceBackendWorkOutputSlot work_queue[
+        SPARK_RING_SERVICE_BACKEND_WORK_QUEUE_CAPACITY];
 	uint32_t work_queue_head;
 	uint32_t work_queue_count;
 	uint32_t work_queue_write_offset;
+    SparkDistributedWorkAcknowledgement work_output_acknowledgement;
+    uint32_t work_output_acknowledgement_read_offset;
+    uint32_t work_output_waiting_for_acknowledgement;
+    uint64_t work_output_packet_hash;
+    SparkCudaResidentIpcSubmitPrefill resident_prefill_message;
 	SparkRingServiceBackendPendingDecode pending_decodes[
 		SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY];
 	SparkRingRuntimeFinalEvent early_final_events[
@@ -230,14 +265,51 @@ _Static_assert(
 
 static SparkRingServiceBackendState SparkGlm52RingServiceBackendSingleton;
 
+static SparkStatus SparkRingServiceBackendStampWorkPacketChunk(
+	const SparkRingServiceBackendState *state,
+	SparkRingWorkControlPacket *packet,
+	uint32_t step_chunk_index,
+	uint32_t step_chunk_count)
+{
+	if (state == 0 || packet == 0 || state->session_id_base == 0u ||
+		packet->descriptor_bytes <
+			SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES ||
+		packet->descriptor_bytes > SPARK_RING_WORK_CONTROL_PACKET_BYTES ||
+		packet->lane_count == 0u ||
+		packet->lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT)
+	{
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	return SparkRingWorkControlFinalizeTransaction(
+		packet,
+		state->session_id_base,
+		step_chunk_index,
+		step_chunk_count);
+}
+
 static SparkStatus SparkRingServiceBackendStampWorkPacket(
 	const SparkRingServiceBackendState *state,
 	SparkRingWorkControlPacket *packet)
 {
-	if (state == 0 || packet == 0 || state->session_id_base == 0u)
+	uint32_t step_chunk_count;
+	uint32_t step_chunk_index;
+
+	if (packet == 0)
+	{
 		return SPARK_STATUS_INVALID_ARGUMENT;
-	packet->control_generation = state->session_id_base;
-	return SPARK_STATUS_OK;
+	}
+	step_chunk_count = packet->step_chunk_count;
+	step_chunk_index = packet->step_chunk_index;
+	if (step_chunk_count == 0u || step_chunk_index >= step_chunk_count)
+	{
+		step_chunk_index = 0u;
+		step_chunk_count = 1u;
+	}
+	return SparkRingServiceBackendStampWorkPacketChunk(
+		state,
+		packet,
+		step_chunk_index,
+		step_chunk_count);
 }
 
 static SparkStatus SparkRingServiceBackendRegisterPendingDecode(
@@ -251,9 +323,58 @@ static SparkStatus SparkRingServiceBackendBuildDecodeWorkPacket(
 	uint32_t lane_count,
 	uint32_t speculative_token_index,
 	SparkRingWorkControlPacket *packet);
+static SparkRingServiceBackendPendingDecode *SparkRingServiceBackendFindPendingDecodeForMalformedEvent(
+	SparkRingServiceBackendState *state,
+	const SparkRingRuntimeFinalEvent *event)
+{
+	SparkRingServiceBackendPendingDecode *pending;
+	uint32_t lane_index;
+	uint32_t pending_index;
+
+	if (state == 0 || event == 0 || event->request_id == 0u ||
+		event->sequence_id == 0u)
+	{
+		return 0;
+	}
+	for (pending_index = 0u;
+		 pending_index < SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY;
+		 ++pending_index)
+	{
+		pending = &state->pending_decodes[pending_index];
+		if (pending->state !=
+			SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE)
+		{
+			continue;
+		}
+		for (lane_index = 0u;
+			 lane_index < pending->dispatch.request_count;
+			 ++lane_index)
+		{
+			if (pending->dispatch.request_ids[lane_index] !=
+					event->request_id ||
+				pending->dispatch.sequence_ids[lane_index] !=
+					event->sequence_id)
+			{
+				continue;
+			}
+			if (event->request_generation != 0u &&
+				pending->dispatch.request_handles[lane_index] !=
+					event->request_generation)
+			{
+				continue;
+			}
+			return pending;
+		}
+	}
+	return 0;
+}
+
 static SparkStatus SparkRingServiceBackendCompletePendingFinalEvent(
 	SparkRingServiceBackendState *state,
 	const SparkRingRuntimeFinalEvent *event);
+static SparkStatus SparkRingServiceBackendCompleteEarlyFinalEvents(
+	SparkRingServiceBackendState *state,
+	SparkRingServiceBackendPendingDecode *pending);
 static SparkStatus SparkRingServiceBackendPumpWorkOutput(
 	SparkRingServiceBackendState *state);
 static SparkStatus SparkRingServiceBackendForwardPrefillWork(
@@ -391,16 +512,23 @@ static SparkStatus SparkRingServiceBackendResidentReadBounded(int32_t fd, void *
 	return SPARK_STATUS_OK;
 }
 
-static void SparkRingServiceBackendTeardownCudaResident(SparkRingServiceBackendState *state, const char *reason)
+static void SparkRingServiceBackendTeardownCudaResident(
+    SparkRingServiceBackendState *state,
+    const char *reason)
 {
-	if (state == 0 || state->cuda_resident_fd < 0)
-		return;
-	fprintf(stderr,"ring_resident_disconnected reason=%s\n",reason);
-	close(state->cuda_resident_fd);
-	state->cuda_resident_fd = -1;
-	state->cuda_resident_submit_capacity = 0u;
-	state->cuda_resident_submit_credit = 0u;
-	SparkCudaResidentIpcReaderReset(&state->cuda_resident_reader);
+    if (state == 0)
+    {
+        return;
+    }
+    if (state->cuda_resident_fd >= 0)
+    {
+        fprintf(stderr,"ring_resident_disconnected reason=%s\n",reason);
+        close(state->cuda_resident_fd);
+    }
+    state->cuda_resident_fd = -1;
+    state->cuda_resident_submit_capacity = 0u;
+    memset(&state->credit_ledger,0,sizeof(state->credit_ledger));
+    SparkCudaResidentIpcReaderReset(&state->cuda_resident_reader);
 }
 
 static SparkStatus SparkRingServiceBackendConnectCudaResident(SparkRingServiceBackendState *state, const char *socket_path)
@@ -522,8 +650,40 @@ static SparkStatus SparkRingServiceBackendConnectCudaResident(SparkRingServiceBa
 	}
 	state->kv_physical_block_capacity = stats.kv_physical_block_capacity;
 	state->cuda_resident_submit_capacity = stats.work_queue_capacity;
-	state->cuda_resident_submit_credit =
-		stats.work_queue_capacity - stats.work_queue_depth;
+    {
+        uint32_t credit_capacities[
+            SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_COUNT];
+
+        credit_capacities[
+            SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_TRANSPORT_WINDOW] = 1u;
+        credit_capacities[
+            SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_RESIDENT_RESERVATION] =
+            stats.work_queue_capacity;
+        credit_capacities[
+            SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_EXECUTION] =
+            SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY;
+        credit_capacities[
+            SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_COMPLETION_OWNERSHIP] =
+            SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY;
+        status = SparkDistributedWorkInitializeCreditLedger(
+            &state->credit_ledger,
+            credit_capacities);
+        if (status == SPARK_STATUS_OK && stats.work_queue_depth != 0u)
+        {
+            status = SparkDistributedWorkAcquireCredits(
+                &state->credit_ledger,
+                SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_RESIDENT_RESERVATION,
+                stats.work_queue_depth);
+        }
+        if (status != SPARK_STATUS_OK)
+        {
+            close(fd);
+            state->cuda_resident_fd = -1;
+            state->cuda_resident_submit_capacity = 0u;
+            memset(&state->credit_ledger,0,sizeof(state->credit_ledger));
+            return status;
+        }
+    }
 	SparkCudaResidentIpcReaderReset(&state->cuda_resident_reader);
 	if (state->service_runtime_ready != 0u)
 		state->request_api.max_resident_kv_block_count =
@@ -553,13 +713,17 @@ static SparkStatus SparkRingServiceBackendEnsureCudaResident(SparkRingServiceBac
 	return SPARK_STATUS_BUSY;
 }
 
-static void SparkRingServiceBackendReleaseResidentSubmitCredit(
-	SparkRingServiceBackendState *state)
+static SparkStatus SparkRingServiceBackendReleaseResidentSubmitCredit(
+    SparkRingServiceBackendState *state)
 {
-	if (state != 0 &&
-		state->cuda_resident_submit_credit <
-			state->cuda_resident_submit_capacity)
-		state->cuda_resident_submit_credit += 1u;
+    if (state == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    return SparkDistributedWorkReleaseCredits(
+        &state->credit_ledger,
+        SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_RESIDENT_RESERVATION,
+        1u);
 }
 
 static SparkStatus SparkRingServiceBackendResidentReadMessage(
@@ -679,7 +843,16 @@ static SparkStatus SparkRingServiceBackendHandleResidentCompletion(
 			~SPARK_CUDA_RESIDENT_IPC_COMPLETION_KNOWN_FLAGS) != 0u)
 		return SPARK_STATUS_ABI_MISMATCH;
 	state->cuda_resident_completion_count += 1u;
-	SparkRingServiceBackendReleaseResidentSubmitCredit(state);
+    {
+        SparkStatus credit_status;
+
+        credit_status = SparkRingServiceBackendReleaseResidentSubmitCredit(
+            state);
+        if (credit_status != SPARK_STATUS_OK)
+        {
+            return credit_status;
+        }
+    }
 	if (completion->completion.status != SPARK_STATUS_OK)
 	{
 		SparkRingServiceBackendPendingDecode *pending;
@@ -729,7 +902,16 @@ static SparkStatus SparkRingServiceBackendHandleResidentSubmitResult(
 	if (result->descriptor_bytes !=
 		SPARK_CUDA_RESIDENT_IPC_SUBMIT_RESULT_BYTES)
 		return SPARK_STATUS_ABI_MISMATCH;
-	SparkRingServiceBackendReleaseResidentSubmitCredit(state);
+    {
+        SparkStatus credit_status;
+
+        credit_status = SparkRingServiceBackendReleaseResidentSubmitCredit(
+            state);
+        if (credit_status != SPARK_STATUS_OK)
+        {
+            return credit_status;
+        }
+    }
 	if (result->status == (uint32_t)SPARK_STATUS_OK)
 		return SPARK_STATUS_OK;
 	state->cuda_resident_rejection_count += 1u;
@@ -785,42 +967,67 @@ static SparkStatus SparkRingServiceBackendPumpCudaResidentResponses(
 }
 
 static SparkStatus SparkRingServiceBackendRequireResidentSubmitCredits(
-	SparkRingServiceBackendState *state,
-	uint32_t required_credit_count)
+    SparkRingServiceBackendState *state,
+    uint32_t required_credit_count)
 {
-	SparkStatus status;
-	if (state == 0 || required_credit_count == 0u)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	status = SparkRingServiceBackendEnsureCudaResident(state);
-	if (status == SPARK_STATUS_OK)
-		status = SparkRingServiceBackendPumpCudaResidentResponses(state);
-	if (status != SPARK_STATUS_OK)
-		return status;
-	return state->cuda_resident_submit_credit >= required_credit_count
-		? SPARK_STATUS_OK : SPARK_STATUS_BUSY;
+    SparkStatus status;
+
+    if (state == 0 || required_credit_count == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkRingServiceBackendEnsureCudaResident(state);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkRingServiceBackendPumpCudaResidentResponses(state);
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkDistributedWorkAvailableCredits(
+        &state->credit_ledger,
+        SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_RESIDENT_RESERVATION) >=
+            required_credit_count ?
+        SPARK_STATUS_OK : SPARK_STATUS_BUSY;
 }
 
 static SparkStatus SparkRingServiceBackendSubmitResidentMessage(
-	SparkRingServiceBackendState *state,
-	uint32_t kind,
-	const void *payload,
-	uint32_t payload_bytes)
+    SparkRingServiceBackendState *state,
+    uint32_t kind,
+    const void *payload,
+    uint32_t payload_bytes)
 {
-	SparkStatus status;
-	if (state == 0 || state->cuda_resident_fd < 0 ||
-		state->cuda_resident_submit_credit == 0u)
-		return SPARK_STATUS_BUSY;
-	status = SparkRingServiceBackendResidentWriteMessage(
-		state,kind,payload,payload_bytes);
-	if (status != SPARK_STATUS_OK)
-	{
-		SparkRingServiceBackendTeardownCudaResident(
-			state,"submit_message_write");
-		return SPARK_STATUS_BUSY;
-	}
-	state->cuda_resident_submit_credit -= 1u;
-	state->cuda_resident_submit_count += 1u;
-	return SPARK_STATUS_OK;
+    SparkStatus status;
+
+    if (state == 0 || state->cuda_resident_fd < 0)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+    status = SparkDistributedWorkAcquireCredits(
+        &state->credit_ledger,
+        SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_RESIDENT_RESERVATION,
+        1u);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status == SPARK_STATUS_CAPACITY_EXCEEDED ?
+            SPARK_STATUS_BUSY : status;
+    }
+    status = SparkRingServiceBackendResidentWriteMessage(
+        state,
+        kind,
+        payload,
+        payload_bytes);
+    if (status != SPARK_STATUS_OK)
+    {
+        (void)SparkRingServiceBackendReleaseResidentSubmitCredit(state);
+        SparkRingServiceBackendTeardownCudaResident(
+            state,
+            "submit_message_write");
+        return SPARK_STATUS_BUSY;
+    }
+    state->cuda_resident_submit_count += 1u;
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkRingServiceBackendResidentAwaitSubmitResult(
@@ -925,8 +1132,6 @@ static SparkStatus SparkRingServiceBackendSubmitReleaseToRank0(
 		state->builder_library.builder_interface.submit_work == 0)
 		return SPARK_STATUS_MODULE_NOT_VALIDATED;
 	local_packet = *packet;
-	local_packet.control_generation =
-		SPARK_RING_WORK_CONTROL_STANDALONE_GENERATION;
 	return state->builder_library.builder_interface.submit_work(
 		state->builder_state,&local_packet,0,0,0,0);
 }
@@ -934,27 +1139,58 @@ static SparkStatus SparkRingServiceBackendSubmitReleaseToRank0(
 static SparkStatus SparkRingServiceBackendQueueSequenceRelease(
 	void *context,
 	uint64_t request_id,
+	uint64_t request_generation,
 	uint64_t sequence_id,
 	uint32_t token_count)
 {
+	SparkRingServiceBackendReleaseRecord *record;
 	SparkRingServiceBackendState *state;
+	uint32_t queue_index;
+	uint32_t queue_offset;
 	uint32_t tail;
+
 	state = (SparkRingServiceBackendState *)context;
-	if (state == 0 || request_id == 0u || sequence_id == 0u ||
-		token_count == 0u)
+	if (state == 0 || request_id == 0u || request_generation == 0u ||
+		sequence_id == 0u || token_count == 0u)
+	{
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	if (token_count <= SPARK_RING_SERVICE_BACKEND_CONTEXT_TOKENS -
 		SPARK_RING_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT)
-		token_count +=
-			SPARK_RING_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT;
+	{
+		token_count += SPARK_RING_WORK_CONTROL_MAX_SPECULATIVE_TOKEN_COUNT;
+	}
 	else
+	{
 		token_count = SPARK_RING_SERVICE_BACKEND_CONTEXT_TOKENS;
+	}
+	for (queue_offset = 0u;
+		 queue_offset < state->release_queue_count;
+		 ++queue_offset)
+	{
+		queue_index = (state->release_queue_head + queue_offset) %
+			SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY;
+		record = &state->release_queue[queue_index];
+		if (record->request_id == request_id &&
+			record->request_generation == request_generation &&
+			record->sequence_id == sequence_id)
+		{
+			if (token_count > record->token_count)
+			{
+				record->token_count = token_count;
+			}
+			return SPARK_STATUS_OK;
+		}
+	}
 	if (state->release_queue_count >=
 		SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY)
+	{
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	tail = (state->release_queue_head + state->release_queue_count) %
 		SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY;
 	state->release_queue[tail].request_id = request_id;
+	state->release_queue[tail].request_generation = request_generation;
 	state->release_queue[tail].sequence_id = sequence_id;
 	state->release_queue[tail].token_count = token_count;
 	state->release_queue[tail].reserved0 = 0u;
@@ -1000,69 +1236,93 @@ static SparkStatus SparkRingServiceBackendSubmitPrefillPacket(
 }
 
 static SparkStatus SparkRingServiceBackendSubmitPrefillToResident(
-	SparkRingServiceBackendState *state,
-	const SparkPromptPipelinePrefillDispatch *prefill_dispatch)
+    SparkRingServiceBackendState *state,
+    const SparkPromptPipelinePrefillDispatch *prefill_dispatch)
 {
-	static SparkCudaResidentIpcSubmitPrefill message;
-	uint32_t token_count;
-	uint32_t token_offset;
-	SparkStatus status;
-	if (state == 0 || prefill_dispatch == 0 ||
-		prefill_dispatch->request_dispatch == 0 ||
-		prefill_dispatch->prefill_view == 0 ||
-		prefill_dispatch->kv_block_table_view == 0 ||
-		prefill_dispatch->host_token_ids == 0 ||
-		prefill_dispatch->lane_count == 0u ||
-		prefill_dispatch->lane_count !=
-			prefill_dispatch->active_sequence_count ||
-		prefill_dispatch->prompt_token_count == 0u ||
-		prefill_dispatch->prompt_token_count >
-			SPARK_RING_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (prefill_dispatch->lane_count >
-		state->rank_plan.execution_row_capacity)
-		return SPARK_STATUS_CAPACITY_EXCEEDED;
-	for (token_offset = 0u;
-		 token_offset < prefill_dispatch->prompt_token_count;
-		 token_offset += token_count)
-	{
-		status = SparkRingWorkControlSelectPrefillChunk(
-			prefill_dispatch,
-			token_offset,
-			state->rank_plan.execution_row_capacity,
-			&token_count);
-		if (status != SPARK_STATUS_OK)
-			return status;
-		status = SparkRingServiceBackendRequireResidentSubmitCredits(
-			state,1u);
-		if (status != SPARK_STATUS_OK)
-			return status;
-		memset(&message,0,sizeof(message));
-		message.request_flags = prefill_dispatch->request_dispatch->flags;
-		status = SparkRingWorkControlBuildPrefillPacket(
-			prefill_dispatch,
-			token_offset,
-			token_count,
-			&message.work_packet);
-		if (status == SPARK_STATUS_OK)
-			status = SparkRingServiceBackendStampWorkPacket(
-				state,&message.work_packet);
-		if (status != SPARK_STATUS_OK)
-			return status;
-		message.descriptor_bytes =
-			SparkCudaResidentIpcCalculateSubmitPrefillBytes(
-				&message.work_packet);
-		if (message.descriptor_bytes == 0u)
-			return SPARK_STATUS_INVALID_ARGUMENT;
-		status = SparkRingServiceBackendForwardPrefillPacket(
-			state,&message.work_packet);
-		if (status == SPARK_STATUS_OK)
-			status = SparkRingServiceBackendSubmitPrefillPacket(
-				state,&message);
-		if (status != SPARK_STATUS_OK)
-			return status;
-	}
-	return SPARK_STATUS_OK;
+    SparkCudaResidentIpcSubmitPrefill *message;
+    uint32_t token_count;
+    uint32_t token_offset;
+    SparkStatus status;
+
+    if (state == 0 || prefill_dispatch == 0 ||
+        prefill_dispatch->request_dispatch == 0 ||
+        prefill_dispatch->prefill_view == 0 ||
+        prefill_dispatch->kv_block_table_view == 0 ||
+        prefill_dispatch->host_token_ids == 0 ||
+        prefill_dispatch->lane_count == 0u ||
+        prefill_dispatch->lane_count !=
+            prefill_dispatch->active_sequence_count ||
+        prefill_dispatch->prompt_token_count == 0u ||
+        prefill_dispatch->prompt_token_count >
+            SPARK_RING_NODE_CONTEXT_BUILDER_MAX_PREFILL_TOKENS)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (prefill_dispatch->lane_count >
+        state->rank_plan.execution_row_capacity)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    message = &state->resident_prefill_message;
+    for (token_offset = 0u;
+         token_offset < prefill_dispatch->prompt_token_count;
+         token_offset += token_count)
+    {
+        status = SparkRingWorkControlSelectPrefillChunk(
+            prefill_dispatch,
+            token_offset,
+            state->rank_plan.execution_row_capacity,
+            &token_count);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkRingServiceBackendRequireResidentSubmitCredits(
+            state,
+            1u);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        memset(message,0,sizeof(*message));
+        message->request_flags = prefill_dispatch->request_dispatch->flags;
+        status = SparkRingWorkControlBuildPrefillPacket(
+            prefill_dispatch,
+            token_offset,
+            token_count,
+            &message->work_packet);
+        if (status == SPARK_STATUS_OK)
+        {
+            status = SparkRingServiceBackendStampWorkPacket(
+                state,
+                &message->work_packet);
+        }
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        message->descriptor_bytes =
+            SparkCudaResidentIpcCalculateSubmitPrefillBytes(
+                &message->work_packet);
+        if (message->descriptor_bytes == 0u)
+        {
+            return SPARK_STATUS_INVALID_ARGUMENT;
+        }
+        status = SparkRingServiceBackendForwardPrefillPacket(
+            state,
+            &message->work_packet);
+        if (status == SPARK_STATUS_OK)
+        {
+            status = SparkRingServiceBackendSubmitPrefillPacket(
+                state,
+                message);
+        }
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkRingServiceBackendBuildDecodeResidentPayload(
@@ -1312,8 +1572,26 @@ static SparkStatus SparkRingServiceBackendSubmitDecodeChunksToResident(
 static void SparkRingServiceBackendFreeStorage(
 	SparkRingServiceBackendState *state)
 {
+    uint32_t work_slot_index;
+
 	if (state == 0)
 		return;
+    for (work_slot_index = 0u;
+         work_slot_index < SPARK_RING_SERVICE_BACKEND_WORK_QUEUE_CAPACITY;
+         ++work_slot_index)
+    {
+        free(state->work_queue[work_slot_index].packet_bytes);
+        memset(&state->work_queue[work_slot_index],0,
+            sizeof(state->work_queue[work_slot_index]));
+    }
+    state->work_queue_head = 0u;
+    state->work_queue_count = 0u;
+    state->work_queue_write_offset = 0u;
+    memset(&state->work_output_acknowledgement,0,
+        sizeof(state->work_output_acknowledgement));
+    state->work_output_acknowledgement_read_offset = 0u;
+    state->work_output_waiting_for_acknowledgement = 0u;
+    state->work_output_packet_hash = 0u;
 	SparkServingEngineDestroy(&state->serving_engine);
 	free(state->kv_blocks);
 	free(state->prefix_entries);
@@ -1429,64 +1707,45 @@ static SparkStatus SparkRingServiceBackendPrefillIdlePump(
 }
 
 static SparkStatus SparkRingServiceBackendPrefillInner(
-	void *context,
-	const SparkPromptPipelinePrefillDispatch *prefill_dispatch)
+    void *context,
+    const SparkPromptPipelinePrefillDispatch *prefill_dispatch)
 {
-	SparkRingServiceBackendState *state;
-	SparkStatus status;
-	uint32_t drain_iteration;
+    SparkRingServiceBackendState *state;
+    SparkStatus status;
 
-	state = (SparkRingServiceBackendState *)context;
-	if (state == 0 || prefill_dispatch == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (state->cuda_resident_attached != 0u)
-	{
-		status = SparkRingServiceBackendEnsureCudaResident(state);
-		if (status != SPARK_STATUS_OK)
-			return status;
-		return SparkRingServiceBackendSubmitPrefillToResident(state,prefill_dispatch);
-	}
-	if (state->builder_library.builder_interface.prefill == 0 ||
-		state->builder_state == 0)
-		return SPARK_STATUS_MODULE_NOT_VALIDATED;
-	fprintf(
-		stderr,
-		"ring_prefill dispatch_kind=%u active=%u lanes=%u offset=%u tokens=%u\n",
-		prefill_dispatch->dispatch_kind,
-		prefill_dispatch->active_sequence_count,
-		prefill_dispatch->lane_count,
-		prefill_dispatch->prompt_token_offset,
-		prefill_dispatch->prompt_token_count);
-	status = SparkRingServiceBackendForwardPrefillWork(
-		state,
-		prefill_dispatch);
-	if (status != SPARK_STATUS_OK)
-	{
-		fprintf(stderr,"ring_prefill_forward status=%u\n",status);
-		return status;
-	}
-	status = state->builder_library.builder_interface.prefill(
-		state->builder_state,
-		prefill_dispatch,
-		SparkRingServiceBackendPrefillIdlePump,
-		state);
-	fprintf(stderr,"ring_prefill_builder status=%u\n",status);
-	if (status != SPARK_STATUS_OK)
-		return status;
-	for (drain_iteration = 0u; state->work_queue_count != 0u && drain_iteration < 25000u; ++drain_iteration)
-	{
-		status = SparkRingServiceBackendPumpWorkOutput(state);
-		if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
-			return status;
-		if (state->work_queue_count != 0u)
-			(void)poll(0,0,1);
-	}
-	if (state->work_queue_count != 0u)
-	{
-		fprintf(stderr,"ring_prefill_drain_incomplete queued=%u\n",state->work_queue_count);
-		return SPARK_STATUS_IO_ERROR;
-	}
-	return SPARK_STATUS_OK;
+    state = (SparkRingServiceBackendState *)context;
+    if (state == 0 || prefill_dispatch == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (state->cuda_resident_attached != 0u)
+    {
+        status = SparkRingServiceBackendEnsureCudaResident(state);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        return SparkRingServiceBackendSubmitPrefillToResident(
+            state,
+            prefill_dispatch);
+    }
+    if (state->builder_library.builder_interface.prefill == 0 ||
+        state->builder_state == 0)
+    {
+        return SPARK_STATUS_MODULE_NOT_VALIDATED;
+    }
+    status = SparkRingServiceBackendForwardPrefillWork(
+        state,
+        prefill_dispatch);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return state->builder_library.builder_interface.prefill(
+        state->builder_state,
+        prefill_dispatch,
+        SparkRingServiceBackendPrefillIdlePump,
+        state);
 }
 
 static int32_t SparkRingServiceBackendStartConnectToAddress(
@@ -1501,7 +1760,8 @@ static int32_t SparkRingServiceBackendStartConnectToAddress(
 	fd = socket(entry->ai_family,entry->ai_socktype,entry->ai_protocol);
 	if (fd < 0)
 		return -2;
-	if (SparkNetSetNonblocking(fd) < 0)
+	if (SparkNetSetNonblocking(fd) < 0 ||
+        SparkNetConfigureLowLatencyTcp(fd) < 0)
 	{
 		close(fd);
 		return -3;
@@ -1565,32 +1825,217 @@ static SparkStatus SparkRingServiceBackendEnqueueWorkPacket(
 	SparkRingServiceBackendState *state,
 	const SparkRingWorkControlPacket *packet)
 {
+	SparkDistributedWorkIdentity packet_identity;
+	SparkDistributedWorkIdentity queued_identity;
+	SparkRingServiceBackendWorkOutputSlot *slot;
+	const SparkRingWorkControlPacket *queued_packet;
+	SparkStatus status;
+	uint32_t queue_offset;
+	uint32_t queue_index;
 	uint32_t tail;
 
-	if (state == 0 || packet == 0)
+	if (state == 0 || packet == 0 ||
+		packet->descriptor_bytes <
+			SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES ||
+		packet->descriptor_bytes > SPARK_RING_WORK_CONTROL_PACKET_BYTES)
+	{
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	status = SparkRingWorkControlGetTransactionIdentity(
+		packet,
+		&packet_identity);
+	if (status != SPARK_STATUS_OK)
+	{
+		return status;
+	}
 	if ((state->rank_plan.flags &
 			SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
+	{
 		return SPARK_STATUS_OK;
+	}
+	for (queue_offset = 0u;
+		 queue_offset < state->work_queue_count;
+		 ++queue_offset)
+	{
+		queue_index = (state->work_queue_head + queue_offset) %
+			SPARK_RING_SERVICE_BACKEND_WORK_QUEUE_CAPACITY;
+		slot = &state->work_queue[queue_index];
+		if (slot->packet_bytes == 0 ||
+			slot->packet_bytes_count <
+				SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES)
+		{
+			return SPARK_STATUS_INTERNAL_ERROR;
+		}
+		queued_packet =
+			(const SparkRingWorkControlPacket *)slot->packet_bytes;
+		status = SparkRingWorkControlGetTransactionIdentity(
+			queued_packet,
+			&queued_identity);
+		if (status != SPARK_STATUS_OK)
+		{
+			return status;
+		}
+		if (SparkDistributedWorkIdentityMatches(
+				&queued_identity,
+				&packet_identity) != 0u)
+		{
+			if (slot->packet_bytes_count != packet->descriptor_bytes ||
+				memcmp(
+					queued_packet,
+					packet,
+					packet->descriptor_bytes) != 0)
+			{
+				return SPARK_STATUS_VALIDATION_FAILED;
+			}
+			return SPARK_STATUS_OK;
+		}
+	}
 	if (state->work_queue_count >=
 		SPARK_RING_SERVICE_BACKEND_WORK_QUEUE_CAPACITY)
+	{
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
 	tail = SparkRingServiceBackendWorkQueueTail(state);
-	state->work_queue[tail] = *packet;
+	slot = &state->work_queue[tail];
+	if (slot->packet_bytes != 0 || slot->packet_bytes_count != 0u)
+	{
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
+	slot->packet_bytes = (uint8_t *)calloc(1u,packet->descriptor_bytes);
+	if (slot->packet_bytes == 0)
+	{
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	}
+	memcpy(slot->packet_bytes,packet,packet->descriptor_bytes);
+	slot->packet_bytes_count = packet->descriptor_bytes;
+	slot->reserved0 = 0u;
 	state->work_queue_count += 1u;
 	return SPARK_STATUS_OK;
 }
 
-static void SparkRingServiceBackendDropWorkOutputSocket(
-	SparkRingServiceBackendState *state)
+static SparkRingWorkControlPacket *SparkRingServiceBackendWorkQueueHeadPacket(
+    SparkRingServiceBackendState *state)
 {
-	if (state == 0)
-		return;
-	if (state->work_output_socket_fd >= 0)
-		close(state->work_output_socket_fd);
-	state->work_output_socket_fd = -1;
-	state->work_output_socket_connecting = 0u;
-	state->work_queue_write_offset = 0u;
+    SparkRingServiceBackendWorkOutputSlot *slot;
+
+    if (state == 0 || state->work_queue_count == 0u)
+    {
+        return 0;
+    }
+    slot = &state->work_queue[state->work_queue_head];
+    if (slot->packet_bytes == 0 ||
+        slot->packet_bytes_count < SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES)
+    {
+        return 0;
+    }
+    return (SparkRingWorkControlPacket *)slot->packet_bytes;
+}
+
+static void SparkRingServiceBackendPopWorkPacket(
+    SparkRingServiceBackendState *state)
+{
+    SparkRingServiceBackendWorkOutputSlot *slot;
+
+    if (state == 0 || state->work_queue_count == 0u)
+    {
+        return;
+    }
+    slot = &state->work_queue[state->work_queue_head];
+    free(slot->packet_bytes);
+    memset(slot,0,sizeof(*slot));
+    state->work_queue_head =
+        (state->work_queue_head + 1u) %
+        SPARK_RING_SERVICE_BACKEND_WORK_QUEUE_CAPACITY;
+    state->work_queue_count -= 1u;
+}
+
+static void SparkRingServiceBackendResetWorkOutputAcknowledgement(
+    SparkRingServiceBackendState *state)
+{
+    if (state == 0)
+    {
+        return;
+    }
+    memset(
+        &state->work_output_acknowledgement,
+        0,
+        sizeof(state->work_output_acknowledgement));
+    state->work_output_acknowledgement_read_offset = 0u;
+    state->work_output_waiting_for_acknowledgement = 0u;
+    state->work_output_packet_hash = 0u;
+}
+
+static SparkStatus SparkRingServiceBackendReadWorkOutputAcknowledgement(
+    SparkRingServiceBackendState *state,
+    const SparkRingWorkControlPacket *packet)
+{
+    SparkDistributedWorkIdentity identity;
+    SparkStatus status;
+    uint8_t *acknowledgement_bytes;
+    uint32_t remaining;
+    ssize_t got;
+
+    if (state == 0 || packet == 0 || state->work_output_socket_fd < 0 ||
+        state->work_output_waiting_for_acknowledgement == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    acknowledgement_bytes =
+        (uint8_t *)&state->work_output_acknowledgement;
+    while (state->work_output_acknowledgement_read_offset <
+        SPARK_DISTRIBUTED_WORK_ACKNOWLEDGEMENT_BYTES)
+    {
+        remaining = SPARK_DISTRIBUTED_WORK_ACKNOWLEDGEMENT_BYTES -
+            state->work_output_acknowledgement_read_offset;
+        got = read(
+            state->work_output_socket_fd,
+            acknowledgement_bytes +
+                state->work_output_acknowledgement_read_offset,
+            remaining);
+        if (got < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                return SPARK_STATUS_BUSY;
+            }
+            return SPARK_STATUS_ROUTE_NOT_FOUND;
+        }
+        if (got == 0)
+        {
+            return SPARK_STATUS_ROUTE_NOT_FOUND;
+        }
+        state->work_output_acknowledgement_read_offset += (uint32_t)got;
+    }
+    status = SparkRingWorkControlGetTransactionIdentity(packet,&identity);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkDistributedWorkValidateAcknowledgement(
+        &state->work_output_acknowledgement,
+        &identity,
+        state->work_output_packet_hash);
+}
+
+static void SparkRingServiceBackendDropWorkOutputSocket(
+    SparkRingServiceBackendState *state)
+{
+    if (state == 0)
+    {
+        return;
+    }
+    if (state->work_output_socket_fd >= 0)
+    {
+        close(state->work_output_socket_fd);
+    }
+    state->work_output_socket_fd = -1;
+    state->work_output_socket_connecting = 0u;
+    state->work_queue_write_offset = 0u;
+    SparkRingServiceBackendResetWorkOutputAcknowledgement(state);
 }
 
 static SparkStatus SparkRingServiceBackendStartWorkOutputSocket(
@@ -1686,136 +2131,234 @@ static SparkStatus SparkRingServiceBackendCheckWorkOutputConnect(
 }
 
 static SparkStatus SparkRingServiceBackendFlushWorkOutput(
-	SparkRingServiceBackendState *state)
+    SparkRingServiceBackendState *state)
 {
-	SparkRingWorkControlPacket *packet;
-	uint32_t remaining;
-	ssize_t written;
+    SparkDistributedWorkIdentity identity;
+    SparkRingWorkControlPacket *packet;
+    SparkStatus status;
+    uint32_t remaining;
+    ssize_t written;
 
-	if (state == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	if ((state->rank_plan.flags &
-			SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u ||
-		state->work_queue_count == 0u)
-		return SPARK_STATUS_OK;
-	while (state->work_queue_count != 0u)
-	{
-		packet = &state->work_queue[state->work_queue_head];
-		remaining = packet->descriptor_bytes -
-			state->work_queue_write_offset;
-		written = write(
-			state->work_output_socket_fd,
-			((const uint8_t *)packet) + state->work_queue_write_offset,
-			remaining);
-		if (written < 0)
-		{
-			if (errno == EINTR)
-				continue;
-			if (errno == EAGAIN || errno == EWOULDBLOCK)
-				return SPARK_STATUS_BUSY;
-			if (getenv("SPARKPIPE_STAGE_COMPLETION_DEBUG") != 0)
-				fprintf(
-					stderr,
-					"ring_work_flush_drop fd=%d errno=%d\n",
-					state->work_output_socket_fd,
-					errno);
-			SparkRingServiceBackendDropWorkOutputSocket(state);
-			return SPARK_STATUS_ROUTE_NOT_FOUND;
-		}
-		if (written == 0)
-			return SPARK_STATUS_BUSY;
-		state->work_queue_write_offset += (uint32_t)written;
-		if (state->work_queue_write_offset != packet->descriptor_bytes)
-			continue;
-		state->work_queue_write_offset = 0u;
-		state->work_queue_head =
-			(state->work_queue_head + 1u) %
-			SPARK_RING_SERVICE_BACKEND_WORK_QUEUE_CAPACITY;
-		state->work_queue_count -= 1u;
-	}
-	return SPARK_STATUS_OK;
+    if (state == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if ((state->rank_plan.flags &
+            SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u ||
+        state->work_queue_count == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    for (;;)
+    {
+        packet = SparkRingServiceBackendWorkQueueHeadPacket(state);
+        if (packet == 0)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+        if (state->work_output_waiting_for_acknowledgement != 0u)
+        {
+            status = SparkRingServiceBackendReadWorkOutputAcknowledgement(
+                state,
+                packet);
+            if (status == SPARK_STATUS_BUSY)
+            {
+                return SPARK_STATUS_BUSY;
+            }
+            if (status == SPARK_STATUS_ROUTE_NOT_FOUND)
+            {
+                SparkRingServiceBackendDropWorkOutputSocket(state);
+                return status;
+            }
+            if (status == SPARK_STATUS_OK || status == SPARK_STATUS_DUPLICATE)
+            {
+                SparkRingServiceBackendResetWorkOutputAcknowledgement(state);
+                SparkRingServiceBackendPopWorkPacket(state);
+                if (state->work_queue_count == 0u)
+                {
+                    return SPARK_STATUS_OK;
+                }
+                continue;
+            }
+            if (status == SPARK_STATUS_CAPACITY_EXCEEDED)
+            {
+                SparkRingServiceBackendResetWorkOutputAcknowledgement(state);
+                state->work_queue_write_offset = 0u;
+                return SPARK_STATUS_BUSY;
+            }
+            SparkRingServiceBackendDropWorkOutputSocket(state);
+            return status;
+        }
+        remaining = packet->descriptor_bytes -
+            state->work_queue_write_offset;
+        written = write(
+            state->work_output_socket_fd,
+            ((const uint8_t *)packet) + state->work_queue_write_offset,
+            remaining);
+        if (written < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                return SPARK_STATUS_BUSY;
+            }
+            SparkRingServiceBackendDropWorkOutputSocket(state);
+            return SPARK_STATUS_ROUTE_NOT_FOUND;
+        }
+        if (written == 0)
+        {
+            return SPARK_STATUS_BUSY;
+        }
+        state->work_queue_write_offset += (uint32_t)written;
+        if (state->work_queue_write_offset != packet->descriptor_bytes)
+        {
+            continue;
+        }
+        status = SparkRingWorkControlGetTransactionIdentity(packet,&identity);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        state->work_output_packet_hash = SparkDistributedWorkHashBytes(
+            packet,
+            packet->descriptor_bytes);
+        if (state->work_output_packet_hash == 0u)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+        state->work_queue_write_offset = 0u;
+        state->work_output_waiting_for_acknowledgement = 1u;
+        state->work_output_acknowledgement_read_offset = 0u;
+        memset(
+            &state->work_output_acknowledgement,
+            0,
+            sizeof(state->work_output_acknowledgement));
+    }
 }
 
 static SparkStatus SparkRingServiceBackendBuildReleasePacket(
-	const SparkRingServiceBackendState *state,
-	uint32_t lane_count,
-	SparkRingWorkControlPacket *packet)
+    const SparkRingServiceBackendState *state,
+    uint32_t lane_count,
+    SparkRingWorkControlPacket *packet)
 {
-	uint32_t lane_index;
-	uint32_t maximum_token_count;
-	if (state == 0 || packet == 0 || lane_count == 0u ||
-		lane_count > state->release_queue_count ||
-		lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	memset(packet,0,sizeof(*packet));
-	packet->magic = SPARK_RING_WORK_CONTROL_PACKET_MAGIC;
-	packet->abi_version = SPARK_RING_WORK_CONTROL_ABI_VERSION;
-	packet->descriptor_bytes =
-		SparkRingWorkControlCalculatePacketBytes(lane_count);
-	packet->flags = SPARK_RING_WORK_CONTROL_FLAG_RELEASE_SEQUENCES;
-	packet->control_generation = state->session_id_base;
-	packet->active_sequence_count = lane_count;
-	packet->lane_count = lane_count;
-	packet->block_token_count =
-		SPARK_RING_SERVICE_BACKEND_KV_BLOCK_TOKENS;
-	packet->max_blocks_per_sequence =
-		SPARK_RING_SERVICE_BACKEND_MAX_BLOCKS_PER_SEQUENCE;
-	maximum_token_count = 0u;
-	for (lane_index = 0u; lane_index < lane_count; ++lane_index)
-	{
-		uint32_t queue_index;
-		const SparkRingServiceBackendReleaseRecord *record;
-		SparkRingWorkControlLane *lane;
-		queue_index = (state->release_queue_head + lane_index) %
-			SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY;
-		record = &state->release_queue[queue_index];
-		lane = &packet->lanes[lane_index];
-		if (record->request_id == 0u || record->sequence_id == 0u ||
-			record->token_count == 0u || record->reserved0 != 0u)
-			return SPARK_STATUS_INTERNAL_ERROR;
-		lane->request_id = record->request_id;
-		lane->sequence_id = record->sequence_id;
-		lane->context_token_count = record->token_count;
-		if (record->token_count > maximum_token_count)
-			maximum_token_count = record->token_count;
-	}
-	packet->request_id = packet->lanes[0u].request_id;
-	packet->sequence_id = packet->lanes[0u].sequence_id;
-	packet->kv_block_table_token_count = maximum_token_count;
-	return SparkRingWorkControlValidatePacket(
-		packet,state->rank_plan.execution_row_capacity,1u);
+    const SparkRingServiceBackendReleaseRecord *record;
+    SparkRingWorkControlLane *lane;
+    SparkStatus status;
+    uint32_t lane_index;
+    uint32_t maximum_token_count;
+    uint32_t queue_index;
+
+    if (state == 0 || packet == 0 || lane_count == 0u ||
+        lane_count > state->release_queue_count ||
+        lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(packet,0,sizeof(*packet));
+    packet->magic = SPARK_RING_WORK_CONTROL_PACKET_MAGIC;
+    packet->abi_version = SPARK_RING_WORK_CONTROL_ABI_VERSION;
+    packet->descriptor_bytes =
+        SparkRingWorkControlCalculatePacketBytes(lane_count);
+    packet->flags = SPARK_RING_WORK_CONTROL_FLAG_RELEASE_SEQUENCES;
+    packet->active_sequence_count = lane_count;
+    packet->lane_count = lane_count;
+    packet->block_token_count =
+        SPARK_RING_SERVICE_BACKEND_KV_BLOCK_TOKENS;
+    packet->max_blocks_per_sequence =
+        SPARK_RING_SERVICE_BACKEND_MAX_BLOCKS_PER_SEQUENCE;
+    maximum_token_count = 0u;
+    for (lane_index = 0u; lane_index < lane_count; ++lane_index)
+    {
+        queue_index = (state->release_queue_head + lane_index) %
+            SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY;
+        record = &state->release_queue[queue_index];
+        lane = &packet->lanes[lane_index];
+        if (record->request_id == 0u ||
+            record->request_generation == 0u ||
+            record->sequence_id == 0u || record->token_count == 0u ||
+            record->reserved0 != 0u)
+        {
+            return SPARK_STATUS_INTERNAL_ERROR;
+        }
+        lane->request_id = record->request_id;
+        lane->request_generation = record->request_generation;
+        lane->sequence_id = record->sequence_id;
+        lane->context_token_count = record->token_count;
+        lane->mtp_resolution_path_id =
+            SPARK_MODEL_MTP_TREE_RESOLUTION_NONE;
+        if (record->token_count > maximum_token_count)
+        {
+            maximum_token_count = record->token_count;
+        }
+    }
+    packet->request_id = packet->lanes[0u].request_id;
+    packet->sequence_id = packet->lanes[0u].sequence_id;
+    packet->kv_block_table_token_count = maximum_token_count;
+    status = SparkRingServiceBackendStampWorkPacket(state,packet);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkRingWorkControlValidatePacket(
+        packet,
+        state->rank_plan.execution_row_capacity,
+        1u);
 }
 
 static SparkStatus SparkRingServiceBackendPumpSequenceReleases(
-	SparkRingServiceBackendState *state)
+    SparkRingServiceBackendState *state)
 {
-	SparkRingWorkControlPacket packet;
-	uint32_t lane_count;
-	SparkStatus status;
-	if (state == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	if (state->release_queue_count == 0u)
-		return SPARK_STATUS_OK;
-	lane_count = state->release_queue_count;
-	if (lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT)
-		lane_count = SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT;
-	status = SparkRingServiceBackendBuildReleasePacket(
-		state,lane_count,&packet);
-	if (status != SPARK_STATUS_OK)
-		return status;
-	status = SparkRingServiceBackendSubmitReleaseToRank0(
-		state,&packet);
-	if (status != SPARK_STATUS_OK)
-		return status;
-	status = SparkRingServiceBackendEnqueueWorkPacket(state,&packet);
-	if (status == SPARK_STATUS_CAPACITY_EXCEEDED)
-		return SPARK_STATUS_BUSY;
-	if (status != SPARK_STATUS_OK)
-		return status;
-	state->release_queue_head = (state->release_queue_head + lane_count) %
-		SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY;
-	state->release_queue_count -= lane_count;
-	return SPARK_STATUS_OK;
+    SparkRingWorkControlPacket packet;
+    SparkStatus status;
+    uint32_t lane_count;
+
+    if (state == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (state->release_queue_count == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    lane_count = state->release_queue_count;
+    if (lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT)
+    {
+        lane_count = SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT;
+    }
+    status = SparkRingServiceBackendBuildReleasePacket(
+        state,
+        lane_count,
+        &packet);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkRingServiceBackendEnqueueWorkPacket(state,&packet);
+    if (status == SPARK_STATUS_CAPACITY_EXCEEDED)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkRingServiceBackendPumpWorkOutput(state);
+    if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+    {
+        return status;
+    }
+    status = SparkRingServiceBackendSubmitReleaseToRank0(state,&packet);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    state->release_queue_head = (state->release_queue_head + lane_count) %
+        SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY;
+    state->release_queue_count -= lane_count;
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkRingServiceBackendBuildDecodeWorkPacket(
@@ -1921,9 +2464,56 @@ static SparkStatus SparkRingServiceBackendForwardPrefillWork(
 	return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkRingServiceBackendRecordDecodeChunk(
+	SparkRingServiceBackendPendingDecode *pending,
+	uint32_t lane_offset,
+	const SparkRingWorkControlPacket *packet)
+{
+	SparkRingServiceBackendLaneTransaction *transaction;
+	uint32_t lane_index;
+	uint32_t request_index;
+
+	if (pending == 0 || packet == 0 ||
+		pending->state !=
+			SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE ||
+		lane_offset > pending->dispatch.request_count ||
+		packet->lane_count > pending->dispatch.request_count - lane_offset)
+	{
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
+	{
+		request_index = lane_offset + lane_index;
+		if (pending->dispatch.request_ids[request_index] !=
+				packet->lanes[lane_index].request_id ||
+			pending->dispatch.request_handles[request_index] !=
+				packet->lanes[lane_index].request_generation ||
+			pending->dispatch.sequence_ids[request_index] !=
+				packet->lanes[lane_index].sequence_id)
+		{
+			return SPARK_STATUS_VALIDATION_FAILED;
+		}
+		transaction = &pending->lane_transactions[request_index];
+		transaction->control_generation = packet->control_generation;
+		transaction->transaction_id = packet->transaction_id;
+		transaction->dispatch_generation = packet->dispatch_generation;
+		transaction->request_generation =
+			packet->lanes[lane_index].request_generation;
+		transaction->sequence_position =
+			packet->lanes[lane_index].sequence_position;
+		transaction->step_generation = packet->step_generation;
+		transaction->step_chunk_index = packet->step_chunk_index;
+		transaction->step_chunk_count = packet->step_chunk_count;
+		transaction->transaction_phase = packet->transaction_phase;
+		transaction->reserved0 = 0u;
+	}
+	return SPARK_STATUS_OK;
+}
+
 static SparkStatus SparkRingServiceBackendForwardDecodeWork(
 	SparkRingServiceBackendState *state,
-	const SparkServingDecodeDispatch *decode_dispatch)
+	const SparkServingDecodeDispatch *decode_dispatch,
+	SparkRingServiceBackendPendingDecode *pending)
 {
 	SparkRingWorkControlPacket packet;
 	uint32_t chunk_count;
@@ -1932,42 +2522,81 @@ static SparkStatus SparkRingServiceBackendForwardDecodeWork(
 	uint32_t lane_offset;
 	uint32_t maximum_lanes_per_chunk;
 	SparkStatus status;
-	if (state == 0 || decode_dispatch == 0)
+
+	if (state == 0 || decode_dispatch == 0 || pending == 0)
+	{
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	status = SparkRingServiceBackendPlanDecodeChunks(
-		decode_dispatch,state->rank_plan.execution_row_capacity,
-		&maximum_lanes_per_chunk,&chunk_count);
+		decode_dispatch,
+		state->rank_plan.execution_row_capacity,
+		&maximum_lanes_per_chunk,
+		&chunk_count);
 	if (status != SPARK_STATUS_OK)
+	{
 		return status;
+	}
 	if (chunk_count >
 		SPARK_RING_SERVICE_BACKEND_WORK_QUEUE_CAPACITY -
 			state->work_queue_count)
+	{
 		return SPARK_STATUS_BUSY;
+	}
 	lane_offset = 0u;
 	for (chunk_index = 0u; chunk_index < chunk_count; ++chunk_index)
 	{
 		lane_count = decode_dispatch->request_count - lane_offset;
 		if (lane_count > maximum_lanes_per_chunk)
+		{
 			lane_count = maximum_lanes_per_chunk;
+		}
 		status = SparkRingServiceBackendBuildDecodeWorkPacket(
-			decode_dispatch,lane_offset,lane_count,0u,&packet);
+			decode_dispatch,
+			lane_offset,
+			lane_count,
+			0u,
+			&packet);
 		if (status == SPARK_STATUS_OK)
-			status = SparkRingServiceBackendStampWorkPacket(state,&packet);
+		{
+			status = SparkRingServiceBackendStampWorkPacketChunk(
+				state,
+				&packet,
+				chunk_index,
+				chunk_count);
+		}
 		if (status == SPARK_STATUS_OK)
+		{
 			status = SparkRingWorkControlValidatePacket(
-				&packet,state->rank_plan.execution_row_capacity,
+				&packet,
+				state->rank_plan.execution_row_capacity,
 				SPARK_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
+		}
 		if (status == SPARK_STATUS_OK)
+		{
+			status = SparkRingServiceBackendRecordDecodeChunk(
+				pending,
+				lane_offset,
+				&packet);
+		}
+		if (status == SPARK_STATUS_OK)
+		{
 			status = SparkRingServiceBackendEnqueueWorkPacket(state,&packet);
+		}
 		if (status != SPARK_STATUS_OK)
+		{
 			return status;
+		}
 		lane_offset += lane_count;
 	}
 	if (lane_offset != decode_dispatch->request_count)
+	{
 		return SPARK_STATUS_INTERNAL_ERROR;
+	}
 	status = SparkRingServiceBackendPumpWorkOutput(state);
 	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+	{
 		return status;
+	}
 	return SPARK_STATUS_OK;
 }
 
@@ -2075,7 +2704,10 @@ static SparkStatus SparkRingServiceBackendDecodeInner(
 			state,decode_dispatch);
 		if (pending != 0)
 			pending->trace_submit_time_ns = trace_submit_ns;
-		status = SparkRingServiceBackendForwardDecodeWork(state,decode_dispatch);
+		status = SparkRingServiceBackendForwardDecodeWork(
+			state,
+			decode_dispatch,
+			pending);
 		if (status != SPARK_STATUS_OK)
 		{
 			if (pending != 0)
@@ -2094,7 +2726,16 @@ static SparkStatus SparkRingServiceBackendDecodeInner(
 				memset(pending,0,sizeof(*pending));
 			return status;
 		}
-		return SPARK_STATUS_PENDING;
+		status = SparkRingServiceBackendCompleteEarlyFinalEvents(
+			state,
+			pending);
+		if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+		{
+			return status;
+		}
+		return pending->state ==
+			SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE ?
+			SPARK_STATUS_OK : SPARK_STATUS_PENDING;
 	}
 	if (state->builder_library.builder_interface.decode == 0 ||
 		state->builder_state == 0)
@@ -2135,7 +2776,8 @@ static SparkStatus SparkRingServiceBackendDecodeInner(
 		pending->trace_submit_time_ns = trace_submit_ns;
 	status = SparkRingServiceBackendForwardDecodeWork(
 		state,
-		decode_dispatch);
+		decode_dispatch,
+		pending);
 	if (status != SPARK_STATUS_OK)
 	{
 		if (pending != 0)
@@ -2143,9 +2785,18 @@ static SparkStatus SparkRingServiceBackendDecodeInner(
 		fprintf(stderr,"ring_decode_forward status=%u\n",status);
 		return status;
 	}
+	status = SparkRingServiceBackendCompleteEarlyFinalEvents(
+		state,
+		pending);
+	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+	{
+		return status;
+	}
 	if (state->trace_enabled != 0u)
 		fprintf(stderr,"ring_decode_pending_final begin\n");
-	return SPARK_STATUS_PENDING;
+	return pending->state ==
+		SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE ?
+		SPARK_STATUS_OK : SPARK_STATUS_PENDING;
 }
 
 static SparkStatus SparkRingServiceBackendDecode(
@@ -3287,21 +3938,100 @@ static SparkStatus SparkRingServiceBackendReadFinalEvent(
 	return SPARK_STATUS_OK;
 }
 
-static int32_t SparkRingServiceBackendFindDecodeLane(
-	const SparkRequestApiDispatch *decode_dispatch,
+static SparkStatus SparkRingServiceBackendValidateFinalEventEnvelope(
 	const SparkRingRuntimeFinalEvent *event)
 {
+	uint32_t has_draft_tokens;
+	uint32_t has_token_ids;
+
+	if (event == 0)
+	{
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	if (event->magic != SPARK_RING_RUNTIME_FINAL_EVENT_MAGIC ||
+		event->descriptor_bytes !=
+			SPARK_RING_RUNTIME_FINAL_EVENT_DESCRIPTOR_BYTES)
+	{
+		return SPARK_STATUS_ABI_MISMATCH;
+	}
+	if (event->status > (uint32_t)SPARK_STATUS_UNSUPPORTED ||
+		(event->completion_flags &
+			~SPARK_RING_SERVICE_BACKEND_MODEL_COMPLETION_KNOWN_FLAGS) != 0u ||
+		(event->extension_flags &
+			~SPARK_RING_RUNTIME_FINAL_EVENT_KNOWN_FLAGS) != 0u ||
+		event->request_id == 0u ||
+		event->control_generation == 0u ||
+		event->transaction_id == 0u ||
+		event->dispatch_generation == 0u ||
+		event->request_generation == 0u ||
+		event->sequence_id == 0u ||
+		event->step_generation == 0u ||
+		event->step_chunk_count == 0u ||
+		event->step_chunk_index >= event->step_chunk_count ||
+		(event->transaction_phase != SPARK_DISTRIBUTED_WORK_PHASE_DECODE &&
+		 event->transaction_phase != SPARK_DISTRIBUTED_WORK_PHASE_VERIFY) ||
+		event->reserved_transaction != 0u ||
+		event->reserved0 != 0u ||
+		event->token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY ||
+		event->draft_token_count >
+			SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY)
+	{
+		return SPARK_STATUS_VALIDATION_FAILED;
+	}
+	has_token_ids =
+		(event->completion_flags &
+		 SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) != 0u;
+	has_draft_tokens =
+		(event->completion_flags &
+		 SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS) != 0u;
+	if ((has_token_ids == 0u) != (event->token_count == 0u) ||
+		(has_draft_tokens == 0u) != (event->draft_token_count == 0u))
+	{
+		return SPARK_STATUS_VALIDATION_FAILED;
+	}
+	if (event->status == (uint32_t)SPARK_STATUS_OK &&
+		(has_token_ids == 0u || event->token_count == 0u))
+	{
+		return SPARK_STATUS_VALIDATION_FAILED;
+	}
+	return SPARK_STATUS_OK;
+}
+
+static int32_t SparkRingServiceBackendFindDecodeLane(
+	const SparkRingServiceBackendPendingDecode *pending,
+	const SparkRingRuntimeFinalEvent *event,
+	uint32_t *transaction_matches_out)
+{
+	const SparkRingServiceBackendLaneTransaction *transaction;
 	uint32_t lane_index;
 
-	if (decode_dispatch == 0 || event == 0)
+	if (pending == 0 || event == 0 || transaction_matches_out == 0)
+	{
 		return -1;
+	}
+	*transaction_matches_out = 0u;
 	for (lane_index = 0u;
-		 lane_index < decode_dispatch->request_count;
+		 lane_index < pending->dispatch.request_count;
 		 ++lane_index)
 	{
-		if (decode_dispatch->request_ids[lane_index] == event->request_id &&
-			decode_dispatch->sequence_ids[lane_index] == event->sequence_id)
-			return (int32_t)lane_index;
+		if (pending->dispatch.request_ids[lane_index] != event->request_id ||
+			pending->dispatch.sequence_ids[lane_index] != event->sequence_id)
+		{
+			continue;
+		}
+		transaction = &pending->lane_transactions[lane_index];
+		*transaction_matches_out =
+			transaction->control_generation == event->control_generation &&
+			transaction->transaction_id == event->transaction_id &&
+			transaction->dispatch_generation == event->dispatch_generation &&
+			transaction->request_generation == event->request_generation &&
+			transaction->sequence_position == event->sequence_position &&
+			transaction->step_generation == event->step_generation &&
+			transaction->step_chunk_index == event->step_chunk_index &&
+			transaction->step_chunk_count == event->step_chunk_count &&
+			transaction->transaction_phase == event->transaction_phase &&
+			transaction->reserved0 == 0u;
+		return (int32_t)lane_index;
 	}
 	return -2;
 }
@@ -3327,26 +4057,37 @@ static SparkRingServiceBackendPendingDecode *SparkRingServiceBackendFindFreePend
 static SparkRingServiceBackendPendingDecode *SparkRingServiceBackendFindPendingDecodeForEvent(
 	SparkRingServiceBackendState *state,
 	const SparkRingRuntimeFinalEvent *event,
-	uint32_t *lane_index_out)
+	uint32_t *lane_index_out,
+	uint32_t *transaction_matches_out)
 {
 	uint32_t index;
+	uint32_t transaction_matches;
 	int32_t lane;
 
-	if (state == 0 || event == 0 || lane_index_out == 0)
+	if (state == 0 || event == 0 || lane_index_out == 0 ||
+		transaction_matches_out == 0)
+	{
 		return 0;
+	}
+	*transaction_matches_out = 0u;
 	for (index = 0u;
 		 index < SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY;
 		 ++index)
 	{
 		if (state->pending_decodes[index].state !=
 			SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE)
+		{
 			continue;
+		}
+		transaction_matches = 0u;
 		lane = SparkRingServiceBackendFindDecodeLane(
-			&state->pending_decodes[index].dispatch,
-			event);
+			&state->pending_decodes[index],
+			event,
+			&transaction_matches);
 		if (lane >= 0)
 		{
 			*lane_index_out = (uint32_t)lane;
+			*transaction_matches_out = transaction_matches;
 			return &state->pending_decodes[index];
 		}
 	}
@@ -3378,22 +4119,63 @@ static void SparkRingServiceBackendDropEarlyFinalEvent(
 	state->early_final_event_count -= 1u;
 }
 
+static uint32_t SparkRingServiceBackendFinalEventIdentityMatches(
+	const SparkRingRuntimeFinalEvent *left,
+	const SparkRingRuntimeFinalEvent *right)
+{
+	return left != 0 && right != 0 &&
+		left->control_generation == right->control_generation &&
+		left->transaction_id == right->transaction_id &&
+		left->dispatch_generation == right->dispatch_generation &&
+		left->request_id == right->request_id &&
+		left->request_generation == right->request_generation &&
+		left->sequence_id == right->sequence_id &&
+		left->sequence_position == right->sequence_position &&
+		left->step_generation == right->step_generation &&
+		left->step_chunk_index == right->step_chunk_index &&
+		left->step_chunk_count == right->step_chunk_count &&
+		left->transaction_phase == right->transaction_phase;
+}
+
 static SparkStatus SparkRingServiceBackendStashEarlyFinalEvent(
 	SparkRingServiceBackendState *state,
 	const SparkRingRuntimeFinalEvent *event)
 {
+	const SparkRingRuntimeFinalEvent *queued_event;
+	SparkStatus status;
+	uint32_t event_index;
+	uint32_t ring_index;
 	uint32_t tail;
 
 	if (state == 0 || event == 0)
+	{
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	status = SparkRingServiceBackendValidateFinalEventEnvelope(event);
+	if (status != SPARK_STATUS_OK)
+	{
+		return status;
+	}
+	for (event_index = 0u;
+		 event_index < state->early_final_event_count;
+		 ++event_index)
+	{
+		ring_index = (state->early_final_event_head + event_index) %
+			SPARK_RING_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY;
+		queued_event = &state->early_final_events[ring_index];
+		if (SparkRingServiceBackendFinalEventIdentityMatches(
+				queued_event,
+				event) == 0u)
+		{
+			continue;
+		}
+		return memcmp(queued_event,event,sizeof(*event)) == 0 ?
+			SPARK_STATUS_BUSY : SPARK_STATUS_VALIDATION_FAILED;
+	}
 	if (state->early_final_event_count >=
 		SPARK_RING_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY)
 	{
-		state->early_final_event_head =
-			(state->early_final_event_head + 1u) %
-			SPARK_RING_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY;
-		state->early_final_event_count -= 1u;
-		state->final_event_receive_error_count += 1u;
+		return SPARK_STATUS_BUSY;
 	}
 	tail = (state->early_final_event_head + state->early_final_event_count) %
 		SPARK_RING_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY;
@@ -3410,10 +4192,13 @@ static SparkStatus SparkRingServiceBackendCompleteEarlyFinalEvents(
 	SparkStatus status;
 	uint32_t event_index;
 	uint32_t ring_index;
+	uint32_t transaction_matches;
 	int32_t lane;
 
 	if (state == 0 || pending == 0)
+	{
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	event_index = 0u;
 	while (pending->state ==
 			SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE &&
@@ -3421,9 +4206,11 @@ static SparkStatus SparkRingServiceBackendCompleteEarlyFinalEvents(
 	{
 		ring_index = (state->early_final_event_head + event_index) %
 			SPARK_RING_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY;
+		transaction_matches = 0u;
 		lane = SparkRingServiceBackendFindDecodeLane(
-			&pending->dispatch,
-			&state->early_final_events[ring_index]);
+			pending,
+			&state->early_final_events[ring_index],
+			&transaction_matches);
 		if (lane < 0)
 		{
 			event_index += 1u;
@@ -3435,7 +4222,9 @@ static SparkStatus SparkRingServiceBackendCompleteEarlyFinalEvents(
 			state,
 			&event);
 		if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
+		{
 			return status;
+		}
 	}
 	return pending->state ==
 		SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE ?
@@ -3449,25 +4238,23 @@ static SparkStatus SparkRingServiceBackendRegisterPendingDecode(
 	SparkRingServiceBackendPendingDecode **pending_out)
 {
 	SparkRingServiceBackendPendingDecode *pending;
-	SparkStatus status;
 
 	if (state == 0 || decode_dispatch == 0 || decode_result == 0 ||
 		decode_dispatch->request_dispatch == 0 || pending_out == 0)
+	{
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
 	pending = SparkRingServiceBackendFindFreePendingDecode(state);
 	if (pending == 0)
+	{
 		return SPARK_STATUS_BUSY;
+	}
 	memset(pending,0,sizeof(*pending));
 	pending->state =
 		SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE;
 	pending->dispatch = *decode_dispatch->request_dispatch;
 	pending->result = *decode_result;
 	*pending_out = pending;
-	status = SparkRingServiceBackendCompleteEarlyFinalEvents(
-		state,
-		pending);
-	if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY)
-		return status;
 	return SPARK_STATUS_OK;
 }
 
@@ -3533,25 +4320,51 @@ static SparkStatus SparkRingServiceBackendCompletePendingFinalEvent(
 	const SparkRingRuntimeFinalEvent *event)
 {
 	SparkRingServiceBackendPendingDecode *pending;
+	SparkStatus status;
+	uint64_t event_fingerprint;
+	uint32_t dspark_expected;
 	uint32_t lane_index;
 	uint32_t token_count;
-	uint32_t dspark_expected;
+	uint32_t transaction_matches;
 
 	if (state == 0 || event == 0)
+	{
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	status = SparkRingServiceBackendValidateFinalEventEnvelope(event);
+	if (status != SPARK_STATUS_OK)
+	{
+		state->final_event_receive_error_count += 1u;
+		pending = SparkRingServiceBackendFindPendingDecodeForMalformedEvent(
+			state,
+			event);
+		if (pending != 0)
+		{
+			return SparkRingServiceBackendFailPendingDecode(
+				state,
+				pending,
+				SPARK_STATUS_VALIDATION_FAILED);
+		}
+		return status;
+	}
 	SparkRingServiceBackendRecordFinalEvent(state,event);
-	if (event->magic != SPARK_RING_RUNTIME_FINAL_EVENT_MAGIC ||
-		event->descriptor_bytes !=
-			SPARK_RING_RUNTIME_FINAL_EVENT_DESCRIPTOR_BYTES ||
-		(event->extension_flags &
-			~SPARK_RING_RUNTIME_FINAL_EVENT_KNOWN_FLAGS) != 0u)
-		return SPARK_STATUS_VALIDATION_FAILED;
+	transaction_matches = 0u;
 	pending = SparkRingServiceBackendFindPendingDecodeForEvent(
 		state,
 		event,
-		&lane_index);
+		&lane_index,
+		&transaction_matches);
 	if (pending == 0)
+	{
 		return SparkRingServiceBackendStashEarlyFinalEvent(state,event);
+	}
+	if (transaction_matches == 0u)
+	{
+		return SparkRingServiceBackendFailPendingDecode(
+			state,
+			pending,
+			SPARK_STATUS_VALIDATION_FAILED);
+	}
 	if (event->status != (uint32_t)SPARK_STATUS_OK)
 	{
 		SparkRingServiceBackendTraceFinalEvent(state,event,pending);
@@ -3560,6 +4373,28 @@ static SparkStatus SparkRingServiceBackendCompletePendingFinalEvent(
 			pending,
 			(SparkStatus)event->status);
 	}
+	event_fingerprint = SparkDistributedWorkHashBytes(
+		event,
+		SPARK_RING_RUNTIME_FINAL_EVENT_DESCRIPTOR_BYTES);
+	if (event_fingerprint == 0u)
+	{
+		return SparkRingServiceBackendFailPendingDecode(
+			state,
+			pending,
+			SPARK_STATUS_INTERNAL_ERROR);
+	}
+	if (pending->lane_done[lane_index] != 0u)
+	{
+		if (pending->lane_final_event_fingerprints[lane_index] ==
+			event_fingerprint)
+		{
+			return SPARK_STATUS_OK;
+		}
+		return SparkRingServiceBackendFailPendingDecode(
+			state,
+			pending,
+			SPARK_STATUS_VALIDATION_FAILED);
+	}
 	if ((event->completion_flags &
 			SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u ||
 		(((event->completion_flags &
@@ -3567,7 +4402,12 @@ static SparkStatus SparkRingServiceBackendCompletePendingFinalEvent(
 			 (event->draft_token_count != 0u)) ||
 		event->draft_token_count >
 			SPARK_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT)
-		return SPARK_STATUS_VALIDATION_FAILED;
+	{
+		return SparkRingServiceBackendFailPendingDecode(
+			state,
+			pending,
+			SPARK_STATUS_VALIDATION_FAILED);
+	}
 	dspark_expected =
 		(pending->dispatch.flags &
 			(SPARK_REQUEST_API_DISPATCH_FLAG_DSPARK_TAP_CAPTURE |
@@ -3580,17 +4420,33 @@ static SparkStatus SparkRingServiceBackendCompletePendingFinalEvent(
 			event->dspark_draft.descriptor_bytes !=
 				SPARK_GLM52_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES ||
 			event->dspark_draft.token_count == 0u)
-			return SPARK_STATUS_VALIDATION_FAILED;
+		{
+			return SparkRingServiceBackendFailPendingDecode(
+				state,
+				pending,
+				SPARK_STATUS_VALIDATION_FAILED);
+		}
 		pending->dspark_drafts[lane_index] = event->dspark_draft;
 		pending->dspark_draft_valid[lane_index] = 1u;
 	}
-	if (pending->lane_done[lane_index] != 0u)
-		return SPARK_STATUS_OK;
+	else if ((event->extension_flags &
+		SPARK_RING_RUNTIME_FINAL_EVENT_FLAG_DSPARK_DRAFT) != 0u)
+	{
+		return SparkRingServiceBackendFailPendingDecode(
+			state,
+			pending,
+			SPARK_STATUS_VALIDATION_FAILED);
+	}
 	token_count = event->token_count;
 	if (token_count == 0u ||
 		token_count > SPARK_SERVING_MAX_DECODE_TOKENS_PER_LANE ||
 		token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
-		return SPARK_STATUS_VALIDATION_FAILED;
+	{
+		return SparkRingServiceBackendFailPendingDecode(
+			state,
+			pending,
+			SPARK_STATUS_VALIDATION_FAILED);
+	}
 	SparkRingServiceBackendTraceFinalEvent(state,event,pending);
 	memcpy(
 		pending->result.token_ids[lane_index],
@@ -3603,39 +4459,67 @@ static SparkStatus SparkRingServiceBackendCompletePendingFinalEvent(
 		event->draft_token_ids,
 		event->draft_token_count *
 			sizeof(pending->result.draft_token_ids[lane_index][0u]));
+	pending->lane_final_event_fingerprints[lane_index] = event_fingerprint;
 	pending->lane_done[lane_index] = 1u;
 	pending->done_count += 1u;
 	if (pending->done_count != pending->dispatch.request_count)
+	{
 		return SPARK_STATUS_BUSY;
+	}
 	return SparkRingServiceBackendCompletePendingDecode(state,pending);
 }
 
 static SparkStatus SparkRingServiceBackendPumpFinalEvents(
-	SparkRingServiceBackendState *state)
+    SparkRingServiceBackendState *state)
 {
-	SparkRingRuntimeFinalEvent event;
-	SparkStatus status;
-	uint32_t event_count;
+    SparkRingRuntimeFinalEvent event;
+    SparkStatus status;
+    uint32_t event_count;
+    uint32_t pump_budget;
 
-	if (state == 0)
-		return SPARK_STATUS_INVALID_ARGUMENT;
-	for (event_count = 0u;
-		 event_count < SPARK_RING_SERVICE_BACKEND_FINAL_EVENT_PUMP_BUDGET;
-		 ++event_count)
-	{
-		status = SparkRingServiceBackendReadFinalEvent(state,&event);
-		if (status == SPARK_STATUS_BUSY)
-			return SPARK_STATUS_OK;
-		if (status != SPARK_STATUS_OK)
-			return status;
-		status = SparkRingServiceBackendCompletePendingFinalEvent(
-			state,
-			&event);
-		if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY &&
-			status != SPARK_STATUS_NOT_FOUND)
-			return status;
-	}
-	return SPARK_STATUS_OK;
+    if (state == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (state->early_final_event_count >=
+        SPARK_RING_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+    pump_budget = SPARK_RING_SERVICE_BACKEND_FINAL_EVENT_PUMP_BUDGET;
+    if (state->early_final_event_count != 0u &&
+        pump_budget > SPARK_RING_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY -
+            state->early_final_event_count)
+    {
+        pump_budget = SPARK_RING_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY -
+            state->early_final_event_count;
+    }
+    for (event_count = 0u; event_count < pump_budget; ++event_count)
+    {
+        status = SparkRingServiceBackendReadFinalEvent(state,&event);
+        if (status == SPARK_STATUS_BUSY)
+        {
+            return SPARK_STATUS_OK;
+        }
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+        status = SparkRingServiceBackendCompletePendingFinalEvent(
+            state,
+            &event);
+        if (status != SPARK_STATUS_OK && status != SPARK_STATUS_BUSY &&
+            status != SPARK_STATUS_NOT_FOUND)
+        {
+            return status;
+        }
+        if (state->early_final_event_count >=
+            SPARK_RING_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY)
+        {
+            return SPARK_STATUS_BUSY;
+        }
+    }
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkRingServiceBackendPump(
@@ -3812,8 +4696,17 @@ static SparkStatus SparkRingServiceBackendGetPollDescriptors(
 		descriptors[descriptor_count].descriptor_bytes =
 			SPARK_SERVICE_BACKEND_POLL_DESCRIPTOR_BYTES;
 		descriptors[descriptor_count].fd = state->work_output_socket_fd;
-		descriptors[descriptor_count].events =
-			SPARK_SERVICE_BACKEND_POLL_WRITE;
+        if (state->work_output_socket_connecting != 0u ||
+            state->work_output_waiting_for_acknowledgement == 0u)
+        {
+            descriptors[descriptor_count].events =
+                SPARK_SERVICE_BACKEND_POLL_WRITE;
+        }
+        else
+        {
+            descriptors[descriptor_count].events =
+                SPARK_SERVICE_BACKEND_POLL_READ;
+        }
 		descriptor_count += 1u;
 	}
 	SparkRingServiceBackendAppendOutputTransportPollDescriptors(

@@ -69,8 +69,8 @@ int main(void)
 	// the sigmoid rides inside the selection now; scores is unused
 	(void)scores;
 	LM_HOST_LAUNCH(dim3(ROWS),
-		(LmTopkSmallKernel<THREADS, TOP_K, true>(
-			0, EXPERTS, chosen, weights, bias, logits)));
+		(LmTopkSmallKernel<THREADS, TOP_K, true, 1u, 1u, LM_TOPK_SCORE_SIGMOID>(
+			0, EXPERTS, chosen, weights, bias, logits, 1.0f)));
 
 	for (row = 0u; row < ROWS; ++row)
 		for (expert = 0u; expert < TOP_K; ++expert)

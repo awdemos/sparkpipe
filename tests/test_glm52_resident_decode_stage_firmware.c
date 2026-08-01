@@ -3907,7 +3907,7 @@ int main(void)
     assert(SparkOrchestratorResolveRoute(
                orchestrator,
                "zai.glm-5.2.resident-decode-stage-firmware",
-               "bf16-h6144-h64-d512-r64-k2048-b1024-rv256-mtp6-v1",
+               "fp8-experts-bf16-rest-sm121a-v1",
                "resident_decode",
                "decode",
                &route_handle) == SPARK_STATUS_OK);

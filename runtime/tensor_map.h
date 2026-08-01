@@ -21,6 +21,7 @@
 #define LM_TM_ENCODE_ERR_NULL (-22)
 #define LM_TM_ENCODE_ERR_DRIVER (-23)
 #define LM_TM_ENCODE_ERR_SWIZZLE (-24)
+#define LM_TM_ENCODE_ERR_ALIGNMENT (-25)
 
 // The descriptor swizzle must be the one the kernel's chunk xor implements.
 // spark_lm_tensor_map.h fixes the span at 128 bytes and the kernel
@@ -51,7 +52,7 @@ static int32_t LmTensorMapSwizzleEnum(uint32_t swizzle_bytes, CUtensorMapSwizzle
 
 // Encode one descriptor from a built plan.
 //
-// Both FP8 and NVFP4 are described as CU_TENSOR_MAP_DATA_TYPE_UINT8. There is
+// BF16, FP8, and FP4 are described as raw CU_TENSOR_MAP_DATA_TYPE_UINT8 bytes. There is
 // no 4-bit data type, so an NVFP4 tensor is a byte tensor of half the K extent
 // and the plan has already halved every K-axis figure. Passing element counts
 // here instead of the plan's byte counts is the mistake this signature is
@@ -67,6 +68,8 @@ static int32_t LmTensorMapEncode(CUtensorMap *tensor_map, const LmTensorMapPlan 
 	int32_t status;
 	if ( tensor_map == 0 || plan == 0 || global_address == 0 )
 		return(LM_TM_ENCODE_ERR_NULL);
+	if ( ((uintptr_t)tensor_map % 64u) != 0u )
+		return(LM_TM_ENCODE_ERR_ALIGNMENT);
 	if ( plan->rank < 2u || plan->rank > LM_TM_MAX_RANK )
 		return(LM_TM_ENCODE_ERR_PLAN);
 	status = LmTensorMapSwizzleEnum(plan->swizzle_bytes,&swizzle);

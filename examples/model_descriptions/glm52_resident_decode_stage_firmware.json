@@ -2,11 +2,28 @@
   "schema_version": 1,
   "model": {
     "id": "zai.glm-5.2.resident-decode-stage-firmware",
-    "revision": "bf16-h6144-h64-d512-r64-k2048-b1024-rv256-mtp6-v1"
+    "revision": "fp8-experts-bf16-rest-sm121a-v1"
   },
   "metadata": {
     "architecture": "glm52_resident_decode_stage",
-    "purpose": "exact resident decode-stage firmware with raw q/kv projections, native DSA selection, fused RoPE/KV write, sparse MLA, local MoE layer progression, restricted logits, and MXFP4 MTP verify",
+    "purpose": "exact resident GLM 5.2 firmware with BF16 attention, dense/shared paths, router, residuals and activations; FP8 E4M3 weights only for routed experts; FP32 accumulation",
+    "cuda_target": "sm_121a",
+    "qualification": {
+      "host_contracts_required": true,
+      "cuda13_compile_required": true,
+      "blackwell_execution_required": true,
+      "production_ready": false,
+      "status": "NOT_MEASURED"
+    },
+    "precision_contract": {
+      "routed_expert_weight_format": "fp8_e4m3",
+      "routed_expert_activation_format": "bf16",
+      "non_expert_weight_format": "bf16",
+      "non_expert_activation_format": "bf16",
+      "accumulator_format": "fp32",
+      "runtime_precision_selection": "forbidden",
+      "fallback_allowed": false
+    },
     "module_geometry": {
       "hidden_dimension": 6144,
       "heads": 64,
@@ -37,357 +54,32 @@
       "rope_theta": 8000000.0,
       "rope_interleave": true,
       "indexer_rope_interleave": true,
-      "rms_norm_eps": 0.00001,
+      "rms_norm_eps": 1e-05,
       "routed_scaling_factor": 2.5
     },
-    "hf_tensor_contract": [
-      {
-        "name": "model.embed_tokens.weight",
-        "dtype": "BF16",
-        "shape": [
-          154880,
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.input_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.q_a_proj.weight",
-        "dtype": "BF16",
-        "shape": [
-          2048,
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.q_a_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          2048
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.q_b_proj.weight",
-        "dtype": "BF16",
-        "shape": [
-          16384,
-          2048
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
-        "dtype": "BF16",
-        "shape": [
-          576,
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.kv_a_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          512
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.kv_b_proj.weight",
-        "dtype": "BF16",
-        "shape": [
-          28672,
-          512
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.o_proj.weight",
-        "dtype": "BF16",
-        "shape": [
-          6144,
-          16384
-        ]
-      },
-      {
-        "name": "model.layers.0.post_attention_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.mlp.gate_proj.weight",
-        "dtype": "BF16",
-        "shape": [
-          12288,
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.mlp.up_proj.weight",
-        "dtype": "BF16",
-        "shape": [
-          12288,
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.mlp.down_proj.weight",
-        "dtype": "BF16",
-        "shape": [
-          6144,
-          12288
-        ]
-      },
-      {
-        "name": "lm_head.weight",
-        "dtype": "BF16",
-        "shape": [
-          154880,
-          6144
-        ]
-      }
-    ],
-    "hf_tensor_contract_fp8_e4m3": [
-      {
-        "name": "model.embed_tokens.weight",
-        "dtype": "BF16",
-        "shape": [
-          154880,
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.input_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.q_a_proj.weight",
-        "dtype": "F8_E4M3",
-        "shape": [
-          2048,
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.q_a_proj.weight_scale_inv",
-        "dtype": "F32",
-        "shape": [
-          16,
-          48
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.q_a_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          2048
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.q_b_proj.weight",
-        "dtype": "F8_E4M3",
-        "shape": [
-          16384,
-          2048
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.q_b_proj.weight_scale_inv",
-        "dtype": "F32",
-        "shape": [
-          128,
-          16
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.kv_a_proj_with_mqa.weight",
-        "dtype": "F8_E4M3",
-        "shape": [
-          576,
-          6144
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.kv_a_proj_with_mqa.weight_scale_inv",
-        "dtype": "F32",
-        "shape": [
-          5,
-          48
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.kv_a_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          512
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.kv_b_proj.weight",
-        "dtype": "F8_E4M3",
-        "shape": [
-          28672,
-          512
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.kv_b_proj.weight_scale_inv",
-        "dtype": "F32",
-        "shape": [
-          224,
-          4
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.o_proj.weight",
-        "dtype": "F8_E4M3",
-        "shape": [
-          6144,
-          16384
-        ]
-      },
-      {
-        "name": "model.layers.0.self_attn.o_proj.weight_scale_inv",
-        "dtype": "F32",
-        "shape": [
-          48,
-          128
-        ]
-      },
-      {
-        "name": "lm_head.weight",
-        "dtype": "BF16",
-        "shape": [
-          154880,
-          6144
-        ]
-      }
+    "required_execution_surfaces": [
+      "Glm52GemmBf16",
+      "Glm52GemmFp8ExpertWeightBf16Activation",
+      "Glm52LayerAttentionBf16",
+      "Glm52LayerDenseMlpBf16",
+      "Glm52LayerMoeFp8ExpertWeightBf16Activation",
+      "Glm52HeadFullVocab",
+      "Glm52HeadRestricted"
     ],
     "supported_quantization_variants": [
       {
-        "name": "glm52_nvfp4_4bit",
-        "stage_plan_quantization_constant": "SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT",
-        "resident_layer_progression": "SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_NVFP4_TOPK",
-        "moe_execution": "FlashInfer B12x fused NVFP4 MoE",
-        "projection_contract": "RAW_GLM_BF16 attention, DSA, dense, shared-expert, embedding, normalization, vocabulary-head, and MLA KV tensors; only routed experts use NVFP4",
-        "hf_tensor_contract_member": "hf_tensor_contract",
-        "stagepack_contract": {
-          "format": "sparkpipe.glm52.ring.stagepack.v1",
-          "model_quantization": "nvfp4",
-          "non_expert_weight_dtype": "BF16",
-          "index_file": "stagepack_index.json"
-        },
-        "resident_moe_pack_contract": {
-          "record_schema": "sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1",
-          "manifest_file": "resident_moe_pack_manifest.json",
-          "file_pattern": "glm52_layer_%04u_b12x_moe.spb12x",
-          "pack_magic": "SPARKGLM52B12X",
-          "pack_abi_version": 3,
-          "quant_mode": 1,
-          "output_dtype": "BF16",
-          "weight_layout": "flashinfer_static_view",
-          "scale_layout": "flashinfer_static_storage",
-          "scale2_baked_into_block_scales": true,
-          "alpha_contract": "w1_alpha, w2_alpha, and fc2_input_scale are FP32 ones by expert",
-          "contains_all_experts": true,
-          "expert_count": 256,
-          "gate_up_order": "up_gate"
-        },
-        "aot_contract": {
-          "record_schema": "sparkpipe.glm52.sm121.b12x.aot_manifest.v1",
-          "required_module": "spark.glm52.sm121.flashinfer_b12x_fused_moe.nvfp4.bf16.v2",
-          "required_arch": "sm_121a",
-          "generated_files": [
-            "aot_manifest.json",
-            "spark_glm52_sm121_b12x_generated_kernel_table.cu",
-            "runtime_link_args.txt",
-            "tvm_ffi_flags.mk",
-            "objects/*.o"
-          ],
-          "kernel_identity": "resident pack kernel_manifest_hash_low64 must equal the linked generated manifest hash",
-          "production_backend_policy": "exact_static_buckets_only",
-          "runtime_bucket_decomposition": "forbidden",
-          "runtime_diagnostic_routing_mutation": "forbidden",
-          "deterministic_fc2_finalize": true,
-          "runtime_python": false,
-          "runtime_torch": false
-        },
-        "capacity_contract": {
-          "maximum_token_count_units": "execution_rows",
-          "plain_decode_rows_per_lane": 1,
-          "mtp_rows_per_lane": 6,
-          "dspark_rows_per_lane": 8,
-          "required_rule": "maximum_token_count >= logical_lane_capacity * rows_per_lane",
-          "plain_b1024_minimum_token_count": 1024,
-          "mtp_b1024_minimum_token_count": 6144,
-          "dspark_b1024_minimum_token_count": 8192,
-          "default_dspark_logical_lane_buckets": [
-            1,
-            2,
-            4,
-            8,
-            16,
-            32,
-            64,
-            96,
-            128
-          ],
-          "default_dspark_execution_row_buckets": [
-            8,
-            16,
-            32,
-            64,
-            128,
-            256,
-            512,
-            768,
-            1024
-          ]
-        },
-        "runtime_state_contract": "one compiled B12x backend state and AOT workspace is shared across ordered local routed layers; each layer retains its own resident expert weights and small deterministic workspace",
-        "execution_contract": "every execution-row count requires an exact static AOT bucket; micro, dynamic, chunk-decomposed, diagnostic-routing, and synchronized fallback execution are forbidden",
-        "source_identity_contract": "StagePack and B12x manifests must contain the same 64-hex source_model_index_sha256",
-        "fallback_allowed": false
-      },
-      {
-        "name": "glm52_fp8_e4m3_8bit",
+        "name": "glm52_fp8_experts_bf16_rest",
         "stage_plan_quantization_constant": "SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT",
-        "resident_layer_progression": "SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_FP8_TOPK",
-        "moe_execution": "FP8 E4M3 tensor-core MoE plan through SparkGlm52ResidentDecodeStageFp8MoePlan",
-        "projection_contract": "RAW_GLM_FP8_E4M3 Q/KV/O projections with FP32 inverse scales"
-      },
-      {
-        "name": "glm52_w8lut_8bit_experts_bf16_trunk",
-        "stage_plan_quantization_constant": "SPARK_STAGE_PLAN_QUANTIZATION_W8LUT_8BIT",
-        "resident_layer_progression": "SPARK_GLM52_RESIDENT_DECODE_STAGE_LAYER_ROUTED_W8LUT_TOPK",
-        "moe_execution": "W8LUT routed experts decoded tile-locally into BF16 WMMA operands through SparkGlm52ResidentDecodeStageW8lutMoePlan",
-        "projection_contract": "RAW_GLM_BF16 attention, DSA, dense, shared-expert, embedding, normalization, and vocabulary-head tensors",
-        "hf_tensor_contract_member": "hf_tensor_contract",
-        "stagepack_contract": {
-          "format": "sparkpipe.glm52.ring.stagepack.v1",
-          "model_quantization": "w8lut",
-          "non_expert_weight_dtype": "BF16",
-          "index_file": "stagepack_index.json"
-        },
-        "resident_moe_pack_contract": {
-          "format": "sparkpipe.glm52.w8lut.resident_moe_pack.v1",
-          "manifest_file": "w8lut_moe_pack_manifest.json",
-          "file_pattern": "glm52_layer_%04u_w8lut_moe.spw8lut",
-          "pack_magic": "SPARKGLM52W8LUT",
-          "quant_mode": 3,
-          "includes_mtp_layer": 78,
-          "contains_all_experts": true,
-          "expert_count": 256,
-          "gate_up_order": "up_gate"
-        },
-        "source_identity_contract": "stagepack and W8LUT manifests must contain the same 64-hex source_model_index_sha256",
-        "execution_contract": "expert tile descriptors are built in parallel on the request CUDA stream and routed expert matrices execute through the built-in BF16 WMMA kernel; no CPU, scalar CUDA, or reference fallback is permitted",
+        "stagepack_model_quantization": "fp8",
+        "non_expert_weight_dtype": "BF16",
+        "non_expert_activation_dtype": "BF16",
+        "routed_expert_weight_dtype": "F8_E4M3",
+        "routed_expert_activation_dtype": "BF16",
+        "expert_scale_dtype": "F32",
+        "expert_scale_block_size": 128,
+        "expert_count": 256,
+        "top_k": 8,
+        "gate_up_order": "up_gate",
         "fallback_allowed": false
       }
     ]
@@ -407,117 +99,27 @@
               "name": "resident_decode_stage",
               "module": "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b1024.rv256.mtp6.v1",
               "configuration": {
-                "required_cuda_module": "spark.glm52.sm121.required_decode_stage.b12x_fused.v1",
+                "required_cuda_module": "spark.glm52.sm121.required_decode_stage.fp8_experts_bf16_rest.v1",
                 "required_arch": "sm_121a",
+                "precision_contract": "glm52_fp8_experts_bf16_rest",
+                "required_symbols": [
+                  "Glm52GemmBf16",
+                  "Glm52GemmFp8ExpertWeightBf16Activation",
+                  "Glm52LayerAttentionBf16",
+                  "Glm52LayerDenseMlpBf16",
+                  "Glm52LayerMoeFp8ExpertWeightBf16Activation",
+                  "Glm52HeadFullVocab",
+                  "Glm52HeadRestricted"
+                ],
+                "stagepack_model_quantization": "fp8",
+                "non_expert_weight_dtype": "BF16",
+                "non_expert_activation_dtype": "BF16",
+                "routed_expert_weight_dtype": "F8_E4M3",
+                "routed_expert_activation_dtype": "BF16",
+                "runtime_backend_selection": "forbidden",
                 "fallback_allowed": false,
                 "restore_mode": "prequalified_once",
-                "runtime_backend_selection": "forbidden",
-                "required_symbols": [
-                  "SparkGlm52Sm121RequiredDecodeStageInitialize",
-                  "SparkGlm52Sm121RequiredDecodeStageLaunch",
-                  "SparkGlm52Sm121RequiredDecodeStageQuiesce",
-                  "SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice",
-                  "SparkGlm52Sm121RequiredDecodeStageLaunchBulkPrefill",
-                  "SparkGlm52Sm121RequiredDecodeStageLaunchStageSliceBulkPrefill"
-                ],
-                "quantization_driver_contracts": {
-                  "w8lut": {
-                    "stagepack_model_quantization": "w8lut",
-                    "non_expert_weight_dtype": "BF16",
-                    "mla_kv_dtype": "BF16",
-                    "resident_pack_manifest": "w8lut_moe_pack_manifest.json",
-                    "resident_pack_magic": "SPARKGLM52W8LUT",
-                    "resident_pack_abi_version": 1,
-                    "required_symbols": [
-                      "SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingCreateFromPackFile",
-                      "SparkGlm52ResidentDecodeStageW8lutMoeResidentBindingDestroy",
-                      "SparkGlm52Sm121RequiredDecodeStageCalculateW8lutMoeWorkspaceBytes",
-                      "SparkGlm52Sm121RequiredDecodeStageBindW8lutMoePlan"
-                    ],
-                    "backend_state_ownership": "one shared external W8LUT workspace per PP rank with layer-local resident codes and exponent bases",
-                    "execution_backend": "builtin_bf16_wmma",
-                    "parallel_tile_builder": true,
-                    "diagnostic_routing_mutation": false,
-                    "fallback_allowed": false
-                  },
-                  "nvfp4": {
-                    "stagepack_model_quantization": "nvfp4",
-                    "non_expert_weight_dtype": "BF16",
-                    "mla_kv_dtype": "BF16",
-                    "resident_pack_manifest": "resident_moe_pack_manifest.json",
-                    "resident_pack_magic": "SPARKGLM52B12X",
-                    "resident_pack_abi_version": 3,
-                    "resident_binding_abi_version": 2,
-                    "resident_binding_create_abi_version": 2,
-                    "aot_manifest_schema": "sparkpipe.glm52.sm121.b12x.aot_manifest.v1",
-                    "required_symbols": [
-                      "SparkGlm52ResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile",
-                      "SparkGlm52ResidentDecodeStageB12xMoeResidentBindingDestroy",
-                      "SparkGlm52Sm121FlashInferB12xMoeActiveKernelManifestHashLow64",
-                      "SparkGlm52Sm121B12xGeneratedManifestInstance",
-                      "SparkGlm52Sm121B12xGeneratedLaunch"
-                    ],
-                    "backend_state_ownership": "one shared compiled B12x state and generated AOT workspace per PP rank with layer-local resident NVFP4 weights",
-                    "capacity_units": "execution_rows",
-                    "production_backend_policy": "exact_static_buckets_only",
-                    "runtime_bucket_decomposition": "forbidden",
-                    "diagnostic_routing_mutation": false,
-                    "stream_synchronization": false,
-                    "fallback_allowed": false
-                  }
-                },
-                "required_primitive_modules": [
-                  {
-                    "module": "spark.glm52.sm121.flashinfer_b12x_fused_moe.nvfp4.bf16.v2",
-                    "source": "third_party/flashinfer",
-                    "abi": "include/sparkpipe/spark_glm52_sm121_flashinfer_b12x_moe.h",
-                    "fallback_allowed": false,
-                    "required_symbols": [
-                      "SparkFlashInferB12xCompiledMoeCreate",
-                      "SparkFlashInferB12xCompiledMoeLaunch",
-                      "SparkFlashInferB12xCompiledMoeDestroy"
-                    ],
-                    "shape": {
-                      "hidden_dimension": 6144,
-                      "intermediate_dimension": 2048,
-                      "experts": 256,
-                      "top_k": 8,
-                      "quant_mode": "nvfp4",
-                      "output_dtype": "bf16",
-                      "weight_layout": "flashinfer_static_view",
-                      "scale_layout": "flashinfer_static_storage",
-                      "gate_up_order": "up_gate"
-                    }
-                  }
-                ],
-                "vendored_source_manifests": [
-                  "third_party/flashinfer/SPARKPIPE_UPSTREAM_MANIFEST.sha256"
-                ],
-                "aot_generation_tool": "tools/glm52_b12x_aot_compile.py",
-                "resident_moe_pack_tool": "tools/glm52_b12x_resident_pack.py",
-                "resident_moe_artifact_preflight": "tools/glm52_nvfp4_artifact_preflight.py",
-                "required_resident_moe_packs": {
-                  "schema": "sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1",
-                  "directory": "build/glm52_b12x_resident_moe",
-                  "layers": [
-                    3,
-                    4,
-                    5,
-                    6,
-                    7,
-                    8,
-                    9,
-                    10
-                  ],
-                  "file_pattern": "glm52_layer_%04u_b12x_moe.spb12x",
-                  "contains_all_experts": true,
-                  "expert_count": 256,
-                  "gate_up_order": "up_gate",
-                  "scale2_baked_into_block_scales": true,
-                  "fallback_allowed": false
-                },
                 "required_hidden_transport": {
-                  "module": "spark.glm52.hidden_stage_transport.100g.persistent.v1",
                   "abi": "include/sparkpipe/spark_hidden_transport.h",
                   "payload": "bf16_device_pointer",
                   "hidden_dimension": 6144,

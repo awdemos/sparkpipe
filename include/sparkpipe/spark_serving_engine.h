@@ -264,6 +264,7 @@ typedef SparkStatus (*SparkServingDecodeFunction)(
 typedef SparkStatus (*SparkServingReleaseSequenceFunction)(
     void *context,
     uint64_t request_id,
+    uint64_t request_generation,
     uint64_t sequence_id,
     uint32_t token_count);
 

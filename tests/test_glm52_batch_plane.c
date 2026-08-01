@@ -19,6 +19,7 @@ static void SparkTestExpertQueueThresholdDeadlineAndOrder(void)
 	configuration.expert_count = 256u;
 	configuration.firing_threshold_rows = 4u;
 	configuration.firing_deadline_ns = 1000000u;
+	configuration.mode = SPARK_GLM52_EXPERT_QUEUE_MODE_LOW_LATENCY;
 	assert(SparkGlm52ExpertQueueInitialize(&test_queue,&configuration) == SPARK_STATUS_OK);
 	assert(SparkGlm52ExpertQueueNextFiring(&test_queue,0u,&firing) == SPARK_STATUS_NOT_FOUND);
 	for (row_index=0u; row_index<4u; row_index++)
@@ -51,6 +52,57 @@ static void SparkTestExpertQueueThresholdDeadlineAndOrder(void)
 		assert(test_queue.slots[0u][0u].count == 200u);
 		assert(test_queue.slots[0u][0u].oldest_arrival_ns == 10u + SPARK_GLM52_EXPERT_QUEUE_MAX_FIRING_ROWS);
 	}
+}
+
+
+static void SparkTestExpertQueueSealedBatchFiresEachExpertOnce(void)
+{
+	SparkGlm52ExpertQueueConfiguration configuration;
+	SparkGlm52ExpertQueueFiring firing;
+	uint32_t row_index;
+	uint32_t firing_count;
+
+	memset(&configuration,0,sizeof(configuration));
+	configuration.abi_version = SPARK_GLM52_EXPERT_QUEUE_ABI_VERSION;
+	configuration.layer_count = 2u;
+	configuration.expert_count = 256u;
+	configuration.firing_threshold_rows = 1u;
+	configuration.firing_deadline_ns = 1u;
+	configuration.mode = SPARK_GLM52_EXPERT_QUEUE_MODE_SEALED_BATCH;
+	assert(SparkGlm52ExpertQueueInitialize(&test_queue,&configuration) == SPARK_STATUS_OK);
+	for ( row_index = 0u; row_index < 9u; ++row_index )
+		assert(SparkGlm52ExpertQueueEnqueueRow(
+			&test_queue,0u,17u,10000u + row_index,row_index) == SPARK_STATUS_OK);
+	for ( row_index = 0u; row_index < 5u; ++row_index )
+		assert(SparkGlm52ExpertQueueEnqueueRow(
+			&test_queue,0u,3u,20000u + row_index,row_index) == SPARK_STATUS_OK);
+	assert(SparkGlm52ExpertQueueNextFiring(&test_queue,UINT64_MAX,&firing) ==
+		SPARK_STATUS_NOT_FOUND);
+	assert(SparkGlm52ExpertQueueSealLayer(&test_queue,0u) == SPARK_STATUS_OK);
+	assert(SparkGlm52ExpertQueueEnqueueRow(&test_queue,0u,3u,30000u,0u) ==
+		SPARK_STATUS_BUSY);
+	firing_count = 0u;
+	while ( SparkGlm52ExpertQueueNextFiring(&test_queue,0u,&firing) ==
+		SPARK_STATUS_OK )
+	{
+		++firing_count;
+		if ( firing.expert_index == 3u )
+		{
+			assert(firing.row_count == 5u);
+			assert(firing.row_ids[0u] == 20000u);
+		}
+		else
+		{
+			assert(firing.expert_index == 17u);
+			assert(firing.row_count == 9u);
+			assert(firing.row_ids[0u] == 10000u);
+		}
+	}
+	assert(firing_count == 2u);
+	assert(test_queue.layer_sealed[0u] == 0u);
+	assert(test_queue.layer_enqueued_row_count[0u] == 0u);
+	assert(SparkGlm52ExpertQueueEnqueueRow(&test_queue,0u,3u,40000u,0u) ==
+		SPARK_STATUS_OK);
 }
 
 static void SparkTestBatchSequenceTableLifecycleAndThreshold(void)
@@ -107,6 +159,7 @@ static void SparkTestBatchSequenceTableLifecycleAndThreshold(void)
 int main(void)
 {
 	SparkTestExpertQueueThresholdDeadlineAndOrder();
+	SparkTestExpertQueueSealedBatchFiresEachExpertOnce();
 	SparkTestBatchSequenceTableLifecycleAndThreshold();
 	printf("test_glm52_batch_plane PASS\n");
 	return(0);

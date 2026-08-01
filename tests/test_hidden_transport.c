@@ -598,7 +598,7 @@ static void SparkTestHiddenTransportValidatesSparkHostRdmaEndpoint(void)
     assert(SparkHiddenTransportValidateSparkHostRdmaEndpoint(&endpoint) ==
         SPARK_STATUS_INVALID_ARGUMENT);
     SparkTestInitializeSparkHostRdmaEndpoint(&endpoint);
-    endpoint.transport_module_id = SPARK_HIDDEN_TRANSPORT_TCP_CUDA_HOST_MODULE_ID;
+    endpoint.transport_module_id = SPARK_HIDDEN_TRANSPORT_PERSISTENT_RING_MODULE_ID;
     assert(SparkHiddenTransportValidateSparkHostRdmaEndpoint(&endpoint) ==
         SPARK_STATUS_INVALID_ARGUMENT);
 }

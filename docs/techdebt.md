@@ -1,5 +1,8 @@
 # techdebt
 
+> Current phase ledger: [`PHASE4_REMAINING_WORK.md`](PHASE4_REMAINING_WORK.md). Historical items below are retained for provenance and may describe superseded names or assumptions.
+
+
 The diff between README.md and `git HEAD`. Ledger order: an item leaves this
 file by landing with a gate, or by being struck from the README. Nothing
 leaves silently.

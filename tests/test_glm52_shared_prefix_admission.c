@@ -84,11 +84,22 @@ static void SparkTestSharedInitializePacket(SparkRingWorkControlPacket *packet,u
 	for (lane_index = 0u; lane_index < lane_count; ++lane_index)
 	{
 		packet->lanes[lane_index].request_id = 1u + lane_index;
+		packet->lanes[lane_index].request_generation = 101u + lane_index;
 		packet->lanes[lane_index].sequence_id = 1000u + lane_index;
 		packet->lanes[lane_index].sequence_position = context_token_count - 1u;
 		packet->lanes[lane_index].request_slot_index = lane_index;
 		packet->lanes[lane_index].context_token_count = context_token_count;
 	}
+}
+
+static void SparkTestSharedFinalizePacket(
+	SparkRingWorkControlPacket *packet)
+{
+	assert(SparkRingWorkControlFinalizeTransaction(
+		packet,
+		SPARK_RING_WORK_CONTROL_STANDALONE_GENERATION,
+		0u,
+		1u) == SPARK_STATUS_OK);
 }
 
 static uint32_t SparkTestSharedDistinctPhysicalBlocks(const SparkRingWorkControlKvState *state,uint32_t lane_count,uint32_t block_index)
@@ -123,6 +134,7 @@ static void SparkTestSharedPrefixCollapses(void)
 	assert(SparkRingWorkControlConfigureKvSharing(&state,storage.lane_block_keys,SPARK_TEST_LANE_STRIDE) == SPARK_STATUS_OK);
 	SparkTestSharedInitializePacket(&packet,SPARK_TEST_SHARED_ROWS,context_token_count);
 	packet.flags = SPARK_RING_WORK_CONTROL_FLAG_PREFILL;
+	SparkTestSharedFinalizePacket(&packet);
 	assert(SparkRingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
 	for (block_index = 0u; block_index < SPARK_TEST_SHARED_BLOCKS; ++block_index)
 		assert(SparkTestSharedDistinctPhysicalBlocks(&state,SPARK_TEST_SHARED_ROWS,block_index) == 1u);
@@ -149,6 +161,7 @@ static void SparkTestSharedReleaseIsRefcounted(void)
 	assert(SparkRingWorkControlConfigureKvSharing(&state,storage.lane_block_keys,SPARK_TEST_LANE_STRIDE) == SPARK_STATUS_OK);
 	SparkTestSharedInitializePacket(&packet,SPARK_TEST_SHARED_ROWS,context_token_count);
 	packet.flags = SPARK_RING_WORK_CONTROL_FLAG_PREFILL;
+	SparkTestSharedFinalizePacket(&packet);
 	assert(SparkRingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
 	shared_physical_block = state.physical_block_indices[0u];
 	for (lane_index = 0u; lane_index + 1u < SPARK_TEST_SHARED_ROWS; ++lane_index)
@@ -208,6 +221,7 @@ static void SparkTestSharedPromotionKeepsBytes(void)
 	SparkTestSharedInitializeState(&state,SPARK_TEST_SHARED_ROWS);
 	SparkTestSharedInitializePacket(&packet,1u,context_token_count);
 	packet.flags = SPARK_RING_WORK_CONTROL_FLAG_PREFILL;
+	SparkTestSharedFinalizePacket(&packet);
 	assert(SparkRingWorkControlBuildHostKvBlockTable(&packet,&state,&view) == SPARK_STATUS_OK);
 	private_physical_block = state.physical_block_indices[0u];
 	assert(state.block_entry_count == SPARK_TEST_SHARED_BLOCKS + 1u);

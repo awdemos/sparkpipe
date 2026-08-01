@@ -31,12 +31,16 @@ static_assert(K3GlobalKv::kGrows == true, "the global layers still page");
 #define K3_WARPS 8u
 #define K3_THREADS 256u
 
-// 896 experts at top-16 gives 16 rows per expert at B1024, half GLM 5.2's, so
-// the tile selector lands lower and the 64-row instantiation is never chosen.
-template __global__ void LmGemmKernel<LmFp8, 16u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8, 32u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmMxfp4, 16u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmMxfp4, 32u, K3_TILE_N, 128u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+// K3 non-expert projections are BF16. Routed expert weights are MXFP4 while
+// their activations remain BF16, so those kernels are asymmetric. A 64-element
+// K tile is 128 bytes for BF16 and 32 bytes for MXFP4; both are valid TMA
+// swizzle spans and share the same decoded BF16 MMA geometry.
+template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 16u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 32u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 64u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 16u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 32u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmBf16Format, LmMxfp4, 64u, K3_TILE_N, 64u, K3_STAGES, K3_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmFusedResidualRmsNormKernel<K3_THREADS,float>(const uint16_t *, const uint16_t *, const float *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<K3_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
@@ -72,7 +76,7 @@ template __global__ void LmHeadCommitKernel<K3_THREADS>(const float *, const uin
 template __global__ void LmMoeFinalizeKernel<K3_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
 
 template __global__ void LmAttentionDecodeKernel<K3GlobalKv, K3_THREADS, K3_KV_LORA_RANK, K3_QK_UNROTATED_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
-template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true, 1u, 1u, true>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
+template __global__ void LmTopkSmallKernel<K3_THREADS, K3_TOP_K, true, 1u, 1u, LM_TOPK_SCORE_SIGMOID>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *, float);
 template __global__ void LmSigmoidRowsKernel<K3_THREADS>(const uint16_t *, float *, uint32_t);
 
 // -- entry points ---------------------------------------------------------------
@@ -100,9 +104,3 @@ template __global__ void LmCopyRowsKernel<K3_THREADS>(const uint16_t *, uint16_t
 template __global__ void LmGatherRowsKernel<K3_THREADS>(const uint16_t *, const uint32_t *, uint16_t *, uint32_t, uint32_t);
 template __global__ void LmRouteBuildKernel<K3_THREADS, K3_EXPERTS>(const uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t, uint32_t *);
 template __global__ void LmGemmTilePrefixKernel<32u>(const uint32_t *, uint32_t, uint32_t, uint32_t, uint32_t *);
-// The weight-only GEMM at every tile height the launcher can select. BF16
-// activations, MXFP4 weights, the E8M0 plane decoded in the load - the recipe
-// the checkpoint ships and the only path the routed experts take.
-template __global__ void LmGemmWeightOnlyKernel<LmMxfp4, 16u, K3_LAYER_TILE_N, LmMxfp4::kTileK, K3_LAYER_STAGES, K3_LAYER_WARPS>(const __grid_constant__ LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmWeightOnlyKernel<LmMxfp4, 32u, K3_LAYER_TILE_N, LmMxfp4::kTileK, K3_LAYER_STAGES, K3_LAYER_WARPS>(const __grid_constant__ LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmWeightOnlyKernel<LmMxfp4, 64u, K3_LAYER_TILE_N, LmMxfp4::kTileK, K3_LAYER_STAGES, K3_LAYER_WARPS>(const __grid_constant__ LmGemmArguments, LmTileSource, LmTileSource, bool);

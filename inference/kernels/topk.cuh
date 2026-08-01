@@ -34,16 +34,24 @@
 // One score, from whichever source the caller supplied. Sigmoid applied here
 // when the caller passes raw logits, so the selection and the weight read the
 // same number by construction rather than by two call sites agreeing.
-template<bool SIGMOID_FLOAT>
+#define LM_TOPK_SCORE_IDENTITY 0u
+#define LM_TOPK_SCORE_SIGMOID 1u
+#define LM_TOPK_SCORE_SQRT_SOFTPLUS 2u
+
+template<uint32_t SCORE_TRANSFORM>
 static __device__ __forceinline__ float LmTopkScore(const float *scores, const uint16_t *logits_bf16, uint64_t index)
 {
-	if ( logits_bf16 != 0 )
-	{
-		float value = LmBf16ToFloat(logits_bf16[index]);
+	float value = logits_bf16 != 0
+		? LmBf16ToFloat(logits_bf16[index])
+		: scores[index];
+	if ( SCORE_TRANSFORM == LM_TOPK_SCORE_SIGMOID )
 		return(1.0f / (1.0f + __expf(-value)));
+	if ( SCORE_TRANSFORM == LM_TOPK_SCORE_SQRT_SOFTPLUS )
+	{
+		float softplus = value > 20.0f ? value : __logf(1.0f + __expf(value));
+		return(sqrtf(softplus > 0.0f ? softplus : 0.0f));
 	}
-	float value = scores[index];
-	return(SIGMOID_FLOAT ? 1.0f / (1.0f + __expf(-value)) : value);
+	return(value);
 }
 
 static __device__ __forceinline__ uint32_t LmTopkKey(float value)
@@ -69,9 +77,9 @@ static __device__ __forceinline__ float LmTopkValue(uint32_t key)
 // a shared-memory array, not a limit of the algorithm.
 #define LM_TOPK_MAX_GROUPS 16u
 
-template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u, bool SIGMOID_FLOAT = false>
+template<uint32_t THREADS, uint32_t K, bool RENORMALISE = false, uint32_t GROUPS = 1u, uint32_t TOP_GROUPS = 1u, uint32_t SCORE_TRANSFORM = LM_TOPK_SCORE_IDENTITY>
 __global__ __launch_bounds__(THREADS, 1)
-void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ sigmoid_logits_bf16)
+void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *__restrict__ out_indices, float *__restrict__ out_values, const float *__restrict__ selection_bias, const uint16_t *__restrict__ logits_bf16, float mixture_scale)
 {
 	extern __shared__ uint32_t lm_topk_shared[];
 	uint32_t *keys = lm_topk_shared;
@@ -94,7 +102,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		// MoE layers that is tens of megabytes a token for a value used once.
 		// Pass sigmoid_logits_bf16 and scores is ignored; pass scores and the
 		// activation already happened.
-		keys[index] = index < n ? LmTopkKey(LmTopkScore<SIGMOID_FLOAT>(scores, sigmoid_logits_bf16,
+		keys[index] = index < n ? LmTopkKey(LmTopkScore<SCORE_TRANSFORM>(scores, logits_bf16,
 			base + index) + (selection_bias != 0 ? selection_bias[index] : 0.0f)) : 0u;
 		slots[index] = index;
 	}
@@ -185,7 +193,7 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		out_indices[((uint64_t)blockIdx.x * K) + index] = slots[index];
 		if ( out_values != 0 )
 			out_values[((uint64_t)blockIdx.x * K) + index] =
-				LmTopkScore<SIGMOID_FLOAT>(scores, sigmoid_logits_bf16, base + slots[index]);
+				LmTopkScore<SCORE_TRANSFORM>(scores, logits_bf16, base + slots[index]);
 	}
 	if ( RENORMALISE && out_values != 0 )
 	{
@@ -213,7 +221,13 @@ void LmTopkSmallKernel(const float *__restrict__ scores, uint32_t n, uint32_t *_
 		}
 		total = reduction[0] + 1e-20f;
 		for (index = threadIdx.x; index < K; index += THREADS)
-			out_values[((uint64_t)blockIdx.x * K) + index] /= total;
+			out_values[((uint64_t)blockIdx.x * K) + index] =
+				(out_values[((uint64_t)blockIdx.x * K) + index] / total) * mixture_scale;
+	}
+	else if ( out_values != 0 && mixture_scale != 1.0f )
+	{
+		for (index = threadIdx.x; index < K; index += THREADS)
+			out_values[((uint64_t)blockIdx.x * K) + index] *= mixture_scale;
 	}
 }
 

@@ -23,6 +23,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -58,6 +59,21 @@ static inline int32_t SparkNetSetNonblocking(int32_t fd)
 		return -211;
 	if (fcntl(fd,F_SETFL,(flags | O_NONBLOCK)) < 0)
 		return -212;
+	return 0;
+}
+
+
+static inline int32_t SparkNetConfigureLowLatencyTcp(int32_t fd)
+{
+	int32_t enabled;
+
+	if (fd < 0)
+		return -231;
+	enabled = 1;
+	if (setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&enabled,sizeof(enabled)) < 0)
+		return -232;
+	if (setsockopt(fd,SOL_SOCKET,SO_KEEPALIVE,&enabled,sizeof(enabled)) < 0)
+		return -233;
 	return 0;
 }
 

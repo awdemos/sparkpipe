@@ -13,10 +13,10 @@ struct LmBf16Format
 {
 	static constexpr uint32_t kStoredBits = 16u;
 	// The K tile this format needs, in ELEMENTS. It is a property of the
-	// stored width, not a free choice: the row pitch must be a whole swizzle
-	// span in BYTES, so 8 bits needs 128 elements and 7 needs 256. Hardcoding
+	// stored width, not a free choice: a BF16 K tile of 64 elements is exactly
+	// one 128-byte TMA swizzle span. Hardcoding
 	// it at a call site is a static_assert away from being caught, and was.
-	static constexpr uint32_t kTileK = 128u;
+	static constexpr uint32_t kTileK = 64u;
 	static constexpr uint32_t kBits = 16u;
 	static constexpr uint32_t kMmaM = LM_MMA16_M;
 	static constexpr uint32_t kMmaN = LM_MMA16_N;

@@ -79,7 +79,7 @@ static inline uint64_t SparkHashBytes(uint64_t hash,const void *data,uint32_t da
 
 static inline uint64_t SparkNormalizeRequestIdBase(
     uint64_t default_base,
-    
+
     uint64_t request_id_base)
 {
     if (request_id_base == 0u)

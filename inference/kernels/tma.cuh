@@ -47,16 +47,9 @@ static __device__ __forceinline__ uint32_t LmTmaBoxBytes(uint32_t rows, uint32_t
 	return(rows * columns * element_bytes);
 }
 
-// One thread per CTA issues the TMA. elect.sync picks it from the leader warp
-// without a ballot or a shared counter, and returns a predicate the caller
-// branches on. Any thread of the warp may be elected; which one is irrelevant.
-static __device__ __forceinline__ bool LmTmaElectOne(void)
-{
-	uint32_t elected;
-	asm volatile("{\n\t.reg .pred P;\n\t.reg .b32 L;\n\telect.sync L|P, 0xffffffff;\n\tselp.b32 %0, 1, 0, P;\n\t}\n"
-		: "=r"(elected));
-	return(elected != 0u);
-}
+// The caller elects the single CTA producer with threadIdx.x == 0.
+// Warp-scoped elect.sync is intentionally not used: it elects once per warp,
+// which duplicates TMA transactions and barrier arrivals in a multi-warp CTA.
 
 static __device__ __forceinline__ void LmMbarrierInit(uint64_t *barrier, uint32_t arrive_count)
 {

@@ -320,27 +320,33 @@ static __device__ __forceinline__ uint32_t LmPackCodePairBf16(uint32_t low, uint
 	return(LmCodeToBf16Bits<BITS>(low) | (LmCodeToBf16Bits<BITS>(high) << 16u));
 }
 
-// Store a scaled pair into a format's packed layout at a bit offset. The
-// mirror of Fragment(): Fragment decodes storage into a register, this encodes a
-// value into storage, and a format that gets one right and the other wrong is
-// wrong in a way only a round trip catches.
+// Store eight scaled values into a byte-aligned, thread-exclusive block.
+//
+// Eight codes occupy exactly Format::kStoredBits bytes, so consecutive owners
+// never share a byte for 4-, 6-, 7-, or 8-bit formats. The old pair writer
+// updated an overlapping 32-bit word; adjacent CUDA threads could lose each
+// other's bits even though their logical codes were disjoint.
 template<class Format>
-static __device__ __forceinline__ void LmStoreCodePair(uint8_t *base, uint64_t bit, float low, float high)
+static __device__ __forceinline__ void LmStoreCodeOctet(
+    uint8_t *base,
+    uint64_t bit,
+    const float values[8])
 {
-	uint32_t width = Format::kStoredBits;
-	uint32_t mask = (1u << width) - 1u;
-	uint32_t packed = ((uint32_t)Format::Encode(low) & mask)
-		| (((uint32_t)Format::Encode(high) & mask) << width);
-	uint32_t shift = (uint32_t)(bit & 7u);
-	uint64_t byte = bit >> 3u;
-	uint32_t word;
-	// Two codes are at most 16 bits and the shift at most 7, so a 32-bit
-	// read-modify-write always covers them. Adjacent pairs never share a word
-	// because the loop steps two codes at a time.
-	memcpy(&word,base + byte,4);
-	word &= ~(((1u << (width * 2u)) - 1u) << shift);
-	word |= packed << shift;
-	memcpy(base + byte,&word,4);
+    static_assert(
+        Format::kStoredBits >= 1u && Format::kStoredBits <= 8u,
+        "packed code width must fit in one byte");
+    uint64_t packed = 0u;
+    uint32_t index;
+    const uint32_t mask = (1u << Format::kStoredBits) - 1u;
+    const uint64_t byte = bit >> 3u;
+
+    for (index = 0u; index < 8u; ++index)
+    {
+        packed |=
+            ((uint64_t)Format::Encode(values[index]) & mask) <<
+            (index * Format::kStoredBits);
+    }
+    memcpy(base + byte, &packed, Format::kStoredBits);
 }
 
 static __device__ __forceinline__ uint32_t LmPackBf16Pair(float low, float high)

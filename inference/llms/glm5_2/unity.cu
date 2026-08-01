@@ -1,276 +1,257 @@
-// GLM 5.2. The whole model, one translation unit.
+// GLM 5.2 CUDA unity surface.
 //
-// A unity build is not a compile-time trick here, it is the link surface. The
-// old tree reached its kernels through extern "C" seams, a dlopen plugin, a
-// generated kernel table and an AOT object pack; every one of those is a way for
-// a build to succeed and a link to fail, or to succeed and dispatch to the wrong
-// thing. One TU per model has none of them.
+// The shipping precision contract is deliberately narrow:
 //
-// This file does three things and should never do a fourth:
-//   1. name the geometries this model uses
-//   2. instantiate the kernels for the buckets it supports
-//   3. expose the entry points runtime/ calls
+//     attention, dense/shared paths, router, residuals and activations: BF16
+//     routed-expert weights:                                      FP8 E4M3
+//     routed-expert inputs and outputs:                            BF16
+//     accumulators:                                                FP32
 //
-// If something cannot be expressed as a parameter to kernels/, it goes in its
-// own file in this directory with a comment saying why. That should be rare.
+// Alternative weight formats belong in separate qualified packages. They are
+// not exposed from this model translation unit because a runtime-selectable
+// precision mode would make it possible to load a package whose metadata says
+// BF16-rest/FP8-experts and execute something else.
 
 #include "runtime/gemm.cuh"
-#include "inference/kernels/norm.cuh"
 #include "inference/kernels/attn.cuh"
-#include "inference/kernels/topk.cuh"
-#include "inference/kernels/speculate.cuh"
-#include "inference/kernels/formats/fp8.cuh"
-#include "inference/kernels/formats/int7.cuh"
-#include "inference/kernels/formats/int6.cuh"
-#include "inference/kernels/formats/int8.cuh"
-#include "inference/kernels/formats/nvfp4.cuh"
 #include "inference/kernels/formats/bf16.cuh"
+#include "inference/kernels/formats/fp8.cuh"
+#include "inference/kernels/graph.cuh"
+#include "inference/kernels/head.cuh"
 #include "inference/kernels/kv.cuh"
+#include "inference/kernels/norm.cuh"
+#include "inference/kernels/route.cuh"
+#include "inference/kernels/speculate.cuh"
+#include "inference/kernels/topk.cuh"
+#include "inference/llms/glm5_2/api.h"
 #include "inference/llms/glm5_2/config.h"
 #include "inference/llms/glm5_2/layer.cuh"
-#include "inference/kernels/graph.cuh"
 
-// -- geometries --------------------------------------------------------------
+#define GLM52_UNITY_TILE_N 128u
+#define GLM52_UNITY_TILE_K 64u
+#define GLM52_UNITY_STAGES 2u
+#define GLM52_UNITY_WARPS 8u
 
-using Glm52Kv = LmKvLatent<GLM52_KV_BITS, GLM52_LATENT, GLM52_ROPE_DIM, GLM52_KV_PAGE_SLOTS>;
+static_assert(
+    Glm52Kv::kSlotBytes == GLM52_KV_SLOT_BYTES,
+    "config.h and the GLM 5.2 KV geometry disagree");
+static_assert(
+    GLM52_UNITY_TILE_K % LmBf16Format::kMmaK == 0u,
+    "GLM 5.2 BF16 tile depth must contain complete MMA steps");
+static_assert(
+    GLM52_UNITY_TILE_K % LmFp8::kMmaK == 0u,
+    "GLM 5.2 FP8 expert tile depth must contain complete MMA steps");
+static_assert(
+    LmTileKIsSwizzleable(GLM52_UNITY_TILE_K, LmBf16Format::kStoredBits),
+    "GLM 5.2 BF16 activation tile must be TMA-swizzleable");
+static_assert(
+    LmTileKIsSwizzleable(GLM52_UNITY_TILE_K, LmFp8::kStoredBits),
+    "GLM 5.2 FP8 expert tile must be TMA-swizzleable");
 
-static_assert(Glm52Kv::kSlotBytes == GLM52_KV_SLOT_BYTES,
-	"config.h and kernels/kv.cuh disagree about the slot size");
-
-// -- GEMM instantiations -----------------------------------------------------
-//
-// One per tile height the bucket selector can produce. Rows per expert is
-// batch/32 at 256 experts and top-8, so B1024 needs a 64-row tile; a 16-row tile
-// there would split every expert and double the weight stream, which is 96
-// percent of all traffic on this path.
-//
-// TILE_K differs by format because the swizzle span is in BYTES: NVFP4 at 4 bits
-// needs 256 elements where FP8 needs 128. kernels/tile.cuh asserts it rather
-// than trusting this file to remember.
-
-#define GLM52_TILE_N 128u
-#define GLM52_STAGES 2u
-#define GLM52_WARPS 8u
-
-// Weight formats this model can be served with. All use DYNAMIC shared memory,
-// so none is limited by the 48 KB static cap; the launcher requests
-// LmGemmSharedBytes<...>() through cudaFuncAttributeMaxDynamicSharedMemorySize
-// and passes it at launch. Each is a decoder into the same
-// BF16 fragment, so these six instantiations differ only in how many bits cross
-// the bus and how a code becomes a number - not in what the kernel does.
-//
-// TILE_K is in ELEMENTS and must make a whole swizzle span of the STORED width,
-// which kernels/tile.cuh asserts.
-//
-// __grid_constant__ is repeated here because nvcc requires the annotation on an
-// explicit instantiation to match the primary template. Omitting it is an error,
-// not a silent difference, which is the good outcome.
-
-
-
-
-
-
-
-
-
-
-
-
-
-// Every (format, tile height) the dispatch in runtime/gemm.cuh can select.
-//
-// The switch there and this list must agree. Omitting a height here is a LINK
-// error and omitting it there is a runtime error - both loud, neither silent,
-// which is the property worth having when the alternative is a kernel that
-// launches with the wrong shared-memory size.
-//
-// TILE_K differs by stored width because the swizzle span is in BYTES: 128
-// elements at 8 bits, 256 at 7. kernels/layout.cuh asserts it.
-
-template __global__ void LmGemmKernel<LmFp8, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt7, 16u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt7, 32u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt7, 64u, GLM52_TILE_N, 256u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt6, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt6, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt6, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt8, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt8, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmInt8, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmNvfp4, 16u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmNvfp4, 32u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmNvfp4, 64u, GLM52_TILE_N, 128u, GLM52_STAGES, GLM52_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-
-#define GLM52_NORM_THREADS 256u
-
-// Norm, activation and quantise. Generic kernels with this model's dimensions
-// passed at the call, not baked in: the old decode stage's RmsNormKernel was 62
-// lines carrying seven SPARK_GLM52_MODEL_* references, none of which changed
-// what it computed.
-template __global__ void LmFusedResidualRmsNormKernel<GLM52_NORM_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
-template __global__ void LmSiluMulKernel<GLM52_NORM_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
-template __global__ void LmQuantiseRowsKernel<LmFp8, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
-template __global__ void LmQuantiseRowsKernel<LmInt7, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
-template __global__ void LmQuantiseRowsKernel<LmInt6, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
-template __global__ void LmQuantiseRowsKernel<LmNvfp4, GLM52_NORM_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
-
-// Attention. Generic over the cache geometry, so the same three kernels serve
-// any model whose cache is a paged pool of opaque slots - which after
-// kernels/kv.cuh is all of them.
-//
-// The sparse path is the dense path with a selected-position array. Passing null
-// makes it dense; the old tree had them as separate kernels and the difference
-// was which positions the loop visited.
-template __global__ void LmRopeKernel<GLM52_NORM_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
-template __global__ void LmAttentionDecodeKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_LATENT, GLM52_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
-template __global__ void LmSparseScoreKernel<Glm52Kv, GLM52_NORM_THREADS, GLM52_DSA_INDEX_DIM>(const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, uint32_t, float *);
-
-// Top-k and speculation. The router picks 8 of 256 with the small path; DSA
-// picks its positions with the radix path. Both were separate kernels before and
-// the algorithm was the same.
-template __global__ void LmTopkSmallKernel<GLM52_NORM_THREADS, GLM52_TOP_K>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *);
-template __global__ void LmTopkHistogramKernel<GLM52_NORM_THREADS>(const float *, uint32_t, uint32_t, uint32_t *);
-template __global__ void LmTopkGatherKernel<GLM52_NORM_THREADS>(const float *, uint32_t, uint32_t, const uint32_t *, uint32_t *, uint32_t *);
-template __global__ void LmSpeculativeVerifyGreedyKernel<GLM52_NORM_THREADS>(const uint32_t *, const uint32_t *, uint32_t, uint32_t *, uint32_t *, uint32_t *);
-template __global__ void LmSpeculativeVerifySampledKernel<GLM52_NORM_THREADS>(const uint32_t *, const float *, const float *, const float *, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *);
-
-template __global__ void LmHeadCandidateKernel<GLM52_NORM_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
-template __global__ void LmHeadCommitKernel<GLM52_NORM_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
-template __global__ void LmHeadSoftmaxKernel<GLM52_NORM_THREADS>(float *, uint32_t, uint32_t, float);
-
-// -- entry points ------------------------------------------------------------
-//
-// What runtime/ calls. One per weight format; the tile height is chosen inside
-// from the token count, so a caller never picks one.
-//
-// extern "C" because the scheduler is C. This is the whole ABI surface of the
-// model - four functions and a plan struct - against the old tree's extern "C"
-// seams, dlopen plugin, generated kernel table and AOT object pack.
-
-extern "C" int32_t Glm52GemmFp8(LmGemmArguments *args, const void *a, const void *b,
-	uint32_t packed_rows, uint32_t tokens, uint32_t groups,
-	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
+extern "C" int32_t Glm52GemmBf16(
+    LmGemmArguments *arguments,
+    const void *activation_bf16,
+    const void *weight_bf16,
+    uint32_t packed_rows,
+    uint32_t tokens,
+    uint32_t group_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t multiprocessors,
+    bool grouped,
+    void *stream_handle)
 {
-	return(LmGemmLaunch<LmFp8,GLM52_TILE_N,128u,GLM52_STAGES,GLM52_WARPS>(
-		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+    return LmGemmLaunch<
+        LmBf16Format,
+        GLM52_UNITY_TILE_N,
+        GLM52_UNITY_TILE_K,
+        GLM52_UNITY_STAGES,
+        GLM52_UNITY_WARPS>(
+            arguments,
+            activation_bf16,
+            weight_bf16,
+            packed_rows,
+            tokens,
+            grouped ? GLM52_TOP_K : 1u,
+            group_count,
+            input_dimension,
+            output_dimension,
+            multiprocessors,
+            grouped,
+            (cudaStream_t)stream_handle);
 }
 
-extern "C" int32_t Glm52GemmInt7(LmGemmArguments *args, const void *a, const void *b,
-	uint32_t packed_rows, uint32_t tokens, uint32_t groups,
-	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
+extern "C" int32_t Glm52GemmFp8ExpertWeightBf16Activation(
+    LmGemmArguments *arguments,
+    const void *activation_bf16,
+    const void *weight_fp8_e4m3,
+    uint32_t packed_rows,
+    uint32_t tokens,
+    uint32_t group_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t multiprocessors,
+    bool grouped,
+    void *stream_handle)
 {
-	return(LmGemmLaunch<LmInt7,GLM52_TILE_N,256u,GLM52_STAGES,GLM52_WARPS>(
-		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+    if (!grouped)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    return LmGemmWeightOnlyLaunch<
+        LmFp8,
+        GLM52_UNITY_TILE_N,
+        GLM52_UNITY_STAGES,
+        GLM52_UNITY_WARPS>(
+            arguments,
+            activation_bf16,
+            weight_fp8_e4m3,
+            packed_rows,
+            tokens,
+            GLM52_TOP_K,
+            group_count,
+            input_dimension,
+            output_dimension,
+            multiprocessors,
+            grouped,
+            (cudaStream_t)stream_handle);
 }
 
-extern "C" int32_t Glm52GemmInt6(LmGemmArguments *args, const void *a, const void *b,
-	uint32_t packed_rows, uint32_t tokens, uint32_t groups,
-	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
+extern "C" int32_t Glm52LayerAttentionBf16(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_in_group,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
 {
-	return(LmGemmLaunch<LmInt6,GLM52_TILE_N,128u,GLM52_STAGES,GLM52_WARPS>(
-		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+    return Glm52LayerAttention(
+        buffers,
+        rows,
+        context,
+        layer_in_group,
+        multiprocessors,
+        stream);
 }
 
-extern "C" int32_t Glm52GemmInt8(LmGemmArguments *args, const void *a, const void *b,
-	uint32_t packed_rows, uint32_t tokens, uint32_t groups,
-	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
+extern "C" int32_t Glm52LayerDenseMlpBf16(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
 {
-	return(LmGemmLaunch<LmInt8,GLM52_TILE_N,128u,GLM52_STAGES,GLM52_WARPS>(
-		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+    return Glm52LayerDenseMlp(
+        buffers,
+        rows,
+        multiprocessors,
+        stream);
 }
 
-extern "C" int32_t Glm52GemmNvfp4(LmGemmArguments *args, const void *a, const void *b,
-	uint32_t packed_rows, uint32_t tokens, uint32_t groups,
-	uint32_t k, uint32_t n, uint32_t sms, bool grouped, cudaStream_t stream)
+extern "C" int32_t Glm52LayerMoeFp8ExpertWeightBf16Activation(
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t packed_rows,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
 {
-	return(LmGemmLaunch<LmNvfp4,GLM52_TILE_N,128u,GLM52_STAGES,GLM52_WARPS>(
-		args,a,b,packed_rows,tokens,GLM52_TOP_K,groups,k,n,sms,grouped,stream));
+    return Glm52LayerMoe(
+        buffers,
+        rows,
+        packed_rows,
+        multiprocessors,
+        stream);
 }
 
-// -- the layer -----------------------------------------------------------------
-//
-// One call per layer half. The host binds buffers once and steps; the sequence
-// is in llms/glm5_2/layer.cuh because the sequence is what makes this GLM 5.2
-// rather than another model with the same kernels.
-//
-// Instantiated per weight format because the format is a template parameter all
-// the way down - the quantiser, the GEMM and the fragment decode all take it,
-// and a runtime format would put a branch in every one of them.
-
-// layer_in_group selects: 0 recomputes the DSA index, the rest reuse it. GLM 5.2
-// shares a selection across GLM52_DSA_SHARE_GROUP_LAYERS layers, so a 78-layer
-// model runs the index pass about 19 times rather than 75.
-extern "C" int32_t Glm52LayerAttentionFp8(const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t layer_in_group, uint32_t sms, cudaStream_t stream)
+extern "C" int32_t Glm52HeadFullVocab(
+    const Glm52LayerBuffers *buffers,
+    const void *norm_weight_bf16,
+    const void *head_weight_bf16,
+    uint32_t rows,
+    cudaStream_t stream)
 {
-	return(Glm52LayerAttention<LmFp8>(b,rows,context,layer_in_group,sms,stream));
+    return Glm52Head(
+        buffers,
+        norm_weight_bf16,
+        head_weight_bf16,
+        0,
+        GLM52_VOCAB,
+        rows,
+        stream);
 }
 
-extern "C" int32_t Glm52LayerAttentionInt7(const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t layer_in_group, uint32_t sms, cudaStream_t stream)
+extern "C" int32_t Glm52HeadRestricted(
+    const Glm52LayerBuffers *buffers,
+    const void *norm_weight_bf16,
+    const void *head_weight_bf16,
+    const uint32_t *token_ids,
+    uint32_t token_count,
+    uint32_t rows,
+    cudaStream_t stream)
 {
-	return(Glm52LayerAttention<LmInt7>(b,rows,context,layer_in_group,sms,stream));
+    if (token_ids == 0 || token_count == 0u ||
+        token_count > GLM52_RESTRICTED_VOCAB)
+    {
+        return LM_LAUNCH_ERR_SHAPE;
+    }
+    return Glm52Head(
+        buffers,
+        norm_weight_bf16,
+        head_weight_bf16,
+        token_ids,
+        token_count,
+        rows,
+        stream);
 }
 
-// Layers before GLM52_FIRST_ROUTED_LAYER have no router and no experts. A caller
-// that sends a dense layer to the MoE entry point selects among experts the
-// checkpoint does not carry for it.
-extern "C" int32_t Glm52LayerDenseMlpFp8(const Glm52LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
+extern "C" int32_t Glm52LayerAttentionBf16Graphed(
+    LmGraphCache *graphs,
+    const Glm52LayerBuffers *buffers,
+    uint32_t rows,
+    uint32_t context,
+    uint32_t layer_in_group,
+    uint32_t multiprocessors,
+    cudaStream_t stream)
 {
-	return(Glm52LayerDenseMlp<LmFp8>(b,rows,sms,stream));
-}
+    LmGraphKey key;
+    int32_t status;
 
-extern "C" int32_t Glm52LayerDenseMlpInt7(const Glm52LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
-{
-	return(Glm52LayerDenseMlp<LmInt7>(b,rows,sms,stream));
-}
+    if (graphs == 0)
+    {
+        return Glm52LayerAttention(
+            buffers,
+            rows,
+            context,
+            layer_in_group,
+            multiprocessors,
+            stream);
+    }
 
-extern "C" int32_t Glm52LayerMoeFp8(const Glm52LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
-{
-	return(Glm52LayerMoe<LmFp8>(b,rows,packed_rows,sms,stream));
-}
-
-extern "C" int32_t Glm52LayerMoeInt7(const Glm52LayerBuffers *b, uint32_t rows, uint32_t packed_rows, uint32_t sms, cudaStream_t stream)
-{
-	return(Glm52LayerMoe<LmInt7>(b,rows,packed_rows,sms,stream));
-}
-
-// The head. Full vocabulary and restricted; the second is the same kernels with
-// a token id list and costs the subset's size.
-extern "C" int32_t Glm52HeadFullVocab(const Glm52LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t stream)
-{
-	return(Glm52Head(b,norm_weight,head_weight,0,GLM52_VOCAB,rows,stream));
-}
-
-extern "C" int32_t Glm52HeadRestricted(const Glm52LayerBuffers *b, const void *norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t count, uint32_t rows, cudaStream_t stream)
-{
-	return(Glm52Head(b,norm_weight,head_weight,token_ids,count,rows,stream));
-}
-
-// -- graph capture --------------------------------------------------------------
-//
-// One layer half, captured per shape and replayed. The sequence is a function
-// call, so this file needs to know nothing about which kernels it records - which
-// is why it is thirty lines where the old capture was 1,501.
-
-extern "C" int32_t Glm52LayerAttentionFp8Graphed(LmGraphCache *graphs, const Glm52LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t layer_in_group, uint32_t sms, cudaStream_t stream)
-{
-	LmGraphKey key;
-	int32_t status;
-	key.rows = rows;
-	key.layer_kind = 0u;
-	key.format = 0u;
-	key.sparse = context > GLM52_DSA_SELECTED ? 1u : 0u;
-	key.context_bucket = LmGraphContextBucket(context,GLM52_DSA_SELECTED);
-	if ( LmGraphReplay(graphs,&key,stream) == LM_GRAPH_OK )
-		return(LM_LAUNCH_OK);
-	if ( LmGraphBeginCapture(stream) != LM_GRAPH_OK )
-		return(Glm52LayerAttention<LmFp8>(b,rows,context,layer_in_group,sms,stream));
-	status = Glm52LayerAttention<LmFp8>(b,rows,context,layer_in_group,sms,stream);
-	// A capture that ends without a slot leaves the work queued and unrecorded,
-	// which is correct and merely uncaptured. Failing the step instead would
-	// turn a cache-full condition into a dropped request.
-	LmGraphEndCapture(graphs,&key,stream);
-	return(status);
+    key.rows = rows;
+    key.layer_kind = 0u;
+    key.format = 0u;
+    key.sparse = context > GLM52_DSA_SELECTED ? 1u : 0u;
+    key.context_bucket = LmGraphContextBucket(context, GLM52_DSA_SELECTED);
+    if (LmGraphReplay(graphs, &key, stream) == LM_GRAPH_OK)
+    {
+        return LM_LAUNCH_OK;
+    }
+    if (LmGraphBeginCapture(stream) != LM_GRAPH_OK)
+    {
+        return Glm52LayerAttention(
+            buffers,
+            rows,
+            context,
+            layer_in_group,
+            multiprocessors,
+            stream);
+    }
+    status = Glm52LayerAttention(
+        buffers,
+        rows,
+        context,
+        layer_in_group,
+        multiprocessors,
+        stream);
+    LmGraphEndCapture(graphs, &key, stream);
+    return status;
 }

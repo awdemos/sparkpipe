@@ -14,7 +14,6 @@
 #include "inference/kernels/topk.cuh"
 #include "inference/kernels/linear_attn.cuh"
 #include "inference/kernels/head.cuh"
-#include "inference/kernels/formats/fp8.cuh"
 #include "inference/kernels/formats/int7.cuh"
 #include "inference/llms/qwen_3_6/layer.cuh"
 
@@ -30,12 +29,11 @@ static_assert(QWEN36_LAYER_IS_LINEAR(0) && !QWEN36_LAYER_IS_LINEAR(3),
 #define QWEN36_WARPS 8u
 #define QWEN36_THREADS 256u
 
-template __global__ void LmGemmKernel<LmFp8, 16u, QWEN36_TILE_N, 128u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8, 32u, QWEN36_TILE_N, 128u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
-template __global__ void LmGemmKernel<LmFp8, 64u, QWEN36_TILE_N, 128u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, LmTileSource, LmTileSource, bool);
+template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 16u, QWEN36_TILE_N, 64u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 32u, QWEN36_TILE_N, 64u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
+template __global__ void LmGemmKernel<LmBf16Format, LmBf16Format, 64u, QWEN36_TILE_N, 64u, QWEN36_STAGES, QWEN36_WARPS>(__grid_constant__ const LmGemmArguments, __grid_constant__ const CUtensorMap, __grid_constant__ const CUtensorMap, LmTileGeometry, LmTileGeometry, bool);
 template __global__ void LmFusedResidualRmsNormKernel<QWEN36_THREADS,uint16_t>(const uint16_t *, const uint16_t *, const uint16_t *, uint16_t *, uint16_t *, uint32_t, uint32_t, float);
 template __global__ void LmSiluMulKernel<QWEN36_THREADS>(const uint16_t *, uint16_t *, uint32_t, bool);
-template __global__ void LmQuantiseRowsKernel<LmFp8, QWEN36_THREADS>(const uint16_t *, const uint32_t *, uint8_t *, uint8_t *, uint32_t, uint32_t);
 template __global__ void LmRopePerHeadKernel<QWEN36_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
 template __global__ void LmSplitQkvKernel<QWEN36_THREADS>(const uint16_t *, LmQkvLayout, uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
 // The linear layers. 48 of 64, with a fixed state instead of a growing cache.
@@ -51,11 +49,37 @@ template __global__ void LmMoeFinalizeKernel<QWEN36_THREADS>(const uint16_t *, c
 
 template __global__ void LmAttentionDecodeKernel<Qwen36FullKv, QWEN36_THREADS, QWEN36_NOPE_DIM, QWEN36_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 
-extern "C" int32_t Qwen36GemmFp8(LmGemmArguments *a, const void *x, const void *w,
-	uint32_t rows, uint32_t tokens, uint32_t groups, uint32_t k, uint32_t n,
-	uint32_t sms, bool grouped, cudaStream_t s)
+extern "C" int32_t Qwen36GemmBf16(
+    LmGemmArguments *arguments,
+    const void *activation,
+    const void *weight,
+    uint32_t row_count,
+    uint32_t token_count,
+    uint32_t group_count,
+    uint32_t input_dimension,
+    uint32_t output_dimension,
+    uint32_t multiprocessor_count,
+    bool grouped,
+    cudaStream_t stream)
 {
-	return(LmGemmLaunch<LmFp8,QWEN36_TILE_N,128u,QWEN36_STAGES,QWEN36_WARPS>(a,x,w,rows,tokens,8u,groups,k,n,sms,grouped,s));
+    return LmGemmLaunch<
+        LmBf16Format,
+        QWEN36_TILE_N,
+        LmBf16Format::kTileK,
+        QWEN36_STAGES,
+        QWEN36_WARPS>(
+            arguments,
+            activation,
+            weight,
+            row_count,
+            token_count,
+            1u,
+            group_count,
+            input_dimension,
+            output_dimension,
+            multiprocessor_count,
+            grouped,
+            stream);
 }
 
 // -- entry points ---------------------------------------------------------------
@@ -64,19 +88,19 @@ extern "C" int32_t Qwen36GemmFp8(LmGemmArguments *a, const void *x, const void *
 // QWEN36_LAYER_IS_LINEAR. Separate entry points rather than a flag: the state
 // pool and the KV pool are different geometries, and that belongs in the type.
 
-extern "C" int32_t Qwen36LayerLinearFp8(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t s)
+extern "C" int32_t Qwen36LayerLinearBf16(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t s)
 {
-	return(Qwen36LayerLinear<LmFp8>(b,rows,sms,s));
+	return(Qwen36LayerLinear<LmBf16Format>(b,rows,sms,s));
 }
 
-extern "C" int32_t Qwen36LayerAttentionFp8(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t s)
+extern "C" int32_t Qwen36LayerAttentionBf16(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t s)
 {
-	return(Qwen36LayerAttention<LmFp8,Qwen36FullKv>(b,rows,context,sms,s));
+	return(Qwen36LayerAttention<LmBf16Format,Qwen36FullKv>(b,rows,context,sms,s));
 }
 
-extern "C" int32_t Qwen36LayerDenseMlpFp8(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t s)
+extern "C" int32_t Qwen36LayerDenseMlpBf16(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t s)
 {
-	return(Qwen36LayerDenseMlp<LmFp8>(b,rows,sms,s));
+	return(Qwen36LayerDenseMlp<LmBf16Format>(b,rows,sms,s));
 }
 
 extern "C" int32_t Qwen36HeadFullVocab(const Qwen36LayerBuffers *b, const void *norm_weight, const void *head_weight, uint32_t rows, cudaStream_t s)

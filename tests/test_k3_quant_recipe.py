@@ -73,12 +73,12 @@ def main():
     # its count outside the helper must be zero, not two.
     helper = re.search(r"static int32_t K3Project\b.*?\n\}", text, re.S)
     outside = text.replace(helper.group(0), "") if helper else text
-    expert_gemms = len(re.findall(r"LmGemmWeightOnlyLaunch<Format", outside))
+    expert_gemms = len(re.findall(r"LmGemmWeightOnlyLaunch<\s*Format", outside))
     if expert_gemms != 2:
         print(f"  FAIL {expert_gemms} weight-only expert GEMMs take Format, "
               f"expected 2")
         failures += 1
-    symmetric = len(re.findall(r"LmGemmLaunch<Format", outside))
+    symmetric = len(re.findall(r"LmGemmLaunch<\s*Format", outside))
     if symmetric != 0:
         print(f"  FAIL {symmetric} symmetric GEMMs take Format; a symmetric "
               f"launch quantises the activations the checkpoint leaves alone")

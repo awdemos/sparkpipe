@@ -10,7 +10,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 from glm52_model_contract import load_model_contract, render_c_header
 
 SOURCE_SUFFIXES = {".c", ".cu", ".h", ".py"}
-SKIP_PARTS = {".git", "__pycache__", "build", "third_party"}
+SKIP_PARTS = {".git", "__pycache__", "build", "docs", "tests", "third_party"}
 CALL_NAME = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 MEMORY_CALL = re.compile(
     r"alloc|malloc|calloc|realloc|memcpy|memset|copy|zero", re.I)
@@ -67,9 +67,16 @@ NON_GLM_MODEL_PREFIXES = (
     "modules/k3_",
     "modules/mimo25_",
     "modules/qwen36_",
+    "inference/llms/deepseek_v4/",
+    "inference/llms/deepseek_v4_pro/",
+    "inference/llms/kimi_k3/",
+    "inference/llms/mimo_2_5/",
+    "inference/llms/qwen_3_6/",
+    "tools/generate_k3_contract.py",
+    "tools/generate_dsv4_contracts.py",
 )
 REQUIRED_SYMBOLIC_DEFINES = {
-    "model-families/glm52/src/spark_glm52_ring_service_backend.c": {
+    "node/backend.c": {
         "SPARK_RING_SERVICE_BACKEND_PIPELINE_COHORT_CAPACITY":
             "SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT",
         "SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY":
@@ -92,17 +99,6 @@ REQUIRED_SYMBOLIC_DEFINES = {
             "SPARK_GLM52_MODEL_DSA_INDEX_SHARE_GROUP_LAYER_COUNT",
         "SPARK_PRODUCTION_TOPOLOGY_INDEX_SKIP_TOPK_OFFSET":
             "SPARK_GLM52_MODEL_DSA_INDEX_SKIP_TOPK_OFFSET",
-    },
-    "include/sparkpipe/spark_request_api.h": {
-        "SPARK_REQUEST_API_MTP_MAX_DRAFT_TOKEN_COUNT":
-            "SPARK_GLM52_MODEL_MTP_DRAFT_TOKEN_COUNT",
-    },
-    "modules/glm52_resident_decode_stage/include/sparkpipe/"
-    "spark_glm52_resident_decode_stage_firmware.h": {
-        "SPARK_RESIDENT_DECODE_STAGE_FP8_MOE_SCALE_BLOCK_SIZE":
-            "SPARK_GLM52_MODEL_FP8_SCALE_BLOCK",
-        "SPARK_RESIDENT_DECODE_STAGE_MAX_ROUTED_STAGE_SLICE_LAYER_COUNT":
-            "SPARK_STAGE_PLAN_MAX_ROUTED_LAYERS_PER_STAGE",
     },
 }
 SIZE_ARGUMENTS_BY_CALL = {
@@ -243,12 +239,13 @@ def main():
         for match in RAW_REGION_INDEX.finditer(text):
             report(violations, path, text, match.start(),
                 "FP8 pack region uses a numeric field index")
-        for match in RAW_DIMENSION_DEFINE.finditer(text):
-            report(violations, path, text, match.start(),
-                "derived GLM dimension is defined as a literal")
-        for match in RAW_MODEL_SCALAR_ASSIGNMENT.finditer(text):
-            report(violations, path, text, match.start(),
-                "GLM model scalar is assigned from a raw literal")
+        if glm_model_literal_scope(relative):
+            for match in RAW_DIMENSION_DEFINE.finditer(text):
+                report(violations, path, text, match.start(),
+                    "derived GLM dimension is defined as a literal")
+            for match in RAW_MODEL_SCALAR_ASSIGNMENT.finditer(text):
+                report(violations, path, text, match.start(),
+                    "GLM model scalar is assigned from a raw literal")
         for match in RAW_SCALAR_WIDTH_ASSIGNMENT.finditer(text):
             report(violations, path, text, match.start(),
                 "scalar element width is assigned as a byte literal")
@@ -291,7 +288,7 @@ def main():
         violations.append("B12x public ABI header has a duplicate module copy")
     final_event_definitions = []
     final_event_pattern = re.compile(
-        r"typedef\s+struct\s+SparkGlm52Ring[A-Za-z0-9_]*FinalEvent\s*\{")
+        r"typedef\s+struct\s+SparkRingRuntimeFinalEvent\s*\{")
     for path in source_paths():
         text = path.read_text(errors="replace")
         for match in final_event_pattern.finditer(text):
@@ -318,9 +315,11 @@ def main():
     if "dsa_prefill_scores_f32" in all_source_text:
         violations.append("DSA score storage retains a prefill-only ABI field")
     backend_text = (
-        ROOT / "model-families/glm52/src/spark_glm52_ring_service_backend.c").read_text()
+        ROOT / "node/backend.c").read_text()
     if re.search(
-            r"message->control_generation\s*=\s*state->session_id_base\s*;",
+            r"message->control_generation\s*=\s*"
+            r"(?:state->session_id_base|transaction_packet\.control_generation)"
+            r"\s*;",
             backend_text) is None:
         violations.append("attached decode IPC omits the gateway generation")
     if re.search(

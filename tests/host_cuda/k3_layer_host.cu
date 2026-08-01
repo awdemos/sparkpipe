@@ -118,8 +118,8 @@ int main(void)
 	b.router_logits = router_logits; b.router_bias = router_bias;
 	b.route_expert = route_expert; b.route_weight = route_weight;
 	b.route_packed_row = route_packed; b.route_source_token = route_source;
-	b.group_row_offset = group_offsets; b.group_tile_prefix = group_tiles;
-	b.group_tile_prefix_down = group_tiles_down;
+	b.group_row_offset = group_offsets; b.group_tile_prefix_w1 = group_tiles;
+	b.group_tile_prefix_w2 = group_tiles_down;
 	dense_offsets[0] = 0u; dense_offsets[1] = ROWS;
 	b.dense_row_offset = dense_offsets; b.dense_tile_prefix = dense_tiles;
 
