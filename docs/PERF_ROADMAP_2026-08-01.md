@@ -42,7 +42,9 @@ balance:    ~915 FLOP/byte — every decode kernel here is memory-bound
 
 The roofline law is the ledger's own: tokens/s = streamed bytes/s divided
 by bytes-per-token (docs/BANDWIDTH_LEDGER.md:3-8). At B1 there is no
-amortisation; the whole active-weight stream is paid every token.
+amortisation; the whole active-weight stream is paid every token. At B>1
+the fixed stream amortises 1/B but the routed-expert stream anti-amortises
+along the coverage S-curve — the per-batch section below prices both.
 
 ## Per-model bytes/token at B1, and the implied ceiling
 
@@ -193,8 +195,12 @@ What the correction does and does not change:
 - **Batch ceiling: this is where it bites.** State scales with B while
   weights amortise: B16 = 14.5 GB, B64 = 58.2 GB, B256 = 232.7 GB of state
   R+W per step (against a weight pass that shrinks per-token toward the
-  full-pool sweep). At B64 the state is ~40% of the step's bytes at the
-  BF16 recipe. The bf16-state option the README prices at admission
+  full-pool sweep). CORRECTED 2026-08-01: an earlier revision of this
+  bullet called the state ~40% of the B64 step; that priced the step as
+  fixed-weights + state and ignored expert coverage growth. The per-batch
+  section below puts the B64 step at 1,157.9 GB and the state at 5% of it
+  — first-order only from B256 (13%), dominance-adjacent only at B1024
+  (36%). The bf16-state option the README prices at admission
   (README.md:81-84) is the lever, and it is a numerics question
   (K3_SPEED.md:56-60), not a systems one.
 - **Prefill and replay:** the fold path re-streams the same slots; the
@@ -226,6 +232,351 @@ as a cluster or concurrency number.**
 
 The user's own target (~50 tok/s B1) is the Pro-class 80%-eta ceiling, and
 is the right kind of quote: a ring-aggregate single-stream number.
+
+## Per-batch roofline — B1, B8, B64, B256, B1024 (2026-08-01 extension)
+
+The targets are now 80% of roofline at every batch, not only B1. This
+section prices the decode step at each batch for all six models. Method,
+so every figure is reproducible:
+
+- Step bytes = fixed stream (attention + dense FFN + shared experts + head,
+  read once per step) + expert stream (coverage(B) x full routed pool) +
+  B x (recurrent state R+W + KV read + residual-bank reads). Reference
+  context 2K tokens; KV terms scale linearly with context and the formula
+  is given so any context can be re-derived.
+- Expert coverage under uniform routing: cov(B) = 1 - (1 - 1/E)^(B*k).
+  Uniform routing OVERESTIMATES coverage against measured skew: glm52
+  measured 87% at B128 and 98% at B256 (GB10_CUDA_COST_MODEL_CALIBRATION.md
+  :62-64) where the uniform law gives 98.2% and 99.97%. Skewed routing
+  streams FEWER distinct experts, so the expert-stream figures at B8-B128
+  are upper bounds; skew also concentrates rows per hot expert, which helps
+  the grouped GEMM. Real route histograms are standing measurement #9
+  below.
+- Rates: 3.549 TB/s ring aggregate at 100%, 2.84 TB/s at the 80% target
+  (the "The machine" block above). tok/s/seq = 2840 / step bytes; aggregate
+  = B x that.
+
+### The anti-amortisation law, and the dense-equivalent crossover
+
+The B1 tables above amortise nothing. The naive expectation for B>1 is
+that weight bytes amortise 1/B across rows. That is true ONLY for the
+fixed stream. The routed-expert stream does the opposite until the pool
+saturates: each added token routes to k fresh draws, so the stream GROWS
+with coverage — K3 streams 25.8 GB of experts at B1 and 192.7 GB at B8
+for the same 8 tokens. MoE batching is an S-curve: per-token expert bytes
+fall only after coverage saturates. The dense-equivalent crossover — the
+batch where every expert is hot and the stream is the full pool sweep —
+at 99% coverage (draws = 4.6 x E):
+
+```text
+model      E    k   B(99% cov)   full-pool expert stream per step
+K3         896  16   ~B258       896 x 17.55 MB x 92 L   = 1,446.7 GB
+GLM 5.2    256   8   ~B147       256 x 37.75 MB x 75 L   =   724.8 GB
+DSv4 Pro   384   6   ~B295       384 x 33.0  MB x 61 L   =   773.2 GB
+DSv4 Flash 256   6   ~B196       256 x 12.6  MB x 43 L   =   138.7 GB
+MiMo 2.5   256   8   ~B147       256 x 25.17 MB x 47 L   =   302.8 GB
+```
+
+At B1024 every MoE model here is past crossover: rows per hot expert are
+K3 18, GLM 32, Pro 16, Flash 24, MiMo 32 — decode MoE is batched dense
+GEMM territory, and the expert problem is a scheduling problem, not a
+sparsity problem. B64 is the worst regime per byte: coverage 63-87%
+(stream most of the pool) at ~1 row per hot expert (amortise nothing).
+This is exactly the regime the expert-queue amortization exists to rescue
+(docs/BATCHPLANE_MODEL_RECONCILIATION.md:10-25), and its routed-queue
+depth is the ring measurement that proves or kills it.
+
+### K3 (BF16 non-expert, MXFP4 experts; 69 KDA + 24 MLA)
+
+Fixed stream 109.65 GB (the B1 table above). Pool 1,446.7 GB. Per-seq per
+step: KDA state R+W 0.909 GB (69 x 6.59 MB x 2, config.h:303-305), MLA KV
+0.0566 GB at 2K (24 x 1152 B x ctx, kv_lora 512 + unrotated 64 at 16 bits,
+k3_authoritative.json mla/cache), AttnRes bank reads ~0.013 GB (2 sites x
+93 layers x ~5 of 9 candidate reps x 14,336 B, config.h:178-205; the bank
+is per-in-flight-row activation state, not a context-growing cache — its
+capacity cost is the 126 KB stage payload per row, config.h:208-213).
+
+```text
+B       fixed   experts  state    KV+AR   step GB   tok/s/seq  agg tok/s
+1       109.7     25.8     0.9      0.07     136.4     20.8        20.8
+8       109.7    192.7     7.3      0.6      310.2      9.2        73.3
+64      109.7    985.6    58.2      4.5    1,157.9     2.45       157.0
+256     109.7  1,431.8   232.7     17.9    1,792.0     1.58       405.7
+1024    109.7  1,446.7   930.8     71.6    2,558.7     1.11     1,136.6
+```
+
+Dominant term: B1 fixed weights (80%); B8-B256 the expert coverage stream
+(62-85%); B1024 the fp32 state is 36% of step bytes — the only batch where
+the state term is first-order. Launch tax (D1, 6.6-16.5 ms/step) is 12-34%
+of the B1 step, ~1% of the B1024 step: graphs are a B1-B8 fix.
+
+### GLM 5.2 (FP8 experts, BF16 rest; no recurrent state)
+
+Fixed 30.2 GB. Pool 724.8 GB. KV 0.184 GB/seq/step at 2K (78 x 1152 B x
+min(ctx, 2048 selected), glm52.json dsa_selected_token_count). The DSA
+index cache (32 heads x 128 dim) is a second per-slot read not priced
+here — second-order at 2K, and PENDING a geometry confirmation.
+
+```text
+B       fixed   experts   KV      step GB   tok/s/seq  agg tok/s
+1        30.2     22.6     0.2       53.0     53.6        53.6
+8        30.2    160.3     1.5      192.3     14.8       118.2
+64       30.2    626.7    11.8      669.1      4.24      271.7
+256      30.2    724.5    47.1      801.9      3.54      906.7
+1024     30.2    724.8   188.4      943.4      3.01    3,082.5
+```
+
+No state term; the expert stream dominates B8-B1024 (78-83%). At B1024 KV
+is 20% of step bytes.
+
+### Qwen 3.6 (dense 27B, all-BF16 — bind.cu:133 LmBf16Format; 48 GDN + 16 full-attention layers)
+
+Fixed 50.2 GB — the whole dense weight read every step, no expert sparsity
+(16 attn layers x 0.341 B + 48 GDN layers x 0.383 B params at 2 B, plus
+the 2.54 GB head; geometry config.h:31-67). GDN state is ALREADY bf16:
+0.54 MB/seq/layer (config.h:65-67, the *2u element), 0.052 GB/seq/step
+R+W across 48 layers. KV 0.131 GB/seq/step at 2K (16 layers x 4 KV heads
+x 256 dim x K+V x 2 B, config.h:47-49).
+
+```text
+B       fixed   state    KV      step GB   tok/s/seq  agg tok/s   compute roof
+1        50.2     0.05     0.1       50.4     56.4        56.4
+8        50.2     0.4      1.0       51.7     55.0       439.6
+64       50.2     3.3      8.6       62.1     45.7     2,926.8
+256      50.2    13.3     34.4       97.8     29.0     7,431.1    8,028 @peak BF16
+1024     50.2    53.1   137.4      240.8     11.8    12,078.1    8,028 @peak / 1,683 @6.5 TF
+```
+
+**Qwen is the model the 80%-of-bandwidth target cannot be promised to at
+B1024.** 50.2 GFLOP/token against 50.2 GB fixed is 1,049 FLOP/byte on the
+weight stream; GB10's BF16 balance point is ~114 FLOP/byte (31 TFLOPS /
+273 GB/s — the calibration doc's 915 is the FP8 balance,
+GB10_CUDA_COST_MODEL_CALIBRATION.md:21-26). Decode turns compute-bound at
+~B294 even at 100% of the BF16 peak, and at ~B34 at the measured 6.5 TFLOPS
+QKVO wall. At B1024 the honest ceiling is 8,028 tok/s aggregate at
+impossibly-perfect BF16 efficiency — 66% of the 80%-MBU target — and 1,683
+at the measured wall. The lever is the one the calibration doc already
+names: dense-FFN quantization (GB10_CUDA_COST_MODEL_CALIBRATION.md:125-127).
+FP8 FFN halves the dominant byte term AND moves 50 GFLOP/token onto the
+250 TFLOPS unit, where 12,078 tok/s needs only 19% of FP8 peak.
+
+### DeepSeek V4 Pro (FP4 experts, FP8 non-expert, compressed KV)
+
+Fixed 40.4 GB. Pool 773.2 GB. KV: the compression ladder
+(dsv4_pro_authoritative.json compression_ratios — 62 entries for 61 layers,
+30 at 4:1, 31 at 128:1, trailing 0 unverified) stores ~8.9 KB/token, not
+61 x 1152 B; the step read at 2K with top-k 1024 + window 128 selection is
+0.018 GB/seq (selection binds only past ~128K compressed slots).
+
+```text
+B       fixed   experts   KV      step GB   tok/s/seq  agg tok/s
+1        40.4     14.1    0.02       54.5     52.1        52.1
+8        40.4     91.2     0.1      131.5     21.6       172.8
+64       40.4    489.5     1.2      530.6      5.35      342.6
+256      40.4    759.1     4.7      804.0      3.53      904.3
+1024     40.4    773.2    18.7      832.1      3.41    3,495.0
+```
+
+Per-seq tok/s holds 3.4-3.5 from B256 to B1024 — the flattest batch curve
+on the board, because the pool is small (773 GB) and KV is compressed
+away. The 50 tok/s B1 target analysis above stands unchanged.
+
+### DeepSeek V4 Flash (FP4 experts, FP8 non-expert)
+
+Fixed 10.5 GB. Pool 138.7 GB. KV ~6.1 KB/token stored (2 sliding-window
+layers bounded at 128 slots, 21 layers at 4:1, 20 at 128:1 — 44 entries
+for 43 layers, UNVERIFIED in deepseek_v4/config.h); step read 0.012 GB/seq
+at 2K. B1 reproduces the 14.7 GB above (the ~1 GB "indexer + misc" lump
+carries this KV read).
+
+```text
+B       fixed   experts   KV      step GB   tok/s/seq  agg tok/s
+1        10.5      3.8    0.01       14.3    198.4       198.4
+8        10.5     23.7     0.1        34.4     82.7       661.3
+64       10.5    107.8     0.8       119.1     23.8     1,525.6
+256      10.5    138.4     3.2       152.1     18.7     4,781.6
+1024     10.5    138.7    12.7       162.0     17.5    17,956.1
+```
+
+### MiMo 2.5 (FP8 linears — bind.cu:123 LmFp8; per-head KV, no latent)
+
+Fixed 5.9 GB. Pool 302.8 GB (47 routed layers, MIMO25_FIRST_ROUTED_LAYER
+is a GUESS, config.h:81). KV: 7 full layers x 2,560 B/slot (config.h:98-99)
+plus 41 SWA layers bounded at 128 slots x 5,120 B: 0.064 GB/seq/step at 2K,
+of which 26.8 MB is the fixed SWA window re-read.
+
+```text
+B       fixed   experts   KV      step GB   tok/s/seq  agg tok/s
+1         5.9      9.5    0.06       15.4    184.7       184.7
+8         5.9     67.0     0.5        73.5     38.7       309.3
+64        5.9    262.0     4.1       271.9     10.4       668.5
+256       5.9    302.5    16.3       324.8      8.7     2,238.3
+1024      5.9    302.8    65.1       373.7      7.6     7,781.2
+```
+
+### The compute wall per batch — where bytes stop being the bound
+
+Per-token FLOPs by precision (2 x active params), the ring aggregate
+roofs, and the batch at which compute time overtakes memory time:
+
+```text
+model  BF16 GF  FP8 GF  FP4 GF | roof @peak   roof @6.5 TF wall | crossover @wall  @peak
+K3      110       0      97    |   3,474              408        |   B258          never (<B2048)
+GLM      30.5    45.2     0    |  11,162            1,116        |   B320          never
+Qwen     50.2     0       0    |   8,028            1,683        |   B34           B294
+Pro       3.7    77      56.4  |  24,067              616        |   B165          never
+Flash     1.1    16.8    15.2  |  97,683            2,553        |   B130          never
+MiMo      1.3    27.6     0    |  86,067            2,928        |   B341          never
+```
+
+Roofs are aggregate tok/s (per-row time is batch-independent: B cancels).
+Peak = 13 x (31 BF16 / 250 FP8 / 500 dense FP4) TFLOPS. Wall = every GEMM
+class at the measured 6.5 TFLOPS QKVO figure (GB10_CUDA_COST_MODEL_
+CALIBRATION.md:66-73) — right for BF16 projections, pessimistic for the
+FP8/FP4 expert GEMMs whose efficiency is PENDING (calibration doc:158-159);
+if FP8 GEMMs hold even 40% of FP8 peak, Pro and Flash stay memory-bound
+past B1024. Three readings:
+
+- **B256 is the last batch where bandwidth alone sets every MoE ceiling.**
+  At the wall, Pro and Flash have already crossed (B165, B130); K3 crosses
+  at B258. This matches the measured glm regime map — QKVO compute-bound
+  from B128 (calibration doc:46-48) — and promotes WMMA retiling from
+  "measurement #10" to the B256+ P0.
+- **At B1024 the wall caps K3 at 408 tok/s against the 1,137 memory
+  roofline** — a 2.8x gap. Closing it needs BF16-class GEMMs at ~9.6
+  TFLOPS/node (31% of peak), 1.5x past the measured wall. GLM needs ~8.1.
+  These are retile targets, not hopes: 2.6% of peak is a tiling defect,
+  not a silicon limit.
+- **Qwen at B256+ is compute-bound at ANY achievable BF16 efficiency**;
+  its B1024 row in the byte table is unreachable as stated (see its
+  subsection). Its 80% target is only coherent after FP8 FFN quantization.
+
+### The bf16-state option, priced per batch (K3 only — Qwen's GDN state is already bf16)
+
+Halving the KDA state term (0.909 -> 0.455 GB/seq/step; the numerics
+question is K3_SPEED.md:56-60, priced at admission in README.md:81-84):
+
+```text
+B       fp32 step GB   bf16 step GB   agg tok/s gain
+1           136.4          135.9        +0.3%    noise — do not touch numerics for B1
+64        1,157.9        1,128.8        +2.5%
+256       1,792.0        1,675.7        +6.9%    406 -> 434
+1024      2,558.7        2,093.3       +22.2%  1,137 -> 1,389 (memory side; the
+                                                 compute wall still caps at ~408-690
+                                                 until the WMMA retile lands)
+```
+
+Verdict: bf16 state is a B256+ lever and a B1024 prerequisite, inert at
+B1-B8. Sequence it after the numerics review and before the B1024 push,
+not in the B1 campaign.
+
+### KV capacity and the NVMe budget
+
+Per-token KV (whole model, unsharded; each pipeline rank holds only its
+own layers' share — the 12-rank GLM shard of 7.5 KB/token is why the
+production pool of 65,536 blocks x 64 slots lands at 29 GiB,
+docs/BATCHPLANE_MODEL_RECONCILIATION.md:43-47), per-seq fixed state, and
+what 1 TB of NVMe per node holds (ring aggregate is 13 x):
+
+```text
+model   KV B/token   fixed/seq      seqs @ 8K ctx   seqs @ 128K ctx   seqs @ 1M ctx
+K3        27,648     455 MB state      1,467             245                29
+GLM       89,856       —               1,359              85                10
+Qwen      65,536      26 MB state      1,777             116                14
+Pro        8,919       —              13,687             855               106
+Flash      6,082       0.3 MB SWA     20,427           1,284               160
+MiMo      17,920      26.9 MB SWA      5,758             421                52
+```
+
+Cross-check: GLM at 13,312 requests x 4,096 tokens x 89,856 B / 13 nodes =
+377 GB/node — the reconciliation doc's independently derived "370 to 429
+GiB per node" (BATCHPLANE_MODEL_RECONCILIATION.md:72-74). The accounting
+agrees to 2%.
+
+Prefetch budget. NVMe read bandwidth is not pinned anywhere in this tree —
+assume ~5-7 GB/s per node (Gen4/Gen5 x4 class), 65-91 GB/s ring aggregate,
+explicitly PENDING until the ring measures it. KV demand if the working
+set were served from NVMe live, at the 80%-target rates above:
+
+```text
+GLM  B1     9.9 GB/s   feasible per-node, tight
+GLM  B64   50.1 GB/s   ring-marginal: needs 55-77% of aggregate NVMe with
+                       perfect prefetch-ahead — no headroom for churn
+GLM  B256 166.9 GB/s   impossible: 2-3x the whole ring's NVMe
+K3   B256  23.0 GB/s   feasible (compressed-context MLA is cheap to re-read)
+K3   B1024 64.4 GB/s   ring-marginal
+Pro  B1024 63.7 GB/s   ring-marginal at 2K; at 32K ctx the read is
+                       0.28 GB/seq/step x 3,495 = ~960 GB/s — impossible
+Qwen B1024 >1 TB/s     impossible by an order of magnitude
+```
+
+Verdict: **NVMe cannot be in the decode KV path at B256+ for any model,
+and at B64 it is already marginal for the latent-cache models.** The
+working set must be GPU/host-resident — Pro at B1024 x 32K ctx is 282 GB
+ring-wide (22 GB/node), which fits host memory — with NVMe as overflow
+for cold sequences under admission control, exactly the JIT-paging posture
+the B1024 integration doc already mandates
+(docs/GLM52_B1024_JIT_KV_INTEGRATION.md:62-66: report kv_nvme_read_bytes
+per generated token or the throughput claim is invalid). The conclusion is
+robust to the unpinned NVMe constant: 2x the assumed bandwidth moves only
+the B64 GLM row from "marginal" to "feasible".
+
+### Per-batch attack priorities
+
+```text
+B1     1. D2 tensor-map cache (3-13%, certain, days)
+       2. D10/D1 CUDA graphs + fusion (12-34% of every model's step)
+       3. D6 pre-advertised RDMA slots (~0.35 ms/tok)
+       4. D3 warp-reduce delta norm (hours)
+       State dtype: inert. NVMe: inert. Compute: irrelevant at B1.
+B8     1. graphs/fusion still pay (launch tax is 6-15% of the ~2x-longer step)
+       2. expert-queue depth and grouped-MoE plumbing: the coverage stream
+          is now 62-83% of MoE step bytes at ~1 row/expert — the worst
+          amortisation regime on the curve (PHASE6_REMAINING_WORK.md:142-150)
+       3. split-KV decode for CTA parallelism (PHASE6_REMAINING_WORK.md:152)
+B64    1. device-side grouped MoE + route-aware scheduling (85% of bytes)
+       2. D5 bounded ack window + D7 packet slab (packet rates, fill/drain)
+       3. Qwen: compute-bound at the wall from here — WMMA retile or FP8 FFN
+       4. KV residency policy: NVMe overflow must be admission-controlled
+B256   1. WMMA RETILING — Pro/Flash are past the wall crossover (B165/B130),
+          K3 crosses at B258; this is the batch where the 6.5 TFLOPS figure
+          stops being a glm52 footnote and becomes the ceiling
+       2. K3 bf16 state: +6.9%, first batch where it pays
+       3. NVMe: settled — resident working set, JIT overflow (above)
+       4. D9 indirect-A gather: still <0.5% of step bytes; keep it last
+B1024  1. compute efficiency, nothing else first: at the wall every model
+          is 1.4-7x below its memory roofline; retile targets ~8-10 TFLOPS
+          /node BF16-class for K3/GLM, FP8-class efficiency measurement for
+          Pro/Flash (calibration PENDING list)
+       2. K3 bf16 state: +22.2% memory headroom, a prerequisite once
+          compute is fixed
+       3. full-pool expert streaming as batched dense GEMM, weight-
+          stationary (18-32 rows/expert — the grouped-MoE continuation,
+          PHASE6_REMAINING_WORK.md:142-150)
+       4. KV admission control against the capacity table above
+```
+
+### Corrections this analysis makes to earlier numbers in this document
+
+- **The "K3 state correction" section above says "at B64 the state is ~40%
+  of the step's bytes at the BF16 recipe".** That figure priced the B64
+  step as fixed-weights + state and ignored expert coverage growth. With
+  coverage the B64 step is 1,157.9 GB and the state is 5% of it. The state
+  reaches first-order (13%) only at B256 and dominance-adjacent (36%) only
+  at B1024. The bullet's own lever conclusion (bf16 state matters at
+  batch, not at B1) survives; its magnitude was wrong.
+- **"At B1 there is no amortisation" (The roofline law, above) is
+  incomplete for B>1:** the fixed stream amortises 1/B but the
+  routed-expert stream anti-amortises along the coverage S-curve until
+  ~B150-B300 depending on the model. Every B8-B64 aggregate figure in the
+  per-model tables is dominated by this term.
+- **Flash B1 is 14.3 GB here vs 14.7 GB in the B1 table** — the difference
+  is the ~1 GB "indexer + misc" lump, which the decomposed table prices
+  explicitly (KV read at 2K included). No behavioural change.
+- The launch tax's relative weight is batch-dependent: D1/D10 are B1-B8
+  items. At B256-B1024 the same 6.6-16.5 ms is 1-4% of the step, and the
+  attack list re-orders accordingly (above). The B1-ordered list below is
+  unaffected.
 
 ## The static defect inventory, priced
 
@@ -492,3 +843,22 @@ should run it. The instruments already exist; the receipts do not.
   clears either way.
 - The launch counts are static LM_LAUNCH enumeration; the driver may elide
   or batch some. +-10% does not change any ranking.
+- Per-batch section: expert coverage assumes uniform routing; measured
+  glm52 skew (87% at B128 vs 98% uniform, calibration doc:62-64) means the
+  B8-B128 expert-stream figures are upper bounds. Real route histograms
+  are standing measurement #9.
+- Per-batch section: the DSv4 compression-ratio tables are off-by-one
+  against the layer counts (62 entries for 61 Pro layers, 44 for 43 Flash
+  layers, trailing 0s; deepseek_v4/config.h flags this UNVERIFIED). The KV
+  bytes/token move by at most one layer's share, +-15%.
+- Per-batch section: the per-node NVMe read rate (~5-7 GB/s assumed) is
+  pinned nowhere in this tree; the KV residency verdicts are stated to be
+  robust to 2x in either direction, but the B64 GLM "marginal" row flips
+  to "feasible" at the high end.
+- Per-batch section: GLM's DSA index cache read (32 heads x 128 dim per
+  slot, glm52.json) is unpriced; at 2K context it is second-order beside
+  the 1152 B latent read, at 1M context it is not.
+- Per-batch section: the 6.5 TFLOPS wall applied to FP8/FP4 expert GEMMs
+  is a pessimism, not a measurement — their efficiency is on the
+  calibration doc's PENDING list, and Pro/Flash's B165/B130 compute
+  crossovers move past B1024 if FP8 GEMMs hold ~40% of FP8 peak.

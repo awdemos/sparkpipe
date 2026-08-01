@@ -68,6 +68,16 @@ static int32_t Glm52BindLayer(
         layer_buffers->dense_gate_weight = node->dense_gate_weight_bf16;
         layer_buffers->dense_up_weight = node->dense_up_weight_bf16;
         layer_buffers->dense_down_weight = node->dense_down_weight_bf16;
+        // One GEMM can serve gate and up only when the pack laid the up rows
+        // immediately behind the gate rows. That is a pointer comparison at
+        // bind time, never an assumption about the pack: anything else takes
+        // the layer's two-launch path and loses nothing but the fusion.
+        layer_buffers->dense_gate_up_fused =
+            (const uint8_t *)node->dense_up_weight_bf16 ==
+                (const uint8_t *)node->dense_gate_weight_bf16 +
+                    ((uint64_t)GLM52_DENSE_INTERMEDIATE * GLM52_HIDDEN * 2u)
+            ? 1u
+            : 0u;
         layer_buffers->router_weight = 0;
         layer_buffers->expert_w1_weight = 0;
         layer_buffers->expert_w1_scale = 0;
@@ -91,6 +101,7 @@ static int32_t Glm52BindLayer(
     layer_buffers->dense_gate_weight = 0;
     layer_buffers->dense_up_weight = 0;
     layer_buffers->dense_down_weight = 0;
+    layer_buffers->dense_gate_up_fused = 0u;
     return LM_LAUNCH_OK;
 }
 
@@ -195,7 +206,7 @@ extern "C" int32_t Glm52StageSlicePrefill(
         packed_rows,
         context,
         multiprocessors,
-        (cudaStream_t)stream);
+        (cudaStream_t)(uintptr_t)stream);
 }
 
 extern "C" int32_t Glm52StageSlice(
@@ -222,5 +233,5 @@ extern "C" int32_t Glm52StageSlice(
         packed_rows,
         context,
         multiprocessors,
-        (cudaStream_t)stream);
+        (cudaStream_t)(uintptr_t)stream);
 }

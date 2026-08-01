@@ -21,6 +21,9 @@ run "reference oracle"     "gcc -O2 -Wall -Wextra -Itests -o /tmp/g_r tests/test
 run "weight binding"       "gcc -O2 -Wall -Wextra -I. -Imodules/glm52_resident_decode_stage/include -Iinclude -Ideployment/include -Imodel-families/glm52/include -o /tmp/g_b tests/test_pack_bind.c && /tmp/g_b"
 run "sidebands"            "gcc -O2 -Wall -Wextra -I. -o /tmp/g_s tests/test_sideband.c && /tmp/g_s"
 run "kv cache"             "gcc -O2 -Wall -Wextra -I. -o /tmp/g_kv tests/test_cache.c && /tmp/g_kv"
+# The JIT tier below device/host KV: lookahead, preemption and eviction are all
+# schedule arithmetic, so a mock drive verifies the whole contract on a host.
+run "nvme tier"            "make -s build/test_nvme_tier && ./build/test_nvme_tier"
 run "kv geometry"          "g++ -std=c++17 -fsyntax-only -Wall -Wextra -I. -Imodel-families/glm52/include tests/test_kv_geometry.cc"
 run "workspace layout"     "gcc -O2 -Wall -Wextra -I. -o /tmp/g_w tests/test_group_gemm_workspace.c && /tmp/g_w"
 run "tensor map geometry"  "gcc -O2 -Wall -Wextra -I. -o /tmp/g_t tests/test_tensor_map_geometry.c && /tmp/g_t"
@@ -63,6 +66,19 @@ run "layer on host"        "python3 tests/test_layer_host.py"
 # The MLA store and attention over a paged cache, two sequences with interleaved
 # pages so ignoring the page table is visible.
 run "mla on host"          "python3 tests/test_mla_host.py"
+# The per-head KV pair qwen_3_6 and mimo_2_5 actually launch: store packing
+# [K|V] into the slot, then GQA decode. Both drivers previously stored a buffer
+# nothing wrote and attended through the MLA latent kernel, which returns the
+# key's prefix as the value.
+run "gqa on host"          "python3 tests/test_gqa_host.py"
+# A whole Qwen 3.6 layer on a CPU: the GEMM recorded, every other kernel the
+# one that ships. Catches the wiring defects per-kernel tests cannot - a cache
+# stored from a buffer nothing wrote, a state pool half the kernel's stride.
+run "qwen36 layer on host" "python3 tests/test_qwen36_layer_host.py"
+# MiMo 2.5's two attention branches: full and sliding-window, same recorder
+# pattern, plus the 0.707 value scale and the narrower-than-key value width
+# only this driver has.
+run "mimo25 layer on host" "python3 tests/test_mimo25_layer_host.py"
 # Dataflow, not arithmetic. Every per-kernel harness passes and an audit still
 # found three defects in which buffer feeds which kernel. Reintroducing the
 # shared-expert overwrite makes this fail.
@@ -72,20 +88,40 @@ run "layer dataflow"       "python3 tests/test_layer_dataflow.py"
 run "k3 quant recipe"      "python3 tests/test_k3_quant_recipe.py"
 run "glm52 precision"      "python3 tests/test_glm52_quantized_cuda_contract.py"
 run "glm52 unity precision" "python3 tests/test_glm52_unity_precision_contract.py"
+# The whole GLM layer, executed. The kv projections write the cache slot
+# layout directly - a reintroduced join or a swapped slot offset fails the
+# stored-slot check - and the head's norm must fold the residual stream, which
+# it did not do until this harness disagreed with it.
+run "glm52 layer on host"  "python3 tests/test_glm52_layer_host.py"
 # A whole layer, executed. Found a divide-by-zero in production code on its
 # first successful run, and catches the shared-expert overwrite by seeing the
 # routed value missing from the output rather than by reading the source.
 run "k3 layer on host"     "python3 tests/test_k3_layer_host.py"
 run "k3 slice on host"     "python3 tests/test_k3_slice_host.py"
 run "k3 engine on host"    "python3 tests/test_k3_engine.py"
+run "k3 driver contracts"  "python3 tests/test_k3_driver_contracts.py"
 run "k3 pack"              "python3 tests/test_k3_pack.py"
+# The V2 layout - fused KDA section tables, the zero-padding interleave grid,
+# the 128-byte alignment - is integer arithmetic, proven here with no numpy.
+run "k3 pack layout"       "python3 tests/test_k3_pack_layout.py"
 run "k3 tp shard"          "python3 tests/test_k3_shard.py"
 run "k3 shard table"       "python3 tests/test_k3_shard_table.py"
 run "k3 stage doorway"     "gcc -Iinclude -Imodel-families/k3/include -Imodel-families/glm52/include -Wall -Werror -DNDEBUG -c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_validation.c -o /tmp/g_k3v.o"
 run "mimo25 stage doorway"  "gcc -Iinclude -Wall -Werror -DNDEBUG -c modules/mimo25_resident_decode_stage/source/spark_mimo25_resident_decode_stage_validation.c -o /tmp/g_mimo25v.o"
 run "qwen36 stage doorway"  "gcc -Iinclude -Wall -Werror -DNDEBUG -c modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_validation.c -o /tmp/g_qwen36v.o"
 run "dsv4 stage doorway"  "gcc -Iinclude -Wall -Werror -DNDEBUG -c modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_validation.c -o /tmp/g_dsv4v.o"
+run "dsv4 driver contracts" "python3 tests/test_dsv4_driver_source_contracts.py"
+# The whole DSv4 layer on a CPU, GEMM recorded: the KV GEMM must ride the
+# low-rank quantise, the experts must see rows*top_k, the shared expert adds.
+run "dsv4 layer on host" "python3 tests/test_dsv4_layer_host.py"
 run "stage firmware runs"  "make -s build/test_glm52_resident_decode_stage_firmware && ./build/test_glm52_resident_decode_stage_firmware"
+# The decode step's launch count is the B1 bottleneck (D10): the stage-side
+# graph cache decides capture vs replay vs eager. Every branch runs here with
+# a recording mock; the five CUDA call sites in dispatch.cu stay thin.
+run "stage graph replay"   "make -s build/test_stage_graph_replay && ./build/test_stage_graph_replay"
+# dispatch.cu is nvcc-only in the real build; the stub lets a host compiler
+# see the whole translation unit, including the graph capture call sites.
+run "stage dispatch host compile" "g++ -x c++ -std=c++17 -fsyntax-only -Wall -Wextra -Werror -I. -Iinclude -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source -Imodel-families/glm52/include -Itests/cuda_stub inference/stage/dispatch.cu"
 run "topology behavior"    "make -s build/test_glm52_production_topology && ./build/test_glm52_production_topology"
 run "fabric topology"      "make -s build/test_fabric_topology && ./build/test_fabric_topology"
 run "request api behavior"  "make -s build/test_glm52_request_api && ./build/test_glm52_request_api"
@@ -113,6 +149,10 @@ run "dry naming law"       "python3 tests/test_dry_law.py"
 # it and nothing would notice it failing to compile.
 run_cuda "grouped topk builds"  "sh tools/build_grouped_topk.sh"
 run_cuda "replay fold builds"   "sh tools/build_replay_fold.sh"
+run_cuda "head topk builds"     "sh tools/build_head_topk.sh"
+# The head's chunked top-k, run on a CPU and scored against float32 with the
+# tie rule planted at the top of the shortlist.
+run "head topk on host"    "python3 tests/test_head_host.py"
 run "kernel algorithms"    "python3 tests/test_kernel_algorithms.py"
 run "model contracts"      "python3 tests/test_model_driver_contracts.py"
 run_cuda "nvcc: sm_121a build"  "sh tools/build.sh"

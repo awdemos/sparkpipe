@@ -215,6 +215,7 @@ TEST_NAMES := \
     test_release \
     test_glm52_kv_cache \
     test_kv_store \
+    test_nvme_tier \
     test_kv_mooncake \
     test_qwen36_work_control \
     test_dsv4_cache_plan \
@@ -251,7 +252,8 @@ TEST_NAMES := \
     test_driver_compiler \
     test_orchestrator \
     test_glm52_resident_decode_stage_firmware \
-    test_glm52_resident_decode_stage_production_runner
+    test_glm52_resident_decode_stage_production_runner \
+    test_stage_graph_replay
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
@@ -261,6 +263,8 @@ PYTHON_TESTS := \
 	tests/test_cuda_performance_contracts.py \
 	tests/test_dry_law.py \
 	tests/test_dsv4_contracts.py \
+	tests/test_dsv4_driver_source_contracts.py \
+	tests/test_dsv4_layer_host.py \
 	tests/test_expert_grouping.py \
 	tests/test_fast_defaults.py \
 	tests/test_gemm_k_alignment.py \
@@ -268,15 +272,19 @@ PYTHON_TESTS := \
 	tests/test_glm52_dspark_trace_quality.py \
 	tests/test_glm52_firmware_package.py \
 	tests/test_glm52_fp8_pack_layout.py \
+	tests/test_glm52_layer_host.py \
 	tests/test_glm52_prompt_pipeline_input.py \
 	tests/test_glm52_quantized_cuda_contract.py \
 	tests/test_glm52_stage_pack.py \
 	tests/test_glm52_unity_precision_contract.py \
+	tests/test_gqa_host.py \
 	tests/test_grouped_moe_source_contracts.py \
+	tests/test_k3_driver_contracts.py \
 	tests/test_k3_engine.py \
 	tests/test_k3_kv_geometry.py \
 	tests/test_k3_layer_host.py \
 	tests/test_k3_pack.py \
+	tests/test_k3_pack_layout.py \
 	tests/test_k3_quant_recipe.py \
 	tests/test_k3_shard.py \
 	tests/test_k3_shard_table.py \
@@ -290,6 +298,7 @@ PYTHON_TESTS := \
 	tests/test_layer_kinds.py \
 	tests/test_measured_status.py \
 	tests/test_memory_contracts.py \
+	tests/test_mimo25_layer_host.py \
 	tests/test_mla_absorption.py \
 	tests/test_mla_host.py \
 	tests/test_model_driver_contracts.py \
@@ -298,6 +307,7 @@ PYTHON_TESTS := \
 	tests/test_ptx_capability_gate.py \
 	tests/test_python_syntax.py \
 	tests/test_qwen36_bf16_contract.py \
+	tests/test_qwen36_layer_host.py \
 	tests/test_release_assemble.py \
 	tests/test_rope_pairing.py \
 	tests/test_router_host.py \
@@ -662,6 +672,11 @@ build/test_distributed_work: tests/test_distributed_work.c $(MODEL_COMMON_LIBRAR
 build/test_json: tests/test_json.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+# The stage-side graph cache and its capture/replay/fallback decision, driven
+# through a recording mock of the five CUDA calls dispatch.cu provides.
+build/test_stage_graph_replay: tests/test_stage_graph_replay.c inference/stage/graph_replay.h include/sparkpipe/spark_resident_decode_stage.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) -o $@
+
 build/test_fabric_topology: tests/test_fabric_topology.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -679,6 +694,12 @@ build/test_glm52_kv_cache: tests/test_glm52_kv_cache.c $(COMMON_LIBRARY)
 
 build/test_kv_store: tests/test_kv_store.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+# The tier and its mock device, compiled together directly: the test's device
+# is a vtable implementation, so there is no library boundary to cross and no
+# archive to link for two translation units.
+build/test_nvme_tier: tests/test_nvme_tier.c cache/nvme_tier.c include/sparkpipe/spark_nvme_tier.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_nvme_tier.c cache/nvme_tier.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_kv_mooncake: tests/test_kv_mooncake.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
 	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@

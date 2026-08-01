@@ -277,7 +277,9 @@
 // A recurrent state accumulates over a million tokens without renormalising, so
 // fp32 is not a precision luxury - the same argument as keeping the flash
 // attention output in fp32 during training. The rest of the model is 4- and
-// 8-bit; this one buffer is not.
+// 8-bit; this one buffer is not. The bf16 escape exists - it is half of the
+// largest batch term in the model - as an admission-time option with its own
+// numerics contract at K3_KDA_STATE_SLOT_BYTES_BF16 below, default OFF.
 // Reference semantics (moonshotai/Kimi-K3 modeling_kimi_linear.py): the
 // checkpoint's A_log tensor carries 128 heads; the model runs 96 - the
 // loader takes the authoritative first-96 slice and must refuse other
@@ -303,6 +305,32 @@
 #define K3_KDA_STATE_SLOT_BYTES \
 	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * K3_KDA_STATE_ELEMENT_BYTES)
 #define K3_KDA_STATE_BYTES (K3_KDA_STATE_SLOT_BYTES + K3_KDA_CONV_WINDOW_BYTES)
+
+// THE BF16 STATE OPTION - HALF THE SLOT, DEFAULT OFF, FAIL-CLOSED TODAY.
+//
+// At batch the fp32 slot is the largest per-sequence stream in the model:
+// 69 layers x 6.59 MB x 2 (read + write) = 909 MB per sequence per token,
+// ~40% of a B64 step's bytes at the BF16 weight recipe
+// (docs/PERF_ROADMAP_2026-08-01.md, "The K3 state correction"). Halving the
+// slot halves exactly that term, and K3_SPEED.md:56-60 names it the single
+// biggest K3 throughput lever after residency - and "a numerics question,
+// not a systems one". The numerics: the slot is read and rewritten at every
+// committed token, so a bf16 slot re-rounds every element once per token and
+// the rounding compounds inside a recurrence that never renormalises, over a
+// 1M-token context. That is the same argument the fp32 block above makes,
+// and it does not go away because the bandwidth is tempting.
+//
+// So this is an ADMISSION-TIME option (README.md:81-84 prices the pool both
+// ways), never the default, and it is gated three ways: the consumer flag is
+// K3LayerBuffers::kda_state_bf16, the layer FAILS CLOSED on it while
+// LmDeltaRuleKernel hardwires four-byte addressing (its head offset is
+// KEY_DIM * VALUE_DIM * 4u, its shared tile and pool traffic are float), and
+// tests/test_k3_driver_contracts.py refuses a tree where the flag can launch.
+// The kernel-side contract that lifts the gate is written at the flag.
+#define K3_KDA_STATE_ELEMENT_BYTES_BF16 2u
+#define K3_KDA_STATE_SLOT_BYTES_BF16 \
+	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM \
+		* K3_KDA_STATE_ELEMENT_BYTES_BF16)
 // Layer counts by kind, so per-layer pool arithmetic has one source. 69 + 24.
 // Literals, matching generated_config.h's spelling of the same two numbers -
 // pipeline_sideband.h includes both headers, and (K3_LAYERS / 4u) + 1 against

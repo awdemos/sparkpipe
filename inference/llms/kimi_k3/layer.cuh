@@ -229,6 +229,9 @@ struct K3LayerBuffers
 	uint16_t *gate_up_bf16;
 	uint16_t *intermediate_bf16;
 	uint16_t *route_gather_bf16;
+	// THE GATHERED COPY DIES WITH THE DOUBLE-TOUCH. It exists only because the
+	// grouped GEMM cannot yet stage A rows indirectly; the contract that
+	// removes it is written at the gather site in K3LayerLatentMoe.
 	// Rows sorted by sequence, sequence_row_begin a prefix of length
 	// sequences + 1: sequence s owns rows [begin[s], begin[s+1]). Null means
 	// identity - row i is sequence i - which is every pure-decode step. The
@@ -248,6 +251,25 @@ struct K3LayerBuffers
 
 	// The recurrent half. Fixed per sequence, never grows with context.
 	uint8_t *kda_state_pool;
+	// BF16 STATE, DEFAULT OFF, AND IT FAILS CLOSED HERE. Nonzero asks for the
+	// half-width slot of config.h's K3_KDA_STATE_SLOT_BYTES_BF16 - the batch
+	// lever the roadmap prices at half of 909 MB per sequence per token. The
+	// bind strides the pool by the flag so the plumbing is honest, but the
+	// layer refuses to launch on it: LmDeltaRuleKernel addresses the slot as
+	// float (head offset KEY_DIM * VALUE_DIM * 4u, fp32 shared tile, fp32
+	// pool read and write), so running against a bf16 pool would mis-stride
+	// every head and every sequence - a silent corruption, the worst kind.
+	//
+	// What lifts the gate, in inference/kernels/linear_attn.cuh and nowhere
+	// else: a bf16-store variant that loads the slot bf16 -> fp32 into the
+	// same shared tile, runs the recurrence in fp32 EXACTLY as today, and
+	// converts back only on the commit store. Decode, verify and the replay
+	// fold must convert at the same two points or the kda gate's
+	// bit-equivalence between them dies - and verify (commit == 0) never
+	// stores, so it stays dtype-neutral. The numerics contract this option
+	// signs is in config.h at K3_KDA_STATE_SLOT_BYTES_BF16; admission-time
+	// only, never default.
+	uint32_t kda_state_bf16;
 	uint16_t *kda_q_window;
 	uint16_t *kda_k_window;
 	uint16_t *kda_v_window;
@@ -407,6 +429,16 @@ template<class Format>
 static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t sequences, uint32_t commit, uint16_t *partial_accumulate, uint32_t multiprocessors, cudaStream_t stream)
 {
 	int32_t status;
+	uint32_t state_slot_bytes;
+	// THE BF16 STATE OPTION IS REFUSED, NOT MIS-ADDRESSED. The delta kernel's
+	// slot arithmetic is four-byte only; the day it grows the bf16-store
+	// variant the flag contract describes, this check and the stride below
+	// are the two lines that change. An error here is the loud failure -
+	// launching would alias half-width slots into a full-width reader.
+	if ( b->kda_state_bf16 != 0u )
+		return(LM_LAUNCH_ERR_SHAPE);
+	state_slot_bytes = b->kda_state_bf16 != 0u
+		? K3_KDA_STATE_SLOT_BYTES_BF16 : K3_KDA_STATE_SLOT_BYTES;
 	// THE INPUT IS THE RETRIEVAL, ALONE. Under AttnRes there is no residual
 	// stream to fold in: the reference computes input_layernorm(h) where h is
 	// what the retrieval produced (or the raw stream at layer 0), and the
@@ -510,7 +542,7 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(sequences,K3_KDA_HEADS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)), stream,
-		b->kda_state_pool,K3_KDA_STATE_SLOT_BYTES,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,retention,write_gate,b->attention_out_bf16, K3_KDA_HEADS,1u,sequences,commit);
+		b->kda_state_pool,state_slot_bytes,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,retention,write_gate,b->attention_out_bf16, K3_KDA_HEADS,1u,sequences,commit);
 	// RMSNORM BEFORE THE GATE, AND ONLY HERE. Report eq. 6 normalises the
 	// recurrent output head-wise before gating; eq. 7 gates the MLA output with
 	// no normalisation at all. The two paths differ in exactly this step.
@@ -650,6 +682,39 @@ static int32_t K3LayerLatentMoe(const K3LayerBuffers *b, uint32_t rows, uint32_t
 	// activations, so the expert GEMMs stream BF16 rows against MXFP4 weights
 	// with the E8M0 plane decoded in the load. The quantiser this replaced was
 	// doing the expansion implicitly on its way to a grid the recipe forbids.
+	//
+	// AND THE GATHER IS THE DOUBLE-TOUCH (audit K3-PERF-004, roadmap D9): the
+	// build above already read every routed row once to pack it, this launch
+	// reads latent rows a second time and writes the packed copy, and the w1
+	// GEMM reads that copy - 2R+1W where a gather-aware A load pays 1R. At B1
+	// the copy is 16 rows x 3584 x 2 B x 2 = 229 KB a layer and the launch
+	// tax exceeds the bytes; at B16 it is ~150 MB a token across the MoE
+	// stack, so this is a batch fix, not a B1 one.
+	//
+	// THE MAP THAT REMOVES IT ALREADY EXISTS. route_source_token[packed] is
+	// exactly the source-token index an indirect-A grouped GEMM would need -
+	// LmRouteBuildKernel writes it, and the finalize below already consumes
+	// the inverse through route_packed_row. What is missing is not here:
+	// LmGemmArguments has no activation-row-index field and the kernel stages
+	// A by TMA from one contiguous buffer, which per-row indirection cannot
+	// be - TMA boxes are affine. The consumer-side contract for whoever owns
+	// inference/kernels/gemm.cuh:
+	//
+	//   * an activation_row_index word on LmGemmArguments; when set, packed
+	//     A row p is activation row activation_row_index[p], and the w1
+	//     launch below passes route_source_token with latent_bf16 as the A
+	//     base and rows (not packed_rows) as its extent.
+	//   * that variant stages A rows by cp.async or vectorised ldg through
+	//     the index - the B side, the E8M0 scale plane, the tile prefix and
+	//     the persistent grid are all unchanged. TMA-vs-cp.async occupancy
+	//     is the open hardware question the roadmap gates the fix on, so the
+	//     indirect form is a variant, not a replacement.
+	//   * when it lands, this launch, route_gather_bf16, and the gather
+	//     check in tests/test_k3_quant_recipe.py are deleted together; the
+	//     scatter side needs nothing - the finalize never read the copy.
+	//
+	// Until then the gather stays: it is the only producer of the packed
+	// activation, and the recipe gate asserts on its presence.
 	LM_LAUNCH((LmGatherRowsKernel<K3_LAYER_THREADS>),
 		dim3((K3_ROUTED_EXPERT_HIDDEN + K3_LAYER_THREADS - 1u) / K3_LAYER_THREADS,packed_rows),
 		K3_LAYER_THREADS, 0, stream,
@@ -779,6 +844,26 @@ static int32_t K3LayerDenseMlp(const K3LayerBuffers *b, uint32_t rows, uint32_t 
 		K3_DENSE_INTERMEDIATE,K3_HIDDEN,multiprocessors,stream));
 }
 
+// The head, already in the split form the full-vocab price demands.
+//
+// Two of the three costs the naive form pays are gone. The candidate kernel
+// reduces each 1024-wide vocab tile to its best (score, token) pair, so the
+// full logit row - 163840 x 4 B per decode row, written and re-read every
+// step - is never materialised, and the commit reduces 160 candidates a row
+// instead of scanning the vocabulary. What REMAINS is the weight stream
+// itself: 163840 x 7168 x 2 B = 2.35 GB read once per step, and that part is
+// irreducible for an exact argmax - every vocab row must meet the hidden
+// state once, which is the roadmap's D8 verdict ("exact sampling admits no
+// cheat"). At TP13 it is ~180 MB per rank, 1.7% of the K3 budget.
+//
+// WHAT SAMPLING CONSUMES, checked before touching any of this: output_token
+// and output_score only - one argmax token per row, greedy. The K3 engine
+// commits tokens, no temperature/top-p path exists in this driver, and
+// LmHeadSoftmaxKernel - which DOES need the full logit row - is never
+// launched here. A sampler that needs the distribution would need the
+// full-vocab GEMM restored and is a different contract, not a flag on this
+// one. The restricted form (token_ids non-null, vocabulary = set size) is
+// the exact grammar mitigation and is already wired through K3HeadRestricted.
 static int32_t K3Head(const K3LayerBuffers *b, const void *head_norm_weight, const void *head_weight, const uint32_t *token_ids, uint32_t vocabulary, uint32_t rows, cudaStream_t stream)
 {
 	uint32_t tiles = (vocabulary + K3_HEAD_TILE - 1u) / K3_HEAD_TILE;

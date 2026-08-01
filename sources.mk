@@ -39,6 +39,7 @@ SPARKPIPE_MODEL_COMMON_SOURCES := \
     text/tokenizer.c \
     cache/store/kv_store.c \
     cache/store/stage_kv_client.c \
+    cache/nvme_tier.c \
     runtime/stage_module_common.c \
     runtime/work_transaction.c
 

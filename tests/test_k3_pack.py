@@ -1,16 +1,27 @@
 """The packer moves the checkpoint's bytes and performs exactly the folds the
-weight table cannot get from any checkpoint.
+weight table cannot get from any checkpoint - and, since format V2, it owns
+the layout those bytes land in.
 
 A miniature synthetic checkpoint - written with the same stdlib safetensors
 framing the reader parses, no torch - drives tools/k3_pack.py end to end, and
 the manifest's bytes are held to the source:
 
-  the expert payloads and E8M0 planes are BIT-PRESERVED, gate first then up,
-  experts-major, the layout the weight-only GEMM prices
+  the expert payloads and E8M0 scales are INTERLEAVED, gate first then up,
+  experts-major, one 17-row cell per 16 neurons per 128-element k-tile -
+  payload and scales in one zero-padding stream (docs/K3_PACK_FORMAT_V2.md)
+  the six KDA input projections ride as two fused tensors, one TP shard
+  class each: q|k|v|beta and decay_down|gate_down, bytes exactly the
+  checkpoint's sections concatenated
+  every tensor offset is 128-aligned and the payload base is too
   the q-fold equals the einsum it claims, to bf16 round-to-nearest-even
   kv_b's value half lands as its own per-head table
   the attention-residual gammas fold elementwise into their score rows
   an E8M0 0xff anywhere is a loud failure, as is a missing tensor
+
+The layout arithmetic itself - the grid closure, the addressing contract, the
+alignment - is proven without numpy by tests/test_k3_pack_layout.py; this
+test holds the byte CONTENT to the checkpoint, which needs numpy for its
+reference einsum.
 """
 import json
 import struct
@@ -47,8 +58,8 @@ def write_safetensors(path, tensors):
             handle.write(blob)
 
 
-def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=32, inter=32):
-    hidden, vocab = 32, 64
+def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=128, inter=128):
+    hidden, vocab = 64, 64
     q_lora, kv_lora, rope, nope, v_head, heads = 16, 32, 8, 16, 32, 2
     kda_heads, kda_head = 2, 32
     kda_dim = kda_heads * kda_head
@@ -132,14 +143,27 @@ def mini_checkpoint(root, poison_scale=False, bad_fp32=False, latent=32, inter=3
 def read_pack(path):
     raw = path.read_bytes()
     magic, version, length = struct.unpack_from("<IIQ", raw, 0)
-    assert magic == 0x4B33504B and version == 1
+    assert magic == 0x4B33504B and version == 2
     manifest = json.loads(raw[16:16 + length])
     base = 16 + length
-    base += (-base) % 64
+    base += (-base) % 128
     def tensor(name):
         entry = manifest["tensors"][name]
         return raw[base + entry["offset"]: base + entry["offset"] + entry["bytes"]]
     return manifest, tensor
+
+
+def interleave_reference(payload, scales, experts, out_dim, k_dim):
+    """The V2 grid, written independently of the packer: payload
+    (E, out, K/2) and scales (E, out, K/32) become (E, k_tiles, cells, 17,
+    64) - sixteen 64B payload rows then one 64B scale row per cell."""
+    p = payload.reshape(experts, out_dim, k_dim // 128, 64) \
+        .transpose(0, 2, 1, 3).reshape(experts, k_dim // 128, out_dim // 16,
+                                       16, 64)
+    s = scales.reshape(experts, out_dim, k_dim // 128, 4) \
+        .transpose(0, 2, 1, 3).reshape(experts, k_dim // 128, out_dim // 16,
+                                       1, 64)
+    return np.concatenate([p, s], axis=3).tobytes()
 
 
 def main():
@@ -154,20 +178,56 @@ def main():
             print("FAIL packer:", (run.stdout + run.stderr)[-400:])
             return 1
         manifest, tensor = read_pack(out)
+        entries = manifest["tensors"]
+        if any(e["offset"] % 128 != 0 for e in entries.values()):
+            print("  FAIL a tensor offset is not 128-aligned")
+            failures += 1
         p = "model.layers.0."
-        want = b"".join(
-            src[f"{p}mlp.experts.{e}.{w}.weight"][1].tobytes()
-            for e in range(4) for w in ("w1", "w3"))
-        if tensor(p + "expert_w1_weight") != want:
-            print("  FAIL expert w1|w3 payload is not bit-preserved gate-first")
-            failures += 1
-        want = b"".join(
-            src[f"{p}mlp.experts.{e}.{w}.weight_scale"][1].tobytes()
-            for e in range(4) for w in ("w1", "w3"))
-        if tensor(p + "expert_w1_scale") != want:
-            print("  FAIL the E8M0 plane is not [expert][neuron][k_group]")
-            failures += 1
+        # the fused KDA projections: the checkpoint's sections, concatenated,
+        # one shard class per fused tensor
         a = p + "self_attn."
+        want = b"".join(src[a + n][1].tobytes() for n in (
+            "q_proj.weight", "k_proj.weight", "v_proj.weight", "b_proj.weight"))
+        if tensor(p + "kda_qkv_beta_weight") != want:
+            print("  FAIL fused q|k|v|beta is not the sections concatenated")
+            failures += 1
+        sections = entries[p + "kda_qkv_beta_weight"]["sections"]
+        if [s["name"] for s in sections] != ["q", "k", "v", "beta"] or \
+                entries[p + "kda_qkv_beta_weight"]["shard_class"] != \
+                "output_dim_heads":
+            print("  FAIL fused q|k|v|beta section table or shard class")
+            failures += 1
+        want = src[a + "f_a_proj.weight"][1].tobytes() + \
+            src[a + "g_a_proj.weight"][1].tobytes()
+        if tensor(p + "kda_decay_gate_down_weight") != want:
+            print("  FAIL fused decay|gate down is not the sections concatenated")
+            failures += 1
+        for gone in ("kda_q_weight", "kda_beta_weight", "kda_decay_down_weight",
+                     "expert_w1_scale", "expert_w2_scale"):
+            if p + gone in entries:
+                print(f"  FAIL {gone} must not exist in V2")
+                failures += 1
+        # the expert stream: payload and scales interleaved per the reference
+        # grid, gate first then up, experts-major
+        latent, inter, experts = 128, 128, 4
+        pay = np.stack([np.concatenate(
+            [src[f"{p}mlp.experts.{e}.w1.weight"][1],
+             src[f"{p}mlp.experts.{e}.w3.weight"][1]]) for e in range(experts)])
+        sc = np.stack([np.concatenate(
+            [src[f"{p}mlp.experts.{e}.w1.weight_scale"][1],
+             src[f"{p}mlp.experts.{e}.w3.weight_scale"][1]]) for e in range(experts)])
+        want = interleave_reference(pay, sc, experts, 2 * inter, latent)
+        if tensor(p + "expert_w1_weight") != want:
+            print("  FAIL expert w1 is not the interleaved gate-first stream")
+            failures += 1
+        pay = np.stack([src[f"{p}mlp.experts.{e}.w2.weight"][1]
+                        for e in range(experts)])
+        sc = np.stack([src[f"{p}mlp.experts.{e}.w2.weight_scale"][1]
+                       for e in range(experts)])
+        want = interleave_reference(pay, sc, experts, latent, inter)
+        if tensor(p + "expert_w2_weight") != want:
+            print("  FAIL expert w2 is not the interleaved stream")
+            failures += 1
         for packed, source in (
                 ("kda_q_conv_weight", "q_conv1d.weight"),
                 ("kda_k_conv_weight", "k_conv1d.weight"),

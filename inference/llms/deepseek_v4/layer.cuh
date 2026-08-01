@@ -134,6 +134,36 @@ struct Dsv4LayerBuffers
 	float *output_score;
 };
 
+// -- exact attention weight bytes, replacing the roadmap's approximation ---------
+//
+// docs/PERF_ROADMAP_2026-08-01.md prices this line at "~195 M params/layer" for
+// Flash and "~632 M" for Pro, and flags +-15% because the grouped low-rank
+// output projection (output_lora_rank, output_group_count) was approximated as
+// full-width. The GEMMs below are the ground truth; every factor is config
+// geometry and tests/test_dsv4_driver_source_contracts.py recomputes the
+// figures from config.h and dsv4_pro.json, so a stale number fails a gate:
+//
+//     Flash, as coded (config.h):
+//         q_down 4096x1024 + q_up 1024x32768 + kv_latent 4096x576
+//         + o_proj 32768x4096 = 174325760 weights/layer
+//         -> 7.50 GB/token FP8 over 43 layers   (roadmap 8.4 GB: 11.9% high)
+//     Pro, as coded (dsv4_pro.json geometry, same full-width o_proj):
+//         q_down 7168x1536 + q_up 1536x65536 + kv_latent 7168x576
+//         + o_proj 65536x7168 = 585564160 weights/layer
+//         -> 35.72 GB/token over 61 layers      (roadmap 38.5 GB: 7.9% high)
+//     Pro, contract o_proj (output_group_count 16 x output_lora_rank 1024):
+//         16x(4096x1024 + 1024x7168) = 184549376, layer total 300351488
+//         -> 18.32 GB/token. UNIMPLEMENTED: this function launches one
+//         full-width o_proj GEMM. Landing the grouped low-rank form halves
+//         the Pro attention line and lifts the 80%-eta Pro ceiling from
+//         ~55 tok/s (52.1 GB/token coded: +14.1 experts, +1.9 head,
+//         +0.34 router) to ~82 tok/s (34.7 GB/token).
+//
+// The router is separate and BF16 (hidden x experts x 2 B per layer, read
+// every step): 90 MB/token Flash, 336 MB/token Pro, absent from the roadmap's
+// Pro line. Index projections are absent from this driver entirely - the
+// sparse score below reads the query and the latent cache directly - so they
+// are not priced here. Block-128x128 FP8 weight scales add 0.024%: noise.
 template<class Format>
 static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint32_t context, uint32_t sms, cudaStream_t stream)
 {
@@ -144,6 +174,9 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 	// effective set is whichever is smaller. Treating them as alternatives would
 	// attend outside the window on any context longer than 512.
 	uint32_t budget = context < DSV4_SLIDING_WINDOW ? context : DSV4_SLIDING_WINDOW;
+	// CAPTURE: this host branch on a runtime context length changes the launch
+	// sequence, so a CUDA graph of this layer is valid only for the (rows,
+	// sparse) shape it was captured at - the engine must key graphs on both.
 	bool sparse = context > DSV4_INDEX_TOP_K;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<DSV4_LAYER_THREADS,uint16_t>), rows, DSV4_LAYER_THREADS, (DSV4_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,DSV4_HIDDEN,DSV4_HIDDEN,DSV4_RMS_EPSILON);
@@ -162,13 +195,37 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 	// DSV4_COMPRESS_ROPE_THETA. Two thetas is not a mistake in the config: the
 	// model trains them separately because the compressed path sees a different
 	// position distribution.
+	//
+	// SPAN: LmRopeYarnKernel rotates ONE rope_dim span per block at
+	// (blockIdx.x * row_stride) + rope_offset, and the grid is rows - so of
+	// the 64 rope spans a token carries (one per head), 63 are never rotated.
+	// glm5_2's per-head kernel is not YaRN and reads a separate heads x
+	// rope_dim buffer, so the correct call needs a YaRN per-head variant in
+	// kernels/attn.cuh, which this file does not own. Flagged, not patched.
+	//
+	// WIDTH: LmAttentionDecodeKernel below reads the query at a per-head
+	// stride of LATENT + ROPE = 576, so query_bf16 is heads x 576 wide with
+	// each head's rope tail at +512. config.h names no such row width and the
+	// up projection's output_dimension is binder-set, so the binder has no
+	// constant to be right with; ATTN_HEADS * HEAD_DIM (32768) below prices
+	// the rope span, not the buffer. Same owner, same fix.
 	LM_LAUNCH((LmRopeYarnKernel<DSV4_LAYER_THREADS,LM_ROPE_INTERLEAVED>), rows, DSV4_LAYER_THREADS, 0, stream,
 		b->query_bf16,b->positions,DSV4_ATTN_HEADS * DSV4_HEAD_DIM, (DSV4_ATTN_HEADS * DSV4_HEAD_DIM) - DSV4_ROPE_DIM,DSV4_ROPE_DIM, DSV4_ROPE_THETA,(float)DSV4_YARN_FACTOR, (float)DSV4_YARN_ORIGINAL_POSITIONS,1.0f,32.0f);
-	LM_LAUNCH((LmQuantiseRowsKernel<Format,DSV4_LAYER_THREADS>), dim3(rows,DSV4_HIDDEN / Format::kScaleGroup), DSV4_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,
-		b->normed_bf16,0,b->packed_activation,b->packed_scale,rows,DSV4_HIDDEN);
+	// NO SECOND QUANTISE OF THE NORMED ROWS. LmLowRankProject already ran
+	// LmQuantiseRowsKernel over this exact buffer into the query scratch - same
+	// kernel, same grid, same row-UE4M3 scale layout - so the KV latent GEMM
+	// reads that copy. The launch this replaces cost one kernel per layer per
+	// token plus a full re-read and re-write of the normed rows: 61 launches
+	// and ~1.35 GB of activation traffic per step at B1024 on Pro. The guard
+	// is what makes the reuse a contract rather than a coincidence: the codes
+	// are only the normed rows if the down projection consumes the hidden.
+	static_assert(Format::kScaleGroup > 0u,
+		"the KV latent GEMM reuses the low-rank path's quantised input, which exists only for a quantised format");
+	if ( b->query.input_dimension != DSV4_HIDDEN )
+		return(LM_LAUNCH_ERR_SHAPE);
 	memset(&gemm,0,sizeof(gemm));
 	gemm.scale_a = Dsv4Fp8ActivationScale(
-		b->packed_scale,
+		b->query_scratch.input_scales,
 		rows,
 		DSV4_HIDDEN);
 	gemm.scale_b = Dsv4Fp8WeightScale(
@@ -180,7 +237,7 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->kv_slot_bf16;
 	status = LmGemmLaunch<Format,DSV4_LAYER_TILE_N,Format::kTileK,DSV4_LAYER_STAGES,DSV4_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->kv_latent_weight,rows,rows,DSV4_TOP_K,1u,
+		&gemm,b->query_scratch.input_codes,b->kv_latent_weight,rows,rows,DSV4_TOP_K,1u,
 		DSV4_HIDDEN,DSV4_HEAD_DIM + DSV4_ROPE_DIM,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -192,6 +249,19 @@ static int32_t Dsv4LayerAttention(const Dsv4LayerBuffers *b, uint32_t rows, uint
 		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, DSV4_HEAD_DIM + DSV4_ROPE_DIM);
 	if ( sparse )
 	{
+		// GRID LIMIT: LmSparseScoreKernel maps position to blockIdx.y, so
+		// grid.y = context and the launch fails with an invalid-configuration
+		// error - caught by the status checks on this path, never silent -
+		// once context passes 65,535, the y ceiling on every CUDA arch. The
+		// model sells 1M context; the fix is an axis swap in
+		// kernels/attn.cuh (position to the unbounded blockIdx.x) and belongs
+		// to that file's owner.
+		//
+		// WINDOW: in this branch the attended set is the full top-k selection
+		// with no 128-token window clamp, while the comment above `budget`
+		// describes selection AND window. Which the checkpoint means is a
+		// reference question, not one to guess at three days before bring-up -
+		// flagged, not changed.
 		LM_LAUNCH((LmSparseScoreKernel<Dsv4Kv,DSV4_LAYER_THREADS,DSV4_INDEX_DIM>), dim3(rows,context), DSV4_LAYER_THREADS, 0, stream,
 		b->query_bf16,b->cache,b->sequence_of_row,b->context_length, DSV4_INDEX_HEADS,b->selection_scores);
 		LM_LAUNCH((LmTopkHistogramKernel<DSV4_LAYER_THREADS>), rows, DSV4_LAYER_THREADS, 0, stream,

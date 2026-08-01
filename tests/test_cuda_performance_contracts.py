@@ -268,6 +268,11 @@ def validate_grouped_moe_contract() -> None:
 
     require(route, "packed_rows != expected_packed_rows", "route cardinality validation")
     require(route, "LmLaunchGroupedTileM(rows,top_k,EXPERTS)", "token-priced grouped tile")
+    # The gather double-touch is retired by reading A rows through
+    # route_source_token; the consumer contract and the named mapping are
+    # what the gather4 GEMM wave builds against.
+    require(route, "ROUTE ROW INDIRECTION CONSUMER CONTRACT", "route row indirection contract")
+    require(route, "LmRouteSourceRow", "named route indirection mapping")
     require(queue_header, "SPARK_GLM52_EXPERT_QUEUE_MODE_SEALED_BATCH", "sealed expert batch mode")
     require(queue_header, "SparkGlm52ExpertQueueSealLayer", "sealed layer API")
     require(queue_source, "queue->layer_sealed[layer_index]", "sealed layer state")
@@ -279,6 +284,22 @@ def validate_stream_ordered_dispatch() -> None:
     require(dispatch, "cudaLaunchHostFunc(", "stream-ordered stage completion")
     require(dispatch, "GLM52_STAGE_SLICE_DEBUG_SYNC", "debug-only synchronization gate")
     require(dispatch, "SparkResidentDecodeStageBackendQuiesce", "explicit quiesce boundary")
+    # D10: the decode step's launch count, not its kernels, is the B1 cost.
+    require(dispatch, "SparkResidentDecodeStageGraphSubmit(", "decode step graph capture/replay")
+    require(dispatch, "cudaStreamBeginCapture(", "stage-side graph capture")
+
+
+def validate_head_selection_contract() -> None:
+    head = read("inference/kernels/head.cuh")
+
+    # Sampled decoding must not stream full logits back: the chunked top-k
+    # emits per-tile partials and commits rows * K * 8 bytes. The full-logits
+    # variant stays for callers that need the distribution.
+    require(head, "LmHeadTopkCandidateKernel", "chunked top-k partial pass")
+    require(head, "LmHeadTopkCommitKernel", "chunked top-k commit pass")
+    require(head, "LmHeadTopk", "top-k launcher")
+    require(head, "score == best && token < best_token", "deterministic top-k tie rule")
+    require(head, "LmHeadSoftmaxKernel", "full-logits variant retained")
 
 
 def main() -> int:
@@ -294,6 +315,7 @@ def main() -> int:
     validate_model_precision_contracts()
     validate_grouped_moe_contract()
     validate_stream_ordered_dispatch()
+    validate_head_selection_contract()
     print(
         f"PASS CUDA performance source contracts: {len(files)} owned CUDA files"
     )

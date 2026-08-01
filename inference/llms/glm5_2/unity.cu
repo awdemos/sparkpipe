@@ -227,6 +227,10 @@ extern "C" int32_t Glm52LayerAttentionBf16Graphed(
     }
 
     key.rows = rows;
+    // CONTRACT: the key carries no layer or buffer identity, so one cache must
+    // serve exactly one layer's buffers. Sharing a cache across layers replays
+    // the first-captured layer's graph - right shapes, wrong weights - and LmGraphKey
+    // lives in kernels/, so the discipline lives here until a caller exists.
     key.layer_kind = 0u;
     key.format = 0u;
     key.sparse = context > GLM52_DSA_SELECTED ? 1u : 0u;
@@ -252,6 +256,26 @@ extern "C" int32_t Glm52LayerAttentionBf16Graphed(
         layer_in_group,
         multiprocessors,
         stream);
-    LmGraphEndCapture(graphs, &key, stream);
-    return status;
+    // Captured work does not execute: the launches above only recorded. The
+    // first step of a new key must replay the graph it just built or the layer
+    // silently skips attention. EndCapture failure leaves nothing to replay,
+    // so fall back to running eagerly - the capture attempt itself ran nothing.
+    if ( status != LM_LAUNCH_OK )
+    {
+        LmGraphEndCapture(graphs, &key, stream);
+        return status;
+    }
+    if ( LmGraphEndCapture(graphs, &key, stream) != LM_GRAPH_OK )
+    {
+        return Glm52LayerAttention(
+            buffers,
+            rows,
+            context,
+            layer_in_group,
+            multiprocessors,
+            stream);
+    }
+    return LmGraphReplay(graphs, &key, stream) == LM_GRAPH_OK
+        ? LM_LAUNCH_OK
+        : LM_LAUNCH_ERR_LAUNCH;
 }

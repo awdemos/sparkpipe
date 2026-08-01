@@ -4,6 +4,16 @@
 // dimensions to the shared CUDA kernel library. The shipping stage runner is
 // intentionally not exported here until HCA, CSA, hyper-connections, hash MoE,
 // and the Pro stage-pack contract are connected end to end.
+//
+// LAUNCH BUDGET, audited 2026-08-01 against the shared Flash layer shape
+// (inference/llms/deepseek_v4/layer.cuh), which is the only layer driver this
+// family has: attention 13 launches dense / 16 sparse, MoE 16, so 29-32 per
+// layer, ~1,770-1,955 per 61-layer Pro token plus 3 for the head. At the
+// 2-5 us GB10 launch floor that is 3.5-9.8 ms against the 20 ms/token budget
+// the 50 tok/s target allows - 18-49% before any kernel runs, which is why
+// the Pro runner must be born graph-captured (per (rows, context, sparse)
+// step shape) rather than retrofitted. The byte side of the same audit lives
+// at the top of Dsv4LayerAttention.
 
 #include "runtime/gemm.cuh"
 #include "inference/kernels/formats/fp8.cuh"

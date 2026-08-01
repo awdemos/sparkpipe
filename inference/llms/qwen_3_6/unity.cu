@@ -42,12 +42,14 @@ template __global__ void LmSplitQkvKernel<QWEN36_THREADS>(const uint16_t *, LmQk
 // QWEN36_GDN_STATE_BYTES is their sum and kernels/kv.cuh sizes the pool from it.
 template __global__ void LmDeltaRuleKernel<QWEN36_THREADS, QWEN36_GDN_KEY_DIM, QWEN36_GDN_VALUE_DIM>(uint8_t *, uint32_t, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t, uint32_t);
 template __global__ void LmCausalConvKernel<QWEN36_THREADS, QWEN36_GDN_CONV_KERNEL, LM_CONV_SWISH,uint16_t>(uint16_t *, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t);
-template __global__ void LmKvStoreKernel<Qwen36FullKv, QWEN36_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
+template __global__ void LmExpandHeadsKernel<QWEN36_THREADS>(const uint16_t *, uint16_t *, uint32_t, uint32_t, uint32_t, uint32_t);
+// Per-head KV: the pack store and the GQA decode, not the MLA latent pair -
+// the latent kernel cannot express a value that is not a prefix of the key.
+template __global__ void LmGqaKvStoreKernel<Qwen36FullKv, QWEN36_THREADS, QWEN36_KV_HEADS, QWEN36_HEAD_DIM, QWEN36_HEAD_DIM>(LmKvView, const uint16_t *, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t);
+template __global__ void LmGqaAttentionDecodeKernel<Qwen36FullKv, QWEN36_THREADS, QWEN36_KV_HEADS, QWEN36_HEAD_DIM, QWEN36_HEAD_DIM>(const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 template __global__ void LmHeadCandidateKernel<QWEN36_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmHeadCommitKernel<QWEN36_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
 template __global__ void LmMoeFinalizeKernel<QWEN36_THREADS>(const uint16_t *, const uint32_t *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t);
-
-template __global__ void LmAttentionDecodeKernel<Qwen36FullKv, QWEN36_THREADS, QWEN36_NOPE_DIM, QWEN36_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 
 extern "C" int32_t Qwen36GemmBf16(
     LmGemmArguments *arguments,

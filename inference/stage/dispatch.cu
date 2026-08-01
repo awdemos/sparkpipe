@@ -8,6 +8,8 @@
 
 #include "sparkpipe/spark_glm52_resident_decode_stage_required_cuda.h"
 
+#include "inference/stage/graph_replay.h"
+
 static void CUDART_CB SparkResidentDecodeStageCudaCompletion(
     void *completion_context)
 {
@@ -19,6 +21,141 @@ static void CUDART_CB SparkResidentDecodeStageCudaCompletion(
     {
         completion->function(completion->context);
     }
+}
+
+// The CUDA half of the graph ops table. These five functions are the only
+// capture call sites on the stage side; every branch that decides WHEN to
+// call them lives in graph_replay.h so a host test can drive it.
+static int32_t SparkResidentDecodeStageGraphBeginCapture(
+    void *context,
+    void *cuda_stream)
+{
+    (void)context;
+    // Relaxed rather than global: a global capture forbids every other
+    // stream in the process from launching for the duration, which stalls
+    // the transport posting the previous stage's hidden state.
+    return cudaStreamBeginCapture(
+        (cudaStream_t)cuda_stream,
+        cudaStreamCaptureModeRelaxed) == cudaSuccess ? 0 : -1;
+}
+
+static int32_t SparkResidentDecodeStageGraphEndCapture(
+    void *context,
+    void *cuda_stream,
+    void **exec_out)
+{
+    cudaGraph_t graph;
+
+    (void)context;
+    graph = 0;
+    if (cudaStreamEndCapture((cudaStream_t)cuda_stream, &graph) !=
+        cudaSuccess)
+    {
+        return -1;
+    }
+    if (cudaGraphInstantiate((cudaGraphExec_t *)exec_out, graph, 0ull) !=
+        cudaSuccess)
+    {
+        cudaGraphDestroy(graph);
+        return -1;
+    }
+    cudaGraphDestroy(graph);
+    return 0;
+}
+
+static void SparkResidentDecodeStageGraphAbortCapture(
+    void *context,
+    void *cuda_stream)
+{
+    cudaGraph_t graph;
+
+    (void)context;
+    graph = 0;
+    if (cudaStreamEndCapture((cudaStream_t)cuda_stream, &graph) ==
+            cudaSuccess &&
+        graph != 0)
+    {
+        cudaGraphDestroy(graph);
+    }
+}
+
+static int32_t SparkResidentDecodeStageGraphLaunchExec(
+    void *context,
+    void *exec,
+    void *cuda_stream)
+{
+    (void)context;
+    return cudaGraphLaunch((cudaGraphExec_t)exec, (cudaStream_t)cuda_stream) ==
+        cudaSuccess ? 0 : -1;
+}
+
+static void SparkResidentDecodeStageGraphDestroyExec(void *context, void *exec)
+{
+    (void)context;
+    if (exec != 0)
+    {
+        cudaGraphExecDestroy((cudaGraphExec_t)exec);
+    }
+}
+
+static const SparkResidentDecodeStageGraphOps
+    SparkResidentDecodeStageGraphCudaOps =
+{
+    0,
+    SparkResidentDecodeStageGraphBeginCapture,
+    SparkResidentDecodeStageGraphEndCapture,
+    SparkResidentDecodeStageGraphAbortCapture,
+    SparkResidentDecodeStageGraphLaunchExec,
+    SparkResidentDecodeStageGraphDestroyExec
+};
+
+// The driver launch sequence, shaped for the graph submit callback. One
+// struct serves both decode submit paths; the prefill paths stay eager
+// because their shapes vary per prompt and would capture once per request.
+typedef struct SparkResidentDecodeStageGraphLaunchContext
+{
+    const SparkResidentDecodeStageNodeContext *node_context;
+    const SparkResidentDecodeStageStageSlicePlan *stage_slice_plan;
+    const SparkResidentDecodeStageNodeContext *const *layer_node_contexts;
+    uint32_t layer_count;
+    uint32_t pipeline_slot_index;
+    uint32_t active_sequence_count;
+    uint32_t final_token_stage;
+    const SparkKvBlockTableView *runtime_kv_block_table;
+    const SparkResidentDecodeStageFrameContext *frame_context;
+    void *cuda_stream;
+} SparkResidentDecodeStageGraphLaunchContext;
+
+static SparkStatus SparkResidentDecodeStageGraphLaunchTrampoline(
+    void *launch_context)
+{
+    const SparkResidentDecodeStageGraphLaunchContext *launch;
+
+    launch = (const SparkResidentDecodeStageGraphLaunchContext *)launch_context;
+    if (launch->stage_slice_plan != 0)
+    {
+        return SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
+            launch->stage_slice_plan,
+            launch->layer_node_contexts,
+            launch->layer_count,
+            launch->pipeline_slot_index,
+            launch->active_sequence_count,
+            launch->final_token_stage,
+            launch->runtime_kv_block_table,
+            launch->frame_context,
+            launch->cuda_stream,
+            0);
+    }
+    return SparkGlm52Sm121RequiredDecodeStageLaunch(
+        launch->node_context,
+        launch->node_context->pipeline_slots != 0
+            ? &launch->node_context
+                ->pipeline_slots[launch->pipeline_slot_index]
+            : 0,
+        launch->pipeline_slot_index,
+        launch->active_sequence_count,
+        launch->runtime_kv_block_table,
+        launch->cuda_stream);
 }
 
 static SparkStatus SparkResidentDecodeStageCudaCopyFinalTokens(
@@ -121,13 +258,42 @@ extern "C" SparkStatus SparkResidentDecodeStageBackendSubmit(
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    status = SparkGlm52Sm121RequiredDecodeStageLaunch(
-        node_context,
-        pipeline_slot,
-        pipeline_slot_index,
-        active_sequence_count,
-        runtime_kv_block_table,
-        cuda_stream);
+    {
+        SparkResidentDecodeStageGraphLaunchContext graph_launch;
+        uint32_t graph_mode;
+
+        graph_launch.node_context = node_context;
+        graph_launch.stage_slice_plan = 0;
+        graph_launch.layer_node_contexts = 0;
+        graph_launch.layer_count = 1u;
+        graph_launch.pipeline_slot_index = pipeline_slot_index;
+        graph_launch.active_sequence_count = active_sequence_count;
+        graph_launch.final_token_stage = 0u;
+        graph_launch.runtime_kv_block_table = runtime_kv_block_table;
+        graph_launch.frame_context = 0;
+        graph_launch.cuda_stream = cuda_stream;
+        graph_mode = SPARK_RESIDENT_DECODE_STAGE_GRAPH_MODE_EAGER;
+        // The decode step replays a captured recording of itself when this
+        // (batch, geometry) signature has been seen; the first sighting
+        // captures. Everything after - the debug sync, the completion host
+        // function - stays outside the recording and is unchanged.
+        status = SparkResidentDecodeStageGraphSubmit(
+            SparkResidentDecodeStageGraphSlotState(
+                node_context,
+                pipeline_slot_index),
+            active_sequence_count,
+            SparkResidentDecodeStageGraphSpecializationSignature(
+                0u,
+                1u,
+                0,
+                runtime_kv_block_table,
+                0),
+            &SparkResidentDecodeStageGraphCudaOps,
+            cuda_stream,
+            SparkResidentDecodeStageGraphLaunchTrampoline,
+            &graph_launch,
+            &graph_mode);
+    }
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -176,7 +342,6 @@ extern "C" SparkStatus SparkResidentDecodeStageBackendSubmitStageSlice(
     const SparkResidentDecodeStagePipelineSlot *pipeline_slot;
     const SparkResidentDecodeStagePipelineSlot *completion_pipeline_slot;
     void *cuda_stream;
-    void *launch_completion;
     SparkStatus status;
     cudaError_t cuda_status;
 
@@ -218,19 +383,56 @@ extern "C" SparkStatus SparkResidentDecodeStageBackendSubmitStageSlice(
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
-    launch_completion = 0;
 
-    status = SparkGlm52Sm121RequiredDecodeStageLaunchStageSlice(
-        stage_slice_plan,
-        layer_node_contexts,
-        layer_count,
-        pipeline_slot_index,
-        active_sequence_count,
-        final_token_stage,
-        runtime_kv_block_table,
-        frame_context,
-        cuda_stream,
-        launch_completion);
+    {
+        SparkResidentDecodeStageGraphLaunchContext graph_launch;
+        SparkResidentDecodeStageCudaPipelineSlotState *graph_slot_state;
+        uint32_t graph_mode;
+
+        graph_launch.node_context = first_node_context;
+        graph_launch.stage_slice_plan = stage_slice_plan;
+        graph_launch.layer_node_contexts = layer_node_contexts;
+        graph_launch.layer_count = layer_count;
+        graph_launch.pipeline_slot_index = pipeline_slot_index;
+        graph_launch.active_sequence_count = active_sequence_count;
+        graph_launch.final_token_stage = final_token_stage;
+        graph_launch.runtime_kv_block_table = runtime_kv_block_table;
+        graph_launch.frame_context = frame_context;
+        graph_launch.cuda_stream = cuda_stream;
+        graph_mode = SPARK_RESIDENT_DECODE_STAGE_GRAPH_MODE_EAGER;
+        graph_slot_state = SparkResidentDecodeStageGraphSlotState(
+            first_node_context,
+            pipeline_slot_index);
+        if (frame_context != 0 &&
+            (frame_context->flags &
+                (SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_FRAME |
+                 SPARK_RESIDENT_DECODE_STAGE_FRAME_CONTEXT_FLAG_PREFILL_VIEW)) !=
+                0u)
+        {
+            // Prefill shapes vary per prompt; a recording per prompt would
+            // capture once and evict a decode graph every time. Prefill
+            // stays eager by policy, not by capability.
+            graph_slot_state = 0;
+        }
+        // The slice's decode step replays its recording on a signature hit
+        // and captures on a miss. The final-token D2H copy below stays
+        // outside the recording: its destination is an unpinned host struct,
+        // and stream order makes the graph's writes visible to it.
+        status = SparkResidentDecodeStageGraphSubmit(
+            graph_slot_state,
+            active_sequence_count,
+            SparkResidentDecodeStageGraphSpecializationSignature(
+                final_token_stage,
+                layer_count,
+                frame_context,
+                runtime_kv_block_table,
+                (const void *)stage_slice_plan),
+            &SparkResidentDecodeStageGraphCudaOps,
+            cuda_stream,
+            SparkResidentDecodeStageGraphLaunchTrampoline,
+            &graph_launch,
+            &graph_mode);
+    }
     if (status != SPARK_STATUS_OK)
     {
         return status;

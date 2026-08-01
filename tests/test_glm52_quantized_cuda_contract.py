@@ -52,10 +52,19 @@ def main() -> int:
         "static int32_t Glm52LaunchBf16Linear(",
         "GLM 5.2 BF16 non-expert linear path",
     )
-    require(
+    for needle in (
+        "buffers->absorbed.query_latent_weight,",
+        "buffers->absorbed.query_rope_weight,",
+        "buffers->absorbed.key_rope_weight,",
+        "buffers->absorbed.kv_latent_weight,",
+    ):
+        require(layer, needle, "GLM 5.2 BF16 attention projections")
+    # The kv projections write the cache-slot layout directly; the join launch
+    # that used to assemble the slot row must not come back.
+    forbid(
         layer,
-        "LmAbsorbedProject<LmBf16Format>(",
-        "GLM 5.2 BF16 attention projections",
+        "LmJoinRowsKernel",
+        "GLM 5.2 KV slot assembly",
     )
     require(
         layer,

@@ -35,6 +35,11 @@ typedef enum cudaStreamCaptureMode
 #define cudaHostAllocDefault 0u
 #define cudaHostAllocPortable 1u
 #define cudaHostAllocMapped 2u
+#ifndef CUDART_CB
+#define CUDART_CB
+#endif
+
+typedef void (*cudaHostFn_t)(void *user_data);
 
 cudaError_t cudaMalloc(void **pointer, size_t bytes);
 cudaError_t cudaFree(void *pointer);
@@ -71,6 +76,10 @@ cudaError_t cudaStreamCreateWithFlags(
 cudaError_t cudaStreamDestroy(cudaStream_t stream);
 cudaError_t cudaStreamSynchronize(cudaStream_t stream);
 cudaError_t cudaDeviceSynchronize(void);
+cudaError_t cudaLaunchHostFunc(
+    cudaStream_t stream,
+    cudaHostFn_t function,
+    void *user_data);
 cudaError_t cudaStreamBeginCapture(
     cudaStream_t stream,
     cudaStreamCaptureMode mode);

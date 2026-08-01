@@ -58,8 +58,12 @@ template __global__ void LmSiluMulKernel<K3_THREADS>(const uint16_t *, uint16_t 
 static_assert(K3_KDA_STATE_SLOT_BYTES >=
 	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(uint16_t)),
 	"a slot must hold the state it addresses");
-static_assert(K3_KDA_STATE_ELEMENT_BYTES >= sizeof(uint16_t),
-	"the kernel stores bf16; a narrower element would truncate the state");
+static_assert(K3_KDA_STATE_ELEMENT_BYTES == sizeof(float),
+	"the kernel addresses the pool as float; the slot must agree");
+// The bf16 option is exactly half the slot and exactly that much of the state
+// stream - the consumer contract the layer's fail-closed check guards.
+static_assert(K3_KDA_STATE_SLOT_BYTES == 2u * K3_KDA_STATE_SLOT_BYTES_BF16,
+	"the bf16 option halves the slot, no more and no less");
 
 template __global__ void LmDeltaRuleKernel<K3_THREADS, K3_KDA_KEY_DIM, K3_KDA_VALUE_DIM>(uint8_t *, uint32_t, const uint32_t *, const uint32_t *, const uint32_t *, const uint16_t *, const uint16_t *, const uint16_t *, const float *, const float *, uint16_t *, uint32_t, uint32_t, uint32_t, uint32_t);
 // The rest of the KDA path, none of which unity built: the short convolution

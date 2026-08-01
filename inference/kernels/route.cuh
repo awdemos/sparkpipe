@@ -15,9 +15,74 @@
 // care - every packed row carries its source token - and demanding a stable
 // order would buy determinism the finalize never reads.
 
+// ROUTE ROW INDIRECTION CONSUMER CONTRACT
+//
+// Does the grouped GEMM read activation rows through route_source_token
+// directly? TODAY, NO. LmGemmArguments carries group_row_offset and
+// group_tile_prefix but no row map, and the A-operand stage is a plain TMA
+// 2D box load (LmPipelineProduce in tile.cuh), which needs its rows
+// contiguous. That contiguity is the whole reason LmGatherRowsKernel exists:
+// it expands rows x hidden activations into packed_rows x hidden purely so
+// the box load sees a dense tensor - a full write plus a full re-read of
+// packed_rows x hidden x 2 bytes (235 MB per routed projection at
+// B1024/top-8 over a 7164-wide latent) spent moving bytes the GEMM was
+// about to read from their original addresses.
+//
+// The producer side of the indirect form is ALREADY COMPLETE - this kernel
+// writes everything an indirect consumer needs, which is why the contract
+// can be stated exactly. A grouped GEMM with row indirection (Blackwell's
+// TMA tile::gather4 loads four A rows by index; CUTLASS's SM100 grouped
+// kernels use it for exactly this) consumes the arrays as follows:
+//
+//   - Packed row p of expert group g spans
+//     p in [group_row_offset[g], group_row_offset[g + 1]), contiguous and
+//     expert-major. Output rows stay packed - only the A READ is indirect.
+//   - The A row for packed row p is route_source_token[p] of the
+//     UN-gathered activation tensor. The A tensor map describes that source
+//     tensor (rows x hidden), never a packed copy.
+//   - route_source_token[p] < rows for every p < rows * top_k, by
+//     construction (it is index / top_k over the route array).
+//   - Within one group the source rows are DISTINCT if and only if the
+//     router emits distinct experts per token; the top-k contract
+//     guarantees that, and this kernel neither checks nor needs it.
+//   - Order within a group is atomic-arrival order. An indirect consumer
+//     must not assume sorted, unique-across-groups, or stable order.
+//   - RAGGED TAIL. gather4 moves rows in fours and TILE_M is a multiple of
+//     four, but a group's last tile covers [row_base, row_base + TILE_M)
+//     while valid indices end at row_limit = group_row_offset[g + 1). The
+//     consumer reads indices only for p < row_limit and CLAMPS the tail
+//     fours to a live row (row_base works); the stores for those rows are
+//     already dropped by the GEMM's row_limit check, so a clamped duplicate
+//     load is dead traffic, never wrong output. Reading an index past
+//     row_limit instead of clamping is a wild TMA gather - the array's next
+//     bytes are another group's indices, in-range but wrong, and nothing
+//     faults.
+//   - SCALE ROWS FOLLOW THE SOURCE. An indirect A-read changes which
+//     activation row a fragment came from, so scale_a must be indexed by
+//     route_source_token[p], not by p. The BF16-activation MoE paths carry
+//     LmScaleTensorNone here and are unaffected; a quantized-activation
+//     consumer that forgets this applies another token's scale and nothing
+//     faults.
+//   - LIFETIME. The next step's route build rewrites these arrays on the
+//     same stream, so any consumer on that stream is ordered for free. A
+//     consumer on another stream, or a CUDA graph that captured the build
+//     and the GEMM together, needs the buffers to stay at the addresses the
+//     graph recorded - the stage's replay contract guarantees that.
+//
+// The mapping itself is LmRouteSourceRow, defined just below the includes.
+
+
 #include "inference/kernels/mma.cuh"
 #include "runtime/launch.h"
 #include <stdint.h>
+
+// The indirection mapping from the contract above: packed row to source
+// activation row. A function rather than an open-coded index so the consumer
+// and this producer cannot drift on what the array means.
+static __device__ __forceinline__ uint32_t LmRouteSourceRow(const uint32_t *__restrict__ route_source_token, uint32_t packed_row)
+{
+	return(route_source_token[packed_row]);
+}
 
 // route_expert:      [routes]  the router's choice per (token, k)
 // group_row_offset:  [experts + 1]  exclusive prefix of per-expert row counts

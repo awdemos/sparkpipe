@@ -40,14 +40,20 @@ weight tile to BF16 registers -> BF16 MMA, FP32 accumulate -> BF16 out`.
    17,547,264 -> 20,643,840 bytes per expert layer. **Verify that number before
    acting on it** — I did not.
 
-4. **One scale layout, asserted.** The quantiser writes row-major and the GEMM
-   reads K-group-major. `[expert][output_neuron][k_group]`, packer and kernel
-   sharing the contract.
+4. **One scale layout, asserted.** SUPERSEDED by pack format V2
+   (`docs/K3_PACK_FORMAT_V2.md`): the scale plane no longer exists as a
+   plane. The packer interleaves payload and E8M0 scales per 16-neuron cell
+   per 128-element k-tile — sixteen 64B payload rows plus one 64B scale row,
+   zero padding — so one TMA box fetches a stage's weights and scales
+   together and the far LDG stream this item was about to bless is never
+   built.
 
-5. **The packer.** `bind.cu:7` has always said no K3 pack format exists. It
-   must preserve MXFP4 payload and U8 scales, concatenate `w1`/`w3` into the
-   combined gate-up layout, keep `w2` orientation, validate 896 experts and
-   group 32, reject E8M0 `0xff`, and fail loudly on a recipe mismatch.
+5. **The packer.** EXISTS: `tools/k3_pack.py` emits pack format V2. It
+   preserves the MXFP4 payload and U8 scales (now interleaved, item 4),
+   concatenates `w1`/`w3` gate-first, keeps `w2` orientation, fuses the six
+   KDA input projections into two single-shard-class tensors, validates 896
+   experts and group 32, rejects E8M0 `0xff`, and fails loudly on a recipe
+   mismatch. The consumption contract is `docs/K3_PACK_FORMAT_V2.md`.
 
 Also owed: the two MLA folds. `test_mla_absorption.py` proves them at 5.9e-16
 and prints them. `mla_kv_b_weight` sits in `K3LayerBuffers` with no call site,

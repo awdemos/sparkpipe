@@ -23,12 +23,14 @@
 
 // -- geometries ----------------------------------------------------------------
 //
-// No latent compression, so LmKvHeads rather than LmKvLatent. Same allocator,
-// same page table, same eviction - only the slot size differs, which is exactly
-// the parameterisation kernels/kv.cuh exists for.
+// No latent compression, so a full [K|V] slot rather than LmKvLatent - priced
+// from the real widths, since this model's value is narrower than its key and
+// LmKvHeads assumes they match. Same allocator, same page table, same
+// eviction - only the slot size differs, which is exactly the
+// parameterisation kernels/kv.cuh exists for.
 
-static_assert(Mimo25FullKv::kSlotBytes == 3072u, "4 heads x 192 dim x (k+v) x bf16");
-static_assert(Mimo25SwaKv::kSlotBytes == 6144u, "8 heads, twice the slot");
+static_assert(Mimo25FullKv::kSlotBytes == 2560u, "4 heads x (192 key + 128 value) x bf16");
+static_assert(Mimo25SwaKv::kSlotBytes == 5120u, "8 heads, twice the slot");
 
 #define MIMO25_TILE_N 128u
 #define MIMO25_STAGES 2u
@@ -58,15 +60,17 @@ template __global__ void LmRopeKernel<MIMO25_THREADS>(uint16_t *, const uint32_t
 
 // Attention instantiated per geometry, because the slot size is compile-time.
 // The sliding window is the selected-position array, not a different kernel.
-template __global__ void LmAttentionDecodeKernel<Mimo25FullKv, MIMO25_THREADS, MIMO25_HEAD_DIM, MIMO25_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
-template __global__ void LmAttentionDecodeKernel<Mimo25SwaKv, MIMO25_THREADS, MIMO25_HEAD_DIM, MIMO25_ROPE_DIM>(const uint16_t *, const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
+// Per-head KV, so the GQA pair: the latent kernel cannot express a value that
+// is not a prefix of the key, which is the defect this replaced.
+template __global__ void LmGqaAttentionDecodeKernel<Mimo25FullKv, MIMO25_THREADS, MIMO25_FULL_KV_HEADS, MIMO25_HEAD_DIM, MIMO25_VALUE_DIM>(const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
+template __global__ void LmGqaAttentionDecodeKernel<Mimo25SwaKv, MIMO25_THREADS, MIMO25_SWA_KV_HEADS, MIMO25_HEAD_DIM, MIMO25_VALUE_DIM>(const uint16_t *, LmKvView, const uint32_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t, float, uint16_t *, const uint32_t *);
 
 template __global__ void LmTopkSmallKernel<MIMO25_THREADS, MIMO25_TOP_K, false, 1u, 1u, LM_TOPK_SCORE_IDENTITY>(const float *, uint32_t, uint32_t *, float *, const float *, const uint16_t *, float);
 template __global__ void LmRouteBuildKernel<MIMO25_THREADS, MIMO25_EXPERTS>(const uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t *, uint32_t *, uint32_t, uint32_t, uint32_t *, uint32_t, uint32_t *);
 template __global__ void LmSplitQkvKernel<MIMO25_THREADS>(const uint16_t *, LmQkvLayout, uint16_t *, uint16_t *, uint16_t *, uint32_t, float);
 template __global__ void LmRopePerHeadKernel<MIMO25_THREADS>(uint16_t *, const uint32_t *, uint32_t, uint32_t, uint32_t, float);
-template __global__ void LmKvStoreKernel<Mimo25FullKv, MIMO25_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
-template __global__ void LmKvStoreKernel<Mimo25SwaKv, MIMO25_THREADS>(LmKvView, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t, uint32_t);
+template __global__ void LmGqaKvStoreKernel<Mimo25FullKv, MIMO25_THREADS, MIMO25_FULL_KV_HEADS, MIMO25_HEAD_DIM, MIMO25_VALUE_DIM>(LmKvView, const uint16_t *, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t);
+template __global__ void LmGqaKvStoreKernel<Mimo25SwaKv, MIMO25_THREADS, MIMO25_SWA_KV_HEADS, MIMO25_HEAD_DIM, MIMO25_VALUE_DIM>(LmKvView, const uint16_t *, const uint16_t *, const uint32_t *, const uint32_t *, uint32_t);
 template __global__ void LmHeadCandidateKernel<MIMO25_THREADS, 1024u>(const uint16_t *, const uint16_t *, const uint32_t *, float *, uint32_t *, uint32_t, uint32_t, uint32_t);
 template __global__ void LmHeadCommitKernel<MIMO25_THREADS>(const float *, const uint32_t *, uint32_t, uint32_t *, float *, uint32_t);
 

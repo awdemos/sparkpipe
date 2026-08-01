@@ -53,6 +53,31 @@ def validate_source(source: dict[str, Any]) -> None:
     require_equal(attention["mla_layer_count"], expected_mla, "MLA layer count")
     require_equal(attention["kda_layer_count"], model["layer_count"] - expected_mla, "KDA layer count")
 
+    # Pack format V2 (tools/k3_pack.py, docs/K3_PACK_FORMAT_V2.md): the
+    # geometry must divide the way the layout promises, or the contract is
+    # shipping a model the packer has to refuse.
+    # - the fused KDA section bases stay 128-aligned only because a hidden
+    #   row is a whole number of 128-byte lines
+    # - the interleaved expert tensors block K into 128-element tiles
+    #   (LmMxfp4::kTileK, whose 64 payload bytes fill one swizzle span) and
+    #   outputs into 16-neuron cells; w1's K is the latent, w2's K is the
+    #   intermediate, w1's output is gate|up doubled
+    # - the scale row closes exactly: 16 neurons x (128/32) bytes == the 64
+    #   payload bytes of one k-tile row
+    hidden = model["hidden_dimension"]
+    latent = moe["latent_dimension"]
+    inter = moe["expert_intermediate_dimension"]
+    group = quantization["routed_expert_group_size"]
+    k_tile = 128  # LmMxfp4::kTileK in inference/kernels/formats/mxfp4.cuh
+    require_equal((hidden * 2) % 128, 0, "hidden row 128B alignment")
+    require_equal(latent % k_tile, 0, "expert latent whole interleave k-tiles")
+    require_equal(inter % k_tile, 0, "expert intermediate whole interleave k-tiles")
+    require_equal(latent % group, 0, "expert latent whole scale groups")
+    require_equal(inter % group, 0, "expert intermediate whole scale groups")
+    require_equal(latent % 16, 0, "expert latent whole 16-neuron cells")
+    require_equal((2 * inter) % 16, 0, "expert gate|up whole 16-neuron cells")
+    require_equal(16 * (k_tile // group), (k_tile * 4) // 8, "interleave scale row closure")
+
 
 def c_float(value: float) -> str:
     if value == int(value):
@@ -121,7 +146,25 @@ def render_header(source: dict[str, Any]) -> str:
         ("K3_KDA_LAYER_COUNT", f"{attention['kda_layer_count']}u"),
         ("K3_MLA_LAYER_COUNT", f"{attention['mla_layer_count']}u"),
         ("K3_ATTENTION_PERIOD", f"{attention['period']}u"),
-        ("K3_GLOBAL_ATTENTION_PHASE", f"{attention['global_phase']}u")
+        ("K3_GLOBAL_ATTENTION_PHASE", f"{attention['global_phase']}u"),
+        # Pack format V2 (tools/k3_pack.py, docs/K3_PACK_FORMAT_V2.md). The
+        # driver binds a pack with these, and validate_source above holds the
+        # model geometry to what they assume. K3_PACK_MXFP4_K_TILE is
+        # LmMxfp4::kTileK: the k extent whose payload bytes fill exactly one
+        # swizzle span; the cell count is the exact 16:1 payload-to-scale
+        # byte ratio of group-32 MXFP4 at that tile.
+        ("K3_PACK_FORMAT_VERSION", "2u"),
+        ("K3_PACK_ALIGNMENT", "128u"),
+        ("K3_PACK_MXFP4_K_TILE", "128u"),
+        ("K3_PACK_INTERLEAVE_CELL_PAYLOAD_ROWS", "16u"),
+        ("K3_PACK_INTERLEAVE_CELL_ROWS", "17u"),
+        ("K3_PACK_INTERLEAVE_ROW_BYTES", "64u"),
+        ("K3_PACK_INTERLEAVE_SCALE_BYTES", "4u"),
+        # The two fused KDA projection tensors, as row counts over hidden:
+        # q|k|v|beta (OUTPUT_DIM_HEADS) and decay_down|gate_down (REPLICATED).
+        ("K3_KDA_QKVB_FUSED_ROWS",
+         "(2u * K3_KDA_HEADS * K3_KDA_KEY_DIM + K3_KDA_HEADS * K3_KDA_VALUE_DIM + K3_KDA_HEADS)"),
+        ("K3_KDA_DECAY_GATE_DOWN_FUSED_ROWS", "(2u * K3_KDA_KEY_DIM)")
     ]
 
     lines = [

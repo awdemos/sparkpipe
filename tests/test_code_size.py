@@ -26,7 +26,31 @@ from pathlib import Path
 # test), the RDMA eviction/batching/lane-rotation logic in rdma.cu, the BF16
 # collective path, and docs/PERF_ROADMAP_2026-08-01.md; ceiling moves to the
 # exact count again.
-CEILING = 116903
+# The NVMe JIT KV tier (cache/nvme_tier.c + include/sparkpipe/spark_nvme_tier.h,
+# the tier-3 manager and lookahead prefetcher, ~1080 lines with its build and
+# gate wiring) lands alongside concurrent performance-wave work; ceiling moves
+# to the exact count again.
+# The K3 pack format V2 redesign (tools/k3_pack.py +400: the fused KDA
+# projection emission, the interleaved weight+scale relay and its numpy-free
+# fallback, the layout validator; tools/generate_k3_contract.py and
+# generated_config.h gain the pack constants and geometry checks) lands its
+# tooling lines; ceiling moves to the exact count.
+# The DSv4 driver audit (2026-08-01) adds the exact attention-bytes
+# derivation and the sparse-launch/rope-span defect flags to
+# inference/llms/deepseek_v4/layer.cuh (+70), the Pro launch-budget note to
+# deepseek_v4_pro/unity.cu (+10), and the two dsv4 gates' wiring in
+# tools/gates.sh and Makefile (+6); the quantise dedup is net-negative code.
+# Ceiling moves by those 86 lines; concurrent agents' in-flight growth is
+# theirs to account.
+# The D10 graph/gather/head wave adds the stage-side CUDA graph cache and
+# replay contract (inference/stage/graph_replay.h, 451), the dispatch.cu
+# capture wiring (+202 net), the head's chunked top-k pair with its launcher
+# (inference/kernels/head.cuh, +231), the route row-indirection consumer
+# contract (inference/kernels/route.cuh, +65), the slot-state field docs
+# (+9), and their build/gate wiring (Makefile +6, tools/gates.sh +10,
+# tools/build_head_topk.sh 25). Ceiling moves by those 999 lines; concurrent
+# agents' in-flight growth remains theirs to account.
+CEILING = 121137
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

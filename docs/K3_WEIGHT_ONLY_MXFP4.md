@@ -46,14 +46,19 @@ The weight decoder is right. The ABI around it is wrong.
    17,547,264 -> 20,643,840 bytes per expert layer, 17.6% of expert bandwidth,
    for a value that decodes in one instruction.
 
-4. **One scale layout, asserted.** The quantiser writes row-major and the GEMM
-   reads as though K-group-major. `[expert][output_neuron][k_group]` with the
-   packer and kernel sharing the contract.
+4. **One scale layout, asserted.** SUPERSEDED by pack format V2
+   (`docs/K3_PACK_FORMAT_V2.md`). The `[expert][output_neuron][k_group]`
+   plane described here was V1; V2 interleaves payload and E8M0 scales into
+   one tensor per expert GEMM (sixteen 64B payload rows + one 64B scale row
+   per 16 neurons per 128-element k-tile, zero padding), so a single TMA box
+   fetches a stage's weights and scales together. The packer and the
+   consumer share that contract instead.
 
-5. **A packer.** `bind.cu` says no K3 pack format exists. It must preserve the
-   MXFP4 payload and U8 scales, concatenate `w1` and `w3` into the combined
-   gate/up layout, keep `w2` orientation, validate 896 experts and group 32,
-   reject E8M0 `0xff`, and fail loudly on a recipe mismatch.
+5. **A packer.** EXISTS — `tools/k3_pack.py`, format V2. It preserves the
+   MXFP4 payload and U8 scales (interleaved, item 4), concatenates `w1` and
+   `w3` into the combined gate/up layout, keeps `w2` orientation, validates
+   896 experts and group 32, rejects E8M0 `0xff`, and fails loudly on a
+   recipe mismatch.
 
 ## Validation the gate does not yet do
 

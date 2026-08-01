@@ -17,7 +17,8 @@ using Glm52Kv = LmKvLatent<
     GLM52_ROPE_DIM,
     GLM52_KV_PAGE_SLOTS>;
 
-#define GLM52_LAYER_THREADS 256u
+#include "inference/llms/glm5_2/launch_shape.h"
+
 #define GLM52_LAYER_TILE_N 128u
 #define GLM52_LAYER_STAGES 2u
 #define GLM52_LAYER_WARPS 8u
@@ -61,6 +62,11 @@ struct Glm52LayerBuffers
     const void *dense_gate_weight;
     const void *dense_up_weight;
     const void *dense_down_weight;
+    // Bind-time fact, not a launch-time decision: the pack laid the up rows
+    // immediately behind the gate rows, so one GEMM over the concatenated
+    // tensor produces the [gate | up] layout two launches would. Zero means
+    // unknown or non-contiguous, which takes the two-launch path.
+    uint32_t dense_gate_up_fused;
     const void *expert_w1_weight;
     const void *expert_w1_scale;
     const void *expert_w2_weight;
@@ -167,7 +173,13 @@ static int32_t Glm52LayerAttention(
         buffers->attention_latent_bf16 == 0 ||
         buffers->attention_out_bf16 == 0 || buffers->output_weight == 0 ||
         buffers->sequence_of_row == 0 || buffers->context_length == 0 ||
-        buffers->positions == 0)
+        buffers->positions == 0 ||
+        buffers->projected.query_latent_bf16 == 0 ||
+        buffers->projected.query_rope_bf16 == 0 ||
+        buffers->absorbed.query_latent_weight == 0 ||
+        buffers->absorbed.query_rope_weight == 0 ||
+        buffers->absorbed.key_rope_weight == 0 ||
+        buffers->absorbed.kv_latent_weight == 0)
     {
         return LM_LAUNCH_ERR_SHAPE;
     }
@@ -187,15 +199,77 @@ static int32_t Glm52LayerAttention(
         GLM52_HIDDEN,
         GLM52_RMS_EPSILON);
 
-    status = LmAbsorbedProject<LmBf16Format>(
-        &buffers->absorbed,
-        &buffers->projected,
+    // Four projections from the normed hidden state, issued directly rather
+    // than through LmAbsorbedProject so the kv half can write the cache-slot
+    // layout where it lands: latent at [0, GLM52_LATENT) and the rope tail at
+    // [GLM52_LATENT, GLM52_LATENT_ROW) of one row-strided buffer. The old
+    // sequence projected both halves into separate packed buffers and ran a
+    // join launch to assemble the slot row - one extra launch and a full
+    // write-then-read round trip of every slot row, per layer per token, for
+    // a copy the GEMM epilogue places for free. Numerics are untouched: same
+    // weights, same inputs, same accumulators, only the output addresses move.
+    status = Glm52LaunchBf16Linear(
         buffers->normed_bf16,
-        0,
-        0,
+        buffers->absorbed.query_latent_weight,
+        buffers->projected.query_latent_bf16,
         buffers->dense_row_offset,
         buffers->dense_tile_prefix,
         rows,
+        GLM52_HIDDEN,
+        GLM52_ATTN_HEADS * GLM52_LATENT,
+        GLM52_ATTN_HEADS * GLM52_LATENT,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    status = Glm52LaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->absorbed.query_rope_weight,
+        buffers->projected.query_rope_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM52_HIDDEN,
+        GLM52_ATTN_HEADS * GLM52_ROPE_DIM,
+        GLM52_ATTN_HEADS * GLM52_ROPE_DIM,
+        0u,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    status = Glm52LaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->absorbed.key_rope_weight,
+        buffers->kv_slot_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM52_HIDDEN,
+        GLM52_ROPE_DIM,
+        GLM52_LATENT_ROW,
+        GLM52_LATENT,
+        multiprocessors,
+        stream);
+    if (status != LM_LAUNCH_OK)
+    {
+        return status;
+    }
+    status = Glm52LaunchBf16Linear(
+        buffers->normed_bf16,
+        buffers->absorbed.kv_latent_weight,
+        buffers->kv_slot_bf16,
+        buffers->dense_row_offset,
+        buffers->dense_tile_prefix,
+        rows,
+        GLM52_HIDDEN,
+        GLM52_LATENT,
+        GLM52_LATENT_ROW,
+        0u,
         multiprocessors,
         stream);
     if (status != LM_LAUNCH_OK)
@@ -215,30 +289,21 @@ static int32_t Glm52LayerAttention(
         GLM52_ROPE_DIM,
         GLM52_ROPE_DIM,
         GLM52_ROPE_THETA);
+    // Rotate the key rope tail in place inside the slot row. The stride and
+    // offset parameters exist for exactly this; a separate rope buffer would
+    // reintroduce the join this sequence just removed.
     LM_LAUNCH(
         (LmRopeKernel<GLM52_LAYER_THREADS>),
         rows,
         GLM52_LAYER_THREADS,
         0,
         stream,
-        buffers->projected.key_rope_bf16,
+        buffers->kv_slot_bf16,
         buffers->positions,
-        GLM52_ROPE_DIM,
-        0u,
+        GLM52_LATENT_ROW,
+        GLM52_LATENT,
         GLM52_ROPE_DIM,
         GLM52_ROPE_THETA);
-    LM_LAUNCH(
-        (LmJoinRowsKernel<GLM52_LAYER_THREADS>),
-        rows,
-        GLM52_LAYER_THREADS,
-        0,
-        stream,
-        buffers->projected.kv_latent_bf16,
-        GLM52_LATENT,
-        buffers->projected.key_rope_bf16,
-        GLM52_ROPE_DIM,
-        buffers->kv_slot_bf16,
-        rows);
     LM_LAUNCH(
         (LmKvStoreKernel<Glm52Kv, GLM52_LAYER_THREADS>),
         rows,
@@ -254,11 +319,11 @@ static int32_t Glm52LayerAttention(
     LM_LAUNCH(
         (LmLatentAttentionDecodeKernel<
             Glm52Kv,
-            GLM52_LAYER_THREADS,
+            GLM52_ATTN_THREADS,
             GLM52_LATENT,
             GLM52_ROPE_DIM>),
         dim3(rows, GLM52_ATTN_HEADS),
-        GLM52_LAYER_THREADS,
+        GLM52_ATTN_THREADS,
         0,
         stream,
         buffers->projected.query_latent_bf16,
@@ -321,39 +386,67 @@ static int32_t Glm52LayerDenseMlp(
         GLM52_HIDDEN,
         GLM52_RMS_EPSILON);
 
-    status = Glm52LaunchBf16Linear(
-        buffers->normed_bf16,
-        buffers->dense_gate_weight,
-        buffers->gate_up_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
-        rows,
-        GLM52_HIDDEN,
-        GLM52_DENSE_INTERMEDIATE,
-        GLM52_DENSE_INTERMEDIATE * 2u,
-        0u,
-        multiprocessors,
-        stream);
-    if (status != LM_LAUNCH_OK)
+    if (buffers->dense_gate_up_fused != 0u)
     {
-        return status;
+        // Bind proved the up rows sit immediately behind the gate rows, so one
+        // GEMM over the concatenated tensor writes the [gate | up] layout
+        // directly - the two-launch form below re-reads the normed activation
+        // and pays a second launch for the same weight bytes. Per-element math
+        // is identical either way; only the launch count differs.
+        status = Glm52LaunchBf16Linear(
+            buffers->normed_bf16,
+            buffers->dense_gate_weight,
+            buffers->gate_up_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM52_HIDDEN,
+            GLM52_DENSE_INTERMEDIATE * 2u,
+            GLM52_DENSE_INTERMEDIATE * 2u,
+            0u,
+            multiprocessors,
+            stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
     }
-    status = Glm52LaunchBf16Linear(
-        buffers->normed_bf16,
-        buffers->dense_up_weight,
-        buffers->gate_up_bf16,
-        buffers->dense_row_offset,
-        buffers->dense_tile_prefix,
-        rows,
-        GLM52_HIDDEN,
-        GLM52_DENSE_INTERMEDIATE,
-        GLM52_DENSE_INTERMEDIATE * 2u,
-        GLM52_DENSE_INTERMEDIATE,
-        multiprocessors,
-        stream);
-    if (status != LM_LAUNCH_OK)
+    else
     {
-        return status;
+        status = Glm52LaunchBf16Linear(
+            buffers->normed_bf16,
+            buffers->dense_gate_weight,
+            buffers->gate_up_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM52_HIDDEN,
+            GLM52_DENSE_INTERMEDIATE,
+            GLM52_DENSE_INTERMEDIATE * 2u,
+            0u,
+            multiprocessors,
+            stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
+        status = Glm52LaunchBf16Linear(
+            buffers->normed_bf16,
+            buffers->dense_up_weight,
+            buffers->gate_up_bf16,
+            buffers->dense_row_offset,
+            buffers->dense_tile_prefix,
+            rows,
+            GLM52_HIDDEN,
+            GLM52_DENSE_INTERMEDIATE,
+            GLM52_DENSE_INTERMEDIATE * 2u,
+            GLM52_DENSE_INTERMEDIATE,
+            multiprocessors,
+            stream);
+        if (status != LM_LAUNCH_OK)
+        {
+            return status;
+        }
     }
 
     LM_LAUNCH(
@@ -622,7 +715,8 @@ static int32_t Glm52Head(
 
     if (buffers == 0 || head_norm_weight == 0 || head_weight == 0 ||
         rows == 0u || vocabulary == 0u || buffers->hidden_bf16 == 0 ||
-        buffers->normed_bf16 == 0 || buffers->head_candidate_score == 0 ||
+        buffers->residual_bf16 == 0 || buffers->normed_bf16 == 0 ||
+        buffers->head_candidate_score == 0 ||
         buffers->head_candidate_token == 0 || buffers->output_token == 0 ||
         buffers->output_score == 0)
     {
@@ -630,6 +724,14 @@ static int32_t Glm52Head(
     }
 
     tiles = (vocabulary + GLM52_HEAD_TILE - 1u) / GLM52_HEAD_TILE;
+    // The stream arrives SPLIT: the layer loop leaves the last MLP output in
+    // hidden_bf16 and everything before it in residual_bf16, and the true
+    // final stream is their sum. Norming hidden alone - as this did - drops
+    // the whole residual stream at the one norm the model cannot afford to
+    // lose. The fold is free: the kernel adds the residual and writes no
+    // residual back when residual_out is null.
+    // CONTRACT: a caller that flushes residual into hidden itself must zero
+    // residual_bf16 afterwards, or the stream is counted twice here.
     LM_LAUNCH(
         (LmFusedResidualRmsNormKernel<GLM52_LAYER_THREADS, uint16_t>),
         rows,
@@ -637,7 +739,7 @@ static int32_t Glm52Head(
         (GLM52_HIDDEN + 8u) * sizeof(float),
         stream,
         buffers->hidden_bf16,
-        0,
+        buffers->residual_bf16,
         (const uint16_t *)head_norm_weight,
         0,
         buffers->normed_bf16,
