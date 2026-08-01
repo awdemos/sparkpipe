@@ -9,7 +9,14 @@ CORE_INCLUDE_FLAGS := -I. -Iinclude -Isrc
 # stage_module_common.c reaches <cuda_runtime.h> through spark_stage_module_common.h.
 # Nothing in this group supplied that path, so the archive could not have built;
 # the tests hid it behind -Itests/cuda_stub.
+CUDA_RUNTIME_HEADER := $(wildcard $(CUDA_HOME)/include/cuda_runtime.h)
+ifeq ($(CUDA_RUNTIME_HEADER),)
+MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -Itests/cuda_stub
+SPARKPIPE_HOST_CUDA_STUB_SOURCE := tests/cuda_stub/cuda_runtime_stub.c
+else
 MODEL_COMMON_INCLUDE_FLAGS := $(CORE_INCLUDE_FLAGS) -I$(CUDA_HOME)/include
+SPARKPIPE_HOST_CUDA_STUB_SOURCE :=
+endif
 GLM52_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/glm52/include
 QWEN36_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/qwen36/include
 DSV4_INCLUDE_FLAGS := $(MODEL_COMMON_INCLUDE_FLAGS) -Imodel-families/dsv4/include
@@ -126,10 +133,11 @@ HIDDEN_TRANSPORT_SPARK_GPUDIRECT_RDMA := build/libhidden_transport_spark_gpudire
 include sources.mk
 
 CORE_SOURCES := $(SPARKPIPE_CORE_SOURCES)
-MODEL_COMMON_SOURCES := $(SPARKPIPE_MODEL_COMMON_SOURCES)
+MODEL_COMMON_SOURCES := $(SPARKPIPE_MODEL_COMMON_SOURCES) $(SPARKPIPE_HOST_CUDA_STUB_SOURCE)
 DEPLOYMENT_SOURCES := $(SPARKPIPE_DEPLOYMENT_SOURCES)
 GLM52_HOST_SOURCES := $(SPARKPIPE_GLM52_SOURCES)
 QWEN36_HOST_SOURCES := $(SPARKPIPE_QWEN36_SOURCES)
+DSV4_HOST_SOURCES := $(SPARKPIPE_DSV4_SOURCES)
 COMPILER_SOURCES := $(SPARKPIPE_COMPILER_SOURCES)
 RUNTIME_SOURCES := $(SPARKPIPE_RUNTIME_SOURCES)
 
@@ -145,10 +153,11 @@ MODEL_COMMON_OBJECTS := $(call sp_objects,$(MODEL_COMMON_SOURCES))
 DEPLOYMENT_OBJECTS := $(call sp_objects,$(DEPLOYMENT_SOURCES))
 GLM52_HOST_OBJECTS := $(call sp_objects,$(GLM52_HOST_SOURCES))
 QWEN36_HOST_OBJECTS := $(call sp_objects,$(QWEN36_HOST_SOURCES))
+DSV4_HOST_OBJECTS := $(call sp_objects,$(DSV4_HOST_SOURCES))
 COMPILER_OBJECTS := $(call sp_objects,$(COMPILER_SOURCES))
 RUNTIME_OBJECTS := $(call sp_objects,$(RUNTIME_SOURCES))
 ALL_HOST_OBJECTS := $(CORE_OBJECTS) $(MODEL_COMMON_OBJECTS) $(DEPLOYMENT_OBJECTS) \
-    $(GLM52_HOST_OBJECTS) $(QWEN36_HOST_OBJECTS) $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS)
+    $(GLM52_HOST_OBJECTS) $(QWEN36_HOST_OBJECTS) $(DSV4_HOST_OBJECTS) $(COMPILER_OBJECTS) $(RUNTIME_OBJECTS)
 
 # Every object is built by the one rule below. Include flags are attached per
 # object list rather than per directory, so moving a source does not change how
@@ -160,15 +169,17 @@ $(MODEL_COMMON_OBJECTS): SP_INCLUDE_FLAGS = $(MODEL_COMMON_INCLUDE_FLAGS)
 $(DEPLOYMENT_OBJECTS): SP_INCLUDE_FLAGS = $(DEPLOYMENT_INCLUDE_FLAGS)
 $(GLM52_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(GLM52_INCLUDE_FLAGS)
 $(QWEN36_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(QWEN36_INCLUDE_FLAGS)
+$(DSV4_HOST_OBJECTS): SP_INCLUDE_FLAGS = $(DSV4_INCLUDE_FLAGS)
 CORE_LIBRARY := build/libsparkpipe_core.a
 MODEL_COMMON_LIBRARY := build/libsparkpipe_model_common.a
 DEPLOYMENT_LIBRARY := build/libsparkpipe_deployment.a
 GLM52_HOST_LIBRARY := build/libglm52_host.a
 QWEN36_HOST_LIBRARY := build/libqwen36_host.a
+DSV4_HOST_LIBRARY := build/libdsv4_host.a
 COMPILER_LIBRARY := build/libsparkpipe_compiler.a
 RUNTIME_LIBRARY := build/libsparkpipe_runtime.a
 COMMON_LIBRARY := $(CORE_LIBRARY)
-LIBRARIES := $(CORE_LIBRARY) $(MODEL_COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(DEPLOYMENT_LIBRARY) $(GLM52_HOST_LIBRARY) $(QWEN36_HOST_LIBRARY)
+LIBRARIES := $(CORE_LIBRARY) $(MODEL_COMMON_LIBRARY) $(COMPILER_LIBRARY) $(RUNTIME_LIBRARY) $(DEPLOYMENT_LIBRARY) $(GLM52_HOST_LIBRARY) $(QWEN36_HOST_LIBRARY) $(DSV4_HOST_LIBRARY)
 
 GLM52_RING_SERVICE_BACKEND := build/libglm52_ring_service_backend.$(SHARED_LIBRARY_EXT)
 
@@ -187,19 +198,27 @@ TOOL_NAMES := \
     sparkpipe_memlink \
     sparkpipe_prevcp \
     sparkpipe_nextcp \
-    sparkpipe_release_manager
+    sparkpipe_release_manager \
+    sparkpipe_dsv4_cache_plan_report
 
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
 TEST_NAMES := \
+    test_gemm_descriptor_cache \
+    test_arena \
+    test_work_transaction \
+    test_distributed_work \
     test_json \
     test_hidden_transport \
+    test_fabric_topology \
     test_memlink \
     test_release \
     test_glm52_kv_cache \
     test_kv_store \
+    test_nvme_tier \
     test_kv_mooncake \
     test_qwen36_work_control \
+    test_dsv4_cache_plan \
     test_glm52_dspark \
     test_glm52_stage_plan \
     test_glm52_mtp_tree \
@@ -211,7 +230,6 @@ TEST_NAMES := \
     test_glm52_production_topology \
     test_glm52_ring_runtime \
     test_glm52_cuda_resident_ipc \
-    test_glm52_cuda_resident_gate \
     test_glm52_ring_work_control \
     test_glm52_shared_prefix_admission \
     test_glm52_scheduler \
@@ -223,6 +241,8 @@ TEST_NAMES := \
     test_glm52_serving_engine \
     test_glm52_service \
     test_glm52_service_backend \
+    test_ring_service_backend_transactions \
+    test_glm52_ring_service_backend_internal \
     test_glm52_compat_api \
     test_glm52_http_gateway \
     test_glm52_ring_rank_daemon \
@@ -232,36 +252,68 @@ TEST_NAMES := \
     test_driver_compiler \
     test_orchestrator \
     test_glm52_resident_decode_stage_firmware \
-    test_glm52_resident_decode_stage_production_runner
+    test_glm52_resident_decode_stage_production_runner \
+    test_stage_graph_replay
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
 	tests/test_api_stress.py \
-	tests/test_memory_contracts.py \
+	tests/test_code_size.py \
+	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
-	tests/test_ptx_capability_gate.py \
-	tests/test_b12x_scale_layout.py \
+	tests/test_dry_law.py \
+	tests/test_dsv4_contracts.py \
+	tests/test_dsv4_driver_source_contracts.py \
+	tests/test_dsv4_layer_host.py \
+	tests/test_expert_grouping.py \
+	tests/test_fast_defaults.py \
+	tests/test_gemm_k_alignment.py \
 	tests/test_glm52_dspark_manifest.py \
-	tests/test_glm52_dspark_artifact_preflight.py \
 	tests/test_glm52_dspark_trace_quality.py \
-	tests/test_glm52_b12x_pack_worker.py \
-	tests/test_glm52_b12x_resident_manifest.py \
-	tests/test_glm52_fp8_pack_layout.py \
-	tests/test_glm52_w8lut_pack_layout.py \
-	tests/test_glm52_w8lut_artifact_preflight.py \
-	tests/test_glm52_quantized_cuda_contract.py \
-	tests/test_glm52_w8lut_ring_preflight.py \
-	tests/test_glm52_w8lut_validation_wiring.py \
-	tests/test_glm52_w8lut_stage_pack_watch.py \
-	tests/test_glm52_b12x_relocate_aot_bundle.py \
-	tests/test_glm52_b12x_deterministic_finalize.py \
-	tests/test_glm52_final_from_hidden_mode.py \
-	tests/test_glm52_exact_ring_prefill_hidden.py \
 	tests/test_glm52_firmware_package.py \
-	tests/test_measured_status.py \
-	tests/test_release_assemble.py \
+	tests/test_glm52_fp8_pack_layout.py \
+	tests/test_glm52_layer_host.py \
+	tests/test_glm52_prompt_pipeline_input.py \
+	tests/test_glm52_quantized_cuda_contract.py \
 	tests/test_glm52_stage_pack.py \
-	tests/test_glm52_prompt_pipeline_input.py
+	tests/test_glm52_unity_precision_contract.py \
+	tests/test_gqa_host.py \
+	tests/test_grouped_moe_source_contracts.py \
+	tests/test_k3_driver_contracts.py \
+	tests/test_k3_engine.py \
+	tests/test_k3_kv_geometry.py \
+	tests/test_k3_layer_host.py \
+	tests/test_k3_pack.py \
+	tests/test_k3_pack_layout.py \
+	tests/test_k3_quant_recipe.py \
+	tests/test_k3_shard.py \
+	tests/test_k3_shard_table.py \
+	tests/test_k3_slice_host.py \
+	tests/test_kda_decay.py \
+	tests/test_kda_host.py \
+	tests/test_kernel_algorithms.py \
+	tests/test_kernel_launches.py \
+	tests/test_layer_dataflow.py \
+	tests/test_layer_host.py \
+	tests/test_layer_kinds.py \
+	tests/test_measured_status.py \
+	tests/test_memory_contracts.py \
+	tests/test_mimo25_layer_host.py \
+	tests/test_mla_absorption.py \
+	tests/test_mla_host.py \
+	tests/test_model_driver_contracts.py \
+	tests/test_model_families.py \
+	tests/test_must_work_targets.py \
+	tests/test_ptx_capability_gate.py \
+	tests/test_python_syntax.py \
+	tests/test_qwen36_bf16_contract.py \
+	tests/test_qwen36_layer_host.py \
+	tests/test_release_assemble.py \
+	tests/test_rope_pairing.py \
+	tests/test_router_host.py \
+	tests/test_router_precision_contract.py \
+	tests/test_situ_activation.py \
+	tests/test_sources_exist.py
 TEST_SUPPORT_OBJECT := build/test_support.o
 TEST_MODULE_OBJECTS := \
     build/test_modules/module_add_one.o \
@@ -330,10 +382,11 @@ audit-boundaries: core
 architecture_audit: audit-boundaries
 
 non_glm_model_driver_contracts:
-	@set -e; \
-	for family in dsv4 k3 mimo25 qwen36; do \
-		$(MAKE) -C modules/$${family}_resident_decode_stage contract; \
-	done
+	@mkdir -p build/model_driver_contracts
+	$(CC) -Iinclude -Wall -Wextra -Werror -DNDEBUG -c modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_validation.c -o build/model_driver_contracts/dsv4_validation.o
+	$(CC) -Iinclude -Imodel-families/k3/include -Imodel-families/glm52/include -Wall -Wextra -Werror -DNDEBUG -c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_validation.c -o build/model_driver_contracts/k3_validation.o
+	$(CC) -Iinclude -Wall -Wextra -Werror -DNDEBUG -c modules/mimo25_resident_decode_stage/source/spark_mimo25_resident_decode_stage_validation.c -o build/model_driver_contracts/mimo25_validation.o
+	$(CC) -Iinclude -Wall -Wextra -Werror -DNDEBUG -c modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_validation.c -o build/model_driver_contracts/qwen36_validation.o
 
 model_driver_contracts: build/test_model_description build/test_stage_module_common non_glm_model_driver_contracts
 	./build/test_stage_module_common
@@ -363,13 +416,13 @@ GLM52_LINK_TARGETS := \
 NULL_REQUEST_MODEL_OBJECT := build/obj/serving/spark_request_model_null.o
 
 $(NULL_REQUEST_MODEL_OBJECT): serving/spark_request_model_null.c include/sparkpipe/spark_request_api.h
-	@mkdir -p $(dir $@)
-	$(CC) -I. -Iinclude -Imodel-families/glm52/include -std=c11 -Wall -Wextra -Werror -O3 -g -c serving/spark_request_model_null.c -o $@
+	@mkdir -p $(dir $@) && $(CC) -I. -Iinclude -Imodel-families/glm52/include -std=c11 -Wall -Wextra -Werror -O3 -g -c serving/spark_request_model_null.c -o $@
 
 build/test_null_seam_link: tests/test_null_seam_link.c $(NULL_REQUEST_MODEL_OBJECT) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) -I. -Iinclude -Imodel-families/glm52/include -std=c11 -Wall -Wextra -Werror -O3 -g -pthread tests/test_null_seam_link.c $(NULL_REQUEST_MODEL_OBJECT) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) -o $@
 
 QWEN36_LINK_TARGETS := build/test_qwen36_work_control
+DSV4_LINK_TARGETS := build/test_dsv4_cache_plan build/sparkpipe_dsv4_cache_plan_report
 
 
 DEPLOYMENT_LINK_TARGETS := build/sparkpipe_release_manager build/test_release
@@ -378,6 +431,8 @@ $(MODEL_COMMON_LINK_TARGETS): COMMON_LIBRARY = $(MODEL_COMMON_LIBRARY) $(CORE_LI
 $(MODEL_COMMON_LINK_TARGETS): $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 $(GLM52_LINK_TARGETS): COMMON_LIBRARY = $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 $(GLM52_LINK_TARGETS): $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+$(DSV4_LINK_TARGETS): $(DSV4_HOST_LIBRARY) $(CORE_LIBRARY)
+
 $(QWEN36_LINK_TARGETS): COMMON_LIBRARY = $(QWEN36_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(NULL_REQUEST_MODEL_OBJECT)
 $(QWEN36_LINK_TARGETS): $(QWEN36_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(NULL_REQUEST_MODEL_OBJECT)
 $(DEPLOYMENT_LINK_TARGETS): COMMON_LIBRARY = $(DEPLOYMENT_LIBRARY) $(CORE_LIBRARY)
@@ -393,8 +448,7 @@ $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY):
 	mkdir -p $(GLM52_RESIDENT_DECODE_STAGE_TEST_DIRECTORY)
 
 build/obj/%.o: %.c | build
-	mkdir -p $(dir $@)
-	$(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
+	@mkdir -p $(dir $@) && $(CC) $(SP_INCLUDE_FLAGS) $(CFLAGS) -fPIC -MMD -MP -c $< -o $@
 
 $(CORE_LIBRARY): $(CORE_OBJECTS)
 	$(AR) rcs $@ $^
@@ -409,6 +463,9 @@ $(GLM52_HOST_LIBRARY): $(GLM52_HOST_OBJECTS)
 	$(AR) rcs $@ $^
 
 $(QWEN36_HOST_LIBRARY): $(QWEN36_HOST_OBJECTS)
+	$(AR) rcs $@ $^
+
+$(DSV4_HOST_LIBRARY): $(DSV4_HOST_OBJECTS)
 	$(AR) rcs $@ $^
 
 $(COMPILER_LIBRARY): $(COMPILER_OBJECTS)
@@ -429,11 +486,18 @@ build/sparkpipe_driver_inspect: tools/sparkpipe_driver_inspect.c $(RUNTIME_LIBRA
 build/sparkpipe_glm52_pipesim: tests/studies/sparkpipe_glm52_pipesim.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+
+build/sparkpipe_dsv4_cache_plan_report: tests/studies/sparkpipe_dsv4_cache_plan_report.c $(DSV4_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(DSV4_INCLUDE_FLAGS) $(CFLAGS) $< $(DSV4_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_dsv4_cache_plan: tests/test_dsv4_cache_plan.c $(DSV4_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(DSV4_INCLUDE_FLAGS) $(CFLAGS) $< $(DSV4_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_glm52_batch_plane: tests/test_glm52_batch_plane.c $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(GLM52_INCLUDE_FLAGS) $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/sparkpipe_glm52_batchplane_model: tests/studies/sparkpipe_glm52_batchplane_model.c 
-	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -o $@
+build/sparkpipe_glm52_batchplane_model: tests/studies/sparkpipe_glm52_batchplane_model.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) $(LDLIBS) -lm -o $@
 
 build/sparkpipe_glm52_tokenize: text/tokenize_main.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -472,10 +536,6 @@ $(GLM52_RING_SERVICE_BACKEND): node/backend.c inference/stage/runner.c modules/g
 	$(CC) $(CPPFLAGS) -Imodules/glm52_resident_decode_stage/include $(CFLAGS) -fPIC $(SHARED_LIBRARY_FLAGS) node/backend.c inference/stage/runner.c $(RUNTIME_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 glm52_ring_service_backend: $(GLM52_RING_SERVICE_BACKEND)
-
-	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
-	else \
-	fi
 
 
 $(HIDDEN_TRANSPORT_SPARK_HOST_RDMA): ring/transport/rdma.cu include/sparkpipe/spark_hidden_transport.h include/sparkpipe/spark_memlink.h $(COMMON_LIBRARY)
@@ -591,8 +651,34 @@ build/test_uniform_profile_admit: tests/test_uniform_profile_admit.c $(GLM52_HOS
 build/test_hybrid_kv_arithmetic: tests/test_hybrid_kv_arithmetic.c $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Imodel-families/k3/include -Imodel-families/qwen36/include $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_arena: tests/test_arena.c runtime/arena.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_arena.c $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_work_transaction: tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+# Header-only cache plus a mock encode; the driver stub's cuda.h is what lets
+# runtime/tensor_map.h compile with no CUDA toolkit, and its stub.c stands in
+# for cuTensorMapEncodeTiled so the production entry point is exercised too.
+# -x c++ on the stub keeps the symbol mangling identical to the test TU's
+# (the stub predates C and C++ disagreeing on the name).
+build/test_gemm_descriptor_cache: tests/test_gemm_descriptor_cache.cpp tests/cuda_driver_stub/stub.c runtime/gemm_descriptor_cache.h
+	$(CXX) -x c++ -Itests/cuda_driver_stub -O2 -Wall -Wextra -c tests/cuda_driver_stub/stub.c -o build/test_gemm_descriptor_cache_stub.o
+	$(CXX) $(CPPFLAGS) -I. -Itests/cuda_driver_stub $(CXXFLAGS) tests/test_gemm_descriptor_cache.cpp build/test_gemm_descriptor_cache_stub.o $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_distributed_work: tests/test_distributed_work.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_distributed_work.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_json: tests/test_json.c $(COMPILER_LIBRARY) $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMPILER_LIBRARY) $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+# The stage-side graph cache and its capture/replay/fallback decision, driven
+# through a recording mock of the five CUDA calls dispatch.cu provides.
+build/test_stage_graph_replay: tests/test_stage_graph_replay.c inference/stage/graph_replay.h include/sparkpipe/spark_resident_decode_stage.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) $< $(LDFLAGS) -o $@
+
+build/test_fabric_topology: tests/test_fabric_topology.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
+	$(CC) $(MODEL_COMMON_INCLUDE_FLAGS) $(CFLAGS) $< $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_hidden_transport: tests/test_hidden_transport.c $(COMMON_LIBRARY) $(TEST_HIDDEN_TRANSPORT_MODULE)
 	$(CC) $(CPPFLAGS) -Itests -DSPARK_TEST_HIDDEN_TRANSPORT_MODULE_PATH=\"$(TEST_HIDDEN_TRANSPORT_MODULE)\" $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -608,6 +694,12 @@ build/test_glm52_kv_cache: tests/test_glm52_kv_cache.c $(COMMON_LIBRARY)
 
 build/test_kv_store: tests/test_kv_store.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+# The tier and its mock device, compiled together directly: the test's device
+# is a vtable implementation, so there is no library boundary to cross and no
+# archive to link for two translation units.
+build/test_nvme_tier: tests/test_nvme_tier.c cache/nvme_tier.c include/sparkpipe/spark_nvme_tier.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_nvme_tier.c cache/nvme_tier.c $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_kv_mooncake: tests/test_kv_mooncake.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
 	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
@@ -663,10 +755,6 @@ build/test_glm52_request_api: tests/test_glm52_request_api.c $(COMMON_LIBRARY)
 build/test_glm52_cuda_resident_ipc: tests/test_glm52_cuda_resident_ipc.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-build/test_glm52_cuda_resident_gate: tests/test_glm52_cuda_resident_gate.c $(COMMON_LIBRARY)
-	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
-
-
 build/test_glm52_long_context: tests/test_glm52_long_context.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -686,6 +774,12 @@ build/test_glm52_service: tests/test_glm52_service.c $(COMMON_LIBRARY)
 
 build/test_glm52_service_backend: tests/test_glm52_service_backend.c $(COMMON_LIBRARY) $(TEST_SERVICE_BACKEND_MODULE)
 	$(CC) $(CPPFLAGS) -Itests -DTEST_SERVICE_BACKEND_MODULE_PATH=\"$(TEST_SERVICE_BACKEND_MODULE)\" $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_ring_service_backend_transactions: tests/test_ring_service_backend_transactions.c inference/stage/runner.c $(LIBRARIES)
+	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_ring_service_backend_transactions.c inference/stage/runner.c $(LIBRARIES) $(LIBRARIES) $(LDFLAGS) $(LDLIBS) -o $@
+
+build/test_glm52_ring_service_backend_internal: tests/test_glm52_ring_service_backend_internal.c inference/stage/runner.c $(LIBRARIES)
+	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_ring_service_backend_internal.c inference/stage/runner.c $(LIBRARIES) $(LIBRARIES) $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_glm52_compat_api: tests/test_glm52_compat_api.c $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests $(CFLAGS) $< $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
@@ -718,10 +812,9 @@ build/test_glm52_resident_decode_stage_firmware: tests/test_glm52_resident_decod
 build/test_glm52_resident_decode_stage_production_runner: tests/test_glm52_resident_decode_stage_production_runner.c inference/stage/runner.c modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_production_runner.h $(COMMON_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Imodules/glm52_resident_decode_stage/include $(CFLAGS) tests/test_glm52_resident_decode_stage_production_runner.c inference/stage/runner.c $(COMMON_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
-glm52_quantized_readiness_test: build/test_glm52_ring_runtime build/test_glm52_stagepack build/test_glm52_cuda_resident_gate build/test_model_description
+glm52_quantized_readiness_test: build/test_glm52_ring_runtime build/test_glm52_stagepack build/test_model_description
 	./build/test_glm52_ring_runtime
 	./build/test_glm52_stagepack
-	./build/test_glm52_cuda_resident_gate
 	./build/test_model_description
 	python3 tests/test_glm52_stage_pack.py
 	python3 tests/test_glm52_w8lut_artifact_preflight.py
@@ -759,14 +852,6 @@ cuda_glm52_resident_decode_stage:
 		$(MAKE) -C modules/glm52_resident_decode_stage archive NVCC=$(NVCC) CUDA_ARCH=sm_121a; \
 	fi
 
-	mkdir -p build
-	$(NVCC) -std=c++17 $(NVCCFLAGS) \
-		-Iinclude \
-		-Imodules/glm52_resident_decode_stage/include \
-		$(GLM52_STAGE_SWEEP_MODULE_ARCHIVE) \
-		$(GLM52_RING_NODE_CONTEXT_BUILDER_LINK_ARGS) \
-		-lcublasLt -lcublas -ldl \
-		-o $(GLM52_FP8_SCALED_GEMM_CUDA_GATE)
 
 glm52_w8lut_quality_reference:
 	@test -d modules/glm52_w8lut_quality_weights || { echo "modules/glm52_w8lut_quality_weights is not in this tree; target unavailable" >&2; exit 2; }
@@ -959,8 +1044,6 @@ tree_summary:
 	@printf "test_executables="; printf '%s\n' $(TEST_NAMES) | wc -l
 
 clean:
-	@test -d modules/glm52_w8lut_quality_weights || { echo "modules/glm52_w8lut_quality_weights is not in this tree; target unavailable" >&2; exit 2; }
-	$(MAKE) -C modules/glm52_w8lut_quality_weights clean
 	rm -rf build
 
 -include $(ALL_HOST_OBJECTS:.o=.d) $(TEST_SUPPORT_OBJECT:.o=.d) \

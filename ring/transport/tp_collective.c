@@ -19,6 +19,12 @@
 #define SPARK_TP_COLLECTIVE_HANDSHAKE_MAGIC 0x53545043u
 #define SPARK_TP_COLLECTIVE_OPERATION_MAGIC 0x5354504fu
 #define SPARK_TP_COLLECTIVE_OPERATION_SUM_F32 1u
+/* BF16 payload with F32 accumulate per exchange step (audit NET-011): decode
+   all-reduce tensors are BF16, so staging F32 doubled both the host-staging
+   copies and the wire bytes. The wire kind is negotiated in the operation
+   header, so a rank mixing kinds fails validation instead of silently
+   decoding the peer's bytes with the wrong element width. */
+#define SPARK_TP_COLLECTIVE_OPERATION_SUM_BF16 2u
 #define SPARK_TP_COLLECTIVE_CONNECT_RETRY_NANOSECONDS 2000000L
 #define SPARK_TP_COLLECTIVE_IO_CHUNK_BYTES ((uint64_t)INT_MAX)
 
@@ -938,12 +944,13 @@ static void SparkTpCollectiveBuildOperationHeader(
     uint32_t step_index,
     uint64_t operation_sequence,
     uint64_t element_count,
+    uint32_t operation_kind,
     SparkTpCollectiveOperationWire *operation_header)
 {
     memset(operation_header, 0, sizeof(*operation_header));
     operation_header->magic = htonl(SPARK_TP_COLLECTIVE_OPERATION_MAGIC);
     operation_header->abi_version = htonl(SPARK_TP_COLLECTIVE_ABI_VERSION);
-    operation_header->operation_kind = htonl(SPARK_TP_COLLECTIVE_OPERATION_SUM_F32);
+    operation_header->operation_kind = htonl(operation_kind);
     operation_header->step_index = htonl(step_index);
     operation_header->tp_degree = htonl(collective->tp_degree);
     operation_header->sender_rank = htonl(collective->tp_rank);
@@ -967,11 +974,12 @@ static SparkStatus SparkTpCollectiveValidateOperationHeader(
     uint32_t expected_step_index,
     uint32_t expected_sender_rank,
     uint64_t expected_operation_sequence,
-    uint64_t expected_element_count)
+    uint64_t expected_element_count,
+    uint32_t expected_operation_kind)
 {
     if (ntohl(operation_header->magic) != SPARK_TP_COLLECTIVE_OPERATION_MAGIC ||
         ntohl(operation_header->abi_version) != SPARK_TP_COLLECTIVE_ABI_VERSION ||
-        ntohl(operation_header->operation_kind) != SPARK_TP_COLLECTIVE_OPERATION_SUM_F32 ||
+        ntohl(operation_header->operation_kind) != expected_operation_kind ||
         ntohl(operation_header->step_index) != expected_step_index ||
         ntohl(operation_header->tp_degree) != collective->tp_degree ||
         ntohl(operation_header->sender_rank) != expected_sender_rank ||
@@ -998,6 +1006,7 @@ static SparkStatus SparkTpCollectiveExchangeOperationHeaders(
     uint32_t partner_rank,
     uint64_t operation_sequence,
     uint64_t element_count,
+    uint32_t operation_kind,
     uint64_t deadline_milli)
 {
     SparkTpCollectiveOperationWire local_header;
@@ -1010,6 +1019,7 @@ static SparkStatus SparkTpCollectiveExchangeOperationHeaders(
         step_index,
         operation_sequence,
         element_count,
+        operation_kind,
         &local_header);
 
     receive_status = SPARK_STATUS_OK;
@@ -1063,7 +1073,8 @@ static SparkStatus SparkTpCollectiveExchangeOperationHeaders(
         step_index,
         partner_rank,
         operation_sequence,
-        element_count);
+        element_count,
+        operation_kind);
 }
 
 SparkStatus SparkTpCollectiveCreate(
@@ -1176,11 +1187,92 @@ static int SparkTpCollectiveMemoryRangesOverlap(
     return first_begin < second_end && second_begin < first_end;
 }
 
-SparkStatus SparkTpCollectiveAllReduceSumF32(
+/* Widens one BF16 lane to F32: the high half of the F32 bit pattern. */
+static float SparkTpCollectiveBf16ToF32(uint16_t value_bf16)
+{
+    uint32_t bits;
+    float value;
+
+    bits = (uint32_t)value_bf16 << 16u;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+/* Narrows one F32 lane to BF16 with round-to-nearest-even, matching the
+   device-side narrowing a CUDA kernel would apply, so the host-staged and the
+   future device-resident path round identically. NaN inputs are canonicalised
+   before the bias add, which would otherwise carry into the exponent and
+   produce infinity. Every rank runs this same code on the same partials, so
+   the BF16 variant keeps the F32 variant's bitwise-identical-across-ranks
+   guarantee. */
+static uint16_t SparkTpCollectiveF32ToBf16(float value)
+{
+    uint32_t bits;
+
+    memcpy(&bits, &value, sizeof(bits));
+    if ((bits & 0x7fffffffu) > 0x7f800000u)
+    {
+        return (uint16_t)((bits >> 16u) | 0x0040u);
+    }
+
+    bits += 0x7fffu + ((bits >> 16u) & 1u);
+    return (uint16_t)(bits >> 16u);
+}
+
+static void SparkTpCollectiveReduceSumF32(
+    void *values,
+    const void *scratch,
+    uint64_t element_count)
+{
+    float *value_elements;
+    const float *scratch_elements;
+    uint64_t element_index;
+
+    value_elements = (float *)values;
+    scratch_elements = (const float *)scratch;
+    for (element_index = 0u; element_index < element_count; ++element_index)
+    {
+        value_elements[element_index] =
+            value_elements[element_index] + scratch_elements[element_index];
+    }
+}
+
+/* The standard BF16-all-reduce recipe (vLLM custom all-reduce, NCCL): the
+   wire and the staging buffers stay BF16, each exchange step accumulates in
+   F32 and narrows once, so precision cost is one rounding per doubling step
+   instead of one per element-pair in F32 staged at twice the bytes. */
+static void SparkTpCollectiveReduceSumBf16(
+    void *values,
+    const void *scratch,
+    uint64_t element_count)
+{
+    uint16_t *value_elements;
+    const uint16_t *scratch_elements;
+    uint64_t element_index;
+
+    value_elements = (uint16_t *)values;
+    scratch_elements = (const uint16_t *)scratch;
+    for (element_index = 0u; element_index < element_count; ++element_index)
+    {
+        value_elements[element_index] = SparkTpCollectiveF32ToBf16(
+            SparkTpCollectiveBf16ToF32(value_elements[element_index]) +
+            SparkTpCollectiveBf16ToF32(scratch_elements[element_index]));
+    }
+}
+
+typedef void (*SparkTpCollectiveReduceFunction)(
+    void *values,
+    const void *scratch,
+    uint64_t element_count);
+
+static SparkStatus SparkTpCollectiveAllReduceSum(
     SparkTpCollective *collective,
-    float *values,
+    void *values,
     uint64_t element_count,
-    float *scratch)
+    void *scratch,
+    uint64_t element_bytes,
+    uint32_t operation_kind,
+    SparkTpCollectiveReduceFunction reduce_step)
 {
     uint32_t expected_step_count;
     uint32_t step_index;
@@ -1220,12 +1312,12 @@ SparkStatus SparkTpCollectiveAllReduceSumF32(
         collective->collective_identifier == 0u ||
         collective->next_operation_sequence == 0u ||
         collective->next_operation_sequence == UINT64_MAX ||
-        element_count > (uint64_t)(SIZE_MAX / sizeof(float)))
+        element_count > (uint64_t)(SIZE_MAX / element_bytes))
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
 
-    buffer_bytes = element_count * sizeof(float);
+    buffer_bytes = element_count * element_bytes;
     if (SparkTpCollectiveMemoryRangesOverlap(
             values,
             scratch,
@@ -1242,7 +1334,6 @@ SparkStatus SparkTpCollectiveAllReduceSumF32(
     {
         uint32_t partner_rank;
         int32_t step_socket;
-        uint64_t element_index;
         SparkStatus status;
 
         partner_rank = collective->tp_rank ^ (1u << step_index);
@@ -1261,6 +1352,7 @@ SparkStatus SparkTpCollectiveAllReduceSumF32(
             partner_rank,
             operation_sequence,
             element_count,
+            operation_kind,
             deadline_milli);
         if (status != SPARK_STATUS_OK)
         {
@@ -1305,14 +1397,43 @@ SparkStatus SparkTpCollectiveAllReduceSumF32(
             return SparkTpCollectiveFail(collective, status);
         }
 
-        for (element_index = 0u; element_index < element_count; ++element_index)
-        {
-            values[element_index] = values[element_index] + scratch[element_index];
-        }
+        reduce_step(values, scratch, element_count);
     }
 
     collective->next_operation_sequence += 1u;
     return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkTpCollectiveAllReduceSumF32(
+    SparkTpCollective *collective,
+    float *values,
+    uint64_t element_count,
+    float *scratch)
+{
+    return SparkTpCollectiveAllReduceSum(
+        collective,
+        values,
+        element_count,
+        scratch,
+        (uint64_t)sizeof(float),
+        SPARK_TP_COLLECTIVE_OPERATION_SUM_F32,
+        SparkTpCollectiveReduceSumF32);
+}
+
+SparkStatus SparkTpCollectiveAllReduceSumBf16(
+    SparkTpCollective *collective,
+    uint16_t *values_bf16,
+    uint64_t element_count,
+    uint16_t *scratch_bf16)
+{
+    return SparkTpCollectiveAllReduceSum(
+        collective,
+        values_bf16,
+        element_count,
+        scratch_bf16,
+        (uint64_t)sizeof(uint16_t),
+        SPARK_TP_COLLECTIVE_OPERATION_SUM_BF16,
+        SparkTpCollectiveReduceSumBf16);
 }
 
 void SparkTpCollectiveDestroy(SparkTpCollective *collective)

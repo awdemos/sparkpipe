@@ -780,6 +780,15 @@ typedef struct SparkResidentDecodeStageBulkPrefillPlan
 } SparkResidentDecodeStageBulkPrefillPlan;
 
 
+// Per-pipeline-slot CUDA graph state. Decode steps are captured once per
+// (active_sequence_count, specialization_signature) key and replayed
+// thereafter; the contract for what may vary between replays - device-side
+// buffer contents yes, any host-derived launch input no - and the capture /
+// replay / eager-fallback decision live in inference/stage/graph_replay.h,
+// which operates these fields. The layout is ABI: the primary entry is the
+// named triple, the spares are the parallel arrays, and eviction is LRU by
+// last_use epoch against graph_cache_clock. graph_capture_count and
+// graph_replay_count are cumulative for the runtime snapshot.
 typedef struct SparkResidentDecodeStageCudaPipelineSlotState
 {
     uint32_t abi_version;

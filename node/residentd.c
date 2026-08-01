@@ -1793,6 +1793,12 @@ static SparkStatus SparkCudaResidentdBuildDecodeWorkPacket(
     packet->magic = SPARK_RING_WORK_CONTROL_PACKET_MAGIC;
     packet->abi_version = SPARK_RING_WORK_CONTROL_ABI_VERSION;
     packet->control_generation = message->control_generation;
+    packet->request_generation = message->request_generation;
+    packet->step_generation = message->step_generation;
+    packet->step_chunk_index = message->step_chunk_index;
+    packet->step_chunk_count = message->step_chunk_count;
+    packet->transaction_phase = message->transaction_phase;
+    packet->reserved_transaction = message->reserved_transaction;
     packet->descriptor_bytes =
         SparkRingWorkControlCalculatePacketBytes(message->lane_count);
     if (packet->descriptor_bytes == 0u)
@@ -1868,6 +1874,7 @@ static SparkStatus SparkCudaResidentdBuildDecodeWorkPacket(
             required_context_token_count += additional_token_count;
         }
         target_lane->request_id = source_lane->request_id;
+        target_lane->request_generation = source_lane->request_generation;
         target_lane->sequence_id = source_lane->sequence_id;
         target_lane->sequence_position = source_lane->sequence_position;
         target_lane->request_slot_index = source_lane->request_slot_index;

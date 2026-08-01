@@ -3,6 +3,222 @@
 
 #include <string.h>
 
+static uint64_t SparkRingWorkControlRotateLeft(
+	uint64_t value,
+	uint32_t bit_count)
+{
+	return (value << bit_count) | (value >> (64u - bit_count));
+}
+
+static uint64_t SparkRingWorkControlNonzeroIdentityWord(
+	uint64_t value,
+	uint64_t fallback)
+{
+	return value == 0u ? fallback : value;
+}
+
+uint32_t SparkRingWorkControlTransactionPhase(
+	const SparkRingWorkControlPacket *packet)
+{
+	if (packet == 0)
+	{
+		return 0u;
+	}
+	if ((packet->flags &
+		SPARK_RING_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u)
+	{
+		return SPARK_DISTRIBUTED_WORK_PHASE_RELEASE;
+	}
+	if ((packet->flags & SPARK_RING_WORK_CONTROL_FLAG_PREFILL) != 0u)
+	{
+		return SPARK_DISTRIBUTED_WORK_PHASE_PREFILL;
+	}
+	if ((packet->flags &
+		(SPARK_RING_WORK_CONTROL_FLAG_DSPARK_SPECULATIVE_VERIFY |
+		 SPARK_RING_WORK_CONTROL_FLAG_MTP_SPECULATIVE_VERIFY)) != 0u)
+	{
+		return SPARK_DISTRIBUTED_WORK_PHASE_VERIFY;
+	}
+	return SPARK_DISTRIBUTED_WORK_PHASE_DECODE;
+}
+
+uint64_t SparkRingWorkControlPacketFingerprint(
+	const SparkRingWorkControlPacket *packet)
+{
+	if (packet == 0 ||
+		packet->descriptor_bytes <
+			SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES ||
+		packet->descriptor_bytes > SPARK_RING_WORK_CONTROL_PACKET_BYTES)
+	{
+		return 0u;
+	}
+	return SparkDistributedWorkHashBytes(packet,packet->descriptor_bytes);
+}
+
+SparkStatus SparkRingWorkControlSetTransactionIdentity(
+	SparkRingWorkControlPacket *packet,
+	uint64_t control_generation,
+	uint64_t transaction_id,
+	uint64_t dispatch_generation,
+	uint64_t step_generation)
+{
+	uint32_t lane_index;
+
+	if (packet == 0 || control_generation == 0u || transaction_id == 0u ||
+		dispatch_generation == 0u || step_generation == 0u ||
+		packet->lane_count == 0u ||
+		packet->lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT ||
+		packet->step_chunk_count == 0u ||
+		packet->step_chunk_index >= packet->step_chunk_count ||
+		SparkDistributedWorkPhaseIsValid(packet->transaction_phase) == 0u)
+	{
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
+	{
+		if (packet->lanes[lane_index].request_generation == 0u)
+		{
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		}
+	}
+	packet->control_generation = control_generation;
+	packet->transaction_id = transaction_id;
+	packet->dispatch_generation = dispatch_generation;
+	packet->request_generation = packet->lanes[0u].request_generation;
+	packet->step_generation = step_generation;
+	packet->reserved_transaction = 0u;
+	for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
+	{
+		packet->lanes[lane_index].step_generation = step_generation;
+	}
+	return SPARK_STATUS_OK;
+}
+
+SparkStatus SparkRingWorkControlFinalizeTransaction(
+	SparkRingWorkControlPacket *packet,
+	uint64_t control_generation,
+	uint32_t step_chunk_index,
+	uint32_t step_chunk_count)
+{
+	uint64_t canonical_hash;
+	uint64_t dispatch_generation;
+	uint64_t step_generation;
+	uint32_t lane_index;
+
+	if (packet == 0 || control_generation == 0u ||
+		step_chunk_count == 0u || step_chunk_index >= step_chunk_count ||
+		packet->lane_count == 0u ||
+		packet->lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT ||
+		packet->descriptor_bytes !=
+			SparkRingWorkControlCalculatePacketBytes(packet->lane_count))
+	{
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
+	{
+		if (packet->lanes[lane_index].request_generation == 0u)
+		{
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		}
+		packet->lanes[lane_index].step_generation = 0u;
+	}
+	packet->control_generation = control_generation;
+	packet->transaction_id = 0u;
+	packet->dispatch_generation = 0u;
+	packet->request_generation = packet->lanes[0u].request_generation;
+	packet->step_generation = 0u;
+	packet->step_chunk_index = step_chunk_index;
+	packet->step_chunk_count = step_chunk_count;
+	packet->transaction_phase = SparkRingWorkControlTransactionPhase(packet);
+	packet->reserved_transaction = 0u;
+	if (SparkDistributedWorkPhaseIsValid(packet->transaction_phase) == 0u)
+	{
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	canonical_hash = SparkDistributedWorkHashBytes(
+		packet,
+		packet->descriptor_bytes);
+	if (canonical_hash == 0u)
+	{
+		return SPARK_STATUS_INTERNAL_ERROR;
+	}
+	dispatch_generation = SparkRingWorkControlNonzeroIdentityWord(
+		canonical_hash ^ UINT64_C(0x9E3779B97F4A7C15),
+		UINT64_C(1));
+	step_generation = SparkRingWorkControlNonzeroIdentityWord(
+		SparkRingWorkControlRotateLeft(canonical_hash,17u) ^
+			UINT64_C(0xD1B54A32D192ED03),
+		UINT64_C(1));
+	return SparkRingWorkControlSetTransactionIdentity(
+		packet,
+		control_generation,
+		canonical_hash,
+		dispatch_generation,
+		step_generation);
+}
+
+SparkStatus SparkRingWorkControlGetTransactionIdentity(
+	const SparkRingWorkControlPacket *packet,
+	SparkDistributedWorkIdentity *identity_out)
+{
+	if (packet == 0 || identity_out == 0)
+	{
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	memset(identity_out,0,sizeof(*identity_out));
+	identity_out->control_generation = packet->control_generation;
+	identity_out->transaction_id = packet->transaction_id;
+	identity_out->dispatch_generation = packet->dispatch_generation;
+	identity_out->request_generation = packet->request_generation;
+	identity_out->step_generation = packet->step_generation;
+	identity_out->step_chunk_index = packet->step_chunk_index;
+	identity_out->step_chunk_count = packet->step_chunk_count;
+	identity_out->transaction_phase = packet->transaction_phase;
+	return SparkDistributedWorkIdentityIsValid(identity_out) != 0u ?
+		SPARK_STATUS_OK : SPARK_STATUS_INVALID_ARGUMENT;
+}
+
+static SparkStatus SparkRingWorkControlValidateTransactionFields(
+	const SparkRingWorkControlPacket *packet)
+{
+	SparkDistributedWorkIdentity identity;
+	uint32_t expected_phase;
+	uint32_t lane_index;
+	SparkStatus status;
+
+	if (packet->lane_count == 0u ||
+		packet->lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT ||
+		packet->descriptor_bytes !=
+			SparkRingWorkControlCalculatePacketBytes(packet->lane_count) ||
+		packet->request_generation == 0u ||
+		packet->reserved_transaction != 0u)
+	{
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	status = SparkRingWorkControlGetTransactionIdentity(packet,&identity);
+	if (status != SPARK_STATUS_OK)
+	{
+		return status;
+	}
+	expected_phase = SparkRingWorkControlTransactionPhase(packet);
+	if (packet->transaction_phase != expected_phase ||
+		packet->request_generation !=
+			packet->lanes[0u].request_generation)
+	{
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	}
+	for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
+	{
+		if (packet->lanes[lane_index].request_generation == 0u ||
+			packet->lanes[lane_index].step_generation !=
+				packet->step_generation)
+		{
+			return SPARK_STATUS_INVALID_ARGUMENT;
+		}
+	}
+	return SPARK_STATUS_OK;
+}
+
 uint32_t SparkRingWorkControlCalculatePacketBytes(
 	uint32_t active_sequence_count)
 {
@@ -172,6 +388,10 @@ static SparkStatus SparkRingWorkControlBuildDecodeLanes(
 			return SPARK_STATUS_INVALID_ARGUMENT;
 		lane->request_id =
 			decode_dispatch->request_dispatch->request_ids[source_index];
+		lane->request_generation =
+			decode_dispatch->request_dispatch->request_handles[source_index];
+		if (source_lane->request_handle != lane->request_generation)
+			return SPARK_STATUS_INVALID_ARGUMENT;
 		lane->sequence_id =
 			decode_dispatch->request_dispatch->sequence_ids[source_index];
 		lane->sequence_position = source_lane->sequence_position;
@@ -322,7 +542,11 @@ SparkStatus SparkRingWorkControlBuildDecodePacketRange(
 			decode_dispatch->speculative_draft_token_ids[lane_offset],
 			sizeof(packet->speculative_draft_token_ids));
 	}
-	return SPARK_STATUS_OK;
+	return SparkRingWorkControlFinalizeTransaction(
+		packet,
+		SPARK_RING_WORK_CONTROL_STANDALONE_GENERATION,
+		0u,
+		1u);
 }
 
 SparkStatus SparkRingWorkControlBuildDecodePacket(
@@ -480,6 +704,7 @@ SparkStatus SparkRingWorkControlBuildPrefillPacket(
 			return SPARK_STATUS_CAPACITY_EXCEEDED;
 		destination_lane = &packet->lanes[active_lane_count];
 		destination_lane->request_id = source_lane->request_id;
+		destination_lane->request_generation = source_lane->request_handle;
 		destination_lane->sequence_id = source_lane->sequence_id;
 		destination_lane->sequence_position = position;
 		destination_lane->request_slot_index =
@@ -519,7 +744,11 @@ SparkStatus SparkRingWorkControlBuildPrefillPacket(
 	packet->sequence_id = packet->lanes[0u].sequence_id;
 	packet->sequence_position = packet->lanes[0u].sequence_position;
 	packet->input_token_id = packet->lanes[0u].input_token_id;
-	return SPARK_STATUS_OK;
+	return SparkRingWorkControlFinalizeTransaction(
+		packet,
+		SPARK_RING_WORK_CONTROL_STANDALONE_GENERATION,
+		0u,
+		1u);
 }
 
 uint32_t SparkRingWorkControlBlockCount(
@@ -567,6 +796,7 @@ SparkStatus SparkRingWorkControlValidatePacket(
 	uint64_t expected_execution_row_count;
 	uint32_t release_sequences;
 	uint32_t mtp_resolution_lane_count;
+	SparkStatus transaction_status;
 
 	if (packet == 0 ||
 		packet->magic != SPARK_RING_WORK_CONTROL_PACKET_MAGIC ||
@@ -577,6 +807,10 @@ SparkStatus SparkRingWorkControlValidatePacket(
 		packet->sequence_id == 0u ||
 		packet->control_generation == 0u)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	transaction_status =
+		SparkRingWorkControlValidateTransactionFields(packet);
+	if (transaction_status != SPARK_STATUS_OK)
+		return transaction_status;
 	release_sequences = (packet->flags &
 		SPARK_RING_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u;
 	if (release_sequences != 0u)

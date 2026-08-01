@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_serving_engine.h"
 
 #define SPARK_TEST_SERVING_REQUEST_SLOT_COUNT 4u
@@ -99,6 +100,7 @@ static SparkStatus SparkTestServingKvPrefetch(
 static SparkStatus SparkTestServingReleaseSequence(
     void *context,
     uint64_t request_id,
+    uint64_t request_generation,
     uint64_t sequence_id,
     uint32_t token_count)
 {
@@ -106,6 +108,7 @@ static SparkStatus SparkTestServingReleaseSequence(
     callback_context = (SparkTestServingCallbackContext *)context;
     assert(callback_context != 0);
     assert(request_id != 0u);
+    assert(request_generation != 0u);
     assert(sequence_id != 0u);
     assert(token_count != 0u);
     callback_context->release_callback_count += 1u;
@@ -445,7 +448,11 @@ static void SparkTestServingInitializeFixture(
     scheduler_configuration.measured_profile_id =
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701;
     scheduler_configuration.quantization_mode =
-        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT;
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT;
+    scheduler_configuration.stage_geometry.layer_count =
+        SPARK_GLM52_MODEL_LAYER_COUNT;
+    scheduler_configuration.stage_geometry.first_routed_layer =
+        SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER;
     scheduler_configuration.max_prefill_tokens_per_step =
         SPARK_TEST_SERVING_PREFILL_TOKEN_STRIDE;
     scheduler_configuration.configuration_flags =

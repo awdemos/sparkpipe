@@ -131,9 +131,9 @@ static uint32_t LmLaunchSelectTile(uint32_t peak_rows)
 // The grouped tile height as a pure function of the batch shape, so a layer
 // can price its expert tile tables in the route build and skip the prefix
 // launches. This IS the planner's choice - one truth, exported.
-static uint32_t LmLaunchGroupedTileM(uint32_t tokens, uint32_t top_k, uint32_t expert_count)
+static inline uint32_t LmLaunchGroupedTileM(uint32_t tokens, uint32_t top_k, uint32_t expert_count)
 {
-	LmLaunchShape shape = { 0 };
+	LmLaunchShape shape = {};
 	shape.tokens = tokens;
 	shape.top_k = top_k;
 	shape.expert_count = expert_count;
@@ -181,13 +181,18 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 	// with the same one the kernel applies. Both come from here.
 	pitch = (shape->tile_k * shape->stored_bits) / 8u;
 	plan->swizzle_span = LmSwizzleSpanFor(pitch);
-	if ( plan->swizzle_span == 0u )
+	if ( plan->swizzle_span == 0u || pitch != plan->swizzle_span )
 		return(LM_LAUNCH_ERR_MAP);
 	// The activation pitch must be swizzleable in its own right when the widths
 	// differ; the weight span above does not vouch for it.
-	if ( shape->stored_bits_a != 0u
-		&& LmSwizzleSpanFor((shape->tile_k * shape->stored_bits_a) / 8u) == 0u )
-		return(LM_LAUNCH_ERR_MAP);
+	if ( shape->stored_bits_a != 0u )
+	{
+		uint32_t activation_pitch =
+			(shape->tile_k * shape->stored_bits_a) / 8u;
+		uint32_t activation_span = LmSwizzleSpanFor(activation_pitch);
+		if ( activation_span == 0u || activation_pitch != activation_span )
+			return(LM_LAUNCH_ERR_MAP);
+	}
 	// Persistent grid: one CTA per SM, sized to the machine rather than the
 	// problem, so a short group never leaves an SM idle behind a long one. The
 	// kernel bounds its own loop on the device-side tile prefix, so an
@@ -197,3 +202,81 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 	plan->workspace_bytes = 0u;
 	return(LM_LAUNCH_OK);
 }
+
+// THE 48 KiB DYNAMIC SHARED OPT-IN, for any kernel that needs it.
+//
+// ptxas grants 48 KiB of dynamic shared without asking; anything larger fails
+// the launch on device every time unless cudaFuncSetAttribute opts the kernel
+// in first. The delta rule carves KEY_DIM * VALUE_DIM floats (64 KiB at both
+// drivers' widths), and every model family launches its own instantiation, so
+// the opt-in lives here once, keyed on the kernel address, rather than being
+// copied per driver. Once per kernel per device, mutex-guarded, and checked,
+// because a skipped opt-in fails the launch rather than corrupting anything.
+// The host recorders have no launch to attribute, so the guard compiles to a
+// no-op there and the call sites keep one spelling.
+#define LM_LAUNCH_MAX_OPTIN_KERNELS 16u
+#define LM_LAUNCH_MAX_TRACKED_DEVICES 64u
+
+#ifdef __CUDACC__
+#include <mutex>
+
+typedef struct LmKernelOptInEntry
+{
+	const void *kernel;
+	uint64_t device_mask;
+}
+LmKernelOptInEntry;
+
+static int32_t LmKernelSharedMemoryOptIn(const void *kernel, uint32_t shared_bytes)
+{
+	static std::mutex grant_mutex;
+	static LmKernelOptInEntry grants[LM_LAUNCH_MAX_OPTIN_KERNELS];
+	static uint32_t grant_count = 0u;
+	cudaError_t status;
+	uint64_t device_bit;
+	uint32_t index;
+	int device_index;
+
+	if ( kernel == 0 )
+		return(LM_LAUNCH_ERR_ATTRIBUTE);
+	status = cudaGetDevice(&device_index);
+	if ( status != cudaSuccess )
+		return(LM_LAUNCH_ERR_ATTRIBUTE);
+	if ( device_index < 0
+		|| (uint32_t)device_index >= LM_LAUNCH_MAX_TRACKED_DEVICES )
+		return(LM_LAUNCH_ERR_ATTRIBUTE);
+	device_bit = UINT64_C(1) << (uint32_t)device_index;
+	{
+		std::lock_guard<std::mutex> lock(grant_mutex);
+		for ( index = 0u; index < grant_count; index++ )
+		{
+			if ( grants[index].kernel == kernel )
+			{
+				if ( (grants[index].device_mask & device_bit) != 0u )
+					return(LM_LAUNCH_OK);
+				break;
+			}
+		}
+		if ( index == grant_count )
+		{
+			if ( grant_count >= LM_LAUNCH_MAX_OPTIN_KERNELS )
+				return(LM_LAUNCH_ERR_ATTRIBUTE);
+			grants[grant_count].kernel = kernel;
+			grants[grant_count].device_mask = 0u;
+			grant_count++;
+		}
+		status = cudaFuncSetAttribute(kernel,
+			cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared_bytes);
+		if ( status == cudaSuccess )
+			grants[index].device_mask |= device_bit;
+	}
+	return(status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_ATTRIBUTE);
+}
+#else
+static int32_t LmKernelSharedMemoryOptIn(const void *kernel, uint32_t shared_bytes)
+{
+	(void)kernel;
+	(void)shared_bytes;
+	return(LM_LAUNCH_OK);
+}
+#endif

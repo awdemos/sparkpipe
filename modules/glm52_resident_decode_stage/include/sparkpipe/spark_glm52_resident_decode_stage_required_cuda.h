@@ -9,7 +9,7 @@ extern "C" {
 #endif
 
 #define SPARK_GLM52_SM121_REQUIRED_DECODE_STAGE_MODULE_ID \
-    "spark.glm52.sm121.required_decode_stage.b12x_fused.v1"
+    "spark.glm52.sm121.required_decode_stage.fp8_experts_bf16_rest.v1"
 
 SparkStatus SparkGlm52Sm121RequiredDecodeStageInitialize(
     const SparkResidentDecodeStageNodeContext *node_context);

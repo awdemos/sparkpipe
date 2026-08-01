@@ -114,7 +114,7 @@ static void SparkLongContextNormalizePolicyCopy(
             SPARK_LONG_CONTEXT_POLICY_MODE_BOUNDED_WINDOW;
     }
     normalized_policy->max_context_tokens =
-        SparkNormalizeMaxContextTokens(SPARK_LONG_CONTEXT_DEFAULT_MAX_CONTEXT_TOKENS, 
+        SparkNormalizeMaxContextTokens(SPARK_LONG_CONTEXT_DEFAULT_MAX_CONTEXT_TOKENS,
             normalized_policy->max_context_tokens);
     normalized_policy->selected_token_capacity =
         SparkLongContextNormalizeSelectedTokenCapacity(

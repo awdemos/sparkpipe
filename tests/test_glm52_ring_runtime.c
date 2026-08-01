@@ -1,18 +1,44 @@
 #include <assert.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "sparkpipe/spark_ring_runtime.h"
+
+#define SPARK_TEST_PACK_ROOT "build/test_glm52_ring_runtime_packs"
 
 static void SparkTestWriteFile(const char *path)
 {
     FILE *file;
 
-    file = fopen(path,"wb");
+    file = fopen(path, "wb");
     assert(file != 0);
-    assert(fputs("x\n",file) >= 0);
+    assert(fputs("x\n", file) >= 0);
     assert(fclose(file) == 0);
+}
+
+static void SparkTestRemoveFile(const char *path)
+{
+    if (remove(path) != 0)
+    {
+        assert(access(path, F_OK) != 0);
+    }
+}
+
+static void SparkTestResetPackRoot(void)
+{
+    (void)mkdir("build", 0775);
+    (void)mkdir(SPARK_TEST_PACK_ROOT, 0775);
+    SparkTestRemoveFile(SPARK_TEST_PACK_ROOT "/fp8_moe_pack_manifest.json");
+    SparkTestRemoveFile(SPARK_TEST_PACK_ROOT "/resident_moe_pack_manifest.json");
+    SparkTestRemoveFile(SPARK_TEST_PACK_ROOT "/glm52_layer_0003_fp8_moe.spfp8");
+    SparkTestRemoveFile(SPARK_TEST_PACK_ROOT "/glm52_layer_0004_fp8_moe.spfp8");
+    SparkTestRemoveFile(SPARK_TEST_PACK_ROOT "/glm52_layer_0005_fp8_moe.spfp8");
+    SparkTestRemoveFile(SPARK_TEST_PACK_ROOT "/glm52_layer_0003_b12x_moe.spb12x");
+    SparkTestRemoveFile(SPARK_TEST_PACK_ROOT "/glm52_layer_0004_b12x_moe.spb12x");
+    SparkTestRemoveFile(SPARK_TEST_PACK_ROOT "/glm52_layer_0005_b12x_moe.spb12x");
 }
 
 static void SparkTestGlm52RingRuntimeRankPlan(void)
@@ -22,18 +48,22 @@ static void SparkTestGlm52RingRuntimeRankPlan(void)
     char host_name[16];
 
     assert(SparkRingRuntimeRankHostName(
-        0u,host_name,sizeof(host_name)) == SPARK_STATUS_OK);
-    assert(strcmp(host_name,"10.10.100.10") == 0);
+        0u, host_name, sizeof(host_name)) == SPARK_STATUS_OK);
+    assert(strcmp(host_name, "10.10.100.10") == 0);
     assert(SparkRingRuntimeRankHostName(
-        10u,host_name,sizeof(host_name)) == SPARK_STATUS_OK);
-    assert(strcmp(host_name,"10.10.100.20") == 0);
+        10u, host_name, sizeof(host_name)) == SPARK_STATUS_OK);
+    assert(strcmp(host_name, "10.10.100.20") == 0);
     assert(SparkRingRuntimeRankHostName(
-        12u,host_name,sizeof(host_name)) == SPARK_STATUS_OK);
-    assert(strcmp(host_name,"10.10.100.22") == 0);
+        12u, host_name, sizeof(host_name)) == SPARK_STATUS_OK);
+    assert(strcmp(host_name, "10.10.100.22") == 0);
     assert(SparkRingRuntimeBuildRankPlan(
-        0u,1024u,52100u,
-        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,&rank_plan,error_buffer,sizeof(error_buffer)) ==
-            SPARK_STATUS_OK);
+        0u,
+        1024u,
+        52100u,
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        &rank_plan,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(rank_plan.first_layer_index == 0u);
     assert(rank_plan.layer_count == 6u);
     assert(rank_plan.listen_port == 52100u);
@@ -42,12 +72,11 @@ static void SparkTestGlm52RingRuntimeRankPlan(void)
     assert(rank_plan.maximum_speculative_rows_per_lane == 8u);
     assert(rank_plan.execution_row_capacity == 1024u);
     assert(rank_plan.output_endpoint.max_active_sequence_count == 1024u);
-    assert((rank_plan.flags &
-        SPARK_RING_RUNTIME_RANK_FLAG_DENSE_PREFIX) != 0u);
-    assert((rank_plan.flags &
-        SPARK_RING_RUNTIME_RANK_FLAG_HAS_PREVIOUS) == 0u);
-    assert(strcmp(rank_plan.next_host_name,"10.10.100.11") == 0);
-    assert(strcmp(rank_plan.output_route_name,
+    assert((rank_plan.flags & SPARK_RING_RUNTIME_RANK_FLAG_DENSE_PREFIX) != 0u);
+    assert((rank_plan.flags & SPARK_RING_RUNTIME_RANK_FLAG_HAS_PREVIOUS) == 0u);
+    assert(strcmp(rank_plan.next_host_name, "10.10.100.11") == 0);
+    assert(strcmp(
+        rank_plan.output_route_name,
         "10.10.100.10_to_10.10.100.11_hidden") == 0);
     assert(rank_plan.quantization_mode ==
         SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT);
@@ -56,19 +85,22 @@ static void SparkTestGlm52RingRuntimeRankPlan(void)
     assert(SparkRingRuntimeExecutionRowCapacity(256u) == 1024u);
     assert(SparkRingRuntimeExecutionRowCapacity(1024u) == 1024u);
     assert(SparkRingRuntimeBuildRankPlan(
-        12u,1024u,52100u,
-        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,&rank_plan,error_buffer,sizeof(error_buffer)) ==
-            SPARK_STATUS_OK);
+        12u,
+        1024u,
+        52100u,
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        &rank_plan,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(rank_plan.first_layer_index == 72u);
     assert(rank_plan.layer_count == 6u);
     assert(rank_plan.listen_port == 52112u);
     assert(rank_plan.next_port == 0u);
-    assert((rank_plan.flags &
-        SPARK_RING_RUNTIME_RANK_FLAG_FINAL_STAGE) != 0u);
-    assert((rank_plan.flags &
-        SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u);
-    assert(strcmp(rank_plan.previous_host_name,"10.10.100.21") == 0);
-    assert(strcmp(rank_plan.input_route_name,
+    assert((rank_plan.flags & SPARK_RING_RUNTIME_RANK_FLAG_FINAL_STAGE) != 0u);
+    assert((rank_plan.flags & SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u);
+    assert(strcmp(rank_plan.previous_host_name, "10.10.100.21") == 0);
+    assert(strcmp(
+        rank_plan.input_route_name,
         "10.10.100.21_to_10.10.100.22_hidden") == 0);
 }
 
@@ -84,153 +116,171 @@ static void SparkTestGlm52RingRuntimeDsaCandidateBucket(void)
     assert(SparkRingRuntimeDsaCandidateBucket(1048577u) == 0u);
 }
 
-static void SparkTestGlm52RingRuntimeFp8Packs(void)
+static void SparkTestWriteStagePacks(
+    const SparkRingRuntimeRankPlan *rank_plan,
+    uint32_t quantization_mode)
+{
+    char pack_path[SPARK_RING_RUNTIME_PACK_PATH_BYTES];
+    uint32_t layer_index;
+
+    for (layer_index = SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER;
+         layer_index < rank_plan->first_layer_index + rank_plan->layer_count;
+         ++layer_index)
+    {
+        assert(SparkRingRuntimeBuildMoePackPath(
+            SPARK_TEST_PACK_ROOT,
+            quantization_mode,
+            layer_index,
+            rank_plan->tp_degree,
+            rank_plan->tp_rank,
+            pack_path,
+            sizeof(pack_path)) == SPARK_STATUS_OK);
+        SparkTestWriteFile(pack_path);
+    }
+}
+
+static void SparkTestGlm52RingRuntimeMoePacks(void)
 {
     SparkRingRuntimeRankPlan rank_plan;
     char error_buffer[256];
-    char pack_path[512];
-    const char *pack_root;
+    char pack_path[SPARK_RING_RUNTIME_PACK_PATH_BYTES];
+    uint32_t backend_kind;
+    uint32_t quantization_mode;
 
-    pack_root = "build/test_glm52_ring_runtime_packs";
-    (void)mkdir(pack_root,0775);
-    (void)remove("build/test_glm52_ring_runtime_packs/fp8_moe_pack_manifest.json");
-    (void)remove("build/test_glm52_ring_runtime_packs/resident_moe_pack_manifest.json");
-    (void)remove("build/test_glm52_ring_runtime_packs/glm52_layer_0003_fp8_moe.spfp8");
-    (void)remove("build/test_glm52_ring_runtime_packs/glm52_layer_0004_fp8_moe.spfp8");
-    (void)remove("build/test_glm52_ring_runtime_packs/glm52_layer_0005_fp8_moe.spfp8");
-    (void)remove("build/test_glm52_ring_runtime_packs/glm52_layer_0003_b12x_moe.spb12x");
-    (void)remove("build/test_glm52_ring_runtime_packs/glm52_layer_0004_b12x_moe.spb12x");
-    (void)remove("build/test_glm52_ring_runtime_packs/glm52_layer_0005_b12x_moe.spb12x");
+    SparkTestResetPackRoot();
     assert(SparkRingRuntimeBuildRankPlan(
-        0u,1024u,52100u,
-        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,&rank_plan,error_buffer,sizeof(error_buffer)) ==
-            SPARK_STATUS_OK);
+        0u,
+        1024u,
+        52100u,
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        &rank_plan,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(SparkRingRuntimeValidateStageMoePackFiles(
-        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
-            SPARK_STATUS_NOT_FOUND);
-    SparkTestWriteFile("build/test_glm52_ring_runtime_packs/fp8_moe_pack_manifest.json");
-    assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,3u,1u,0u,pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
-    assert(strcmp(pack_path,
-        "build/test_glm52_ring_runtime_packs/glm52_layer_0003_fp8_moe.spfp8") == 0);
-    SparkTestWriteFile(pack_path);
-    assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,4u,1u,0u,pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
-    SparkTestWriteFile(pack_path);
+        &rank_plan,
+        SPARK_TEST_PACK_ROOT,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_NOT_FOUND);
+    SparkTestWriteFile(SPARK_TEST_PACK_ROOT "/fp8_moe_pack_manifest.json");
+    SparkTestWriteStagePacks(
+        &rank_plan,
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT);
     assert(SparkRingRuntimeValidateStageMoePackFiles(
-        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
-            SPARK_STATUS_NOT_FOUND);
+        &rank_plan,
+        SPARK_TEST_PACK_ROOT,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,5u,1u,0u,pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
-    SparkTestWriteFile(pack_path);
+        SPARK_TEST_PACK_ROOT,
+        rank_plan.quantization_mode,
+        SPARK_GLM52_MODEL_MTP_LAYER_INDEX,
+        1u,
+        0u,
+        pack_path,
+        sizeof(pack_path)) == SPARK_STATUS_OK);
+    assert(strcmp(
+        pack_path,
+        SPARK_TEST_PACK_ROOT "/glm52_layer_0078_fp8_moe.spfp8") == 0);
+    assert(SparkRingRuntimeBuildMoePackPath(
+        SPARK_TEST_PACK_ROOT,
+        rank_plan.quantization_mode,
+        SPARK_GLM52_MODEL_WEIGHT_LAYER_COUNT,
+        1u,
+        0u,
+        pack_path,
+        sizeof(pack_path)) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    SparkTestWriteFile(SPARK_TEST_PACK_ROOT "/resident_moe_pack_manifest.json");
     assert(SparkRingRuntimeValidateStageMoePackFiles(
-        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
-            SPARK_STATUS_OK);
-    assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,SPARK_GLM52_MODEL_MTP_LAYER_INDEX,1u,0u,
-        pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
-    assert(strcmp(pack_path,
-        "build/test_glm52_ring_runtime_packs/glm52_layer_0078_fp8_moe.spfp8") == 0);
-    assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,SPARK_GLM52_MODEL_WEIGHT_LAYER_COUNT,1u,0u,
-        pack_path,sizeof(pack_path)) == SPARK_STATUS_INVALID_ARGUMENT);
+        &rank_plan,
+        SPARK_TEST_PACK_ROOT,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_MODULE_NOT_VALIDATED);
+
+    SparkTestResetPackRoot();
+    SparkTestWriteFile(SPARK_TEST_PACK_ROOT "/resident_moe_pack_manifest.json");
     assert(SparkRingRuntimeBuildRankPlan(
-        &rank_plan,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+        0u,
+        1024u,
+        52100u,
+        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,
+        &rank_plan,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(SparkRingRuntimeValidateStageMoePackFiles(
-        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
-            SPARK_STATUS_MODULE_NOT_VALIDATED);
-    assert(remove("build/test_glm52_ring_runtime_packs/fp8_moe_pack_manifest.json") == 0);
-    SparkTestWriteFile("build/test_glm52_ring_runtime_packs/resident_moe_pack_manifest.json");
-    assert(SparkRingRuntimeBuildRankPlan(
-        0u,1024u,52100u,SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,
-        &rank_plan,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+        &rank_plan,
+        SPARK_TEST_PACK_ROOT,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_NOT_FOUND);
+    SparkTestWriteStagePacks(
+        &rank_plan,
+        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT);
     assert(SparkRingRuntimeValidateStageMoePackFiles(
-        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
-            SPARK_STATUS_NOT_FOUND);
+        &rank_plan,
+        SPARK_TEST_PACK_ROOT,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,3u,1u,0u,pack_path,sizeof(pack_path)) ==
-            SPARK_STATUS_OK);
-    assert(strcmp(pack_path,
-        "build/test_glm52_ring_runtime_packs/glm52_layer_0003_b12x_moe.spb12x") == 0);
-    SparkTestWriteFile(pack_path);
-    assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,4u,1u,0u,pack_path,sizeof(pack_path)) ==
-            SPARK_STATUS_OK);
-    SparkTestWriteFile(pack_path);
-    assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,5u,1u,0u,pack_path,sizeof(pack_path)) ==
-            SPARK_STATUS_OK);
-    SparkTestWriteFile(pack_path);
-    assert(SparkRingRuntimeValidateStageMoePackFiles(
-        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
-    assert(remove("build/test_glm52_ring_runtime_packs/resident_moe_pack_manifest.json") == 0);
-    assert(SparkRingRuntimeValidateStageMoePackFiles(
-        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
-            SPARK_STATUS_NOT_FOUND);
-    assert(SparkRingRuntimeBuildRankPlan(
-        &rank_plan,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
-    assert(SparkRingRuntimeValidateStageMoePackFiles(
-        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) ==
-            SPARK_STATUS_NOT_FOUND);
-    assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,3u,1u,0u,pack_path,sizeof(pack_path)) ==
-            SPARK_STATUS_OK);
-    assert(strcmp(pack_path,
-    SparkTestWriteFile(pack_path);
-    assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,4u,1u,0u,pack_path,sizeof(pack_path)) ==
-            SPARK_STATUS_OK);
-    SparkTestWriteFile(pack_path);
-    assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,rank_plan.quantization_mode,5u,1u,0u,pack_path,sizeof(pack_path)) ==
-            SPARK_STATUS_OK);
-    SparkTestWriteFile(pack_path);
-    assert(SparkRingRuntimeValidateStageMoePackFiles(
-        &rank_plan,pack_root,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
-    assert(SparkRingRuntimeBuildMoePackPath(
-        pack_root,UINT32_MAX,3u,1u,0u,pack_path,sizeof(pack_path)) ==
-            SPARK_STATUS_INVALID_ARGUMENT);
+        SPARK_TEST_PACK_ROOT,
+        UINT32_MAX,
+        3u,
+        1u,
+        0u,
+        pack_path,
+        sizeof(pack_path)) == SPARK_STATUS_INVALID_ARGUMENT);
+
     assert(SparkRingRuntimeParseQuantizationMode(
-        "fp8",&rank_plan.quantization_mode) == SPARK_STATUS_OK);
-    assert(strcmp(SparkRingRuntimeQuantizationModeName(
-        rank_plan.quantization_mode),"fp8") == 0);
+        "fp8", &quantization_mode) == SPARK_STATUS_OK);
+    assert(strcmp(
+        SparkRingRuntimeQuantizationModeName(quantization_mode),
+        "fp8") == 0);
     assert(SparkRingRuntimeParseQuantizationMode(
-        "nvfp4",&rank_plan.quantization_mode) == SPARK_STATUS_OK);
-    assert(strcmp(SparkRingRuntimeQuantizationModeName(
-        rank_plan.quantization_mode),"nvfp4") == 0);
+        "nvfp4", &quantization_mode) == SPARK_STATUS_OK);
+    assert(strcmp(
+        SparkRingRuntimeQuantizationModeName(quantization_mode),
+        "nvfp4") == 0);
     assert(SparkRingRuntimeParseQuantizationMode(
-    assert(strcmp(SparkRingRuntimeQuantizationModeName(
+        "auto", &quantization_mode) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkRingRuntimeQuantizationModeName(UINT32_MAX) == 0);
+
     assert(SparkRingRuntimeValidateFp8PlanCounts(
-        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,42u,42u) ==
-        SPARK_STATUS_OK);
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        42u,
+        42u) == SPARK_STATUS_OK);
     assert(SparkRingRuntimeValidateFp8PlanCounts(
-        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,0u,0u) ==
-        SPARK_STATUS_MODULE_NOT_VALIDATED);
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        0u,
+        0u) == SPARK_STATUS_MODULE_NOT_VALIDATED);
     assert(SparkRingRuntimeValidateFp8PlanCounts(
-        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,0u,0u) ==
-        SPARK_STATUS_OK);
+        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,
+        0u,
+        0u) == SPARK_STATUS_OK);
     assert(SparkRingRuntimeValidateFp8PlanCounts(
-        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,1u,1u) ==
-        SPARK_STATUS_MODULE_NOT_VALIDATED);
+        SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,
+        1u,
+        1u) == SPARK_STATUS_MODULE_NOT_VALIDATED);
     assert(SparkRingRuntimeValidateFp8PlanCounts(
-        SPARK_STATUS_OK);
-    assert(SparkRingRuntimeValidateFp8PlanCounts(
-        SPARK_STATUS_MODULE_NOT_VALIDATED);
-    assert(SparkRingRuntimeParseQuantizationMode(
-        "auto",&rank_plan.quantization_mode) == SPARK_STATUS_INVALID_ARGUMENT);
+        UINT32_MAX,
+        0u,
+        0u) == SPARK_STATUS_INVALID_ARGUMENT);
+
     assert(SparkRingRuntimeExpectedMoeBackendKind(
         SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
-        &rank_plan.quantization_mode) == SPARK_STATUS_OK);
-    assert(rank_plan.quantization_mode ==
-        SPARK_RING_RUNTIME_MOE_BACKEND_FP8_FLASHINFER_GROUPED);
+        &backend_kind) == SPARK_STATUS_OK);
+    assert(backend_kind == SPARK_RING_RUNTIME_MOE_BACKEND_FP8_FLASHINFER_GROUPED);
     assert(SparkRingRuntimeExpectedMoeBackendKind(
         SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,
-        &rank_plan.quantization_mode) == SPARK_STATUS_OK);
-    assert(rank_plan.quantization_mode ==
-        SPARK_RING_RUNTIME_MOE_BACKEND_NVFP4_B12X);
+        &backend_kind) == SPARK_STATUS_OK);
+    assert(backend_kind == SPARK_RING_RUNTIME_MOE_BACKEND_NVFP4_B12X);
     assert(SparkRingRuntimeExpectedMoeBackendKind(
-        &rank_plan.quantization_mode) == SPARK_STATUS_OK);
-    assert(rank_plan.quantization_mode ==
+        UINT32_MAX,
+        &backend_kind) == SPARK_STATUS_INVALID_ARGUMENT);
+    assert(SparkRingRuntimeExpectedMoeBackendKind(
+        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
+        0) == SPARK_STATUS_INVALID_ARGUMENT);
+
+    SparkTestResetPackRoot();
+    assert(rmdir(SPARK_TEST_PACK_ROOT) == 0);
 }
 
 static void SparkTestGlm52RingRuntimeFinalEventRoute(void)
@@ -239,51 +289,64 @@ static void SparkTestGlm52RingRuntimeFinalEventRoute(void)
     char error_buffer[256];
 
     assert(SparkRingRuntimeBuildFinalEventRoute(
-        52100u,&route,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+        52100u,
+        &route,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(route.source_rank_index == 12u);
     assert(route.sink_rank_index == 0u);
     assert(route.listen_port == 52300u);
     assert(route.connect_port == 52300u);
-    assert(strcmp(route.source_host_name,"10.10.100.22") == 0);
-    assert(strcmp(route.sink_host_name,"10.10.100.10") == 0);
-    assert(strcmp(route.route_name,
+    assert(strcmp(route.source_host_name, "10.10.100.22") == 0);
+    assert(strcmp(route.sink_host_name, "10.10.100.10") == 0);
+    assert(strcmp(
+        route.route_name,
         "10.10.100.22_to_10.10.100.10_final_events") == 0);
     assert(SparkRingRuntimeValidateFinalEventRoute(
-        &route,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+        &route,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
     route.sink_rank_index = 1u;
     assert(SparkRingRuntimeValidateFinalEventRoute(
-        &route,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
+        &route,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-// Shape-driven rank plans: legacy builds carry degree-one shape defaults and
-// a nonzero configuration hash; a TP4 x PP3 middle node derives the
-// twenty-six layer slice, ring neighbors at the same TP rank one stage away,
-// and same-stage collective peers; a tampered hash fails validation; and a
-// shape whose linear node index exceeds the host table fails closed, which
-// is exactly the TP16 state until the table grows with the hardware.
 static void SparkTestRingRuntimeShapePlans(void)
 {
     SparkRingRuntimeRankPlan plan;
     SparkTpShapeDescriptor shape;
     char error_buffer[256];
     char pack_path[512];
+
     assert(SparkRingRuntimeBuildRankPlan(
-        5u,16u,42000u,
+        5u,
+        16u,
+        42000u,
         SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
-        &plan,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+        &plan,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(plan.tp_degree == 1u && plan.tp_rank == 0u);
     assert(plan.pp_stage_count == 13u && plan.pp_stage_index == 5u);
     assert(plan.shape_configuration_hash != 0u);
-    memset(&shape,0,sizeof(shape));
+
+    memset(&shape, 0, sizeof(shape));
     shape.abi_version = SPARK_TP_SHARD_ABI_VERSION;
     shape.tp_degree = 4u;
     shape.tp_rank = 2u;
     shape.pp_stage_count = 3u;
     shape.pp_stage_index = 1u;
     assert(SparkRingRuntimeBuildShapeRankPlan(
-        &shape,16u,42000u,43000u,
+        &shape,
+        16u,
+        42000u,
+        43000u,
         SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
-        &plan,error_buffer,sizeof(error_buffer)) == SPARK_STATUS_OK);
+        &plan,
+        error_buffer,
+        sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(plan.rank_index == 6u);
     assert(plan.first_layer_index == 26u && plan.layer_count == 26u);
     assert(plan.previous_rank_index == 2u && plan.next_rank_index == 10u);
@@ -293,20 +356,33 @@ static void SparkTestRingRuntimeShapePlans(void)
     assert((plan.flags & SPARK_RING_RUNTIME_RANK_FLAG_DENSE_PREFIX) == 0u);
     assert((plan.flags & SPARK_RING_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u);
     assert(SparkRingRuntimeBuildMoePackPath(
-        "packs",plan.quantization_mode,7u,plan.tp_degree,plan.tp_rank,
-        pack_path,sizeof(pack_path)) == SPARK_STATUS_OK);
-    assert(strstr(pack_path,"_tp4r2.spfp8") != 0);
+        "packs",
+        plan.quantization_mode,
+        7u,
+        plan.tp_degree,
+        plan.tp_rank,
+        pack_path,
+        sizeof(pack_path)) == SPARK_STATUS_OK);
+    assert(strstr(pack_path, "_tp4r2.spfp8") != 0);
     plan.shape_configuration_hash += 1u;
     assert(SparkRingRuntimeValidateRankPlan(
-        &plan,error_buffer,sizeof(error_buffer)) != SPARK_STATUS_OK);
+        &plan,
+        error_buffer,
+        sizeof(error_buffer)) != SPARK_STATUS_OK);
+
     shape.tp_degree = 16u;
     shape.tp_rank = 15u;
     shape.pp_stage_count = 1u;
     shape.pp_stage_index = 0u;
     assert(SparkRingRuntimeBuildShapeRankPlan(
-        &shape,16u,42000u,43000u,
+        &shape,
+        16u,
+        42000u,
+        43000u,
         SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
-        &plan,error_buffer,sizeof(error_buffer)) != SPARK_STATUS_OK);
+        &plan,
+        error_buffer,
+        sizeof(error_buffer)) != SPARK_STATUS_OK);
 }
 
 int main(void)
@@ -314,7 +390,7 @@ int main(void)
     SparkTestRingRuntimeShapePlans();
     SparkTestGlm52RingRuntimeRankPlan();
     SparkTestGlm52RingRuntimeDsaCandidateBucket();
-    SparkTestGlm52RingRuntimeFp8Packs();
+    SparkTestGlm52RingRuntimeMoePacks();
     SparkTestGlm52RingRuntimeFinalEventRoute();
     return 0;
 }

@@ -128,6 +128,20 @@ cudaError_t cudaDeviceSynchronize(void)
     return cudaSuccess;
 }
 
+cudaError_t cudaLaunchHostFunc(
+    cudaStream_t stream,
+    cudaHostFn_t function,
+    void *user_data)
+{
+    (void)stream;
+    if (function == 0)
+    {
+        return cudaErrorMemoryAllocation;
+    }
+    function(user_data);
+    return cudaSuccess;
+}
+
 cudaError_t cudaStreamBeginCapture(
     cudaStream_t stream,
     cudaStreamCaptureMode mode)

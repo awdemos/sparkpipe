@@ -1,7 +1,7 @@
 # GLM52 PP13 wrong tokens — status handoff (updated)
 
-**Date:** 2026-07-10 (updated same day after PRs #248–#250)  
-**Repo:** `sparkpipe`  
+**Date:** 2026-07-10 (updated same day after PRs #248–#250)
+**Repo:** `sparkpipe`
 **Symptom (historical and current):** 13× SparkPipe ring inference can complete end-to-end while emitting **wrong** and/or **nondeterministic** tokens at temp=0.
 
 **Important:** PR #250 archived a useful investigation note, but it is **not** “the bug is found and fixed.” This file supersedes the stale claims in that first revision.
@@ -86,10 +86,10 @@ This document does **not** claim a single remaining root cause. It claims the pr
 
 ## Deploy / interpretation checklist
 
-1. Live release SHA must be **at or after** `40dc600` (merge of #249) or later including #250 doc-only if present.  
-2. Confirm RoPE half-split is in the binary (ancestor of `b5bc7a8`).  
-3. Confirm dense path: no `dense_mlp_fp8_gate status=1` hard fail; fallback probe slots stay zero if `SPARKPIPE_FP8_AMAX_PROBE=1`.  
-4. **Pass bar for “fixed”:** identical greedy prompts → **identical** token ids (and preferably match a trusted oracle).  
+1. Live release SHA must be **at or after** `40dc600` (merge of #249) or later including #250 doc-only if present.
+2. Confirm RoPE half-split is in the binary (ancestor of `b5bc7a8`).
+3. Confirm dense path: no `dense_mlp_fp8_gate status=1` hard fail; fallback probe slots stay zero if `SPARKPIPE_FP8_AMAX_PROBE=1`.
+4. **Pass bar for “fixed”:** identical greedy prompts → **identical** token ids (and preferably match a trusted oracle).
 5. Until (4), treat ring correctness as **open**.
 
 ---
@@ -140,14 +140,14 @@ modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_lin
 
 ## Suggested blurb for a teammate
 
-> Updated handoff: `docs/GLM52_PP13_WRONG_TOKENS_ROOT_CAUSE_20260710.md`.  
-> RoPE (#235) and dense FP8 path (#248/#249) are real fixes but **not** the full current story.  
+> Updated handoff: `docs/GLM52_PP13_WRONG_TOKENS_ROOT_CAUSE_20260710.md`.
+> RoPE (#235) and dense FP8 path (#248/#249) are real fixes but **not** the full current story.
 > After #249, ring still produces nondeterministic greedy tokens (`17` / `2064` / `18300` on three identical prompts). Fallback dense probes are zero. Remaining issue is open.
 
 ---
 
 ## How this file should be used
 
-- **Yes:** onboarding, “what we already fixed,” avoid re-fixing RoPE / dense BF16 fallback.  
-- **No:** closing the wrong-token bug as done.  
+- **Yes:** onboarding, “what we already fixed,” avoid re-fixing RoPE / dense BF16 fallback.
+- **No:** closing the wrong-token bug as done.
 - **Next correctness work:** localize **run-to-run divergence after #249**, not re-argue RoPE or the prepared-backend hole.

@@ -4,7 +4,10 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from glm52_model_contract import load_model_contract
+try:
+    from .glm52_model_contract import load_model_contract
+except ImportError:
+    from glm52_model_contract import load_model_contract
 
 
 MODEL_CONTRACT = load_model_contract()

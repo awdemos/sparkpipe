@@ -96,30 +96,6 @@ static void SparkTestGlm52StagePackResolveTensor(void)
 		SPARK_STATUS_SCHEMA_ERROR);
 }
 
-{
-	const char *stagepack_root;
-
-	stagepack_root = "build/test_glm52_stagepack_w8_data";
-	SparkTestMakeDirectory(stagepack_root);
-	SparkTestWriteTextFile(
-		"build/test_glm52_stagepack_w8_data/stagepack_index.json",
-		"{\"format\":\"sparkpipe.glm52.ring.stagepack.v1\","
-		"\"non_expert_weight_dtype\":\"BF16\","
-		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_A "\"}");
-	SparkTestWriteTextFile(
-		"\"quant_mode\":3,"
-		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_A "\"}");
-	SparkTestWriteTextFile(
-		"\"quant_mode\":3,"
-		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_B "\"}");
-	SparkTestWriteTextFile(
-		"build/test_glm52_stagepack_w8_data/stagepack_index.json",
-		"{\"format\":\"sparkpipe.glm52.ring.stagepack.v1\","
-		"\"model_quantization\":\"fp8\","
-		"\"non_expert_weight_dtype\":\"BF16\","
-		"\"source_model_index_sha256\":\"" SPARK_TEST_GLM52_STAGEPACK_SHA_B "\"}");
-}
-
 static void SparkTestGlm52StagePackNvfp4Contract(void)
 {
 	const char *stagepack_root;

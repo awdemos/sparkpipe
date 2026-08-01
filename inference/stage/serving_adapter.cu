@@ -13,11 +13,13 @@
    because bind.cu pulls the whole kernel library and this file needs two
    symbols from it - an include here would make every edit to a kernel recompile
    the serving adapter. */
-extern "C" int32_t Glm52StageSlicePrefill(const void *node_context, void *layer_buffers,
+extern "C" int32_t Glm52StageSlicePrefill(
+    const SparkResidentDecodeStageNodeContext *const *node_contexts, void *layer_buffers,
     uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows,
     uint32_t context, uint32_t multiprocessors, const uint32_t *row_positions, void *stream);
 
-extern "C" int32_t Glm52StageSlice(const void *node_context, void *layer_buffers,
+extern "C" int32_t Glm52StageSlice(
+    const SparkResidentDecodeStageNodeContext *const *node_contexts, void *layer_buffers,
     uint32_t first_layer, uint32_t layer_count, uint32_t rows,
     uint32_t packed_rows, uint32_t context, uint32_t multiprocessors,
     void *stream);
@@ -61,6 +63,29 @@ static SparkStatus SparkServingAdapterDeviceAlloc(void **pointer,uint64_t bytes)
     }
     *pointer = 0;
     return SparkServingAdapterCudaStatus(cudaMalloc(pointer,(size_t)bytes));
+}
+
+/* Waits for exactly the readback copies this dispatch enqueued. A
+   whole-stream synchronize costs more than the values consumed here require:
+   on a caller-supplied shared stream it also drains unrelated enqueued work,
+   and it couples the host to anything launched after the copies it reads.
+   The event is recorded after the last device-to-host copy, so its
+   completion implies every readback below has landed in the pinned host
+   buffers. */
+static SparkStatus SparkServingAdapterWaitReadback(
+    SparkResidentDecodeStageServingAdapter *adapter,
+    cudaStream_t stream)
+{
+    SparkStatus status;
+
+    status = SparkServingAdapterCudaStatus(
+        cudaEventRecord((cudaEvent_t)adapter->readback_event,stream));
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkServingAdapterCudaStatus(
+        cudaEventSynchronize((cudaEvent_t)adapter->readback_event));
 }
 
 static SparkStatus SparkServingAdapterHostAlloc(uint32_t **pointer,uint64_t count)
@@ -446,6 +471,11 @@ SparkStatus SparkResidentDecodeStageServingAdapterInitialize(
         status = SparkServingAdapterDeviceAlloc(
             &adapter->device_prompt_output_hidden_bf16,
             hidden_bytes);
+    if (status == SPARK_STATUS_OK)
+        status = SparkServingAdapterCudaStatus(
+            cudaEventCreateWithFlags(
+                (cudaEvent_t *)&adapter->readback_event,
+                cudaEventDisableTiming));
     if (status != SPARK_STATUS_OK)
     {
         SparkResidentDecodeStageServingAdapterDestroy(adapter);
@@ -485,6 +515,10 @@ void SparkResidentDecodeStageServingAdapterDestroy(
     SparkServingAdapterFreeHost(adapter->host_decode_token_ids);
     SparkServingAdapterFreeHost(adapter->host_mtp_draft_token_budgets);
     SparkServingAdapterFreeHost(adapter->host_mtp_committed_token_ids);
+    if (adapter->readback_event != 0)
+    {
+        (void)cudaEventDestroy((cudaEvent_t)adapter->readback_event);
+    }
     if (adapter->owns_cuda_stream != 0u && adapter->cuda_stream != 0)
     {
         (void)cudaStreamDestroy((cudaStream_t)adapter->cuda_stream);
@@ -680,6 +714,9 @@ SparkStatus SparkResidentDecodeStageServingAdapterPrefill(
     {
         return status;
     }
+    /* Debug drain, off in steady state: the host consumes no readback after
+       a prefill launch, so the flag exists to surface kernel failures
+       synchronously while bringing a configuration up, not to move data. */
     if ((adapter->flags &
             SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_SYNCHRONIZE_AFTER_LAUNCH) != 0u)
     {
@@ -866,13 +903,16 @@ static SparkStatus SparkGlm52ServingAdapterLaunchDecodeStep(
         return status;
     }
 
-    /* The first-party slice: inference/llms/glm5_2/bind.cu maps the node context
-       to layer buffers and loops. Behind the same build flag as the layer body
+    /* The first-party slice: inference/llms/glm5_2/bind.cu maps each node
+       context to layer buffers and loops. The array is indexed by slice
+       offset - layer_node_contexts[0] is this rank's first layer, so bind.cu
+       pairing node_contexts[offset] with first_layer + offset lines up.
+       Behind the same build flag as the layer body
        it calls, because the two must be selected together - a first-party slice
        driving the legacy layer, or the reverse, is a configuration nobody
        tested and the compiler cannot see. */
     return Glm52StageSlice(
-               adapter->layer_node_contexts[0],
+               adapter->layer_node_contexts,
                adapter->first_party_buffers,
                adapter->first_layer_index,
                adapter->layer_count,
@@ -972,7 +1012,9 @@ static SparkStatus SparkGlm52ServingAdapterDecodeMtpVerify(
         }
     }
 
-    status = SparkServingAdapterCudaStatus(cudaStreamSynchronize(stream));
+    /* The host loop below consumes every per-step token-id copy, so a wait
+       is required - but only on those copies, not on the whole stream. */
+    status = SparkServingAdapterWaitReadback(adapter, stream);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1142,7 +1184,10 @@ SparkStatus SparkResidentDecodeStageServingAdapterDecode(
         }
     }
 
-    status = SparkServingAdapterCudaStatus(cudaStreamSynchronize(stream));
+    /* Same contract as the verify path: the result loop reads the pinned
+       readback buffers, so wait on the event recorded after the last copy
+       rather than draining the whole stream. */
+    status = SparkServingAdapterWaitReadback(adapter, stream);
     if (status != SPARK_STATUS_OK)
     {
         return status;

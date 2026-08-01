@@ -116,7 +116,7 @@
 // file was already on disk. The number was right and the label was wrong, which
 // is the worse of the two failures: a hedge on a fact that could be checked
 // spends someone else's review time confirming what a grep would have settled.
-#define K3_MLA_QK_SCALE 0.0721687836f        /* 1 / sqrt(128 + 64) */
+#define K3_MLA_QK_SCALE 0.07216878365f       /* 1 / sqrt(128 + 64) */
 #define K3_MLA_USE_NOPE 1u
 #define K3_MLA_OUTPUT_GATE 1u
 
@@ -170,16 +170,27 @@
 
 // AttnRes sources at K3's shape: 93 layers in blocks of 12 gives 8 blocks, one
 // partial final, and the embedding is always b_0 - so a layer late in the stack
-// scores 9 candidates plus the running partial sum. LmAttnResKernel takes the
-// count at runtime because it grows with depth; MAX_SOURCES bounds the shared
-// arrays.
-#define K3_ATTNRES_MAX_SOURCES 10u
+// scores 9 candidates plus the running partial sum. The partial is not a bank
+// candidate, and counting it is what made this 10 against the contract's 9
+// (k3_authoritative.json: layer_block_count + embedding_representation_count).
+// LmAttnResKernel takes the count at runtime because it grows with depth;
+// MAX_SOURCES bounds the shared arrays.
+#define K3_ATTNRES_MAX_SOURCES 9u
 
 // THE PER-REQUEST COST OF THE BANK, which is the transport question stated as a
-// number. Eight completed blocks plus the embedding plus the running partial is
-// ten hidden states a token, against one for a conventional residual.
+// number. Eight completed blocks plus the embedding is nine hidden states a
+// token in the bank, with the running partial carried beside it under its own
+// range, against one state for a conventional residual.
 #define K3_ATTNRES_BANK_BYTES \
 	(K3_ATTNRES_MAX_SOURCES * K3_HIDDEN * (K3_KV_BITS / 8u))
+
+// THE BANK, AS THE WIRE DESCRIBES IT. pipeline_sideband validates a bank of
+// source_count slots and a partial of one state, so it needs the slot count
+// and one state's bytes separately rather than the product above. A slot is
+// one BF16 hidden row; the slots are the candidates, and the partial - one
+// more state of the same size - travels under its own flag.
+#define K3_ATTNRES_BANK_SLOTS K3_ATTNRES_MAX_SOURCES
+#define K3_ATTNRES_PARTIAL_BYTES (K3_HIDDEN * (K3_KV_BITS / 8u))
 
 // AttnRes, now read from the modelling file. It is an ATTENTION over residuals,
 // not a weighted sum with learned scalars:
@@ -266,7 +277,9 @@
 // A recurrent state accumulates over a million tokens without renormalising, so
 // fp32 is not a precision luxury - the same argument as keeping the flash
 // attention output in fp32 during training. The rest of the model is 4- and
-// 8-bit; this one buffer is not.
+// 8-bit; this one buffer is not. The bf16 escape exists - it is half of the
+// largest batch term in the model - as an admission-time option with its own
+// numerics contract at K3_KDA_STATE_SLOT_BYTES_BF16 below, default OFF.
 // Reference semantics (moonshotai/Kimi-K3 modeling_kimi_linear.py): the
 // checkpoint's A_log tensor carries 128 heads; the model runs 96 - the
 // loader takes the authoritative first-96 slice and must refuse other
@@ -274,11 +287,11 @@
 // through bind. q and k are L2-normalized IN KERNEL
 // (use_qk_l2norm_in_kernel), beta passes through sigmoid in kernel, the
 // gate combines g, A_log and dt_bias in kernel with the safe lower
-// bound below, and the reference stores state TRANSPOSED
-// (transpose_state_layout=True) - the pack/loader owns that flip.
+// bound defined with the KDA block above, and the reference stores state
+// TRANSPOSED (transpose_state_layout=True) - the pack/loader owns that
+// flip.
 #define K3_KDA_A_LOG_SOURCE_HEADS 128u
 #define K3_KDA_QK_L2NORM 1u
-#define K3_KDA_GATE_LOWER_BOUND (-5.0f)
 #define K3_KDA_STATE_ELEMENT_BYTES 4u
 #define K3_KDA_CONV_WINDOW_BYTES \
 	(((2u * K3_KDA_HEADS * K3_KDA_KEY_DIM) + (K3_KDA_HEADS * K3_KDA_VALUE_DIM)) \
@@ -292,9 +305,39 @@
 #define K3_KDA_STATE_SLOT_BYTES \
 	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * K3_KDA_STATE_ELEMENT_BYTES)
 #define K3_KDA_STATE_BYTES (K3_KDA_STATE_SLOT_BYTES + K3_KDA_CONV_WINDOW_BYTES)
+
+// THE BF16 STATE OPTION - HALF THE SLOT, DEFAULT OFF, FAIL-CLOSED TODAY.
+//
+// At batch the fp32 slot is the largest per-sequence stream in the model:
+// 69 layers x 6.59 MB x 2 (read + write) = 909 MB per sequence per token,
+// ~40% of a B64 step's bytes at the BF16 weight recipe
+// (docs/PERF_ROADMAP_2026-08-01.md, "The K3 state correction"). Halving the
+// slot halves exactly that term, and K3_SPEED.md:56-60 names it the single
+// biggest K3 throughput lever after residency - and "a numerics question,
+// not a systems one". The numerics: the slot is read and rewritten at every
+// committed token, so a bf16 slot re-rounds every element once per token and
+// the rounding compounds inside a recurrence that never renormalises, over a
+// 1M-token context. That is the same argument the fp32 block above makes,
+// and it does not go away because the bandwidth is tempting.
+//
+// So this is an ADMISSION-TIME option (README.md:81-84 prices the pool both
+// ways), never the default, and it is gated three ways: the consumer flag is
+// K3LayerBuffers::kda_state_bf16, the layer FAILS CLOSED on it while
+// LmDeltaRuleKernel hardwires four-byte addressing (its head offset is
+// KEY_DIM * VALUE_DIM * 4u, its shared tile and pool traffic are float), and
+// tests/test_k3_driver_contracts.py refuses a tree where the flag can launch.
+// The kernel-side contract that lifts the gate is written at the flag.
+#define K3_KDA_STATE_ELEMENT_BYTES_BF16 2u
+#define K3_KDA_STATE_SLOT_BYTES_BF16 \
+	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM \
+		* K3_KDA_STATE_ELEMENT_BYTES_BF16)
 // Layer counts by kind, so per-layer pool arithmetic has one source. 69 + 24.
-#define K3_KDA_LAYER_COUNT (K3_LAYERS - K3_MLA_LAYER_COUNT)
-#define K3_MLA_LAYER_COUNT ((K3_LAYERS / 4u) + 1u)
+// Literals, matching generated_config.h's spelling of the same two numbers -
+// pipeline_sideband.h includes both headers, and (K3_LAYERS / 4u) + 1 against
+// 24u is one value spelled two ways, which the preprocessor reports as a
+// redefinition.
+#define K3_KDA_LAYER_COUNT 69u
+#define K3_MLA_LAYER_COUNT 24u
 
 // 1-INDEXED IN THE CONFIG, 0-INDEXED HERE. full_attn_layers is
 // {4,8,...,92} plus 93; subtract one and that is {3,7,...,91} plus 92. So the

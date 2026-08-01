@@ -419,9 +419,9 @@ SparkStatus SparkServingEngineInitialize(
         configuration->default_output_token_budget);
     engine->default_max_prefill_tokens_per_step =
         configuration->default_max_prefill_tokens_per_step;
-    engine->max_context_tokens = SparkNormalizeMaxContextTokens(SPARK_SERVING_DEFAULT_MAX_CONTEXT_TOKENS, 
+    engine->max_context_tokens = SparkNormalizeMaxContextTokens(SPARK_SERVING_DEFAULT_MAX_CONTEXT_TOKENS,
         configuration->max_context_tokens);
-    engine->next_generated_request_id = SparkNormalizeRequestIdBase(SPARK_SERVING_DEFAULT_REQUEST_ID_BASE, 
+    engine->next_generated_request_id = SparkNormalizeRequestIdBase(SPARK_SERVING_DEFAULT_REQUEST_ID_BASE,
         configuration->request_id_base);
     engine->request_api = configuration->request_api;
     engine->tokenizer = configuration->tokenizer;
@@ -2442,7 +2442,10 @@ SparkStatus SparkServingEngineReleaseCompletedRequest(
             return SPARK_STATUS_CAPACITY_EXCEEDED;
         }
         status = engine->release_sequence_function(
-            engine->callback_context,record->request_id,record->sequence_id,
+            engine->callback_context,
+            record->request_id,
+            record->request_handle,
+            record->sequence_id,
             (uint32_t)token_count);
         if (status != SPARK_STATUS_OK)
         {

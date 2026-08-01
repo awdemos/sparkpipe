@@ -12,13 +12,11 @@
 //
 // THE ONE AGREEMENT THAT MATTERS. The descriptor encodes a swizzle mode and the
 // kernel applies a matching xor when computing fragment addresses. The span is
-// a function of the row pitch, not a constant - see LmSwizzleSpanFor in
+// a function of the staged box row width, not the global row pitch - see LmSwizzleSpanFor in
 // kernels/mma.cuh, which this must agree with. If they
 // disagree the kernel reads real data from the wrong place and produces
-// plausible wrong numbers with no error anywhere. CU_TENSOR_MAP_SWIZZLE_128B
-// and an 8-chunk xor over 16-byte chunks are the same transform;
-// LM_TM_SWIZZLE_CHUNKS and SPARK_LM_GROUP_GEMM_SWIZZLE_CHUNKS
-// must stay equal and tests/test_tensor_map_geometry.c asserts it.
+// plausible wrong numbers with no error anywhere. A 32-, 64-, or 128-byte box uses the matching hardware swizzle and the
+// fragment path derives the same span from its staged row pitch.
 //
 // NVFP4 IS DESCRIBED AS BYTES. There is no 4-bit CUtensorMapDataType, so a
 // 4-bit tensor of K columns is described as UINT8 with K/2 columns and every
@@ -29,12 +27,14 @@
 #define LM_TENSOR_MAP_H
 
 #include <stdint.h>
+#include <string.h>
 
 #define LM_TM_SWIZZLE_CHUNKS 8u
 #define LM_TM_CHUNK_BYTES 16u
 #define LM_TM_SWIZZLE_BYTES 128u
 #define LM_TM_ALIGNMENT 16u
 #define LM_TM_MAX_RANK 3u
+#define LM_TM_BITS_BF16 16u
 #define LM_TM_BITS_FP8 8u
 #define LM_TM_BITS_NVFP4 4u
 
@@ -79,55 +79,100 @@ static uint64_t LmTensorMapBytes(uint64_t elements, uint32_t element_bits)
 
 // Build the descriptor geometry. Every rejection below is a case that would
 // otherwise encode cleanly and move the wrong bytes at runtime.
-static int32_t LmTensorMapPlanBuild(const LmTensorMapRequest *request, LmTensorMapPlan *plan)
+static uint32_t LmTensorMapBoxSwizzleBytes(uint32_t box_column_bytes)
 {
-	uint64_t column_bytes;
-	uint32_t box_column_bytes,index;
-	if ( request == 0 || plan == 0 || request->global_address == 0 )
-		return(LM_TM_ERR_NULL);
-	if ( request->element_bits != LM_TM_BITS_FP8 && request->element_bits != LM_TM_BITS_NVFP4 )
-		return(LM_TM_ERR_BITS);
-	if ( request->groups == 0 || request->rows == 0 || request->columns == 0 )
-		return(LM_TM_ERR_RANK);
-	// A 4-bit tensor is described as bytes, so an odd column count has no byte
-	// representation and would silently round.
-	if ( ((request->columns * (uint64_t)request->element_bits) % 8u) != 0u )
-		return(LM_TM_ERR_ODD_COLUMNS);
-	if ( ((request->box_columns * request->element_bits) % 8u) != 0u )
-		return(LM_TM_ERR_BOX_ODD);
-	column_bytes = LmTensorMapBytes(request->columns,request->element_bits);
-	box_column_bytes = (uint32_t)LmTensorMapBytes(request->box_columns,request->element_bits);
-	// 128B swizzle permutes 16-byte chunks within a 128-byte span, so both the
-	// row pitch and the box width must be whole multiples of that span or the
-	// permutation straddles a boundary the hardware does not cross.
-	if ( (column_bytes % LM_TM_SWIZZLE_BYTES) != 0u )
-		return(LM_TM_ERR_ROW_SWIZZLE);
-	if ( (box_column_bytes % LM_TM_SWIZZLE_BYTES) != 0u )
-		return(LM_TM_ERR_BOX_ALIGN);
-	if ( (uint64_t)request->box_rows > request->rows || (uint64_t)box_column_bytes > column_bytes )
-		return(LM_TM_ERR_BOX_EXCEEDS);
-	if ( (((uintptr_t)request->global_address) % LM_TM_ALIGNMENT) != 0u )
-		return(LM_TM_ERR_ADDRESS_ALIGN);
-	// Innermost dimension first, as the driver expects. Dimension 0 is the
-	// contiguous byte axis, 1 is rows, 2 selects the expert.
-	plan->rank = request->groups > 1u ? 3u : 2u;
-	plan->global_dimension[0] = column_bytes;
-	plan->global_dimension[1] = request->rows;
-	plan->global_dimension[2] = request->groups;
-	// globalStrides has rank-1 meaningful entries and excludes the innermost
-	// axis, which is implicitly one element. Slot 0 holds the row pitch.
-	plan->global_stride_bytes[0] = column_bytes;
-	plan->global_stride_bytes[1] = column_bytes * request->rows;
-	plan->global_stride_bytes[2] = 0u;
-	plan->box_dimension[0] = box_column_bytes;
-	plan->box_dimension[1] = request->box_rows;
-	plan->box_dimension[2] = 1u;
-	for (index = 0u; index < LM_TM_MAX_RANK; ++index)
-		plan->element_stride[index] = 1u;
-	plan->swizzle_bytes = LM_TM_SWIZZLE_BYTES;
-	plan->row_bytes = column_bytes;
-	plan->box_bytes = (uint64_t)box_column_bytes * (uint64_t)request->box_rows;
-	return(LM_TM_OK);
+    if (box_column_bytes == 128u)
+    {
+        return 128u;
+    }
+    if (box_column_bytes == 64u)
+    {
+        return 64u;
+    }
+    if (box_column_bytes == 32u)
+    {
+        return 32u;
+    }
+    return 0u;
+}
+
+static int32_t LmTensorMapPlanBuild(
+    const LmTensorMapRequest *request,
+    LmTensorMapPlan *plan)
+{
+    uint64_t column_bytes;
+    uint32_t box_column_bytes;
+    uint32_t index;
+    uint32_t swizzle_bytes;
+
+    if (request == 0 || plan == 0 || request->global_address == 0)
+    {
+        return LM_TM_ERR_NULL;
+    }
+    if (request->element_bits != LM_TM_BITS_BF16 &&
+        request->element_bits != LM_TM_BITS_FP8 &&
+        request->element_bits != LM_TM_BITS_NVFP4)
+    {
+        return LM_TM_ERR_BITS;
+    }
+    if (request->groups == 0u || request->rows == 0u ||
+        request->columns == 0u)
+    {
+        return LM_TM_ERR_RANK;
+    }
+    if (((request->columns * (uint64_t)request->element_bits) % 8u) != 0u)
+    {
+        return LM_TM_ERR_ODD_COLUMNS;
+    }
+    if (((request->box_columns * request->element_bits) % 8u) != 0u)
+    {
+        return LM_TM_ERR_BOX_ODD;
+    }
+
+    column_bytes = LmTensorMapBytes(
+        request->columns,
+        request->element_bits);
+    box_column_bytes = (uint32_t)LmTensorMapBytes(
+        request->box_columns,
+        request->element_bits);
+    swizzle_bytes = LmTensorMapBoxSwizzleBytes(box_column_bytes);
+
+    if ((column_bytes % LM_TM_ALIGNMENT) != 0u)
+    {
+        return LM_TM_ERR_ROW_SWIZZLE;
+    }
+    if (swizzle_bytes == 0u)
+    {
+        return LM_TM_ERR_BOX_ALIGN;
+    }
+    if ((uint64_t)request->box_rows > request->rows ||
+        (uint64_t)box_column_bytes > column_bytes)
+    {
+        return LM_TM_ERR_BOX_EXCEEDS;
+    }
+    if ((((uintptr_t)request->global_address) % LM_TM_ALIGNMENT) != 0u)
+    {
+        return LM_TM_ERR_ADDRESS_ALIGN;
+    }
+
+    memset(plan, 0, sizeof(*plan));
+    plan->rank = request->groups > 1u ? 3u : 2u;
+    plan->global_dimension[0] = column_bytes;
+    plan->global_dimension[1] = request->rows;
+    plan->global_dimension[2] = request->groups;
+    plan->global_stride_bytes[0] = column_bytes;
+    plan->global_stride_bytes[1] = column_bytes * request->rows;
+    plan->box_dimension[0] = box_column_bytes;
+    plan->box_dimension[1] = request->box_rows;
+    plan->box_dimension[2] = 1u;
+    for (index = 0u; index < LM_TM_MAX_RANK; ++index)
+    {
+        plan->element_stride[index] = 1u;
+    }
+    plan->swizzle_bytes = swizzle_bytes;
+    plan->row_bytes = column_bytes;
+    plan->box_bytes = (uint64_t)box_column_bytes * request->box_rows;
+    return LM_TM_OK;
 }
 
 #endif

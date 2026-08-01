@@ -1,8 +1,3 @@
-// Descriptor geometry for the first-party grouped GEMM, checked without CUDA.
-//
-// The failure this guards against: a descriptor that encodes cleanly and moves
-// the wrong bytes. Every case below is one that cuTensorMapEncodeTiled would
-// accept.
 #include "inference/kernels/tensor_map.cuh"
 
 #include <stdio.h>
@@ -12,76 +7,88 @@ static int32_t failures = 0;
 
 static void expect(int32_t condition, const char *label)
 {
-	if ( condition == 0 )
-	{
-		printf("  FAIL %s\n",label);
-		failures++;
-		return;
-	}
-	printf("  ok   %s\n",label);
+    if (condition == 0)
+    {
+        printf("  FAIL %s\n", label);
+        failures++;
+        return;
+    }
+    printf("  ok   %s\n", label);
 }
 
-static int32_t build(uint64_t rows, uint64_t columns, uint64_t groups, uint32_t box_rows, uint32_t box_columns, uint32_t bits, LmTensorMapPlan *plan)
+static int32_t build(
+    uint64_t rows,
+    uint64_t columns,
+    uint64_t groups,
+    uint32_t box_rows,
+    uint32_t box_columns,
+    uint32_t bits,
+    LmTensorMapPlan *plan)
 {
-	LmTensorMapRequest request;
-	static uint8_t aligned_storage[256] __attribute__((aligned(128)));
-	memset(&request,0,sizeof(request));
-	request.global_address = aligned_storage;
-	request.rows = rows;
-	request.columns = columns;
-	request.groups = groups;
-	request.box_rows = box_rows;
-	request.box_columns = box_columns;
-	request.element_bits = bits;
-	return(LmTensorMapPlanBuild(&request,plan));
+    LmTensorMapRequest request;
+    static uint8_t aligned_storage[256] __attribute__((aligned(128)));
+
+    memset(&request, 0, sizeof(request));
+    request.global_address = aligned_storage;
+    request.rows = rows;
+    request.columns = columns;
+    request.groups = groups;
+    request.box_rows = box_rows;
+    request.box_columns = box_columns;
+    request.element_bits = bits;
+    return LmTensorMapPlanBuild(&request, plan);
 }
 
 int32_t main(void)
 {
-	LmTensorMapPlan plan;
-	int32_t status;
-	printf("TMA descriptor geometry\n");
-	printf("\nswizzle agreement between descriptor and kernel\n");
-	expect(LM_TM_SWIZZLE_CHUNKS == 8u,
-		"descriptor swizzle chunk count equals the kernel's");
-	expect(LM_TM_SWIZZLE_CHUNKS * LM_TM_CHUNK_BYTES
-		== LM_TM_SWIZZLE_BYTES,
-		"8 chunks x 16 bytes equals the 128-byte swizzle span");
-	printf("\nFP8 activation tile, M rows x K=6144, box 16x128\n");
-	status = build(128u,6144u,1u,16u,128u,LM_TM_BITS_FP8,&plan);
-	expect(status == LM_TM_OK,"builds");
-	expect(plan.rank == 2u,"rank 2 for a single group");
-	expect(plan.row_bytes == 6144u,"FP8 row is K bytes");
-	expect(plan.box_dimension[0] == 128u,"box inner extent is 128 bytes");
-	expect(plan.box_bytes == 2048u,"16x128 FP8 box is 2048 bytes");
-	// TILE_K for NVFP4 must be 256 ELEMENTS, not 128. At 4 bits a 128-element
-	// K tile is 64 bytes wide, which is narrower than the 128-byte swizzle span
-	// and cannot be permuted at that granularity. This constraint does not exist
-	// for FP8, where 128 elements are already 128 bytes, and it is invisible
-	// until a descriptor is actually constructed.
-	printf("\nNVFP4 weight tensor, 256 experts x N=4096 x K=6144\n");
-	expect(build(4096u,6144u,256u,128u,128u,LM_TM_BITS_NVFP4,&plan)
-		== LM_TM_ERR_BOX_ALIGN,
-		"TILE_K=128 elements is 64 bytes at NVFP4 and is correctly rejected");
-	status = build(4096u,6144u,256u,128u,256u,LM_TM_BITS_NVFP4,&plan);
-	expect(status == LM_TM_OK,"TILE_K=256 elements builds");
-	expect(plan.rank == 3u,"rank 3 so one descriptor covers every expert");
-	expect(plan.row_bytes == 3072u,"NVFP4 row is K/2 bytes, not K");
-	expect(plan.box_dimension[0] == 128u,"NVFP4 box inner extent is 128 bytes");
-	expect(plan.box_bytes == 16384u,"128x256 NVFP4 box is 16384 bytes");
-	expect(plan.global_stride_bytes[1] == 3072u * 4096u,"expert stride spans a whole weight matrix");
-	printf("\nrejections that would otherwise encode cleanly\n");
-	expect(build(128u,6144u,1u,16u,128u,6u,&plan) == LM_TM_ERR_BITS,
-		"6-bit element width rejected");
-	expect(build(128u,6145u,1u,16u,128u,LM_TM_BITS_NVFP4,&plan)
-		== LM_TM_ERR_ODD_COLUMNS,
-		"odd NVFP4 column count has no byte representation");
-	expect(build(128u,320u,1u,16u,128u,LM_TM_BITS_FP8,&plan)
-		== LM_TM_ERR_ROW_SWIZZLE,
-		"row pitch not a multiple of 128 bytes rejected");
-	expect(build(8u,6144u,1u,16u,128u,LM_TM_BITS_FP8,&plan)
-		== LM_TM_ERR_BOX_EXCEEDS,
-		"box taller than the tensor rejected");
-	printf("\n%s (%d failing checks)\n",failures == 0 ? "PASS" : "FAIL",failures);
-	return(failures == 0 ? 0 : 1);
+    LmTensorMapPlan plan;
+    int32_t status;
+
+    printf("TMA descriptor geometry\n");
+
+    printf("\nFP8 activation tile\n");
+    status = build(128u, 6144u, 1u, 16u, 128u, LM_TM_BITS_FP8, &plan);
+    expect(status == LM_TM_OK, "FP8 16x128 box builds");
+    expect(plan.rank == 2u, "single group uses rank 2");
+    expect(plan.row_bytes == 6144u, "FP8 row is K bytes");
+    expect(plan.box_dimension[0] == 128u, "FP8 box is 128 bytes wide");
+    expect(plan.swizzle_bytes == 128u, "FP8 box uses 128-byte swizzle");
+
+    printf("\nFP4 expert tile\n");
+    status = build(4096u, 6144u, 256u, 128u, 128u,
+        LM_TM_BITS_NVFP4, &plan);
+    expect(status == LM_TM_OK, "FP4 TILE_K=128 builds");
+    expect(plan.rank == 3u, "expert tensor uses rank 3");
+    expect(plan.row_bytes == 3072u, "FP4 row is K/2 bytes");
+    expect(plan.box_dimension[0] == 64u, "FP4 box is 64 bytes wide");
+    expect(plan.swizzle_bytes == 64u, "FP4 box uses 64-byte swizzle");
+    expect(plan.global_stride_bytes[1] == 3072u * 4096u,
+        "expert stride spans one weight matrix");
+
+    printf("\nBF16 activation and weight tile\n");
+    status = build(64u, 7168u, 1u, 16u, 64u, LM_TM_BITS_BF16, &plan);
+    expect(status == LM_TM_OK, "BF16 TILE_K=64 builds");
+    expect(plan.row_bytes == 14336u, "BF16 row has two bytes per element");
+    expect(plan.box_dimension[0] == 128u, "BF16 box is 128 bytes wide");
+    expect(plan.swizzle_bytes == 128u, "BF16 box uses 128-byte swizzle");
+
+    printf("\nrejections\n");
+    expect(build(128u, 6144u, 1u, 16u, 128u, 6u, &plan) ==
+        LM_TM_ERR_BITS, "unsupported packed width rejected");
+    expect(build(128u, 6145u, 1u, 16u, 128u,
+        LM_TM_BITS_NVFP4, &plan) == LM_TM_ERR_ODD_COLUMNS,
+        "odd FP4 column count rejected");
+    expect(build(128u, 6144u, 1u, 16u, 96u,
+        LM_TM_BITS_FP8, &plan) == LM_TM_ERR_BOX_ALIGN,
+        "box without exact 32/64/128-byte swizzle rejected");
+    expect(build(128u, 321u, 1u, 16u, 128u,
+        LM_TM_BITS_FP8, &plan) == LM_TM_ERR_ROW_SWIZZLE,
+        "global row stride must remain 16-byte aligned");
+    expect(build(8u, 6144u, 1u, 16u, 128u,
+        LM_TM_BITS_FP8, &plan) == LM_TM_ERR_BOX_EXCEEDS,
+        "box taller than tensor rejected");
+
+    printf("\n%s (%d failing checks)\n",
+        failures == 0 ? "PASS" : "FAIL", failures);
+    return failures == 0 ? 0 : 1;
 }

@@ -1,69 +1,311 @@
 #!/usr/bin/env python3
-"""Pack a Kimi K3 checkpoint into the sparkpipe resident layout.
+"""Pack a Kimi K3 checkpoint into the sparkpipe resident layout, format V2.
 
 The engines serve the checkpoint as shipped: MXFP4 expert payloads and their
 E8M0 scales are moved, never recomputed, and everything on the ignore list
-stays BF16. What the packer OWES beyond moving bytes is exactly what the
-layer's weight table cannot get from any checkpoint directly:
+stays BF16. What the packer OWES beyond moving bytes is what the layer's
+weight table cannot get from any checkpoint directly. V2 adds three layout
+transforms, each removing a defect the V1 format baked in:
+
+  fused KDA     the six projections that read one normed KDA input shipped as
+  projections   six tensors, so six GEMM launches read the same activation
+                (layer.cuh K3-PERF-003). One GEMM needs one base pointer, and
+                the TP shard table splits the six into two classes, so V2
+                emits TWO fused tensors per KDA layer, each carrying exactly
+                one shard class:
+                  kda_qkv_beta_weight       q|k|v|beta rows, one
+                                            [sum_out, hidden] BF16 tensor,
+                                            OUTPUT_DIM_HEADS
+                  kda_decay_gate_down_weight decay_down|gate_down rows,
+                                            REPLICATED
+                The manifest's per-tensor section table gives each section's
+                row offset and rows-per-head, so bind is pointer arithmetic.
+
+  interleaved   V1 shipped expert payload and E8M0 scales as two planes two
+  weight+scale  pointers apart; the GEMM staged the payload by TMA and the
+                scales by LDG from the far plane. V2 blocks each expert into
+                k-tiles of 128 elements and, per k-tile, interleaves each
+                16-neuron cell's sixteen 64-byte payload rows with ONE 64-byte
+                scale row (16 neurons x 4 group scales - exactly full). The
+                ratio is exact, so the tensor is zero padding: payload+scales
+                = cells * k_tiles * 17 * 64 bytes per expert. One TMA box of
+                17 * (TILE_N/16) rows then fetches a stage's payload AND its
+                scales in a single transaction off one descriptor, the 64-byte
+                swizzle span intact. The addressing math is
+                interleave_geometry / interleave_byte_offset below and the
+                consumption contract is docs/K3_PACK_FORMAT_V2.md.
+
+  alignment     every tensor starts 128-byte aligned (TMA base and L2 line),
+                tensors are emitted layer by layer in consumption order so a
+                sequential prefetcher never re-seeks, and the manifest header
+                block carries per-tensor kind/shape/sections/interleave so a
+                loader binds with adds, not parsing.
 
   q-fold        kv_b's k_nope half absorbed into q_b, per head:
-                A[h] = kv_b_k[h]^T @ q_b_nope[h], then the 64 unrotated rows -
+                A[h] = kv_b_k[h]^T @ q_b_nope[h], then the unrotated rows -
                 heads * (kv_lora + rope) rows over q_lora
   kv_b split    the value half of kv_b as its own [heads * v_head, kv_lora]
                 per-head table (the gate lives in v-space and does not
                 commute, so o_proj stays as shipped)
-  w1 | w3       each routed expert's gate and up projections concatenated
-                gate-first - the SiTU kernel's contract - payload and scales
-                alike, experts-major for the rank-3 descriptor
-  scale plane   E8M0 bytes relaid to [expert][neuron][k_group], the layout
-                LmGemmWeightOnlyConsume prices
   gamma folds   every attention-residual score projection multiplied
-                elementwise by its RMSNorm gamma, because the kernel norms
-                without a weight and the fold is exact
-  conv flatten  [channels, 1, kernel] to [channels, kernel]
+                elementwise by its RMSNorm gamma - exact, the kernel norms
+                without a weight
+  conv flatten  [channels, 1, kernel] to [channels, kernel] (a shape
+                assertion; the row-major bytes are identical)
 
-Output is one file: magic, version, a JSON manifest of {tensor name ->
-offset, bytes} keyed by the K3LayerWeights field names (model.layers.N.
-prefixed), and 64-byte-aligned payload. A loader walks names to pointers and
-needs to know nothing else.
+NUMPY IS OPTIONAL. Every layout transform (fusion, interleave, alignment,
+manifest) is pure stdlib and bit-exact without numpy; numpy, when importable,
+only accelerates the two heavy paths (the q-fold matmul and the expert
+interleave relay). The pure-python q-fold fallback emulates float32 per
+operation - bit-exact f32 semantics, but the accumulation ORDER is
+sequential where numpy's may be pairwise, so the fallback can differ in the
+last ulp and is for host verification, not for shipping a pack. It is also
+O(n^3) in python: fine for the test mini, days for the real checkpoint.
 
-Torch is not required. BF16 rides as uint16 and checkpoint FP32 stays float32;
-the two folds run in float32 through numpy and round to nearest even on the way
-back. Failure is loud:
-a missing tensor, an E8M0 0xff, a group size that is not 32, an expert count
-that is not the config's - each is a PackFailure naming what and where.
+Failure is loud: a missing tensor, an E8M0 0xff, a group size that is not 32,
+an expert count that is not the config's, a dimension the interleave grid
+does not divide - each is a PackFailure naming what and where.
 """
 import json
+import math
 import struct
 import sys
 from pathlib import Path
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:  # layout logic below is stdlib-only; see module docstring
+    np = None
 
 MAGIC = 0x4B33504B  # 'K3PK'
-VERSION = 1
-ALIGN = 64
+VERSION = 2
+ALIGN = 128            # tensor alignment: TMA base + L2 line
 E8M0_NAN = 0xFF
-GROUP = 32
+GROUP = 32             # MXFP4 scale group, elements
+TILE_K = 128           # interleave k-tile, elements - LmMxfp4::kTileK, the
+                       # extent whose 64 payload bytes fill one swizzle span
+CELL_PAYLOAD_ROWS = 16 # payload rows per interleave cell; the exact ratio
+                       # 16 * 4 scale bytes == one 64-byte row is why 16
 A_LOG_SOURCE_HEADS = 128
+
+KIND_BF16 = "bf16"
+KIND_F32 = "f32"
+KIND_MXFP4_INTERLEAVED = "mxfp4_ws_interleaved_v1"
 
 
 class PackFailure(RuntimeError):
     pass
 
 
-def bf16_to_f32(u16):
-    return (u16.astype(np.uint32) << 16).view(np.float32)
+# -- pure-python scalar helpers ----------------------------------------------
+#
+# float32 emulation: a python float is f64, and the product of two f32 values
+# is exact in f64 (24 + 24 <= 53 mantissa bits), so rounding the f64 result to
+# f32 equals a hardware f32 multiply. Rounding an f32 to BF16 round-to-nearest-
+# even is then exact, which is what makes the gamma folds bit-identical to the
+# numpy path they replaced.
+
+def f32_round(value):
+    # an f64 product past the f32 ceiling rounds to inf, exactly what the
+    # numpy f32 multiply this emulates produces
+    try:
+        return struct.unpack("<f", struct.pack("<f", value))[0]
+    except OverflowError:
+        return math.copysign(math.inf, value)
 
 
-def f32_to_bf16(f32):
-    u = f32.astype(np.float32).view(np.uint32)
-    rounded = u + 0x7FFF + ((u >> 16) & 1)
-    return (rounded >> 16).astype(np.uint16)
+def bf16_raw_to_f32(raw):
+    return [struct.unpack("<f", struct.pack("<I", u << 16))[0]
+            for (u,) in struct.iter_unpack("<H", raw)]
 
 
-DTYPE_BYTES = {"BF16": 2, "F32": 4, "U8": 1, "I64": 8, "F16": 2}
+def f32_list_to_bf16_raw(values):
+    out = bytearray()
+    for value in values:
+        u = struct.unpack("<I", struct.pack("<f", value))[0]
+        out += struct.pack("<H", (u + 0x7FFF + ((u >> 16) & 1)) >> 16)
+    return bytes(out)
 
+
+if np is not None:
+    def bf16_to_f32(u16):
+        return (u16.astype(np.uint32) << 16).view(np.float32)
+
+    def f32_to_bf16(f32):
+        u = f32.astype(np.float32).view(np.uint32)
+        rounded = u + 0x7FFF + ((u >> 16) & 1)
+        return (rounded >> 16).astype(np.uint16)
+
+
+# -- fused KDA projection section tables --------------------------------------
+#
+# Both fused tensors are stored [sum_out, hidden] row-major like every other
+# projection here; sections are row ranges in the order listed. rows_per_head
+# is what a TP OUTPUT_DIM_HEADS slice takes per head from that section - the
+# fused tensor carries ONE shard class because each section splits by whole
+# heads, beta's single row per head included.
+
+def kda_fused_qkvb_sections(heads, key_dim, value_dim):
+    """q|k|v|beta: the OUTPUT_DIM_HEADS half of the six-way KDA fusion."""
+    sections = []
+    row = 0
+    for name, rows, per_head in (
+            ("q", heads * key_dim, key_dim),
+            ("k", heads * key_dim, key_dim),
+            ("v", heads * value_dim, value_dim),
+            ("beta", heads, 1)):
+        sections.append({"name": name, "row_offset": row, "rows": rows,
+                         "rows_per_head": per_head})
+        row += rows
+    return sections, row
+
+
+def kda_fused_decay_gate_down_sections(head_dim):
+    """decay_down|gate_down: the REPLICATED half. Bottleneck widths are not
+    head-split by the TP table, so rows_per_head is 0 - the section exists for
+    bind arithmetic, not for slicing."""
+    sections = []
+    row = 0
+    for name in ("decay_down", "gate_down"):
+        sections.append({"name": name, "row_offset": row, "rows": head_dim,
+                         "rows_per_head": 0})
+        row += head_dim
+    return sections, row
+
+
+# -- interleaved weight+scale geometry ----------------------------------------
+#
+# One expert is a byte grid of 64-byte rows:
+#
+#   row(expert e, k_tile t, cell c, sub r) =
+#       e * rows_per_expert + (t * cells + c) * 17 + r
+#
+# sub 0..15 hold the payload k-tile of neurons 16c+sub; sub 16 holds the 64
+# scale bytes of that cell's sixteen neurons for this k-tile, byte 4n+j the
+# E8M0 of neuron 16c+n, k-group 4t+j. Everything a consumer needs is derived
+# here once - the packer, the validator, the layout test and the doc all price
+# the same arithmetic.
+
+def interleave_geometry(out_dim, k_dim, experts=1, tile_k=TILE_K, group=GROUP,
+                        stored_bits=4):
+    tile_payload = tile_k * stored_bits // 8      # 64: one swizzle span
+    tile_scale = tile_k // group                  # 4 scale bytes/neuron/tile
+    if tile_payload != CELL_PAYLOAD_ROWS * tile_scale:
+        raise PackFailure(
+            f"interleave cell does not close: {CELL_PAYLOAD_ROWS} payload "
+            f"rows of {tile_payload}B need a {CELL_PAYLOAD_ROWS * tile_scale}B "
+            f"scale row, not {tile_payload}B")
+    if k_dim % tile_k != 0:
+        raise PackFailure(f"K {k_dim} is not a whole number of {tile_k}-element "
+                          f"interleave tiles")
+    if k_dim % group != 0:
+        raise PackFailure(f"K {k_dim} is not whole MXFP4 groups of {group}")
+    if out_dim % CELL_PAYLOAD_ROWS != 0:
+        raise PackFailure(f"output {out_dim} is not a whole number of "
+                          f"{CELL_PAYLOAD_ROWS}-neuron interleave cells")
+    k_tiles = k_dim // tile_k
+    cells = out_dim // CELL_PAYLOAD_ROWS
+    cell_rows = CELL_PAYLOAD_ROWS + 1
+    rows_per_expert = k_tiles * cells * cell_rows
+    expert_bytes = rows_per_expert * tile_payload
+    payload_bytes = out_dim * (k_dim * stored_bits // 8)
+    scale_bytes = out_dim * (k_dim // group)
+    if expert_bytes != payload_bytes + scale_bytes:
+        raise PackFailure("interleave padding is not zero; the grid is wrong")
+    return {"kind": KIND_MXFP4_INTERLEAVED, "out_dim": out_dim,
+            "k_dim": k_dim, "experts": experts, "tile_k": tile_k,
+            "group": group, "stored_bits": stored_bits,
+            "row_bytes": tile_payload,
+            "scale_bytes_per_neuron_tile": tile_scale,
+            "cell_payload_rows": CELL_PAYLOAD_ROWS, "cell_rows": cell_rows,
+            "cells": cells, "k_tiles": k_tiles,
+            "rows_per_expert": rows_per_expert,
+            "expert_bytes": expert_bytes,
+            "tensor_bytes": expert_bytes * experts}
+
+
+def interleave_byte_offset(geom, expert, k_tile, neuron, kind, lane=0):
+    """Byte offset of one payload byte lane (0..63) or one scale group lane
+    (0..3) of one neuron inside the interleaved tensor. The published
+    addressing contract; the relays below must agree with it and the layout
+    test holds them to it."""
+    cell, sub = divmod(neuron, geom["cell_payload_rows"])
+    row = (expert * geom["rows_per_expert"]
+           + (k_tile * geom["cells"] + cell) * geom["cell_rows"])
+    if kind == "payload":
+        return (row + sub) * geom["row_bytes"] + lane
+    if kind == "scale":
+        return (row + geom["cell_payload_rows"]) * geom["row_bytes"] \
+            + sub * geom["scale_bytes_per_neuron_tile"] + lane
+    raise PackFailure(f"unknown interleave lane kind {kind!r}")
+
+
+def interleave_py(payload, scales, geom):
+    """Stdlib relay: payload [experts][out][k/2] and scales [experts][out]
+    [k/32] as raw bytes into the interleaved grid. Slice-assignment moves
+    whole rows, so this is memory-bound, not loop-bound."""
+    experts = geom["experts"]
+    row_payload = geom["k_dim"] * geom["stored_bits"] // 8
+    k_groups = geom["k_dim"] // geom["group"]
+    per_expert_payload = geom["out_dim"] * row_payload
+    per_expert_scale = geom["out_dim"] * k_groups
+    if len(payload) != experts * per_expert_payload or \
+            len(scales) != experts * per_expert_scale:
+        raise PackFailure("interleave source plane size does not match geometry")
+    out = bytearray(geom["tensor_bytes"])
+    for e in range(experts):
+        pay_base = e * per_expert_payload
+        sc_base = e * per_expert_scale
+        for t in range(geom["k_tiles"]):
+            for c in range(geom["cells"]):
+                dst = (e * geom["rows_per_expert"]
+                       + (t * geom["cells"] + c) * geom["cell_rows"]) \
+                    * geom["row_bytes"]
+                for r in range(geom["cell_payload_rows"]):
+                    n = c * geom["cell_payload_rows"] + r
+                    src = pay_base + n * row_payload + t * geom["row_bytes"]
+                    out[dst + r * geom["row_bytes"]:
+                        dst + (r + 1) * geom["row_bytes"]] = \
+                        payload[src:src + geom["row_bytes"]]
+                srow = dst + geom["cell_payload_rows"] * geom["row_bytes"]
+                for r in range(geom["cell_payload_rows"]):
+                    n = c * geom["cell_payload_rows"] + r
+                    src = sc_base + n * k_groups \
+                        + t * geom["scale_bytes_per_neuron_tile"]
+                    width = geom["scale_bytes_per_neuron_tile"]
+                    out[srow + r * width:srow + (r + 1) * width] = \
+                        scales[src:src + width]
+    return bytes(out)
+
+
+def interleave_np(payload, scales, geom):
+    """The same grid by reshape+transpose: payload (E, out, k_tiles, 64) ->
+    (E, k_tiles, cells, 16, 64); scales (E, out, k_tiles, 4) ->
+    (E, k_tiles, cells, 1, 64); concatenate along the sub-row axis."""
+    row_bytes = geom["row_bytes"]
+    width = geom["scale_bytes_per_neuron_tile"]
+    p = payload.reshape(geom["experts"], geom["out_dim"], geom["k_tiles"],
+                        row_bytes).transpose(0, 2, 1, 3) \
+        .reshape(geom["experts"], geom["k_tiles"], geom["cells"],
+                 geom["cell_payload_rows"], row_bytes)
+    s = scales.reshape(geom["experts"], geom["out_dim"], geom["k_tiles"],
+                       width).transpose(0, 2, 1, 3) \
+        .reshape(geom["experts"], geom["k_tiles"], geom["cells"], 1,
+                 geom["cell_payload_rows"] * width)
+    return np.concatenate([p, s], axis=3).tobytes()
+
+
+def interleave(payload, scales, geom):
+    if np is not None:
+        p = np.frombuffer(payload, dtype=np.uint8) \
+            .reshape(geom["experts"], geom["out_dim"], -1)
+        s = np.frombuffer(scales, dtype=np.uint8) \
+            .reshape(geom["experts"], geom["out_dim"], -1)
+        return interleave_np(p, s, geom)
+    return interleave_py(payload, scales, geom)
+
+
+# -- checkpoint reading --------------------------------------------------------
 
 class SafetensorDir:
     """Minimal reader: index.json plus shards, or a single model.safetensors.
@@ -111,29 +353,24 @@ class SafetensorDir:
             raw = handle.read(end - begin)
         return entry["dtype"], tuple(entry["shape"]), raw
 
+    def expect(self, name, dtype, shape=None):
+        got_dtype, got_shape, raw = self.tensor(name)
+        if got_dtype != dtype:
+            raise PackFailure(f"{name}: expected {dtype}, checkpoint says "
+                              f"{got_dtype}")
+        if shape is not None and got_shape != tuple(shape):
+            raise PackFailure(f"{name}: shape {got_shape}, expected "
+                              f"{tuple(shape)}")
+        return raw
+
     def bf16(self, name, shape=None):
-        dtype, got, raw = self.tensor(name)
-        if dtype != "BF16":
-            raise PackFailure(f"{name}: expected BF16, checkpoint says {dtype}")
-        if shape is not None and got != tuple(shape):
-            raise PackFailure(f"{name}: shape {got}, expected {tuple(shape)}")
-        return np.frombuffer(raw, dtype=np.uint16).reshape(got)
+        return self.expect(name, "BF16", shape)
 
     def u8(self, name, shape=None):
-        dtype, got, raw = self.tensor(name)
-        if dtype != "U8":
-            raise PackFailure(f"{name}: expected U8, checkpoint says {dtype}")
-        if shape is not None and got != tuple(shape):
-            raise PackFailure(f"{name}: shape {got}, expected {tuple(shape)}")
-        return np.frombuffer(raw, dtype=np.uint8).reshape(got)
+        return self.expect(name, "U8", shape)
 
     def f32(self, name, shape=None):
-        dtype, got, raw = self.tensor(name)
-        if dtype != "F32":
-            raise PackFailure(f"{name}: expected F32, checkpoint says {dtype}")
-        if shape is not None and got != tuple(shape):
-            raise PackFailure(f"{name}: shape {got}, expected {tuple(shape)}")
-        return np.frombuffer(raw, dtype=np.float32).reshape(got)
+        return self.expect(name, "F32", shape)
 
 
 def quant_pair(reader, base):
@@ -148,18 +385,83 @@ def quant_pair(reader, base):
                       f"(.weight_packed or .weight + .weight_scale)")
 
 
-def check_scales(name, scales):
-    if int((scales == E8M0_NAN).sum()) != 0:
+def check_scales(name, raw):
+    if b"\xff" in raw:
         raise PackFailure(f"{name}: E8M0 0xff (NaN) in the scale plane")
     # Dequantisation is bit-exact in bf16 - power-of-two scales against
     # one-mantissa-bit values - EXCEPT at the exponent ceiling: codes >= 253
     # can push |6 x 2^(code-127)| past bf16's max. Real weight scales sit
     # near 127; a code this large is worth a loud line even though legal.
-    high = int((scales >= 253).sum())
+    high = sum(1 for b in raw if b >= 253)
     if high:
         print(f"ADVISORY {name}: {high} E8M0 codes >= 253; "
               f"bf16 dequant can overflow at this magnitude")
 
+
+# -- the fold paths -------------------------------------------------------------
+
+def gamma_fold_bf16(proj_raw, gamma_raw, count):
+    """proj [1, count] * gamma [count], elementwise, f32 semantics, BF16 RNE
+    out. Pure python: count is hidden, the row count is 187, and exactness is
+    argued at f32_round - no reason to spend a numpy import here."""
+    proj = bf16_raw_to_f32(proj_raw)
+    gamma = bf16_raw_to_f32(gamma_raw)
+    if len(proj) != count or len(gamma) != count:
+        raise PackFailure("gamma fold operand size does not match hidden")
+    return f32_list_to_bf16_raw(
+        [f32_round(proj[i] * gamma[i]) for i in range(count)])
+
+
+def q_fold_absorb(q_b_raw, kv_b_raw, heads, nope, rope, v_head, kv_lora,
+                  q_lora):
+    """The MLA up-projection fold. Returns (q_up_raw, kv_b_value_raw) as BF16
+    bytes: kv_b's k_nope half absorbed into q_b per head, and kv_b's value
+    half as its own table. numpy when present; the pure-python fallback is
+    bit-exact f32 per operation with a sequential accumulation order and is
+    for host verification - it is far too slow to ship."""
+    q_shape = (heads, nope + rope, q_lora)
+    kv_shape = (heads, nope + v_head, kv_lora)
+    if np is not None:
+        q_b = bf16_to_f32(np.frombuffer(q_b_raw, dtype=np.uint16)
+                          .reshape(q_shape))
+        kv_b = bf16_to_f32(np.frombuffer(kv_b_raw, dtype=np.uint16)
+                           .reshape(kv_shape))
+        absorbed = np.einsum("hnl,hnq->hlq", kv_b[:, :nope, :], q_b[:, :nope, :])
+        folded = np.concatenate([absorbed, q_b[:, nope:, :]], axis=1)
+        return f32_to_bf16(folded.reshape(-1)).tobytes(), \
+            f32_to_bf16(kv_b[:, nope:, :].reshape(-1)).tobytes()
+    print("ADVISORY numpy not importable: the MLA q-fold is running the "
+          "pure-python reference (f32-exact, sequential accumulation; "
+          "verification-grade, not ship-grade speed)")
+    q_b = bf16_raw_to_f32(q_b_raw)
+    kv_b = bf16_raw_to_f32(kv_b_raw)
+    q_up = [0.0] * (heads * (kv_lora + rope) * q_lora)
+    value = [0.0] * (heads * v_head * kv_lora)
+    for h in range(heads):
+        q_base = h * (nope + rope) * q_lora
+        kv_base = h * (nope + v_head) * kv_lora
+        out_base = h * (kv_lora + rope) * q_lora
+        for l in range(kv_lora):
+            for q in range(q_lora):
+                acc = 0.0
+                for n in range(nope):
+                    acc = f32_round(acc + f32_round(
+                        kv_b[kv_base + n * kv_lora + l]
+                        * q_b[q_base + n * q_lora + q]))
+                q_up[out_base + l * q_lora + q] = acc
+        for r in range(rope):
+            for q in range(q_lora):
+                q_up[out_base + (kv_lora + r) * q_lora + q] = \
+                    q_b[q_base + (nope + r) * q_lora + q]
+        v_base = h * v_head * kv_lora
+        for v in range(v_head):
+            for l in range(kv_lora):
+                value[v_base + v * kv_lora + l] = \
+                    kv_b[kv_base + (nope + v) * kv_lora + l]
+    return f32_list_to_bf16_raw(q_up), f32_list_to_bf16_raw(value)
+
+
+# -- the pack itself ------------------------------------------------------------
 
 class Pack:
     def __init__(self, out_path):
@@ -167,16 +469,61 @@ class Pack:
         self.manifest = {}
         self.offset = 0
 
-    def add(self, name, payload):
+    def add(self, name, payload, kind, shape, extra=None):
         pad = (-self.offset) % ALIGN
         if pad:
             self.handle.write(b"\0" * pad)
             self.offset += pad
-        raw = payload.tobytes()
-        self.manifest[name] = {"offset": self.offset, "bytes": len(raw)}
+        raw = bytes(payload)
+        entry = {"offset": self.offset, "bytes": len(raw), "align": ALIGN,
+                 "kind": kind, "shape": list(shape)}
+        if extra:
+            entry.update(extra)
+        self.manifest[name] = entry
         self.handle.write(raw)
         self.offset += len(raw)
 
+
+def validate_layout(manifest, config):
+    """Re-derive every layout identity from the config and hold the emitted
+    manifest to it. Runs at the end of pack_model and from the layout test; a
+    drift here is a PackFailure, never a pack that binds wrong."""
+    hidden = config["hidden"]
+    offset = 0
+    for name in sorted(manifest, key=lambda n: manifest[n]["offset"]):
+        entry = manifest[name]
+        if entry["offset"] % ALIGN != 0:
+            raise PackFailure(f"{name}: offset {entry['offset']} is not "
+                              f"{ALIGN}-byte aligned")
+        if entry["offset"] < offset:
+            raise PackFailure(f"{name}: overlaps the previous tensor")
+        offset = entry["offset"] + entry["bytes"]
+        kind = entry["kind"]
+        if kind == KIND_MXFP4_INTERLEAVED:
+            geom = interleave_geometry(entry["interleave"]["out_dim"],
+                                       entry["interleave"]["k_dim"],
+                                       entry["interleave"]["experts"])
+            if geom["tensor_bytes"] != entry["bytes"]:
+                raise PackFailure(f"{name}: {entry['bytes']} bytes, geometry "
+                                  f"prices {geom['tensor_bytes']}")
+        elif kind == KIND_BF16 and entry["bytes"] % 2 != 0:
+            raise PackFailure(f"{name}: odd BF16 byte count")
+        if "sections" in entry:
+            rows = 0
+            for section in entry["sections"]:
+                if section["row_offset"] != rows:
+                    raise PackFailure(f"{name}: section {section['name']} does "
+                                      f"not tile the fused rows")
+                rows += section["rows"]
+            if rows != entry["shape"][0]:
+                raise PackFailure(f"{name}: sections cover {rows} rows, shape "
+                                  f"says {entry['shape'][0]}")
+            if entry["shape"][1] != hidden:
+                raise PackFailure(f"{name}: fused projection is not over "
+                                  f"hidden")
+            if (hidden * 2) % ALIGN != 0:
+                raise PackFailure(f"{name}: a hidden row is {hidden * 2}B, so "
+                                  f"section bases cannot stay {ALIGN}B-aligned")
 
 
 def pack_model(model_dir, out_path):
@@ -205,55 +552,76 @@ def pack_model(model_dir, out_path):
     types = config["layer_types"]
     if len(types) != layers:
         raise PackFailure("layer_types does not cover num_hidden_layers")
-    if latent % GROUP != 0 or inter % GROUP != 0:
-        raise PackFailure("expert dims are not whole MXFP4 groups")
+    # The interleave grid prices both expert GEMMs up front; a checkpoint the
+    # grid does not divide fails before a byte is written.
+    w1_geom = interleave_geometry(2 * inter, latent, experts)
+    w2_geom = interleave_geometry(latent, inter, experts)
 
     payload_path = Path(str(out_path) + ".payload")
     pack = Pack(payload_path)
     L = "model.layers.{}."
 
     def bf(dst, src, shape=None):
-        pack.add(dst, reader.bf16(src, shape))
+        pack.add(dst, reader.bf16(src, shape), KIND_BF16,
+                 shape if shape is not None else [0])
 
-    # model level
+    # model level, in consumption order: the embedding first, the closing
+    # norm, output retrieval and head last.
     bf("model.embed_tokens.weight", "model.embed_tokens.weight",
        (config["vocab_size"], hidden))
-    bf("model.norm.weight", "model.norm.weight", (hidden,))
-    bf("lm_head.weight", "lm_head.weight", (config["vocab_size"], hidden))
-    gamma = bf16_to_f32(reader.bf16("model.output_attn_res_norm.weight", (hidden,)))
-    proj = bf16_to_f32(reader.bf16("model.output_attn_res_proj.weight", (1, hidden)))
-    pack.add("model.attnres_out_weight", f32_to_bf16(proj * gamma))
 
     for layer in range(layers):
         p = L.format(layer)
         linear = types[layer] == "linear_attention"
         bf(p + "attn_norm_weight", p + "input_layernorm.weight", (hidden,))
-        bf(p + "mlp_norm_weight", p + "post_attention_layernorm.weight", (hidden,))
-        for side, norm in (("attnres_attn_weight", "self_attention_res"),
-                           ("attnres_mlp_weight", "mlp_res")):
-            g = bf16_to_f32(reader.bf16(p + f"{norm}_norm.weight", (hidden,)))
-            w = bf16_to_f32(reader.bf16(p + f"{norm}_proj.weight", (1, hidden)))
-            pack.add(p + side, f32_to_bf16(w * g))
+        g = reader.bf16(p + "self_attention_res_norm.weight", (hidden,))
+        w = reader.bf16(p + "self_attention_res_proj.weight", (1, hidden))
+        pack.add(p + "attnres_attn_weight", gamma_fold_bf16(w, g, hidden),
+                 KIND_BF16, [1, hidden])
         if linear:
             a = p + "self_attn."
-            bf(p + "kda_q_weight", a + "q_proj.weight", (kda_dim, hidden))
-            bf(p + "kda_k_weight", a + "k_proj.weight", (kda_dim, hidden))
-            bf(p + "kda_v_weight", a + "v_proj.weight", (kda_dim, hidden))
+            # THE FUSED WIDE TENSOR, OUTPUT_DIM_HEADS CLASS. q|k|v|beta as
+            # one [sum_out, hidden] BF16 tensor: one GEMM over normed_bf16
+            # replaces four launches, and the section table in the manifest
+            # is the split contract.
+            sections, rows = kda_fused_qkvb_sections(kda_heads, kda_head,
+                                                     kda_head)
+            fused = b"".join((
+                reader.bf16(a + "q_proj.weight", (kda_dim, hidden)),
+                reader.bf16(a + "k_proj.weight", (kda_dim, hidden)),
+                reader.bf16(a + "v_proj.weight", (kda_dim, hidden)),
+                reader.bf16(a + "b_proj.weight", (kda_heads, hidden))))
+            pack.add(p + "kda_qkv_beta_weight", fused, KIND_BF16,
+                     [rows, hidden], {"sections": sections,
+                                      "shard_class": "output_dim_heads"})
             for conv in "qkv":
-                w = reader.f32(a + f"{conv}_conv1d.weight", (kda_dim, 1, kernel))
-                pack.add(p + f"kda_{conv}_conv_weight", w.reshape(kda_dim, kernel))
-            bf(p + "kda_decay_down_weight", a + "f_a_proj.weight", (kda_head, hidden))
-            bf(p + "kda_decay_up_weight", a + "f_b_proj.weight", (kda_dim, kda_head))
-            pack.add(p + "kda_decay_bias",
-                     reader.f32(a + "dt_bias", (kda_dim,)))
-            head_log_scale = reader.f32(
-                a + "A_log", (A_LOG_SOURCE_HEADS,))
-            pack.add(p + "kda_head_log_scale", head_log_scale[:kda_heads])
-            bf(p + "kda_beta_weight", a + "b_proj.weight", (kda_heads, hidden))
-            bf(p + "kda_gate_down_weight", a + "g_a_proj.weight", (kda_head, hidden))
-            bf(p + "kda_gate_up_weight", a + "g_b_proj.weight", (kda_dim, kda_head))
+                raw = reader.f32(a + f"{conv}_conv1d.weight",
+                                 (kda_dim, 1, kernel))
+                pack.add(p + f"kda_{conv}_conv_weight", raw, KIND_F32,
+                         [kda_dim, kernel])
+            # THE FUSED REPLICATED TENSOR. decay_down and gate_down are the
+            # low-rank bottlenecks the TP table replicates; fusing them keeps
+            # the second wide GEMM to one launch without mixing shard classes
+            # into kda_qkv_beta_weight.
+            sections, rows = kda_fused_decay_gate_down_sections(kda_head)
+            fused = b"".join((
+                reader.bf16(a + "f_a_proj.weight", (kda_head, hidden)),
+                reader.bf16(a + "g_a_proj.weight", (kda_head, hidden))))
+            pack.add(p + "kda_decay_gate_down_weight", fused, KIND_BF16,
+                     [rows, hidden], {"sections": sections,
+                                      "shard_class": "replicated"})
+            bf(p + "kda_decay_up_weight", a + "f_b_proj.weight",
+               (kda_dim, kda_head))
+            pack.add(p + "kda_decay_bias", reader.f32(a + "dt_bias", (kda_dim,)),
+                     KIND_F32, [kda_dim])
+            head_log_scale = reader.f32(a + "A_log", (A_LOG_SOURCE_HEADS,))
+            pack.add(p + "kda_head_log_scale", head_log_scale[:kda_heads * 4],
+                     KIND_F32, [kda_heads])
+            bf(p + "kda_gate_up_weight", a + "g_b_proj.weight",
+               (kda_dim, kda_head))
             pack.add(p + "kda_out_norm_weight",
-                     reader.f32(a + "o_norm.weight", (kda_head,)))
+                     reader.f32(a + "o_norm.weight", (kda_head,)),
+                     KIND_F32, [kda_head])
             bf(p + "kda_out_weight", a + "o_proj.weight", (hidden, kda_dim))
         else:
             a = p + "self_attn."
@@ -262,42 +630,48 @@ def pack_model(model_dir, out_path):
             bf(p + "mla_kv_a_weight", a + "kv_a_proj_with_mqa.weight",
                (kv_lora + rope, hidden))
             bf(p + "mla_kv_a_norm_weight", a + "kv_a_layernorm.weight", (kv_lora,))
-            q_b = bf16_to_f32(reader.bf16(a + "q_b_proj.weight",
-                                          (heads * (nope + rope), q_lora)))
-            kv_b = bf16_to_f32(reader.bf16(a + "kv_b_proj.weight",
-                                           (heads * (nope + v_head), kv_lora)))
-            q_b = q_b.reshape(heads, nope + rope, q_lora)
-            kv_b = kv_b.reshape(heads, nope + v_head, kv_lora)
-            absorbed = np.einsum("hnl,hnq->hlq", kv_b[:, :nope, :], q_b[:, :nope, :])
-            folded = np.concatenate([absorbed, q_b[:, nope:, :]], axis=1)
-            pack.add(p + "mla_q_up_weight",
-                     f32_to_bf16(folded.reshape(heads * (kv_lora + rope), q_lora)))
-            pack.add(p + "mla_kv_b_value_weight",
-                     f32_to_bf16(kv_b[:, nope:, :].reshape(heads * v_head, kv_lora)))
+            q_up, value = q_fold_absorb(
+                reader.bf16(a + "q_b_proj.weight",
+                            (heads * (nope + rope), q_lora)),
+                reader.bf16(a + "kv_b_proj.weight",
+                            (heads * (nope + v_head), kv_lora)),
+                heads, nope, rope, v_head, kv_lora, q_lora)
+            pack.add(p + "mla_q_up_weight", q_up, KIND_BF16,
+                     [heads * (kv_lora + rope), q_lora])
+            pack.add(p + "mla_kv_b_value_weight", value, KIND_BF16,
+                     [heads * v_head, kv_lora])
             bf(p + "mla_gate_down_weight", a + "g_a_proj.weight", (v_head, hidden))
-            bf(p + "mla_gate_up_weight", a + "g_b_proj.weight", (heads * v_head, v_head))
+            bf(p + "mla_gate_up_weight", a + "g_b_proj.weight",
+               (heads * v_head, v_head))
             bf(p + "mla_out_weight", a + "o_proj.weight", (hidden, heads * v_head))
+        bf(p + "mlp_norm_weight", p + "post_attention_layernorm.weight", (hidden,))
+        g = reader.bf16(p + "mlp_res_norm.weight", (hidden,))
+        w = reader.bf16(p + "mlp_res_proj.weight", (1, hidden))
+        pack.add(p + "attnres_mlp_weight", gamma_fold_bf16(w, g, hidden),
+                 KIND_BF16, [1, hidden])
         m = p + "mlp."
         if m + "gate.weight" not in reader.names():
             # the dense layer: one MLP, no router, no experts
             w1 = reader.bf16(m + "gate_proj.weight")
             w3 = reader.bf16(m + "up_proj.weight")
-            pack.add(p + "dense_gate_up_weight", np.concatenate([w1, w3], axis=0))
-            bf(p + "dense_down_weight", m + "down_proj.weight")
+            dense_inter = len(w1) // (hidden * 2)
+            pack.add(p + "dense_gate_up_weight", w1 + w3, KIND_BF16,
+                     [2 * dense_inter, hidden])
+            down = reader.bf16(m + "down_proj.weight")
+            pack.add(p + "dense_down_weight", down, KIND_BF16,
+                     [hidden, len(down) // (hidden * 2)])
             continue
         bf(p + "router_weight", m + "gate.weight", (experts, hidden))
         dtype, shape, raw = reader.tensor(m + "gate.e_score_correction_bias")
-        pack.add(p + "router_bias", np.frombuffer(raw, np.float32 if dtype == "F32" else np.uint16))
-        bf(p + "routed_down_weight", m + "routed_expert_down_proj.weight",
-           (latent, hidden))
-        bf(p + "routed_up_weight", m + "routed_expert_up_proj.weight",
-           (hidden, latent))
-        bf(p + "routed_norm_weight", m + "routed_expert_norm.weight", (latent,))
-        s1 = reader.bf16(m + "shared_experts.gate_proj.weight", (shared, hidden))
-        s3 = reader.bf16(m + "shared_experts.up_proj.weight", (shared, hidden))
-        pack.add(p + "shared_w1_weight", np.concatenate([s1, s3], axis=0))
-        bf(p + "shared_w2_weight", m + "shared_experts.down_proj.weight",
-           (hidden, shared))
+        if dtype != "F32" and dtype != "BF16":
+            raise PackFailure(f"{m}gate.e_score_correction_bias: unexpected "
+                              f"{dtype}")
+        pack.add(p + "router_bias", raw,
+                 KIND_F32 if dtype == "F32" else KIND_BF16, [experts])
+        # THE INTERLEAVED EXPERT TENSORS. Payload and E8M0 scales become ONE
+        # tensor each: the manifest names keep their V1 meaning (w1 = gate|up
+        # concat, w2 = down) but there is no separate scale plane to bind,
+        # shard or prefetch. Geometry was validated before the layer loop.
         w1_pay, w1_sc, w2_pay, w2_sc = [], [], [], []
         for e in range(experts):
             base = m + f"experts.{e}."
@@ -312,14 +686,37 @@ def pack_model(model_dir, out_path):
             ds = reader.u8(d_scale, (latent, inter // GROUP))
             for name, sc in ((g_scale, gs), (u_scale, us), (d_scale, ds)):
                 check_scales(name, sc)
-            w1_pay.append(np.concatenate([g, u], axis=0))
-            w1_sc.append(np.concatenate([gs, us], axis=0))
+            w1_pay.append(g + u)
+            w1_sc.append(gs + us)
             w2_pay.append(d)
             w2_sc.append(ds)
-        pack.add(p + "expert_w1_weight", np.stack(w1_pay))
-        pack.add(p + "expert_w1_scale", np.stack(w1_sc))
-        pack.add(p + "expert_w2_weight", np.stack(w2_pay))
-        pack.add(p + "expert_w2_scale", np.stack(w2_sc))
+        pack.add(p + "expert_w1_weight",
+                 interleave(b"".join(w1_pay), b"".join(w1_sc), w1_geom),
+                 KIND_MXFP4_INTERLEAVED, [experts, 2 * inter, latent],
+                 {"interleave": w1_geom, "shard_class": "concat_output"})
+        pack.add(p + "expert_w2_weight",
+                 interleave(b"".join(w2_pay), b"".join(w2_sc), w2_geom),
+                 KIND_MXFP4_INTERLEAVED, [experts, latent, inter],
+                 {"interleave": w2_geom, "shard_class": "input_dim"})
+        s1 = reader.bf16(m + "shared_experts.gate_proj.weight", (shared, hidden))
+        s3 = reader.bf16(m + "shared_experts.up_proj.weight", (shared, hidden))
+        pack.add(p + "shared_w1_weight", s1 + s3, KIND_BF16, [2 * shared, hidden])
+        bf(p + "shared_w2_weight", m + "shared_experts.down_proj.weight",
+           (hidden, shared))
+        bf(p + "routed_down_weight", m + "routed_expert_down_proj.weight",
+           (latent, hidden))
+        bf(p + "routed_up_weight", m + "routed_expert_up_proj.weight",
+           (hidden, latent))
+        bf(p + "routed_norm_weight", m + "routed_expert_norm.weight", (latent,))
+
+    bf("model.norm.weight", "model.norm.weight", (hidden,))
+    gamma = reader.bf16("model.output_attn_res_norm.weight", (hidden,))
+    proj = reader.bf16("model.output_attn_res_proj.weight", (1, hidden))
+    pack.add("model.attnres_out_weight", gamma_fold_bf16(proj, gamma, hidden),
+             KIND_BF16, [1, hidden])
+    bf("lm_head.weight", "lm_head.weight", (config["vocab_size"], hidden))
+
+    validate_layout(pack.manifest, {"hidden": hidden})
 
     pack.handle.flush()
     pack.handle.close()
@@ -329,7 +726,18 @@ def pack_model(model_dir, out_path):
             "kda_heads": kda_heads, "kda_head": kda_head, "heads": heads,
             "kv_lora": kv_lora, "rope": rope, "v_head": v_head,
             "nope": nope, "shared": shared, "q_lora": q_lora}
-    manifest = json.dumps({"config": echo, "tensors": pack.manifest},
+    fmt = {"version": VERSION, "alignment": ALIGN,
+           "mxfp4_interleave": {"tile_k": TILE_K, "group": GROUP,
+                                "stored_bits": 4,
+                                "cell_payload_rows": CELL_PAYLOAD_ROWS,
+                                "cell_rows": CELL_PAYLOAD_ROWS + 1,
+                                "row_bytes": TILE_K * 4 // 8,
+                                "scale_bytes_per_neuron_tile": TILE_K // GROUP},
+           "kda_fused": {"qkvb_sections": ["q", "k", "v", "beta"],
+                         "decay_gate_down_sections": ["decay_down",
+                                                      "gate_down"]}}
+    manifest = json.dumps({"format": fmt, "config": echo,
+                           "tensors": pack.manifest},
                           separators=(",", ":")).encode()
     with open(out_path, "wb") as out:
         out.write(struct.pack("<IIQ", MAGIC, VERSION, len(manifest)))

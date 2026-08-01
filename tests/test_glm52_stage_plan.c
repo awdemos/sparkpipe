@@ -1,12 +1,18 @@
 #include <assert.h>
 #include <string.h>
 
+#include "sparkpipe/spark_glm52_model.h"
 #include "sparkpipe/spark_stage_plan.h"
 
+static const SparkStagePlanGeometry SparkTestGlm52StagePlanGeometry =
+{
+    SPARK_GLM52_MODEL_LAYER_COUNT,
+    SPARK_GLM52_MODEL_FIRST_ROUTED_LAYER
+};
 
 static uint64_t SparkTestGlm52StagePlanMaximumStageCostNs(
     const SparkStagePlan *stage_plan,
-    const uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT],
+    const uint64_t layer_cost_ns[SPARK_GLM52_MODEL_LAYER_COUNT],
     uint64_t final_stage_extra_cost_ns)
 {
     uint64_t maximum_stage_cost_ns;
@@ -69,6 +75,7 @@ static void SparkTestGlm52StagePlanValidRing(void)
         SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN;
 
     assert(SparkStagePlanValidate(
+        &SparkTestGlm52StagePlanGeometry,
         &stage_plan,
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_OK);
@@ -83,6 +90,7 @@ static void SparkTestGlm52StagePlanLayerCountTable(void)
     char error_buffer[256];
 
     assert(SparkStagePlanBuildFromLayerCounts(
+        &SparkTestGlm52StagePlanGeometry,
         layer_counts,
         12u,
         &stage_plan,
@@ -98,9 +106,10 @@ static void SparkTestGlm52StagePlanLayerCountTable(void)
     assert((stage_plan.stages[11u].flags &
         SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN) != 0u);
 
-    memcpy(invalid_layer_counts,layer_counts,sizeof(layer_counts));
+    memcpy(invalid_layer_counts, layer_counts, sizeof(layer_counts));
     invalid_layer_counts[11u] = 5u;
     assert(SparkStagePlanBuildFromLayerCounts(
+        &SparkTestGlm52StagePlanGeometry,
         invalid_layer_counts,
         12u,
         &stage_plan,
@@ -111,18 +120,19 @@ static void SparkTestGlm52StagePlanLayerCountTable(void)
 static void SparkTestGlm52StagePlanBuilderAndBuckets(void)
 {
     SparkStagePlan stage_plan;
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_GLM52_MODEL_LAYER_COUNT];
     char error_buffer[256];
     uint32_t layer_index;
     uint32_t bucket;
 
     for (layer_index = 0u;
-         layer_index < SPARK_STAGE_PLAN_LAYER_COUNT;
+         layer_index < SPARK_GLM52_MODEL_LAYER_COUNT;
          ++layer_index)
     {
         layer_cost_ns[layer_index] = 1000u + (uint64_t)layer_index;
     }
     assert(SparkStagePlanBuildBalanced(
+        &SparkTestGlm52StagePlanGeometry,
         layer_cost_ns,
         13u,
         &stage_plan,
@@ -132,7 +142,7 @@ static void SparkTestGlm52StagePlanBuilderAndBuckets(void)
     assert(stage_plan.stages[0].first_layer_index == 0u);
     assert(stage_plan.stages[12].first_layer_index +
         stage_plan.stages[12].layer_count ==
-            SPARK_STAGE_PLAN_LAYER_COUNT);
+            SPARK_GLM52_MODEL_LAYER_COUNT);
     assert((stage_plan.stages[12].flags &
         SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN) != 0u);
 
@@ -161,21 +171,22 @@ static void SparkTestGlm52StagePlanBuilderAndBuckets(void)
         SPARK_STATUS_CAPACITY_EXCEEDED);
 }
 
-
 static void SparkTestGlm52StagePlanMeasuredBalanced(void)
 {
     SparkStagePlan stage_plan;
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
+    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
     uint64_t final_stage_extra_cost_ns;
     char error_buffer[256];
 
     assert(SparkStagePlanLoadMeasuredCostProfile(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B64,
         layer_cost_ns,
         &final_stage_extra_cost_ns) == SPARK_STATUS_OK);
     assert(final_stage_extra_cost_ns == 0u);
     assert(SparkStagePlanBuildCurrentSparkMeasuredBalanced(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B64,
         &stage_plan,
@@ -202,12 +213,14 @@ static void SparkTestGlm52StagePlanMeasuredBalanced(void)
         final_stage_extra_cost_ns) == 50660288u);
 
     assert(SparkStagePlanLoadMeasuredCostProfile(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B128,
         layer_cost_ns,
         &final_stage_extra_cost_ns) == SPARK_STATUS_OK);
     assert(final_stage_extra_cost_ns == 0u);
     assert(SparkStagePlanBuildCurrentSparkMeasuredBalanced(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B128,
         &stage_plan,
@@ -224,12 +237,14 @@ static void SparkTestGlm52StagePlanMeasuredBalanced(void)
         final_stage_extra_cost_ns) == 197361562u);
 
     assert(SparkStagePlanLoadMeasuredCostProfile(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B256,
         layer_cost_ns,
         &final_stage_extra_cost_ns) == SPARK_STATUS_OK);
     assert(final_stage_extra_cost_ns == 0u);
     assert(SparkStagePlanBuildCurrentSparkMeasuredBalanced(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B256,
         &stage_plan,
@@ -242,12 +257,14 @@ static void SparkTestGlm52StagePlanMeasuredBalanced(void)
     assert(stage_plan.stages[12].layer_count == 6u);
 
     assert(SparkStagePlanLoadMeasuredCostProfile(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B32,
         layer_cost_ns,
         &final_stage_extra_cost_ns) == SPARK_STATUS_OK);
     assert(final_stage_extra_cost_ns == 39342000u);
     assert(SparkStagePlanBuildCurrentSparkMeasuredBalanced(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B32,
         &stage_plan,
@@ -266,6 +283,7 @@ static void SparkTestGlm52StagePlanMeasuredBalanced(void)
         final_stage_extra_cost_ns) == 63119000u);
 
     assert(SparkStagePlanBuildMeasuredBalanced(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B32,
         SPARK_STAGE_PLAN_CURRENT_SPARK_COUNT + 1u,
@@ -274,44 +292,53 @@ static void SparkTestGlm52StagePlanMeasuredBalanced(void)
         sizeof(error_buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
 }
 
-
 static void SparkTestGlm52StagePlanMeasuredBalancedQuantizationModes(void)
 {
     SparkStagePlan stage_plan_4bit;
     SparkStagePlan stage_plan_8bit;
-    uint64_t layer_cost_ns[SPARK_STAGE_PLAN_LAYER_COUNT];
-    uint64_t final_stage_extra_cost_ns;
+    SparkStagePlan stage_plan_auto;
+    uint64_t layer_cost_ns_4bit[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
+    uint64_t layer_cost_ns_8bit[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
+    uint64_t layer_cost_ns_auto[SPARK_STAGE_PLAN_MAX_LAYER_COUNT];
+    uint64_t final_stage_extra_cost_ns_4bit;
+    uint64_t final_stage_extra_cost_ns_8bit;
+    uint64_t final_stage_extra_cost_ns_auto;
     char error_buffer[256];
 
     assert(SparkStagePlanLoadMeasuredCostProfileForQuantization(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B64,
         SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,
-        layer_cost_ns,
-        &final_stage_extra_cost_ns) == SPARK_STATUS_OK);
-    assert(final_stage_extra_cost_ns == 0u);
+        layer_cost_ns_4bit,
+        &final_stage_extra_cost_ns_4bit) == SPARK_STATUS_OK);
     assert(SparkStagePlanLoadMeasuredCostProfileForQuantization(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B64,
         SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
-        layer_cost_ns,
-        &final_stage_extra_cost_ns) == SPARK_STATUS_OK);
-    assert(final_stage_extra_cost_ns == 0u);
-    assert(SparkStagePlanLoadMeasuredCostProfileForQuantization(
+        layer_cost_ns_8bit,
+        &final_stage_extra_cost_ns_8bit) == SPARK_STATUS_OK);
+    assert(SparkStagePlanLoadMeasuredCostProfile(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
-        SPARK_STAGE_PLAN_BUCKET_B128,
-        SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
-        layer_cost_ns,
-        &final_stage_extra_cost_ns) == SPARK_STATUS_OK);
-    assert(final_stage_extra_cost_ns == 0u);
-    assert(SparkStagePlanLoadMeasuredCostProfileForQuantization(
-        SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
-        SPARK_STAGE_PLAN_BUCKET_B128,
-        layer_cost_ns,
-        &final_stage_extra_cost_ns) == SPARK_STATUS_OK);
-    assert(final_stage_extra_cost_ns == 0u);
+        SPARK_STAGE_PLAN_BUCKET_B64,
+        layer_cost_ns_auto,
+        &final_stage_extra_cost_ns_auto) == SPARK_STATUS_OK);
+    assert(final_stage_extra_cost_ns_4bit == 0u);
+    assert(final_stage_extra_cost_ns_8bit == 0u);
+    assert(final_stage_extra_cost_ns_auto == 0u);
+    assert(memcmp(
+        layer_cost_ns_4bit,
+        layer_cost_ns_8bit,
+        SPARK_GLM52_MODEL_LAYER_COUNT * sizeof(layer_cost_ns_4bit[0])) == 0);
+    assert(memcmp(
+        layer_cost_ns_8bit,
+        layer_cost_ns_auto,
+        SPARK_GLM52_MODEL_LAYER_COUNT * sizeof(layer_cost_ns_8bit[0])) == 0);
 
     assert(SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B64,
         SPARK_STAGE_PLAN_QUANTIZATION_NVFP4_4BIT,
@@ -319,15 +346,18 @@ static void SparkTestGlm52StagePlanMeasuredBalancedQuantizationModes(void)
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B64,
         SPARK_STAGE_PLAN_QUANTIZATION_FP8_E4M3_8BIT,
         &stage_plan_8bit,
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_OK);
-    assert(SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+    assert(SparkStagePlanBuildCurrentSparkMeasuredBalanced(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B64,
+        &stage_plan_auto,
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_OK);
     assert(memcmp(
@@ -336,8 +366,11 @@ static void SparkTestGlm52StagePlanMeasuredBalancedQuantizationModes(void)
         sizeof(stage_plan_4bit)) == 0);
     assert(memcmp(
         &stage_plan_8bit,
+        &stage_plan_auto,
         sizeof(stage_plan_8bit)) == 0);
+
     assert(SparkStagePlanBuildCurrentSparkMeasuredBalancedForQuantization(
+        &SparkTestGlm52StagePlanGeometry,
         SPARK_STAGE_PLAN_MEASURED_PROFILE_20260701,
         SPARK_STAGE_PLAN_BUCKET_B64,
         99u,
@@ -352,6 +385,7 @@ static void SparkTestGlm52StagePlanInvalidCuts(void)
     char error_buffer[256];
 
     assert(SparkStagePlanBuildUniform(
+        &SparkTestGlm52StagePlanGeometry,
         13u,
         &stage_plan,
         error_buffer,
@@ -359,11 +393,13 @@ static void SparkTestGlm52StagePlanInvalidCuts(void)
     stage_plan.stages[1].layer_count = 9u;
     stage_plan.stages[2].first_layer_index = 15u;
     assert(SparkStagePlanValidate(
+        &SparkTestGlm52StagePlanGeometry,
         &stage_plan,
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_INVALID_ARGUMENT);
 
     assert(SparkStagePlanBuildUniform(
+        &SparkTestGlm52StagePlanGeometry,
         13u,
         &stage_plan,
         error_buffer,
@@ -371,6 +407,7 @@ static void SparkTestGlm52StagePlanInvalidCuts(void)
     stage_plan.stages[0].flags |=
         SPARK_STAGE_PLAN_STAGE_FLAG_FINAL_TOKEN;
     assert(SparkStagePlanValidate(
+        &SparkTestGlm52StagePlanGeometry,
         &stage_plan,
         error_buffer,
         sizeof(error_buffer)) == SPARK_STATUS_INVALID_ARGUMENT);

@@ -80,7 +80,13 @@ EOS_TOKEN_MACROS = {
 
 
 def repository_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    source_path = Path(__file__).resolve()
+    for candidate in source_path.parents:
+        if (candidate / CONTRACT_RELATIVE_PATH).is_file():
+            return candidate
+    raise FileNotFoundError(
+        f"cannot locate repository root from {source_path}"
+    )
 
 
 def load_model_contract(root: Path | None = None) -> Dict[str, Any]:

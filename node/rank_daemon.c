@@ -8,6 +8,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +19,7 @@
 #include <unistd.h>
 
 #include "sparkpipe/spark_driver_loader.h"
+#include "sparkpipe/spark_distributed_work.h"
 #include "sparkpipe/spark_cuda_resident_ipc.h"
 #include "sparkpipe/spark_glm52_kv_cache.h"
 #include "sparkpipe/spark_ring_node_context_builder.h"
@@ -30,6 +32,13 @@
 #define SPARK_RING_DAEMON_DEFAULT_PROGRAM "glm52.ring.rank.production"
 #define SPARK_RING_DAEMON_WORK_QUEUE_CAPACITY 64u
 #define SPARK_RING_DAEMON_WORK_QUEUE_HASH_SLOTS 4096u
+#define SPARK_RING_DAEMON_TRANSACTION_LEDGER_CAPACITY 4096u
+#define SPARK_RING_DAEMON_INFLIGHT_TRANSACTION_CAPACITY \
+    SPARK_RING_DAEMON_TRANSACTION_LEDGER_CAPACITY
+#define SPARK_RING_DAEMON_INFLIGHT_COMPLETION_CAPACITY \
+    (SPARK_RING_DAEMON_TRANSACTION_LEDGER_CAPACITY * 4u)
+#define SPARK_RING_DAEMON_DRIVER_COMPLETION_QUEUE_CAPACITY \
+    SPARK_RING_DAEMON_TRANSACTION_LEDGER_CAPACITY
 #define SPARK_RING_DAEMON_FINAL_EVENT_QUEUE_CAPACITY 2048u
 #define SPARK_RING_DAEMON_NO_WORK_QUEUE_SLOT UINT32_MAX
 #define SPARK_RING_DAEMON_POLL_FD_CAPACITY 32u
@@ -40,6 +49,9 @@
 #define SPARK_RING_DAEMON_WORK_PHASE_DECODE 1u
 #define SPARK_RING_DAEMON_WORK_PHASE_VERIFY 2u
 #define SPARK_RING_DAEMON_WORK_PHASE_RELEASE 3u
+#define SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_FREE 0u
+#define SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_ACTIVE 1u
+#define SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_TOMBSTONE 2u
 #define SPARK_RING_DAEMON_DEPENDENCY_HASH_CAPACITY 2048u
 #define SPARK_RING_DAEMON_WORK_HASH_OFFSET UINT32_C(2166136261)
 #define SPARK_RING_DAEMON_WORK_HASH_PRIME UINT32_C(16777619)
@@ -53,6 +65,13 @@
 #define SPARK_RING_DAEMON_POLL_KIND_CUDA_RESIDENT 0x00000080u
 #define SPARK_RING_DAEMON_CONNECT_RETRY_NS 250000ull
 #define SPARK_RING_DAEMON_RUNNER_PROGRESS_NS 250000ull
+
+typedef SparkGlm52DsparkDraftResult SparkRingDaemonDraftResult;
+
+#define SPARK_RING_DAEMON_DRAFT_ABI_VERSION \
+    SPARK_GLM52_DSPARK_ABI_VERSION
+#define SPARK_RING_DAEMON_DRAFT_DESCRIPTOR_BYTES ((uint32_t)sizeof(SparkRingDaemonDraftResult))
+_Static_assert(SPARK_RING_DAEMON_DRAFT_DESCRIPTOR_BYTES == SPARK_GLM52_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES, "rank daemon draft-result descriptor must match the DSpark wire ABI");
 
 typedef struct SparkRingDaemonConfig
 {
@@ -75,6 +94,34 @@ typedef struct SparkRingDaemonConfig
     uint32_t port_base;
     uint32_t model_quantization_mode;
 } SparkRingDaemonConfig;
+
+typedef struct SparkRingDaemonInflightTransaction
+{
+    uint32_t active;
+    uint32_t remaining_completion_count;
+    uint32_t terminal_state;
+    uint32_t terminal_status;
+    SparkDistributedWorkIdentity identity;
+    uint64_t packet_hash;
+} SparkRingDaemonInflightTransaction;
+
+typedef struct SparkRingDaemonInflightCompletion
+{
+    uint32_t state;
+    uint32_t transaction_index;
+    uint64_t request_id;
+    uint64_t request_generation;
+    uint64_t sequence_id;
+    uint64_t sequence_position;
+} SparkRingDaemonInflightCompletion;
+
+typedef struct SparkRingDaemonDriverCompletionRecord
+{
+    SparkModelDriverCompletion completion;
+    SparkRingDaemonDraftResult dspark_draft;
+    uint32_t dspark_draft_valid;
+    uint32_t reserved0;
+} SparkRingDaemonDriverCompletionRecord;
 
 typedef struct SparkRingDaemonRuntime
 {
@@ -108,6 +155,13 @@ typedef struct SparkRingDaemonRuntime
     uint32_t work_output_connecting;
     uint32_t work_output_write_offset;
     uint64_t work_output_retry_mono_ns;
+    SparkDistributedWorkAcknowledgement work_output_acknowledgement;
+    uint32_t work_output_acknowledgement_read_offset;
+    uint32_t work_output_waiting_for_acknowledgement;
+    uint64_t work_output_packet_hash;
+    SparkDistributedWorkAcknowledgement work_input_acknowledgement;
+    uint32_t work_input_acknowledgement_write_offset;
+    uint32_t work_input_acknowledgement_pending;
     int32_t final_event_listen_fd;
     int32_t final_event_socket_fd;
     uint32_t final_event_socket_connecting;
@@ -127,6 +181,27 @@ typedef struct SparkRingDaemonRuntime
         SPARK_RING_DAEMON_DEPENDENCY_HASH_CAPACITY];
     uint32_t work_queue_head;
     uint32_t work_queue_count;
+    SparkDistributedWorkTransactionEntry transaction_entries[
+        SPARK_RING_DAEMON_TRANSACTION_LEDGER_CAPACITY];
+    uint32_t transaction_hash_heads[
+        SPARK_RING_DAEMON_TRANSACTION_LEDGER_CAPACITY];
+    uint32_t transaction_hash_next[
+        SPARK_RING_DAEMON_TRANSACTION_LEDGER_CAPACITY];
+    SparkDistributedWorkTransactionLedger transaction_ledger;
+    SparkRingDaemonInflightTransaction inflight_transactions[
+        SPARK_RING_DAEMON_INFLIGHT_TRANSACTION_CAPACITY];
+    SparkRingDaemonInflightCompletion inflight_completions[
+        SPARK_RING_DAEMON_INFLIGHT_COMPLETION_CAPACITY];
+    pthread_mutex_t driver_completion_mutex;
+    uint32_t driver_completion_mutex_initialized;
+    pthread_mutex_t builder_completion_mutex;
+    uint32_t builder_completion_mutex_initialized;
+    SparkRingDaemonDriverCompletionRecord driver_completion_queue[
+        SPARK_RING_DAEMON_DRIVER_COMPLETION_QUEUE_CAPACITY];
+    uint32_t driver_completion_queue_head;
+    uint32_t driver_completion_queue_count;
+    uint32_t driver_completion_queue_overflow;
+    uint32_t reserved_completion_queue;
     uint64_t work_receive_count;
     uint64_t work_forward_count;
     uint64_t work_submit_count;
@@ -154,20 +229,24 @@ typedef struct SparkRingDaemonRuntime
     uint64_t final_event_receive_count;
     uint64_t final_event_send_error_count;
     uint64_t final_event_receive_error_count;
-    SparkGlm52DsparkDraftResult completion_dspark_draft;
-    uint32_t completion_dspark_draft_valid;
 } SparkRingDaemonRuntime;
 
-static volatile sig_atomic_t SparkGlm52RingDaemonRunning = 1;
+static volatile sig_atomic_t SparkRingDaemonRunning = 1;
 
 static void SparkRingDaemonCompletion(
     void *completion_context,
     const SparkModelDriverCompletion *completion);
+static SparkStatus SparkRingDaemonQueueDriverCompletion(
+    SparkRingDaemonRuntime *runtime,
+    const SparkModelDriverCompletion *completion,
+    const SparkRingDaemonDraftResult *dspark_draft);
+static uint32_t SparkRingDaemonPumpDriverCompletions(
+    SparkRingDaemonRuntime *runtime);
 
 static void SparkRingDaemonSignal(int signal_number)
 {
     (void)signal_number;
-    SparkGlm52RingDaemonRunning = 0;
+    SparkRingDaemonRunning = 0;
 }
 
 static void SparkRingDaemonInitializeConfig(
@@ -279,13 +358,7 @@ static int32_t SparkRingDaemonParseArguments(
 
 static void SparkRingDaemonConfigureTcpSocket(int32_t fd)
 {
-    int32_t option;
-
-    if (fd < 0)
-        return;
-    option = 1;
-    (void)setsockopt(fd,IPPROTO_TCP,TCP_NODELAY,&option,sizeof(option));
-    (void)setsockopt(fd,SOL_SOCKET,SO_KEEPALIVE,&option,sizeof(option));
+    (void)SparkNetConfigureLowLatencyTcp(fd);
 }
 
 static uint64_t SparkRingDaemonMinNonzeroNs(
@@ -444,12 +517,8 @@ static void SparkRingDaemonAppendTransportPollFds(
 static uint32_t SparkRingDaemonWorkInputCanRead(
     const SparkRingDaemonRuntime *runtime)
 {
-    if (runtime == 0 || runtime->work_input_socket_fd < 0)
-        return 0u;
-    if (runtime->work_read_offset != 0u)
-        return 1u;
-    return runtime->work_queue_count <
-        SPARK_RING_DAEMON_WORK_QUEUE_CAPACITY;
+    return runtime != 0 && runtime->work_input_socket_fd >= 0 &&
+        runtime->work_input_acknowledgement_pending == 0u;
 }
 
 static uint32_t SparkRingDaemonWaitForEvents(
@@ -479,26 +548,40 @@ static uint32_t SparkRingDaemonWaitForEvents(
             runtime->work_listen_fd,
             POLLIN,
             SPARK_RING_DAEMON_POLL_KIND_WORK);
-    if (SparkRingDaemonWorkInputCanRead(runtime) != 0u)
+    if (runtime->work_input_socket_fd >= 0)
+    {
+        int16_t work_input_events;
+
+        work_input_events = runtime->work_input_acknowledgement_pending != 0u ?
+            POLLOUT : POLLIN;
         (void)SparkRingDaemonAppendPollFd(
             fds,
             fd_kinds,
             SPARK_RING_DAEMON_POLL_FD_CAPACITY,
             &fd_count,
             runtime->work_input_socket_fd,
-            POLLIN,
+            work_input_events,
             SPARK_RING_DAEMON_POLL_KIND_WORK);
+    }
     if (runtime->work_output_socket_fd >= 0 &&
         (runtime->work_output_connecting != 0u ||
          runtime->work_queue_count != 0u))
+    {
+        int16_t work_output_events;
+
+        work_output_events = runtime->work_output_waiting_for_acknowledgement != 0u ?
+            POLLIN : POLLOUT;
+        if (runtime->work_output_connecting != 0u)
+            work_output_events = POLLOUT;
         (void)SparkRingDaemonAppendPollFd(
             fds,
             fd_kinds,
             SPARK_RING_DAEMON_POLL_FD_CAPACITY,
             &fd_count,
             runtime->work_output_socket_fd,
-            POLLOUT,
+            work_output_events,
             SPARK_RING_DAEMON_POLL_KIND_WORK_OUTPUT);
+    }
     if (runtime->final_event_listen_fd >= 0 &&
         runtime->final_event_socket_fd < 0)
         (void)SparkRingDaemonAppendPollFd(
@@ -1081,20 +1164,25 @@ static uint32_t SparkRingDaemonHandleCudaResidentMessage(
                 SPARK_CUDA_RESIDENT_IPC_COMPLETION_FLAG_DSPARK_DRAFT) != 0u)
         {
             if (completion_message->dspark_draft.abi_version !=
-                    SPARK_GLM52_DSPARK_ABI_VERSION ||
+                    SPARK_RING_DAEMON_DRAFT_ABI_VERSION ||
                 completion_message->dspark_draft.descriptor_bytes !=
-                    SPARK_GLM52_DSPARK_DRAFT_RESULT_DESCRIPTOR_BYTES)
+                    SPARK_RING_DAEMON_DRAFT_DESCRIPTOR_BYTES)
             {
                 runtime->cuda_resident_error_count += 1u;
                 return 0u;
             }
-            runtime->completion_dspark_draft = completion_message->dspark_draft;
-            runtime->completion_dspark_draft_valid = 1u;
         }
         runtime->cuda_resident_completion_count += 1u;
-        SparkRingDaemonCompletion(
-            runtime,
-            &completion_message->completion);
+        if (SparkRingDaemonQueueDriverCompletion(
+                runtime,
+                &completion_message->completion,
+                (completion_message->flags &
+                    SPARK_CUDA_RESIDENT_IPC_COMPLETION_FLAG_DSPARK_DRAFT) != 0u ?
+                    &completion_message->dspark_draft : 0) !=
+            SPARK_STATUS_OK)
+        {
+            runtime->cuda_resident_error_count += 1u;
+        }
         return 1u;
     }
     if (header->kind == SPARK_CUDA_RESIDENT_IPC_KIND_STATS)
@@ -1198,11 +1286,157 @@ static void SparkRingDaemonSignalWake(
     wrote = write(runtime->wake_pipe_write_fd,&byte,1u);
     if (wrote == 1)
     {
-        runtime->wake_signal_count += 1u;
+        (void)__atomic_fetch_add(
+            &runtime->wake_signal_count,
+            1u,
+            __ATOMIC_RELAXED);
         return;
     }
     if (wrote < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))
-        runtime->wake_drop_count += 1u;
+        (void)__atomic_fetch_add(
+            &runtime->wake_drop_count,
+            1u,
+            __ATOMIC_RELAXED);
+}
+
+static SparkStatus SparkRingDaemonInitializeCompletionState(
+    SparkRingDaemonRuntime *runtime)
+{
+    if (runtime == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    memset(
+        runtime->inflight_transactions,
+        0,
+        sizeof(runtime->inflight_transactions));
+    memset(
+        runtime->inflight_completions,
+        0,
+        sizeof(runtime->inflight_completions));
+    memset(
+        runtime->driver_completion_queue,
+        0,
+        sizeof(runtime->driver_completion_queue));
+    runtime->driver_completion_queue_head = 0u;
+    runtime->driver_completion_queue_count = 0u;
+    runtime->driver_completion_queue_overflow = 0u;
+    if (pthread_mutex_init(&runtime->driver_completion_mutex,0) != 0)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    runtime->driver_completion_mutex_initialized = 1u;
+    if (pthread_mutex_init(&runtime->builder_completion_mutex,0) != 0)
+    {
+        (void)pthread_mutex_destroy(&runtime->driver_completion_mutex);
+        runtime->driver_completion_mutex_initialized = 0u;
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    runtime->builder_completion_mutex_initialized = 1u;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkRingDaemonQueueDriverCompletion(
+    SparkRingDaemonRuntime *runtime,
+    const SparkModelDriverCompletion *completion,
+    const SparkRingDaemonDraftResult *dspark_draft)
+{
+    SparkRingDaemonDriverCompletionRecord *record;
+    uint32_t tail;
+
+    if (runtime == 0 || completion == 0 ||
+        runtime->driver_completion_mutex_initialized == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (dspark_draft != 0 &&
+        (dspark_draft->abi_version != SPARK_RING_DAEMON_DRAFT_ABI_VERSION ||
+         dspark_draft->descriptor_bytes !=
+            SPARK_RING_DAEMON_DRAFT_DESCRIPTOR_BYTES))
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    if (pthread_mutex_lock(&runtime->driver_completion_mutex) != 0)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (runtime->driver_completion_queue_count >=
+        SPARK_RING_DAEMON_DRIVER_COMPLETION_QUEUE_CAPACITY)
+    {
+        runtime->driver_completion_queue_overflow = 1u;
+        (void)pthread_mutex_unlock(&runtime->driver_completion_mutex);
+        SparkRingDaemonSignalWake(runtime);
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    tail = (runtime->driver_completion_queue_head +
+        runtime->driver_completion_queue_count) %
+        SPARK_RING_DAEMON_DRIVER_COMPLETION_QUEUE_CAPACITY;
+    record = &runtime->driver_completion_queue[tail];
+    memset(record,0,sizeof(*record));
+    record->completion = *completion;
+    if (dspark_draft != 0)
+    {
+        record->dspark_draft = *dspark_draft;
+        record->dspark_draft_valid = 1u;
+    }
+    runtime->driver_completion_queue_count += 1u;
+    (void)pthread_mutex_unlock(&runtime->driver_completion_mutex);
+    SparkRingDaemonSignalWake(runtime);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkRingDaemonPeekDriverCompletion(
+    SparkRingDaemonRuntime *runtime,
+    SparkRingDaemonDriverCompletionRecord *record_out)
+{
+    if (runtime == 0 || record_out == 0 ||
+        runtime->driver_completion_mutex_initialized == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (pthread_mutex_lock(&runtime->driver_completion_mutex) != 0)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (runtime->driver_completion_queue_count == 0u)
+    {
+        (void)pthread_mutex_unlock(&runtime->driver_completion_mutex);
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    *record_out = runtime->driver_completion_queue[
+        runtime->driver_completion_queue_head];
+    (void)pthread_mutex_unlock(&runtime->driver_completion_mutex);
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkRingDaemonPopDriverCompletion(
+    SparkRingDaemonRuntime *runtime)
+{
+    SparkRingDaemonDriverCompletionRecord *record;
+
+    if (runtime == 0 ||
+        runtime->driver_completion_mutex_initialized == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (pthread_mutex_lock(&runtime->driver_completion_mutex) != 0)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (runtime->driver_completion_queue_count == 0u)
+    {
+        (void)pthread_mutex_unlock(&runtime->driver_completion_mutex);
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    record = &runtime->driver_completion_queue[
+        runtime->driver_completion_queue_head];
+    memset(record,0,sizeof(*record));
+    runtime->driver_completion_queue_head =
+        (runtime->driver_completion_queue_head + 1u) %
+        SPARK_RING_DAEMON_DRIVER_COMPLETION_QUEUE_CAPACITY;
+    runtime->driver_completion_queue_count -= 1u;
+    (void)pthread_mutex_unlock(&runtime->driver_completion_mutex);
+    return SPARK_STATUS_OK;
 }
 
 static SparkStatus SparkRingDaemonQueueFinalEvent(
@@ -1235,6 +1469,392 @@ static void SparkRingDaemonPopFinalEvent(
     runtime->final_event_queue_count -= 1u;
 }
 
+static uint64_t SparkRingDaemonInflightCompletionHash(
+    uint64_t request_id,
+    uint64_t sequence_id,
+    uint64_t sequence_position)
+{
+    uint64_t words[3];
+
+    words[0u] = request_id;
+    words[1u] = sequence_id;
+    words[2u] = sequence_position;
+    return SparkWorkTransactionFingerprintBytes(
+        words,
+        (uint32_t)sizeof(words));
+}
+
+static uint32_t SparkRingDaemonInflightCompletionMatches(
+    const SparkRingDaemonInflightCompletion *entry,
+    uint64_t request_id,
+    uint64_t sequence_id,
+    uint64_t sequence_position)
+{
+    return entry != 0 &&
+        entry->state == SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_ACTIVE &&
+        entry->request_id == request_id &&
+        entry->sequence_id == sequence_id &&
+        entry->sequence_position == sequence_position;
+}
+
+static SparkStatus SparkRingDaemonFindInflightCompletion(
+    SparkRingDaemonRuntime *runtime,
+    uint64_t request_id,
+    uint64_t sequence_id,
+    uint64_t sequence_position,
+    uint32_t *completion_index_out)
+{
+    uint64_t hash;
+    uint32_t completion_index;
+    uint32_t probe_index;
+    uint32_t start_index;
+
+    if (runtime == 0 || completion_index_out == 0 ||
+        request_id == 0u || sequence_id == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    hash = SparkRingDaemonInflightCompletionHash(
+        request_id,
+        sequence_id,
+        sequence_position);
+    start_index = (uint32_t)(hash %
+        SPARK_RING_DAEMON_INFLIGHT_COMPLETION_CAPACITY);
+    for (probe_index = 0u;
+         probe_index < SPARK_RING_DAEMON_INFLIGHT_COMPLETION_CAPACITY;
+         ++probe_index)
+    {
+        SparkRingDaemonInflightCompletion *entry;
+
+        completion_index = (start_index + probe_index) %
+            SPARK_RING_DAEMON_INFLIGHT_COMPLETION_CAPACITY;
+        entry = &runtime->inflight_completions[completion_index];
+        if (entry->state ==
+            SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_FREE)
+        {
+            return SPARK_STATUS_NOT_FOUND;
+        }
+        if (SparkRingDaemonInflightCompletionMatches(
+                entry,
+                request_id,
+                sequence_id,
+                sequence_position) != 0u)
+        {
+            *completion_index_out = completion_index;
+            return SPARK_STATUS_OK;
+        }
+    }
+    return SPARK_STATUS_NOT_FOUND;
+}
+
+static SparkStatus SparkRingDaemonInsertInflightCompletion(
+    SparkRingDaemonRuntime *runtime,
+    uint32_t transaction_index,
+    const SparkRingWorkControlLane *lane,
+    uint32_t *completion_index_out)
+{
+    uint64_t hash;
+    uint32_t completion_index;
+    uint32_t first_tombstone_index;
+    uint32_t probe_index;
+    uint32_t start_index;
+
+    if (runtime == 0 || lane == 0 || completion_index_out == 0 ||
+        transaction_index >= SPARK_RING_DAEMON_INFLIGHT_TRANSACTION_CAPACITY ||
+        lane->request_id == 0u || lane->request_generation == 0u ||
+        lane->sequence_id == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    hash = SparkRingDaemonInflightCompletionHash(
+        lane->request_id,
+        lane->sequence_id,
+        lane->sequence_position);
+    start_index = (uint32_t)(hash %
+        SPARK_RING_DAEMON_INFLIGHT_COMPLETION_CAPACITY);
+    first_tombstone_index = SPARK_DISTRIBUTED_WORK_INVALID_INDEX;
+    for (probe_index = 0u;
+         probe_index < SPARK_RING_DAEMON_INFLIGHT_COMPLETION_CAPACITY;
+         ++probe_index)
+    {
+        SparkRingDaemonInflightCompletion *entry;
+
+        completion_index = (start_index + probe_index) %
+            SPARK_RING_DAEMON_INFLIGHT_COMPLETION_CAPACITY;
+        entry = &runtime->inflight_completions[completion_index];
+        if (entry->state ==
+                SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_TOMBSTONE &&
+            first_tombstone_index == SPARK_DISTRIBUTED_WORK_INVALID_INDEX)
+        {
+            first_tombstone_index = completion_index;
+            continue;
+        }
+        if (entry->state ==
+            SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_ACTIVE)
+        {
+            if (SparkRingDaemonInflightCompletionMatches(
+                    entry,
+                    lane->request_id,
+                    lane->sequence_id,
+                    lane->sequence_position) != 0u)
+            {
+                return SPARK_STATUS_BUSY;
+            }
+            continue;
+        }
+        if (entry->state ==
+            SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_FREE)
+        {
+            if (first_tombstone_index !=
+                SPARK_DISTRIBUTED_WORK_INVALID_INDEX)
+            {
+                completion_index = first_tombstone_index;
+                entry = &runtime->inflight_completions[completion_index];
+            }
+            memset(entry,0,sizeof(*entry));
+            entry->state =
+                SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_ACTIVE;
+            entry->transaction_index = transaction_index;
+            entry->request_id = lane->request_id;
+            entry->request_generation = lane->request_generation;
+            entry->sequence_id = lane->sequence_id;
+            entry->sequence_position = lane->sequence_position;
+            *completion_index_out = completion_index;
+            return SPARK_STATUS_OK;
+        }
+    }
+    if (first_tombstone_index != SPARK_DISTRIBUTED_WORK_INVALID_INDEX)
+    {
+        SparkRingDaemonInflightCompletion *entry;
+
+        completion_index = first_tombstone_index;
+        entry = &runtime->inflight_completions[completion_index];
+        memset(entry,0,sizeof(*entry));
+        entry->state = SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_ACTIVE;
+        entry->transaction_index = transaction_index;
+        entry->request_id = lane->request_id;
+        entry->request_generation = lane->request_generation;
+        entry->sequence_id = lane->sequence_id;
+        entry->sequence_position = lane->sequence_position;
+        *completion_index_out = completion_index;
+        return SPARK_STATUS_OK;
+    }
+    return SPARK_STATUS_CAPACITY_EXCEEDED;
+}
+
+static void SparkRingDaemonRemoveInflightCompletion(
+    SparkRingDaemonRuntime *runtime,
+    uint32_t completion_index)
+{
+    SparkRingDaemonInflightCompletion *entry;
+
+    if (runtime == 0 ||
+        completion_index >= SPARK_RING_DAEMON_INFLIGHT_COMPLETION_CAPACITY)
+    {
+        return;
+    }
+    entry = &runtime->inflight_completions[completion_index];
+    memset(entry,0,sizeof(*entry));
+    entry->state = SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_TOMBSTONE;
+}
+
+static SparkStatus SparkRingDaemonAllocateInflightTransaction(
+    SparkRingDaemonRuntime *runtime,
+    uint32_t *transaction_index_out)
+{
+    uint32_t transaction_index;
+
+    if (runtime == 0 || transaction_index_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    for (transaction_index = 0u;
+         transaction_index < SPARK_RING_DAEMON_INFLIGHT_TRANSACTION_CAPACITY;
+         ++transaction_index)
+    {
+        if (runtime->inflight_transactions[transaction_index].active == 0u)
+        {
+            memset(
+                &runtime->inflight_transactions[transaction_index],
+                0,
+                sizeof(runtime->inflight_transactions[transaction_index]));
+            runtime->inflight_transactions[transaction_index].active = 1u;
+            *transaction_index_out = transaction_index;
+            return SPARK_STATUS_OK;
+        }
+    }
+    return SPARK_STATUS_CAPACITY_EXCEEDED;
+}
+
+static void SparkRingDaemonReleaseInflightTransaction(
+    SparkRingDaemonRuntime *runtime,
+    uint32_t transaction_index)
+{
+    if (runtime == 0 ||
+        transaction_index >= SPARK_RING_DAEMON_INFLIGHT_TRANSACTION_CAPACITY)
+    {
+        return;
+    }
+    memset(
+        &runtime->inflight_transactions[transaction_index],
+        0,
+        sizeof(runtime->inflight_transactions[transaction_index]));
+}
+
+static uint32_t SparkRingDaemonRemoveTransactionCompletionMappings(
+    SparkRingDaemonRuntime *runtime,
+    uint32_t transaction_index)
+{
+    uint32_t completion_index;
+    uint32_t removed_count;
+
+    if (runtime == 0 ||
+        transaction_index >= SPARK_RING_DAEMON_INFLIGHT_TRANSACTION_CAPACITY)
+    {
+        return 0u;
+    }
+    removed_count = 0u;
+    for (completion_index = 0u;
+         completion_index < SPARK_RING_DAEMON_INFLIGHT_COMPLETION_CAPACITY;
+         ++completion_index)
+    {
+        SparkRingDaemonInflightCompletion *entry;
+
+        entry = &runtime->inflight_completions[completion_index];
+        if (entry->state ==
+                SPARK_RING_DAEMON_INFLIGHT_COMPLETION_STATE_ACTIVE &&
+            entry->transaction_index == transaction_index)
+        {
+            SparkRingDaemonRemoveInflightCompletion(runtime,completion_index);
+            removed_count += 1u;
+        }
+    }
+    return removed_count;
+}
+
+static SparkStatus SparkRingDaemonRegisterInflightTransaction(
+    SparkRingDaemonRuntime *runtime,
+    const SparkRingWorkControlPacket *packet,
+    uint32_t *transaction_index_out)
+{
+    SparkRingDaemonInflightTransaction *transaction;
+    SparkDistributedWorkIdentity identity;
+    SparkStatus status;
+    uint64_t packet_hash;
+    uint32_t completion_index;
+    uint32_t lane_index;
+    uint32_t transaction_index;
+
+    if (runtime == 0 || packet == 0 || transaction_index_out == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    *transaction_index_out = SPARK_DISTRIBUTED_WORK_INVALID_INDEX;
+    if ((packet->flags &
+            SPARK_RING_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    if (packet->lane_count == 0u ||
+        packet->lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkRingWorkControlGetTransactionIdentity(packet,&identity);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    packet_hash = SparkRingWorkControlPacketFingerprint(packet);
+    if (packet_hash == 0u)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    status = SparkRingDaemonAllocateInflightTransaction(
+        runtime,
+        &transaction_index);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    transaction = &runtime->inflight_transactions[transaction_index];
+    transaction->identity = identity;
+    transaction->packet_hash = packet_hash;
+    transaction->remaining_completion_count = packet->lane_count;
+    transaction->terminal_state = 0u;
+    transaction->terminal_status = (uint32_t)SPARK_STATUS_PENDING;
+    for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
+    {
+        status = SparkRingDaemonInsertInflightCompletion(
+            runtime,
+            transaction_index,
+            &packet->lanes[lane_index],
+            &completion_index);
+        if (status != SPARK_STATUS_OK)
+        {
+            (void)SparkRingDaemonRemoveTransactionCompletionMappings(
+                runtime,
+                transaction_index);
+            SparkRingDaemonReleaseInflightTransaction(
+                runtime,
+                transaction_index);
+            return status;
+        }
+    }
+    if (runtime->driver_inflight_count == 0u)
+    {
+        runtime->driver_inflight_open_ns = SparkNetMonotonicNs();
+        runtime->driver_inflight_warned = 0u;
+    }
+    if (packet->lane_count > UINT32_MAX - runtime->driver_inflight_count)
+    {
+        (void)SparkRingDaemonRemoveTransactionCompletionMappings(
+            runtime,
+            transaction_index);
+        SparkRingDaemonReleaseInflightTransaction(runtime,transaction_index);
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    runtime->driver_inflight_count += packet->lane_count;
+    *transaction_index_out = transaction_index;
+    return SPARK_STATUS_OK;
+}
+
+static SparkStatus SparkRingDaemonCancelInflightTransaction(
+    SparkRingDaemonRuntime *runtime,
+    uint32_t transaction_index)
+{
+    SparkRingDaemonInflightTransaction *transaction;
+    uint32_t removed_count;
+
+    if (runtime == 0 ||
+        transaction_index >= SPARK_RING_DAEMON_INFLIGHT_TRANSACTION_CAPACITY)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    transaction = &runtime->inflight_transactions[transaction_index];
+    if (transaction->active == 0u)
+    {
+        return SPARK_STATUS_NOT_FOUND;
+    }
+    removed_count = SparkRingDaemonRemoveTransactionCompletionMappings(
+        runtime,
+        transaction_index);
+    if (removed_count > runtime->driver_inflight_count)
+    {
+        runtime->driver_inflight_count = 0u;
+    }
+    else
+    {
+        runtime->driver_inflight_count -= removed_count;
+    }
+    SparkRingDaemonReleaseInflightTransaction(runtime,transaction_index);
+    if (runtime->driver_inflight_count == 0u)
+    {
+        runtime->driver_inflight_warned = 0u;
+    }
+    return SPARK_STATUS_OK;
+}
+
 static uint32_t SparkRingDaemonDrainWakePipe(
     SparkRingDaemonRuntime *runtime)
 {
@@ -1256,90 +1876,372 @@ static uint32_t SparkRingDaemonDrainWakePipe(
     }
 }
 
+static SparkStatus SparkRingDaemonValidateDriverCompletionRecord(
+    const SparkRingDaemonDriverCompletionRecord *record)
+{
+    const SparkModelDriverCompletion *completion;
+    uint32_t has_draft_tokens;
+    uint32_t has_token_ids;
+
+    if (record == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    completion = &record->completion;
+    if (completion->request_id == 0u || completion->sequence_id == 0u ||
+        completion->token_count >
+            SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY ||
+        completion->draft_token_count >
+            SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY)
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    has_token_ids = (completion->completion_flags &
+        SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) != 0u;
+    has_draft_tokens = (completion->completion_flags &
+        SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS) != 0u;
+    if ((has_token_ids == 0u) != (completion->token_count == 0u) ||
+        (has_draft_tokens == 0u) !=
+            (completion->draft_token_count == 0u))
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    if (record->dspark_draft_valid != 0u &&
+        (record->dspark_draft.abi_version !=
+            SPARK_RING_DAEMON_DRAFT_ABI_VERSION ||
+         record->dspark_draft.descriptor_bytes !=
+            SPARK_RING_DAEMON_DRAFT_DESCRIPTOR_BYTES))
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkRingDaemonCompletionNeedsFinalEvent(
+    const SparkRingDaemonRuntime *runtime,
+    const SparkRingDaemonDriverCompletionRecord *record,
+    SparkStatus effective_status,
+    uint32_t transaction_terminal_state)
+{
+    if (runtime == 0 || record == 0 ||
+        (runtime->rank_plan.flags &
+            SPARK_RING_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u ||
+        transaction_terminal_state != 0u)
+    {
+        return 0u;
+    }
+    if (effective_status != SPARK_STATUS_OK)
+    {
+        return 1u;
+    }
+    return (record->completion.completion_flags &
+            SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) != 0u &&
+        record->completion.token_count != 0u;
+}
+
+static void SparkRingDaemonBuildFinalEvent(
+    const SparkRingDaemonInflightTransaction *transaction,
+    const SparkRingDaemonInflightCompletion *inflight_completion,
+    const SparkRingDaemonDriverCompletionRecord *record,
+    SparkStatus effective_status,
+    SparkRingRuntimeFinalEvent *event)
+{
+    const SparkModelDriverCompletion *completion;
+
+    memset(event,0,sizeof(*event));
+    completion = &record->completion;
+    event->magic = SPARK_RING_RUNTIME_FINAL_EVENT_MAGIC;
+    event->descriptor_bytes = SPARK_RING_RUNTIME_FINAL_EVENT_DESCRIPTOR_BYTES;
+    event->status = (uint32_t)effective_status;
+    event->program_id = completion->program_id;
+    event->driver_dispatch_slot = completion->driver_dispatch_slot;
+    event->accepted_token_count = completion->accepted_token_count;
+    event->request_id = completion->request_id;
+    event->sequence_id = completion->sequence_id;
+    event->sequence_position = completion->sequence_position;
+    event->service_time_ns = completion->service_time_ns;
+    event->control_generation = transaction->identity.control_generation;
+    event->transaction_id = transaction->identity.transaction_id;
+    event->dispatch_generation = transaction->identity.dispatch_generation;
+    event->request_generation = inflight_completion->request_generation;
+    event->step_generation = transaction->identity.step_generation;
+    event->step_chunk_index = transaction->identity.step_chunk_index;
+    event->step_chunk_count = transaction->identity.step_chunk_count;
+    event->transaction_phase = transaction->identity.phase;
+    if (effective_status != SPARK_STATUS_OK)
+    {
+        return;
+    }
+    event->completion_flags = completion->completion_flags;
+    event->token_count = completion->token_count;
+    memcpy(
+        event->token_ids,
+        completion->token_ids,
+        event->token_count * sizeof(event->token_ids[0u]));
+    event->draft_token_count = completion->draft_token_count;
+    memcpy(
+        event->draft_token_ids,
+        completion->draft_token_ids,
+        event->draft_token_count * sizeof(event->draft_token_ids[0u]));
+    if (record->dspark_draft_valid != 0u)
+    {
+        event->extension_flags |=
+            SPARK_RING_RUNTIME_FINAL_EVENT_FLAG_DSPARK_DRAFT;
+        event->dspark_draft = record->dspark_draft;
+    }
+}
+
+static SparkStatus SparkRingDaemonProcessDriverCompletion(
+    SparkRingDaemonRuntime *runtime,
+    const SparkRingDaemonDriverCompletionRecord *record)
+{
+    SparkRingDaemonInflightCompletion inflight_completion;
+    SparkRingDaemonInflightTransaction *transaction;
+    SparkRingRuntimeFinalEvent event;
+    SparkStatus effective_status;
+    SparkStatus status;
+    uint64_t transaction_id;
+    uint32_t completion_index;
+    uint32_t emit_final_event;
+    uint32_t remaining_completion_count;
+    uint32_t terminal_state;
+
+    if (runtime == 0 || record == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkRingDaemonFindInflightCompletion(
+        runtime,
+        record->completion.request_id,
+        record->completion.sequence_id,
+        record->completion.sequence_position,
+        &completion_index);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status == SPARK_STATUS_NOT_FOUND ?
+            SPARK_STATUS_VALIDATION_FAILED : status;
+    }
+    inflight_completion = runtime->inflight_completions[completion_index];
+    if (inflight_completion.transaction_index >=
+        SPARK_RING_DAEMON_INFLIGHT_TRANSACTION_CAPACITY)
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    transaction = &runtime->inflight_transactions[
+        inflight_completion.transaction_index];
+    if (transaction->active == 0u ||
+        transaction->remaining_completion_count == 0u)
+    {
+        return SPARK_STATUS_VALIDATION_FAILED;
+    }
+    status = SparkRingDaemonValidateDriverCompletionRecord(record);
+    effective_status = status == SPARK_STATUS_OK ?
+        record->completion.status : SPARK_STATUS_VALIDATION_FAILED;
+    emit_final_event = SparkRingDaemonCompletionNeedsFinalEvent(
+        runtime,
+        record,
+        effective_status,
+        transaction->terminal_state);
+    if (emit_final_event != 0u &&
+        runtime->final_event_queue_count >=
+            SPARK_RING_DAEMON_FINAL_EVENT_QUEUE_CAPACITY)
+    {
+        return SPARK_STATUS_BUSY;
+    }
+    if (transaction->terminal_state == 0u &&
+        effective_status != SPARK_STATUS_OK)
+    {
+        transaction->terminal_state =
+            SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_FAILED;
+        transaction->terminal_status = (uint32_t)effective_status;
+    }
+    if (emit_final_event != 0u)
+    {
+        SparkRingDaemonBuildFinalEvent(
+            transaction,
+            &inflight_completion,
+            record,
+            effective_status,
+            &event);
+    }
+    transaction_id = transaction->identity.transaction_id;
+    remaining_completion_count =
+        transaction->remaining_completion_count - 1u;
+    if (remaining_completion_count == 0u)
+    {
+        terminal_state = transaction->terminal_state != 0u ?
+            transaction->terminal_state :
+            SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_COMMITTED;
+        status = SparkDistributedWorkTransitionTransaction(
+            &runtime->transaction_ledger,
+            &transaction->identity,
+            transaction->packet_hash,
+            terminal_state,
+            terminal_state ==
+                SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_COMMITTED ?
+                SPARK_STATUS_OK :
+                (SparkStatus)transaction->terminal_status);
+        if (status != SPARK_STATUS_OK && status != SPARK_STATUS_DUPLICATE)
+        {
+            return status;
+        }
+    }
+    SparkRingDaemonRemoveInflightCompletion(runtime,completion_index);
+    transaction->remaining_completion_count = remaining_completion_count;
+    if (runtime->driver_inflight_count != 0u)
+    {
+        runtime->driver_inflight_count -= 1u;
+    }
+    runtime->driver_completion_count += 1u;
+    if (runtime->driver_inflight_count == 0u)
+    {
+        runtime->driver_inflight_warned = 0u;
+    }
+    else
+    {
+        runtime->driver_inflight_open_ns = SparkNetMonotonicNs();
+    }
+    if (remaining_completion_count == 0u)
+    {
+        SparkRingDaemonReleaseInflightTransaction(
+            runtime,
+            inflight_completion.transaction_index);
+    }
+    if (emit_final_event != 0u)
+    {
+        status = SparkRingDaemonQueueFinalEvent(runtime,&event);
+        if (status != SPARK_STATUS_OK)
+        {
+            return status;
+        }
+    }
+    if (runtime->trace_enabled != 0u)
+    {
+        fprintf(
+            stderr,
+            "ring_trace rank=%u completion request=%llu position=%llu flags=0x%x tokens=%u id0=%u status=%u transaction=%llu remaining=%u\n",
+            runtime->rank_plan.rank_index,
+            (unsigned long long)record->completion.request_id,
+            (unsigned long long)record->completion.sequence_position,
+            record->completion.completion_flags,
+            record->completion.token_count,
+            record->completion.token_count != 0u ?
+                record->completion.token_ids[0u] : 0u,
+            (uint32_t)effective_status,
+            (unsigned long long)transaction_id,
+            remaining_completion_count);
+    }
+    return SPARK_STATUS_OK;
+}
+
+static uint32_t SparkRingDaemonPumpDriverCompletions(
+    SparkRingDaemonRuntime *runtime)
+{
+    SparkRingDaemonDriverCompletionRecord record;
+    SparkStatus status;
+    uint32_t overflow;
+    uint32_t progress;
+
+    if (runtime == 0)
+    {
+        return 0u;
+    }
+    progress = 0u;
+    overflow = 0u;
+    if (runtime->driver_completion_mutex_initialized != 0u &&
+        pthread_mutex_lock(&runtime->driver_completion_mutex) == 0)
+    {
+        overflow = runtime->driver_completion_queue_overflow;
+        runtime->driver_completion_queue_overflow = 0u;
+        (void)pthread_mutex_unlock(&runtime->driver_completion_mutex);
+    }
+    if (overflow != 0u)
+    {
+        fprintf(stderr,"rank_driver_completion_queue_overflow rank=%u\n",
+            runtime->rank_plan.rank_index);
+        runtime->work_error_count += 1u;
+        SparkRingDaemonRunning = 0;
+        return 1u;
+    }
+    for (;;)
+    {
+        status = SparkRingDaemonPeekDriverCompletion(runtime,&record);
+        if (status == SPARK_STATUS_NOT_FOUND)
+        {
+            return progress;
+        }
+        if (status != SPARK_STATUS_OK)
+        {
+            runtime->work_error_count += 1u;
+            return progress;
+        }
+        status = SparkRingDaemonProcessDriverCompletion(runtime,&record);
+        if (status == SPARK_STATUS_BUSY)
+        {
+            return progress;
+        }
+        if (status != SPARK_STATUS_OK)
+        {
+            runtime->work_error_count += 1u;
+            fprintf(
+                stderr,
+                "rank_driver_completion_rejected rank=%u status=%u request=%llu sequence=%llu position=%llu\n",
+                runtime->rank_plan.rank_index,
+                (uint32_t)status,
+                (unsigned long long)record.completion.request_id,
+                (unsigned long long)record.completion.sequence_id,
+                (unsigned long long)record.completion.sequence_position);
+        }
+        (void)SparkRingDaemonPopDriverCompletion(runtime);
+        progress = 1u;
+    }
+}
+
 static void SparkRingDaemonCompletion(
     void *completion_context,
     const SparkModelDriverCompletion *completion)
 {
+    SparkRingDaemonDraftResult dspark_draft;
     SparkRingDaemonRuntime *runtime;
-    SparkRingRuntimeFinalEvent event;
+    SparkStatus status;
 
     runtime = (SparkRingDaemonRuntime *)completion_context;
     if (runtime == 0 || completion == 0)
-        return;
-    if (runtime->completion_dspark_draft_valid == 0u &&
-        runtime->builder_library.builder_interface.take_dspark_draft != 0 &&
-        runtime->builder_library.builder_interface.take_dspark_draft(
-            runtime->builder_state,
-            &runtime->completion_dspark_draft) == SPARK_STATUS_OK)
-        runtime->completion_dspark_draft_valid = 1u;
-    if (runtime->driver_inflight_count != 0u)
-        runtime->driver_inflight_count -= 1u;
-    if (runtime->driver_inflight_count == 0u)
-        runtime->driver_inflight_warned = 0u;
-    else
-        runtime->driver_inflight_open_ns = SparkNetMonotonicNs();
-    runtime->driver_completion_count += 1u;
-    SparkRingDaemonSignalWake(runtime);
-    if (runtime->trace_enabled != 0u)
-        fprintf(stderr,"ring_trace rank=%u completion request=%llu position=%llu flags=0x%x tokens=%u id0=%u status=%u\n",runtime->rank_plan.rank_index,(unsigned long long)completion->request_id,(unsigned long long)completion->sequence_position,completion->completion_flags,completion->token_count,completion->token_count != 0u ? completion->token_ids[0u] : 0u,(uint32_t)completion->status);
-    if ((runtime->rank_plan.flags &
-        SPARK_RING_RUNTIME_RANK_FLAG_FINAL_STAGE) == 0u)
-        return;
-    if (completion->status == SPARK_STATUS_OK &&
-        ((completion->completion_flags &
-            SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS) == 0u ||
-         completion->token_count == 0u))
     {
-        if (runtime->trace_enabled != 0u)
-            fprintf(stderr,"ring_trace rank=%u final_event_skipped request=%llu position=%llu flags=0x%x tokens=%u\n",runtime->rank_plan.rank_index,(unsigned long long)completion->request_id,(unsigned long long)completion->sequence_position,completion->completion_flags,completion->token_count);
         return;
     }
-    memset(&event,0,sizeof(event));
-    event.magic = SPARK_RING_RUNTIME_FINAL_EVENT_MAGIC;
-    event.descriptor_bytes = SPARK_RING_RUNTIME_FINAL_EVENT_DESCRIPTOR_BYTES;
-    event.status = (uint32_t)completion->status;
-    event.program_id = completion->program_id;
-    event.driver_dispatch_slot = completion->driver_dispatch_slot;
-    event.accepted_token_count = completion->accepted_token_count;
-    event.completion_flags = completion->completion_flags;
-    event.token_count = completion->token_count;
-    if (event.token_count > SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY)
-        event.token_count = SPARK_MODEL_DRIVER_COMPLETION_TOKEN_CAPACITY;
-    memcpy(event.token_ids,completion->token_ids,
-        event.token_count * sizeof(event.token_ids[0u]));
-    event.draft_token_count = completion->draft_token_count;
-    if ((((completion->completion_flags &
-            SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS) != 0u) !=
-         (event.draft_token_count != 0u)) ||
-        event.draft_token_count >
-        SPARK_MODEL_DRIVER_COMPLETION_DRAFT_TOKEN_CAPACITY)
+    memset(&dspark_draft,0,sizeof(dspark_draft));
+    status = SPARK_STATUS_NOT_FOUND;
+    if (runtime->builder_completion_mutex_initialized != 0u &&
+        pthread_mutex_lock(&runtime->builder_completion_mutex) == 0)
     {
-        fprintf(stderr,"ring_final_event_invalid_draft count=%u flags=0x%x\n",
-            event.draft_token_count,completion->completion_flags);
-        runtime->final_event_send_error_count += 1u;
+        if (runtime->builder_library.builder_interface.take_dspark_draft != 0 &&
+            runtime->builder_state != 0)
+        {
+            status =
+                runtime->builder_library.builder_interface.take_dspark_draft(
+                    runtime->builder_state,
+                    &dspark_draft);
+        }
+        if (SparkRingDaemonQueueDriverCompletion(
+                runtime,
+                completion,
+                status == SPARK_STATUS_OK ? &dspark_draft : 0) !=
+            SPARK_STATUS_OK)
+        {
+            SparkRingDaemonSignalWake(runtime);
+        }
+        (void)pthread_mutex_unlock(&runtime->builder_completion_mutex);
         return;
     }
-    memcpy(event.draft_token_ids,completion->draft_token_ids,
-        event.draft_token_count * sizeof(event.draft_token_ids[0u]));
-    event.request_id = completion->request_id;
-    event.sequence_id = completion->sequence_id;
-    event.sequence_position = completion->sequence_position;
-    event.service_time_ns = completion->service_time_ns;
-    if (runtime->completion_dspark_draft_valid != 0u)
+    if (SparkRingDaemonQueueDriverCompletion(
+            runtime,
+            completion,
+            status == SPARK_STATUS_OK ? &dspark_draft : 0) !=
+        SPARK_STATUS_OK)
     {
-        event.extension_flags |=
-            SPARK_RING_RUNTIME_FINAL_EVENT_FLAG_DSPARK_DRAFT;
-        event.dspark_draft = runtime->completion_dspark_draft;
-        memset(&runtime->completion_dspark_draft,0,
-            sizeof(runtime->completion_dspark_draft));
-        runtime->completion_dspark_draft_valid = 0u;
+        SparkRingDaemonSignalWake(runtime);
     }
-    if (SparkRingDaemonQueueFinalEvent(runtime,&event) != SPARK_STATUS_OK)
-    {
-        runtime->final_event_send_error_count += 1u;
-        return;
-    }
-    SparkRingDaemonSignalWake(runtime);
 }
 
 static SparkStatus SparkRingDaemonLoadTransport(
@@ -1567,28 +2469,120 @@ static SparkStatus SparkRingDaemonOpenWorkControlPath(
     return SPARK_STATUS_OK;
 }
 
+static void SparkRingDaemonResetWorkInputSocket(
+    SparkRingDaemonRuntime *runtime)
+{
+    if (runtime == 0)
+    {
+        return;
+    }
+    if (runtime->work_input_socket_fd >= 0)
+    {
+        close(runtime->work_input_socket_fd);
+    }
+    runtime->work_input_socket_fd = -1;
+    runtime->work_read_offset = 0u;
+    runtime->work_input_acknowledgement_pending = 0u;
+    runtime->work_input_acknowledgement_write_offset = 0u;
+    memset(
+        &runtime->work_input_acknowledgement,
+        0,
+        sizeof(runtime->work_input_acknowledgement));
+}
+
+static void SparkRingDaemonResetWorkOutputSocket(
+    SparkRingDaemonRuntime *runtime)
+{
+    if (runtime == 0)
+    {
+        return;
+    }
+    if (runtime->work_output_socket_fd >= 0)
+    {
+        close(runtime->work_output_socket_fd);
+    }
+    runtime->work_output_socket_fd = -1;
+    runtime->work_output_connecting = 0u;
+    runtime->work_output_write_offset = 0u;
+    runtime->work_output_waiting_for_acknowledgement = 0u;
+    runtime->work_output_acknowledgement_read_offset = 0u;
+    runtime->work_output_packet_hash = 0u;
+    memset(
+        &runtime->work_output_acknowledgement,
+        0,
+        sizeof(runtime->work_output_acknowledgement));
+}
+
+static SparkStatus SparkRingDaemonFlushWorkInputAcknowledgement(
+    SparkRingDaemonRuntime *runtime)
+{
+    SparkStatus status;
+
+    if (runtime == 0 || runtime->work_input_socket_fd < 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    if (runtime->work_input_acknowledgement_pending == 0u)
+    {
+        return SPARK_STATUS_OK;
+    }
+    status = SparkRingDaemonWriteBuffered(
+        runtime->work_input_socket_fd,
+        &runtime->work_input_acknowledgement,
+        SPARK_DISTRIBUTED_WORK_ACKNOWLEDGEMENT_BYTES,
+        &runtime->work_input_acknowledgement_write_offset);
+    if (status == SPARK_STATUS_BUSY)
+    {
+        return status;
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkRingDaemonResetWorkInputSocket(runtime);
+        return SPARK_STATUS_ROUTE_NOT_FOUND;
+    }
+    runtime->work_input_acknowledgement_pending = 0u;
+    runtime->work_input_acknowledgement_write_offset = 0u;
+    memset(
+        &runtime->work_input_acknowledgement,
+        0,
+        sizeof(runtime->work_input_acknowledgement));
+    return SPARK_STATUS_OK;
+}
+
 static uint32_t SparkRingDaemonAcceptWorkSocket(
     SparkRingDaemonRuntime *runtime)
 {
     int32_t fd;
 
-    if (runtime->work_listen_fd < 0 || runtime->work_input_socket_fd >= 0)
+    if (runtime == 0 || runtime->work_listen_fd < 0 ||
+        runtime->work_input_socket_fd >= 0)
+    {
         return 0u;
+    }
     fd = accept(runtime->work_listen_fd,0,0);
     if (fd < 0)
     {
         if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
+        {
             runtime->work_error_count += 1u;
+        }
         return 0u;
     }
-    if (SparkNetSetNonblocking(fd) < 0)
+    if (SparkNetSetNonblocking(fd) < 0 ||
+        SparkNetConfigureLowLatencyTcp(fd) < 0)
     {
         close(fd);
         runtime->work_error_count += 1u;
         return 0u;
     }
-    SparkRingDaemonConfigureTcpSocket(fd);
     runtime->work_input_socket_fd = fd;
+    runtime->work_read_offset = 0u;
+    runtime->work_input_acknowledgement_pending = 0u;
+    runtime->work_input_acknowledgement_write_offset = 0u;
+    memset(
+        &runtime->work_input_acknowledgement,
+        0,
+        sizeof(runtime->work_input_acknowledgement));
     return 1u;
 }
 
@@ -1598,31 +2592,47 @@ static SparkStatus SparkRingDaemonEnsureWorkOutputSocket(
     SparkStatus status;
     uint64_t now_ns;
 
+    if (runtime == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     if ((runtime->rank_plan.flags &
-        SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
+            SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
+    {
         return SPARK_STATUS_OK;
+    }
     if (runtime->work_output_socket_fd >= 0)
     {
         status = SparkRingDaemonFinishConnect(
             &runtime->work_output_socket_fd,
             &runtime->work_output_connecting);
         if (status == SPARK_STATUS_OK)
+        {
             runtime->work_output_retry_mono_ns = 0u;
-        else if (runtime->work_output_socket_fd < 0)
-            runtime->work_output_retry_mono_ns =
-                SparkNetMonotonicNs() +
-                SPARK_RING_DAEMON_CONNECT_RETRY_NS;
+            return SPARK_STATUS_OK;
+        }
+        if (runtime->work_output_socket_fd >= 0)
+        {
+            return status;
+        }
+        runtime->work_output_write_offset = 0u;
+        runtime->work_output_waiting_for_acknowledgement = 0u;
+        runtime->work_output_acknowledgement_read_offset = 0u;
+        runtime->work_output_packet_hash = 0u;
+        runtime->work_output_retry_mono_ns =
+            SparkNetMonotonicNs() + SPARK_RING_DAEMON_CONNECT_RETRY_NS;
         return status;
     }
     now_ns = SparkNetMonotonicNs();
     if (runtime->work_output_retry_mono_ns != 0u &&
         now_ns < runtime->work_output_retry_mono_ns)
+    {
         return SPARK_STATUS_BUSY;
-    runtime->work_output_socket_fd =
-        SparkRingDaemonStartConnect(
-            runtime->rank_plan.next_host_name,
-            runtime->rank_plan.next_port,
-            &runtime->work_output_connecting);
+    }
+    runtime->work_output_socket_fd = SparkRingDaemonStartConnect(
+        runtime->rank_plan.next_host_name,
+        runtime->rank_plan.next_port,
+        &runtime->work_output_connecting);
     if (runtime->work_output_socket_fd < 0)
     {
         runtime->work_output_retry_mono_ns =
@@ -1634,35 +2644,146 @@ static SparkStatus SparkRingDaemonEnsureWorkOutputSocket(
         SPARK_STATUS_OK : SPARK_STATUS_BUSY;
 }
 
+static SparkStatus SparkRingDaemonReadWorkOutputAcknowledgement(
+    SparkRingDaemonRuntime *runtime,
+    const SparkRingWorkControlPacket *packet)
+{
+    SparkDistributedWorkIdentity identity;
+    SparkStatus status;
+    uint8_t *acknowledgement_bytes;
+    ssize_t got;
+    uint32_t remaining;
+
+    if (runtime == 0 || packet == 0 || runtime->work_output_socket_fd < 0 ||
+        runtime->work_output_waiting_for_acknowledgement == 0u)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    acknowledgement_bytes =
+        (uint8_t *)&runtime->work_output_acknowledgement;
+    while (runtime->work_output_acknowledgement_read_offset <
+        SPARK_DISTRIBUTED_WORK_ACKNOWLEDGEMENT_BYTES)
+    {
+        remaining = SPARK_DISTRIBUTED_WORK_ACKNOWLEDGEMENT_BYTES -
+            runtime->work_output_acknowledgement_read_offset;
+        got = read(
+            runtime->work_output_socket_fd,
+            acknowledgement_bytes +
+                runtime->work_output_acknowledgement_read_offset,
+            remaining);
+        if (got < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                return SPARK_STATUS_BUSY;
+            }
+            SparkRingDaemonResetWorkOutputSocket(runtime);
+            runtime->work_output_retry_mono_ns =
+                SparkNetMonotonicNs() + SPARK_RING_DAEMON_CONNECT_RETRY_NS;
+            return SPARK_STATUS_ROUTE_NOT_FOUND;
+        }
+        if (got == 0)
+        {
+            SparkRingDaemonResetWorkOutputSocket(runtime);
+            runtime->work_output_retry_mono_ns =
+                SparkNetMonotonicNs() + SPARK_RING_DAEMON_CONNECT_RETRY_NS;
+            return SPARK_STATUS_ROUTE_NOT_FOUND;
+        }
+        runtime->work_output_acknowledgement_read_offset += (uint32_t)got;
+    }
+    status = SparkRingWorkControlGetTransactionIdentity(packet,&identity);
+    if (status == SPARK_STATUS_OK)
+    {
+        status = SparkDistributedWorkValidateAcknowledgement(
+            &runtime->work_output_acknowledgement,
+            &identity,
+            runtime->work_output_packet_hash);
+    }
+    runtime->work_output_acknowledgement_read_offset = 0u;
+    runtime->work_output_waiting_for_acknowledgement = 0u;
+    memset(
+        &runtime->work_output_acknowledgement,
+        0,
+        sizeof(runtime->work_output_acknowledgement));
+    if (status == SPARK_STATUS_BUSY ||
+        status == SPARK_STATUS_CAPACITY_EXCEEDED)
+    {
+        runtime->work_output_write_offset = 0u;
+        runtime->work_output_packet_hash = 0u;
+        runtime->work_output_retry_mono_ns =
+            SparkNetMonotonicNs() + SPARK_RING_DAEMON_CONNECT_RETRY_NS;
+        return SPARK_STATUS_BUSY;
+    }
+    if (status == SPARK_STATUS_OK || status == SPARK_STATUS_DUPLICATE)
+    {
+        runtime->work_output_write_offset = 0u;
+        runtime->work_output_packet_hash = 0u;
+        runtime->work_forward_count += 1u;
+        return SPARK_STATUS_OK;
+    }
+    runtime->work_output_write_offset = 0u;
+    runtime->work_output_packet_hash = 0u;
+    return status;
+}
+
 static SparkStatus SparkRingDaemonForwardWork(
     SparkRingDaemonRuntime *runtime,
     const SparkRingWorkControlPacket *packet)
 {
     SparkStatus status;
 
+    if (runtime == 0 || packet == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
     if ((runtime->rank_plan.flags &
-        SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
+            SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u)
+    {
         return SPARK_STATUS_OK;
+    }
+    if (runtime->work_output_waiting_for_acknowledgement != 0u)
+    {
+        return SparkRingDaemonReadWorkOutputAcknowledgement(runtime,packet);
+    }
     status = SparkRingDaemonEnsureWorkOutputSocket(runtime);
     if (status != SPARK_STATUS_OK)
+    {
         return status;
+    }
     status = SparkRingDaemonWriteBuffered(
-            runtime->work_output_socket_fd,
-            packet,
-            packet->descriptor_bytes,
-            &runtime->work_output_write_offset);
+        runtime->work_output_socket_fd,
+        packet,
+        packet->descriptor_bytes,
+        &runtime->work_output_write_offset);
     if (status == SPARK_STATUS_BUSY)
+    {
         return status;
+    }
     if (status != SPARK_STATUS_OK)
     {
-        close(runtime->work_output_socket_fd);
-        runtime->work_output_socket_fd = -1;
-        runtime->work_output_connecting = 0u;
-        runtime->work_output_write_offset = 0u;
+        SparkRingDaemonResetWorkOutputSocket(runtime);
+        runtime->work_output_retry_mono_ns =
+            SparkNetMonotonicNs() + SPARK_RING_DAEMON_CONNECT_RETRY_NS;
         return SPARK_STATUS_ROUTE_NOT_FOUND;
     }
-    runtime->work_forward_count += 1u;
-    return SPARK_STATUS_OK;
+    runtime->work_output_packet_hash = SparkDistributedWorkHashBytes(
+        packet,
+        packet->descriptor_bytes);
+    if (runtime->work_output_packet_hash == 0u)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    runtime->work_output_waiting_for_acknowledgement = 1u;
+    runtime->work_output_acknowledgement_read_offset = 0u;
+    memset(
+        &runtime->work_output_acknowledgement,
+        0,
+        sizeof(runtime->work_output_acknowledgement));
+    return SPARK_STATUS_BUSY;
 }
 
 static SparkStatus SparkRingDaemonAwaitResidentSubmitResult(
@@ -1702,13 +2823,19 @@ static SparkStatus SparkRingDaemonAwaitResidentSubmitResult(
             }
             completion_message = (const SparkCudaResidentIpcCompletion *)
                 runtime->cuda_resident_payload;
-            if ((completion_message->flags &
-                    SPARK_CUDA_RESIDENT_IPC_COMPLETION_FLAG_DSPARK_DRAFT) != 0u)
+            if (SparkRingDaemonQueueDriverCompletion(
+                    runtime,
+                    &completion_message->completion,
+                    (completion_message->flags &
+                        SPARK_CUDA_RESIDENT_IPC_COMPLETION_FLAG_DSPARK_DRAFT) != 0u ?
+                        &completion_message->dspark_draft : 0) !=
+                SPARK_STATUS_OK)
             {
-                runtime->completion_dspark_draft = completion_message->dspark_draft;
-                runtime->completion_dspark_draft_valid = 1u;
+                SparkRingDaemonTeardownCudaResident(
+                    runtime,
+                    "submit_completion_queue");
+                return SPARK_STATUS_BUSY;
             }
-            SparkRingDaemonCompletion(runtime,&completion_message->completion);
             continue;
         }
         SparkRingDaemonTeardownCudaResident(runtime,"submit_unknown_kind");
@@ -1897,12 +3024,18 @@ static void SparkRingDaemonInitializeWorkQueue(
     uint32_t slot_index;
 
     if (runtime == 0)
+    {
         return;
+    }
+    runtime->work_queue_head = 0u;
+    runtime->work_queue_count = 0u;
     for (slot_index = 0u;
          slot_index < SPARK_RING_DAEMON_WORK_QUEUE_HASH_SLOTS;
          ++slot_index)
+    {
         runtime->work_queue_hash_heads[slot_index] =
             SPARK_RING_DAEMON_NO_WORK_QUEUE_SLOT;
+    }
     for (slot_index = 0u;
          slot_index < SPARK_RING_DAEMON_WORK_QUEUE_CAPACITY;
          ++slot_index)
@@ -2127,48 +3260,122 @@ static void SparkRingDaemonWakeDeferredWork(
     }
 }
 
+static SparkStatus SparkRingDaemonTransitionPacket(
+    SparkRingDaemonRuntime *runtime,
+    const SparkRingWorkControlPacket *packet,
+    uint32_t next_state,
+    SparkStatus terminal_status)
+{
+    SparkDistributedWorkIdentity identity;
+    SparkStatus status;
+    uint64_t packet_hash;
+
+    if (runtime == 0 || packet == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    status = SparkRingWorkControlGetTransactionIdentity(packet,&identity);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    packet_hash = SparkRingWorkControlPacketFingerprint(packet);
+    if (packet_hash == 0u)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    return SparkDistributedWorkTransitionTransaction(
+        &runtime->transaction_ledger,
+        &identity,
+        packet_hash,
+        next_state,
+        terminal_status);
+}
+
+static void SparkRingDaemonFailHeadWork(
+    SparkRingDaemonRuntime *runtime,
+    SparkStatus status)
+{
+    SparkRingWorkControlPacket *packet;
+
+    if (runtime == 0 || runtime->work_queue_count == 0u)
+    {
+        return;
+    }
+    packet = &runtime->work_queue[runtime->work_queue_head];
+    (void)SparkRingDaemonTransitionPacket(
+        runtime,
+        packet,
+        SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_FAILED,
+        status);
+    runtime->work_error_count += 1u;
+    fprintf(
+        stderr,
+        "rank_work_failed status=%u transaction=%llu request=%llu sequence=%llu position=%llu queued=%u\n",
+        (uint32_t)status,
+        (unsigned long long)packet->step_generation,
+        (unsigned long long)packet->request_id,
+        (unsigned long long)packet->sequence_id,
+        (unsigned long long)packet->sequence_position,
+        runtime->work_queue_count);
+    SparkRingDaemonPopWork(runtime);
+}
+
 static uint32_t SparkRingDaemonPumpQueuedWork(
     SparkRingDaemonRuntime *runtime)
 {
     SparkRingWorkControlPacket *packet;
     SparkStatus status;
-    uint32_t queue_slot;
-    uint32_t forward_done;
     uint32_t attempts;
+    uint32_t forward_done;
+    uint32_t queue_slot;
+    uint32_t transaction_index;
 
     if (runtime == 0 || runtime->work_queue_count == 0u)
+    {
         return 0u;
+    }
     attempts = runtime->work_queue_count;
     while (attempts != 0u)
     {
         attempts -= 1u;
-    queue_slot = runtime->work_queue_head;
-    packet = &runtime->work_queue[queue_slot];
-        if (runtime->work_queue_state[queue_slot] ==
-            SPARK_RING_DAEMON_WORK_STATE_WAITING_FORWARD)
-            return 0u;
+        queue_slot = runtime->work_queue_head;
+        packet = &runtime->work_queue[queue_slot];
         if (runtime->work_queue_state[queue_slot] ==
             SPARK_RING_DAEMON_WORK_STATE_WAITING_SUBMIT)
         {
             SparkRingDaemonDeferWork(runtime);
             continue;
         }
-        if (SparkRingDaemonHasQueuedDependency(runtime,packet) != 0u)
+        if (runtime->work_queue_state[queue_slot] !=
+                SPARK_RING_DAEMON_WORK_STATE_WAITING_FORWARD &&
+            SparkRingDaemonHasQueuedDependency(runtime,packet) != 0u)
         {
             SparkRingDaemonDeferWork(runtime);
             continue;
         }
         forward_done =
             ((runtime->rank_plan.flags &
-              SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u ||
-             runtime->work_queue_forwarded[queue_slot] != 0u)
-                ? 1u : 0u;
+                SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT) == 0u ||
+             runtime->work_queue_forwarded[queue_slot] != 0u) ? 1u : 0u;
         if (forward_done == 0u)
         {
+            status = SparkRingDaemonTransitionPacket(
+                runtime,
+                packet,
+                SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_ACCEPTED,
+                SPARK_STATUS_PENDING);
+            if (status != SPARK_STATUS_OK && status != SPARK_STATUS_DUPLICATE)
+            {
+                SparkRingDaemonFailHeadWork(runtime,status);
+                return 1u;
+            }
             status = SparkRingDaemonForwardWork(runtime,packet);
             if (status == SPARK_STATUS_OK)
             {
                 runtime->work_queue_forwarded[queue_slot] = 1u;
+                runtime->work_queue_state[queue_slot] =
+                    SPARK_RING_DAEMON_WORK_STATE_READY;
                 forward_done = 1u;
             }
             else if (status == SPARK_STATUS_BUSY ||
@@ -2181,47 +3388,90 @@ static uint32_t SparkRingDaemonPumpQueuedWork(
             }
             else
             {
-                runtime->work_error_count += 1u;
-                fprintf(stderr,
-                    "rank_work_forward_failed status=%u request=%llu sequence=%llu position=%llu queued=%u\n",
-                    (uint32_t)status,
-                    (unsigned long long)packet->request_id,
-                    (unsigned long long)packet->sequence_id,
-                    (unsigned long long)packet->sequence_position,
-                    runtime->work_queue_count);
-                SparkRingDaemonPopWork(runtime);
+                SparkRingDaemonFailHeadWork(runtime,status);
                 return 1u;
             }
         }
+        status = SparkRingDaemonTransitionPacket(
+            runtime,
+            packet,
+            SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_ACCEPTED,
+            SPARK_STATUS_PENDING);
+        if (status != SPARK_STATUS_OK && status != SPARK_STATUS_DUPLICATE)
+        {
+            SparkRingDaemonFailHeadWork(runtime,status);
+            return 1u;
+        }
         if (runtime->work_queue_submitted[queue_slot] == 0u)
         {
-            /*
-             * submit_work may complete inline because the current builder
-             * drains its CUDA slot before returning.  Account the submission
-             * first so an inline completion cannot be lost and leave a
-             * permanently positive inflight count.
-             */
-            if (runtime->driver_inflight_count == 0u)
+            transaction_index = SPARK_DISTRIBUTED_WORK_INVALID_INDEX;
+            status = SparkRingDaemonRegisterInflightTransaction(
+                runtime,
+                packet,
+                &transaction_index);
+            if (status == SPARK_STATUS_BUSY ||
+                status == SPARK_STATUS_CAPACITY_EXCEEDED)
             {
-                runtime->driver_inflight_open_ns =
-                    SparkNetMonotonicNs();
-                runtime->driver_inflight_warned = 0u;
+                runtime->work_queue_state[queue_slot] =
+                    SPARK_RING_DAEMON_WORK_STATE_WAITING_SUBMIT;
+                runtime->work_deferred_count += 1u;
+                SparkRingDaemonDeferWork(runtime);
+                continue;
             }
-            runtime->driver_inflight_count += 1u;
+            if (status != SPARK_STATUS_OK)
+            {
+                SparkRingDaemonFailHeadWork(runtime,status);
+                return 1u;
+            }
             status = SparkRingDaemonSubmitWork(runtime,packet);
             if (status == SPARK_STATUS_OK)
             {
                 runtime->work_submit_count += 1u;
                 runtime->work_queue_submitted[queue_slot] = 1u;
+                status = SparkRingDaemonTransitionPacket(
+                    runtime,
+                    packet,
+                    SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_EXECUTING,
+                    SPARK_STATUS_PENDING);
+                if (status != SPARK_STATUS_OK &&
+                    status != SPARK_STATUS_DUPLICATE)
+                {
+                    fprintf(
+                        stderr,
+                        "rank_work_transition_failed status=%u request=%llu sequence=%llu position=%llu\n",
+                        (uint32_t)status,
+                        (unsigned long long)packet->request_id,
+                        (unsigned long long)packet->sequence_id,
+                        (unsigned long long)packet->sequence_position);
+                    runtime->work_error_count += 1u;
+                    SparkRingDaemonRunning = 0;
+                    return 1u;
+                }
                 if ((packet->flags &
-                        SPARK_RING_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u &&
-                    runtime->driver_inflight_count != 0u)
-                    runtime->driver_inflight_count -= 1u;
+                        SPARK_RING_WORK_CONTROL_FLAG_RELEASE_SEQUENCES) != 0u)
+                {
+                    status = SparkRingDaemonTransitionPacket(
+                        runtime,
+                        packet,
+                        SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_COMMITTED,
+                        SPARK_STATUS_OK);
+                    if (status != SPARK_STATUS_OK &&
+                        status != SPARK_STATUS_DUPLICATE)
+                    {
+                        runtime->work_error_count += 1u;
+                        SparkRingDaemonRunning = 0;
+                        return 1u;
+                    }
+                }
             }
             else if (status == SPARK_STATUS_BUSY)
             {
-                if (runtime->driver_inflight_count != 0u)
-                    runtime->driver_inflight_count -= 1u;
+                if (transaction_index != SPARK_DISTRIBUTED_WORK_INVALID_INDEX)
+                {
+                    (void)SparkRingDaemonCancelInflightTransaction(
+                        runtime,
+                        transaction_index);
+                }
                 runtime->work_queue_state[queue_slot] =
                     SPARK_RING_DAEMON_WORK_STATE_WAITING_SUBMIT;
                 runtime->work_deferred_count += 1u;
@@ -2230,17 +3480,13 @@ static uint32_t SparkRingDaemonPumpQueuedWork(
             }
             else
             {
-                if (runtime->driver_inflight_count != 0u)
-                    runtime->driver_inflight_count -= 1u;
-                runtime->work_error_count += 1u;
-                fprintf(stderr,
-                    "rank_work_submit_failed status=%u request=%llu sequence=%llu position=%llu queued=%u\n",
-                    (uint32_t)status,
-                    (unsigned long long)packet->request_id,
-                    (unsigned long long)packet->sequence_id,
-                    (unsigned long long)packet->sequence_position,
-                    runtime->work_queue_count);
-                SparkRingDaemonPopWork(runtime);
+                if (transaction_index != SPARK_DISTRIBUTED_WORK_INVALID_INDEX)
+                {
+                    (void)SparkRingDaemonCancelInflightTransaction(
+                        runtime,
+                        transaction_index);
+                }
+                SparkRingDaemonFailHeadWork(runtime,status);
                 return 1u;
             }
         }
@@ -2254,93 +3500,215 @@ static uint32_t SparkRingDaemonPumpQueuedWork(
     return 0u;
 }
 
-static void SparkRingDaemonHandleWork(
+static SparkStatus SparkRingDaemonHandleWork(
     SparkRingDaemonRuntime *runtime,
     const SparkRingWorkControlPacket *packet)
 {
+    SparkDistributedWorkIdentity identity;
     SparkStatus status;
+    SparkStatus terminal_status;
+    uint64_t packet_hash;
+    uint32_t existing_state;
 
+    if (runtime == 0 || packet == 0)
+    {
+        return SPARK_STATUS_INVALID_ARGUMENT;
+    }
+    existing_state = SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_FREE;
+    terminal_status = SPARK_STATUS_OK;
     status = SparkRingWorkControlValidatePacket(
         packet,
         runtime->rank_plan.execution_row_capacity,
         SPARK_RESIDENT_DECODE_STAGE_MAX_PIPELINE_SLOT_COUNT);
-    if (status == SPARK_STATUS_OK)
-        status = SparkRingDaemonQueueWork(runtime,packet);
     if (status != SPARK_STATUS_OK)
     {
-        runtime->work_error_count += 1u;
-        fprintf(stderr,
-            "rank_work_queue_failed status=%u request=%llu sequence=%llu position=%llu queued=%u\n",
-            (uint32_t)status,
-            packet == 0 ? 0ull : (unsigned long long)packet->request_id,
-            packet == 0 ? 0ull : (unsigned long long)packet->sequence_id,
-            packet == 0 ? 0ull : (unsigned long long)packet->sequence_position,
-            runtime == 0 ? 0u : runtime->work_queue_count);
+        return status;
     }
+    status = SparkRingWorkControlGetTransactionIdentity(packet,&identity);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    packet_hash = SparkRingWorkControlPacketFingerprint(packet);
+    if (packet_hash == 0u)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    if (runtime->work_queue_count >= SPARK_RING_DAEMON_WORK_QUEUE_CAPACITY)
+    {
+        return SPARK_STATUS_CAPACITY_EXCEEDED;
+    }
+    status = SparkDistributedWorkObserveTransaction(
+        &runtime->transaction_ledger,
+        &identity,
+        packet_hash,
+        &existing_state,
+        &terminal_status);
+    if (status == SPARK_STATUS_DUPLICATE)
+    {
+        runtime->work_duplicate_count += 1u;
+        if (existing_state ==
+                SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_FAILED ||
+            existing_state ==
+                SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_CANCELLED)
+        {
+            return terminal_status;
+        }
+        return SPARK_STATUS_DUPLICATE;
+    }
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkDistributedWorkTransitionTransaction(
+        &runtime->transaction_ledger,
+        &identity,
+        packet_hash,
+        SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_ACCEPTED,
+        SPARK_STATUS_PENDING);
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    status = SparkRingDaemonQueueWork(runtime,packet);
+    if (status != SPARK_STATUS_OK)
+    {
+        (void)SparkDistributedWorkTransitionTransaction(
+            &runtime->transaction_ledger,
+            &identity,
+            packet_hash,
+            SPARK_DISTRIBUTED_WORK_TRANSACTION_STATE_FAILED,
+            status);
+    }
+    return status;
 }
 
 static uint32_t SparkRingDaemonPumpWorkControl(
     SparkRingDaemonRuntime *runtime)
 {
+    SparkDistributedWorkIdentity identity;
     SparkRingWorkControlPacket *packet;
+    SparkStatus acknowledgement_status;
+    SparkStatus status;
     ssize_t got;
-	uint32_t expected_bytes;
+    uint64_t packet_hash;
+    uint32_t expected_bytes;
     uint32_t remaining;
     uint32_t progress;
 
+    if (runtime == 0)
+    {
+        return 0u;
+    }
     progress = SparkRingDaemonAcceptWorkSocket(runtime);
     if (runtime->work_listen_fd < 0 || runtime->work_input_socket_fd < 0)
+    {
         return progress;
+    }
+    if (runtime->work_input_acknowledgement_pending != 0u)
+    {
+        status = SparkRingDaemonFlushWorkInputAcknowledgement(runtime);
+        if (status == SPARK_STATUS_OK)
+        {
+            return 1u;
+        }
+        return progress;
+    }
     for (;;)
     {
-		if (SparkRingDaemonWorkInputCanRead(runtime) == 0u)
-			return progress;
-		packet = (SparkRingWorkControlPacket *)runtime->work_read_buffer;
-		expected_bytes = SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES;
-		if (runtime->work_read_offset >=
-			(uint32_t)offsetof(SparkRingWorkControlPacket,flags))
-		{
-			expected_bytes = packet->descriptor_bytes;
-			if (expected_bytes <
-					SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES ||
-				expected_bytes > SPARK_RING_WORK_CONTROL_PACKET_BYTES)
-			{
-				runtime->work_error_count += 1u;
-				close(runtime->work_input_socket_fd);
-				runtime->work_input_socket_fd = -1;
-				runtime->work_read_offset = 0u;
-				return 1u;
-			}
-		}
-		remaining = expected_bytes - runtime->work_read_offset;
+        if (SparkRingDaemonWorkInputCanRead(runtime) == 0u)
+        {
+            return progress;
+        }
+        packet = (SparkRingWorkControlPacket *)runtime->work_read_buffer;
+        expected_bytes = SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES;
+        if (runtime->work_read_offset >=
+            (uint32_t)offsetof(SparkRingWorkControlPacket,flags))
+        {
+            expected_bytes = packet->descriptor_bytes;
+            if (expected_bytes < SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES ||
+                expected_bytes > SPARK_RING_WORK_CONTROL_PACKET_BYTES)
+            {
+                runtime->work_error_count += 1u;
+                SparkRingDaemonResetWorkInputSocket(runtime);
+                return 1u;
+            }
+        }
+        remaining = expected_bytes - runtime->work_read_offset;
         got = read(
             runtime->work_input_socket_fd,
             runtime->work_read_buffer + runtime->work_read_offset,
             remaining);
         if (got < 0)
         {
-            if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-                runtime->work_error_count += 1u;
-            return progress;
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                return progress;
+            }
+            runtime->work_error_count += 1u;
+            SparkRingDaemonResetWorkInputSocket(runtime);
+            return 1u;
         }
         if (got == 0)
         {
-            close(runtime->work_input_socket_fd);
-            runtime->work_input_socket_fd = -1;
-            runtime->work_read_offset = 0u;
+            SparkRingDaemonResetWorkInputSocket(runtime);
             return 1u;
         }
         progress = 1u;
-		runtime->work_read_offset += (uint32_t)got;
-		if (runtime->work_read_offset ==
-				SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES &&
-			packet->descriptor_bytes >
-				SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES)
-			continue;
-		if (runtime->work_read_offset < expected_bytes)
+        runtime->work_read_offset += (uint32_t)got;
+        if (runtime->work_read_offset ==
+                SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES &&
+            packet->descriptor_bytes >
+                SPARK_RING_WORK_CONTROL_PACKET_PREFIX_BYTES)
+        {
+            continue;
+        }
+        if (runtime->work_read_offset < expected_bytes)
+        {
             return progress;
-        SparkRingDaemonHandleWork(runtime,packet);
+        }
+        packet_hash = SparkDistributedWorkHashBytes(
+            packet,
+            packet->descriptor_bytes);
+        status = SparkRingWorkControlGetTransactionIdentity(packet,&identity);
+        if (status != SPARK_STATUS_OK || packet_hash == 0u)
+        {
+            runtime->work_error_count += 1u;
+            SparkRingDaemonResetWorkInputSocket(runtime);
+            return 1u;
+        }
+        acknowledgement_status = SparkRingDaemonHandleWork(runtime,packet);
+        if (acknowledgement_status != SPARK_STATUS_OK &&
+            acknowledgement_status != SPARK_STATUS_DUPLICATE &&
+            acknowledgement_status != SPARK_STATUS_BUSY &&
+            acknowledgement_status != SPARK_STATUS_CAPACITY_EXCEEDED)
+        {
+            runtime->work_error_count += 1u;
+            fprintf(
+                stderr,
+                "rank_work_accept_failed status=%u transaction=%llu request=%llu queued=%u\n",
+                (uint32_t)acknowledgement_status,
+                (unsigned long long)identity.step_generation,
+                (unsigned long long)packet->request_id,
+                runtime->work_queue_count);
+        }
+        SparkDistributedWorkInitializeAcknowledgement(
+            &runtime->work_input_acknowledgement,
+            &identity,
+            packet_hash,
+            acknowledgement_status);
+        runtime->work_input_acknowledgement_pending = 1u;
+        runtime->work_input_acknowledgement_write_offset = 0u;
         runtime->work_read_offset = 0u;
+        status = SparkRingDaemonFlushWorkInputAcknowledgement(runtime);
+        if (status != SPARK_STATUS_OK)
+        {
+            return 1u;
+        }
     }
 }
 
@@ -2591,6 +3959,29 @@ static SparkStatus SparkRingDaemonInitialize(
     runtime->wake_pipe_read_fd = -1;
     runtime->wake_pipe_write_fd = -1;
     SparkRingDaemonInitializeWorkQueue(runtime);
+    status = SparkRingDaemonInitializeCompletionState(runtime);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkRingDaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to initialize rank completion state");
+        return status;
+    }
+    status = SparkDistributedWorkInitializeTransactionLedger(
+        &runtime->transaction_ledger,
+        runtime->transaction_entries,
+        runtime->transaction_hash_heads,
+        runtime->transaction_hash_next,
+        SPARK_RING_DAEMON_TRANSACTION_LEDGER_CAPACITY);
+    if (status != SPARK_STATUS_OK)
+    {
+        SparkRingDaemonSetDefaultError(
+            error_buffer,
+            error_buffer_bytes,
+            "failed to initialize distributed work ledger");
+        return status;
+    }
     SparkLoadedModelDriverReset(&runtime->loaded_driver);
     status = SparkRingDaemonOpenWakePipe(runtime);
     if (status != SPARK_STATUS_OK)
@@ -2787,6 +4178,16 @@ static void SparkRingDaemonDestroy(
     SparkHiddenTransportClose(runtime->input_transport_session);
     SparkHiddenTransportClose(runtime->output_transport_session);
     SparkHiddenTransportUnloadInterface(&runtime->transport_library);
+    if (runtime->driver_completion_mutex_initialized != 0u)
+    {
+        (void)pthread_mutex_destroy(&runtime->driver_completion_mutex);
+        runtime->driver_completion_mutex_initialized = 0u;
+    }
+    if (runtime->builder_completion_mutex_initialized != 0u)
+    {
+        (void)pthread_mutex_destroy(&runtime->builder_completion_mutex);
+        runtime->builder_completion_mutex_initialized = 0u;
+    }
 }
 
 static void SparkRingDaemonPrintReady(
@@ -2843,7 +4244,9 @@ static void SparkRingDaemonPrintReady(
     printf("work_errors=%llu\n",
         (unsigned long long)runtime->work_error_count);
     printf("wake_signals=%llu\n",
-        (unsigned long long)runtime->wake_signal_count);
+        (unsigned long long)__atomic_load_n(
+            &runtime->wake_signal_count,
+            __ATOMIC_RELAXED));
     printf("driver_inflight=%u\n",runtime->driver_inflight_count);
     printf("driver_completions=%llu\n",
         (unsigned long long)runtime->driver_completion_count);
@@ -2854,7 +4257,9 @@ static void SparkRingDaemonPrintReady(
     printf("cuda_resident_errors=%llu\n",
         (unsigned long long)runtime->cuda_resident_error_count);
     printf("wake_dropped=%llu\n",
-        (unsigned long long)runtime->wake_drop_count);
+        (unsigned long long)__atomic_load_n(
+            &runtime->wake_drop_count,
+            __ATOMIC_RELAXED));
     printf("timer_wakes=%llu\n",
         (unsigned long long)runtime->timer_wake_count);
     printf("final_event_listen=%d\n",runtime->final_event_listen_fd);
@@ -2915,7 +4320,7 @@ int main(int argc,char **argv)
         return 3;
     }
     SparkRingDaemonPrintReady(&runtime,&configuration);
-    while (SparkGlm52RingDaemonRunning != 0)
+    while (SparkRingDaemonRunning != 0)
     {
         progress = 0u;
         if (SparkRingDaemonDrainWakePipe(&runtime) != 0u)
@@ -2925,6 +4330,7 @@ int main(int argc,char **argv)
         }
         progress |= SparkRingDaemonPumpWorkControl(&runtime);
         progress |= SparkRingDaemonPumpCudaResident(&runtime);
+        progress |= SparkRingDaemonPumpDriverCompletions(&runtime);
         SparkRingDaemonCheckInflightOverdue(&runtime);
         if (runtime.cuda_resident_fd < 0)
             (void)SparkResidentDecodeStageProductionRunnerProgress(
@@ -2939,6 +4345,7 @@ int main(int argc,char **argv)
 			break;
 		}
         progress |= SparkRingDaemonPumpQueuedWork(&runtime);
+        progress |= SparkRingDaemonPumpDriverCompletions(&runtime);
         progress |= SparkRingDaemonPumpFinalEvents(&runtime);
         if (progress == 0u)
         {

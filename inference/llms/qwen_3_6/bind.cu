@@ -18,7 +18,7 @@
 // missing: config.h has declared QWEN36_LAYER_KIND since the layer-kind commit
 // and nothing read it.
 
-#include "inference/kernels/formats/fp8.cuh"
+#include "inference/kernels/formats/bf16.cuh"
 #include "inference/llms/qwen_3_6/layer.cuh"
 
 // One layer's weights. Every pointer here is a tensor the packer must place;
@@ -130,7 +130,7 @@ static int32_t Qwen36LaunchSlice(const Qwen36LayerWeights *weights, Qwen36LayerB
 
 extern "C" int32_t Qwen36StageSlice(const void *layer_weights, void *layer_buffers, uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t context, uint32_t multiprocessors, void *stream)
 {
-	return(Qwen36LaunchSlice<LmFp8>(
+	return(Qwen36LaunchSlice<LmBf16Format>(
 		(const Qwen36LayerWeights *)layer_weights,
 		(Qwen36LayerBuffers *)layer_buffers,
 		first_layer,layer_count,rows,context,multiprocessors,

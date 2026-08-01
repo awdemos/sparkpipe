@@ -141,7 +141,7 @@ Normal publication validates a new archive exactly once:
 
 ```sh
 make -C modules/glm52_resident_decode_stage publish \
-    CUDA_ARCH=sm_121 \
+    CUDA_ARCH=sm_121a \
     MAX_STAGE_MICROSECONDS=<qualified-limit>
 ```
 

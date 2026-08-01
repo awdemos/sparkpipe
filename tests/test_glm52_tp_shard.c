@@ -22,7 +22,7 @@ static void SparkTestTpShardSpec(SparkGlm52StagePackTensorSpec *spec,const char 
 static void SparkTestTpShardShape(SparkTpShapeDescriptor *shape,uint32_t degree,uint32_t rank)
 {
 	memset(shape,0,sizeof(*shape));
-	shape->abi_version = SPARK_GLM52_TP_SHARD_ABI_VERSION;
+	shape->abi_version = SPARK_TP_SHARD_ABI_VERSION;
 	shape->tp_degree = degree;
 	shape->tp_rank = rank;
 	shape->pp_stage_count = 1u;
@@ -38,29 +38,29 @@ static void SparkTestTpShardGeometry(SparkTpModelGeometry *geometry)
 static void SparkTestTpShardClassification(void)
 {
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.7.self_attn.q_b_proj.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_OUTPUT_DIM_HEADS);
+		SPARK_TP_SHARD_CLASS_OUTPUT_DIM_HEADS);
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.7.self_attn.kv_b_proj.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_OUTPUT_DIM_HEADS);
+		SPARK_TP_SHARD_CLASS_OUTPUT_DIM_HEADS);
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.7.self_attn.o_proj.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_INPUT_DIM_HEADS);
+		SPARK_TP_SHARD_CLASS_INPUT_DIM_HEADS);
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.0.mlp.gate_proj.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_OUTPUT_DIM);
+		SPARK_TP_SHARD_CLASS_OUTPUT_DIM);
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.9.mlp.shared_experts.up_proj.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_OUTPUT_DIM);
+		SPARK_TP_SHARD_CLASS_OUTPUT_DIM);
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.0.mlp.down_proj.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_INPUT_DIM);
+		SPARK_TP_SHARD_CLASS_INPUT_DIM);
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.9.mlp.shared_experts.down_proj.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_INPUT_DIM);
+		SPARK_TP_SHARD_CLASS_INPUT_DIM);
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.7.self_attn.q_a_proj.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_REPLICATED);
+		SPARK_TP_SHARD_CLASS_REPLICATED);
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.7.self_attn.kv_a_proj_with_mqa.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_REPLICATED);
+		SPARK_TP_SHARD_CLASS_REPLICATED);
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.7.mlp.gate.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_REPLICATED);
+		SPARK_TP_SHARD_CLASS_REPLICATED);
 	assert(SparkGlm52TpShardClassifyTensor("model.embed_tokens.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_REPLICATED);
+		SPARK_TP_SHARD_CLASS_REPLICATED);
 	assert(SparkGlm52TpShardClassifyTensor("model.layers.7.self_attn.mystery.weight") ==
-		SPARK_GLM52_TP_SHARD_CLASS_UNKNOWN);
+		SPARK_TP_SHARD_CLASS_UNKNOWN);
 }
 
 // The four tp4 shards of q_b tile the output dimension exactly: contiguous,
@@ -123,7 +123,7 @@ static void SparkTestTpShardReplicated(void)
 	SparkTestTpShardShape(&shape,4u,2u);
 	SparkTestTpShardGeometry(&geometry);
 	assert(SparkGlm52TpShardComputeView(&spec,&shape,&geometry,&view) == SPARK_STATUS_OK);
-	assert(view.shard_class == SPARK_GLM52_TP_SHARD_CLASS_REPLICATED);
+	assert(view.shard_class == SPARK_TP_SHARD_CLASS_REPLICATED);
 	assert(view.element_offset == 0u);
 	assert(view.shard_bytes == SPARK_GLM52_MODEL_KV_A_DIMENSION * SPARK_GLM52_MODEL_HIDDEN_DIMENSION * sizeof(uint16_t));
 }

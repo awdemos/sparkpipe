@@ -14,12 +14,21 @@
 // implements the dense path and would be wrong for A3B, so the variant is named
 // here rather than left to whoever reads the weights.
 //
-// TWO KNOWN GAPS, both real and neither implemented:
+// THREE KNOWN GAPS, all real and none implemented:
 //   the reference calls the full-attention path GATED attention. config sets
 //   attn_output_gate true. Qwen36LayerAttention does not apply the gate.
 //   the reference sets mrope_interleaved with sections [11,11,10]. LmRopePerHead
 //   applies plain rope. For text-only decode the sections degenerate to the
 //   standard rotation, so this is correct until an image or video enters.
+//   the GDN forget and write gates have no producer. LmDeltaRuleKernel reads
+//   gdn_forget_gate and gdn_write_gate per (row, head, channel), and no
+//   projection or activation anywhere in this driver writes them - the
+//   reference derives both from a small beta/alpha projection of the hidden
+//   state plus learned bias and per-head log-scale tensors, none of which are
+//   in Qwen36LayerWeights. Until those tensors are bound and computed the
+//   recurrent layers read whatever the gate buffers hold. The shapes are not
+//   in any in-repo contract, so this is named here rather than guessed at:
+//   lineage inference about exactly this path has been wrong twice already.
 //
 // Gated DeltaNet on 48 of 64 layers, full attention on the other 16, in a fixed
 // period. Same shape as K3 - a recurrent state for most layers and a KV cache
@@ -62,9 +71,38 @@
 
 // The GDN state plus the short causal convolution window it carries. Both are
 // per-sequence and neither grows, so both live in one non-growing pool.
+//
+// THE STATE IS ONE PER VALUE HEAD: 48 of them, not 16. The reference form of
+// gated DeltaNet (Qwen3-Next's modeling file, FLA's gated delta rule) repeats
+// q and k from the 16 key heads to the 48 value heads and holds a 128x128
+// state for every value head. This driver once sized and launched the
+// recurrence as 16 states with three value heads "sharing" each - which read
+// only value head 3h of every group, never touched 3h+1 and 3h+2, and wrote a
+// 2048-wide output into the 6144-wide input of the output projection. A state
+// per key head shared three ways is not GDN; the layer expands q and k and
+// launches the delta rule at 48 heads.
+//
+// THE STATE IS FP32. LmDeltaRuleKernel's pool contract is four-byte elements -
+// it addresses head h at h * KEY_DIM * VALUE_DIM * 4 and the K3 contract
+// (K3_KDA_STATE_ELEMENT_BYTES = 4) says the same. This macro once sized the
+// state at 2 bytes, which put the upper half of every sequence's heads past
+// the end of the slot: at B1 the delta rule read and wrote beyond the pool.
+// The element width is a named constant because the bf16-state option is a
+// real, priced lever - it halves a state stream that is 310 MB/seq/token at
+// this geometry (docs/PERF_ROADMAP_2026-08-01.md's K3 state correction is the
+// same problem at twice the heads) - but it is a numerics question on a
+// recurrence that compounds per token, and it lands as a bf16-pool delta-rule
+// VARIANT with this constant flipped, never as this constant flipped alone.
+// layer.cuh static_asserts the width against sizeof(float) so the flip cannot
+// happen silently ahead of the kernel.
+//
+// The window is one tensor because the convolution runs on the fused QKV row
+// before the split: QKV_DIM channels at KERNEL taps, bf16.
+#define QWEN36_GDN_STATE_ELEMENT_BYTES 4u
 #define QWEN36_GDN_STATE_BYTES \
-	((QWEN36_GDN_KEY_HEADS * QWEN36_GDN_KEY_DIM * QWEN36_GDN_VALUE_DIM * 2u) \
-	 + (QWEN36_GDN_KEY_HEADS * QWEN36_GDN_KEY_DIM * QWEN36_GDN_CONV_KERNEL * 2u))
+	((QWEN36_GDN_VALUE_HEADS * QWEN36_GDN_KEY_DIM * QWEN36_GDN_VALUE_DIM \
+		* QWEN36_GDN_STATE_ELEMENT_BYTES) \
+	 + (QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL * 2u))
 
 #define QWEN36_MTP_LAYERS 1u                   /* CONFIG mtp_num_hidden_layers */
 #define QWEN36_KV_BITS 16u

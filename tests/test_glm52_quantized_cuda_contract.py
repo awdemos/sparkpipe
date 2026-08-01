@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import importlib.util
+import json
 from pathlib import Path
-import sys
 
 
 def require(text: str, needle: str, label: str) -> None:
@@ -17,273 +16,183 @@ def forbid(text: str, needle: str, label: str) -> None:
         raise AssertionError(f"{label} contains forbidden {needle!r}")
 
 
-def section(text: str, begin: str, end: str) -> str:
-    start = text.index(begin)
-    finish = text.index(end, start)
-    return text[start:finish]
-
-
-def load_aot_tool(repository: Path):
-    path = repository / "tools" / "glm52_b12x_aot_compile.py"
-    sys.path.insert(0, str(path.parent))
-    specification = importlib.util.spec_from_file_location(
-        "glm52_b12x_aot_compile",
-        path,
-    )
-    if specification is None or specification.loader is None:
-        raise RuntimeError("could not load B12x AOT compiler")
-    module = importlib.util.module_from_spec(specification)
-    specification.loader.exec_module(module)
-    return module
+def count_exact(text: str, needle: str, expected: int, label: str) -> None:
+    actual = text.count(needle)
+    if actual != expected:
+        raise AssertionError(
+            f"{label} contains {actual} copies of {needle!r}, expected {expected}"
+        )
 
 
 def main() -> int:
     repository = Path(__file__).resolve().parents[1]
-    nvfp4_path = repository / (
-        "modules/glm52_sm121_b12x_compiled_backend/source/"
-        "spark_flashinfer_b12x_compiled_moe_backend.cu"
+    layer = (repository / "inference/llms/glm5_2/layer.cuh").read_text(
+        encoding="utf-8"
     )
-        "modules/glm52_resident_decode_stage/source/"
-        "spark_glm52_sm121_required_decode_stage.cu"
+    binder = (repository / "inference/llms/glm5_2/bind.cu").read_text(
+        encoding="utf-8"
     )
-    aot_path = repository / "tools" / "glm52_b12x_aot_compile.py"
-    packed_route_header_path = repository / (
-        "modules/glm52_resident_decode_stage/include/sparkpipe/"
-        "spark_glm52_resident_decode_stage_required_cuda.h"
+    unity = (repository / "inference/llms/glm5_2/unity.cu").read_text(
+        encoding="utf-8"
     )
-    builder_path = repository / (
-        "modules/glm52_resident_decode_stage/source/"
-        "spark_glm52_ring_node_context_builder_cuda.cu"
+    stage_pack = (repository / "runtime/pack/stage_pack.py").read_text(
+        encoding="utf-8"
     )
-    dspark_backend_path = repository / (
-        "modules/glm52_dspark_draft_backend/source/"
-        "spark_glm52_dspark_draft_backend.cu"
+    expert_pack = (repository / "runtime/pack/fp8_resident_pack.py").read_text(
+        encoding="utf-8"
     )
-    dspark_backend_header_path = repository / (
-        "modules/glm52_dspark_draft_backend/include/sparkpipe/"
-        "spark_glm52_dspark_draft_backend.h"
-    )
-    makefile_path = repository / "Makefile"
-    sentinel_path = repository / (
-        "modules/glm52_sm121_b12x_compiled_backend/source/"
-        "spark_glm52_sm121_b12x_generated_kernel_table_unavailable.c"
-    )
-    nvfp4 = nvfp4_path.read_text(encoding="utf-8")
-    aot = aot_path.read_text(encoding="utf-8")
-    packed_route_header = packed_route_header_path.read_text(encoding="utf-8")
-    builder = builder_path.read_text(encoding="utf-8")
-    dspark_backend = dspark_backend_path.read_text(encoding="utf-8")
-    dspark_backend_header = dspark_backend_header_path.read_text(
-        encoding="utf-8")
-    makefile = makefile_path.read_text(encoding="utf-8")
-    sentinel = sentinel_path.read_text(encoding="utf-8")
-
-    for forbidden in (
-        "SparkGlm52B12xLaunchChunked",
-        "SparkGlm52B12xSelectLargestBucketAtMost",
-        "SparkGlm52B12xPrepareMicroTopK",
-        "SparkGlm52B12xPrepareRouterTopKMicroKernel",
-        "SparkGlm52B12xPrepareRouterTopKParallelKernel",
-        "SparkGlm52B12xPrepareRouterTopK",
-        "SparkGlm52B12xAllocateDynamicWorkspace",
-        "SparkGlm52B12xMaybeForceBenchmarkExpertCoverage",
-        "SparkGlm52B12xMaybeLogExpertCoverage",
-        "GLM52_BENCHMARK_FORCE_EXPERT_COVERAGE",
-        "GLM52_LOG_EXPERT_COVERAGE",
-        "cudaStreamSynchronize",
-        "SPARK_GLM52_SM121_B12X_BACKEND_KIND_MICRO",
-        "SPARK_GLM52_SM121_B12X_BACKEND_KIND_DYNAMIC",
-    ):
-        forbid(nvfp4, forbidden, "NVFP4 production backend")
-    require(
-        nvfp4,
-        "bucket->backend_kind !=\n"
-        "                SPARK_GLM52_SM121_B12X_BACKEND_KIND_STATIC",
-        "NVFP4 manifest validation",
-    )
-    require(
-        nvfp4,
-        "if (bucket == 0)\n"
-        "    {\n"
-        "        return SPARK_STATUS_CAPACITY_EXCEEDED;",
-        "NVFP4 exact bucket dispatch",
-    )
-    require(
-        nvfp4,
-        "SPARK_GLM52_SM121_FLASHINFER_B12X_MOE_ARGUMENT_FLAG_ROUTER_LOGITS",
-        "NVFP4 precomputed top-k rejection",
-    )
-
-    w8_kernel = section(
-        "static __global__ void "
-        "static __global__ __launch_bounds__(",
-    )
-    forbid(
-        w8_kernel,
-        "blockIdx.x != 0u || threadIdx.x != 0u",
-    )
-    w8_launch = section(
-        "static SparkStatus "
-        'extern "C" SparkStatus '
-    )
-    require(
-        w8_launch,
-        "SPARK_GLM52_RESIDENT_DECODE_STAGE_MOE_EXPERT_COUNT",
-    )
-    forbid(
-        w8_launch,
-        "SparkGlm52ResidentDecodeStageMaybeForceBenchmarkExpertCoverage",
-    )
-    require(
-        "__shared__ uint64_t shared_ordered_keys",
-    )
-    require(
-        "partner_index = expert_index ^ bitonic_stride",
-    )
-
-    packed_route_prefix = section(
-        "void SparkGlm52ResidentDecodeStageMoePackedRoutePrefixKernel",
-        "static __global__ __launch_bounds__("
-        "SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 1)\n"
-        "void SparkGlm52ResidentDecodeStageMoePackedRouteFillKernel",
-    )
-    require(
-        packed_route_prefix,
-        "__shared__ uint32_t shared_prefix",
-        "packed-route parallel prefix",
-    )
-    forbid(
-        packed_route_prefix,
-        "threadIdx.x != 0u",
-        "packed-route parallel prefix",
-    )
-    packed_route_fill = section(
-        "void SparkGlm52ResidentDecodeStageMoePackedRouteFillKernel",
-        "static __global__ __launch_bounds__("
-        "SPARK_GLM52_RESIDENT_DECODE_STAGE_CUDA_THREADS, 4)\n"
-        "void SparkGlm52ResidentDecodeStageMoePackedRouteIndptrKernel",
-    )
-    require(
-        packed_route_fill,
-        "atomicAdd(&expert_route_write_cursors[expert_index], 1u)",
-        "packed-route parallel fill",
-    )
-    forbid(
-        packed_route_fill,
-        "threadIdx.x != 0u",
-        "packed-route parallel fill",
-    )
-    require(
-        packed_route_header,
-        "MOE_PACKED_ROUTE_VIEW_ABI_VERSION 2u",
-        "packed-route workspace ABI",
-    )
-    require(
-        packed_route_header,
-        "uint32_t *expert_route_write_cursors;",
-        "packed-route workspace cursors",
-    )
-    require(
-        builder,
-        "node->phase_clock_mode = "
-        "SPARK_GLM52_RESIDENT_DECODE_STAGE_PHASE_CLOCK_DISABLED;",
-        "production phase-clock default",
-    )
-
-    for forbidden in (
-        "--disable-micro",
-        "--allow-dynamic",
-        "_MICRO_KERNEL_CACHE",
-        "_DYNAMIC_KERNEL_CACHE",
-        "#ifndef kDLFloat4_e2m1fn",
-    ):
-        forbid(aot, forbidden, "NVFP4 production AOT compiler")
-    for required in (
-        '"production_backend_policy": "exact_static_buckets_only"',
-        '"runtime_bucket_decomposition": "forbidden"',
-        '"runtime_diagnostic_routing_mutation": "forbidden"',
-        "selected forbidden backend",
-        "missing exact static AOT buckets",
-    ):
-        require(aot, required, "NVFP4 production AOT compiler")
-    require(
-        makefile,
-        "B12X_AOT_TOKENS ?= "
-        "1,2,4,6,8,12,16,24,32,48,64,96,128,192,"
-        "256,384,512,576,768,1024",
-        "NVFP4 exact MTP-tree and DSpark bucket set",
-    )
-    for text, label in (
-        (dspark_backend, "DSpark backend"),
-        (dspark_backend_header, "DSpark backend ABI"),
-    ):
-        forbid(
-            text,
-            "SparkGlm52DsparkDraftBackendStageLane",
-            label,
+    targets = json.loads(
+        (repository / "model_contracts/must_work_targets.json").read_text(
+            encoding="utf-8"
         )
-        forbid(
-            text,
-            "SparkGlm52DsparkDraftBackendDraft(",
-            label,
-        )
-    for forbidden in (
-        "SparkGlm52DsparkBuildQueryBlockKernel",
-        "SparkGlm52DsparkGatherMarkovEmbeddingKernel",
-        "SparkGlm52DsparkHeadNormRopeRowsKernel",
-        "SparkGlm52DsparkBlockAttentionKernel",
-        "SparkGlm52DsparkArgmaxKernel",
-        "SparkGlm52DsparkConfidenceKernel",
-        "SparkGlm52DsparkAppendContextLayer",
-        "SparkGlm52DsparkBlockAttention(",
-        "SparkGlm52DsparkBlockMlp(",
-        "SparkGlm52DsparkLayerForward(",
-        "SparkGlm52DsparkRunHeadStep(",
+    )
+
+    require(
+        layer,
+        "static int32_t Glm52LaunchBf16Linear(",
+        "GLM 5.2 BF16 non-expert linear path",
+    )
+    for needle in (
+        "buffers->absorbed.query_latent_weight,",
+        "buffers->absorbed.query_rope_weight,",
+        "buffers->absorbed.key_rope_weight,",
+        "buffers->absorbed.kv_latent_weight,",
     ):
-        forbid(
-            dspark_backend,
-            forbidden,
-            "DSpark batch-only CUDA backend",
-        )
-    dspark_batch_path = dspark_backend[dspark_backend.index(
-        "SparkStatus SparkGlm52DsparkDraftBackendStageBatch("):]
-    require(
-        dspark_batch_path,
-        "SparkGlm52DsparkDraftBackendLaunchDraftBatch(",
-        "DSpark batched production path",
+        require(layer, needle, "GLM 5.2 BF16 attention projections")
+    # The kv projections write the cache-slot layout directly; the join launch
+    # that used to assemble the slot row must not come back.
+    forbid(
+        layer,
+        "LmJoinRowsKernel",
+        "GLM 5.2 KV slot assembly",
     )
     require(
-        dspark_batch_path,
-        "SparkGlm52DsparkDraftBackendTakeBatchResults(",
-        "DSpark batched production path",
+        layer,
+        "LmGemmLaunch<\n        LmBf16Format,",
+        "GLM 5.2 BF16 router",
     )
-    require(
-        dspark_batch_path,
-        "cudaEventQuery(",
-        "DSpark event-polled production path",
+    count_exact(
+        layer,
+        "LmGemmWeightOnlyLaunch<\n        LmFp8,",
+        2,
+        "GLM 5.2 FP8 expert GEMMs",
+    )
+    count_exact(
+        layer,
+        "gemm.scale_a = LmScaleTensorNone();",
+        4,
+        "GLM 5.2 BF16 activation scale bypass",
+    )
+    count_exact(
+        layer,
+        "gemm.scale_b = LmScaleTensorBlockF32(",
+        2,
+        "GLM 5.2 FP8 expert scale planes",
     )
     forbid(
-        dspark_batch_path,
-        "cudaStreamSynchronize(",
-        "DSpark batched production path",
+        layer,
+        "LmQuantiseRowsKernel",
+        "GLM 5.2 shipping layer path",
+    )
+    forbid(
+        layer,
+        "LmGemmLaunch<LmFp8",
+        "GLM 5.2 symmetric FP8 execution",
     )
 
-    forbid(sentinel, "__global__", "inactive B12x sentinel")
-    forbid(sentinel, "cuda", "inactive B12x sentinel")
+    for field in (
+        "attention_norm_weight_bf16",
+        "post_attention_norm_weight_bf16",
+        "attention_output_weight_bf16",
+        "dense_gate_weight_bf16",
+        "dense_up_weight_bf16",
+        "dense_down_weight_bf16",
+        "moe_router_weight_bf16",
+    ):
+        require(binder, field, "GLM 5.2 BF16 binder")
+    for field in (
+        "w1_weight_fp8_e4m3",
+        "w1_scale_inv_f32",
+        "w2_weight_fp8_e4m3",
+        "w2_scale_inv_f32",
+    ):
+        require(binder, field, "GLM 5.2 FP8 expert binder")
+    require(
+        binder,
+        "SparkGlm52ResidentDecodeStageFp8MoePlanIsUsable(node)",
+        "GLM 5.2 FP8 plan validation",
+    )
 
-    tool = load_aot_tool(repository)
-    try:
-        tool.find_export_for_bucket({}, "micro", 1)
-    except tool.AotFailure:
-        pass
-    else:
-        raise AssertionError("micro AOT backend unexpectedly accepted")
-    try:
-        tool.bucket_geometry("dynamic", 1)
-    except tool.AotFailure:
-        pass
-    else:
-        raise AssertionError("dynamic AOT backend unexpectedly accepted")
+    require(
+        unity,
+        "Glm52GemmBf16(",
+        "GLM 5.2 BF16 GEMM export",
+    )
+    require(
+        unity,
+        "Glm52GemmFp8ExpertWeightBf16Activation(",
+        "GLM 5.2 FP8-weight/BF16-activation export",
+    )
+    require(
+        unity,
+        "Glm52LayerMoeFp8ExpertWeightBf16Activation(",
+        "GLM 5.2 mixed-precision MoE export",
+    )
+    for forbidden in (
+        "Glm52LayerAttentionFp8",
+        "Glm52LayerDenseMlpFp8",
+        "Glm52LayerMoeFp8(",
+        "Glm52LayerAttentionInt7",
+        "Glm52LayerDenseMlpInt7",
+        "Glm52LayerMoeInt7",
+        "Glm52GemmInt7",
+        "Glm52GemmInt6",
+        "Glm52GemmInt8",
+        "Glm52GemmNvfp4",
+        "LmQuantiseRowsKernel<LmFp8",
+    ):
+        forbid(unity, forbidden, "GLM 5.2 shipping unity surface")
+
+    require(
+        stage_pack,
+        "validate_bf16_non_expert_source_dtypes(",
+        "GLM 5.2 stage-pack precision validator",
+    )
+    require(
+        stage_pack,
+        'f"{model_quantization} non-expert weights must be BF16: "',
+        "GLM 5.2 stage-pack BF16 rejection",
+    )
+    require(
+        expert_pack,
+        'expected FP8 E4M3',
+        "GLM 5.2 expert-pack FP8 rejection",
+    )
+    require(
+        expert_pack,
+        '"format": "sparkpipe.glm52.fp8.resident_moe_pack.v1"',
+        "GLM 5.2 FP8 expert-pack identity",
+    )
+
+    glm_targets = [
+        target for target in targets["targets"]
+        if target.get("model_family") == "glm52"
+    ]
+    if len(glm_targets) != 1:
+        raise AssertionError("must-work manifest must contain exactly one GLM 5.2 target")
+    precision = glm_targets[0]
+    if precision["routed_expert_weight_format"] != "fp8_e4m3":
+        raise AssertionError("GLM 5.2 routed experts are not pinned to FP8 E4M3")
+    if precision["routed_expert_activation_format"] != "bf16":
+        raise AssertionError("GLM 5.2 expert activations are not pinned to BF16")
+    if precision["non_expert_weight_format"] != "bf16":
+        raise AssertionError("GLM 5.2 non-expert weights are not pinned to BF16")
+    if precision["non_expert_activation_format"] != "bf16":
+        raise AssertionError("GLM 5.2 non-expert activations are not pinned to BF16")
+    if precision["accumulator_format"] != "fp32":
+        raise AssertionError("GLM 5.2 accumulators are not pinned to FP32")
+
+    print("PASS GLM-5.2 FP8-expert/BF16-rest CUDA source contract")
     return 0
 
 

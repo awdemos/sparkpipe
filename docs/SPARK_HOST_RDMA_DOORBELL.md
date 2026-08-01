@@ -10,16 +10,24 @@ payload copy or a CUDA device memcpy.
 
 ## Small-frame path
 
-Packets at or below 256 KiB use one RC queue pair. The receiver posts a
-zero-length receive work request and advertises a persistent registered boundary
+Packets at or below 256 KiB use a single RC queue pair per packet,
+selected as `receive_index % lane_count` from the receive slot the
+receiver advertises. The receiver posts a zero-length receive work
+request on that lane and advertises a persistent registered boundary
 region. The sender performs an ordered RDMA write, using
-`IBV_WR_RDMA_WRITE_WITH_IMM` for the final region. The immediate value identifies
-the pending receive slot. A completion-channel file descriptor wakes the normal
-SparkPipe transport event loop; no TCP transfer-complete message is sent.
+`IBV_WR_RDMA_WRITE_WITH_IMM` for the final region. The immediate value
+identifies the pending receive slot, and both endpoints derive the same
+lane from it without any extra control traffic. A completion-channel
+file descriptor wakes the normal SparkPipe transport event loop; no TCP
+transfer-complete message is sent.
 
-One queue pair is intentional for B1 and other small frames. Striping a roughly
-12 KiB hidden vector over eight queue pairs costs more work requests and
-completions while losing the ordering property needed for a single doorbell.
+One queue pair per packet is intentional for B1 and other small frames.
+Striping a roughly 12 KiB hidden vector over eight queue pairs costs
+more work requests and completions while losing the ordering property
+needed for a single doorbell. Spreading whole doorbell packets across
+lanes by receive slot keeps that per-packet ordering while letting
+independent small frames use the full QP set instead of queueing
+behind lane 0.
 
 The sender waits for its local send completion before returning. The current
 node-context builder owns one mapped output buffer per boundary, so returning
@@ -64,19 +72,24 @@ ConnectX ports.
 
 ## Registration lifetime
 
-Mapped boundary memory regions are registered once and retained until transport
-destruction. CUDA-visible pointers passed to the transport must therefore
-remain allocated and keep the same backing allocation until destruction. Exact
-pointer-and-size cache hits intentionally bypass repeated CUDA pointer-attribute
-queries under that lifetime contract. The cache fails closed when full instead
-of deregistering an entry that may still be advertised to a peer. With the PP13
-builder, each edge reuses fixed hidden and sideband pointers, so steady-state
-packets hit the cache.
+Mapped boundary memory regions are registered once and cached; the cache
+evicts the least-recently-used registration when full rather than
+failing closed. A registration is never evicted while in-flight work
+references it: posted send work requests pin their source regions until
+completion, and an advertised receive region stays pinned until the
+receive completes, so a peer can never write to a deregistered rkey.
+CUDA-visible pointers passed to the transport must therefore remain
+allocated and keep the same backing allocation while any transfer
+referencing them is in flight. Exact pointer-and-size cache hits
+intentionally bypass repeated CUDA pointer-attribute queries under that
+lifetime contract. With the PP13 builder, each edge reuses fixed hidden
+and sideband pointers, so steady-state packets hit the cache and no
+eviction occurs.
 
 When `SPARKPIPE_HIDDEN_SPARK_HOST_RDMA_DEBUG=1`, transport destruction logs
 doorbell sends, striped sends, pointer-attribute queries,
-memory-registration count, and MR-cache hits. The only other accepted value is
-`0`.
+memory-registration count, MR-cache evictions, and MR-cache hits. The
+only other accepted value is `0`.
 
 ## Hardware validation
 

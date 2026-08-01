@@ -814,7 +814,7 @@ SparkStatus SparkServiceInitialize(
     service->default_pump_dispatch_steps =
         SparkServiceNormalizePumpDispatchSteps(
             configuration->default_pump_dispatch_steps);
-    service->next_generated_request_id = SparkNormalizeRequestIdBase(SPARK_SERVICE_DEFAULT_REQUEST_ID_BASE, 
+    service->next_generated_request_id = SparkNormalizeRequestIdBase(SPARK_SERVICE_DEFAULT_REQUEST_ID_BASE,
         configuration->request_id_base);
     service->next_generated_client_id = 1u;
     service->serving_engine = configuration->serving_engine;

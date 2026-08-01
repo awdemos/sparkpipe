@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import re
 import sys
 from pathlib import Path
 
@@ -21,17 +22,20 @@ def main():
     if "(args->output_bf16 == 0) == (args->output_f32 == 0)" not in launch:
         failures.append("GEMM output selection is not fail-closed")
     for model in models:
-        source = (
-            ROOT / "inference/llms" / model / "layer.cuh"
-        ).read_text()
-        if "gemm.output_f32 = b->router_logits;" not in source:
+        source = (ROOT / "inference" / "llms" / model / "layer.cuh").read_text()
+        if not re.search(r"gemm\.output_f32\s*=\s*\w+->router_logits\s*;", source):
             failures.append(f"{model} router is not FP32")
-        if "output_bf16 = b->router_logits;" in source:
+        if re.search(r"output_bf16\s*=\s*\w+->router_logits\s*;", source):
             failures.append(f"{model} router still writes BF16")
-    kimi = (
-        ROOT / "inference/llms/kimi_k3/layer.cuh"
-    ).read_text()
-    if "LmTopkSmallKernel<K3_LAYER_THREADS,K3_TOP_K,true,1u,1u,true>" not in kimi:
+    kimi = (ROOT / "inference/llms/kimi_k3/layer.cuh").read_text()
+    sigmoid_topk = re.search(
+        r"LmTopkSmallKernel<\s*K3_LAYER_THREADS\s*,\s*K3_TOP_K\s*,"
+        r"\s*true\s*,\s*1u\s*,\s*1u\s*,"
+        r"\s*(?:true|LM_TOPK_SCORE_SIGMOID)\s*>",
+        kimi,
+        re.S,
+    )
+    if sigmoid_topk is None:
         failures.append("K3 FP32 logits do not take sigmoid in top-k")
     if failures:
         print("\n".join(failures))

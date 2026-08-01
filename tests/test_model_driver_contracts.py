@@ -40,16 +40,24 @@ def main() -> int:
         # something it could not express as a parameter, which is a claim that
         # should be rare and should say why.
         defines = len(re.findall(r"^\s*(static\s+)?__global__", unity_text, re.M))
-        instantiates = unity_text.count("template __global__")
+        explicit_instantiations = unity_text.count("template __global__")
+        templated_launch_bindings = len(re.findall(
+            r"\b(?:LmGemmLaunch|LmGemmWeightOnlyLaunch)\s*<",
+            unity_text))
+        exported_entry_points = len(re.findall(
+            r'extern\s+"C"\s+int32_t\s+[A-Za-z_][A-Za-z0-9_]*\s*\(',
+            unity_text))
+        binding_sites = explicit_instantiations + templated_launch_bindings
         if defines:
-            print(f"  FAIL {name}: unity.cu defines {defines} kernels; it should only instantiate")
+            print(f"  FAIL {name}: unity.cu defines {defines} kernels; it should only bind shared kernels")
             failures += 1
-        if not instantiates:
-            print(f"  FAIL {name}: unity.cu instantiates nothing")
+        if binding_sites == 0 and exported_entry_points == 0:
+            print(f"  FAIL {name}: unity.cu binds no shared kernel or model entry point")
             failures += 1
-        if failures == 0 or True:
-            print(f"  ok   {name}: {len(config_text.splitlines())} line config, "
-                  f"{instantiates} kernels instantiated, 0 defined")
+        print(f"  ok   {name}: {len(config_text.splitlines())} line config, "
+              f"{explicit_instantiations} explicit instantiations, "
+              f"{templated_launch_bindings} templated launch bindings, "
+              f"{exported_entry_points} entry points, 0 kernels defined")
     print(f"\n{'FAIL' if failures else 'PASS'} ({failures} failing)")
     return 1 if failures else 0
 

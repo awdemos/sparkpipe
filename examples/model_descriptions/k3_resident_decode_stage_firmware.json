@@ -2,503 +2,65 @@
   "schema_version": 1,
   "model": {
     "id": "moonshot.kimi-k3.resident-decode-stage-firmware",
-    "revision": "mxfp4-h7168-l72-e896-k16-kda128-mla512-rv256-v1"
+    "revision": "mxfp4-routed-bf16-rest-h7168-l93-e896-k16-kda69-mla24-v2"
   },
   "metadata": {
     "architecture": "k3_resident_decode_stage",
-    "purpose": "proposed resident decode-stage firmware for Kimi K3: 3:1 Kimi Delta Attention to gated NoPE MLA, Block Attention Residuals, Stable LatentMoE with SiTU experts, MXFP4 weights, restricted logits",
+    "purpose": "Kimi K3 text decode firmware with MXFP4 routed experts, BF16 non-expert tensors, FP32 accumulation and recurrent state",
+    "generated_from": "model_contracts/k3_authoritative.json",
     "provenance": {
-      "status": "proposed driver, built before the weights and technical report land on 2026-07-27",
-      "disclosed_source": [
-        "kimi.com/blog/kimi-k3",
-        "platform.kimi.ai",
-        "github.com/MoonshotAI/Attention-Residuals",
-        "arXiv:2603.15031 (Attention Residuals)",
-        "arXiv:2510.26692 (Kimi Linear)"
-      ],
-      "disclosed": [
-        "2.8T total parameters, MoE",
-        "Stable LatentMoE activating 16 of 896 experts alongside shared experts",
-        "Kimi Delta Attention hybrid linear attention, 3:1 against full attention",
-        "Block Attention Residuals over roughly 8 blocks",
-        "Gated MLA (per-head gates on attention output)",
-        "SiTU activation: sigmoid(gate) * tanh(up)",
-        "MXFP4 weights with MXFP8 activations, QAT from SFT, group size 32",
-        "1M context, native vision, always-on thinking"
-      ],
-      "guessed": [
-        "hidden 7168, 72 layers (71 routed + 1 leading dense), moe intermediate 2048: the identity 7168*2048*3*896*71 = 2.801T total and 16*71 experts = 50.0B active closes on the disclosed numbers",
-        "K2-lineage MLA dims (query_a 1536, latent 512, qk_nope 128, v 128, 64 heads) with rope dimension 0 per Kimi Linear NoPE",
-        "KDA 64 heads at dk = dv = 128, low-rank 128 for decay/beta/gate projections",
-        "attention period 4 with MLA last in the period",
-        "AttnRes block span 9 layers, which yields the paper's ~8 blocks at 72 layers",
-        "vocab 163840, dense intermediate 18432, rms eps 1e-05, routed scaling 2.5",
-        "log decay parameterized as -softplus(low_rank(x))"
-      ],
-      "train_time_only_not_implemented": [
-        "Quantile Balancing",
-        "Per-Head Muon"
-      ]
+      "technical_report": "Kimi K3: Open Frontier Intelligence, sections 2 and 5, Table 1",
+      "checkpoint_config": "moonshotai/Kimi-K3-MXFP4 config.json and modeling_kimi_linear.py",
+      "status": "source-integrated, CUDA and target-hardware qualification not measured"
     },
     "module_geometry": {
       "hidden_dimension": 7168,
-      "layer_count": 72,
-      "first_routed_layer": 1,
-      "attention_period": 4,
-      "global_attention_phase": 3,
-      "kda_layer_count": 54,
-      "mla_layer_count": 18,
-      "kda_head_count": 64,
+      "layer_count": 93,
+      "kda_layer_count": 69,
+      "mla_layer_count": 24,
+      "kda_head_count": 96,
       "kda_head_key_dimension": 128,
       "kda_head_value_dimension": 128,
-      "kda_low_rank_dimension": 128,
-      "kda_chunk_tokens": 64,
-      "mla_head_count": 64,
+      "mla_head_count": 96,
       "mla_query_a_dimension": 1536,
       "mla_latent_dimension": 512,
       "mla_qk_nope_head_dimension": 128,
-      "mla_rope_dimension": 0,
+      "mla_unrotated_dimension": 64,
       "mla_value_head_dimension": 128,
-      "mla_cache_block_tokens": 64,
       "moe_expert_count": 896,
       "moe_top_k": 16,
-      "moe_shared_expert_count": 1,
-      "moe_intermediate_dimension": 2048,
-      "dense_intermediate_dimension": 18432,
-      "moe_routed_scaling_factor": 2.5,
-      "attnres_block_layers": 9,
+      "moe_shared_expert_count": 2,
+      "moe_latent_dimension": 3584,
+      "moe_intermediate_dimension": 3072,
+      "dense_intermediate_dimension": 33792,
+      "attnres_block_layers": 12,
       "attnres_block_count": 8,
-      "attnres_max_representations": 10,
-      "restricted_vocab_count": 256,
-      "mxfp4_group_size": 32
+      "attnres_max_representations": 9,
+      "vocab_count": 163840
     },
-    "hf_config_geometry": {
-      "hidden_size": 7168,
-      "num_hidden_layers": 72,
-      "vocab_size": 163840,
-      "num_attention_heads": 64,
-      "q_lora_rank": 1536,
-      "kv_lora_rank": 512,
-      "qk_nope_head_dim": 128,
-      "qk_rope_head_dim": 0,
-      "v_head_dim": 128,
-      "n_routed_experts": 896,
-      "n_shared_experts": 1,
-      "num_experts_per_tok": 16,
-      "moe_intermediate_size": 2048,
-      "intermediate_size": 18432,
-      "first_k_dense_replace": 1,
-      "rms_norm_eps": 1e-05,
-      "routed_scaling_factor": 2.5,
-      "norm_topk_prob": true,
-      "hidden_act": "situ",
-      "linear_attn_config": {
-        "kind": "kimi_delta_attention",
-        "full_attention_period": 4,
-        "full_attention_phase": 3,
-        "head_dim": 128,
-        "num_heads": 64,
-        "short_conv_kernel_size": 0,
-        "gate_low_rank_dim": 128
-      },
-      "attn_res_config": {
-        "kind": "block_attention_residuals",
-        "block_size": 18,
-        "sites_per_layer": 2,
-        "key_norm": "rmsnorm",
-        "query": "learned_pseudo_query_per_site"
-      },
-      "quantization_config": {
-        "quant_method": "mxfp4",
-        "weight_format": "e2m1",
-        "scale_format": "e8m0",
-        "group_size": 32,
-        "activation_format": "mxfp8_e4m3"
-      }
+    "precision_contract": {
+      "routed_expert_weights": "mxfp4_e2m1",
+      "routed_expert_scales": "e8m0",
+      "routed_expert_group_size": 32,
+      "routed_expert_activations": "bf16",
+      "non_expert_weights": "bf16",
+      "non_expert_activations": "bf16",
+      "accumulator": "fp32",
+      "kda_state": "fp32"
     },
-    "hf_tensor_contract": [
-      {
-        "name": "model.embed_tokens.weight",
-        "dtype": "BF16",
-        "shape": [
-          163840,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{layer}.attn_res.attn.query",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{layer}.attn_res.attn.key_norm.weight",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{layer}.attn_res.mlp.query",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{layer}.attn_res.mlp.key_norm.weight",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{layer}.input_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{layer}.post_attention_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{kda_layer}.linear_attn.q_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          8192,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{kda_layer}.linear_attn.k_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          8192,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{kda_layer}.linear_attn.v_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          8192,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{kda_layer}.linear_attn.f_a_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          128,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{kda_layer}.linear_attn.f_b_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          8192,
-          128
-        ]
-      },
-      {
-        "name": "model.layers.{kda_layer}.linear_attn.b_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          64,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{kda_layer}.linear_attn.g_a_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          128,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{kda_layer}.linear_attn.g_b_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          8192,
-          128
-        ]
-      },
-      {
-        "name": "model.layers.{kda_layer}.linear_attn.o_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          7168,
-          8192
-        ]
-      },
-      {
-        "name": "model.layers.{kda_layer}.linear_attn.norm.weight",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          128
-        ]
-      },
-      {
-        "name": "model.layers.{mla_layer}.self_attn.q_a_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          1536,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{mla_layer}.self_attn.q_a_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          1536
-        ]
-      },
-      {
-        "name": "model.layers.{mla_layer}.self_attn.q_b_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          8192,
-          1536
-        ]
-      },
-      {
-        "name": "model.layers.{mla_layer}.self_attn.kv_a_proj_with_mqa.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          512,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{mla_layer}.self_attn.kv_a_layernorm.weight",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          512
-        ]
-      },
-      {
-        "name": "model.layers.{mla_layer}.self_attn.kv_b_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          16384,
-          512
-        ]
-      },
-      {
-        "name": "model.layers.{mla_layer}.self_attn.head_gate_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          64,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{mla_layer}.self_attn.o_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          7168,
-          8192
-        ]
-      },
-      {
-        "name": "model.layers.{routed_layer}.mlp.gate.weight",
-        "dtype": "BF16",
-        "shape": [
-          896,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{routed_layer}.mlp.gate.e_score_correction_bias",
-        "dtype": "F32",
-        "shape": [
-          1,
-          896
-        ]
-      },
-      {
-        "name": "model.layers.{routed_layer}.mlp.experts.gate_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          896,
-          2048,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{routed_layer}.mlp.experts.up_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          896,
-          2048,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{routed_layer}.mlp.experts.down_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          896,
-          7168,
-          2048
-        ]
-      },
-      {
-        "name": "model.layers.{routed_layer}.mlp.shared_experts.gate_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          2048,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{routed_layer}.mlp.shared_experts.up_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          2048,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.{routed_layer}.mlp.shared_experts.down_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          7168,
-          2048
-        ]
-      },
-      {
-        "name": "model.layers.0.mlp.gate_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          18432,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.0.mlp.up_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          18432,
-          7168
-        ]
-      },
-      {
-        "name": "model.layers.0.mlp.down_proj.weight",
-        "dtype": "MXFP4",
-        "shape": [
-          7168,
-          18432
-        ]
-      },
-      {
-        "name": "model.attn_res.final.query",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          7168
-        ]
-      },
-      {
-        "name": "model.attn_res.final.key_norm.weight",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          7168
-        ]
-      },
-      {
-        "name": "model.norm.weight",
-        "dtype": "BF16",
-        "shape": [
-          1,
-          7168
-        ]
-      },
-      {
-        "name": "lm_head.restricted.weight",
-        "dtype": "BF16",
-        "shape": [
-          256,
-          7168
-        ]
-      },
-      {
-        "name": "lm_head.restricted.token_ids",
-        "dtype": "U32",
-        "shape": [
-          1,
-          256
-        ]
-      }
-    ],
-    "resident_footprint": {
-      "mxfp4_weight_bytes": 1498024968192,
-      "dense_weight_bytes": 3271058432,
-      "stage_pack_bytes": 1501296121600,
-      "stage_pack_gib": 1398.2,
-      "note": "measured by k3_pack_synthesize --dry-run at this geometry; 1.4 TiB does not fit one GB10, so a real deployment is pipeline-parallel and this v1 single-node module cannot host the full model"
-    },
-    "supported_quantization_variants": [
-      "mxfp4",
-      "bf16"
-    ],
     "qualification": {
       "status": "NOT_MEASURED",
       "production_ready": false,
+      "cuda13_sm121a_compile": "NOT_RUN",
       "gpu_numerical_correctness": "NOT_MEASURED",
       "gpu_latency": "NOT_MEASURED",
-      "gpu_throughput": "NOT_MEASURED",
-      "controlled_bring_up_only": true
-    },
-    "runtime_contract": {
-      "firmware_module_abi": 4,
-      "model_driver_abi": 6,
-      "completion": "submit_return",
-      "fallback_allowed": false,
-      "runtime_backend_selection": "forbidden",
-      "model_frame_context": "SparkK3ResidentDecodeStageFrameContext",
-      "driver_dispatch_slot_semantics": "advisory scheduler ticket only; this module rejects DRIVER_DISPATCH_SLOT_VALID",
-      "configuration_source": "strict process environment pending migration into immutable module configuration JSON",
-      "required_environment": [
-        "K3_ALLOW_UNQUALIFIED_EXECUTION",
-        "K3_STAGE_PACK",
-        "K3_MAX_LANES",
-        "K3_MAX_CONTEXT_TOKENS",
-        "K3_PIPELINE_SLOTS",
-        "K3_STAGE_COUNT",
-        "K3_STAGE_INDEX",
-        "K3_STAGE_FIRST_LAYER",
-        "K3_STAGE_LAYER_COUNT"
-      ],
-      "notes": [
-        "the K3 geometry is provisional and has no retained GPU qualification receipt",
-        "prefill and decode lane identities are carried by the model-specific frame context, never by driver_dispatch_slot",
-        "host token input is required only on the embedding stage and host token output only on the head stage"
-      ]
+      "gpu_throughput": "NOT_MEASURED"
     }
   },
   "stages": [
     {
-      "name": "resident_decode",
-      "target": "cuda.sm121.k3.resident_decode_stage.mxfp4",
+      "name": "k3_resident_decode_stage",
+      "target": "cuda.sm121.k3.resident_decode_stage.mxfp4_routed_bf16_rest",
       "programs": [
         {
           "name": "resident_decode",
@@ -509,7 +71,7 @@
             "flags": [
               "stream_ordered",
               "driver_owns_resident_state",
-              "driver_owns_kv_cache",
+              "driver_owns_hybrid_cache",
               "fixed_firmware",
               "requires_hidden_transport",
               "no_file_transport",
@@ -519,7 +81,7 @@
           "operations": [
             {
               "name": "k3_resident_decode_stage",
-              "module": "spark.k3.resident_decode_stage.mxfp4.h7168.l72.e896.k16.kda128.mla512.rv256.v1",
+              "module": "spark.k3.resident_decode_stage.mxfp4_routed_bf16_rest.h7168.l93.kda69.mla24.v2",
               "configuration": {
                 "qualification_status": "NOT_MEASURED",
                 "production_ready": false,

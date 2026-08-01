@@ -9,7 +9,6 @@
 #include "sparkpipe/spark_ring_runtime.h"
 #include "sparkpipe/spark_model_description.h"
 
-
 static void SparkTestEnsureBuildDirectory(void)
 {
     if (mkdir("build", 0777) != 0 && errno != EEXIST)
@@ -18,13 +17,12 @@ static void SparkTestEnsureBuildDirectory(void)
     }
 }
 
-int main(void)
+static void SparkTestFirmwareDemoDescription(void)
 {
     SparkModelDescription description;
     const SparkModelStageDescription *cpu_stage;
     const SparkModelProgramDescription *decode_program;
     char error_buffer[1024];
-    FILE *invalid_file;
 
     SparkModelDescriptionReset(&description);
     assert(SparkLoadModelDescription(
@@ -45,9 +43,22 @@ int main(void)
     assert(decode_program->program_id == 1u);
     assert(decode_program->max_inflight == 4u);
     assert(decode_program->operation_count == 2u);
-    assert(strcmp(decode_program->operations[0].module_id, "spark.test.add_one.v1") == 0);
-    assert(strcmp(decode_program->operations[1].module_id, "spark.test.double.v1") == 0);
+    assert(strcmp(
+               decode_program->operations[0].module_id,
+               "spark.test.add_one.v1") == 0);
+    assert(strcmp(
+               decode_program->operations[1].module_id,
+               "spark.test.double.v1") == 0);
     SparkModelDescriptionDestroy(&description);
+}
+
+static void SparkTestGlm52PrecisionDescription(void)
+{
+    SparkModelDescription description;
+    const SparkModelStageDescription *resident_stage;
+    const SparkModelProgramDescription *decode_program;
+    const char *configuration_json;
+    char error_buffer[1024];
 
     SparkModelDescriptionReset(&description);
     assert(SparkLoadModelDescription(
@@ -55,11 +66,16 @@ int main(void)
                &description,
                error_buffer,
                sizeof(error_buffer)) == SPARK_STATUS_OK);
-    cpu_stage = SparkFindModelStage(&description, "resident_decode");
-    assert(cpu_stage != 0);
-    decode_program = SparkFindModelProgram(cpu_stage, "decode");
+    assert(strcmp(
+               description.model_revision,
+               "fp8-experts-bf16-rest-sm121a-v1") == 0);
+
+    resident_stage = SparkFindModelStage(&description, "resident_decode");
+    assert(resident_stage != 0);
+    decode_program = SparkFindModelProgram(resident_stage, "decode");
     assert(decode_program != 0);
     assert(decode_program->max_inflight == 1u);
+    assert(decode_program->operation_count == 1u);
     assert((decode_program->scheduling.flags &
         SPARK_MODEL_DRIVER_PROGRAM_FLAG_DRIVER_OWNS_KV_CACHE) != 0u);
     assert((decode_program->scheduling.flags &
@@ -89,26 +105,61 @@ int main(void)
     assert(decode_program->scheduling.private_queue_count == 1u);
     assert(decode_program->scheduling.validated_latency_ns == 0u);
     assert(decode_program->scheduling.host_staging_bytes_per_submit_ceiling == 0u);
+
     assert(strstr(description.metadata_json,
+        "glm52_fp8_experts_bf16_rest") != 0);
     assert(strstr(description.metadata_json,
+        "routed_expert_weight_format") != 0);
     assert(strstr(description.metadata_json,
-        "sparkpipe.glm52.sm121.b12x.resident_moe_pack.v1") != 0);
+        "fp8_e4m3") != 0);
     assert(strstr(description.metadata_json,
-        "mtp_b1024_minimum_token_count") != 0);
+        "routed_expert_activation_format") != 0);
     assert(strstr(description.metadata_json,
-        "dspark_b1024_minimum_token_count") != 0);
+        "non_expert_weight_format") != 0);
     assert(strstr(description.metadata_json,
-        "only routed experts use NVFP4") != 0);
+        "runtime_precision_selection") != 0);
     assert(strstr(description.metadata_json,
-        "source_model_index_sha256") != 0);
-    assert(strstr(decode_program->operations[0].configuration_json,
-    assert(strstr(decode_program->operations[0].configuration_json,
-        "SparkResidentDecodeStageB12xMoeResidentBindingCreateFromPackFile") != 0);
-    assert(strstr(decode_program->operations[0].configuration_json,
-        "SparkGlm52Sm121FlashInferB12xMoeActiveKernelManifestHashLow64") != 0);
-    assert(strstr(decode_program->operations[0].configuration_json,
-        "glm52_nvfp4_artifact_preflight.py") != 0);
+        "forbidden") != 0);
+    assert(strstr(description.metadata_json,
+        "production_ready") != 0);
+
+    configuration_json = decode_program->operations[0].configuration_json;
+    assert(strstr(configuration_json,
+        "required_arch") != 0);
+    assert(strstr(configuration_json,
+        "sm_121a") != 0);
+    assert(strstr(configuration_json,
+        "spark.glm52.sm121.required_decode_stage.fp8_experts_bf16_rest.v1") != 0);
+    assert(strstr(configuration_json,
+        "precision_contract") != 0);
+    assert(strstr(configuration_json,
+        "glm52_fp8_experts_bf16_rest") != 0);
+    assert(strstr(configuration_json,
+        "Glm52GemmBf16") != 0);
+    assert(strstr(configuration_json,
+        "Glm52GemmFp8ExpertWeightBf16Activation") != 0);
+    assert(strstr(configuration_json,
+        "Glm52LayerMoeFp8ExpertWeightBf16Activation") != 0);
+    assert(strstr(configuration_json,
+        "routed_expert_weight_dtype") != 0);
+    assert(strstr(configuration_json,
+        "F8_E4M3") != 0);
+    assert(strstr(configuration_json,
+        "routed_expert_activation_dtype") != 0);
+    assert(strstr(configuration_json,
+        "BF16") != 0);
+    assert(strstr(configuration_json,
+        "runtime_backend_selection") != 0);
+    assert(strstr(configuration_json,
+        "fallback_allowed") != 0);
     SparkModelDescriptionDestroy(&description);
+}
+
+static void SparkTestDuplicateProgramRejected(void)
+{
+    SparkModelDescription description;
+    char error_buffer[1024];
+    FILE *invalid_file;
 
     SparkTestEnsureBuildDirectory();
     invalid_file = fopen("build/invalid_duplicate_model.json", "w");
@@ -129,5 +180,12 @@ int main(void)
                sizeof(error_buffer)) == SPARK_STATUS_DUPLICATE);
     assert(strstr(error_buffer, "duplicate") != 0);
     SparkModelDescriptionDestroy(&description);
+}
+
+int main(void)
+{
+    SparkTestFirmwareDemoDescription();
+    SparkTestGlm52PrecisionDescription();
+    SparkTestDuplicateProgramRejected();
     return 0;
 }

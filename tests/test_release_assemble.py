@@ -1,23 +1,45 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import hashlib
 import json
-import pathlib
+from pathlib import Path
 import subprocess
 import tempfile
 
 
-def main():
-    repository = pathlib.Path(__file__).resolve().parents[1]
+def role_by_name(manifest: dict, role_name: str) -> dict:
+    matches = [role for role in manifest["roles"] if role["name"] == role_name]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def argument_value(role: dict, argument: str) -> str:
+    arguments = role["argv"]
+    matches = [index for index, value in enumerate(arguments) if value == argument]
+    assert len(matches) == 1
+    index = matches[0]
+    assert index + 1 < len(arguments)
+    return arguments[index + 1]
+
+
+def run_tool(tool: Path, *arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["python3", str(tool), *arguments],
+        check=check,
+        capture_output=not check,
+        text=True,
+    )
+
+
+def main() -> int:
+    repository = Path(__file__).resolve().parents[1]
     tool = repository / "tools" / "sparkpipe_release_assemble.py"
+
     with tempfile.TemporaryDirectory() as directory:
-        root = pathlib.Path(directory)
+        root = Path(directory)
         template = root / "template"
-        output = root / "output"
-        diagnostic_output = root / "diagnostic-output"
-        plain_output = root / "plain-output"
-        nvfp4_output = root / "nvfp4-output"
-        w8_output = root / "w8-output"
         replacement = root / "replacement.bin"
         (template / "bin").mkdir(parents=True)
         (template / "bin" / "runtime").write_bytes(b"old")
@@ -28,7 +50,13 @@ def main():
             "generation": 1,
             "git_commit": "old",
             "max_active_sequence_count": 16,
-            "files": [{"path": "bin/runtime", "bytes": 3, "sha256": "0" * 64}],
+            "files": [
+                {
+                    "path": "bin/runtime",
+                    "bytes": 3,
+                    "sha256": "0" * 64,
+                }
+            ],
             "roles": [
                 {
                     "name": "ring_rank_daemon",
@@ -38,229 +66,282 @@ def main():
                 {
                     "name": "ring_cuda_residentd",
                     "argv": [
-                        "--max-active", "16",
-                        "--fp8-pack-root", "/packs",
-                        "--stagepack-root", "/packs",
+                        "--max-active",
+                        "16",
+                        "--fp8-pack-root",
+                        "/packs",
+                        "--stagepack-root",
+                        "/packs",
                     ],
-                    "env": ["KEEP_RESIDENT=1", "SPARKPIPE_RING_TRACE=1",
-                            "SPARKPIPE_MTP_GPU_PROFILE=1"],
+                    "env": [
+                        "KEEP_RESIDENT=1",
+                        "SPARKPIPE_RING_TRACE=1",
+                        "SPARKPIPE_MTP_GPU_PROFILE=1",
+                    ],
                 },
                 {
                     "name": "spark0_gateway",
                     "argv": [
-                        "--max-active", "16",
-                        "--decode-batch-target", "13",
-                        "--fp8-pack-root", "/packs",
-                        "--stagepack-root", "/packs",
+                        "--max-active",
+                        "16",
+                        "--decode-batch-target",
+                        "13",
+                        "--fp8-pack-root",
+                        "/packs",
+                        "--stagepack-root",
+                        "/packs",
                     ],
                     "env": ["KEEP_GATEWAY=1"],
                 },
             ],
         }
-        (template / "sparkpipe.json").write_text(json.dumps(manifest),encoding="utf-8")
-        subprocess.run([
-            "python3",str(tool),
-            "--template",str(template),
-            "--output",str(diagnostic_output),
-            "--release-id","diagnostic",
-            "--git-commit","abc123",
-            "--max-active","64",
-            "--kv-pool-tokens","65536",
-            "--kv-logical-blocks","1024",
+        (template / "sparkpipe.json").write_text(
+            json.dumps(manifest),
+            encoding="utf-8",
+        )
+
+        diagnostic_output = root / "diagnostic-output"
+        run_tool(
+            tool,
+            "--template",
+            str(template),
+            "--output",
+            str(diagnostic_output),
+            "--release-id",
+            "diagnostic",
+            "--git-commit",
+            "abc123",
+            "--max-active",
+            "64",
+            "--kv-pool-tokens",
+            "65536",
+            "--kv-logical-blocks",
+            "1024",
             "--mtp",
             "--dspark",
-            "--dspark-model-dir","/models/dspark",
-            "--dspark-manifest","/models/dspark/dspark_manifest.json",
-            "--replace","bin/runtime=" + str(replacement),
-        ],check=True)
+            "--dspark-model-dir",
+            "/models/dspark",
+            "--dspark-manifest",
+            "/models/dspark/dspark_manifest.json",
+            "--replace",
+            "bin/runtime=" + str(replacement),
+        )
         diagnostic = json.loads(
-            (diagnostic_output / "sparkpipe.json").read_text(encoding="utf-8"))
-        diagnostic_by_role = {role["name"]: role for role in diagnostic["roles"]}
-        assert "SPARKPIPE_RING_TRACE=1" in diagnostic_by_role[
-            "spark0_gateway"]["env"]
-        assert "SPARKPIPE_STAGE_COMPLETION_DEBUG=1" in diagnostic_by_role[
-            "ring_cuda_residentd"]["env"]
-        assert "SPARKPIPE_STAGE_PHASE_HASH=1" in diagnostic_by_role[
-            "ring_cuda_residentd"]["env"]
-        assert "SPARKPIPE_HIDDEN_DUMP_DIR={state_root}/hidden_dumps" in (
-            diagnostic_by_role["ring_cuda_residentd"]["env"])
-        assert "SPARKPIPE_RING_TRACE=1" not in diagnostic_by_role[
-            "ring_cuda_residentd"]["env"]
-        assert "SPARKPIPE_STAGE_COMPLETION_DEBUG=1" in diagnostic_by_role[
-            "ring_rank_daemon"]["env"]
-        assert "SPARKPIPE_RING_TRACE=1" in diagnostic_by_role[
-            "ring_rank_daemon"]["env"]
-        assert "--dspark" in diagnostic_by_role["spark0_gateway"]["argv"]
-        assert "--dspark" in diagnostic_by_role[
-            "ring_cuda_residentd"]["argv"]
-        assert diagnostic_by_role["ring_cuda_residentd"]["argv"][
-            diagnostic_by_role["ring_cuda_residentd"]["argv"].index(
-                "--dspark-config") + 1] == "/models/dspark/config.json"
-        assert diagnostic_by_role["ring_cuda_residentd"]["argv"][
-            diagnostic_by_role["ring_cuda_residentd"]["argv"].index(
-                "--dspark-manifest") + 1] == (
-                    "/models/dspark/dspark_manifest.json")
-        assert diagnostic_by_role["ring_cuda_residentd"]["argv"][
-            diagnostic_by_role["ring_cuda_residentd"]["argv"].index(
-                "--dspark-safetensors") + 1] == (
-                    "/models/dspark/model.safetensors")
-        subprocess.run([
-            "python3",str(tool),
-            "--template",str(template),
-            "--output",str(output),
-            "--release-id","new",
-            "--git-commit","abc123",
-            "--max-active","64",
-            "--kv-pool-tokens","65536",
-            "--kv-logical-blocks","1024",
+            (diagnostic_output / "sparkpipe.json").read_text(encoding="utf-8")
+        )
+        gateway = role_by_name(diagnostic, "spark0_gateway")
+        resident = role_by_name(diagnostic, "ring_cuda_residentd")
+        rank = role_by_name(diagnostic, "ring_rank_daemon")
+        assert "SPARKPIPE_RING_TRACE=1" in gateway["env"]
+        assert "SPARKPIPE_STAGE_COMPLETION_DEBUG=1" in resident["env"]
+        assert "SPARKPIPE_STAGE_PHASE_HASH=1" in resident["env"]
+        assert (
+            "SPARKPIPE_HIDDEN_DUMP_DIR={state_root}/hidden_dumps"
+            in resident["env"]
+        )
+        assert "SPARKPIPE_RING_TRACE=1" not in resident["env"]
+        assert "SPARKPIPE_STAGE_COMPLETION_DEBUG=1" in rank["env"]
+        assert "SPARKPIPE_RING_TRACE=1" in rank["env"]
+        assert "--dspark" in gateway["argv"]
+        assert "--dspark" in resident["argv"]
+        assert argument_value(resident, "--dspark-config") == "/models/dspark/config.json"
+        assert argument_value(resident, "--dspark-manifest") == (
+            "/models/dspark/dspark_manifest.json"
+        )
+        assert argument_value(resident, "--dspark-safetensors") == (
+            "/models/dspark/model.safetensors"
+        )
+        assert argument_value(resident, "--model-quantization") == "fp8"
+        assert argument_value(gateway, "--model-quantization") == "fp8"
+        assert argument_value(resident, "--stagepack-root") == "/packs"
+        assert argument_value(resident, "--moe-pack-root") == "/packs"
+        assert all(
+            "--fp8-pack-root" not in role["argv"]
+            for role in diagnostic["roles"]
+        )
+
+        output = root / "output"
+        run_tool(
+            tool,
+            "--template",
+            str(template),
+            "--output",
+            str(output),
+            "--release-id",
+            "new",
+            "--git-commit",
+            "abc123",
+            "--max-active",
+            "64",
+            "--kv-pool-tokens",
+            "65536",
+            "--kv-logical-blocks",
+            "1024",
             "--mtp",
             "--without-diagnostics",
-            "--role-env-unset","ring_cuda_residentd=SPARKPIPE_MTP_GPU_PROFILE",
-            "--role-env","spark0_gateway=KEEP_GATEWAY=2",
-            "--replace","bin/runtime=" + str(replacement),
-        ],check=True)
-        result = json.loads((output / "sparkpipe.json").read_text(encoding="utf-8"))
-        expected = hashlib.sha256(b"new-runtime").hexdigest()
+            "--role-env-unset",
+            "ring_cuda_residentd=SPARKPIPE_MTP_GPU_PROFILE",
+            "--role-env",
+            "spark0_gateway=KEEP_GATEWAY=2",
+            "--replace",
+            "bin/runtime=" + str(replacement),
+        )
+        result = json.loads(
+            (output / "sparkpipe.json").read_text(encoding="utf-8")
+        )
         assert result["release_id"] == "new"
         assert result["git_commit"] == "abc123"
         assert result["max_active_sequence_count"] == 64
-        assert result["roles"][0]["argv"] == ["--max-active","64"]
-        assert result["roles"][1]["argv"] == [
-            "--max-active","64","--stagepack-root","/packs",
-            "--kv-pool-tokens","65536","--model-quantization","fp8",
-            "--moe-pack-root","/packs","--mtp"]
-        assert result["roles"][2]["argv"] == [
-            "--max-active","64","--stagepack-root","/packs",
-            "--kv-logical-blocks","1024","--model-quantization","fp8",
-            "--moe-pack-root","/packs","--mtp"]
-        assert all("--fp8-pack-root" not in role["argv"]
-                   for role in result["roles"])
+        assert result["files"][0]["bytes"] == len(b"new-runtime")
+        assert result["files"][0]["sha256"] == hashlib.sha256(
+            b"new-runtime"
+        ).hexdigest()
+        assert (output / "bin" / "runtime").read_bytes() == b"new-runtime"
+        assert list(root.glob("output.assembling.*")) == []
         for role in result["roles"]:
             assert "SPARKPIPE_RELEASE_ID=new" in role["env"]
             assert "SPARKPIPE_RELEASE_GIT_COMMIT=abc123" in role["env"]
-            assert any(item.startswith("SPARKPIPE_RELEASE_GENERATION=")
-                       for item in role["env"])
-        assert "KEEP_RANK=1" in result["roles"][0]["env"]
-        assert "KEEP_RESIDENT=1" in result["roles"][1]["env"]
-        assert "SPARKPIPE_MTP_GPU_PROFILE=1" not in result["roles"][1]["env"]
-        assert "KEEP_GATEWAY=2" in result["roles"][2]["env"]
-        assert "KEEP_GATEWAY=1" not in result["roles"][2]["env"]
+            assert any(
+                entry.startswith("SPARKPIPE_RELEASE_GENERATION=")
+                for entry in role["env"]
+            )
+        result_gateway = role_by_name(result, "spark0_gateway")
+        result_resident = role_by_name(result, "ring_cuda_residentd")
+        assert "KEEP_GATEWAY=2" in result_gateway["env"]
+        assert "KEEP_GATEWAY=1" not in result_gateway["env"]
+        assert "SPARKPIPE_MTP_GPU_PROFILE=1" not in result_resident["env"]
         diagnostic_names = {
             "SPARKPIPE_STAGE_COMPLETION_DEBUG",
             "SPARKPIPE_STAGE_PHASE_HASH",
             "SPARKPIPE_HIDDEN_DUMP_DIR",
             "SPARKPIPE_RING_TRACE",
         }
-        assert all(entry.split("=",1)[0] not in diagnostic_names
-                   for role in result["roles"] for entry in role["env"])
-        assert result["files"][0]["bytes"] == 11
-        assert result["files"][0]["sha256"] == expected
-        assert (output / "bin" / "runtime").read_bytes() == b"new-runtime"
-        assert list(root.glob("output.assembling.*")) == []
-        missing_mode = subprocess.run([
-            "python3",str(tool),
-            "--template",str(template),
-            "--output",str(root / "missing-mode"),
-            "--release-id","missing-mode",
-            "--git-commit","abc123",
-            "--kv-logical-blocks","1024",
-        ],capture_output=True,text=True)
-        assert missing_mode.returncode != 0
-        assert "one of the arguments --mtp --plain-decode is required" in (
-            missing_mode.stderr)
-        subprocess.run([
-            "python3",str(tool),
-            "--template",str(diagnostic_output),
-            "--output",str(plain_output),
-            "--release-id","plain",
-            "--git-commit","abc123",
-            "--kv-logical-blocks","1024",
+        assert all(
+            entry.split("=", 1)[0] not in diagnostic_names
+            for role in result["roles"]
+            for entry in role["env"]
+        )
+
+        plain_output = root / "plain-output"
+        run_tool(
+            tool,
+            "--template",
+            str(diagnostic_output),
+            "--output",
+            str(plain_output),
+            "--release-id",
+            "plain",
+            "--git-commit",
+            "abc123",
+            "--kv-logical-blocks",
+            "1024",
             "--plain-decode",
             "--without-diagnostics",
-        ],check=True)
+        )
         plain = json.loads(
-            (plain_output / "sparkpipe.json").read_text(encoding="utf-8"))
+            (plain_output / "sparkpipe.json").read_text(encoding="utf-8")
+        )
         assert all("--mtp" not in role["argv"] for role in plain["roles"])
         assert all("--dspark" not in role["argv"] for role in plain["roles"])
-        subprocess.run([
-            "python3",str(tool),
-            "--template",str(template),
-            "--output",str(w8_output),
-            "--release-id","w8",
-            "--git-commit","abc123",
-            "--kv-logical-blocks","1024",
-            "--stagepack-root","/home/{host}/artifacts/w8-stage",
-            "--moe-pack-root","/home/{host}/artifacts/w8-moe",
+
+        nvfp4_output = root / "nvfp4-output"
+        run_tool(
+            tool,
+            "--template",
+            str(template),
+            "--output",
+            str(nvfp4_output),
+            "--release-id",
+            "nvfp4",
+            "--git-commit",
+            "abc123",
+            "--kv-logical-blocks",
+            "1024",
+            "--model-quantization",
+            "nvfp4",
+            "--stagepack-root",
+            "/home/{host}/artifacts/nvfp4-stage",
+            "--moe-pack-root",
+            "/home/{host}/artifacts/nvfp4-moe",
             "--mtp",
-            "--dspark",
-            "--dspark-model-dir","/models/dspark",
-            "--dspark-manifest","/models/dspark/dspark_manifest.json",
-        ],check=True)
-        w8 = json.loads(
-            (w8_output / "sparkpipe.json").read_text(encoding="utf-8"))
-        w8_by_role = {role["name"]: role for role in w8["roles"]}
-        for role_name in ("spark0_gateway","ring_cuda_residentd"):
-            arguments = w8_by_role[role_name]["argv"]
-            assert arguments[arguments.index("--model-quantization") + 1] == (
-            assert arguments[arguments.index("--stagepack-root") + 1] == (
-                "/home/{host}/artifacts/w8-stage")
-            assert arguments[arguments.index("--moe-pack-root") + 1] == (
-                "/home/{host}/artifacts/w8-moe")
-            assert "--dspark" in arguments
-        subprocess.run([
-            "python3",str(tool),
-            "--template",str(template),
-            "--output",str(nvfp4_output),
-            "--release-id","nvfp4",
-            "--git-commit","abc123",
-            "--kv-logical-blocks","1024",
-            "--model-quantization","nvfp4",
-            "--stagepack-root","/home/{host}/artifacts/nvfp4-stage",
-            "--moe-pack-root","/home/{host}/artifacts/nvfp4-moe",
-            "--mtp",
-            "--dspark",
-            "--dspark-model-dir","/models/dspark",
-            "--dspark-manifest","/models/dspark/dspark_manifest.json",
-        ],check=True)
+        )
         nvfp4 = json.loads(
-            (nvfp4_output / "sparkpipe.json").read_text(encoding="utf-8"))
-        nvfp4_by_role = {role["name"]: role for role in nvfp4["roles"]}
-        for role_name in ("spark0_gateway","ring_cuda_residentd"):
-            arguments = nvfp4_by_role[role_name]["argv"]
-            assert arguments[arguments.index("--model-quantization") + 1] == (
-                "nvfp4")
-            assert arguments[arguments.index("--stagepack-root") + 1] == (
-                "/home/{host}/artifacts/nvfp4-stage")
-            assert arguments[arguments.index("--moe-pack-root") + 1] == (
-                "/home/{host}/artifacts/nvfp4-moe")
-            assert "--dspark" in arguments
-        missing_w8_stage = subprocess.run([
-            "python3",str(tool),
-            "--template",str(template),
-            "--output",str(root / "missing-w8-stage"),
-            "--release-id","missing-w8-stage",
-            "--git-commit","abc123",
-            "--kv-logical-blocks","1024",
-            "--moe-pack-root","/w8-moe",
+            (nvfp4_output / "sparkpipe.json").read_text(encoding="utf-8")
+        )
+        for role_name in ("spark0_gateway", "ring_cuda_residentd"):
+            role = role_by_name(nvfp4, role_name)
+            assert argument_value(role, "--model-quantization") == "nvfp4"
+            assert argument_value(role, "--stagepack-root") == (
+                "/home/{host}/artifacts/nvfp4-stage"
+            )
+            assert argument_value(role, "--moe-pack-root") == (
+                "/home/{host}/artifacts/nvfp4-moe"
+            )
+
+        missing_mode = run_tool(
+            tool,
+            "--template",
+            str(template),
+            "--output",
+            str(root / "missing-mode"),
+            "--release-id",
+            "missing-mode",
+            "--git-commit",
+            "abc123",
+            "--kv-logical-blocks",
+            "1024",
+            check=False,
+        )
+        assert missing_mode.returncode != 0
+        assert "one of the arguments --mtp --plain-decode is required" in (
+            missing_mode.stderr
+        )
+
+        missing_nvfp4_stage = run_tool(
+            tool,
+            "--template",
+            str(template),
+            "--output",
+            str(root / "missing-nvfp4-stage"),
+            "--release-id",
+            "missing-nvfp4-stage",
+            "--git-commit",
+            "abc123",
+            "--kv-logical-blocks",
+            "1024",
+            "--model-quantization",
+            "nvfp4",
+            "--moe-pack-root",
+            "/nvfp4-moe",
             "--mtp",
-        ],capture_output=True,text=True)
-        assert missing_w8_stage.returncode != 0
-        assert "--stagepack-root is required" in missing_w8_stage.stderr
-        missing_dspark_artifacts = subprocess.run([
-            "python3",str(tool),
-            "--template",str(template),
-            "--output",str(root / "missing-dspark-artifacts"),
-            "--release-id","missing-dspark-artifacts",
-            "--git-commit","abc123",
-            "--kv-logical-blocks","1024",
-            "--model-quantization","fp8",
+            check=False,
+        )
+        assert missing_nvfp4_stage.returncode != 0
+        assert "--stagepack-root is required" in missing_nvfp4_stage.stderr
+        assert list(root.glob("missing-nvfp4-stage.assembling.*")) == []
+
+        missing_dspark_artifacts = run_tool(
+            tool,
+            "--template",
+            str(template),
+            "--output",
+            str(root / "missing-dspark-artifacts"),
+            "--release-id",
+            "missing-dspark-artifacts",
+            "--git-commit",
+            "abc123",
+            "--kv-logical-blocks",
+            "1024",
             "--plain-decode",
             "--dspark",
-        ],capture_output=True,text=True)
+            check=False,
+        )
         assert missing_dspark_artifacts.returncode != 0
-        assert "--dspark-model-dir is required" in (
-            missing_dspark_artifacts.stderr)
+        assert "--dspark-model-dir is required" in missing_dspark_artifacts.stderr
+        assert list(root.glob("missing-dspark-artifacts.assembling.*")) == []
+
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -269,11 +269,25 @@ void LmQuantiseRowsKernel(const uint16_t *__restrict__ input_bf16, const uint32_
 	if ( threadIdx.x == 0u )
 		output_scales[((uint64_t)destination * groups) + group] = LmFloatToUe4m3(scale);
 	__syncthreads();
-	for (index = threadIdx.x * 2u; index < Format::kScaleGroup; index += THREADS * 2u)
+	static_assert(
+		(Format::kScaleGroup % 8u) == 0u,
+		"quantization groups must contain complete eight-code blocks");
+	for (index = threadIdx.x * 8u;
+		index < Format::kScaleGroup;
+		index += THREADS * 8u)
 	{
-		uint64_t bit = (((uint64_t)destination * dimension) + (group * Format::kScaleGroup) + index)
-			* Format::kStoredBits;
-		LmStoreCodePair<Format>(output_codes,bit,row[index] * inverse,row[index + 1u] * inverse);
+		float values[8];
+		uint32_t value_index;
+		uint64_t bit =
+			(((uint64_t)destination * dimension) +
+			 (group * Format::kScaleGroup) + index) *
+			Format::kStoredBits;
+
+		for (value_index = 0u; value_index < 8u; ++value_index)
+		{
+			values[value_index] = row[index + value_index] * inverse;
+		}
+		LmStoreCodeOctet<Format>(output_codes, bit, values);
 	}
 }
 
@@ -378,13 +392,27 @@ void LmFusedNormQuantiseKernel(const uint16_t *__restrict__ input_bf16, const ui
 		if ( threadIdx.x == 0u )
 			output_scales[((uint64_t)destination * groups) + group] =
 				LmFloatToUe4m3(fmaxf(absmax / Format::kMax,1.0e-8f));
-		for (index = threadIdx.x * 2u; index < Format::kScaleGroup; index += THREADS * 2u)
+		static_assert(
+			(Format::kScaleGroup % 8u) == 0u,
+			"quantization groups must contain complete eight-code blocks");
+		for (index = threadIdx.x * 8u;
+			index < Format::kScaleGroup;
+			index += THREADS * 8u)
 		{
-			uint64_t bit = (((uint64_t)destination * dimension)
-				+ (group * Format::kScaleGroup) + index) * Format::kStoredBits;
-			LmStoreCodePair<Format>(output_codes,bit,
-				row[(group * Format::kScaleGroup) + index] * inverse,
-				row[(group * Format::kScaleGroup) + index + 1u] * inverse);
+			float values[8];
+			uint32_t value_index;
+			uint64_t bit =
+				(((uint64_t)destination * dimension) +
+				 (group * Format::kScaleGroup) + index) *
+				Format::kStoredBits;
+
+			for (value_index = 0u; value_index < 8u; ++value_index)
+			{
+				values[value_index] =
+					row[(group * Format::kScaleGroup) + index + value_index] *
+					inverse;
+			}
+			LmStoreCodeOctet<Format>(output_codes, bit, values);
 		}
 		__syncthreads();
 	}

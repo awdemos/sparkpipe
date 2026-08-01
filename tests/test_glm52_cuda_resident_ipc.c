@@ -16,6 +16,34 @@ enum
     SPARK_TEST_RESIDENT_IPC_PAYLOAD_BYTES = 17u
 };
 
+static void SparkTestFinalizeDecodeMessage(
+    SparkCudaResidentIpcSubmitDecode *message)
+{
+    uint32_t lane_index;
+
+    assert(message != 0);
+    for (lane_index = 0u; lane_index < message->lane_count; ++lane_index)
+    {
+        if (message->lanes[lane_index].request_generation == 0u)
+            message->lanes[lane_index].request_generation =
+                message->lanes[lane_index].request_id + UINT64_C(1000000);
+    }
+    message->request_generation =
+        message->lanes[0u].request_generation;
+    message->step_generation = UINT64_C(0x5100000000000000) ^
+        ((uint64_t)message->dispatch_kind << 32u) ^
+        message->request_generation ^ message->lane_count;
+    if (message->step_generation == 0u)
+        message->step_generation = 1u;
+    message->step_chunk_index = 0u;
+    message->step_chunk_count = 1u;
+    message->transaction_phase = message->dispatch_kind ==
+        SPARK_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH
+            ? SPARK_DISTRIBUTED_WORK_PHASE_VERIFY
+            : SPARK_DISTRIBUTED_WORK_PHASE_DECODE;
+    message->reserved_transaction = 0u;
+}
+
 static SparkCudaResidentIpcSubmitDecode *SparkTestBuildWideDecode(
     uint32_t lane_count,
     uint32_t blocks_per_lane,
@@ -60,6 +88,7 @@ static SparkCudaResidentIpcSubmitDecode *SparkTestBuildWideDecode(
                 lane->kv_block_offset + block_index] =
                 lane_index * 4096u + block_index;
     }
+    SparkTestFinalizeDecodeMessage(message);
     *payload_bytes_out = payload_bytes;
     return message;
 }
@@ -104,6 +133,7 @@ static void SparkTestWideDecodePayload(void)
     for (uint32_t lane_index = 0u; lane_index < message->lane_count;
          ++lane_index)
         message->lanes[lane_index].speculative_token_count = 6u;
+    SparkTestFinalizeDecodeMessage(message);
     assert(SparkCudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
         SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
@@ -162,6 +192,7 @@ static void SparkTestInternalDirectoryDecodeHasNoBlockPayload(void)
         message->lanes[lane_index].context_token_count = 4096u;
         message->lanes[lane_index].input_token_id = 123u;
     }
+    SparkTestFinalizeDecodeMessage(message);
     assert(SparkCudaResidentIpcValidateSubmitDecode(
         message,payload_bytes,
         SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT) == SPARK_STATUS_OK);
@@ -226,11 +257,18 @@ static void SparkTestWideSubmitWorkUsesVariablePayload(void)
     for (lane_index = 0u; lane_index < packet->lane_count; ++lane_index)
     {
         packet->lanes[lane_index].request_id = 1000u + lane_index;
+        packet->lanes[lane_index].request_generation = 3000u + lane_index;
         packet->lanes[lane_index].sequence_id = 2000u + lane_index;
         packet->lanes[lane_index].request_slot_index = lane_index;
         packet->lanes[lane_index].speculative_token_count =
             packet->speculative_token_count;
     }
+    packet->request_id = packet->lanes[0u].request_id;
+    packet->sequence_id = packet->lanes[0u].sequence_id;
+    packet->sequence_position = packet->lanes[0u].sequence_position;
+    assert(SparkRingWorkControlFinalizeTransaction(
+        packet,SPARK_RING_WORK_CONTROL_STANDALONE_GENERATION,0u,1u) ==
+        SPARK_STATUS_OK);
     submit_bytes = SparkCudaResidentIpcCalculateSubmitWorkBytes(packet);
     assert(submit_bytes ==
         SPARK_CUDA_RESIDENT_IPC_SUBMIT_WORK_PREFIX_BYTES + packet_bytes);

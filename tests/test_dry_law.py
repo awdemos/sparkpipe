@@ -45,7 +45,7 @@ GLM_BUDGET = {
     "include/sparkpipe/spark_stage_kv_client.h": (1, "seam includes"),
     "include/sparkpipe/spark_stage_plan.h": (0, "model header (glm data)"),
     "node/backend.c": (42, "drafter wiring (glm data); kv-cache seam (A3); stage firmware (A4)"),
-    "node/rank_daemon.c": (17, "drafter wiring (glm data); kv-cache seam (A3); stage firmware (A4)"),
+    "node/rank_daemon.c": (14, "drafter wiring (glm data); kv-cache seam (A3); stage firmware (A4)"),
     "node/rank_runtime.c": (26, "seam includes"),
     "node/residentd.c": (23, "kv-cache seam (A3)"),
     "serving/spark_production_topology.c": (7, "seam includes"),
@@ -91,6 +91,8 @@ def main():
     for root in COMMON:
         for path in sorted((ROOT / root).rglob("*")):
             if not path.is_file():
+                continue
+            if "__pycache__" in path.parts or path.suffix == ".pyc":
                 continue
             rel = str(path.relative_to(ROOT))
             text = path.read_text(errors="surrogateescape")

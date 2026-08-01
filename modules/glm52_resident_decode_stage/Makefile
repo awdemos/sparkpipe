@@ -3,8 +3,11 @@ CC ?= cc
 AR ?= ar
 NVCC ?= nvcc
 CUDA_ARCH ?= sm_121a
+CUDA_COMPUTE_ARCH ?= $(subst sm_,compute_,$(CUDA_ARCH))
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3
-NVCCFLAGS ?= -std=c++17 -O3 --use_fast_math --expt-relaxed-constexpr -lineinfo -arch=$(CUDA_ARCH)
+# -arch=$(CUDA_ARCH) silently drops the architecture-specific suffix (see
+# tools/build.sh); spell the gencode pair out so sm_121a survives.
+NVCCFLAGS ?= -std=c++17 -O3 --use_fast_math --expt-relaxed-constexpr -lineinfo -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
 MODULE_LIBRARY_ROOT ?= $(REPOSITORY_ROOT)/build/module_library
 MAX_STAGE_MICROSECONDS ?= 0
 ARTIFACT_CHECK_ARGS ?=
@@ -43,11 +46,7 @@ BUILD_DIRECTORY := $(REPOSITORY_ROOT)/build/modules/glm52_resident_decode_stage
 HOST_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module.o
 VALIDATION_OBJECT = $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_glm52_validation.o
 CUDA_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda.o
-REQUIRED_STAGE_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_sm121_required_decode_stage.o
-B12X_MOE_PLAN_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_b12x_moe_plan.o
 FP8_MOE_PLAN_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_fp8_moe_plan.o
-W8LUT_MOE_PLAN_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_w8lut_moe_plan.o
-LINEAR_PLAN_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_linear_plan.o
 SERVING_ADAPTER_OBJECT := $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_serving_adapter.o
 MODULE_ARCHIVE := $(BUILD_DIRECTORY)/libglm52_resident_decode_stage.a
 ARTIFACT_CHECK_TOOL := $(BUILD_DIRECTORY)/glm52_artifact_check
@@ -63,11 +62,7 @@ B12X_GENERATED_KERNEL_TABLE_ARCHIVE := $(REPOSITORY_ROOT)/build/modules/glm52_sm
 GLM52_DSA_TOPK_LINK_ARGS := $(if $(GLM52_REQUIRED_CUDA_LINK_ARGS),$(GLM52_REQUIRED_CUDA_LINK_ARGS),$(B12X_ADAPTER_ARCHIVE) $(B12X_COMPILED_BACKEND_ARCHIVE) $(B12X_GENERATED_KERNEL_TABLE_ARCHIVE))
 HOST_DEPENDENCY := $(HOST_OBJECT:.o=.d)
 CUDA_DEPENDENCY := $(CUDA_OBJECT:.o=.d)
-REQUIRED_STAGE_DEPENDENCY := $(REQUIRED_STAGE_OBJECT:.o=.d)
-B12X_MOE_PLAN_DEPENDENCY := $(B12X_MOE_PLAN_OBJECT:.o=.d)
 FP8_MOE_PLAN_DEPENDENCY := $(FP8_MOE_PLAN_OBJECT:.o=.d)
-W8LUT_MOE_PLAN_DEPENDENCY := $(W8LUT_MOE_PLAN_OBJECT:.o=.d)
-LINEAR_PLAN_DEPENDENCY := $(LINEAR_PLAN_OBJECT:.o=.d)
 SERVING_ADAPTER_DEPENDENCY := $(SERVING_ADAPTER_OBJECT:.o=.d)
 
 .PHONY: archive cold_archive artifact_check b12x_resident_pack validate validate_dsa_topk_parity publish package clean require_sm121a require_latency_limit require_model_dir require_fast_model_dir require_validation_inputs prepare_validation_output
@@ -139,53 +134,38 @@ $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
 
 $(HOST_OBJECT): $(REPOSITORY_ROOT)/inference/stage/module.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource $(CFLAGS) \
-		-DNDEBUG -DSPARK_GLM52_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
+	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+		-DNDEBUG -DSPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
 		-fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(VALIDATION_OBJECT): source/spark_glm52_resident_decode_stage_validation.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource $(CFLAGS) \
-		-DNDEBUG -DSPARK_GLM52_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
+	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+		-DNDEBUG -DSPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
 		-fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(CUDA_OBJECT): $(REPOSITORY_ROOT)/inference/stage/dispatch.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
-# source/spark_glm52_sm121_required_decode_stage.cu was deleted. STATUS.md requires the B12x AOT path, so this cannot be
-# quietly dropped from the archive; it names the gap instead of dangling.
-$(REQUIRED_STAGE_OBJECT): | $(BUILD_DIRECTORY)
-	@echo "source/spark_glm52_sm121_required_decode_stage.cu is not in this tree; the decode stage archive cannot be built" >&2; exit 2
-
-# source/spark_glm52_resident_decode_stage_b12x_moe_plan.cu was deleted. STATUS.md requires the B12x AOT path, so this cannot be
-# quietly dropped from the archive; it names the gap instead of dangling.
-$(B12X_MOE_PLAN_OBJECT): | $(BUILD_DIRECTORY)
-	@echo "source/spark_glm52_resident_decode_stage_b12x_moe_plan.cu is not in this tree; the decode stage archive cannot be built" >&2; exit 2
+# The required SM121 stage symbols (SparkGlm52Sm121RequiredDecodeStage*) are
+# an external seam: they arrive at package link time through
+# GLM52_REQUIRED_CUDA_LINK_ARGS, never from this archive. See
+# docs/GLM52_SM121_REQUIRED_CUDA_MODULE.md.
 
 $(FP8_MOE_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_fp8_moe_plan.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
-
-# source/spark_glm52_resident_decode_stage_w8lut_moe_plan.cu was deleted. STATUS.md requires the B12x AOT path, so this cannot be
-# quietly dropped from the archive; it names the gap instead of dangling.
-$(W8LUT_MOE_PLAN_OBJECT): | $(BUILD_DIRECTORY)
-	@echo "source/spark_glm52_resident_decode_stage_w8lut_moe_plan.cu is not in this tree; the decode stage archive cannot be built" >&2; exit 2
-
-# source/spark_glm52_resident_decode_stage_linear_plan.cu was deleted. STATUS.md requires the B12x AOT path, so this cannot be
-# quietly dropped from the archive; it names the gap instead of dangling.
-$(LINEAR_PLAN_OBJECT): | $(BUILD_DIRECTORY)
-	@echo "source/spark_glm52_resident_decode_stage_linear_plan.cu is not in this tree; the decode stage archive cannot be built" >&2; exit 2
 
 $(SERVING_ADAPTER_OBJECT): $(REPOSITORY_ROOT)/inference/stage/serving_adapter.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
-$(MODULE_ARCHIVE): $(HOST_OBJECT) $(VALIDATION_OBJECT) $(CUDA_OBJECT) $(REQUIRED_STAGE_OBJECT) $(B12X_MOE_PLAN_OBJECT) $(FP8_MOE_PLAN_OBJECT) $(W8LUT_MOE_PLAN_OBJECT) $(LINEAR_PLAN_OBJECT) $(SERVING_ADAPTER_OBJECT)
+$(MODULE_ARCHIVE): $(HOST_OBJECT) $(VALIDATION_OBJECT) $(CUDA_OBJECT) $(FP8_MOE_PLAN_OBJECT) $(SERVING_ADAPTER_OBJECT)
 	rm -f $@
 	$(AR) rcs $@ $^
 
 $(ARTIFACT_CHECK_TOOL): $(REPOSITORY_ROOT)/runtime/pack/artifact_check.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -Iinclude -Isource $(CFLAGS) \
+	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
 		$< $(REPOSITORY_ROOT)/build/libsparkpipe_compiler.a $(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
 		-ldl -o $@
 
@@ -294,4 +274,4 @@ endif
 clean:
 	rm -rf $(BUILD_DIRECTORY)
 
--include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(REQUIRED_STAGE_DEPENDENCY) $(B12X_MOE_PLAN_DEPENDENCY) $(FP8_MOE_PLAN_DEPENDENCY) $(W8LUT_MOE_PLAN_DEPENDENCY) $(LINEAR_PLAN_DEPENDENCY) $(SERVING_ADAPTER_DEPENDENCY)
+-include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(FP8_MOE_PLAN_DEPENDENCY) $(SERVING_ADAPTER_DEPENDENCY)

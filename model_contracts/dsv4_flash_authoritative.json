@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "model_id": "deepseek-ai/DeepSeek-V4-Flash",
+  "architecture": "DeepseekV4ForCausalLM",
+  "source_revision": "official Hugging Face config observed 2026-07-31",
+  "model": {
+    "hidden_dimension": 4096,
+    "layer_count": 43,
+    "mtp_layer_count": 1,
+    "vocabulary_size": 129280,
+    "maximum_context_tokens": 1048576,
+    "rms_norm_epsilon": 0.000001,
+    "attention_head_count": 64,
+    "kv_head_count": 1,
+    "head_dimension": 512,
+    "qk_rope_head_dimension": 64,
+    "query_lora_rank": 1024,
+    "output_lora_rank": 1024,
+    "output_group_count": 8
+  },
+  "attention": {
+    "index_head_count": 64,
+    "index_head_dimension": 128,
+    "index_top_k": 512,
+    "sliding_window_tokens": 128,
+    "rope_theta": 10000,
+    "compressed_rope_theta": 160000,
+    "yarn_factor": 16,
+    "yarn_original_context_tokens": 65536,
+    "compression_ratios": [0, 0, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 128, 4, 0]
+  },
+  "hyper_connections": {
+    "stream_count": 4,
+    "sinkhorn_iterations": 20,
+    "epsilon": 0.000001
+  },
+  "moe": {
+    "routed_expert_count": 256,
+    "shared_expert_count": 1,
+    "experts_per_token": 6,
+    "expert_intermediate_dimension": 2048,
+    "hash_routed_layer_count": 3,
+    "routed_scaling_factor": 1.5,
+    "score_function": "sqrtsoftplus",
+    "top_k_method": "noaux_tc",
+    "normalize_selected_probabilities": true,
+    "swiglu_limit": 10.0
+  },
+  "precision": {
+    "routed_expert_weight_format": "checkpoint_fp4",
+    "non_expert_linear_weight_format": "fp8_e4m3_block_128x128",
+    "dynamic_activation_format": "fp8_e4m3",
+    "scale_format": "ue8m0",
+    "residual_norm_storage_format": "bf16",
+    "accumulator_format": "fp32"
+  },
+  "qualification": {
+    "cuda_target": "sm_121a",
+    "status": "NOT_MEASURED",
+    "production_ready": false
+  }
+}

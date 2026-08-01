@@ -14,8 +14,14 @@ import json
 from multiprocessing import Pool
 from pathlib import Path
 import struct
+import sys
 import tempfile
 from typing import Any, BinaryIO, Dict, Iterable, List, Optional, Tuple
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+TOOLS_DIRECTORY = REPOSITORY_ROOT / "tools"
+if str(TOOLS_DIRECTORY) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIRECTORY))
 
 from glm52_resident_pack_common import (
     EXPERT_COUNT,

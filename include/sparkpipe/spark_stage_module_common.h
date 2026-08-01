@@ -53,6 +53,9 @@ SparkStatus SparkStageModuleDeviceAllocateZeroed(
     SparkStageModuleLedger *ledger,
     uint64_t bytes,
     void **pointer);
+void SparkStageModuleLedgerRollback(
+    SparkStageModuleLedger *ledger,
+    uint32_t allocation_count);
 void SparkStageModuleLedgerRelease(SparkStageModuleLedger *ledger);
 SparkStatus SparkStageModulePackRead(
     const char *module_tag,

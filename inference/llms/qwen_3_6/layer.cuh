@@ -18,6 +18,7 @@
 #include "inference/kernels/project.cuh"
 #include "inference/kernels/attn.cuh"
 #include "inference/kernels/linear_attn.cuh"
+#include "inference/kernels/gqa.cuh"
 #include "inference/kernels/head.cuh"
 #include "inference/llms/qwen_3_6/config.h"
 #include "inference/kernels/kv.cuh"
@@ -25,10 +26,23 @@
 // The two pools this model needs. Declared here rather than in unity.cu because
 // Qwen36LayerAttention takes the geometry as a template argument, so any file
 // that calls a layer needs the alias - bind.cu did, and could not see it.
+//
+// Qwen's value width IS its key width, so LmKvHeads prices the slot correctly -
+// but by coincidence, not contract. The assert pins the coincidence: the day
+// the widths differ, the slot must move to LmKvGeometry priced from the sum,
+// the way mimo_2_5's is.
 using Qwen36FullKv = LmKvHeads<QWEN36_KV_BITS, QWEN36_KV_HEADS, QWEN36_HEAD_DIM, QWEN36_KV_PAGE_SLOTS>;
-using Qwen36GdnState = LmKvState<QWEN36_GDN_STATE_BYTES>;
 
+static_assert(Qwen36FullKv::kSlotBytes == QWEN36_KV_HEADS * (QWEN36_HEAD_DIM + QWEN36_HEAD_DIM) * 2u,
+	"the GQA slot is [K: heads x head_dim][V: heads x value_dim] bf16");
+
+// Overridable because the host harnesses instantiate the layer at one thread:
+// the CPU shim's sequential schedule (tests/host_cuda/lm_host_cuda.cuh) is
+// only a valid execution of these kernels when the template width IS one.
+// Device builds take the default and nothing changes.
+#ifndef QWEN36_LAYER_THREADS
 #define QWEN36_LAYER_THREADS 256u
+#endif
 #define QWEN36_LAYER_TILE_N 128u
 #define QWEN36_LAYER_STAGES 2u
 #define QWEN36_LAYER_WARPS 8u
@@ -52,6 +66,16 @@ static_assert(QWEN36_GDN_VALUE_HEADS % QWEN36_GDN_KEY_HEADS == 0u,
 	"value heads share key heads in whole groups");
 static_assert(QWEN36_ATTN_QKV_DIM == QWEN36_QKV_DIM,
 	"config and layer must agree on the fused projection width");
+
+// The state pool, one slot per sequence, sized from the sum of the per-value
+// -head states and the convolution window. Below the width defines because
+// QWEN36_GDN_STATE_BYTES is written in them.
+using Qwen36GdnState = LmKvState<QWEN36_GDN_STATE_BYTES>;
+
+// The delta rule's pool is fp32. config.h carries the bf16-state lever and why
+// it is a kernel variant plus this constant, never this constant alone.
+static_assert(QWEN36_GDN_STATE_ELEMENT_BYTES == sizeof(float),
+	"LmDeltaRuleKernel addresses the state pool as float; a narrower slot is out of bounds");
 
 struct Qwen36LayerBuffers
 {
@@ -78,7 +102,6 @@ struct Qwen36LayerBuffers
 	uint16_t *query_bf16;
 	uint16_t *key_bf16;
 	uint16_t *value_bf16;
-	uint16_t *kv_slot_bf16;
 	uint16_t *attention_out_bf16;
 	uint8_t *packed_activation;
 	uint8_t *packed_scale;
@@ -87,8 +110,16 @@ struct Qwen36LayerBuffers
 
 	// The recurrent half. The state pool never grows, and the convolution
 	// window lives in the same slot - QWEN36_GDN_STATE_BYTES is their sum.
+	// The state is per VALUE head (config.h carries why), so the delta rule
+	// consumes q and k repeated three ways; the expanded rows are scratch
+	// sized rows x 48 x 128 each. The gates are per (row, value head,
+	// channel) and per (row, value head): gdn_forget_gate is rows x 48 x 128
+	// f32 and gdn_write_gate rows x 48 f32 - but see config.h's third known
+	// gap: nothing in this driver produces them yet.
 	uint8_t *gdn_state_pool;
 	uint16_t *gdn_conv_window;
+	uint16_t *gdn_query_expanded_bf16;
+	uint16_t *gdn_key_expanded_bf16;
 	const uint32_t *gdn_state_index;
 	const float *gdn_forget_gate;
 	const float *gdn_write_gate;
@@ -105,16 +136,59 @@ struct Qwen36LayerBuffers
 	float *output_score;
 };
 
-// Quantise a row block and point the GEMM at it. Every projection below does
-// this same four-line dance, and writing it four times is how a scale pointer
-// ends up describing the wrong buffer.
 template<class Format>
-static void Qwen36Quantise(const Qwen36LayerBuffers *b, const uint16_t *source, uint32_t rows, uint32_t width, cudaStream_t stream)
+static const void *Qwen36PrepareInput(
+    const Qwen36LayerBuffers *buffers,
+    const uint16_t *source_bf16,
+    uint32_t row_count,
+    uint32_t input_dimension,
+    LmScaleTensor *scale_out,
+    cudaStream_t stream)
 {
-	LM_LAUNCH((LmQuantiseRowsKernel<Format,QWEN36_LAYER_THREADS>),
-		dim3(rows,width / Format::kScaleGroup), QWEN36_LAYER_THREADS,
-		(Format::kScaleGroup + 8u) * sizeof(float), stream,
-		source,0,b->packed_activation,b->packed_scale,rows,width);
+    if constexpr (Format::kScaleGroup == 0u)
+    {
+        *scale_out = LmScaleTensorNone();
+        return source_bf16;
+    }
+    else
+    {
+        LM_LAUNCH(
+            (LmQuantiseRowsKernel<Format, QWEN36_LAYER_THREADS>),
+            dim3(row_count, input_dimension / Format::kScaleGroup),
+            QWEN36_LAYER_THREADS,
+            (Format::kScaleGroup + 8u) * sizeof(float),
+            stream,
+            source_bf16,
+            0,
+            buffers->packed_activation,
+            buffers->packed_scale,
+            row_count,
+            input_dimension);
+        *scale_out = LmScaleTensorRowsUe4m3(
+            buffers->packed_scale,
+            row_count,
+            input_dimension,
+            Format::kScaleGroup);
+        return buffers->packed_activation;
+    }
+}
+
+template<class Format>
+static LmScaleTensor Qwen36WeightScale(
+    const void *scale_data,
+    uint32_t output_dimension,
+    uint32_t input_dimension)
+{
+    if constexpr (Format::kScaleGroup == 0u)
+        return LmScaleTensorNone();
+    else
+        return LmScaleTensorBlockF32(
+            scale_data,
+            1u,
+            output_dimension,
+            input_dimension,
+            Format::kScaleGroup,
+            Format::kScaleGroup);
 }
 
 // Full attention, one layer in four.
@@ -123,18 +197,20 @@ static int32_t Qwen36LayerAttention(const Qwen36LayerBuffers *b, uint32_t rows, 
 {
 	LmGemmArguments gemm;
 	LmQkvLayout layout;
+	const void *activation;
 	int32_t status;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS,uint16_t>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
-	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->qkv_scale;
+	activation = Qwen36PrepareInput<Format>(
+		b,b->normed_bf16,rows,QWEN36_HIDDEN,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->qkv_scale,QWEN36_ATTN_QKV_DIM,QWEN36_HIDDEN);
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->fused_qkv_bf16;
 	status = LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->qkv_weight,rows,rows,1u,1u,
+		&gemm,activation,b->qkv_weight,rows,rows,1u,1u,
 		QWEN36_HIDDEN,QWEN36_ATTN_QKV_DIM,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -145,23 +221,34 @@ static int32_t Qwen36LayerAttention(const Qwen36LayerBuffers *b, uint32_t rows, 
 	layout.head_dimension = QWEN36_HEAD_DIM;
 	LM_LAUNCH((LmSplitQkvKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
 		b->fused_qkv_bf16,layout,b->query_bf16,b->key_bf16,b->value_bf16,rows,1.0f);
-	// Partial rotary: rope covers the first 64 of each 256-wide head, so this
+	// Partial rotary: rope covers the last 64 of each 256-wide head, so this
 	// is per head. Rotating the row tail would rotate one head and leave 23.
+	// ("First 64" said an earlier comment here; the kernel rotates the suffix
+	// and test_rope_pairing.py pins the suffix as this checkpoint's
+	// convention. The comment was the defect.)
 	LM_LAUNCH((LmRopePerHeadKernel<QWEN36_LAYER_THREADS>), dim3(rows,QWEN36_ATTN_HEADS), QWEN36_LAYER_THREADS, 0, stream,
 		b->query_bf16,b->positions,QWEN36_ATTN_HEADS,QWEN36_HEAD_DIM, QWEN36_ROPE_DIM,QWEN36_ROPE_THETA);
 	LM_LAUNCH((LmRopePerHeadKernel<QWEN36_LAYER_THREADS>), dim3(rows,QWEN36_KV_HEADS), QWEN36_LAYER_THREADS, 0, stream,
 		b->key_bf16,b->positions,QWEN36_KV_HEADS,QWEN36_HEAD_DIM, QWEN36_ROPE_DIM,QWEN36_ROPE_THETA);
-	LM_LAUNCH((LmKvStoreKernel<Geometry,QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
-		b->cache,b->kv_slot_bf16,b->sequence_of_row,b->positions,rows, Geometry::kSlotBytes / 2u);
-	LM_LAUNCH((LmAttentionDecodeKernel<Geometry,QWEN36_LAYER_THREADS,QWEN36_NOPE_DIM,QWEN36_ROPE_DIM>), dim3(rows,QWEN36_ATTN_HEADS), QWEN36_LAYER_THREADS, 0, stream,
-		b->query_bf16,b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,QWEN36_ATTN_HEADS,QWEN36_QK_SCALE,b->attention_out_bf16,0);
-	Qwen36Quantise<Format>(b,b->attention_out_bf16,rows,QWEN36_Q_DIM,stream);
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->output_scale;
+	// This model stores per-head keys AND values. Two defects stood here:
+	// the store's source was kv_slot_bf16, which no launch ever wrote, so the
+	// cache held whatever the allocator left; and the decode went through the
+	// MLA latent kernel, which dots every query head with the slot's first
+	// NOPE+ROPE elements - head zero's key - and returns the key's prefix as
+	// the value, 192 wide where this model's value is 256. The GQA pair packs
+	// the split's K and V into the slot and attends per head over both.
+	LM_LAUNCH((LmGqaKvStoreKernel<Geometry,QWEN36_LAYER_THREADS,QWEN36_KV_HEADS,QWEN36_HEAD_DIM,QWEN36_HEAD_DIM>), rows, QWEN36_LAYER_THREADS, 0, stream,
+		b->cache,b->key_bf16,b->value_bf16,b->sequence_of_row,b->positions,rows);
+	LM_LAUNCH((LmGqaAttentionDecodeKernel<Geometry,QWEN36_LAYER_THREADS,QWEN36_KV_HEADS,QWEN36_HEAD_DIM,QWEN36_HEAD_DIM>), dim3(rows,QWEN36_ATTN_HEADS), QWEN36_LAYER_THREADS, 0, stream,
+		b->query_bf16,b->cache,b->sequence_of_row,b->context_length, 0,0u,QWEN36_ATTN_HEADS,QWEN36_QK_SCALE,b->attention_out_bf16,0);
+	activation = Qwen36PrepareInput<Format>(
+		b,b->attention_out_bf16,rows,QWEN36_Q_DIM,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->output_scale,QWEN36_HIDDEN,QWEN36_Q_DIM);
 	gemm.output_bf16 = b->attention_out_bf16;
 	(void)context;
 	return(LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->output_weight,rows,rows,1u,1u,
+		&gemm,activation,b->output_weight,rows,rows,1u,1u,
 		QWEN36_Q_DIM,QWEN36_HIDDEN,sms,false,stream));
 }
 
@@ -173,18 +260,20 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 {
 	LmGemmArguments gemm;
 	LmQkvLayout layout;
+	const void *activation;
 	int32_t status;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS,uint16_t>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,b->residual_bf16,(const uint16_t *)b->attn_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
-	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->gdn_in_scale;
+	activation = Qwen36PrepareInput<Format>(
+		b,b->normed_bf16,rows,QWEN36_HIDDEN,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->gdn_in_scale,QWEN36_GDN_QKV_DIM,QWEN36_HIDDEN);
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->fused_qkv_bf16;
 	status = LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->gdn_in_weight,rows,rows,1u,1u,
+		&gemm,activation,b->gdn_in_weight,rows,rows,1u,1u,
 		QWEN36_HIDDEN,QWEN36_GDN_QKV_DIM,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
@@ -195,10 +284,14 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 	layout.value_dimension = QWEN36_GDN_V_DIM;
 	layout.rope_dimension = 0u;
 	layout.head_dimension = QWEN36_GDN_KEY_DIM;
-	LM_LAUNCH((LmSplitQkvKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
-		b->fused_qkv_bf16,layout,b->query_bf16,b->key_bf16,b->value_bf16,rows,1.0f);
-	// The short causal convolution runs before the recurrence and carries its
-	// own window in the same non-growing slot as the state.
+	// The short causal convolution runs on the FUSED row, before the split,
+	// because the reference applies one depthwise conv over the concatenated
+	// q, k and v - and because the fused row is the only place the three are
+	// contiguous, which is what one launch over QKV_DIM channels needs. It
+	// once ran on the key alone, leaving q and v carrying the projection's
+	// raw output; the kernel library's own comment states the reference form
+	// (Swish(ShortConv) on all three). In place is safe: the split has not
+	// read the row yet, and every consumer is downstream of the split.
 	// SWISH, INFERRED NOT READ, AND SETTLED BY ONE FILE.
 	// modeling_qwen3_next.py (or whatever Qwen 3.6 names it) from the released
 	// repository: look for ShortConvolution's activation argument on the linear
@@ -206,23 +299,45 @@ static int32_t Qwen36LayerLinear(const Qwen36LayerBuffers *b, uint32_t rows, uin
 	// choice, and Qwen 3.6's linear path is GDN - but citing an architecture is
 	// not reading a checkpoint, and this tree has been wrong twice this week
 	// about exactly that kind of lineage inference.
-	// The kernel indexes its channel as blockIdx.y * THREADS + threadIdx.x, so a
-	// 1D grid convolves only the first 256 of 2048 channels and leaves the rest
-	// carrying the projection's raw output. Found by tests/test_kernel_launches.py
-	// on its first run, in a call I wrote.
+	// The kernel indexes its channel as blockIdx.y * THREADS + threadIdx.x, so
+	// the y extent is priced from the channel count. Found at 1D by
+	// tests/test_kernel_launches.py on its first run, in a call I wrote.
 	// Identity runs: a null prefix means row i is sequence i, which is what
 	// decode is. Qwen's driver has not brought this model to prefill yet; when
 	// it does, the prefix is the only argument that changes.
 	LM_LAUNCH((LmCausalConvKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_CONV_KERNEL,LM_CONV_SWISH,uint16_t>), dim3(rows,(QWEN36_GDN_QKV_DIM + QWEN36_LAYER_THREADS - 1u) / QWEN36_LAYER_THREADS), QWEN36_LAYER_THREADS, 0, stream,
-		b->gdn_conv_window,b->gdn_state_index,0,0,b->key_bf16, (const uint16_t *)b->gdn_conv_weight,b->key_bf16,QWEN36_GDN_QK_DIM,rows,1u);
-	LM_LAUNCH((LmDeltaRuleKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>), dim3(rows,QWEN36_GDN_KEY_HEADS), QWEN36_LAYER_THREADS, (uint32_t)(QWEN36_GDN_KEY_DIM * QWEN36_GDN_VALUE_DIM * sizeof(float)), stream,
-		b->gdn_state_pool,QWEN36_GDN_STATE_BYTES,b->gdn_state_index,0,0,b->query_bf16,b->key_bf16,b->value_bf16, b->gdn_forget_gate,b->gdn_write_gate,b->attention_out_bf16, QWEN36_GDN_KEY_HEADS,QWEN36_GDN_VALUE_PER_KEY,rows,1u);
-	Qwen36Quantise<Format>(b,b->attention_out_bf16,rows,QWEN36_GDN_V_DIM,stream);
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->gdn_out_scale;
+		b->gdn_conv_window,b->gdn_state_index,0,0,b->fused_qkv_bf16, (const uint16_t *)b->gdn_conv_weight,b->fused_qkv_bf16,QWEN36_GDN_QKV_DIM,rows,1u);
+	LM_LAUNCH((LmSplitQkvKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
+		b->fused_qkv_bf16,layout,b->query_bf16,b->key_bf16,b->value_bf16,rows,1.0f);
+	// The recurrence holds one state per VALUE head - 48, not 16 - with q and
+	// k repeated from the key heads three ways, the reference's GQA expansion
+	// for GDN. The delta rule reads its heads densely, so the repeat is
+	// materialised; config.h carries why the shared-state form was not GDN.
+	LM_LAUNCH((LmExpandHeadsKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
+		b->query_bf16,b->gdn_query_expanded_bf16,QWEN36_GDN_KEY_HEADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_PER_KEY,rows);
+	LM_LAUNCH((LmExpandHeadsKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
+		b->key_bf16,b->gdn_key_expanded_bf16,QWEN36_GDN_KEY_HEADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_PER_KEY,rows);
+	// 64 KiB of dynamic shared is past the 48 KiB default: without the opt-in
+	// this launch fails on device every time. See runtime/launch.h.
+	status = LmKernelSharedMemoryOptIn(
+		(const void *)LmDeltaRuleKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>,
+		(uint32_t)(QWEN36_GDN_KEY_DIM * QWEN36_GDN_VALUE_DIM * sizeof(float)));
+	if ( status != LM_LAUNCH_OK )
+		return(status);
+	// 48 heads at value_heads_per_key 1: the output is the full 6144 the
+	// output projection reads, every value head's state advances, and the
+	// forget and write gates are per value head - which is also the
+	// granularity the reference computes them at, so the gate producer the
+	// known gap names has exactly one layout to target.
+	LM_LAUNCH((LmDeltaRuleKernel<QWEN36_LAYER_THREADS,QWEN36_GDN_KEY_DIM,QWEN36_GDN_VALUE_DIM>), dim3(rows,QWEN36_GDN_VALUE_HEADS), QWEN36_LAYER_THREADS, (uint32_t)(QWEN36_GDN_KEY_DIM * QWEN36_GDN_VALUE_DIM * sizeof(float)), stream,
+		b->gdn_state_pool,QWEN36_GDN_STATE_BYTES,b->gdn_state_index,0,0,b->gdn_query_expanded_bf16,b->gdn_key_expanded_bf16,b->value_bf16, b->gdn_forget_gate,b->gdn_write_gate,b->attention_out_bf16, QWEN36_GDN_VALUE_HEADS,1u,rows,1u);
+	activation = Qwen36PrepareInput<Format>(
+		b,b->attention_out_bf16,rows,QWEN36_GDN_V_DIM,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->gdn_out_scale,QWEN36_HIDDEN,QWEN36_GDN_V_DIM);
 	gemm.output_bf16 = b->attention_out_bf16;
 	return(LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->gdn_out_weight,rows,rows,1u,1u,
+		&gemm,activation,b->gdn_out_weight,rows,rows,1u,1u,
 		QWEN36_GDN_V_DIM,QWEN36_HIDDEN,sms,false,stream));
 }
 
@@ -232,28 +347,32 @@ template<class Format>
 static int32_t Qwen36LayerDenseMlp(const Qwen36LayerBuffers *b, uint32_t rows, uint32_t sms, cudaStream_t stream)
 {
 	LmGemmArguments gemm;
+	const void *activation;
 	int32_t status;
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<QWEN36_LAYER_THREADS,uint16_t>), rows, QWEN36_LAYER_THREADS, (QWEN36_HIDDEN + 8u) * sizeof(float), stream,
 		b->attention_out_bf16,b->residual_bf16,(const uint16_t *)b->mlp_norm_weight, b->residual_bf16,b->normed_bf16,QWEN36_HIDDEN,QWEN36_HIDDEN,QWEN36_RMS_EPSILON);
-	Qwen36Quantise<Format>(b,b->normed_bf16,rows,QWEN36_HIDDEN,stream);
 	memset(&gemm,0,sizeof(gemm));
-	gemm.scale_a = (const float *)b->packed_scale;
-	gemm.scale_b = (const float *)b->dense_gate_up_scale;
+	activation = Qwen36PrepareInput<Format>(
+		b,b->normed_bf16,rows,QWEN36_HIDDEN,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->dense_gate_up_scale,QWEN36_FFN_INTERMEDIATE * 2u,QWEN36_HIDDEN);
 	gemm.group_row_offset = b->dense_row_offset;
 	gemm.group_tile_prefix = b->dense_tile_prefix;
 	gemm.output_bf16 = b->gate_up_bf16;
 	status = LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->dense_gate_up_weight,rows,rows,1u,1u,
+		&gemm,activation,b->dense_gate_up_weight,rows,rows,1u,1u,
 		QWEN36_HIDDEN,QWEN36_FFN_INTERMEDIATE * 2u,sms,false,stream);
 	if ( status != LM_LAUNCH_OK )
 		return(status);
 	LM_LAUNCH((LmSiluMulKernel<QWEN36_LAYER_THREADS>), rows, QWEN36_LAYER_THREADS, 0, stream,
 		b->gate_up_bf16,b->intermediate_bf16,QWEN36_FFN_INTERMEDIATE,true);
-	Qwen36Quantise<Format>(b,b->intermediate_bf16,rows,QWEN36_FFN_INTERMEDIATE,stream);
-	gemm.scale_b = (const float *)b->dense_down_scale;
+	activation = Qwen36PrepareInput<Format>(
+		b,b->intermediate_bf16,rows,QWEN36_FFN_INTERMEDIATE,&gemm.scale_a,stream);
+	gemm.scale_b = Qwen36WeightScale<Format>(
+		b->dense_down_scale,QWEN36_HIDDEN,QWEN36_FFN_INTERMEDIATE);
 	gemm.output_bf16 = b->hidden_bf16;
 	return(LmGemmLaunch<Format,QWEN36_LAYER_TILE_N,Format::kTileK,QWEN36_LAYER_STAGES,QWEN36_LAYER_WARPS>(
-		&gemm,b->packed_activation,b->dense_down_weight,rows,rows,1u,1u,
+		&gemm,activation,b->dense_down_weight,rows,rows,1u,1u,
 		QWEN36_FFN_INTERMEDIATE,QWEN36_HIDDEN,sms,false,stream));
 }
 

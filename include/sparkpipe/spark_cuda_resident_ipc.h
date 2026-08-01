@@ -13,7 +13,7 @@
 extern "C" {
 #endif
 
-#define SPARK_CUDA_RESIDENT_IPC_ABI_VERSION 23u
+#define SPARK_CUDA_RESIDENT_IPC_ABI_VERSION 24u
 #define SPARK_CUDA_RESIDENT_IPC_MAGIC 0x52445543u
 #define SPARK_CUDA_RESIDENT_IPC_MAX_LANE_BLOCKS \
     (SPARK_GLM52_KV_CONTEXT_TOKENS / SPARK_GLM52_KV_BLOCK_TOKENS)
@@ -228,6 +228,7 @@ typedef struct SparkCudaResidentIpcSubmitPrefill
 typedef struct SparkCudaResidentIpcDecodeLane
 {
     uint64_t request_id;
+    uint64_t request_generation;
     uint64_t sequence_id;
     uint64_t sequence_position;
     uint32_t request_slot_index;
@@ -258,6 +259,12 @@ typedef struct SparkCudaResidentIpcSubmitDecode
     uint32_t kv_block_index_count;
     uint32_t resident_flags;
     uint64_t control_generation;
+    uint64_t request_generation;
+    uint64_t step_generation;
+    uint32_t step_chunk_index;
+    uint32_t step_chunk_count;
+    uint32_t transaction_phase;
+    uint32_t reserved_transaction;
     SparkCudaResidentIpcDecodeLane
         lanes[SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT];
     uint32_t kv_physical_block_indices[];

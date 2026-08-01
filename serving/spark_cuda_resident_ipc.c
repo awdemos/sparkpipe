@@ -227,6 +227,7 @@ SparkStatus SparkCudaResidentIpcValidateSubmitDecode(
     uint32_t expected_payload_bytes;
     uint32_t expected_block_offset;
     uint32_t expected_mtp_budget;
+    uint32_t expected_transaction_phase;
     uint32_t internal_kv_directory;
     uint32_t lane_index;
     SparkStatus status;
@@ -242,6 +243,14 @@ SparkStatus SparkCudaResidentIpcValidateSubmitDecode(
         return SPARK_STATUS_ABI_MISMATCH;
     if (payload_bytes != expected_payload_bytes ||
         message->control_generation == 0u ||
+        message->request_generation == 0u ||
+        message->step_generation == 0u ||
+        message->step_chunk_count == 0u ||
+        message->step_chunk_index >= message->step_chunk_count ||
+        message->transaction_phase == 0u ||
+        message->transaction_phase >
+            SPARK_DISTRIBUTED_WORK_PHASE_KNOWN_MAX ||
+        message->reserved_transaction != 0u ||
         message->lane_count == 0u ||
         message->lane_count > maximum_lane_count ||
         message->active_sequence_count != message->lane_count ||
@@ -271,6 +280,12 @@ SparkStatus SparkCudaResidentIpcValidateSubmitDecode(
             SPARK_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH &&
          message->speculative_token_count == 0u))
         return SPARK_STATUS_INVALID_ARGUMENT;
+    expected_transaction_phase = message->dispatch_kind ==
+        SPARK_REQUEST_API_DISPATCH_KIND_SPECULATIVE_VERIFY_BATCH
+            ? SPARK_DISTRIBUTED_WORK_PHASE_VERIFY
+            : SPARK_DISTRIBUTED_WORK_PHASE_DECODE;
+    if (message->transaction_phase != expected_transaction_phase)
+        return SPARK_STATUS_INVALID_ARGUMENT;
     status = SparkRingWorkControlSelectMtpDraftBudget(
         message->dispatch_kind,
         message->request_flags,
@@ -283,7 +298,8 @@ SparkStatus SparkCudaResidentIpcValidateSubmitDecode(
     {
         const SparkCudaResidentIpcDecodeLane *lane;
         lane = &message->lanes[lane_index];
-        if (lane->request_id == 0u || lane->sequence_id == 0u ||
+        if (lane->request_id == 0u || lane->request_generation == 0u ||
+            lane->sequence_id == 0u ||
             lane->request_slot_index == UINT32_MAX ||
             lane->context_token_count == 0u ||
             lane->mtp_draft_token_budget != expected_mtp_budget ||
@@ -309,7 +325,9 @@ SparkStatus SparkCudaResidentIpcValidateSubmitDecode(
             return SPARK_STATUS_INVALID_ARGUMENT;
         expected_block_offset += lane->kv_block_count;
     }
-    if (expected_block_offset != message->kv_block_index_count)
+    if (expected_block_offset != message->kv_block_index_count ||
+        message->request_generation !=
+            message->lanes[0u].request_generation)
         return SPARK_STATUS_INVALID_ARGUMENT;
     return SPARK_STATUS_OK;
 }

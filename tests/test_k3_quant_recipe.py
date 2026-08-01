@@ -1,18 +1,13 @@
 #!/usr/bin/env python3
 """K3's quantisation must follow the checkpoint's recipe, not a global choice.
 
-THIS GATE CURRENTLY FAILS, AND IT IS RIGHT TO. A second external audit found
-that the expert path quantises its ACTIVATIONS to MXFP4. The checkpoint sets
-input_activations null: it quantises weights and says nothing about
-activations, so an inference stack runs BF16 activations against streamed
-MXFP4 weights.
-
-The fix needs an asymmetric GEMM - A at 16 stored bits with no scale, B at 4
-with an E8M0 scale every 32, existing BF16 MMA and FP32 accumulators - and that
-is a change to the tile machinery rather than a call-site edit. It is not done.
-The gate stays strict rather than being softened to green, because a suite that
-passes over a known-wrong data path is worth less than one that says where it
-is wrong. docs/K3_WEIGHT_ONLY_MXFP4.md has the full requirement.
+A second external audit found the expert path quantising its ACTIVATIONS to
+MXFP4. The checkpoint sets input_activations null: it quantises weights and
+says nothing about activations, so an inference stack runs BF16 activations
+against streamed MXFP4 weights. The expert GEMM now keeps A at 16 stored bits
+with no scale against B at 4 with an E8M0 scale every 32; reintroducing
+activation quantisation fails this gate. docs/K3_WEIGHT_ONLY_MXFP4.md has the
+full requirement.
 
 config.json's quantization_config quantises weights to 4 bits at group 32 and
 carries an ignore list: self_attn, shared_experts, the dense mlp projections,
@@ -73,12 +68,12 @@ def main():
     # its count outside the helper must be zero, not two.
     helper = re.search(r"static int32_t K3Project\b.*?\n\}", text, re.S)
     outside = text.replace(helper.group(0), "") if helper else text
-    expert_gemms = len(re.findall(r"LmGemmWeightOnlyLaunch<Format", outside))
+    expert_gemms = len(re.findall(r"LmGemmWeightOnlyLaunch<\s*Format", outside))
     if expert_gemms != 2:
         print(f"  FAIL {expert_gemms} weight-only expert GEMMs take Format, "
               f"expected 2")
         failures += 1
-    symmetric = len(re.findall(r"LmGemmLaunch<Format", outside))
+    symmetric = len(re.findall(r"LmGemmLaunch<\s*Format", outside))
     if symmetric != 0:
         print(f"  FAIL {symmetric} symmetric GEMMs take Format; a symmetric "
               f"launch quantises the activations the checkpoint leaves alone")

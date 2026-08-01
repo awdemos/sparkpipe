@@ -7,9 +7,10 @@ Every design decision is downstream of counting bytes on the memory bus and
 launches on the stream, and deleting both.
 
 Primary target: **Kimi K3** — 93 layers of hybrid KDA linear attention + MLA,
-MXFP4 experts, million-token context on constant per-sequence state — served
-across **16× GB10**. GLM 5.2 runs on the same stack, with GLM 5.5, DeepSeek
-V4 GA, and Qwen 3.8 drivers tracking their releases.
+MXFP4 routed experts, million-token context on constant per-sequence state —
+served across up to **16× GB10**. The mandatory support set also includes
+GLM 5.2 with FP8 routed experts and BF16 elsewhere, Qwen 3.6 27B in BF16,
+and separate DeepSeek V4 Flash and Pro drivers.
 
 This README describes the release endpoint. The precise gap between it and
 `git HEAD` lives in [`docs/techdebt.md`](docs/techdebt.md) — the README is
@@ -47,20 +48,20 @@ So sparkpipe is a bandwidth ledger with an engine attached:
 ## The machine
 
 ```
-16× DGX Spark GB10
+Up to 16× DGX Spark GB10
   ├─ 128 GB LPDDR5X unified, 273 GB/s
   ├─ Blackwell tensor cores (FP4/FP8/BF16), sm_121a
-  ├─ 200 GbE RDMA ring          — the bandwidth plane (25 GB/s/link, 29 µs hop)
-  └─ 100 GbE switched fabric    — the latency plane (~20 µs all-reduce floor)
-Aggregate: 2 TB unified memory, 4.37 TB/s bus
+  └─ two 100 GbE ports per node
+Aggregate at 16 nodes: 2 TB unified memory, 4.37 TB/s local memory bus
 ```
 
-Two fabrics, two jobs. Bulk transfers — pipeline hidden-state hops, KV
-migration, weight staging — take the ring. Tensor-parallel all-reduces take
-the switch, whose worth is its latency floor, not its bandwidth. Expert
-parallelism is deliberately absent: at these link budgets, shuffling
-activations to experts loses to reading every resident expert through the
-local bus exactly once.
+Bring-up is deliberately staged. The first debug topology is a single-rail
+physical ring, with pipeline rank order following physical adjacency. The
+first switched topology uses one MikroTik 804 and one 100 GbE port per Spark.
+A second switch and the second port form a future independent rail only after
+the single-rail transport has retained correctness and performance receipts.
+The dual-rail mode is therefore represented in configuration but fails closed
+rather than being selected implicitly.
 
 ## K3, first-class
 
@@ -71,7 +72,7 @@ agrees with prosumer memory:
 |---|---|---|
 | Layers | 93 = 69 KDA + 24 MLA (every 4th + last) | only 24 layers pay per-token KV reads |
 | Hidden | 7168 | 14 KB/token inter-stage transfer |
-| Experts | 384 routed, top-8 + shared, MXFP4 | all-expert sweep amortizes with microbatch |
+| Experts | 896 routed, top-16 + 2 shared, MXFP4 routed weights | grouped expert queues amortize each active expert load across the layer batch |
 | MLA cache | 512 latent + 64 unrotated (NoPE) | 27.6 KB/token/layer bf16, half at fp8 |
 | KDA state | 96 heads × 128 × 128 + conv windows | constant in context; priced at admission |
 | Context | 1M-class | state does not grow; only 24 layers page |
@@ -84,53 +85,31 @@ the hundreds-to-~1.5K sequences, 256K context admits ~100.
 
 ## Topology is a scheduling decision
 
-Weights place as **TP_g × PP_s** (g·s = 16): TP splits every tensor g
-ways inside a stage, PP splits the 93 layers into s stages. Per-node
-weight residency is identical in every topology; what moves is *where the
-time goes*, governed by two laws:
+Weights may be placed with tensor, pipeline, or mixed parallelism, but no one
+topology is declared globally optimal. SparkPipe qualifies a topology for an
+exact tuple:
 
-1. **Expert amortization follows the microbatch: m = B/s.** A stage's
-   weight pass serves only its microbatch, so touched experts per layer
-   are 384·(1−(47/48)^m). Larger g ⇒ smaller s ⇒ larger m ⇒ fewer weight
-   bytes per token. At m ≥ ~300 the sweep is total and weight cost per
-   token collapses ~12×.
-2. **All-reduce cost follows the group: 186·(20 µs + bytes(m,g)/12.5 GB/s)
-   per layer-pass over the switch.** Nearly flat in g at decode message
-   sizes; linear in m — which is exactly why prefill inverts the ranking.
+```text
+model and precision recipe
+context bucket
+active-batch bucket
+pipeline degree
+microbatch count
+transport mode
+```
 
-Decode, aggregate tok/s (ideal / sustained at MBU 0.55, net eff 0.8;
-2K ctx unless marked; 256K column at fp8 KV):
+The debug ring prioritizes deterministic adjacency and observability. The
+single-switch fabric then permits direct rank-to-rank links and a wider search
+over PP and TP placement. Deep pipelines such as PP16 are credible for a
+large queued workload because bubbles and per-hop latency can be amortized;
+small interactive batches may prefer a different placement. Those crossovers
+must come from retained B1-through-B1024 receipts, not from the old analytical
+tables that assumed a smaller K3 expert pool and a different network.
 
-| topology | B=1 | B=8 | B=64 | B=1024 | B=64 @ 256K |
-|---|---|---|---|---|---|
-| TP16      | **50 / 30** | **111 / 63** | **202 / 115** | **1028 / 649** | **174 / 98** |
-| TP8 × PP2 | 28 / 16 | 99 / 56 | 161 / 90 | 894 / 520 | 142 / 79 |
-| TP4 × PP4 | 15 / 9 | 82 / 46 | 138 / 76 | 581 / 324 | 124 / 68 |
-| TP2 × PP8 | 8 / 4 | 61 / 34 | 121 / 67 | 344 / 190 | 110 / 61 |
-| PP16      | 4 / 2 | 32 / 18 | 106 / 58 | 223 / 123 | 97 / 54 |
-
-Prefill, aggregate tok/s (2048-token chunks, compute-side):
-
-| topology | prefill |
-|---|---|
-| PP16 | **11.8K** |
-| TP2 × PP8 | 10.2K |
-| TP4 × PP4 | 6.1K |
-| TP8 × PP2 | 3.7K |
-| TP16 | 2.1K |
-
-Decode is monotone toward TP because the switch flattened the AR tax;
-prefill is monotone toward PP because chunk-sized all-reduces are
-bandwidth, and hidden-state hops are 14 KB. There is no single winner —
-**the topology is chosen per deployment for its prefill:decode ratio**,
-with TP8×PP2 and TP2×PP8 as the shoulders and the scheduler's chunked
-prefill interleaving decode cohorts on whichever placement is loaded.
-DSpark speculation is a *throughput* amplifier on this model — at full
-expert sweep, verify rows ride weight reads already paid for (~1.9×
-effective at ceiling batch); at B=1 on a top-8-of-384 MoE it is
-approximately free but approximately nothing. All numbers are
-bus-model-derived and labeled so until `docs/BANDWIDTH_LEDGER.md`'s
-measured column replaces them.
+Within one layer batch, routed MoE execution is weight-stationary: route all
+tokens, group rows by expert, load each active expert once, run its grouped
+GEMM, and scatter/fold the outputs back to token order. The scheduler does not
+replay an expert-weight sweep for every 128-token chunk.
 
 ## Architecture
 
@@ -139,7 +118,7 @@ sparkpipe/
 ├── api/gateway/          HTTP + SSE, request API, per-request lifecycle
 ├── scheduler/            cohort formation, prefix reuse, admission pricing
 │                         (KV blocks + state slabs), topology-aware dispatch
-├── node/                 backend pump, rank daemon, dual-fabric transport
+├── node/                 backend pump, rank daemon, topology-selected transport
 ├── cache/                kv machinery: paged arena, tiering, prefetch lanes,
 │                         JIT stage budgets, prefix cache, Mooncake KV tier
 ├── serving/              TP shard geometry, capacity estimation
@@ -149,7 +128,7 @@ sparkpipe/
 │   ├── stage/            resident decode stage: module lifecycle, dispatch,
 │   │                     runner — model-agnostic, linked per family
 │   └── llms/             per-model layer/slice/engine (kimi_k3, glm5_2,
-│                         deepseek_v4, qwen3_8, mimo25)
+│                         deepseek_v4, deepseek_v4_pro, qwen_3_6, mimo_2_5)
 ├── model-families/       serving-tier geometry per family, drift-gated
 │                         against the kernel configs
 ├── modules/              per-family stage builds — THE LINKER SEAM
@@ -157,7 +136,7 @@ sparkpipe/
 ├── speculation/          DSpark draft backend, MTP
 ├── quant/                MXFP4 · NVFP4 · INT8/INT7/INT6 · FP8-E4M3 packers
 ├── tools/                build.sh, gates.sh, packers, route collection
-├── tests/                52 gates: host-CUDA recorders, drift gates, DRY law
+├── tests/                78 source/host gates plus complete host-suite coverage
 └── docs/                 SERVING_PIPELINE · MODULE_MAP · BANDWIDTH_LEDGER · techdebt
 ```
 
@@ -201,7 +180,7 @@ Two tiers describing the same model, or refusing to build.
 
 ### Gates, or: how this stays true
 
-52 gates on every push, designed so **CPU-only development proves CUDA
+78 host/source gates plus the complete host suite, designed so **CPU-only development proves CUDA
 dataflow**: host recorders run the real layer/slice code with GEMMs
 recorded and every other kernel executed, replaying byte-level
 partial/bank/aux/fold trajectories; drift gates parse serving and kernel
@@ -213,12 +192,12 @@ compile coverage is itself gated, so a hole found once stays closed.
 
 | Model | Role | What it exercises |
 |---|---|---|
-| **Kimi K3** | primary target | KDA state pool, MLA latent paging, MXFP4 all-expert sweeps, NoPE |
-| **GLM 5.2** | proving stack | full serving path, DSA sparse index, quantized plan families, DSpark |
-| GLM 5.5 | driver on release | expected to inherit the glm module wholesale with a new geometry header — that expectation is a test of the seam |
-| DeepSeek V4 GA | driver at parity | MLA + DSA index cache at GA scale |
-| Qwen 3.8 | driver on release | dense+MoE hybrid, mixed-layer cohort math |
-| MiMo 2.5+ | driver at parity | SWA cache tier, compact-model fast path |
+| **Kimi K3** | mandatory target | KDA state/replay, Gated MLA, Block AttnRes, top-16-of-896 Stable LatentMoE |
+| **GLM 5.2** | mandatory target | BF16 non-expert path, FP8 routed experts, DSA, MTP and DSpark |
+| **Qwen 3.6 27B** | mandatory target | BF16 full-attention/GDN execution and work control |
+| **DeepSeek V4 Flash** | mandatory target | class-exact sparse/cache plan, FP4 experts and FP8 non-expert linears |
+| **DeepSeek V4 Pro** | mandatory target | independent Pro geometry and execution surface |
+| MiMo 2.5 | supported family | full/sliding attention and grouped MoE contracts |
 
 One serving stack, N model drivers. That sentence is the acceptance
 criterion for the architecture (`docs/MODULE_MAP.md`); every model added

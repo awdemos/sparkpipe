@@ -32,3 +32,14 @@ static uint32_t LmLaunchGroupedTileM(uint32_t tokens, uint32_t top_k, uint32_t e
 		return(32u);
 	return(64u);
 }
+
+// THE HOST NO-OP, COPIED. The real launch.h defines this under both branches:
+// the device one grants dynamic shared past 48 KiB, the host one has no launch
+// to attribute and returns OK. The K3 layer calls it through K3DeltaRuleOptIn,
+// so without it here the harness never compiled the layer it exists to run.
+static int32_t LmKernelSharedMemoryOptIn(const void *kernel, uint32_t shared_bytes)
+{
+	(void)kernel;
+	(void)shared_bytes;
+	return(LM_LAUNCH_OK);
+}
