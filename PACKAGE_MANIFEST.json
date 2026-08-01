@@ -2032,8 +2032,8 @@
     },
     {
       "path": "scheduler/topology_switch.c",
-      "sha256": "4275c778f422e482ebd1185a6a89ce50cdbfd487166ffc66a6edb3f98bd43e3e",
-      "size_bytes": 23551
+      "sha256": "e49e9388e6580089ce2e97f9c262b4e4b987f5722b34ad2f1a3b36b316071f90",
+      "size_bytes": 23557
     },
     {
       "path": "scheduler/work_control.c",
