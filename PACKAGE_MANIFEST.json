@@ -3,7 +3,7 @@
     "file": "sparkpipe-phase6-transactional-completion-2026-08-01.tar",
     "sha256": "805d60a52ac8b910ba43a3e2efed2d233ab6552aa1a7ee595756476aeec75405"
   },
-  "file_count": 650,
+  "file_count": 653,
   "files": [
     {
       "path": ".gitattributes",
@@ -32,8 +32,8 @@
     },
     {
       "path": "Makefile",
-      "sha256": "1f57e21611fc3c701a1035f2c4508f865ab712a7ce1a6cdd934f8bb8e203a344",
-      "size_bytes": 63714
+      "sha256": "ae8f91037aabd856b0fd652df9b80933f89963bedaf3199d6e37511f5a7105c7",
+      "size_bytes": 63745
     },
     {
       "path": "PROPOSED_IMPROVEMENTS_README.md",
@@ -704,6 +704,11 @@
       "path": "docs/PHASE6_VALIDATION_STATUS.md",
       "sha256": "9f99b5c0f37e262ab00cdeae2fff4d1027b771163bf5509e544f833089fc9962",
       "size_bytes": 3170
+    },
+    {
+      "path": "docs/PREFILL_DECODE_ESTIMATES.md",
+      "sha256": "85b5e71f11b23c6327967bfd1988d7d5b9ceed2dd09f6e3ce7823fd305688ab0",
+      "size_bytes": 23765
     },
     {
       "path": "docs/PROBES_REMOVED.md",
@@ -2367,8 +2372,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "960d8e3b5779da4367312bb0aeafb004899930e044e284f743f6effc35be8727",
-      "size_bytes": 7325
+      "sha256": "f3b6ac347c52d26c2756a5fde9fc4408e4221170590ba507766589b491839948",
+      "size_bytes": 7730
     },
     {
       "path": "tests/test_config_coverage.py",
@@ -2881,6 +2886,11 @@
       "size_bytes": 3699
     },
     {
+      "path": "tests/test_perf_estimate.py",
+      "sha256": "61acefc311284c22b8f62d08538297f2825ff7f7b88b45c303f9d1f7d3db7c59",
+      "size_bytes": 7802
+    },
+    {
       "path": "tests/test_ptx_capability_gate.py",
       "sha256": "b0c3193ef555d95e0e72bbaca898dd2c58c1b61ad631ec86cdc77c940d993181",
       "size_bytes": 11281
@@ -3087,8 +3097,8 @@
     },
     {
       "path": "tools/gates.sh",
-      "sha256": "1a1b9d0fb4b34168a80cb1a922284ac734991baca8e2625d583898b0b63c1b6d",
-      "size_bytes": 16380
+      "sha256": "bdba37e2a3ddaeca69cb33200d6b4559498cf171e5b0e91920c22d3e0159f3f9",
+      "size_bytes": 16666
     },
     {
       "path": "tools/generate_dsv4_contracts.py",
@@ -3204,6 +3214,11 @@
       "path": "tools/nvme_kv_estimate.py",
       "sha256": "a6cfbd6e0d6019baf0e4199205fb33310cfce511cb8dee9ec07cd0b15fba7f78",
       "size_bytes": 18995
+    },
+    {
+      "path": "tools/perf_estimate.py",
+      "sha256": "e47b410b2ab484e1408d957c7f6009493e4ba6a3c069f892a91ef60983940f24",
+      "size_bytes": 31738
     },
     {
       "path": "tools/seam_parity.sh",

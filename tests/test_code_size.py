@@ -94,7 +94,13 @@ from pathlib import Path
 # model-families/k3/.../spark_k3_tp_shard_table.h +4: the V2 suffixes) -
 # 130 lines. The balance of the exact-count move is concurrent agents'
 # in-flight growth, theirs to account.
-CEILING = 124292
+# The prefill/decode estimator landing adds tools/perf_estimate.py (649:
+# the launch/wall/collective/transport overlay on top of the imported
+# nvme_kv_estimate byte law, the chunked-prefill model, and the sm_121a
+# ptxas occupancy check) and its gate wiring (Makefile +1,
+# tools/gates.sh +4) - 654 lines; the test and the estimates doc are
+# excluded by construction. Ceiling moves to the exact count.
+CEILING = 124946
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

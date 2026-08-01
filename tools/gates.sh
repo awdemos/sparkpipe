@@ -31,6 +31,10 @@ run "topology switch"      "make -s build/test_topology_switch && ./build/test_t
 # must keep reproducing the roadmap it derives from, or the doc's verdict table
 # goes stale while the drive purchase stays justified by it.
 run "nvme kv estimate"     "python3 tests/test_nvme_kv_estimate.py"
+# The prefill/decode estimator on top of that byte law: launch overhead,
+# the 6.5 TFLOPS wall, TP/PP overlays, occupancy from the sm_121a ptxas
+# logs. If it drifts from the roadmap's tables the doc's verdicts go stale.
+run "perf estimate"        "python3 tests/test_perf_estimate.py"
 run "kv geometry"          "g++ -std=c++17 -fsyntax-only -Wall -Wextra -I. -Imodel-families/glm52/include tests/test_kv_geometry.cc"
 run "workspace layout"     "gcc -O2 -Wall -Wextra -I. -o /tmp/g_w tests/test_group_gemm_workspace.c && /tmp/g_w"
 run "tensor map geometry"  "gcc -O2 -Wall -Wextra -I. -o /tmp/g_t tests/test_tensor_map_geometry.c && /tmp/g_t"

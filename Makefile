@@ -308,6 +308,7 @@ PYTHON_TESTS := \
 	tests/test_model_families.py \
 	tests/test_must_work_targets.py \
 	tests/test_nvme_kv_estimate.py \
+	tests/test_perf_estimate.py \
 	tests/test_ptx_capability_gate.py \
 	tests/test_python_syntax.py \
 	tests/test_qwen36_bf16_contract.py \
