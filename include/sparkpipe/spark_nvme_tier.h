@@ -48,6 +48,25 @@ extern "C" {
 #define SPARK_NVME_TIER_CONFIGURATION_BYTES \
 	((uint32_t)sizeof(SparkNvmeTierConfiguration))
 #define SPARK_NVME_TIER_DEFAULT_BUDGET_BYTES (1099511627776ULL)  /* 1 TB */
+// Sizing defaults from the JIT-KV bandwidth analysis (docs/NVME_KV_SIZING.md,
+// tools/nvme_kv_estimate.py) - ESTIMATES, measured nowhere: the roadmap pins
+// NVMe bandwidth as PENDING (PERF_ROADMAP_2026-08-01.md:496-498). The analysis
+// verdict: at 2K chat no model touches the drive through B1024; 128K agent
+// fits under admission control; 1M survives only with token selection.
+//
+// Bandwidth: the LOW end of the assumed 5-7 GB/s internal range. The planner
+// turns bandwidth into transfer-steps ETAs, so erring low errs toward saying
+// NOT-confident - the direction admission control survives. On the external
+// drive (assumed 2.5-3.5 GB/s, "external is 2x slower") halve this.
+#define SPARK_NVME_TIER_DEFAULT_DEVICE_BYTES_PER_SECOND (5000000000ULL)
+// Step time: the flagship latent-cache model's B8 2K chat step at the 80%
+// roofline target, 192.3 GB / 2,840 GB/s = 67.7 ms (the estimator's step
+// table; the roadmap's matching per-batch row agrees). bytes_per_step =
+// bandwidth x step time, so an overstated step time understates
+// transfer_steps and makes every ETA optimistic - this number must not be
+// rounded up, and a deployment serving a longer step (B64 agent is 235.6 ms)
+// should pass its own.
+#define SPARK_NVME_TIER_DEFAULT_STEP_TIME_MICROSECONDS 67700u
 #define SPARK_NVME_TIER_NO_SLOT 0xffffffffu
 #define SPARK_NVME_TIER_MAX_STAGING_BUFFERS 16u
 #define SPARK_NVME_TIER_DEFAULT_PENDING_CAPACITY 256u

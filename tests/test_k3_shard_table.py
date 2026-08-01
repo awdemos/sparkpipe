@@ -47,10 +47,9 @@ def python_class(field, name):
     if field in k3_shard.OUTPUT_DIM:
         return "SPARK_TP_SHARD_CLASS_OUTPUT_DIM"
     if field in k3_shard.INPUT_DIM or field in k3_shard.INPUT_DIM_PLAIN or \
-            field in ("expert_w2_weight", "expert_w2_scale"):
+            field in k3_shard.EXPERT_INPUT:
         return "SPARK_TP_SHARD_CLASS_INPUT_DIM"
-    if field in k3_shard.CONCAT_OUTPUT or \
-            field in ("expert_w1_weight", "expert_w1_scale"):
+    if field in k3_shard.CONCAT_OUTPUT or field in k3_shard.EXPERT_CONCAT:
         return "SPARK_TP_SHARD_CLASS_CONCAT_OUTPUT"
     return "SPARK_TP_SHARD_CLASS_UNKNOWN"
 
@@ -66,7 +65,7 @@ def main():
     failures = 0
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
-        mini_checkpoint(root, latent=64, inter=64)
+        mini_checkpoint(root)
         pack = root / "mini.pack"
         run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
                               str(root), str(pack)], capture_output=True, text=True)

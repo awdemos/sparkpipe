@@ -6,8 +6,13 @@
 #include "sparkpipe/spark_glm52_model.h"
 #include <stdbool.h>
 
+// The module identity is batch-variant content now: the bucket is the only
+// field -DSPARK_BATCH_BUCKET=<n> changes, and the unflagged build is b1024,
+// so the string below composes to exactly the ID this file used to hardcode.
+#include "sparkpipe/spark_glm52_batch_tuning.h"
+
 #define SPARK_RESIDENT_DECODE_STAGE_MODULE_ID \
-    "spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b1024.rv256.mtp6.v1"
+    SPARK_GLM52_BATCH_TUNING_MODULE_ID
 #define SPARK_RESIDENT_DECODE_STAGE_TARGET \
     "cuda.sm121.glm52.resident_decode_stage.bf16"
 

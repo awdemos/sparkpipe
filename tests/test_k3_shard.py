@@ -1,13 +1,18 @@
-"""The shard geometry reassembles to the pack, byte for byte.
+"""The V2 shard geometry reassembles to the pack, byte for byte.
 
-The mini checkpoint packs, then slices at TP 2, and every class is put back
-together by its own rule and compared to the original bytes: replicated
-tensors equal on both ranks, head-block output splits concatenate, input
-splits interleave column-wise, the concatenated gate|up tensors reassemble
-half by half per expert, and expert w2's packed-nibble K split rebuilds with
-its scale plane. Then TP 4 on the same mini must be REFUSED - two heads do
-not split four ways and sixteen K elements are not a whole MXFP4 group - and
-the refusal must be loud, not a mis-sliced pack.
+The mini checkpoint packs (format V2: fused KDA projections, interleaved
+expert weight+scale, 128-aligned), then slices at TP 2, and every class is
+put back together by its own rule and compared to the original bytes:
+replicated tensors equal on both ranks, head-block output splits concatenate,
+the fused kda_qkv_beta_weight rebuilds one contiguous section range per
+rank, input splits interleave column-wise, the concatenated gate|up tensors
+reassemble half by half per expert, expert w1's interleaved grid rebuilds
+cell range by cell range per (expert, k-tile, gate|up half), and expert w2's
+k-tile K split is a contiguous row range per expert. Then TP 4 on the same
+mini must be REFUSED - two heads do not split four ways, and two 128-element
+k-tiles do not split four ways either (the interleave coarsened V1's
+32-element K groups to whole k-tiles) - and the refusal must be loud, not a
+mis-sliced pack.
 """
 import json
 import struct
@@ -18,16 +23,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tests"))
+sys.path.insert(0, str(ROOT / "tools"))
 from test_k3_pack import mini_checkpoint  # noqa: E402
+import k3_shard  # noqa: E402
 
 
 def read_pack(path):
     raw = Path(path).read_bytes()
     magic, version, length = struct.unpack_from("<IIQ", raw, 0)
-    assert magic == 0x4B33504B
+    assert magic == 0x4B33504B and version == 2
     manifest = json.loads(raw[16:16 + length])
     base = 16 + length
-    base += (-base) % 64
+    base += (-base) % 128
 
     def tensor(name):
         entry = manifest["tensors"][name]
@@ -48,7 +55,9 @@ def main():
     failures = 0
     with tempfile.TemporaryDirectory() as scratch:
         root = Path(scratch)
-        mini_checkpoint(root, latent=64, inter=64)
+        # latent 128 = one w1 k-tile; inter 256 = two w2 k-tiles, so TP 2 is
+        # exact and TP 4 must refuse on heads AND on k-tiles
+        mini_checkpoint(root, latent=128, inter=256)
         pack = root / "mini.pack"
         run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_pack.py"),
                               str(root), str(pack)], capture_output=True, text=True)
@@ -68,22 +77,48 @@ def main():
         def both(name):
             return [ranks[r][1](name) for r in range(2)]
 
-        # replicated: equal on both ranks and equal to the source
+        # replicated: equal on both ranks and equal to the source - the fused
+        # decay|gate bottleneck among them
         for name in ("model.norm.weight", "model.layers.0.attn_norm_weight",
                      "model.layers.1.mla_kv_a_weight",
-                     "model.layers.0.router_weight"):
+                     "model.layers.0.router_weight",
+                     "model.layers.0.kda_decay_gate_down_weight"):
             a, b = both(name)
             if not (a == b == full(name)):
                 print(f"  FAIL {name}: replication is not replication")
                 failures += 1
         # output rows concatenate: vocab shard and a head-block shard
         for name in ("model.embed_tokens.weight",
-                     "model.layers.0.kda_q_weight",
                      "model.layers.1.mla_q_up_weight",
                      "model.layers.0.routed_down_weight"):
             if b"".join(both(name)) != full(name):
                 print(f"  FAIL {name}: output shards do not reassemble")
                 failures += 1
+        # the fused q|k|v|beta: one contiguous range PER SECTION per rank,
+        # per-head widths from the section table - reassemble section by
+        # section, and the rank's own section table must tile its shard
+        name = "model.layers.0.kda_qkv_beta_weight"
+        row_bytes = cfg["hidden"] * 2
+        a, b = both(name)
+        rebuilt, offset = bytearray(), 0
+        for section in full_manifest["tensors"][name]["sections"]:
+            rows = section["rows"] // 2
+            rebuilt += a[offset:offset + rows * row_bytes]
+            rebuilt += b[offset:offset + rows * row_bytes]
+            offset += rows * row_bytes
+        if bytes(rebuilt) != full(name):
+            print(f"  FAIL {name}: fused section shards do not reassemble")
+            failures += 1
+        rank_sections = ranks[0][0]["tensors"][name]["sections"]
+        tiled, rows_total = 0, 0
+        for section in rank_sections:
+            tiled += section["row_offset"] == rows_total
+            rows_total += section["rows"]
+        if tiled != 4 or rows_total * row_bytes != len(a) or \
+                ranks[0][0]["tensors"][name]["shard_class"] != \
+                "output_dim_heads":
+            print(f"  FAIL {name}: rank section table does not tile the shard")
+            failures += 1
         # input columns interleave: the all-reduce-closed projections
         for name, rows in (("model.layers.0.kda_out_weight", cfg["hidden"]),
                            ("model.layers.1.mla_out_weight", cfg["hidden"]),
@@ -100,34 +135,68 @@ def main():
         if rebuilt != full(name):
             print("  FAIL shared gate|up halves do not reassemble gate-first")
             failures += 1
-        for name, per_rank_row in (("model.layers.0.expert_w1_weight",
-                                    cfg["latent"] // 2),
-                                   ("model.layers.0.expert_w1_scale",
-                                    cfg["latent"] // 32)):
-            a, b = both(name)
-            experts, inter = cfg["experts"], cfg["intermediate"]
-            block = len(a) // experts
-            half = block // 2
-            rebuilt = bytearray()
-            for e in range(experts):
-                ea, eb = a[e * block:(e + 1) * block], b[e * block:(e + 1) * block]
-                rebuilt += ea[:half] + eb[:half] + ea[half:] + eb[half:]
-            if bytes(rebuilt) != full(name):
-                print(f"  FAIL {name}: expert gate|up shards do not reassemble")
+        # interleaved expert w1: per (expert, k-tile) the rank carries its
+        # gate cell range then its up cell range; the full tensor's tile is
+        # all gate cells then all up cells, ranks in order
+        name = "model.layers.0.expert_w1_weight"
+        geom = full_manifest["tensors"][name]["interleave"]
+        cells, k_tiles = geom["cells"], geom["k_tiles"]
+        chunk = (cells // 2 // 2) * geom["cell_rows"] * geom["row_bytes"]
+        experts = cfg["experts"]
+        a, b = both(name)
+        rank_expert = k_tiles * 2 * chunk
+        if len(a) != experts * rank_expert:
+            print(f"  FAIL {name}: rank shard is not a valid interleave")
+            failures += 1
+        rebuilt = bytearray()
+        for e in range(experts):
+            ea = a[e * rank_expert:(e + 1) * rank_expert]
+            eb = b[e * rank_expert:(e + 1) * rank_expert]
+            for t in range(k_tiles):
+                at = t * 2 * chunk
+                rebuilt += ea[at:at + chunk] + eb[at:at + chunk]
+                rebuilt += ea[at + chunk:at + 2 * chunk] + \
+                    eb[at + chunk:at + 2 * chunk]
+        if bytes(rebuilt) != full(name):
+            print(f"  FAIL {name}: interleaved cell shards do not reassemble")
+            failures += 1
+        rank_geom = ranks[0][0]["tensors"][name]["interleave"]
+        if rank_geom["out_dim"] != geom["out_dim"] // 2 or \
+                rank_geom["tensor_bytes"] != len(a):
+            print(f"  FAIL {name}: rank interleave geometry is not repriced")
+            failures += 1
+        # interleaved expert w2: whole 128-element k-tiles, a contiguous row
+        # range per expert per rank
+        name = "model.layers.0.expert_w2_weight"
+        geom = full_manifest["tensors"][name]["interleave"]
+        a, b = both(name)
+        rank_expert = len(a) // experts
+        rebuilt = bytearray()
+        for e in range(experts):
+            rebuilt += a[e * rank_expert:(e + 1) * rank_expert]
+            rebuilt += b[e * rank_expert:(e + 1) * rank_expert]
+        if bytes(rebuilt) != full(name):
+            print(f"  FAIL {name}: the k-tile shards do not reassemble")
+            failures += 1
+        rank_geom = ranks[0][0]["tensors"][name]["interleave"]
+        if rank_geom["k_dim"] != geom["k_dim"] // 2 or \
+                rank_geom["k_tiles"] != geom["k_tiles"] // 2 or \
+                rank_geom["tensor_bytes"] != len(a):
+            print(f"  FAIL {name}: rank interleave geometry is not repriced")
+            failures += 1
+        # the w2 K split refuses a degree its k-tiles do not divide, even
+        # behind the CLI's earlier head refusal - the granularity trade the
+        # interleave forces (TP<=8 for K3's 24 tiles, TP16 excluded)
+        slicer = k3_shard.Slicer(pack, {}, 4, 0)
+        try:
+            slicer.route("model.layers.0.expert_w2_weight")
+            print("  FAIL a k-tile-indivisible degree sliced w2 silently")
+            failures += 1
+        except k3_shard.ShardFailure as failure:
+            if "k-tiles" not in str(failure):
+                print(f"  FAIL w2 refusal does not name the cause: {failure}")
                 failures += 1
-        for name in ("model.layers.0.expert_w2_weight",
-                     "model.layers.0.expert_w2_scale"):
-            a, b = both(name)
-            experts, latent = cfg["experts"], cfg["latent"]
-            block_a = len(a) // experts
-            rebuilt = bytearray()
-            for e in range(experts):
-                rebuilt += join_cols([a[e * block_a:(e + 1) * block_a],
-                                      b[e * block_a:(e + 1) * block_a]], latent)
-            if bytes(rebuilt) != full(name):
-                print(f"  FAIL {name}: the packed-K shards do not reassemble")
-                failures += 1
-        # TP 4 must refuse: two heads, and sixteen K elements per rank
+        # TP 4 must refuse: two heads, and two k-tiles per rank is not whole
         run = subprocess.run([sys.executable, str(ROOT / "tools" / "k3_shard.py"),
                               str(pack), str(root / "bad"), "4"],
                              capture_output=True, text=True)
@@ -138,7 +207,7 @@ def main():
     if failures:
         print(f"\nFAIL ({failures})")
         return 1
-    print("\nevery class reassembles to the pack, and a degree the "
+    print("\nevery V2 class reassembles to the pack, and a degree the "
           "geometry cannot honour is refused")
     return 0
 

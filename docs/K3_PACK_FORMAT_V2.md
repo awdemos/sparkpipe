@@ -219,11 +219,11 @@ an E8M0 `0xff` anywhere in the scale stream.
   alternative — interleave units smaller than the swizzle span — would
   narrow every TMA box.
 - The K3 shard tables (`spark_k3_tp_shard_table.h`, `tools/k3_shard.py`)
-  classify by tensor name and do not yet know the V2 names
-  (`kda_qkv_beta_weight`, `kda_decay_gate_down_weight`, and the scale-less
-  `expert_w{1,2}_weight`); they refuse unknown names loudly, so nothing
-  mis-slices — but they must be taught the V2 names before TP packs can be
-  cut. That change rides with the driver wave that binds this format.
+  classify by tensor name and know the V2 names (the shard wave):
+  `kda_qkv_beta_weight` slices per section on whole heads,
+  `kda_decay_gate_down_weight` replicates, and the scale-less
+  `expert_w{1,2}_weight` slice on the interleave grid above. Unknown names
+  are still refused loudly, so nothing mis-slices.
 
 ## What the bind wave consumes
 

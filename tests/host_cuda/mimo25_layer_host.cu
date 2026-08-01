@@ -76,12 +76,18 @@ static uint16_t norm_weight[MIMO25_HIDDEN];
 static uint32_t sequence_of_row[ROWS];
 static uint32_t context_length[ROWS];
 static uint32_t positions[ROWS];
-static uint32_t window_positions[ROWS];
+static uint32_t window_positions[ROWS * MIMO25_SLIDING_WINDOW];
 static uint32_t dense_offsets[ROWS + 1u];
 static uint32_t dense_tiles[2];
 static uint8_t full_pool[2u * Mimo25FullKv::kPageBytes];
 static uint8_t swa_pool[2u * Mimo25SwaKv::kPageBytes];
 static uint32_t page_table[ROWS];
+// The layer passes the window as the selected-position count, so the list is
+// rows x MIMO25_SLIDING_WINDOW entries whether or not the context is that
+// long; the short-context tail is padded with a position in an unmapped page,
+// which the decode kernel skips. The swa table carries that second, unmapped
+// page per sequence - the full table's stride-one layout cannot express it.
+static uint32_t swa_page_table[ROWS * 2u];
 
 int main(void)
 {
@@ -171,9 +177,17 @@ int main(void)
 	// stays poisoned, and a window read off the list finds NaN.
 	positions[0] = 1u; positions[1] = 1u;
 	context_length[0] = 2u; context_length[1] = 2u;
-	window_positions[0] = 1u; window_positions[1] = 1u;
-	b.cache.pool = swa_pool; b.cache.page_table = page_table;
-	b.cache.page_table_stride = 1u; b.cache.sequence_count = ROWS;
+	// The layer hands the kernel the window as the list length, so each row
+	// supplies MIMO25_SLIDING_WINDOW entries: the one selected position, then
+	// padding in page one, which the table marks unmapped and the kernel
+	// skips. A shorter list reads past the array and the decode faults.
+	for (index = 0u; index < ROWS * MIMO25_SLIDING_WINDOW; ++index)
+		window_positions[index] = (index % MIMO25_SLIDING_WINDOW) == 0u
+			? 1u : MIMO25_KV_PAGE_SLOTS;
+	swa_page_table[0] = 1u; swa_page_table[1] = LM_KV_PAGE_UNMAPPED;
+	swa_page_table[2] = 0u; swa_page_table[3] = LM_KV_PAGE_UNMAPPED;
+	b.cache.pool = swa_pool; b.cache.page_table = swa_page_table;
+	b.cache.page_table_stride = 2u; b.cache.sequence_count = ROWS;
 	lm_recorded_gemms.clear();
 	if ( Mimo25LayerAttention<LmHostRecorderFormat,Mimo25SwaKv,MIMO25_SWA_KV_HEADS,MIMO25_SWA_QKV_DIM>(
 		&b,ROWS,2u,MIMO25_SLIDING_WINDOW,MIMO25_SWA_ROPE_THETA,1u,0) != LM_LAUNCH_OK )
@@ -188,7 +202,7 @@ int main(void)
 			lm_recorded_gemms[index].output_dimension);
 	{
 		const uint16_t *slot = (const uint16_t *)(swa_pool
-			+ ((uint64_t)page_table[0] * Mimo25SwaKv::kPageBytes)
+			+ ((uint64_t)swa_page_table[0] * Mimo25SwaKv::kPageBytes)
 			+ Mimo25SwaKv::kSlotBytes);
 		uint32_t kv = MIMO25_SWA_KV_HEADS * (MIMO25_HEAD_DIM + MIMO25_VALUE_DIM);
 		uint32_t kwidth = MIMO25_SWA_KV_HEADS * MIMO25_HEAD_DIM;
@@ -215,11 +229,14 @@ int main(void)
 		printf("swa_slot_maxdiff %.9g\nswa_slot_poisoned %u\n", (double)maxdiff, poisoned);
 	}
 	{
+		// The same list and count the layer passed: the kernel reads each
+		// row's window entries, skips the unmapped padding, and lands on
+		// position 1 alone - the layer's own usage, run directly.
 		static uint16_t direct_out[ROWS * MIMO25_O_INPUT_DIM];
 		LM_HOST_LAUNCH(dim3(ROWS,MIMO25_ATTN_HEADS),
 			(LmGqaAttentionDecodeKernel<Mimo25SwaKv,1u,MIMO25_SWA_KV_HEADS,MIMO25_HEAD_DIM,MIMO25_VALUE_DIM>(
 				query, b.cache, sequence_of_row, context_length,
-				window_positions, 1u, MIMO25_ATTN_HEADS, rsqrtf((float)MIMO25_HEAD_DIM), direct_out, 0)));
+				window_positions, MIMO25_SLIDING_WINDOW, MIMO25_ATTN_HEADS, rsqrtf((float)MIMO25_HEAD_DIM), direct_out, 0)));
 		maxdiff = 0.0f;
 		for (index = 0u; index < ROWS * MIMO25_O_INPUT_DIM; ++index)
 		{

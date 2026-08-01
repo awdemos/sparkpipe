@@ -12,11 +12,19 @@ CUDA=${CUDA_HOME:-/opt/cuda}
 ARCH="-gencode arch=compute_121a,code=sm_121a"
 NVCC="$CUDA/bin/nvcc"
 [ -x "$NVCC" ] || { echo "no nvcc at $NVCC; run tools/get_cuda.sh"; exit 2; }
+# Every model family's headers, so a driver that includes its model header
+# compiles regardless of which family it belongs to. Keep in step with
+# tools/cuda13_sm121a_compile_gate.sh's include list.
+INCLUDES="-I. -Iinclude -Ideployment/include \
+	-Imodel-families/glm52/include -Imodel-families/qwen36/include \
+	-Imodel-families/dsv4/include -Imodel-families/k3/include \
+	-Imodel-families/mimo25/include \
+	-Imodules/glm52_resident_decode_stage/include"
 status=0
 for unity in inference/llms/*/unity.cu
 do
 	name=$(basename "$(dirname "$unity")")
-	if "$NVCC" -std=c++17 $ARCH -O3 --use_fast_math -I. -c "$unity" -o "/tmp/lm_$name.o" 2>"/tmp/lm_$name.log"
+	if "$NVCC" -std=c++17 $ARCH -O3 --use_fast_math $INCLUDES -c "$unity" -o "/tmp/lm_$name.o" 2>"/tmp/lm_$name.log"
 	then
 		printf "  %-14s compiled  %s bytes\n" "$name" "$(wc -c < "/tmp/lm_$name.o")"
 	else
@@ -40,7 +48,7 @@ do
 			status=1
 		fi
 	fi
-	"$NVCC" -std=c++17 $ARCH -O3 -I. -ptx "$unity" -o "/tmp/lm_$name.ptx" 2>/dev/null || true
+	"$NVCC" -std=c++17 $ARCH -O3 $INCLUDES -ptx "$unity" -o "/tmp/lm_$name.ptx" 2>/dev/null || true
 	target=$(grep '^.target' "/tmp/lm_$name.ptx" 2>/dev/null || echo "?")
 	case "$target" in
 		*sm_121a) printf "  %-14s %s\n" "" "$target" ;;

@@ -65,7 +65,70 @@ CUDA_DEPENDENCY := $(CUDA_OBJECT:.o=.d)
 FP8_MOE_PLAN_DEPENDENCY := $(FP8_MOE_PLAN_OBJECT:.o=.d)
 SERVING_ADAPTER_DEPENDENCY := $(SERVING_ADAPTER_OBJECT:.o=.d)
 
-.PHONY: archive cold_archive artifact_check b12x_resident_pack validate validate_dsa_topk_parity publish package clean require_sm121a require_latency_limit require_model_dir require_fast_model_dir require_validation_inputs prepare_validation_output
+# BATCH VARIANTS. One source tree, N archives: every variant compiles the same
+# five translation units as the default archive with exactly one extra flag,
+# -DSPARK_BATCH_BUCKET=<n>, and every per-bucket constant that flag selects
+# lives in spark_glm52_batch_tuning.h. DRY by construction: there is one
+# recipe template and one bucket list, so a fix to a recipe reaches every
+# variant and a source edit cannot land in one variant only.
+#
+# A bucket is a capacity ceiling - the b8 archive serves 1-8 rows - so the
+# set {8, 64, 256, 1024} overlaps deliberately: B8 is the chat batch, B1024
+# the stage planner's maximum and the winner of any B64-vs-B1024 tradeoff.
+# Compile time is bounded by keeping the set at four and by emitting variants
+# only for families with resident stage modules (glm52 here; k3 adopts the
+# same contract when its module Makefile lands).
+GLM52_BATCH_VARIANT_BUCKETS ?= 8 64 256 1024
+GLM52_MODULE_ID_PREFIX := spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048
+GLM52_MODULE_ID_SUFFIX := rv256.mtp6.v1
+GLM52_MODULE_ID := $(GLM52_MODULE_ID_PREFIX).b1024.$(GLM52_MODULE_ID_SUFFIX)
+GLM52_BATCH_VARIANT_ARCHIVE = $(BUILD_DIRECTORY)/libglm52_resident_decode_stage_b$(1).a
+GLM52_BATCH_VARIANT_ARCHIVES := $(foreach bucket,$(GLM52_BATCH_VARIANT_BUCKETS),$(call GLM52_BATCH_VARIANT_ARCHIVE,$(bucket)))
+
+# all must be the FIRST target: the $(eval) below expands real object rules
+# ahead of every other target in this file, and without an explicit default
+# goal a bare `make` would build one b8 object and stop. all emits the whole
+# variant set - the default archive plus one archive per bucket - because the
+# variant IS the module now; an unbucketed-only build is a partial build.
+all: archive variants
+
+# $(1) is the bucket. The recipes mirror the default-archive rules flag for
+# flag; the b-suffixed object names keep a variant build from ever linking a
+# default-tuned object or vice versa.
+define SPARK_GLM52_BATCH_VARIANT_RULES
+$(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module_b$(1).o: $(REPOSITORY_ROOT)/inference/stage/module.c | $(BUILD_DIRECTORY)
+	$(CC) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+		-DNDEBUG -DSPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES -DSPARK_BATCH_BUCKET=$(1) \
+		-fPIC -fvisibility=hidden -MMD -MP -c $$< -o $$@
+
+$(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_glm52_validation_b$(1).o: source/spark_glm52_resident_decode_stage_validation.c | $(BUILD_DIRECTORY)
+	$(CC) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+		-DNDEBUG -DSPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES -DSPARK_BATCH_BUCKET=$(1) \
+		-fPIC -fvisibility=hidden -MMD -MP -c $$< -o $$@
+
+$(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda_b$(1).o: $(REPOSITORY_ROOT)/inference/stage/dispatch.cu | $(BUILD_DIRECTORY)
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+		-DSPARK_BATCH_BUCKET=$(1) \
+		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $$< -o $$@
+
+$(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_fp8_moe_plan_b$(1).o: source/spark_glm52_resident_decode_stage_fp8_moe_plan.cu | $(BUILD_DIRECTORY)
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+		-DSPARK_BATCH_BUCKET=$(1) \
+		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $$< -o $$@
+
+$(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_serving_adapter_b$(1).o: $(REPOSITORY_ROOT)/inference/stage/serving_adapter.cu | $(BUILD_DIRECTORY)
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+		-DSPARK_BATCH_BUCKET=$(1) \
+		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $$< -o $$@
+
+$(call GLM52_BATCH_VARIANT_ARCHIVE,$(1)): $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module_b$(1).o $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_glm52_validation_b$(1).o $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda_b$(1).o $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_fp8_moe_plan_b$(1).o $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_serving_adapter_b$(1).o
+	rm -f $$@
+	$(AR) rcs $$@ $$^
+endef
+$(foreach bucket,$(GLM52_BATCH_VARIANT_BUCKETS),$(eval $(call SPARK_GLM52_BATCH_VARIANT_RULES,$(bucket))))
+GLM52_BATCH_VARIANT_DEPENDENCIES := $(foreach bucket,$(GLM52_BATCH_VARIANT_BUCKETS),$(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_module_b$(bucket).d $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_glm52_validation_b$(bucket).d $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_cuda_b$(bucket).d $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_fp8_moe_plan_b$(bucket).d $(BUILD_DIRECTORY)/spark_glm52_resident_decode_stage_serving_adapter_b$(bucket).d)
+
+.PHONY: all archive cold_archive artifact_check b12x_resident_pack validate validate_dsa_topk_parity publish package clean require_sm121a require_latency_limit require_model_dir require_fast_model_dir require_validation_inputs prepare_validation_output variants cold_variants publish_variants
 
 GLM52_VALIDATION_BASE_ENV := NVCC=$(NVCC) CUDA_ARCH=$(CUDA_ARCH) GLM52_REQUIRED_CUDA_LINK_ARGS="$(GLM52_REQUIRED_CUDA_LINK_ARGS)" GLM52_B12X_MOE_PACK_DIR="$(B12X_MOE_PACK_DIR)" GLM52_MODEL_DIR="$(GLM52_MODEL_DIR)" GLM52_ALLOW_REMOTE_MODEL_DIR="$(GLM52_ALLOW_REMOTE_MODEL_DIR)" GLM52_ROUTED_CHAIN_FIRST_LAYER_INDEX="$(GLM52_VALIDATION_FIRST_ROUTED_LAYER_INDEX)" GLM52_ROUTED_CHAIN_LAYER_COUNT="$(GLM52_VALIDATION_ROUTED_CHAIN_LAYER_COUNT)" GLM52_ENABLE_CUDA_GRAPH_REPLAY="$(GLM52_ENABLE_CUDA_GRAPH_REPLAY)" GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT="$(GLM52_VALIDATION_ACTIVE_SEQUENCE_COUNT)" GLM52_VALIDATION_MAX_ACTIVE_SEQUENCE_COUNT="$(GLM52_VALIDATION_MAX_ACTIVE_SEQUENCE_COUNT)" GLM52_VALIDATION_EXACT_RING_BATCH_BUCKET="$(GLM52_VALIDATION_EXACT_RING_BATCH_BUCKET)" GLM52_VALIDATION_EXPECTED_OUTPUT_HIDDEN_BF16="$(GLM52_VALIDATION_EXPECTED_OUTPUT_HIDDEN_BF16)" GLM52_EXACT_RING_ATTENTION_EXECUTION_MODE="$(GLM52_EXACT_RING_ATTENTION_EXECUTION_MODE)" GLM52_EXACT_RING_MODEL_QUANTIZATION="$(GLM52_EXACT_RING_MODEL_QUANTIZATION)" GLM52_STAGE_PACK_DIR="$(GLM52_STAGE_PACK_DIR)" GLM52_FP8_MOE_PACK_DIR="$(GLM52_FP8_MOE_PACK_DIR)" GLM52_W8LUT_MOE_PACK_DIR="$(GLM52_W8LUT_MOE_PACK_DIR)"
 
@@ -90,6 +153,38 @@ archive: require_sm121a $(MODULE_ARCHIVE)
 cold_archive:
 	$(MAKE) clean
 	$(MAKE) archive
+
+# The variant set. variants is the compile-only half of the variant contract:
+# every bucket's archive from the one template above. cold_variants mirrors
+# cold_archive. publish_variants is the publish half: each bucket validated
+# and published under its own module ID, so the module library holds four
+# content-addressed identities the loader resolves between - the naming
+# convention SPEC.md's contract needs and nothing more.
+variants: require_sm121a $(GLM52_BATCH_VARIANT_ARCHIVES)
+
+cold_variants:
+	$(MAKE) clean
+	$(MAKE) variants
+
+publish_variants: require_sm121a require_latency_limit require_fast_model_dir require_validation_inputs prepare_validation_output $(GLM52_B12X_RESIDENT_PACK_PREREQ) cold_variants
+	$(MAKE) -C $(REPOSITORY_ROOT) build/sparkpipe_module_publish
+	@set -e; \
+		for bucket in $(GLM52_BATCH_VARIANT_BUCKETS); do \
+			$(GLM52_VALIDATION_ENV) \
+				$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
+				--library $(MODULE_LIBRARY_ROOT) \
+				--module $(GLM52_MODULE_ID_PREFIX).b$$bucket.$(GLM52_MODULE_ID_SUFFIX) \
+				--target cuda.sm121.glm52.resident_decode_stage.bf16 \
+				--link-unit $(call GLM52_BATCH_VARIANT_ARCHIVE,$$bucket) \
+				--recipe $(VALIDATION_RECIPE) \
+				--initialize SparkGlm52ResidentDecodeStageInitialize \
+				--execute SparkGlm52ResidentDecodeStageExecute \
+				--admit SparkGlm52ResidentDecodeStageAdmit \
+				--snapshot SparkGlm52ResidentDecodeStageSnapshot \
+				--destroy SparkGlm52ResidentDecodeStageDestroy \
+				--validator validation/validate_glm52_resident_decode_stage_cuda.sh \
+				--validator-arg $(MAX_STAGE_MICROSECONDS); \
+		done
 
 require_sm121a:
 	@test "$(CUDA_ARCH)" = "sm_121a" || \
@@ -134,17 +229,17 @@ $(BUILD_DIRECTORY):
 	mkdir -p $(BUILD_DIRECTORY)
 
 $(HOST_OBJECT): $(REPOSITORY_ROOT)/inference/stage/module.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+	$(CC) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
 		-DNDEBUG -DSPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
 		-fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(VALIDATION_OBJECT): source/spark_glm52_resident_decode_stage_validation.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+	$(CC) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
 		-DNDEBUG -DSPARK_RESIDENT_DECODE_STAGE_REQUIRE_EXTERNAL_CUDA_MODULES \
 		-fPIC -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(CUDA_OBJECT): $(REPOSITORY_ROOT)/inference/stage/dispatch.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
 # The required SM121 stage symbols (SparkGlm52Sm121RequiredDecodeStage*) are
@@ -153,11 +248,11 @@ $(CUDA_OBJECT): $(REPOSITORY_ROOT)/inference/stage/dispatch.cu | $(BUILD_DIRECTO
 # docs/GLM52_SM121_REQUIRED_CUDA_MODULE.md.
 
 $(FP8_MOE_PLAN_OBJECT): source/spark_glm52_resident_decode_stage_fp8_moe_plan.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(SERVING_ADAPTER_OBJECT): $(REPOSITORY_ROOT)/inference/stage/serving_adapter.cu | $(BUILD_DIRECTORY)
-	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
+	$(NVCC) $(NVCCFLAGS) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource \
 		-Xcompiler -fPIC -Xcompiler -fvisibility=hidden -MMD -MP -c $< -o $@
 
 $(MODULE_ARCHIVE): $(HOST_OBJECT) $(VALIDATION_OBJECT) $(CUDA_OBJECT) $(FP8_MOE_PLAN_OBJECT) $(SERVING_ADAPTER_OBJECT)
@@ -165,7 +260,7 @@ $(MODULE_ARCHIVE): $(HOST_OBJECT) $(VALIDATION_OBJECT) $(CUDA_OBJECT) $(FP8_MOE_
 	$(AR) rcs $@ $^
 
 $(ARTIFACT_CHECK_TOOL): $(REPOSITORY_ROOT)/runtime/pack/artifact_check.c | $(BUILD_DIRECTORY)
-	$(CC) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
+	$(CC) -I$(REPOSITORY_ROOT) -I$(REPOSITORY_ROOT)/include -I$(REPOSITORY_ROOT)/model-families/glm52/include -Iinclude -Isource $(CFLAGS) \
 		$< $(REPOSITORY_ROOT)/build/libsparkpipe_compiler.a $(REPOSITORY_ROOT)/build/libsparkpipe_model_common.a \
 		-ldl -o $@
 
@@ -218,7 +313,7 @@ publish: require_sm121a require_latency_limit require_fast_model_dir require_val
 	$(GLM52_VALIDATION_ENV) \
 		$(REPOSITORY_ROOT)/build/sparkpipe_module_publish \
 		--library $(MODULE_LIBRARY_ROOT) \
-		--module spark.glm52.resident_decode_stage.bf16.h6144.h64.d512.r64.k2048.b1024.rv256.mtp6.v1 \
+		--module $(GLM52_MODULE_ID) \
 		--target cuda.sm121.glm52.resident_decode_stage.bf16 \
 		--link-unit $(MODULE_ARCHIVE) \
 		--recipe $(VALIDATION_RECIPE) \
@@ -274,4 +369,4 @@ endif
 clean:
 	rm -rf $(BUILD_DIRECTORY)
 
--include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(FP8_MOE_PLAN_DEPENDENCY) $(SERVING_ADAPTER_DEPENDENCY)
+-include $(HOST_DEPENDENCY) $(CUDA_DEPENDENCY) $(FP8_MOE_PLAN_DEPENDENCY) $(SERVING_ADAPTER_DEPENDENCY) $(GLM52_BATCH_VARIANT_DEPENDENCIES)
