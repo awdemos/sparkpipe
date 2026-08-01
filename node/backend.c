@@ -383,6 +383,13 @@ static SparkStatus SparkRingServiceBackendForwardPrefillWork(
 static SparkStatus SparkRingServiceBackendEnqueueWorkPacket(
 	SparkRingServiceBackendState *state,
 	const SparkRingWorkControlPacket *packet);
+static void SparkRingServiceBackendFailWorkPacketCohort(
+	SparkRingServiceBackendState *state,
+	const SparkRingWorkControlPacket *packet,
+	SparkStatus failure_status);
+static uint32_t SparkRingServiceBackendFailInflightResidentDecodes(
+	SparkRingServiceBackendState *state,
+	SparkStatus failure_status);
 
 static void SparkRingServiceBackendSetBlocker(
 	SparkRingServiceBackendState *state,
@@ -542,6 +549,13 @@ static SparkStatus SparkRingServiceBackendConnectCudaResident(SparkRingServiceBa
 	int32_t fd;
 	if (state == 0 || socket_path == 0)
 		return SPARK_STATUS_INVALID_ARGUMENT;
+	/* Reconnect: completions for submissions charged to the torn-down
+	   connection can never be matched on the new one, so fail their
+	   pendings deterministically before the fresh credit ledger below
+	   replaces the old accounting. Remaining gap: work the resident
+	   already executed is discarded rather than replayed. */
+	SparkRingServiceBackendFailInflightResidentDecodes(
+		state,SPARK_STATUS_ROUTE_NOT_FOUND);
 	status = SparkRingRuntimeExpectedMoeBackendKind(
 		state->rank_plan.quantization_mode,
 		&expected_moe_backend_kind);
@@ -827,6 +841,73 @@ static SparkStatus SparkRingServiceBackendFailPendingDecode(
 	return status;
 }
 
+static void SparkRingServiceBackendFailWorkPacketCohort(
+    SparkRingServiceBackendState *state,
+    const SparkRingWorkControlPacket *packet,
+    SparkStatus failure_status)
+{
+    SparkRingServiceBackendPendingDecode *pending;
+    uint32_t lane_count;
+    uint32_t lane_index;
+
+    if (state == 0 || packet == 0)
+    {
+        return;
+    }
+    lane_count = packet->lane_count;
+    if (lane_count > SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT)
+    {
+        lane_count = SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT;
+    }
+    for (lane_index = 0u; lane_index < lane_count; ++lane_index)
+    {
+        /* Failing the first matching lane clears the whole cohort, so
+           subsequent lane lookups simply miss. */
+        pending = SparkRingServiceBackendFindPendingDecodeForRequest(
+            state,
+            packet->lanes[lane_index].request_id);
+        if (pending != 0)
+        {
+            (void)SparkRingServiceBackendFailPendingDecode(
+                state,
+                pending,
+                failure_status);
+        }
+    }
+}
+
+static uint32_t SparkRingServiceBackendFailInflightResidentDecodes(
+    SparkRingServiceBackendState *state,
+    SparkStatus failure_status)
+{
+    SparkRingServiceBackendPendingDecode *pending;
+    uint32_t failed_count;
+    uint32_t pending_index;
+
+    if (state == 0)
+    {
+        return 0u;
+    }
+    failed_count = 0u;
+    for (pending_index = 0u;
+         pending_index < SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_CAPACITY;
+         ++pending_index)
+    {
+        pending = &state->pending_decodes[pending_index];
+        if (pending->state !=
+            SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE)
+        {
+            continue;
+        }
+        (void)SparkRingServiceBackendFailPendingDecode(
+            state,
+            pending,
+            failure_status);
+        failed_count += 1u;
+    }
+    return failed_count;
+}
+
 static SparkStatus SparkRingServiceBackendHandleResidentCompletion(
 	SparkRingServiceBackendState *state,
 	const SparkCudaResidentIpcHeader *header)
@@ -850,7 +931,16 @@ static SparkStatus SparkRingServiceBackendHandleResidentCompletion(
             state);
         if (credit_status != SPARK_STATUS_OK)
         {
-            return credit_status;
+            /* Stale completion for work charged to a torn-down
+               connection: its pending was failed on reconnect, so the
+               fresh ledger has no credit to release. Log and ignore
+               rather than tearing the connection down in a loop. */
+            fprintf(stderr,
+                "ring_resident_stale_completion ledger_status=%u request=%llu sequence=%llu\n",
+                (uint32_t)credit_status,
+                (unsigned long long)completion->completion.request_id,
+                (unsigned long long)completion->completion.sequence_id);
+            return SPARK_STATUS_OK;
         }
     }
 	if (completion->completion.status != SPARK_STATUS_OK)
@@ -2186,8 +2276,28 @@ static SparkStatus SparkRingServiceBackendFlushWorkOutput(
                 state->work_queue_write_offset = 0u;
                 return SPARK_STATUS_BUSY;
             }
-            SparkRingServiceBackendDropWorkOutputSocket(state);
-            return status;
+            /* Hard-negative acknowledgement: reconnecting and
+               retransmitting replays byte-identical content which is
+               rejected identically forever, so fail the owning cohort
+               deterministically (mirrors SparkRingDaemonFailHeadWork)
+               and drop the poisoned packet. */
+            fprintf(
+                stderr,
+                "ring_work_failed status=%u transaction=%llu request=%llu sequence=%llu position=%llu queued=%u\n",
+                (uint32_t)status,
+                (unsigned long long)packet->step_generation,
+                (unsigned long long)packet->request_id,
+                (unsigned long long)packet->sequence_id,
+                (unsigned long long)packet->sequence_position,
+                state->work_queue_count);
+            SparkRingServiceBackendFailWorkPacketCohort(state,packet,status);
+            SparkRingServiceBackendResetWorkOutputAcknowledgement(state);
+            SparkRingServiceBackendPopWorkPacket(state);
+            if (state->work_queue_count == 0u)
+            {
+                return SPARK_STATUS_OK;
+            }
+            continue;
         }
         remaining = packet->descriptor_bytes -
             state->work_queue_write_offset;
@@ -2710,8 +2820,10 @@ static SparkStatus SparkRingServiceBackendDecodeInner(
 			pending);
 		if (status != SPARK_STATUS_OK)
 		{
+			/* Fail the serving request instead of orphaning it. */
 			if (pending != 0)
-				memset(pending,0,sizeof(*pending));
+				(void)SparkRingServiceBackendFailPendingDecode(
+					state,pending,status);
 			return status;
 		}
 		if (SparkRingServiceBackendDecodeIsMtpVerify(decode_dispatch) != 0u)
@@ -2722,8 +2834,10 @@ static SparkStatus SparkRingServiceBackendDecodeInner(
 				state,decode_dispatch);
 		if (status != SPARK_STATUS_OK)
 		{
+			/* Fail the serving request instead of orphaning it. */
 			if (pending != 0)
-				memset(pending,0,sizeof(*pending));
+				(void)SparkRingServiceBackendFailPendingDecode(
+					state,pending,status);
 			return status;
 		}
 		status = SparkRingServiceBackendCompleteEarlyFinalEvents(
@@ -2780,8 +2894,10 @@ static SparkStatus SparkRingServiceBackendDecodeInner(
 		pending);
 	if (status != SPARK_STATUS_OK)
 	{
+		/* Fail the serving request instead of orphaning it. */
 		if (pending != 0)
-			memset(pending,0,sizeof(*pending));
+			(void)SparkRingServiceBackendFailPendingDecode(
+				state,pending,status);
 		fprintf(stderr,"ring_decode_forward status=%u\n",status);
 		return status;
 	}

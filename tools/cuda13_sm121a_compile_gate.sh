@@ -150,6 +150,23 @@ if [[ "${gate_scope}" == "complete" ]]; then
         NVCC="${nvcc_binary}" \
         CUDA_ARCH=sm_121a \
         > "${output_directory}/logs/glm52-resident-stage-build.txt" 2>&1
+
+    # The module archive never goes through the PTX check above; assert the
+    # same sm_121a target on its objects so a wrong-arch module build (the
+    # -arch flag drops the a suffix) fails the gate. Host-only objects carry
+    # no cubin and are skipped.
+    if ! command -v cuobjdump >/dev/null 2>&1; then
+        echo "CUDA gate complete scope requires cuobjdump for the archive arch check" >&2
+        exit 2
+    fi
+    module_build_directory="${repository_root}/build/modules/glm52_resident_decode_stage"
+    for object_file in "${module_build_directory}"/*.o; do
+        elf_listing="$(cuobjdump --list-elf "${object_file}" 2>/dev/null || true)"
+        if [[ -n "${elf_listing}" ]] && ! grep -q 'sm_121a' <<<"${elf_listing}"; then
+            echo "module archive object missing sm_121a target: ${object_file}" >&2
+            exit 4
+        fi
+    done
 fi
 
 if command -v cuobjdump >/dev/null 2>&1; then

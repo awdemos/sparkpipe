@@ -13,8 +13,15 @@ from pathlib import Path
 # completion-to-transaction correlation, synchronous-callback deferral, strict
 # final-event identity propagation, and rollback-safe submission ownership. The
 # exact authored-source count at landing is retained so later changes remain
-# monotonic.
-CEILING = 115582
+# monotonic. The follow-up audit landing adds tools/verify_package_manifest.py
+# and wires more gates into tools/gates.sh; the ceiling moves by those
+# tooling lines (86), no production source grew for its own sake.
+# The audit-fix landing adds the mbarrier phase-parity model coverage
+# (test_mma_fragment_mapping.c, +89), the deterministic-failure paths and their
+# tests (node/backend.c +128, test_ring_service_backend_transactions.c +168),
+# the shared smem opt-in (runtime/launch.h, qwen/kimi call sites net negative),
+# and the new no-python/manifest gates; ceiling moves to the exact count.
+CEILING = 115919
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

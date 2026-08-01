@@ -13,11 +13,13 @@
    because bind.cu pulls the whole kernel library and this file needs two
    symbols from it - an include here would make every edit to a kernel recompile
    the serving adapter. */
-extern "C" int32_t Glm52StageSlicePrefill(const void *node_context, void *layer_buffers,
+extern "C" int32_t Glm52StageSlicePrefill(
+    const SparkResidentDecodeStageNodeContext *const *node_contexts, void *layer_buffers,
     uint32_t first_layer, uint32_t layer_count, uint32_t rows, uint32_t packed_rows,
     uint32_t context, uint32_t multiprocessors, const uint32_t *row_positions, void *stream);
 
-extern "C" int32_t Glm52StageSlice(const void *node_context, void *layer_buffers,
+extern "C" int32_t Glm52StageSlice(
+    const SparkResidentDecodeStageNodeContext *const *node_contexts, void *layer_buffers,
     uint32_t first_layer, uint32_t layer_count, uint32_t rows,
     uint32_t packed_rows, uint32_t context, uint32_t multiprocessors,
     void *stream);
@@ -866,13 +868,16 @@ static SparkStatus SparkGlm52ServingAdapterLaunchDecodeStep(
         return status;
     }
 
-    /* The first-party slice: inference/llms/glm5_2/bind.cu maps the node context
-       to layer buffers and loops. Behind the same build flag as the layer body
+    /* The first-party slice: inference/llms/glm5_2/bind.cu maps each node
+       context to layer buffers and loops. The array is indexed by slice
+       offset - layer_node_contexts[0] is this rank's first layer, so bind.cu
+       pairing node_contexts[offset] with first_layer + offset lines up.
+       Behind the same build flag as the layer body
        it calls, because the two must be selected together - a first-party slice
        driving the legacy layer, or the reverse, is a configuration nobody
        tested and the compiler cannot see. */
     return Glm52StageSlice(
-               adapter->layer_node_contexts[0],
+               adapter->layer_node_contexts,
                adapter->first_party_buffers,
                adapter->first_layer_index,
                adapter->layer_count,

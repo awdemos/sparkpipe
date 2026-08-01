@@ -23,10 +23,12 @@
 // admits three. The latency figure has never been measured in this repo, which
 // is the one thing that could move this number.
 //
-// The stage and phase arithmetic below is checked exhaustively by
-// tests/test_mma_fragment_mapping.c across stages 2..6 and k_tiles 1..48: every
-// tile consumed after it was produced, no stage refilled before consumption,
-// phase parity matching the round counter.
+// The stage arithmetic below - and the per-stage wait parity the GEMM carries
+// across tiles, since a barrier's phase outlives one tile - is checked
+// exhaustively by tests/test_mma_fragment_mapping.c across stages 2..6,
+// k_tiles 1..48 and persistent multi-tile schedules: every tile consumed after
+// it was produced, no stage refilled before consumption, wait parity matching
+// the per-stage completion count.
 
 #include "inference/kernels/layout.cuh"
 #include "inference/kernels/mma.cuh"
@@ -52,13 +54,11 @@ static __device__ __forceinline__ uint32_t LmPipelineStage(uint32_t k_tile, uint
 	return(k_tile % stages);
 }
 
-// An mbarrier flips phase on each completion, so waiting for tile t on its
-// stage means waiting for parity equal to the number of times that stage has
-// already completed, which is the round counter.
-static __device__ __forceinline__ uint32_t LmPipelinePhase(uint32_t k_tile, uint32_t stages)
-{
-	return((k_tile / stages) & 1u);
-}
+// An mbarrier flips phase on each completion, so the wait parity for a stage
+// is the number of times that stage has already completed, kept modulo two.
+// The barriers outlive one output tile, so that count is cumulative across the
+// persistent tile loop and the GEMM carries it as one bit per stage rather
+// than deriving it from k.
 
 // The tile to issue while tile k_tile is being consumed.
 static __device__ __forceinline__ uint32_t LmPipelineAhead(uint32_t k_tile, uint32_t stages)

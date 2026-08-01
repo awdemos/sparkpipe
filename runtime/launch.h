@@ -202,3 +202,81 @@ static int32_t LmLaunchPlanBuild(const LmLaunchShape *shape, uint32_t multiproce
 	plan->workspace_bytes = 0u;
 	return(LM_LAUNCH_OK);
 }
+
+// THE 48 KiB DYNAMIC SHARED OPT-IN, for any kernel that needs it.
+//
+// ptxas grants 48 KiB of dynamic shared without asking; anything larger fails
+// the launch on device every time unless cudaFuncSetAttribute opts the kernel
+// in first. The delta rule carves KEY_DIM * VALUE_DIM floats (64 KiB at both
+// drivers' widths), and every model family launches its own instantiation, so
+// the opt-in lives here once, keyed on the kernel address, rather than being
+// copied per driver. Once per kernel per device, mutex-guarded, and checked,
+// because a skipped opt-in fails the launch rather than corrupting anything.
+// The host recorders have no launch to attribute, so the guard compiles to a
+// no-op there and the call sites keep one spelling.
+#define LM_LAUNCH_MAX_OPTIN_KERNELS 16u
+#define LM_LAUNCH_MAX_TRACKED_DEVICES 64u
+
+#ifdef __CUDACC__
+#include <mutex>
+
+typedef struct LmKernelOptInEntry
+{
+	const void *kernel;
+	uint64_t device_mask;
+}
+LmKernelOptInEntry;
+
+static int32_t LmKernelSharedMemoryOptIn(const void *kernel, uint32_t shared_bytes)
+{
+	static std::mutex grant_mutex;
+	static LmKernelOptInEntry grants[LM_LAUNCH_MAX_OPTIN_KERNELS];
+	static uint32_t grant_count = 0u;
+	cudaError_t status;
+	uint64_t device_bit;
+	uint32_t index;
+	int device_index;
+
+	if ( kernel == 0 )
+		return(LM_LAUNCH_ERR_ATTRIBUTE);
+	status = cudaGetDevice(&device_index);
+	if ( status != cudaSuccess )
+		return(LM_LAUNCH_ERR_ATTRIBUTE);
+	if ( device_index < 0
+		|| (uint32_t)device_index >= LM_LAUNCH_MAX_TRACKED_DEVICES )
+		return(LM_LAUNCH_ERR_ATTRIBUTE);
+	device_bit = UINT64_C(1) << (uint32_t)device_index;
+	{
+		std::lock_guard<std::mutex> lock(grant_mutex);
+		for ( index = 0u; index < grant_count; index++ )
+		{
+			if ( grants[index].kernel == kernel )
+			{
+				if ( (grants[index].device_mask & device_bit) != 0u )
+					return(LM_LAUNCH_OK);
+				break;
+			}
+		}
+		if ( index == grant_count )
+		{
+			if ( grant_count >= LM_LAUNCH_MAX_OPTIN_KERNELS )
+				return(LM_LAUNCH_ERR_ATTRIBUTE);
+			grants[grant_count].kernel = kernel;
+			grants[grant_count].device_mask = 0u;
+			grant_count++;
+		}
+		status = cudaFuncSetAttribute(kernel,
+			cudaFuncAttributeMaxDynamicSharedMemorySize,(int)shared_bytes);
+		if ( status == cudaSuccess )
+			grants[index].device_mask |= device_bit;
+	}
+	return(status == cudaSuccess ? LM_LAUNCH_OK : LM_LAUNCH_ERR_ATTRIBUTE);
+}
+#else
+static int32_t LmKernelSharedMemoryOptIn(const void *kernel, uint32_t shared_bytes)
+{
+	(void)kernel;
+	(void)shared_bytes;
+	return(LM_LAUNCH_OK);
+}
+#endif

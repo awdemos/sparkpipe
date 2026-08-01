@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import argparse
 import re
 import subprocess
@@ -171,10 +173,11 @@ def audit_archive(
     if not archive.is_file():
         raise AuditFailure(f"archive missing: {archive_path}")
 
+    # macOS ar lists the ranlib table of contents as a member; GNU ar does not
     members = [
         line.strip()
         for line in run_checked(["ar", "t", str(archive)]).splitlines()
-        if line.strip()
+        if line.strip() and line.strip() != "__.SYMDEF SORTED"
     ]
     expected_members = {Path(source).with_suffix(".o").name for source in expected_sources}
     actual_members = set(members)

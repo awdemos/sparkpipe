@@ -214,6 +214,171 @@ static void SparkTestBackendCoalescesGeneratedRelease(void)
     assert(state.release_queue_count == 2u);
 }
 
+static void SparkTestBackendPrepareInflightPending(
+    SparkRingServiceBackendState *state,
+    SparkScheduler *scheduler,
+    SparkRequestApiSlot *request_slots,
+    SparkServingRequestRecord *request_records,
+    SparkServingEvent *event_ring,
+    uint64_t request_id,
+    uint64_t request_handle)
+{
+    SparkRingServiceBackendPendingDecode *pending;
+    uint32_t hash_index;
+
+    memset(state,0,sizeof(*state));
+    memset(scheduler,0,sizeof(*scheduler));
+    memset(request_slots,0,sizeof(request_slots[0]));
+    memset(request_records,0,sizeof(request_records[0]));
+    memset(event_ring,0,sizeof(event_ring[0]) * 4u);
+
+    state->request_api.abi_version = SPARK_REQUEST_API_ABI_VERSION;
+    state->request_api.descriptor_bytes = SPARK_REQUEST_API_DESCRIPTOR_BYTES;
+    state->request_api.request_capacity = 1u;
+    state->request_api.running_request_count = 1u;
+    state->request_api.decode_batch_target = 1u;
+    state->request_api.decode_execution_row_capacity = 1u;
+    state->request_api.scheduler = scheduler;
+    state->request_api.request_slots = request_slots;
+    for (hash_index = 0u;
+         hash_index < SPARK_REQUEST_API_SLOT_HASH_SLOTS;
+         ++hash_index)
+    {
+        state->request_api.slot_handle_hash_heads[hash_index] = 0u;
+    }
+    request_slots[0].state = SPARK_REQUEST_API_STATE_RUNNING_DECODE;
+    request_slots[0].handle = request_handle;
+    request_slots[0].handle_hash_next = SPARK_REQUEST_API_NO_SLOT;
+
+    state->serving_engine.abi_version = SPARK_SERVING_ENGINE_ABI_VERSION;
+    state->serving_engine.descriptor_bytes =
+        SPARK_SERVING_ENGINE_DESCRIPTOR_BYTES;
+    state->serving_engine.flags =
+        SPARK_SERVING_ENGINE_FLAG_DYNAMIC_REQUEST_TOKEN_STORAGE;
+    state->serving_engine.request_api = &state->request_api;
+    state->serving_engine.request_records = request_records;
+    state->serving_engine.request_record_capacity = 1u;
+    state->serving_engine.event_ring = event_ring;
+    state->serving_engine.event_ring_capacity = 4u;
+
+    pending = &state->pending_decodes[0];
+    pending->state = SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_ACTIVE;
+    pending->dispatch.accepted = 1u;
+    pending->dispatch.kind = SPARK_REQUEST_API_DISPATCH_KIND_DECODE_BATCH;
+    pending->dispatch.request_count = 1u;
+    pending->dispatch.request_handles[0u] = request_handle;
+    pending->dispatch.request_ids[0u] = request_id;
+    pending->dispatch.decode_batch_decision.abi_version =
+        SPARK_SCHEDULER_ABI_VERSION;
+    pending->dispatch.decode_batch_decision.descriptor_bytes =
+        SPARK_SCHEDULER_BATCH_DECISION_DESCRIPTOR_BYTES;
+    pending->dispatch.decode_batch_decision.accepted = 1u;
+    pending->dispatch.decode_batch_decision.packed_request_count = 1u;
+    pending->dispatch.decode_batch_decision.decision_flags =
+        SPARK_SCHEDULER_DECISION_FLAG_ADAPTIVE_DECODE_PACK;
+}
+
+static void SparkTestBackendHardNegativeAckFailsCohort(void)
+{
+    static SparkRingServiceBackendState state;
+    static SparkScheduler scheduler;
+    static SparkRequestApiSlot request_slots[1];
+    static SparkServingRequestRecord request_records[1];
+    static SparkServingEvent event_ring[4];
+    SparkDistributedWorkAcknowledgement acknowledgement;
+    SparkDistributedWorkIdentity identity;
+    SparkRingWorkControlPacket packet;
+    uint64_t packet_hash;
+    int32_t sockets[2];
+
+    SparkTestBackendPrepareInflightPending(
+        &state,&scheduler,request_slots,request_records,event_ring,
+        301u,777ull);
+    state.rank_plan.flags = SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT;
+    SparkTestBackendBuildPacket(&packet,301u,3001u,401u,12u);
+    assert(SparkRingServiceBackendEnqueueWorkPacket(
+        &state,&packet) == SPARK_STATUS_OK);
+    assert(state.work_queue_count == 1u);
+    assert(SparkRingWorkControlGetTransactionIdentity(
+        &packet,&identity) == SPARK_STATUS_OK);
+    packet_hash = SparkDistributedWorkHashBytes(
+        &packet,packet.descriptor_bytes);
+    assert(packet_hash != 0u);
+    SparkDistributedWorkInitializeAcknowledgement(
+        &acknowledgement,&identity,packet_hash,
+        SPARK_STATUS_MODULE_NOT_VALIDATED);
+    assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
+    state.work_output_socket_fd = sockets[0];
+    assert(write(sockets[1],&acknowledgement,sizeof(acknowledgement)) ==
+        (ssize_t)sizeof(acknowledgement));
+    assert(SparkRingServiceBackendFlushWorkOutput(&state) == SPARK_STATUS_OK);
+    /* The poisoned packet is dropped instead of retransmitted forever. */
+    assert(state.work_queue_count == 0u);
+    assert(state.work_output_waiting_for_acknowledgement == 0u);
+    /* The rejection targets content, not the link, so the socket stays. */
+    assert(state.work_output_socket_fd == sockets[0]);
+    /* The owning cohort is failed deterministically. */
+    assert(state.pending_decodes[0].state ==
+        SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE);
+    assert(request_slots[0].state == SPARK_REQUEST_API_STATE_CANCELLED);
+    /* The next pump has nothing to retransmit. */
+    assert(SparkRingServiceBackendFlushWorkOutput(&state) == SPARK_STATUS_OK);
+    close(sockets[0]);
+    close(sockets[1]);
+}
+
+static void SparkTestBackendReconnectFailsInflightPendings(void)
+{
+    static SparkRingServiceBackendState state;
+    static SparkScheduler scheduler;
+    static SparkRequestApiSlot request_slots[1];
+    static SparkServingRequestRecord request_records[1];
+    static SparkServingEvent event_ring[4];
+
+    SparkTestBackendPrepareInflightPending(
+        &state,&scheduler,request_slots,request_records,event_ring,
+        302u,778ull);
+    state.cuda_resident_fd = -1;
+    /* The connect itself fails, but the in-flight pendings charged to
+       the torn-down connection must already be failed deterministically
+       before any fresh credit ledger replaces the old accounting. */
+    assert(SparkRingServiceBackendConnectCudaResident(
+        &state,"/nonexistent/sparkpipe-test-resident.sock") !=
+        SPARK_STATUS_OK);
+    assert(state.pending_decodes[0].state ==
+        SPARK_RING_SERVICE_BACKEND_PENDING_DECODE_STATE_FREE);
+    assert(request_slots[0].state == SPARK_REQUEST_API_STATE_CANCELLED);
+    assert(state.cuda_resident_fd == -1);
+}
+
+static void SparkTestBackendStaleCompletionDoesNotTeardown(void)
+{
+    static SparkRingServiceBackendState state;
+    SparkCudaResidentIpcHeader header;
+    uint32_t credit_capacities[SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_COUNT];
+
+    memset(&state,0,sizeof(state));
+    memset(&header,0,sizeof(header));
+    header.kind = SPARK_CUDA_RESIDENT_IPC_KIND_COMPLETION;
+    header.payload_bytes = SPARK_CUDA_RESIDENT_IPC_COMPLETION_BYTES;
+    state.cuda_resident_payload.completion.descriptor_bytes =
+        SPARK_CUDA_RESIDENT_IPC_COMPLETION_BYTES;
+    state.cuda_resident_payload.completion.completion.status =
+        SPARK_STATUS_OK;
+    state.cuda_resident_payload.completion.completion.request_id = 303u;
+    state.cuda_resident_payload.completion.completion.sequence_id = 403u;
+    memset(credit_capacities,0,sizeof(credit_capacities));
+    credit_capacities[
+        SPARK_DISTRIBUTED_WORK_CREDIT_DOMAIN_RESIDENT_RESERVATION] = 4u;
+    assert(SparkDistributedWorkInitializeCreditLedger(
+        &state.credit_ledger,credit_capacities) == SPARK_STATUS_OK);
+    /* The fresh ledger has nothing in use: a completion charged to a
+       torn-down connection must be tolerated, not error the new one. */
+    assert(SparkRingServiceBackendHandleResidentCompletion(
+        &state,&header) == SPARK_STATUS_OK);
+    assert(state.cuda_resident_completion_count == 1u);
+}
+
 int main(void)
 {
     SparkTestBackendValidatesFinalEventTransaction();
@@ -222,5 +387,8 @@ int main(void)
     SparkTestBackendRejectsConflictingEarlyFinalReplay();
     SparkTestBackendCopiesOnlyWorkDescriptor();
     SparkTestBackendCoalescesGeneratedRelease();
+    SparkTestBackendHardNegativeAckFailsCohort();
+    SparkTestBackendReconnectFailsInflightPendings();
+    SparkTestBackendStaleCompletionDoesNotTeardown();
     return 0;
 }

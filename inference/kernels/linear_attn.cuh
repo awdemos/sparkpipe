@@ -40,7 +40,6 @@
 
 #include "inference/kernels/dtype.cuh"
 #include "inference/kernels/norm.cuh"
-#include "inference/kernels/norm.cuh"
 #include <stdint.h>
 
 // The decay logit to a per-channel retention factor. Kimi K3 technical report

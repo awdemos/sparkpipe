@@ -388,6 +388,7 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 {
 	uint32_t layer;
 	uint64_t replay_capacity;
+	int32_t status;
 	(void)multiprocessors;
 	if ( weights == 0 || state == 0 || buffers == 0
 		|| verify_row_begin == 0 || accepted == 0
@@ -401,6 +402,9 @@ static int32_t K3FoldAccepted(const K3LayerWeights *weights, const K3SliceState 
 	replay_capacity = (uint64_t)sequences * state->verify_rows;
 	if ( slab_rows == 0u || (uint64_t)slab_rows > replay_capacity )
 		return(LM_LAUNCH_ERR_SHAPE);
+	status = K3DeltaRuleOptIn((uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)));
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	for (layer = first_layer; layer < first_layer + layer_count; ++layer)
 	{
 		if ( K3_LAYER_KIND(layer) != LM_LAYER_RECURRENT )

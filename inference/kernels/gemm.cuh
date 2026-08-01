@@ -303,8 +303,15 @@ void LmGemmKernel(
     const uint32_t lane = threadIdx.x % LM_WARP_LANES;
     uint32_t tile, group, in_group, row_base, row_limit;
     uint32_t neuron_base, k, stage, ahead, total_tiles;
+    // One wait-parity bit per stage, carried across output tiles: the barriers
+    // initialise once, so a stage's phase accumulates over every tile this CTA
+    // runs and cannot be derived from k - (k / STAGES) & 1 is exact only when
+    // k_tiles % (2 * STAGES) == 0, and silently waits on a stale phase
+    // otherwise.
+    uint32_t phase;
 
     LmPipelineInitialise<STAGES>(barrier, 1u);
+    phase = 0u;
     total_tiles = args.group_count == 1u
         ? dense_tiles
         : LmTotalTiles(args.group_tile_prefix, args.group_count);
@@ -362,7 +369,8 @@ void LmGemmKernel(
             }
             LmMbarrierWait(
                 &barrier[stage],
-                LmPipelinePhase(k, STAGES));
+                (phase >> stage) & 1u);
+            phase ^= 1u << stage;
             LmGemmConsume<
                 FormatA,
                 FormatB,

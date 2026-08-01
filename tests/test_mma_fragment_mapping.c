@@ -237,7 +237,7 @@ static uint32_t count_bank_conflicts(int32_t apply_swizzle, uint32_t k_base)
 
 // -- Pipeline schedule check ------------------------------------------------
 // Appended as a second gate. The stage/phase schedule in
-// SparkLmGroupGemmFp8Kernel is pure integer logic and its failure modes -
+// LmGemmKernel is pure integer logic and its failure modes -
 // consuming a stage never produced, overwriting a stage before it is consumed,
 // waiting on the wrong mbarrier phase - are all decidable on the host. Only the
 // hardware behaviour of the transfers themselves needs the ring.
@@ -277,6 +277,94 @@ static int32_t verify_pipeline_schedule(uint32_t stages, uint32_t k_tiles)
 		consumed_round[stage] = round;
 	}
 	return((int32_t)errors);
+}
+
+// -- Persistent multi-tile schedule check ------------------------------------
+// The verifier above covers one output tile, where the wait parity equals
+// (k_tile / stages) & 1. The kernel's barriers initialise once and serve every
+// tile the persistent CTA runs, so a stage's phase accumulates across tiles
+// and the parity is the per-stage completion count modulo two - the per-tile
+// formula is exact only when k_tiles % (2 * stages) == 0, and matches an
+// already-completed old phase otherwise. This models the kernel's per-stage
+// parity bitmask across a multi-tile schedule and checks it against the
+// cumulative produce/consume counts, which are the barrier's true phase.
+static int32_t verify_pipeline_persistent(uint32_t stages, uint32_t k_tiles, uint32_t output_tiles)
+{
+	uint32_t produced[PIPE_MAX_STAGES],consumed[PIPE_MAX_STAGES];
+	uint32_t k_tile,stage,ahead,fill,tile,errors = 0,stale = 0;
+	uint32_t phase = 0; /* the kernel's parity bitmask, one bit per stage */
+	for (stage = 0; stage < stages; ++stage)
+	{
+		produced[stage] = 0;
+		consumed[stage] = 0;
+	}
+	for (tile = 0; tile < output_tiles; ++tile)
+	{
+		// prologue: stages 0 .. stages-2
+		for (fill = 0; fill + 1u < stages && fill < k_tiles; ++fill)
+		{
+			// a stage may only be refilled after its previous contents were consumed
+			if ( produced[fill % stages] != consumed[fill % stages] )
+				errors++;
+			produced[fill % stages]++;
+		}
+		for (k_tile = 0; k_tile < k_tiles; ++k_tile)
+		{
+			stage = k_tile % stages;
+			ahead = k_tile + stages - 1u;
+			if ( ahead < k_tiles )
+			{
+				if ( produced[ahead % stages] != consumed[ahead % stages] )
+					errors++;
+				produced[ahead % stages]++;
+			}
+			// the wait must target the phase the barrier completes next
+			if ( ((phase >> stage) & 1u) != (consumed[stage] & 1u) )
+				errors++;
+			// and the staged data must be the round just produced, not an old one
+			if ( produced[stage] != consumed[stage] + 1u )
+				errors++;
+			// where the per-tile k formula disagrees, a k-derived wait is stale
+			if ( ((k_tile / stages) & 1u) != (consumed[stage] & 1u) )
+				stale++;
+			consumed[stage]++;
+			phase ^= 1u << stage;
+		}
+		// every k tile produced in this tile is consumed in this tile
+		for (stage = 0; stage < stages; ++stage)
+			if ( produced[stage] != consumed[stage] )
+				errors++;
+	}
+	// Coverage, not behaviour: multi-tile runs with k_tiles % (2 * stages) != 0
+	// must actually reach a wait the per-tile formula gets wrong, or this gate
+	// says nothing about the bug it exists for. Single-tile runs must never
+	// reach one - the model reproduces the old formula where the old formula
+	// was right.
+	if ( output_tiles > 1u && (k_tiles % (2u * stages)) != 0u && stale == 0u )
+		errors++;
+	if ( output_tiles == 1u && stale != 0u )
+		errors++;
+	return((int32_t)errors);
+}
+
+static int32_t verify_pipeline_persistent_matrix(void)
+{
+	uint32_t stages,k_tiles,tiles;
+	int32_t errors,total = 0;
+	printf("\npipeline schedule, persistent multi-tile: errors per (stages, k_tiles, tiles) cell\n");
+	for (stages = 2u; stages <= 6u; ++stages)
+	{
+		printf("  stages=%u :",stages);
+		for (k_tiles = 1u; k_tiles <= 21u; k_tiles += 5u)
+			for (tiles = 1u; tiles <= 3u; ++tiles)
+			{
+				errors = verify_pipeline_persistent(stages,k_tiles,tiles);
+				printf(" k=%-2u,t=%u:%d",k_tiles,tiles,errors);
+				total += errors;
+			}
+		printf("\n");
+	}
+	return(total);
 }
 
 static int32_t verify_pipeline_matrix(void)
@@ -607,6 +695,7 @@ int32_t main(void)
 	failures += verify_lm_mma_formulas() != 0;
 	failures += verify_bf16_atom() != 0;
 	failures += verify_pipeline_matrix() != 0;
+	failures += verify_pipeline_persistent_matrix() != 0;
 	printf("\n%s (%d failing checks)\n",failures == 0 ? "PASS" : "FAIL",failures);
 	return(failures == 0 ? 0 : 1);
 }

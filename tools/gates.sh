@@ -85,8 +85,10 @@ run "qwen36 stage doorway"  "gcc -Iinclude -Wall -Werror -DNDEBUG -c modules/qwe
 run "dsv4 stage doorway"  "gcc -Iinclude -Wall -Werror -DNDEBUG -c modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_validation.c -o /tmp/g_dsv4v.o"
 run "stage firmware runs"  "make -s build/test_glm52_resident_decode_stage_firmware && ./build/test_glm52_resident_decode_stage_firmware"
 run "topology behavior"    "make -s build/test_glm52_production_topology && ./build/test_glm52_production_topology"
+run "fabric topology"      "make -s build/test_fabric_topology && ./build/test_fabric_topology"
 run "request api behavior"  "make -s build/test_glm52_request_api && ./build/test_glm52_request_api"
 run "transaction ledger"    "make -s build/test_distributed_work && ./build/test_distributed_work"
+run "work transaction"     "make -s build/test_work_transaction && ./build/test_work_transaction"
 run "rank replay ownership" "make -s build/test_glm52_ring_rank_daemon && ./build/test_glm52_ring_rank_daemon"
 run "backend event ownership" "make -s build/test_ring_service_backend_transactions && ./build/test_ring_service_backend_transactions"
 run "service behavior"      "make -s build/test_glm52_service && ./build/test_glm52_service"
@@ -121,5 +123,10 @@ run "makefile: test"       "make -n test"
 run "makefile: tools"      "make -n tools"
 run "makefile: backend"    "make -n glm52_ring_service_backend"
 run "every source exists"  "python3 tests/test_sources_exist.py"
+# audit-boundaries was an opt-in make target only: the archive boundary it
+# checks could rot while every gate stayed green.
+run "core boundaries"      "make -s audit-boundaries"
+run "no python in production" "python3 tests/test_no_python_in_production.py"
+run "package manifest"     "python3 tools/verify_package_manifest.py"
 printf "  ---- %d pass, %d skip, %d fail\n" "$ok" "$skipped" "$bad"
 [ "$bad" -eq 0 ]

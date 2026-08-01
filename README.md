@@ -136,7 +136,7 @@ sparkpipe/
 ├── speculation/          DSpark draft backend, MTP
 ├── quant/                MXFP4 · NVFP4 · INT8/INT7/INT6 · FP8-E4M3 packers
 ├── tools/                build.sh, gates.sh, packers, route collection
-├── tests/                67 source/host gates plus complete host-suite coverage
+├── tests/                78 source/host gates plus complete host-suite coverage
 └── docs/                 SERVING_PIPELINE · MODULE_MAP · BANDWIDTH_LEDGER · techdebt
 ```
 
@@ -180,7 +180,7 @@ Two tiers describing the same model, or refusing to build.
 
 ### Gates, or: how this stays true
 
-67 host/source gates plus the complete host suite, designed so **CPU-only development proves CUDA
+78 host/source gates plus the complete host suite, designed so **CPU-only development proves CUDA
 dataflow**: host recorders run the real layer/slice code with GEMMs
 recorded and every other kernel executed, replaying byte-level
 partial/bank/aux/fold trajectories; drift gates parse serving and kernel

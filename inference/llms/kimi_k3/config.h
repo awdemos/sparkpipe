@@ -116,7 +116,7 @@
 // file was already on disk. The number was right and the label was wrong, which
 // is the worse of the two failures: a hedge on a fact that could be checked
 // spends someone else's review time confirming what a grep would have settled.
-#define K3_MLA_QK_SCALE 0.0721687836f        /* 1 / sqrt(128 + 64) */
+#define K3_MLA_QK_SCALE 0.07216878365f       /* 1 / sqrt(128 + 64) */
 #define K3_MLA_USE_NOPE 1u
 #define K3_MLA_OUTPUT_GATE 1u
 
@@ -170,16 +170,27 @@
 
 // AttnRes sources at K3's shape: 93 layers in blocks of 12 gives 8 blocks, one
 // partial final, and the embedding is always b_0 - so a layer late in the stack
-// scores 9 candidates plus the running partial sum. LmAttnResKernel takes the
-// count at runtime because it grows with depth; MAX_SOURCES bounds the shared
-// arrays.
-#define K3_ATTNRES_MAX_SOURCES 10u
+// scores 9 candidates plus the running partial sum. The partial is not a bank
+// candidate, and counting it is what made this 10 against the contract's 9
+// (k3_authoritative.json: layer_block_count + embedding_representation_count).
+// LmAttnResKernel takes the count at runtime because it grows with depth;
+// MAX_SOURCES bounds the shared arrays.
+#define K3_ATTNRES_MAX_SOURCES 9u
 
 // THE PER-REQUEST COST OF THE BANK, which is the transport question stated as a
-// number. Eight completed blocks plus the embedding plus the running partial is
-// ten hidden states a token, against one for a conventional residual.
+// number. Eight completed blocks plus the embedding is nine hidden states a
+// token in the bank, with the running partial carried beside it under its own
+// range, against one state for a conventional residual.
 #define K3_ATTNRES_BANK_BYTES \
 	(K3_ATTNRES_MAX_SOURCES * K3_HIDDEN * (K3_KV_BITS / 8u))
+
+// THE BANK, AS THE WIRE DESCRIBES IT. pipeline_sideband validates a bank of
+// source_count slots and a partial of one state, so it needs the slot count
+// and one state's bytes separately rather than the product above. A slot is
+// one BF16 hidden row; the slots are the candidates, and the partial - one
+// more state of the same size - travels under its own flag.
+#define K3_ATTNRES_BANK_SLOTS K3_ATTNRES_MAX_SOURCES
+#define K3_ATTNRES_PARTIAL_BYTES (K3_HIDDEN * (K3_KV_BITS / 8u))
 
 // AttnRes, now read from the modelling file. It is an ATTENTION over residuals,
 // not a weighted sum with learned scalars:
@@ -274,11 +285,11 @@
 // through bind. q and k are L2-normalized IN KERNEL
 // (use_qk_l2norm_in_kernel), beta passes through sigmoid in kernel, the
 // gate combines g, A_log and dt_bias in kernel with the safe lower
-// bound below, and the reference stores state TRANSPOSED
-// (transpose_state_layout=True) - the pack/loader owns that flip.
+// bound defined with the KDA block above, and the reference stores state
+// TRANSPOSED (transpose_state_layout=True) - the pack/loader owns that
+// flip.
 #define K3_KDA_A_LOG_SOURCE_HEADS 128u
 #define K3_KDA_QK_L2NORM 1u
-#define K3_KDA_GATE_LOWER_BOUND (-5.0f)
 #define K3_KDA_STATE_ELEMENT_BYTES 4u
 #define K3_KDA_CONV_WINDOW_BYTES \
 	(((2u * K3_KDA_HEADS * K3_KDA_KEY_DIM) + (K3_KDA_HEADS * K3_KDA_VALUE_DIM)) \
@@ -293,8 +304,12 @@
 	(K3_KDA_HEADS * K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * K3_KDA_STATE_ELEMENT_BYTES)
 #define K3_KDA_STATE_BYTES (K3_KDA_STATE_SLOT_BYTES + K3_KDA_CONV_WINDOW_BYTES)
 // Layer counts by kind, so per-layer pool arithmetic has one source. 69 + 24.
-#define K3_KDA_LAYER_COUNT (K3_LAYERS - K3_MLA_LAYER_COUNT)
-#define K3_MLA_LAYER_COUNT ((K3_LAYERS / 4u) + 1u)
+// Literals, matching generated_config.h's spelling of the same two numbers -
+// pipeline_sideband.h includes both headers, and (K3_LAYERS / 4u) + 1 against
+// 24u is one value spelled two ways, which the preprocessor reports as a
+// redefinition.
+#define K3_KDA_LAYER_COUNT 69u
+#define K3_MLA_LAYER_COUNT 24u
 
 // 1-INDEXED IN THE CONFIG, 0-INDEXED HERE. full_attn_layers is
 // {4,8,...,92} plus 93; subtract one and that is {3,7,...,91} plus 92. So the

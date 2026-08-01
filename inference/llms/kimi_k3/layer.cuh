@@ -379,6 +379,20 @@ static void K3BankStore(const K3LayerBuffers *b, uint32_t slot, uint32_t rows, c
 		rows,K3_HIDDEN);
 }
 
+// THE DELTA RULE'S 64 KiB OF DYNAMIC SHARED IS PAST THE 48 KiB DEFAULT.
+// ptxas grants 48 KiB of dynamic shared without asking; the delta rule carves
+// KEY_DIM * VALUE_DIM floats, which is 64 KiB, so the launch fails on device
+// every time unless cudaFuncSetAttribute opts the kernel in first. The opt-in
+// itself is LmKernelSharedMemoryOptIn in runtime/launch.h, shared with every
+// other family that launches this kernel; this wrapper only names the
+// instantiation.
+static int32_t K3DeltaRuleOptIn(uint32_t shared_bytes)
+{
+	return(LmKernelSharedMemoryOptIn(
+		(const void *)LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>,
+		shared_bytes));
+}
+
 // Kimi Delta Attention, 69 of 93 layers.
 //
 // Report eq. 1-2 and 5-6, with FlashKDA's ordering where the report is silent:
@@ -468,6 +482,9 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 		? b->replay_write_gate : b->kda_write_gate_out;
 	LM_LAUNCH((LmSigmoidRowsKernel<K3_LAYER_THREADS>), rows, K3_LAYER_THREADS, 0, stream,
 		(const uint16_t *)b->kda_beta_logit,write_gate,K3_KDA_HEADS);
+	status = K3DeltaRuleOptIn((uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)));
+	if ( status != LM_LAUNCH_OK )
+		return(status);
 	LM_LAUNCH((LmDeltaRuleKernel<K3_LAYER_THREADS,K3_KDA_KEY_DIM,K3_KDA_VALUE_DIM>), dim3(sequences,K3_KDA_HEADS), K3_LAYER_THREADS, (uint32_t)(K3_KDA_KEY_DIM * K3_KDA_VALUE_DIM * sizeof(float)), stream,
 		b->kda_state_pool,K3_KDA_STATE_SLOT_BYTES,b->kda_state_index,b->sequence_row_begin,0,b->query_bf16,b->key_bf16, b->value_bf16,retention,write_gate,b->attention_out_bf16, K3_KDA_HEADS,1u,sequences,commit);
 	// RMSNORM BEFORE THE GATE, AND ONLY HERE. Report eq. 6 normalises the

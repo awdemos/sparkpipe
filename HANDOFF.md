@@ -1,4 +1,4 @@
-# Handoff — Phase 4 Foundational Correctness
+# Handoff — Phase 6 Transactional Completion
 
 ## Validate the source tree
 
