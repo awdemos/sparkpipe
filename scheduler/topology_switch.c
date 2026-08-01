@@ -533,15 +533,15 @@ SparkTopologySwitchState SparkTopologySwitchAdvance(
 		sw->state = SPARK_TOPOLOGY_SWITCH_CHECKPOINT;
 		sw->phase_cursor = 0u;
 		/* The drain's last boundary IS this step, and the checkpoint is
-		   bookkeeping, not I/O waits - same call, same step.
-		   fall through */
+		   bookkeeping, not I/O waits - same call, same step. */
+		/* fall through */
 	case SPARK_TOPOLOGY_SWITCH_CHECKPOINT:
 		if ( TopologySwitchCheckpointRun(sw) == 0u )
 			break;
 		sw->state = SPARK_TOPOLOGY_SWITCH_SWAP;
 		sw->swap_started = 0u;
-		/* Issuing the swap is one non-blocking vtable call.
-		   fall through */
+		/* Issuing the swap is one non-blocking vtable call. */
+		/* fall through */
 	case SPARK_TOPOLOGY_SWITCH_SWAP:
 		if ( sw->swap_started == 0u )
 		{
