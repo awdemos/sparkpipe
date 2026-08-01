@@ -76,6 +76,7 @@ common_flags=(
     -I"${repository_root}/model-families/mimo25/include"
     -I"${repository_root}/modules/glm52_resident_decode_stage/include"
     -I"${repository_root}/modules/glm52_resident_decode_stage/source"
+    -I"${repository_root}/modules/glm52_dspark_draft_backend/include"
 )
 
 translation_units=(
@@ -122,6 +123,7 @@ for relative_source in "${translation_units[@]}"; do
         -I"${repository_root}/model-families/mimo25/include" \
         -I"${repository_root}/modules/glm52_resident_decode_stage/include" \
         -I"${repository_root}/modules/glm52_resident_decode_stage/source" \
+        -I"${repository_root}/modules/glm52_dspark_draft_backend/include" \
         -ptx "${source_path}" \
         -o "${output_directory}/ptx/${artifact_name}.compute_121a.ptx"
     if ! grep -Eq '^\.target[[:space:]]+sm_121a' \
