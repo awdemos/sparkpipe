@@ -34,6 +34,7 @@ printf 'CUDA_ARCH=%s\nSCOPE=%s\n' "${cuda_architecture}" "${gate_scope}" > "${ou
 
 cat > "${output_directory}/probe.cu" <<'PROBE'
 #include <cuda_runtime.h>
+#include <cstdint>
 
 __global__ void SparkSm121aProbe(float *output, const float *input)
 {

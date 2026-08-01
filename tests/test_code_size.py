@@ -50,7 +50,43 @@ from pathlib import Path
 # (+9), and their build/gate wiring (Makefile +6, tools/gates.sh +10,
 # tools/build_head_topk.sh 25). Ceiling moves by those 999 lines; concurrent
 # agents' in-flight growth remains theirs to account.
-CEILING = 121137
+# The NVMe KV sizing work adds the estimator behind the dedicate-the-external
+# drive decision (tools/nvme_kv_estimate.py, 407), the tier's default
+# bandwidth/step-time assumptions from that analysis
+# (include/sparkpipe/spark_nvme_tier.h +19), and the gate wiring (Makefile +1,
+# tools/gates.sh +4); the test and the doc are excluded by construction.
+# Ceiling moves by those 431 lines; concurrent agents' in-flight growth
+# remains theirs to account.
+# The topology-switch landing adds the TP16<->PP16 switch state machine and
+# its strategy-neutral KV key scheme (scheduler/topology_switch.c, 646;
+# include/sparkpipe/spark_topology_switch.h, 350) and its build/gate wiring
+# (Makefile +6, tools/gates.sh +3) - 1,005 lines; the balance of the
+# exact-count move is concurrent agents' in-flight growth, theirs to
+# account.
+# The hardware-topology landing adds the generator/validator
+# (tools/generate_topology.py, 562) and its two generated C artifacts
+# (deployment/include/sparkpipe/spark_hardware_topology.h, 111;
+# deployment/src/spark_hardware_topology_tables.c, 285) plus the gate
+# wiring (Makefile +1, tools/gates.sh +3) - 962 lines; the balance of the
+# exact-count move is concurrent agents' in-flight growth, theirs to
+# account.
+# The batch-variant landing adds the per-family tuning headers
+# (modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_batch_tuning.h, 131;
+# modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_batch_tuning.h, 115),
+# the variant rules and all/variants/publish_variants targets in the glm52
+# module Makefile (+95 net), the firmware header's composed module ID (+5),
+# and the build/gate wiring (Makefile +25, tools/gates.sh +21) - 392 lines;
+# the test is excluded by construction. The balance of the exact-count move
+# is concurrent agents' in-flight growth, theirs to account.
+# The TP/PP recipe wave adds the recipe generator (tools/generate_recipe.py,
+# 914: family adapters over the authoritative contracts, the stage_plan.c
+# balancing DP mirrored, the k3 shard table built from k3_shard's own sets)
+# and its gate wiring (tools/gates.sh +8, Makefile +1) - 923 lines; the
+# test, the naming doc, the mimo25 contract JSON and the generated
+# examples/recipes/ set are excluded by construction. The balance of the
+# exact-count move is concurrent agents' in-flight growth, theirs to
+# account.
+CEILING = 124151
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

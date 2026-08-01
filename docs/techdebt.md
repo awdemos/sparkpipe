@@ -131,7 +131,9 @@ K3 (1.6 TB) + GLM-class (~0.4 TB) cannot be co-resident with useful KV
 (2.0 TB vs 2.0 TB capacity). Swap = drain + parallel NVMe load of ~100
 GB/node: 14-20 s at 5-7 GB/s local NVMe, plus arena re-init. Target
 <20 s via pack mmap + JIT residency warm path; orchestration (drain,
-load, announce) is scheduler work. Big-batch workloads run the smaller
+load, announce) is scheduler work. The TP16<->PP16 instance of this
+protocol is implemented: scheduler/topology_switch.c, budget and KV-warm
+reasoning in docs/TOPOLOGY_SWITCHING.md. Big-batch workloads run the smaller
 resident model; K3 owns B1-B8 interactive with shared-prefix reuse.
 
 ## Architecture audits (from MODULE_MAP v2, 2026-07-29)

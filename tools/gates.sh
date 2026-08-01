@@ -24,6 +24,13 @@ run "kv cache"             "gcc -O2 -Wall -Wextra -I. -o /tmp/g_kv tests/test_ca
 # The JIT tier below device/host KV: lookahead, preemption and eviction are all
 # schedule arithmetic, so a mock drive verifies the whole contract on a host.
 run "nvme tier"            "make -s build/test_nvme_tier && ./build/test_nvme_tier"
+# The TP16<->PP16 switch protocol on the same mock-drive tier: quiesce bounds,
+# checkpoint pins surviving eviction, warm-vs-recompute resume, budget math.
+run "topology switch"      "make -s build/test_topology_switch && ./build/test_topology_switch"
+# The sizing model behind the dedicate-the-external-NVMe decision: the estimator
+# must keep reproducing the roadmap it derives from, or the doc's verdict table
+# goes stale while the drive purchase stays justified by it.
+run "nvme kv estimate"     "python3 tests/test_nvme_kv_estimate.py"
 run "kv geometry"          "g++ -std=c++17 -fsyntax-only -Wall -Wextra -I. -Imodel-families/glm52/include tests/test_kv_geometry.cc"
 run "workspace layout"     "gcc -O2 -Wall -Wextra -I. -o /tmp/g_w tests/test_group_gemm_workspace.c && /tmp/g_w"
 run "tensor map geometry"  "gcc -O2 -Wall -Wextra -I. -o /tmp/g_t tests/test_tensor_map_geometry.c && /tmp/g_t"
@@ -106,6 +113,13 @@ run "k3 pack"              "python3 tests/test_k3_pack.py"
 run "k3 pack layout"       "python3 tests/test_k3_pack_layout.py"
 run "k3 tp shard"          "python3 tests/test_k3_shard.py"
 run "k3 shard table"       "python3 tests/test_k3_shard_table.py"
+# The recipe generator: deterministic bytes, geometry-hash invalidation, TP
+# shard coverage against k3_shard's own table, PP balance against a
+# brute-force optimum - then --check that the committed examples/recipes/
+# set is current for the committed contracts (a stale content-hash in a
+# filename fails here before a node ever picks it up).
+run "recipe generation"    "python3 tests/test_recipe_generation.py"
+run "recipes current"      "python3 tools/generate_recipe.py --check"
 run "k3 stage doorway"     "gcc -Iinclude -Imodel-families/k3/include -Imodel-families/glm52/include -Wall -Werror -DNDEBUG -c modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_validation.c -o /tmp/g_k3v.o"
 run "mimo25 stage doorway"  "gcc -Iinclude -Wall -Werror -DNDEBUG -c modules/mimo25_resident_decode_stage/source/spark_mimo25_resident_decode_stage_validation.c -o /tmp/g_mimo25v.o"
 run "qwen36 stage doorway"  "gcc -Iinclude -Wall -Werror -DNDEBUG -c modules/qwen36_resident_decode_stage/source/spark_qwen36_resident_decode_stage_validation.c -o /tmp/g_qwen36v.o"
@@ -124,6 +138,9 @@ run "stage graph replay"   "make -s build/test_stage_graph_replay && ./build/tes
 run "stage dispatch host compile" "g++ -x c++ -std=c++17 -fsyntax-only -Wall -Wextra -Werror -I. -Iinclude -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source -Imodel-families/glm52/include -Itests/cuda_stub inference/stage/dispatch.cu"
 run "topology behavior"    "make -s build/test_glm52_production_topology && ./build/test_glm52_production_topology"
 run "fabric topology"      "make -s build/test_fabric_topology && ./build/test_fabric_topology"
+# The hardware description above the fabric mode: node types, per-node ports
+# and ranks, validated, with the runtime configs and C tables as projections.
+run "hardware topology"    "python3 tests/test_hardware_topology.py"
 run "request api behavior"  "make -s build/test_glm52_request_api && ./build/test_glm52_request_api"
 run "transaction ledger"    "make -s build/test_distributed_work && ./build/test_distributed_work"
 run "work transaction"     "make -s build/test_work_transaction && ./build/test_work_transaction"
@@ -145,6 +162,12 @@ run "fast defaults"        "python3 tests/test_fast_defaults.py"
 run "node daemons compile"  "make -s build/sparkpipe_glm52_cuda_residentd build/sparkpipe_glm52_ring_rank_daemon"
 run "code size"           "python3 tests/test_code_size.py"
 run "dry naming law"       "python3 tests/test_dry_law.py"
+# The batch-variant contract: one source tree, four capacity-ceiling modules
+# per resident family from ONE recipe template, every per-bucket constant in
+# the family's tuning header, every name spelled once. A per-bucket fork, a
+# respelled module ID, or a .PHONY target nobody defined all fail here. The
+# ceiling/tile/module-ID selection runs compiled, per bucket, on the host.
+run "batch variants"       "python3 tests/test_batch_variants.py"
 # The grouped selection path has no model in this tree, so nothing instantiates
 # it and nothing would notice it failing to compile.
 run_cuda "grouped topk builds"  "sh tools/build_grouped_topk.sh"
@@ -165,6 +188,11 @@ run "makefile parses"      "make -n all"
 run "makefile: test"       "make -n test"
 run "makefile: tools"      "make -n tools"
 run "makefile: backend"    "make -n glm52_ring_service_backend"
+# The variant set exists only if make can emit it: four archives from the one
+# template plus a publish per bucket ID, proven by expansion - nvcc compiles
+# nothing under -n, but a deleted template or an undefined target fails here.
+run "makefile: variants"   "make -n -C modules/glm52_resident_decode_stage variants"
+run "makefile: variant publish" "make -n -C modules/glm52_resident_decode_stage publish_variants"
 run "every source exists"  "python3 tests/test_sources_exist.py"
 # audit-boundaries was an opt-in make target only: the archive boundary it
 # checks could rot while every gate stayed green.

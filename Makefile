@@ -253,11 +253,13 @@ TEST_NAMES := \
     test_orchestrator \
     test_glm52_resident_decode_stage_firmware \
     test_glm52_resident_decode_stage_production_runner \
-    test_stage_graph_replay
+    test_stage_graph_replay \
+    test_topology_switch
 
 TEST_BINARIES := $(addprefix build/,$(TEST_NAMES))
 PYTHON_TESTS := \
 	tests/test_api_stress.py \
+	tests/test_batch_variants.py \
 	tests/test_code_size.py \
 	tests/test_config_coverage.py \
 	tests/test_cuda_performance_contracts.py \
@@ -279,6 +281,7 @@ PYTHON_TESTS := \
 	tests/test_glm52_unity_precision_contract.py \
 	tests/test_gqa_host.py \
 	tests/test_grouped_moe_source_contracts.py \
+	tests/test_hardware_topology.py \
 	tests/test_k3_driver_contracts.py \
 	tests/test_k3_engine.py \
 	tests/test_k3_kv_geometry.py \
@@ -304,10 +307,12 @@ PYTHON_TESTS := \
 	tests/test_model_driver_contracts.py \
 	tests/test_model_families.py \
 	tests/test_must_work_targets.py \
+	tests/test_nvme_kv_estimate.py \
 	tests/test_ptx_capability_gate.py \
 	tests/test_python_syntax.py \
 	tests/test_qwen36_bf16_contract.py \
 	tests/test_qwen36_layer_host.py \
+	tests/test_recipe_generation.py \
 	tests/test_release_assemble.py \
 	tests/test_rope_pairing.py \
 	tests/test_router_host.py \
@@ -343,6 +348,7 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
 
 .PHONY: all clean test tools demo FORCE \
     cuda_glm52_resident_decode_stage \
+    cuda_glm52_resident_decode_stage_variants \
     cuda_glm52_resident_decode_stage_publish \
     glm52_w8lut_quality_cuda_gate \
     glm52_w8lut_quality_reference \
@@ -364,7 +370,11 @@ GLM52_RESIDENT_DECODE_STAGE_TEST_ARCHIVE := \
     architecture_audit \
     model_driver_contracts
 
-all: $(LIBRARIES) tools $(GLM52_RING_SERVICE_BACKEND)
+# The batch-variant set is part of all: the variant IS the module, so a build
+# that stops at the unbucketed archive is a partial build. The nvcc guard
+# keeps host-only checkouts building - no CUDA toolchain, no variant archives,
+# one skip line, same contract as the other cuda_* targets.
+all: $(LIBRARIES) tools $(GLM52_RING_SERVICE_BACKEND) cuda_glm52_resident_decode_stage_variants
 
 tools: $(TOOL_BINARIES) $(GLM52_RING_SERVICE_BACKEND)
 
@@ -701,6 +711,11 @@ build/test_kv_store: tests/test_kv_store.c $(COMMON_LIBRARY)
 build/test_nvme_tier: tests/test_nvme_tier.c cache/nvme_tier.c include/sparkpipe/spark_nvme_tier.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_nvme_tier.c cache/nvme_tier.c $(LDFLAGS) $(LDLIBS) -o $@
 
+# The switch machine sits on the same mock-drive tier: two translation units,
+# vtable devices, compiled directly like the tier test above.
+build/test_topology_switch: tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c include/sparkpipe/spark_topology_switch.h include/sparkpipe/spark_nvme_tier.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_topology_switch.c scheduler/topology_switch.c cache/nvme_tier.c $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_kv_mooncake: tests/test_kv_mooncake.cpp tests/fixtures/mooncake/dummy_client.cpp modules/kv_mooncake/spark_kv_mooncake.cpp $(COMMON_LIBRARY)
 	$(CXX) $(CPPFLAGS) -Itests/fixtures/mooncake $(CXXFLAGS) $^ $(LDFLAGS) $(LDLIBS) -o $@
 
@@ -850,6 +865,17 @@ cuda_glm52_resident_decode_stage:
 		echo "cuda_glm52_resident_decode_stage skipped: nvcc unavailable"; \
 	else \
 		$(MAKE) -C modules/glm52_resident_decode_stage archive NVCC=$(NVCC) CUDA_ARCH=sm_121a; \
+	fi
+
+# One source tree, four capacity-ceiling modules (b8 chat through b1024, the
+# planner maximum): the module Makefile's variants target compiles every
+# bucket from the single SPARK_GLM52_BATCH_VARIANT_RULES template. Trim the
+# set with GLM52_BATCH_VARIANT_BUCKETS="8 1024", never by editing a variant.
+cuda_glm52_resident_decode_stage_variants:
+	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
+		echo "cuda_glm52_resident_decode_stage_variants skipped: nvcc unavailable"; \
+	else \
+		$(MAKE) -C modules/glm52_resident_decode_stage variants NVCC=$(NVCC) CUDA_ARCH=sm_121a; \
 	fi
 
 
