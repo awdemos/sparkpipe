@@ -3,7 +3,7 @@
     "file": "sparkpipe-phase6-transactional-completion-2026-08-01.tar",
     "sha256": "805d60a52ac8b910ba43a3e2efed2d233ab6552aa1a7ee595756476aeec75405"
   },
-  "file_count": 602,
+  "file_count": 650,
   "files": [
     {
       "path": ".gitattributes",
@@ -121,9 +121,19 @@
       "size_bytes": 5234
     },
     {
+      "path": "deployment/include/sparkpipe/spark_hardware_topology.h",
+      "sha256": "b75932073a70733963d7dc43c1191110080c6fb99c6e2178710c65bed934dd64",
+      "size_bytes": 3084
+    },
+    {
       "path": "deployment/include/sparkpipe/spark_release.h",
       "sha256": "e19a7e70692778a2735984f9ab6a6533b41929420fe8f04ad2fbe881dfd787d9",
       "size_bytes": 5912
+    },
+    {
+      "path": "deployment/src/spark_hardware_topology_tables.c",
+      "sha256": "653a07d690d852013fcb9d4d0bee45292b60637d201a6fd14a6437439d410b56",
+      "size_bytes": 14402
     },
     {
       "path": "deployment/src/spark_release.c",
@@ -169,6 +179,11 @@
       "path": "docs/CORE_CONTAMINATION_AUDIT.md",
       "sha256": "f03c971d83707bf2c9328a5b9771f13443a9ad2fb7b8d3f202a91b23b0b28207",
       "size_bytes": 3140
+    },
+    {
+      "path": "docs/DATAFILE_NAMING.md",
+      "sha256": "63107303b6d74ed2b5389ccabfddb7cf3c08f17526041cba31726a87a9c42de5",
+      "size_bytes": 5380
     },
     {
       "path": "docs/DIAGNOSTICS_ARCHIVE.md",
@@ -546,6 +561,11 @@
       "size_bytes": 13169
     },
     {
+      "path": "docs/HARDWARE_TOPOLOGY.md",
+      "sha256": "16563cf9637f33476db737e7ba4afe091467b1de1f02769288934ae7b227b8a3",
+      "size_bytes": 3940
+    },
+    {
       "path": "docs/HOST_LAYER_EXECUTION.md",
       "sha256": "f3823d12c8ea6900823cfdfd4577b879e4379695e1fe1ec5a4fabcb3c40a97c7",
       "size_bytes": 2932
@@ -557,8 +577,8 @@
     },
     {
       "path": "docs/K3_PACK_FORMAT_V2.md",
-      "sha256": "1519e0d3c2caa2318b53f0fb100c10c6f09fee4ed0d672a8b5fc12cd0e38abb3",
-      "size_bytes": 11511
+      "sha256": "2b32ef88ea72a373e741049bc8316e164d0f970ce3198f629a7742e770fe7bbd",
+      "size_bytes": 11471
     },
     {
       "path": "docs/K3_SPEED.md",
@@ -594,6 +614,11 @@
       "path": "docs/MUST_WORK_TARGETS.md",
       "sha256": "f84bf68a79ac02ef3d2b346b849cd8d0b2e63c25fac1e813d18ffc27b76d3e93",
       "size_bytes": 1108
+    },
+    {
+      "path": "docs/NVME_KV_SIZING.md",
+      "sha256": "a14ca9e455b7248d34cf389be8803af3af3b7ae644c900b728efbb9793c572fd",
+      "size_bytes": 13652
     },
     {
       "path": "docs/PERF_ROADMAP_2026-08-01.md",
@@ -711,6 +736,11 @@
       "size_bytes": 6869
     },
     {
+      "path": "docs/TOPOLOGY_SWITCHING.md",
+      "sha256": "978641e65084c790dfa3b878c943bbc5f805ed05134610edb7c158d05aae7e8b",
+      "size_bytes": 11701
+    },
+    {
       "path": "docs/TP16_DUAL_RAIL_SPEED.md",
       "sha256": "571ff4b33b9c475e7186bfda68c05dbe22fd877c2823e6704e9a6d8b4793104e",
       "size_bytes": 4416
@@ -781,6 +811,126 @@
       "size_bytes": 4957
     },
     {
+      "path": "examples/recipes/dsv4.PP13.6eda86f36e24f59f.json",
+      "sha256": "1c4bafe43d990a62aae3f9dcb93bfa404987239407fb16dd30181c95dbeaa2ee",
+      "size_bytes": 5945
+    },
+    {
+      "path": "examples/recipes/dsv4.PP16.8b939ad146f983c9.json",
+      "sha256": "9f4aad85b45889b42db1113f4827ce026371169a78d30d2f35ea0bff74aa89e3",
+      "size_bytes": 6922
+    },
+    {
+      "path": "examples/recipes/dsv4.TP13.555df43ed0953b63.json",
+      "sha256": "c1cc799ec62d611d9e82d6be534aaa8b293ce42c8bafb66626a1612a86c59758",
+      "size_bytes": 15753
+    },
+    {
+      "path": "examples/recipes/dsv4.TP16.a3790428b98ca8fd.json",
+      "sha256": "575bf74f39b278fe9f319945884b26fe154f07c8d292d4ba2be9cded304c3fcd",
+      "size_bytes": 17447
+    },
+    {
+      "path": "examples/recipes/dsv4pro.PP13.2be9dcbeff00f7e7.json",
+      "sha256": "52c653b5540154c91ed3f84e03b5cce37a6238893304564d7d411bc1157aab89",
+      "size_bytes": 6136
+    },
+    {
+      "path": "examples/recipes/dsv4pro.PP16.6baf62e18bdde196.json",
+      "sha256": "2c9b59c826a2909c7503c99610eb5df6a87c0d9b5b7a0d7c34935b6c3e2aa858",
+      "size_bytes": 7119
+    },
+    {
+      "path": "examples/recipes/dsv4pro.TP13.5b8268dbf0611544.json",
+      "sha256": "d67f13f294a66d57aba6159c51719571b51abe19cc20fc1923cd0290a4e46334",
+      "size_bytes": 15947
+    },
+    {
+      "path": "examples/recipes/dsv4pro.TP16.2ea2dce71113dd74.json",
+      "sha256": "7e7c6737e70d5716038483e767bccd5012fe21a26307fdf72c440c6bfe0839c5",
+      "size_bytes": 17651
+    },
+    {
+      "path": "examples/recipes/glm52.PP13.23ffa3b2e03668a0.json",
+      "sha256": "df02339b50a45b054af80c2e15b5e1c61a75f4e01117ecf0c1d7560f62271fa4",
+      "size_bytes": 5453
+    },
+    {
+      "path": "examples/recipes/glm52.PP16.829cff88196c718d.json",
+      "sha256": "a3fb2e5a1ef9a966b0a639f7af495b2cd5d3067e04c0da96213fd6d7a8437aae",
+      "size_bytes": 6436
+    },
+    {
+      "path": "examples/recipes/glm52.TP13.28c11a493841bf78.json",
+      "sha256": "8496befc71318c229ed2a6a1a57768aef7e82599ccdb2e9faa1dcc0533e5017f",
+      "size_bytes": 15615
+    },
+    {
+      "path": "examples/recipes/glm52.TP16.521a774529a3753f.json",
+      "sha256": "87c0a97e8829a64bd3bc2db7de2780a2fba76750d994103b45eba6f4ce2ed2d0",
+      "size_bytes": 17291
+    },
+    {
+      "path": "examples/recipes/k3.PP13.14725b32d4736408.json",
+      "sha256": "14a539ee1eaaeb97a4effcf3aa00d211dd20faf62d54d0f5cf67837475aaf94d",
+      "size_bytes": 5648
+    },
+    {
+      "path": "examples/recipes/k3.PP16.ea03b1215c2a8ccd.json",
+      "sha256": "97c8cdf6d9c027024866134a8a5fd69c0255e2b5e904abcb00c5320ff28db0f6",
+      "size_bytes": 6631
+    },
+    {
+      "path": "examples/recipes/k3.TP13.11f922e14477a48c.json",
+      "sha256": "1a7621aa0460163eb3faf19d1034b62f9c76d0094fd6726f9b162571653758a4",
+      "size_bytes": 35115
+    },
+    {
+      "path": "examples/recipes/k3.TP16.68b43014938ad472.json",
+      "sha256": "d6f44952215796bccd41b597729571cd8260f5371f12148c5586233373a66c2a",
+      "size_bytes": 39416
+    },
+    {
+      "path": "examples/recipes/mimo25.PP13.00b99c540dfceb1a.json",
+      "sha256": "a23c60c3832db2b246d4601dedc367ccf6e61133b0906800f4170ab1c03574fe",
+      "size_bytes": 5734
+    },
+    {
+      "path": "examples/recipes/mimo25.PP16.595dfc97fd2ae246.json",
+      "sha256": "40f96b9a075a357e9e4d0b1f3e88cba4d776b152a94cfcb49adc3d5e3b81c31d",
+      "size_bytes": 6704
+    },
+    {
+      "path": "examples/recipes/mimo25.TP13.6041ef129b26d0fc.json",
+      "sha256": "5491aa912dfdb02890e8f5d164a9601df7d095daaa14e05c4d4e822078d6f489",
+      "size_bytes": 15343
+    },
+    {
+      "path": "examples/recipes/mimo25.TP16.8b3958fe7416d195.json",
+      "sha256": "04189df37ab1ad7a3f44bc229d8fb16759c5eb8db0f5a0b2fa2fe35df9d718f8",
+      "size_bytes": 17012
+    },
+    {
+      "path": "examples/recipes/qwen36.PP13.f8763913d8ef63d4.json",
+      "sha256": "d95c0cd37fee0190b04798a05d42616454b56cc17aa17f9c32e7f1376f252d60",
+      "size_bytes": 5654
+    },
+    {
+      "path": "examples/recipes/qwen36.PP16.a38fcf1746d4958e.json",
+      "sha256": "aa5591b2b1e7cab7e907cf54cc9e7304cb1418e2835c34e58a0b75c9580b0d52",
+      "size_bytes": 6636
+    },
+    {
+      "path": "examples/recipes/qwen36.TP13.fb94a1fdb76ee497.json",
+      "sha256": "9e2ceeb7220856927d158ea240fe493a678c702a0612fe9d6720a9b20215f698",
+      "size_bytes": 17919
+    },
+    {
+      "path": "examples/recipes/qwen36.TP16.b574ca12b0ea603a.json",
+      "sha256": "a0df85fd1ee1ae3ec5cc6fc3e34e6bcdf1889a1c6af6eb7ced1f0b405f5f122b",
+      "size_bytes": 20178
+    },
+    {
       "path": "examples/release/sparkpipe.example.json",
       "sha256": "764e725d510fdad0b579f3b28ee2ac748b287181711b90f688a63a8b9c1dfb98",
       "size_bytes": 5547
@@ -804,6 +954,21 @@
       "path": "examples/runtime_configs/single_switch_100g.json",
       "sha256": "550eddabb06bbfda5616bcde03020d4720f5862f1822775c63b92ab89e57e6fe",
       "size_bytes": 343
+    },
+    {
+      "path": "examples/topologies/dual_switch_16node_production.json",
+      "sha256": "2143ab176f2f7935d7898c556f2c4a354dc8fd4147885f604b31e1889970dfd6",
+      "size_bytes": 6230
+    },
+    {
+      "path": "examples/topologies/ring_13node_bringup.json",
+      "sha256": "516ef1acae310d0039f7ae4ad4252ebca1da62625f9ba00a428317863ff25ca6",
+      "size_bytes": 5247
+    },
+    {
+      "path": "examples/topologies/single_switch_16node.json",
+      "sha256": "7ea6af4b8e8a6a68a3d53e6da0302df6ea8318adf6875666b2e417237f6dbf16",
+      "size_bytes": 4970
     },
     {
       "path": "include/sparkpipe/spark_batch_sequence_table.h",
@@ -1021,6 +1186,11 @@
       "size_bytes": 9076
     },
     {
+      "path": "include/sparkpipe/spark_topology_switch.h",
+      "sha256": "49e0bb8c65d9dda85eeb8339da15fd032a683d4498a9d7cb895564d1e2b21f19",
+      "size_bytes": 15801
+    },
+    {
       "path": "include/sparkpipe/spark_tp_collective.h",
       "sha256": "69b4fb0b82cba4162a935a7397a078111d250887e23f067960996d4cf32f4d95",
       "size_bytes": 4268
@@ -1037,8 +1207,8 @@
     },
     {
       "path": "inference/kernels/attn.cuh",
-      "sha256": "95d3c36b1e10968c333490a8bc990f7b80655007ae07c018b71e121a7f489680",
-      "size_bytes": 24438
+      "sha256": "8e84d996d32c9ade6811f9d0b712b7c5cec394827981c90cd339beeac29ac37f",
+      "size_bytes": 24187
     },
     {
       "path": "inference/kernels/dtype.cuh",
@@ -1177,8 +1347,8 @@
     },
     {
       "path": "inference/llms/deepseek_v4/layer.cuh",
-      "sha256": "e6fbe8388cd3b10470f154eea55eedc8ea2677d827a4263a9062da5994913a78",
-      "size_bytes": 25181
+      "sha256": "1a93eeec5f8adf9a238fc51ab2f033e20733a2ea46bcf47eb6e074ff842f6e55",
+      "size_bytes": 25500
     },
     {
       "path": "inference/llms/deepseek_v4/unity.cu",
@@ -1462,8 +1632,8 @@
     },
     {
       "path": "model-families/k3/include/sparkpipe/spark_k3_tp_shard_table.h",
-      "sha256": "acfd8dc4f4bcd8b4b70444d33344428fb5df8241773f48d9980a84d1e9e5f0ae",
-      "size_bytes": 3837
+      "sha256": "27a621fc47adad4b696991c7e0c7185f5362b2d7820deac1d0a953d4c85ccea3",
+      "size_bytes": 3901
     },
     {
       "path": "model-families/mimo25/include/sparkpipe/spark_mimo25_model.h",
@@ -1526,9 +1696,19 @@
       "size_bytes": 2953
     },
     {
+      "path": "model_contracts/mimo25_authoritative.json",
+      "sha256": "9ded5e90e5dd8f0c0b731aaa6c7edb9243dc0aba61a2c4e9a1adf64c0e011d5b",
+      "size_bytes": 2712
+    },
+    {
       "path": "model_contracts/must_work_targets.json",
       "sha256": "7b22d891fae2323af9181e102e73e2a85b24d7c6134dec961039337d98155547",
       "size_bytes": 3662
+    },
+    {
+      "path": "model_contracts/qwen36_authoritative.json",
+      "sha256": "e162bb750570d6435697ac0f9da5b021cffb29f2f5480ffc937d11a9603aa577",
+      "size_bytes": 2017
     },
     {
       "path": "modules/dsv4_resident_decode_stage/source/spark_dsv4_resident_decode_stage_validation.c",
@@ -1567,13 +1747,18 @@
     },
     {
       "path": "modules/glm52_resident_decode_stage/Makefile",
-      "sha256": "377c8e2f6e9e979efbac12fe2a1d4c8e83b61a3013da856cfff39f6f4ea1cb4b",
-      "size_bytes": 22849
+      "sha256": "7edb154179516c7eedc5300f26f0b691bd7c45f323624c069c9d949e75d7f0fc",
+      "size_bytes": 23080
     },
     {
       "path": "modules/glm52_resident_decode_stage/README.md",
       "sha256": "35ca82284015dc644686384e4409f48471e08fbba0bec91cc7c6ec6b1b859d4d",
       "size_bytes": 7434
+    },
+    {
+      "path": "modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_batch_tuning.h",
+      "sha256": "1a523a414784ab8c0562155c0709be8b2b16f1351d0f428f54fa816faf418666",
+      "size_bytes": 5807
     },
     {
       "path": "modules/glm52_resident_decode_stage/include/sparkpipe/spark_glm52_resident_decode_stage_b12x_moe_plan.h",
@@ -1629,6 +1814,11 @@
       "path": "modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_validation.c",
       "sha256": "eec963fbe6cd26f955a0a38a108395c6112899ec5f96fd8014e70af0221c3df3",
       "size_bytes": 89854
+    },
+    {
+      "path": "modules/k3_resident_decode_stage/include/sparkpipe/spark_k3_batch_tuning.h",
+      "sha256": "ca51eecce74bcb1a5b7254d21b9db12ddca0c7f943eb706511532d3267072862",
+      "size_bytes": 4526
     },
     {
       "path": "modules/k3_resident_decode_stage/source/spark_k3_resident_decode_stage_validation.c",
@@ -1836,9 +2026,19 @@
       "size_bytes": 30404
     },
     {
+      "path": "scheduler/topology_switch.c",
+      "sha256": "4275c778f422e482ebd1185a6a89ce50cdbfd487166ffc66a6edb3f98bd43e3e",
+      "size_bytes": 23551
+    },
+    {
       "path": "scheduler/work_control.c",
       "sha256": "994546d1ef4b8eb8b7f974876978f4bd65580cec6f97e1ed54cbeb9e5a40f0e2",
       "size_bytes": 92427
+    },
+    {
+      "path": "schema/hardware_topology.schema.json",
+      "sha256": "088ee1f8bc0ddf15722467ba0d2ad715dee7a2417aba54e82ce129e61571a98d",
+      "size_bytes": 5649
     },
     {
       "path": "schema/model_description.schema.json",
@@ -2017,8 +2217,8 @@
     },
     {
       "path": "tests/host_cuda/dsv4_layer_host.cu",
-      "sha256": "6af3cb25188fd5e3e643a5f55068e895d66da0885604f40a641f58a465c21817",
-      "size_bytes": 11528
+      "sha256": "7ff43d6086e3b35e1a76da8bd0431c150cd44cd03023114624417bdf2922139a",
+      "size_bytes": 11761
     },
     {
       "path": "tests/host_cuda/glm52_layer_host.cu",
@@ -2067,8 +2267,8 @@
     },
     {
       "path": "tests/host_cuda/mimo25_layer_host.cu",
-      "sha256": "2450886fd433f5cbad2f9e143c35506f1f17e026ec0eeeb756ff10b9f68d3149",
-      "size_bytes": 10447
+      "sha256": "b5191d17538d8522b43fb43762de82e5b735285886d21e6bd86939b48ac4fee2",
+      "size_bytes": 11659
     },
     {
       "path": "tests/host_cuda/mla_host.cu",
@@ -2156,14 +2356,19 @@
       "size_bytes": 3974
     },
     {
+      "path": "tests/test_batch_variants.py",
+      "sha256": "824df1a0caa9c98411171d8275fe7f74d6d513474e96d227142ee529b8f5ce26",
+      "size_bytes": 15098
+    },
+    {
       "path": "tests/test_cache.c",
       "sha256": "b7a2f1a3accd94a65bcc432669917927198e7729002fe178547d4e19ba5cd220",
       "size_bytes": 10078
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "55e4a3fd18af86997199e5e14ae57d5ae2fd6383119f3b8c023746629eb8e26c",
-      "size_bytes": 6783
+      "sha256": "960d8e3b5779da4367312bb0aeafb004899930e044e284f743f6effc35be8727",
+      "size_bytes": 7325
     },
     {
       "path": "tests/test_config_coverage.py",
@@ -2441,6 +2646,11 @@
       "size_bytes": 3289
     },
     {
+      "path": "tests/test_hardware_topology.py",
+      "sha256": "d815875e11c02ab57cbb49476269f53a6b13a46f48f847c60c397bc490100ffa",
+      "size_bytes": 7634
+    },
+    {
       "path": "tests/test_head_host.py",
       "sha256": "4de49596ffeb4bbe22be7af83683a1868fcbc2c0dc637a99499a60d857bd4792",
       "size_bytes": 4581
@@ -2502,13 +2712,13 @@
     },
     {
       "path": "tests/test_k3_shard.py",
-      "sha256": "b5cf7fcf938587e65d1f354347f5e2484c4eed7d6cec178b312ee42050b7ea15",
-      "size_bytes": 6525
+      "sha256": "31a26e8b432ebb2059ce3d253dbaa09395c39ec8937bf4021cf032f787e72bdc",
+      "size_bytes": 10190
     },
     {
       "path": "tests/test_k3_shard_table.py",
-      "sha256": "cde3f410d16e69679a455e0e3a5d977a56035f7704047197eef684394771398f",
-      "size_bytes": 3685
+      "sha256": "d159f7cd5dc5fdce46772cce5c299a033256b42560d191c0824cfccc38d2633c",
+      "size_bytes": 3615
     },
     {
       "path": "tests/test_k3_slice_host.py",
@@ -2646,6 +2856,11 @@
       "size_bytes": 756
     },
     {
+      "path": "tests/test_nvme_kv_estimate.py",
+      "sha256": "70b45291d691d8e9644fabcf217e98b92ec2dacdfe824c29d17ea2643ec02c76",
+      "size_bytes": 8982
+    },
+    {
       "path": "tests/test_nvme_tier.c",
       "sha256": "03923f916616843e980de18d165aeab9e638d52d7fbc78233270a429025025e1",
       "size_bytes": 22167
@@ -2689,6 +2904,11 @@
       "path": "tests/test_qwen36_work_control.cpp",
       "sha256": "434f26f339ce45f286488a94e366344cbfd01fa38279edc9610387f14dc98030",
       "size_bytes": 10181
+    },
+    {
+      "path": "tests/test_recipe_generation.py",
+      "sha256": "ddaed326baf12bf563028254bc419fcfba56049b61c8e7696bf550da95a5a0b7",
+      "size_bytes": 16046
     },
     {
       "path": "tests/test_reference.c",
@@ -2781,6 +3001,11 @@
       "size_bytes": 18589
     },
     {
+      "path": "tests/test_topology_switch.c",
+      "sha256": "804458c024fac6bb9a3e4e760033556ae10cc6504fdf30706fbce06c68af4b88",
+      "size_bytes": 20891
+    },
+    {
       "path": "tests/test_tp_collective.c",
       "sha256": "f6a9abee1458f4e665f01e62f2c07af8ab76de43e0cd46efb3bc39772dabb8a0",
       "size_bytes": 29004
@@ -2832,13 +3057,13 @@
     },
     {
       "path": "tools/build.sh",
-      "sha256": "a180ac4f4714bc77f7d9acba0119cc8fea8436a7687a296c4b7c0d0bc7c9745c",
-      "size_bytes": 3079
+      "sha256": "6be5aefae0ed14cab8c6ef94657aa8e184afa1343caa506b7349b5cf7571c6dd",
+      "size_bytes": 3548
     },
     {
       "path": "tools/build_grouped_topk.sh",
-      "sha256": "cd819e0f7741d043c84721df807772a09ece61307c7a0da2c6c20c7d1a5df110",
-      "size_bytes": 1039
+      "sha256": "347f87ee74125e5bb10f47f6e6812211734de279f96783afcc620bc8fc33436c",
+      "size_bytes": 1070
     },
     {
       "path": "tools/build_head_topk.sh",
@@ -2857,8 +3082,8 @@
     },
     {
       "path": "tools/cuda13_sm121a_compile_gate.sh",
-      "sha256": "2e9460dd3e384cc2b9c7aa9d23a6ffc6578bfea53b870dee43ebad0353d62235",
-      "size_bytes": 7186
+      "sha256": "b827a568110f2db819b8f0c07a097e01c5b60887d1d8e1b65eeb78a80cb3c15c",
+      "size_bytes": 7332
     },
     {
       "path": "tools/gates.sh",
@@ -2879,6 +3104,16 @@
       "path": "tools/generate_proposed_change_manifest.py",
       "sha256": "97443edd09549358c2abb894cab06a5ca7d08a075c3686502229016c8d7cc7ee",
       "size_bytes": 5300
+    },
+    {
+      "path": "tools/generate_recipe.py",
+      "sha256": "1d2dd3f529439b0ce41e3d938725bf83498b11d9aca6257ee7b97cc855e4473c",
+      "size_bytes": 45655
+    },
+    {
+      "path": "tools/generate_topology.py",
+      "sha256": "690e93fc747bbf6ea767efc2d5fcbc866cbe98f316bd37ac677a8b6c8f33aa76",
+      "size_bytes": 24117
     },
     {
       "path": "tools/get_cuda.sh",
@@ -2952,8 +3187,8 @@
     },
     {
       "path": "tools/k3_shard.py",
-      "sha256": "52552fe827ebc5e20ea3f5f479f8c3333303b3ee025b1d5a80f7cf7ce83c83e4",
-      "size_bytes": 10838
+      "sha256": "e2164e7972f7e69fdc8bc464ba7fa512d6cd7d13ee9b0e7ae3ad9422aed74b58",
+      "size_bytes": 16667
     },
     {
       "path": "tools/length_gate.py",
@@ -2964,6 +3199,11 @@
       "path": "tools/metric.sh",
       "sha256": "9bd269b586ff3e28c5942c062ad34a15207cb53cdb03616dd4fffd279014e06c",
       "size_bytes": 2842
+    },
+    {
+      "path": "tools/nvme_kv_estimate.py",
+      "sha256": "a6cfbd6e0d6019baf0e4199205fb33310cfce511cb8dee9ec07cd0b15fba7f78",
+      "size_bytes": 18995
     },
     {
       "path": "tools/seam_parity.sh",
