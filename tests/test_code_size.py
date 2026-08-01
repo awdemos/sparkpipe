@@ -21,7 +21,12 @@ from pathlib import Path
 # tests (node/backend.c +128, test_ring_service_backend_transactions.c +168),
 # the shared smem opt-in (runtime/launch.h, qwen/kimi call sites net negative),
 # and the new no-python/manifest gates; ceiling moves to the exact count.
-CEILING = 115919
+# The performance wave adds the tensor-map descriptor cache
+# (runtime/gemm_descriptor_cache.h + test), the comms arena (runtime/arena.h +
+# test), the RDMA eviction/batching/lane-rotation logic in rdma.cu, the BF16
+# collective path, and docs/PERF_ROADMAP_2026-08-01.md; ceiling moves to the
+# exact count again.
+CEILING = 116903
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}

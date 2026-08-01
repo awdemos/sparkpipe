@@ -414,6 +414,30 @@ static int32_t K3LayerKda(const K3LayerBuffers *b, uint32_t rows, uint32_t seque
 	// Folding a residual here normed stream-plus-retrieval, a different model.
 	LM_LAUNCH((LmFusedResidualRmsNormKernel<K3_LAYER_THREADS,uint16_t>), rows, K3_LAYER_THREADS, (K3_HIDDEN + 8u) * sizeof(float), stream,
 		b->hidden_bf16,0,(const uint16_t *)b->attn_norm_weight, 0,b->normed_bf16,K3_HIDDEN,K3_HIDDEN,K3_RMS_EPSILON);
+	// SIX PROJECTIONS READ normed_bf16, AND THEY CANNOT FUSE AS SHIPPED
+	// (audit K3-PERF-003). A single [hidden x (q|k|v|decay_down|beta|
+	// gate_down)] GEMM needs the six weights as ONE contiguous array - the
+	// GEMM takes one base pointer and one stride, with no per-section batch
+	// mode. The pack does not provide that and must not be made to at
+	// runtime:
+	//
+	//   * tools/k3_pack.py emits them interleaved with the conv weights,
+	//     decay_up, the bias and the scale tensors - not adjacent, in either
+	//     the full pack or a sharded one.
+	//   * the TP tables (spark_k3_tp_shard_table.h, tools/k3_shard.py) class
+	//     q/k/v/beta OUTPUT_DIM_HEADS but decay_down/gate_down REPLICATED -
+	//     one fused tensor cannot carry two shard classes, so per rank the
+	//     six slices would not even be the same columns of one parent.
+	//   * the format contract is "a loader walks names to pointers"; it
+	//     disclaims placement, and copying the weights contiguous on load
+	//     would cost the exact bandwidth the fusion saves.
+	//
+	// The honest fix is a pack-time fused tensor with its own shard class,
+	// plus a wide scratch and a split kernel (qwen_3_6's qkv pattern) - a
+	// pack-format change, owned with the packer, not something this file can
+	// do with the pointers it is handed. What IS here: q, k and v share
+	// shape, class and input, so they are the fusion candidate if the pack
+	// ever provides them as one tensor.
 	status = K3Project<LmBf16Format>(b,b->normed_bf16,b->kda_q_weight,b->kda_q_scale,
 		b->query_bf16,rows,K3_HIDDEN,K3_KDA_QK_DIM,multiprocessors,stream);
 	if ( status != LM_LAUNCH_OK )

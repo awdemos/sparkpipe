@@ -91,8 +91,11 @@ typedef struct SparkTestTpcThread
     uint64_t collective_identifier;
     uint64_t element_count;
     uint32_t operation_count;
+    uint32_t use_bf16;
     float *values;
     float *scratch;
+    uint16_t *values_bf16;
+    uint16_t *scratch_bf16;
     SparkStatus status;
     SparkTestTpcBarrier *barrier;
 } SparkTestTpcThread;
@@ -308,6 +311,34 @@ static void SparkTestTpcFill(
     }
 }
 
+/* Narrows a small whole value to BF16 bits. The test fill values are chosen
+   so every partial sum stays exactly representable in BF16 (odd parts below
+   256), so truncation and round-to-nearest-even agree and the expected
+   result can be computed without simulating the exchange tree. */
+static uint16_t SparkTestTpcBf16FromUint(uint32_t value)
+{
+    float as_float;
+    uint32_t bits;
+
+    as_float = (float)value;
+    memcpy(&bits, &as_float, sizeof(bits));
+    return (uint16_t)(bits >> 16u);
+}
+
+static void SparkTestTpcFillBf16(
+    uint16_t *values_bf16,
+    uint64_t element_count,
+    uint32_t tp_rank)
+{
+    uint64_t element_index;
+
+    for (element_index = 0u; element_index < element_count; ++element_index)
+    {
+        values_bf16[element_index] = SparkTestTpcBf16FromUint(
+            (tp_rank + 1u) * (uint32_t)(element_index % 2u + 1u));
+    }
+}
+
 static void *SparkTestTpcMain(void *argument)
 {
     SparkTestTpcThread *thread;
@@ -337,15 +368,30 @@ static void *SparkTestTpcMain(void *argument)
              operation_index < thread->operation_count;
              ++operation_index)
         {
-            SparkTestTpcFill(
-                thread->values,
-                thread->element_count,
-                thread->tp_rank);
-            thread->status = SparkTpCollectiveAllReduceSumF32(
-                &collective,
-                thread->values,
-                thread->element_count,
-                thread->scratch);
+            if (thread->use_bf16 != 0u)
+            {
+                SparkTestTpcFillBf16(
+                    thread->values_bf16,
+                    thread->element_count,
+                    thread->tp_rank);
+                thread->status = SparkTpCollectiveAllReduceSumBf16(
+                    &collective,
+                    thread->values_bf16,
+                    thread->element_count,
+                    thread->scratch_bf16);
+            }
+            else
+            {
+                SparkTestTpcFill(
+                    thread->values,
+                    thread->element_count,
+                    thread->tp_rank);
+                thread->status = SparkTpCollectiveAllReduceSumF32(
+                    &collective,
+                    thread->values,
+                    thread->element_count,
+                    thread->scratch);
+            }
             if (thread->status != SPARK_STATUS_OK)
             {
                 break;
@@ -460,11 +506,95 @@ static void SparkTestTpcRun(
     free(scratch_storage);
 }
 
+static void SparkTestTpcRunBf16(
+    uint32_t tp_degree,
+    uint64_t element_count)
+{
+    pthread_t threads[SPARK_TEST_TPC_MAX_DEGREE];
+    SparkTestTpcThread contexts[SPARK_TEST_TPC_MAX_DEGREE];
+    SparkTestTpcBarrier barrier;
+    uint16_t *storage;
+    uint16_t *scratch_storage;
+    uint16_t port_base;
+    uint64_t collective_identifier;
+    uint32_t rank_index;
+    uint64_t element_index;
+
+    assert(tp_degree <= SPARK_TEST_TPC_MAX_DEGREE);
+    storage = (uint16_t *)malloc(
+        (size_t)tp_degree * (size_t)element_count * sizeof(uint16_t));
+    scratch_storage = (uint16_t *)malloc(
+        (size_t)tp_degree * (size_t)element_count * sizeof(uint16_t));
+    assert(storage != NULL && scratch_storage != NULL);
+
+    port_base = SparkTestTpcFindAvailablePortBase(tp_degree);
+    collective_identifier = SparkTestTpcNextCollectiveIdentifier();
+    SparkTestTpcBarrierInitialize(&barrier, tp_degree);
+    for (rank_index = 0u; rank_index < tp_degree; ++rank_index)
+    {
+        memset(&contexts[rank_index], 0, sizeof(contexts[rank_index]));
+        contexts[rank_index].tp_degree = tp_degree;
+        contexts[rank_index].tp_rank = rank_index;
+        contexts[rank_index].port_base = port_base;
+        contexts[rank_index].collective_identifier = collective_identifier;
+        contexts[rank_index].element_count = element_count;
+        contexts[rank_index].operation_count = 2u;
+        contexts[rank_index].use_bf16 = 1u;
+        contexts[rank_index].values_bf16 = storage +
+            ((size_t)rank_index * (size_t)element_count);
+        contexts[rank_index].scratch_bf16 = scratch_storage +
+            ((size_t)rank_index * (size_t)element_count);
+        contexts[rank_index].status = SPARK_STATUS_INTERNAL_ERROR;
+        contexts[rank_index].barrier = &barrier;
+        assert(pthread_create(
+            &threads[rank_index],
+            NULL,
+            SparkTestTpcMain,
+            &contexts[rank_index]) == 0);
+    }
+
+    for (rank_index = 0u; rank_index < tp_degree; ++rank_index)
+    {
+        assert(pthread_join(threads[rank_index], NULL) == 0);
+    }
+    SparkTestTpcBarrierDestroy(&barrier);
+
+    for (rank_index = 0u; rank_index < tp_degree; ++rank_index)
+    {
+        SparkTestTpcReportUnexpectedStatus(
+            rank_index,
+            contexts[rank_index].status,
+            SPARK_STATUS_OK);
+        assert(contexts[rank_index].status == SPARK_STATUS_OK);
+    }
+
+    for (element_index = 0u; element_index < element_count; ++element_index)
+    {
+        uint16_t expected_value;
+
+        expected_value = SparkTestTpcBf16FromUint(
+            (uint32_t)(element_index % 2u + 1u) *
+            (tp_degree * (tp_degree + 1u) / 2u));
+        assert(storage[element_index] == expected_value);
+    }
+
+    for (rank_index = 1u; rank_index < tp_degree; ++rank_index)
+    {
+        assert(memcmp(
+            storage,
+            storage + ((size_t)rank_index * (size_t)element_count),
+            (size_t)element_count * sizeof(uint16_t)) == 0);
+    }
+
+    free(storage);
+    free(scratch_storage);
+}
 static void SparkTestTpcDegreeOneNoOp(void)
 {
     SparkTpCollectiveConfig config;
     SparkTpCollective collective;
     float value;
+    uint16_t value_bf16;
 
     memset(&config, 0, sizeof(config));
     config.abi_version = SPARK_TP_COLLECTIVE_ABI_VERSION;
@@ -477,6 +607,13 @@ static void SparkTestTpcDegreeOneNoOp(void)
         1u,
         NULL) == SPARK_STATUS_OK);
     assert(value == 42.0f);
+    value_bf16 = SparkTestTpcBf16FromUint(42u);
+    assert(SparkTpCollectiveAllReduceSumBf16(
+        &collective,
+        &value_bf16,
+        1u,
+        NULL) == SPARK_STATUS_OK);
+    assert(value_bf16 == SparkTestTpcBf16FromUint(42u));
     SparkTpCollectiveDestroy(&collective);
     SparkTpCollectiveDestroy(&collective);
 }
@@ -624,6 +761,70 @@ static void SparkTestTpcRejectsMismatchedElementCounts(void)
     }
 }
 
+/* One rank on the F32 variant, the peer on the BF16 variant: the wire-kind
+   field in the operation header must turn the mismatch into a validation
+   failure instead of each rank decoding the other's payload at the wrong
+   element width. */
+static void SparkTestTpcRejectsMixedWireKinds(void)
+{
+    pthread_t threads[2];
+    SparkTestTpcThread contexts[2];
+    SparkTestTpcBarrier barrier;
+    float values[2];
+    float scratch[2];
+    uint16_t values_bf16[2];
+    uint16_t scratch_bf16[2];
+    uint16_t port_base;
+    uint64_t collective_identifier;
+    uint32_t rank_index;
+
+    port_base = SparkTestTpcFindAvailablePortBase(2u);
+    collective_identifier = SparkTestTpcNextCollectiveIdentifier();
+    SparkTestTpcBarrierInitialize(&barrier, 2u);
+    memset(values, 0, sizeof(values));
+    memset(scratch, 0, sizeof(scratch));
+    memset(values_bf16, 0, sizeof(values_bf16));
+    memset(scratch_bf16, 0, sizeof(scratch_bf16));
+
+    for (rank_index = 0u; rank_index < 2u; ++rank_index)
+    {
+        memset(&contexts[rank_index], 0, sizeof(contexts[rank_index]));
+        contexts[rank_index].tp_degree = 2u;
+        contexts[rank_index].tp_rank = rank_index;
+        contexts[rank_index].port_base = port_base;
+        contexts[rank_index].collective_identifier = collective_identifier;
+        contexts[rank_index].element_count = 1u;
+        contexts[rank_index].operation_count = 1u;
+        contexts[rank_index].use_bf16 = rank_index;
+        contexts[rank_index].values = values + rank_index;
+        contexts[rank_index].scratch = scratch + rank_index;
+        contexts[rank_index].values_bf16 = values_bf16 + rank_index;
+        contexts[rank_index].scratch_bf16 = scratch_bf16 + rank_index;
+        contexts[rank_index].status = SPARK_STATUS_INTERNAL_ERROR;
+        contexts[rank_index].barrier = &barrier;
+        assert(pthread_create(
+            &threads[rank_index],
+            NULL,
+            SparkTestTpcMain,
+            &contexts[rank_index]) == 0);
+    }
+
+    for (rank_index = 0u; rank_index < 2u; ++rank_index)
+    {
+        assert(pthread_join(threads[rank_index], NULL) == 0);
+    }
+    SparkTestTpcBarrierDestroy(&barrier);
+
+    for (rank_index = 0u; rank_index < 2u; ++rank_index)
+    {
+        SparkTestTpcReportUnexpectedStatus(
+            rank_index,
+            contexts[rank_index].status,
+            SPARK_STATUS_VALIDATION_FAILED);
+        assert(contexts[rank_index].status == SPARK_STATUS_VALIDATION_FAILED);
+    }
+}
+
 static void SparkTestTpcRejectsOverlappingBuffers(void)
 {
     pthread_t threads[2];
@@ -685,11 +886,15 @@ int main(void)
     SparkTestTpcRejectsInvalidConfiguration();
     SparkTestTpcMissingPeerTimesOut();
     SparkTestTpcRejectsMismatchedElementCounts();
+    SparkTestTpcRejectsMixedWireKinds();
     SparkTestTpcRejectsOverlappingBuffers();
     SparkTestTpcRun(2u, SPARK_TEST_TPC_STANDARD_ELEMENTS);
     SparkTestTpcRun(4u, SPARK_TEST_TPC_STANDARD_ELEMENTS);
     SparkTestTpcRun(8u, SPARK_TEST_TPC_STANDARD_ELEMENTS);
     SparkTestTpcRun(16u, SPARK_TEST_TPC_LARGE_ELEMENTS);
+    SparkTestTpcRunBf16(2u, SPARK_TEST_TPC_STANDARD_ELEMENTS);
+    SparkTestTpcRunBf16(4u, SPARK_TEST_TPC_STANDARD_ELEMENTS);
+    SparkTestTpcRunBf16(16u, SPARK_TEST_TPC_STANDARD_ELEMENTS);
     SparkTestTpcRun(8u, SPARK_TEST_TPC_STANDARD_ELEMENTS);
     SparkTestTpcRun(8u, SPARK_TEST_TPC_STANDARD_ELEMENTS);
     SparkTestTpcReleaseProcessLock(process_lock_descriptor);

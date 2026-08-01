@@ -73,6 +73,8 @@ static void SparkTestBackendQueueOwnsExactPacketAndDeduplicates(void)
     SparkRingWorkControlPacket *queued_packet;
 
     SparkTestBackendInitializeState(&state);
+    assert(SparkRingServiceBackendInitializeWorkPacketArena(&state) ==
+        SPARK_STATUS_OK);
     SparkTestBackendBuildPacket(&state,&packet,21u);
     assert(SparkRingServiceBackendEnqueueWorkPacket(
         &state,
@@ -101,6 +103,8 @@ static void SparkTestBackendRequiresAcknowledgementBeforePop(void)
     uint64_t packet_hash;
 
     SparkTestBackendInitializeState(&state);
+    assert(SparkRingServiceBackendInitializeWorkPacketArena(&state) ==
+        SPARK_STATUS_OK);
     assert(socketpair(AF_UNIX,SOCK_STREAM,0,sockets) == 0);
     assert(SparkNetSetNonblocking(sockets[0]) == 0);
     state.work_output_socket_fd = sockets[0];
@@ -146,6 +150,7 @@ static void SparkTestBackendRequiresAcknowledgementBeforePop(void)
     assert(state.work_queue_count == 0u);
     close(sockets[0]);
     close(sockets[1]);
+    SparkArenaDestroy(&state.work_packet_arena);
 }
 
 static void SparkTestBackendCoalescesSequenceRelease(void)

@@ -204,6 +204,8 @@ TOOL_NAMES := \
 TOOL_BINARIES := $(addprefix build/,$(TOOL_NAMES))
 
 TEST_NAMES := \
+    test_gemm_descriptor_cache \
+    test_arena \
     test_work_transaction \
     test_distributed_work \
     test_json \
@@ -639,8 +641,20 @@ build/test_uniform_profile_admit: tests/test_uniform_profile_admit.c $(GLM52_HOS
 build/test_hybrid_kv_arithmetic: tests/test_hybrid_kv_arithmetic.c $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) -Itests -Imodel-families/k3/include -Imodel-families/qwen36/include $(CFLAGS) $< $(GLM52_HOST_LIBRARY) $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
 
+build/test_arena: tests/test_arena.c runtime/arena.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_arena.c $(LDFLAGS) $(LDLIBS) -o $@
+
 build/test_work_transaction: tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_work_transaction.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@
+
+# Header-only cache plus a mock encode; the driver stub's cuda.h is what lets
+# runtime/tensor_map.h compile with no CUDA toolkit, and its stub.c stands in
+# for cuTensorMapEncodeTiled so the production entry point is exercised too.
+# -x c++ on the stub keeps the symbol mangling identical to the test TU's
+# (the stub predates C and C++ disagreeing on the name).
+build/test_gemm_descriptor_cache: tests/test_gemm_descriptor_cache.cpp tests/cuda_driver_stub/stub.c runtime/gemm_descriptor_cache.h
+	$(CXX) -x c++ -Itests/cuda_driver_stub -O2 -Wall -Wextra -c tests/cuda_driver_stub/stub.c -o build/test_gemm_descriptor_cache_stub.o
+	$(CXX) $(CPPFLAGS) -I. -Itests/cuda_driver_stub $(CXXFLAGS) tests/test_gemm_descriptor_cache.cpp build/test_gemm_descriptor_cache_stub.o $(LDFLAGS) $(LDLIBS) -o $@
 
 build/test_distributed_work: tests/test_distributed_work.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY)
 	$(CC) $(CPPFLAGS) $(CFLAGS) tests/test_distributed_work.c $(MODEL_COMMON_LIBRARY) $(CORE_LIBRARY) $(LDFLAGS) $(LDLIBS) -o $@

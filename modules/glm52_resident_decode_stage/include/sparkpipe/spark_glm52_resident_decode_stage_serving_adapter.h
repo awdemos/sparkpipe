@@ -74,6 +74,11 @@ typedef struct SparkResidentDecodeStageServingAdapter
     const SparkResidentDecodeStageNodeContext *const *layer_node_contexts;
     const void *embedding_weight_bf16;
     void *cuda_stream;
+    /* Records the point after the last device-to-host readback of a decode
+       dispatch, so the host waits on exactly the values it consumes instead
+       of draining the whole stream (which, on a shared stream, stalls on
+       unrelated enqueued work). Created with timing disabled. */
+    void *readback_event;
     uint32_t *host_lane_offsets;
     uint32_t *host_lane_counts;
     uint32_t *host_decode_positions;

@@ -81,6 +81,35 @@ SparkStatus SparkTpCollectiveAllReduceSumF32(
     uint64_t element_count,
     float *scratch);
 
+/*
+ * Performs one in-place BF16 sum all-reduce with F32 accumulate.
+ *
+ * Same exchange, validation, and failure contract as
+ * SparkTpCollectiveAllReduceSumF32, but the staging and wire payload are BF16
+ * (uint16_t lanes): half the host-staging copy volume and half the wire bytes
+ * of the F32 variant, which is the format the decode all-reduce tensors
+ * actually live in (audit NET-011). Each exchange step widens both partials
+ * to F32, adds, and narrows back with round-to-nearest-even - one rounding
+ * per doubling step, the standard BF16-all-reduce recipe. The wire operation
+ * kind is exchanged in the operation header, so ranks that mix the F32 and
+ * BF16 variants fail validation instead of misdecoding each other's payload.
+ *
+ * The reduction tree is the same fixed butterfly as the F32 variant and the
+ * narrowing is deterministic, so every rank still receives a
+ * bitwise-identical result. The remaining known cost versus a device-resident
+ * collective is the host staging itself: values_bf16 and scratch_bf16 are
+ * host buffers, so a device caller still pays one device-to-host and one
+ * host-to-device copy (now at BF16 width). The device-direct tier is the
+ * GPUDirect RDMA build of ring/transport/rdma.cu
+ * (SPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=1), which speaks the hidden-state
+ * transport ABI rather than this collective's exchange protocol.
+ */
+SparkStatus SparkTpCollectiveAllReduceSumBf16(
+    SparkTpCollective *collective,
+    uint16_t *values_bf16,
+    uint64_t element_count,
+    uint16_t *scratch_bf16);
+
 void SparkTpCollectiveDestroy(SparkTpCollective *collective);
 
 #ifdef __cplusplus

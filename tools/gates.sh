@@ -25,6 +25,8 @@ run "kv geometry"          "g++ -std=c++17 -fsyntax-only -Wall -Wextra -I. -Imod
 run "workspace layout"     "gcc -O2 -Wall -Wextra -I. -o /tmp/g_w tests/test_group_gemm_workspace.c && /tmp/g_w"
 run "tensor map geometry"  "gcc -O2 -Wall -Wextra -I. -o /tmp/g_t tests/test_tensor_map_geometry.c && /tmp/g_t"
 run "tensor map encode"    "gcc -O2 -Wall -Wextra -I. -Itests/cuda_driver_stub -o /tmp/g_e tests/test_tensor_map_encode.c tests/cuda_driver_stub/stub.c && /tmp/g_e"
+# GEMM-007: hit bytes identical to an encode, zero encodes in steady state.
+run "gemm descriptor cache" "make -s build/test_gemm_descriptor_cache && ./build/test_gemm_descriptor_cache"
 # The real compiler, for the real target. This replaced a keyword-shim gate that
 # approximated nvcc by defining the CUDA keywords away. That shim could not see a
 # missing include, could not see the 48 KB static shared limit, could not see
@@ -101,6 +103,7 @@ run "seam symbol parity"   "sh tools/seam_parity.sh"
 run "stage module + model"  "gcc -Iinclude -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source -Imodel-families/glm52/include -Wall -Werror -DNDEBUG -c inference/stage/module.c -o /tmp/g_mod.o && gcc -Iinclude -Imodules/glm52_resident_decode_stage/include -Imodules/glm52_resident_decode_stage/source -Imodel-families/glm52/include -Wall -Werror -DNDEBUG -c modules/glm52_resident_decode_stage/source/spark_glm52_resident_decode_stage_validation.c -o /tmp/g_val.o"
 run "k3 kv seam"          "gcc -O2 -Wall -Wextra -Iinclude -Imodel-families/glm52/include -Imodel-families/k3/include -o /tmp/g_k3kv tests/test_k3_kv_cache.c cache/kv_cache.c && /tmp/g_k3kv"
 run "state pool"          "gcc -O2 -Wall -Wextra -I. -o /tmp/g_sp tests/test_state_pool.c && /tmp/g_sp"
+run "comms arena"         "gcc -O2 -Wall -Wextra -Werror -I. -o /tmp/g_ar tests/test_arena.c && /tmp/g_ar"
 run "k3 kv geometry"      "python3 tests/test_k3_kv_geometry.py"
 run "fast defaults"        "python3 tests/test_fast_defaults.py"
 run "node daemons compile"  "make -s build/sparkpipe_glm52_cuda_residentd build/sparkpipe_glm52_ring_rank_daemon"

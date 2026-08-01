@@ -65,6 +65,29 @@ static SparkStatus SparkServingAdapterDeviceAlloc(void **pointer,uint64_t bytes)
     return SparkServingAdapterCudaStatus(cudaMalloc(pointer,(size_t)bytes));
 }
 
+/* Waits for exactly the readback copies this dispatch enqueued. A
+   whole-stream synchronize costs more than the values consumed here require:
+   on a caller-supplied shared stream it also drains unrelated enqueued work,
+   and it couples the host to anything launched after the copies it reads.
+   The event is recorded after the last device-to-host copy, so its
+   completion implies every readback below has landed in the pinned host
+   buffers. */
+static SparkStatus SparkServingAdapterWaitReadback(
+    SparkResidentDecodeStageServingAdapter *adapter,
+    cudaStream_t stream)
+{
+    SparkStatus status;
+
+    status = SparkServingAdapterCudaStatus(
+        cudaEventRecord((cudaEvent_t)adapter->readback_event,stream));
+    if (status != SPARK_STATUS_OK)
+    {
+        return status;
+    }
+    return SparkServingAdapterCudaStatus(
+        cudaEventSynchronize((cudaEvent_t)adapter->readback_event));
+}
+
 static SparkStatus SparkServingAdapterHostAlloc(uint32_t **pointer,uint64_t count)
 {
     if (pointer == 0 || count == 0u)
@@ -448,6 +471,11 @@ SparkStatus SparkResidentDecodeStageServingAdapterInitialize(
         status = SparkServingAdapterDeviceAlloc(
             &adapter->device_prompt_output_hidden_bf16,
             hidden_bytes);
+    if (status == SPARK_STATUS_OK)
+        status = SparkServingAdapterCudaStatus(
+            cudaEventCreateWithFlags(
+                (cudaEvent_t *)&adapter->readback_event,
+                cudaEventDisableTiming));
     if (status != SPARK_STATUS_OK)
     {
         SparkResidentDecodeStageServingAdapterDestroy(adapter);
@@ -487,6 +515,10 @@ void SparkResidentDecodeStageServingAdapterDestroy(
     SparkServingAdapterFreeHost(adapter->host_decode_token_ids);
     SparkServingAdapterFreeHost(adapter->host_mtp_draft_token_budgets);
     SparkServingAdapterFreeHost(adapter->host_mtp_committed_token_ids);
+    if (adapter->readback_event != 0)
+    {
+        (void)cudaEventDestroy((cudaEvent_t)adapter->readback_event);
+    }
     if (adapter->owns_cuda_stream != 0u && adapter->cuda_stream != 0)
     {
         (void)cudaStreamDestroy((cudaStream_t)adapter->cuda_stream);
@@ -682,6 +714,9 @@ SparkStatus SparkResidentDecodeStageServingAdapterPrefill(
     {
         return status;
     }
+    /* Debug drain, off in steady state: the host consumes no readback after
+       a prefill launch, so the flag exists to surface kernel failures
+       synchronously while bringing a configuration up, not to move data. */
     if ((adapter->flags &
             SPARK_RESIDENT_DECODE_STAGE_SERVING_ADAPTER_FLAG_SYNCHRONIZE_AFTER_LAUNCH) != 0u)
     {
@@ -977,7 +1012,9 @@ static SparkStatus SparkGlm52ServingAdapterDecodeMtpVerify(
         }
     }
 
-    status = SparkServingAdapterCudaStatus(cudaStreamSynchronize(stream));
+    /* The host loop below consumes every per-step token-id copy, so a wait
+       is required - but only on those copies, not on the whole stream. */
+    status = SparkServingAdapterWaitReadback(adapter, stream);
     if (status != SPARK_STATUS_OK)
     {
         return status;
@@ -1147,7 +1184,10 @@ SparkStatus SparkResidentDecodeStageServingAdapterDecode(
         }
     }
 
-    status = SparkServingAdapterCudaStatus(cudaStreamSynchronize(stream));
+    /* Same contract as the verify path: the result loop reads the pinned
+       readback buffers, so wait on the event recorded after the last copy
+       rather than draining the whole stream. */
+    status = SparkServingAdapterWaitReadback(adapter, stream);
     if (status != SPARK_STATUS_OK)
     {
         return status;

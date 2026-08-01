@@ -49,6 +49,7 @@
 #define SPARK_RING_SERVICE_BACKEND_REQUEST_MAP_CAPACITY \
 	SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY
 #include "sparkpipe/spark_glm52_kv_cache.h"
+#include "runtime/arena.h"
 #include "runtime/net.h"
 #define SPARK_RING_SERVICE_BACKEND_CONTEXT_TOKENS SPARK_GLM52_KV_CONTEXT_TOKENS
 #define SPARK_RING_SERVICE_BACKEND_PREFILL_TOKENS \
@@ -87,10 +88,6 @@
 #define SPARK_RING_SERVICE_BACKEND_EARLY_FINAL_EVENT_CAPACITY \
 	SPARK_RING_SERVICE_BACKEND_REQUEST_CAPACITY
 #define SPARK_RING_SERVICE_BACKEND_PATH_BYTES 4096u
-#define SPARK_RING_SERVICE_BACKEND_INITIAL_DECODE_PAYLOAD_BYTES \
-	(SPARK_CUDA_RESIDENT_IPC_SUBMIT_DECODE_HEADER_BYTES + \
-	 (SPARK_RING_WORK_CONTROL_MAX_LANE_COUNT * 256u * \
-	  (uint32_t)sizeof(uint32_t)))
 #define SPARK_RING_SERVICE_BACKEND_MODEL_COMPLETION_KNOWN_FLAGS \
 	(SPARK_MODEL_DRIVER_COMPLETION_FLAG_TOKEN_IDS | \
 	 SPARK_MODEL_DRIVER_COMPLETION_FLAG_DRAFT_TOKEN_IDS)
@@ -223,6 +220,12 @@ typedef struct SparkRingServiceBackendState
 	uint32_t work_queue_head;
 	uint32_t work_queue_count;
 	uint32_t work_queue_write_offset;
+	/* One arena, one class, one slot per queue position. The queue retained
+	   each packet with a per-packet calloc/free pair on the dispatch path;
+	   a size-class split was considered and rejected: the queue is bounded
+	   by COUNT (512 packets of any size mix), and any partition into smaller
+	   classes invents CAPACITY_EXCEEDED modes the count bound never had. */
+	SparkArena work_packet_arena;
     SparkDistributedWorkAcknowledgement work_output_acknowledgement;
     uint32_t work_output_acknowledgement_read_offset;
     uint32_t work_output_waiting_for_acknowledgement;
@@ -1466,24 +1469,12 @@ static SparkStatus SparkRingServiceBackendBuildDecodeResidentPayload(
 	if (payload_bytes > SPARK_CUDA_RESIDENT_IPC_MAX_DECODE_PAYLOAD_BYTES ||
 		payload_bytes > UINT32_MAX)
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
+	/* Unreachable by construction: the payload buffer is reserved at MAX
+	   at init. The growth-by-realloc branch this replaces ran on the
+	   dispatch path; a capacity guard stays only as a tripwire against a
+	   future init regression. */
 	if (payload_bytes > state->cuda_resident_decode_payload_capacity)
-	{
-		uint32_t grown_capacity;
-		uint8_t *grown_payload;
-		grown_capacity = state->cuda_resident_decode_payload_capacity;
-		while (grown_capacity < payload_bytes &&
-			grown_capacity <=
-				SPARK_CUDA_RESIDENT_IPC_MAX_DECODE_PAYLOAD_BYTES / 2u)
-			grown_capacity *= 2u;
-		if (grown_capacity < payload_bytes)
-			grown_capacity = (uint32_t)payload_bytes;
-		grown_payload = (uint8_t *)realloc(
-			state->cuda_resident_decode_payload,grown_capacity);
-		if (grown_payload == 0)
-			return SPARK_STATUS_CAPACITY_EXCEEDED;
-		state->cuda_resident_decode_payload = grown_payload;
-		state->cuda_resident_decode_payload_capacity = grown_capacity;
-	}
+		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	message = (SparkCudaResidentIpcSubmitDecode *)
 		state->cuda_resident_decode_payload;
 	memset(message,0,(size_t)payload_bytes);
@@ -1662,18 +1653,13 @@ static SparkStatus SparkRingServiceBackendSubmitDecodeChunksToResident(
 static void SparkRingServiceBackendFreeStorage(
 	SparkRingServiceBackendState *state)
 {
-    uint32_t work_slot_index;
-
 	if (state == 0)
 		return;
-    for (work_slot_index = 0u;
-         work_slot_index < SPARK_RING_SERVICE_BACKEND_WORK_QUEUE_CAPACITY;
-         ++work_slot_index)
-    {
-        free(state->work_queue[work_slot_index].packet_bytes);
-        memset(&state->work_queue[work_slot_index],0,
-            sizeof(state->work_queue[work_slot_index]));
-    }
+	/* Queued packet copies live in the arena, not on the heap: one destroy
+	   releases every slot at once, and on a zeroed state (init never
+	   reached the arena) the destroy is a no-op. */
+	SparkArenaDestroy(&state->work_packet_arena);
+	memset(state->work_queue,0,sizeof(state->work_queue));
     state->work_queue_head = 0u;
     state->work_queue_count = 0u;
     state->work_queue_write_offset = 0u;
@@ -1991,7 +1977,13 @@ static SparkStatus SparkRingServiceBackendEnqueueWorkPacket(
 	{
 		return SPARK_STATUS_INTERNAL_ERROR;
 	}
-	slot->packet_bytes = (uint8_t *)calloc(1u,packet->descriptor_bytes);
+	/* Arena acquire, not calloc: the retained copy of every queued packet
+	   used to be a malloc/free pair per packet on the dispatch path. The
+	   arena slot is not zeroed, but the memcpy below covers exactly
+	   descriptor_bytes and every reader is bounded by that count, so the
+	   zeroing calloc paid for was dead work. */
+	slot->packet_bytes = (uint8_t *)SparkArenaAcquire(
+		&state->work_packet_arena,packet->descriptor_bytes);
 	if (slot->packet_bytes == 0)
 	{
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
@@ -2031,7 +2023,10 @@ static void SparkRingServiceBackendPopWorkPacket(
         return;
     }
     slot = &state->work_queue[state->work_queue_head];
-    free(slot->packet_bytes);
+    /* Release back to the arena; the slot was acquired there by
+       construction, so a release failure cannot occur and the status is
+       discarded deliberately. */
+    (void)SparkArenaRelease(&state->work_packet_arena,slot->packet_bytes);
     memset(slot,0,sizeof(*slot));
     state->work_queue_head =
         (state->work_queue_head + 1u) %
@@ -3015,15 +3010,41 @@ static SparkStatus SparkRingServiceBackendAllocateRequestStorage(
 			sizeof(state->service_events[0]));
 	if (status == SPARK_STATUS_OK)
 	{
+		/* The decode payload is reserved at MAX once. It used to start at
+		   ~1.1 MB and double with realloc on the dispatch path as the KV
+		   block list grew: a multi-MB copy (and a possible move) in the
+		   middle of a decode submit, repeated log2(64) times per process.
+		   The payload can legally reach MAX in steady-state long-context
+		   decode, so the memory is owed anyway; paying it at init makes
+		   the dispatch path allocation-free. */
 		status = SparkRingServiceBackendAlloc(
 			(void **)&state->cuda_resident_decode_payload,
-			SPARK_RING_SERVICE_BACKEND_INITIAL_DECODE_PAYLOAD_BYTES,
+			SPARK_CUDA_RESIDENT_IPC_MAX_DECODE_PAYLOAD_BYTES,
 			sizeof(state->cuda_resident_decode_payload[0]));
 		if (status == SPARK_STATUS_OK)
 			state->cuda_resident_decode_payload_capacity =
-				SPARK_RING_SERVICE_BACKEND_INITIAL_DECODE_PAYLOAD_BYTES;
+				SPARK_CUDA_RESIDENT_IPC_MAX_DECODE_PAYLOAD_BYTES;
 	}
 	return status;
+}
+
+static SparkStatus SparkRingServiceBackendInitializeWorkPacketArena(
+	SparkRingServiceBackendState *state)
+{
+	SparkArenaClassDescriptor packet_class;
+
+	if (state == 0)
+		return SPARK_STATUS_INVALID_ARGUMENT;
+	if (state->work_packet_arena.backing != 0)
+		return SPARK_STATUS_OK;
+	/* One slot per queue position at the largest legal packet, so the
+	   arena can always back exactly what the queue count bound allows -
+	   no new exhaustion mode relative to the heap version. 512 slots x
+	   102,592 bytes + links: ~50 MiB, one malloc, at init only. */
+	packet_class.slot_bytes = SPARK_RING_WORK_CONTROL_PACKET_BYTES;
+	packet_class.slot_count = SPARK_RING_SERVICE_BACKEND_WORK_QUEUE_CAPACITY;
+	return SparkArenaInitialize(&state->work_packet_arena,&packet_class,1u) == 0
+		? SPARK_STATUS_OK : SPARK_STATUS_INTERNAL_ERROR;
 }
 
 static SparkStatus SparkRingServiceBackendAllocateServiceStorage(
@@ -3037,6 +3058,8 @@ static SparkStatus SparkRingServiceBackendAllocateServiceStorage(
 		status = SparkRingServiceBackendAllocateRequestStorage(
 			state,
 			lane_capacity);
+	if (status == SPARK_STATUS_OK)
+		status = SparkRingServiceBackendInitializeWorkPacketArena(state);
 	if (status != SPARK_STATUS_OK)
 		SparkRingServiceBackendFreeStorage(state);
 	return status;

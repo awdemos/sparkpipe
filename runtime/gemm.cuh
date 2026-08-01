@@ -1,6 +1,7 @@
 #pragma once
 
 #include "inference/kernels/gemm.cuh"
+#include "runtime/gemm_descriptor_cache.h"
 #include "runtime/launch.h"
 #include "runtime/tensor_map.h"
 #include <cuda_runtime.h>
@@ -140,6 +141,10 @@ static cudaError_t LmGemmLaunchTile(
     return cudaPeekAtLastError();
 }
 
+// GEMM-007: both encodes go through the request-keyed descriptor cache
+// (runtime/gemm_descriptor_cache.h). The request fully determines the
+// descriptor bytes, so a cache hit is what cuTensorMapEncodeTiled would have
+// returned and steady-state decode performs zero driver encodes per token.
 static int32_t LmGemmEncodeMapsSplit(
     CUtensorMap *activation,
     CUtensorMap *weight,
@@ -166,7 +171,7 @@ static int32_t LmGemmEncodeMapsSplit(
     request.box_rows = tile_m;
     request.box_columns = tile_k;
     request.element_bits = activation_bits;
-    status = LmTensorMapPrepare(activation, &request);
+    status = LmGemmTensorMapCached(activation, &request);
     if (status != LM_TM_ENCODE_OK)
         return status;
 
@@ -178,7 +183,7 @@ static int32_t LmGemmEncodeMapsSplit(
     request.box_rows = tile_n;
     request.box_columns = tile_k;
     request.element_bits = weight_bits;
-    return LmTensorMapPrepare(weight, &request);
+    return LmGemmTensorMapCached(weight, &request);
 }
 
 template<

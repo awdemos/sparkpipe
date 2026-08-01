@@ -187,9 +187,11 @@ __global__ __launch_bounds__(THREADS, 1)
 void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, const uint32_t *__restrict__ state_index, const LmReplayStep *__restrict__ steps, const uint32_t *__restrict__ accepted_length, uint32_t key_heads, uint32_t value_heads_per_key, uint32_t rows)
 {
 	__shared__ float shared_key[KEY_DIM];
+	__shared__ float fold_reduction[THREADS / LM_WARP_LANES];
 	__shared__ float shared_predicted[VALUE_DIM];
 	uint32_t row = blockIdx.x,head = blockIdx.y,step,index,flat;
 	float *state;
+	float key_inverse;
 	if ( row >= rows || head >= key_heads )
 		return;
 	// THE POOL STRIDE IS A PARAMETER, NOT AN ASSUMPTION.
@@ -221,17 +223,22 @@ void LmReplayFoldKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, c
 			shared_key[index] = LmBf16ToFloat(input->key_bf16[head_key + index]);
 		__syncthreads();
 		// the decode path L2-normalizes k before the update; the fold must
-		// replay the SAME arithmetic or the states diverge byte by byte
-		if ( threadIdx.x == 0u )
+		// replay the SAME arithmetic or the states diverge byte by byte -
+		// the same strided partials and the same LmBlockSum the decode
+		// kernel runs, at the same THREADS, never a hand-copied loop whose
+		// order can be edited apart from it. This was thread 0 walking 128
+		// elements serially while the block waited (audit K3-PERF-002).
+		// One buffer suffices here: one reduction per step, and the fill
+		// loop's barrier stands between this step's final read and the next
+		// step's first write.
 		{
 			float kk = 0.0f;
-			for (index = 0u; index < KEY_DIM; ++index)
+			for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
 				kk += shared_key[index] * shared_key[index];
-			shared_predicted[0] = rsqrtf(kk + 1e-6f);
+			key_inverse = rsqrtf(LmBlockSum<THREADS>(kk,fold_reduction) + 1e-6f);
 		}
-		__syncthreads();
 		for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
-			shared_key[index] *= shared_predicted[0];
+			shared_key[index] *= key_inverse;
 		__syncthreads();
 		for (index = threadIdx.x; index < VALUE_DIM; index += THREADS)
 		{
@@ -287,11 +294,15 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 	extern __shared__ float state_s[];
 	__shared__ float shared_key[KEY_DIM];
 	__shared__ float shared_query[KEY_DIM];
-	__shared__ float shared_norm[2];
+	// TWO reduction buffers, not one. LmBlockSum's last act is a read of
+	// shared[0] AFTER its final barrier, and a second call on the same buffer
+	// writes shared[warp] BEFORE its first barrier - warp 0 can overwrite the
+	// key total before another warp has read it.
+	__shared__ float norm_reduction[2u * (THREADS / LM_WARP_LANES)];
 	__shared__ float shared_predicted[VALUE_DIM];
 	uint32_t sequence = blockIdx.x,head = blockIdx.y,index,element,row,begin,end,flat;
 	float *state;
-	float beta;
+	float beta,key_inverse,query_inverse;
 	if ( sequence >= sequences || head >= key_heads )
 		return;
 	begin = sequence_row_begin != 0 ? sequence_row_begin[sequence] : sequence;
@@ -324,24 +335,35 @@ void LmDeltaRuleKernel(uint8_t *__restrict__ state_pool, uint32_t slot_bytes, co
 		__syncthreads();
 		// QK L2-NORM, IN KERNEL, per the reference's
 		// use_qk_l2norm_in_kernel=True: q and k are unit vectors before the
-		// delta rule sees them. Serial reduce by thread 0 - KEY_DIM is 128
-		// and this runs once per row, not per element.
-		if ( threadIdx.x == 0u )
+		// delta rule sees them. Reduced by the WHOLE BLOCK: this ran as 128
+		// serial FMAs on thread 0 while the other THREADS-1 threads sat at
+		// the barrier, once per row per head (audit K3-PERF-002) - the
+		// longest dependency chain in the kernel, in the middle of its
+		// serial token loop. Strided partials plus LmBlockSum's shuffle tree
+		// is a handful of steps.
+		//
+		// THE SUMMATION ORDER CHANGES ON DEVICE. A tree over strided
+		// partials is not the old 0..127 serial walk, so the norms move in
+		// the last ulp. The gate that matters survives: decode, verify and
+		// the replay fold all reduce through LmBlockSum at the same THREADS,
+		// so they still agree with EACH OTHER bit for bit, and at
+		// THREADS == 1 - every host harness - the strided partial loop IS
+		// the serial walk, so the harness numbers do not move at all.
 		{
 			float kk = 0.0f,qq = 0.0f;
-			for (index = 0u; index < KEY_DIM; ++index)
+			for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
 			{
 				kk += shared_key[index] * shared_key[index];
 				qq += shared_query[index] * shared_query[index];
 			}
-			shared_norm[0] = rsqrtf(kk + 1e-6f);
-			shared_norm[1] = rsqrtf(qq + 1e-6f);
+			key_inverse = rsqrtf(LmBlockSum<THREADS>(kk,norm_reduction) + 1e-6f);
+			query_inverse = rsqrtf(LmBlockSum<THREADS>(qq,
+				norm_reduction + (THREADS / LM_WARP_LANES)) + 1e-6f);
 		}
-		__syncthreads();
 		for (index = threadIdx.x; index < KEY_DIM; index += THREADS)
 		{
-			shared_key[index] *= shared_norm[0];
-			shared_query[index] *= shared_norm[1];
+			shared_key[index] *= key_inverse;
+			shared_query[index] *= query_inverse;
 		}
 		__syncthreads();
 		// predicted = S^T k, against the DECAYED state. Report eq. 1 expands to

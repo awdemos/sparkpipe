@@ -61,12 +61,22 @@ S3  ATTNRES PARTIAL TOUCHES. K3PartialAdd is a separate kernel: hidden R +
     fusion is invasive. Window: hardware week, after profiles say whether
     the bus or the SMs notice.
 
-S4  HOST-STAGED F32 ALL-REDUCE. SparkTpCollectiveAllReduceSumF32 is TCP
+S4  HOST-STAGED ALL-REDUCE. SparkTpCollectiveAllReduceSumF32 is TCP
     from host memory in f32. Decode payloads are bf16 device tensors:
-    today's path pays device->host staging plus 2x wire width. At decode
+    that path pays device->host staging plus 2x wire width. At decode
     the AR is latency-bound (fine); at TP prefill the 2x wire width is
-    ~0.4 ms/token of pure format. Fix: bf16 sum variant + device staging
-    (rdma.cu is the transport tier). Window: hardware.
+    ~0.4 ms/token of pure format. UPDATE phase6: the format tax is
+    landed - SparkTpCollectiveAllReduceSumBf16 keeps the staging and
+    the wire bf16 with f32 accumulate per doubling step (round-to-
+    nearest-even, bitwise-identical across ranks), halving the D2H,
+    wire, and H2D bytes; the wire kind rides the operation header so
+    mixed-kind groups fail validation. What remains is the staging
+    itself: two host-memory round trips per collective. The device-
+    resident tier is the GPUDirect RDMA build of ring/transport/
+    rdma.cu (SPARK_HIDDEN_SPARK_RDMA_DEVICE_DIRECT=1), which today
+    speaks the hidden-state transport ABI, not this collective's
+    exchange protocol - retargeting it is hardware-week work, not a
+    blind edit. Window: hardware.
 
 S5  LAUNCH COUNT, REMAINDER. After 39b3b27 the prefix launches are gone;
     what remains is one launch per GEMM plus the fixed kernels - ~700 per

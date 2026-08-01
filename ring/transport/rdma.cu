@@ -51,6 +51,9 @@
     (SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT * \
      SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_WR_PER_PACKET)
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_QUEUE_DEPTH 256u
+/* NET-004: work completions drained per ibv_poll_cq call; polling one WC
+ * at a time used to pay the full verbs call overhead per completion. */
+#define SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_POLL_BATCH_COUNT 32u
 #define SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT \
     (SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_INFLIGHT_SEND_COUNT * \
      SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_WR_PER_PACKET)
@@ -122,6 +125,12 @@ typedef struct SparkHiddenSparkHostRdmaCachedMemoryRegion
     const void *pointer;
     uint64_t bytes;
     uint64_t last_use_epoch;
+    /* NET-001: pins the slot against LRU eviction while in-flight work
+     * still references the registration: posted send WRs (sender side)
+     * or an advertised rkey a remote write may still target (receiver
+     * side). Deregistering either would fault the wire, so only slots
+     * with in_flight_count == 0 are eviction candidates. */
+    uint32_t in_flight_count;
     struct ibv_mr *memory_region;
 } SparkHiddenSparkHostRdmaCachedMemoryRegion;
 
@@ -133,11 +142,13 @@ typedef struct SparkHiddenSparkHostRdmaPendingReceive
     uint32_t doorbell_posted;
     uint32_t visibility_flushed;
     uint32_t receive_index;
+    /* NET-001: cached-region slots pinned while this receive's rkeys are
+     * advertised to the peer; NO_INDEX when the region is absent. */
+    uint32_t hidden_region_index;
+    uint32_t sideband_region_index;
     SparkHiddenTransportPacket packet_snapshot;
     SparkHiddenSparkHostRdmaMemoryRegionDescriptor hidden_descriptor;
     SparkHiddenSparkHostRdmaMemoryRegionDescriptor sideband_descriptor;
-    struct ibv_mr *hidden_memory_region;
-    struct ibv_mr *sideband_memory_region;
     SparkStatus completion_status;
 } SparkHiddenSparkHostRdmaPendingReceive;
 
@@ -163,6 +174,10 @@ typedef struct SparkHiddenSparkHostRdmaInflightSend
     uint32_t posted_lane_mask;
     uint32_t completed_lane_mask;
     uint32_t doorbell;
+    /* NET-001: cached-region slots pinned until every posted WR for this
+     * send completes; NO_INDEX when the region is absent. */
+    uint32_t hidden_region_index;
+    uint32_t sideband_region_index;
     SparkStatus status;
     uint64_t start_time_ns;
     uint8_t posted_wr_counts[
@@ -239,6 +254,7 @@ typedef struct SparkHiddenSparkHostRdmaState
     uint64_t memory_region_cache_hit_count;
     uint64_t pointer_attribute_query_count;
     uint64_t memory_region_register_count;
+    uint64_t memory_region_eviction_count;
     uint64_t asynchronous_send_count;
     uint64_t completed_send_count;
     uint64_t control_queue_busy_count;
@@ -1009,6 +1025,76 @@ static void SparkHiddenSparkHostRdmaDeregisterCachedMemoryRegions(
             sizeof(state->cached_regions[index]));
     }
 }
+static uint32_t SparkHiddenSparkHostRdmaCachedRegionIndex(
+    const SparkHiddenSparkHostRdmaState *state,
+    const struct ibv_mr *memory_region)
+{
+    uint32_t index;
+
+    if (state == 0 || memory_region == 0)
+    {
+        return SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
+    }
+    for (index = 0u; index < SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT;
+         ++index)
+    {
+        if (state->cached_regions[index].memory_region == memory_region)
+        {
+            return index;
+        }
+    }
+    return SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
+}
+
+static void SparkHiddenSparkHostRdmaAcquireSendRegions(
+    SparkHiddenSparkHostRdmaState *state,
+    SparkHiddenSparkHostRdmaInflightSend *send,
+    struct ibv_mr *hidden_memory_region,
+    struct ibv_mr *sideband_memory_region)
+{
+    send->hidden_region_index = SparkHiddenSparkHostRdmaCachedRegionIndex(
+        state, hidden_memory_region);
+    send->sideband_region_index = SparkHiddenSparkHostRdmaCachedRegionIndex(
+        state, sideband_memory_region);
+    if (send->hidden_region_index != SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX)
+    {
+        state->cached_regions[send->hidden_region_index].in_flight_count +=
+            1u;
+    }
+    if (send->sideband_region_index != SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX)
+    {
+        state->cached_regions[send->sideband_region_index].in_flight_count +=
+            1u;
+    }
+}
+
+static void SparkHiddenSparkHostRdmaReleaseSendRegions(
+    SparkHiddenSparkHostRdmaState *state,
+    SparkHiddenSparkHostRdmaInflightSend *send)
+{
+    if (state == 0 || send == 0)
+    {
+        return;
+    }
+    if (send->hidden_region_index <
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT &&
+        state->cached_regions[send->hidden_region_index].in_flight_count !=
+            0u)
+    {
+        state->cached_regions[send->hidden_region_index].in_flight_count -=
+            1u;
+    }
+    if (send->sideband_region_index <
+            SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT &&
+        state->cached_regions[send->sideband_region_index].in_flight_count !=
+            0u)
+    {
+        state->cached_regions[send->sideband_region_index].in_flight_count -=
+            1u;
+    }
+    send->hidden_region_index = SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
+    send->sideband_region_index = SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
+}
 
 
 static SparkStatus SparkHiddenSparkHostRdmaResolveRegistrationPointer(
@@ -1209,7 +1295,43 @@ static SparkStatus SparkHiddenSparkHostRdmaGetCachedMemoryRegion(
     }
     if (free_index == SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT)
     {
-        return SPARK_STATUS_CAPACITY_EXCEEDED;
+        /* NET-001: the cache used to return a permanent
+         * CAPACITY_EXCEEDED once all slots filled, even though
+         * last_use_epoch was already tracked. Evict the
+         * least-recently-used registration that no in-flight work
+         * references; slots pinned by posted send WRs or advertised
+         * receive rkeys are never evicted because deregistering them
+         * would fault in-flight RDMA. */
+        uint64_t oldest_epoch;
+        uint32_t victim_index;
+
+        oldest_epoch = UINT64_MAX;
+        victim_index = SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT;
+        for (index = 0u;
+             index < SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT; ++index)
+        {
+            if (state->cached_regions[index].in_flight_count != 0u)
+            {
+                continue;
+            }
+            if (state->cached_regions[index].last_use_epoch < oldest_epoch)
+            {
+                oldest_epoch =
+                    state->cached_regions[index].last_use_epoch;
+                victim_index = index;
+            }
+        }
+        if (victim_index == SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT)
+        {
+            /* Every registration is pinned by in-flight work: transient
+             * back-pressure the caller may retry, not exhaustion. */
+            return SPARK_STATUS_BUSY;
+        }
+        ibv_dereg_mr(state->cached_regions[victim_index].memory_region);
+        memset(&state->cached_regions[victim_index], 0,
+            sizeof(state->cached_regions[victim_index]));
+        state->memory_region_eviction_count += 1u;
+        free_index = victim_index;
     }
     access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_READ |
         IBV_ACCESS_REMOTE_WRITE;
@@ -1236,18 +1358,19 @@ static SparkStatus SparkHiddenSparkHostRdmaRegisterReceiveRegion(
     const void *pointer,
     uint64_t bytes,
     SparkHiddenSparkHostRdmaMemoryRegionDescriptor *descriptor,
-    struct ibv_mr **memory_region_out)
+    uint32_t *region_index_out)
 {
     struct ibv_mr *memory_region;
     void *registration_pointer;
+    uint32_t region_index;
     SparkStatus status;
 
-    if (descriptor == 0 || memory_region_out == 0)
+    if (descriptor == 0 || region_index_out == 0)
     {
         return SPARK_STATUS_INVALID_ARGUMENT;
     }
     memset(descriptor, 0, sizeof(*descriptor));
-    *memory_region_out = 0;
+    *region_index_out = SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
     if (bytes == 0u)
     {
         return SPARK_STATUS_OK;
@@ -1262,10 +1385,22 @@ static SparkStatus SparkHiddenSparkHostRdmaRegisterReceiveRegion(
     {
         return status;
     }
+    /* NET-001: the descriptor's rkey stays reachable by the peer until
+     * the receive completes, so pin the cached region against LRU
+     * eviction for exactly that long. The cache owns the MR lifetime;
+     * callers must release through
+     * SparkHiddenSparkHostRdmaReleasePendingReceive, never ibv_dereg_mr. */
+    region_index = SparkHiddenSparkHostRdmaCachedRegionIndex(state,
+        memory_region);
+    if (region_index == SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX)
+    {
+        return SPARK_STATUS_INTERNAL_ERROR;
+    }
+    state->cached_regions[region_index].in_flight_count += 1u;
+    *region_index_out = region_index;
     descriptor->address = (uint64_t)(uintptr_t)registration_pointer;
     descriptor->bytes = bytes;
     descriptor->rkey = memory_region->rkey;
-    *memory_region_out = 0;
     return SPARK_STATUS_OK;
 }
 
@@ -1378,6 +1513,28 @@ static uint32_t SparkHiddenSparkHostRdmaPacketUsesDoorbell(
     return bytes <= (uint64_t)state->doorbell_max_bytes ? 1u : 0u;
 }
 
+static uint32_t SparkHiddenSparkHostRdmaDoorbellLane(
+    const SparkHiddenSparkHostRdmaState *state,
+    uint32_t receive_index)
+{
+    /* NET-003: sub-doorbell_max_bytes packets used to squeeze onto lane
+     * 0 (both the RDMA_WRITE_WITH_IMM and its pre-posted receive),
+     * leaving the other QPs idle for 14KiB-class hidden packets. Pin
+     * each receive slot to receive_index % lane_count instead: both
+     * endpoints derive the same lane from the receive_index the
+     * receiver already advertises in RECEIVE_READY, so no wire change
+     * is needed. Per-slot (not per-packet) assignment keeps every
+     * replay of one packet on one QP, which is the only ordering RC
+     * guarantees; distinct doorbell packets have no inter-packet
+     * ordering requirement because each targets distinct remote buffers
+     * and signals completion through its own immediate. */
+    if (state == 0 || state->lane_count <= 1u)
+    {
+        return 0u;
+    }
+    return receive_index % state->lane_count;
+}
+
 static uint32_t SparkHiddenSparkHostRdmaRemoteReceiveMatchesPacket(
     const SparkHiddenSparkHostRdmaRemoteReceive *receive,
     const SparkHiddenTransportPacket *packet)
@@ -1436,6 +1593,10 @@ static SparkHiddenSparkHostRdmaPendingReceive *SparkHiddenSparkHostRdmaReservePe
                 sizeof(state->pending_receives[index]));
             state->pending_receives[index].active = 1u;
             state->pending_receives[index].receive_index = index;
+            state->pending_receives[index].hidden_region_index =
+                SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
+            state->pending_receives[index].sideband_region_index =
+                SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
             return &state->pending_receives[index];
         }
     }
@@ -1663,7 +1824,10 @@ static SparkStatus SparkHiddenSparkHostRdmaPostDoorbellReceive(
     work_request.wr_id = SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE |
         (uint64_t)receive->receive_index;
     bad_work_request = 0;
-    if (ibv_post_recv(state->lanes[0].queue_pair, &work_request,
+    /* NET-003: post on this slot's assigned lane; the sender derives
+     * the same lane from the advertised receive_index. */
+    if (ibv_post_recv(state->lanes[SparkHiddenSparkHostRdmaDoorbellLane(
+            state,receive->receive_index)].queue_pair, &work_request,
             &bad_work_request) != 0)
     {
         return SPARK_STATUS_IO_ERROR;
@@ -1772,6 +1936,10 @@ SparkHiddenSparkHostRdmaReserveInflightSend(
                 sizeof(state->inflight_sends[index]));
             state->inflight_sends[index].active = 1u;
             state->inflight_sends[index].status = SPARK_STATUS_OK;
+            state->inflight_sends[index].hidden_region_index =
+                SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
+            state->inflight_sends[index].sideband_region_index =
+                SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX;
             return &state->inflight_sends[index];
         }
     }
@@ -1930,19 +2098,53 @@ static SparkStatus SparkHiddenSparkHostRdmaApplyBatchCompletion(
     return SPARK_STATUS_OK;
 }
 
+static SparkStatus SparkHiddenSparkHostRdmaApplyWorkCompletion(
+    SparkHiddenSparkHostRdmaState *state,
+    const struct ibv_wc *work_completion)
+{
+    if ((work_completion->wr_id &
+            SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE) != 0u)
+    {
+        if (work_completion->status != IBV_WC_SUCCESS)
+            return SPARK_STATUS_IO_ERROR;
+        return SparkHiddenSparkHostRdmaApplyDoorbellCompletion(state,
+            work_completion);
+    }
+    if ((work_completion->wr_id &
+            SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_BATCH) != 0u)
+    {
+        return SparkHiddenSparkHostRdmaApplyBatchCompletion(
+            state,work_completion);
+    }
+    if ((work_completion->wr_id &
+            SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_SEND) != 0u)
+    {
+        return SparkHiddenSparkHostRdmaApplySendCompletion(
+            state,work_completion);
+    }
+    return SPARK_STATUS_IO_ERROR;
+}
+
 static SparkStatus SparkHiddenSparkHostRdmaPollCompletionQueue(
     SparkHiddenSparkHostRdmaState *state,
     uint32_t lane_index)
 {
-    struct ibv_wc work_completion;
-    int result;
+    /* NET-004: drain the CQ in batches instead of one ibv_poll_cq call
+     * per completion; per-WC call overhead dominated the pump loop for
+     * small doorbell packets (vLLM/FlashInfer poll their CQs the same
+     * way). A short final batch means the queue is empty. */
+    struct ibv_wc work_completions[
+        SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_POLL_BATCH_COUNT];
     SparkStatus status;
+    uint32_t completion_index;
+    int result;
 
     while (1)
     {
-        memset(&work_completion, 0, sizeof(work_completion));
+        memset(work_completions, 0, sizeof(work_completions));
         result = ibv_poll_cq(state->lanes[lane_index].completion_queue,
-            1, &work_completion);
+            (int)SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_POLL_BATCH_COUNT,
+            work_completions);
         if (result < 0)
         {
             return SPARK_STATUS_IO_ERROR;
@@ -1951,36 +2153,19 @@ static SparkStatus SparkHiddenSparkHostRdmaPollCompletionQueue(
         {
             return SPARK_STATUS_OK;
         }
-        if ((work_completion.wr_id &
-                SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE) != 0u)
+        for (completion_index = 0u; completion_index < (uint32_t)result;
+             ++completion_index)
         {
-            if (work_completion.status != IBV_WC_SUCCESS)
-                return SPARK_STATUS_IO_ERROR;
-            status = SparkHiddenSparkHostRdmaApplyDoorbellCompletion(state,
-                &work_completion);
-            if (status != SPARK_STATUS_OK)
-            {
-                return status;
-            }
-        }
-        else if ((work_completion.wr_id &
-                SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_BATCH) != 0u)
-        {
-            status = SparkHiddenSparkHostRdmaApplyBatchCompletion(
-                state,&work_completion);
+            status = SparkHiddenSparkHostRdmaApplyWorkCompletion(
+                state,&work_completions[completion_index]);
             if (status != SPARK_STATUS_OK)
                 return status;
         }
-        else if ((work_completion.wr_id &
-                SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_SEND) != 0u)
+        if (result <
+            (int)SPARK_HIDDEN_SPARK_HOST_RDMA_COMPLETION_POLL_BATCH_COUNT)
         {
-            status = SparkHiddenSparkHostRdmaApplySendCompletion(
-                state,&work_completion);
-            if (status != SPARK_STATUS_OK)
-                return status;
+            return SPARK_STATUS_OK;
         }
-        else
-            return SPARK_STATUS_IO_ERROR;
     }
 }
 
@@ -2156,19 +2341,34 @@ static SparkStatus SparkHiddenSparkHostRdmaAdvertiseReceive(
 }
 
 static void SparkHiddenSparkHostRdmaReleasePendingReceive(
+    SparkHiddenSparkHostRdmaState *state,
     SparkHiddenSparkHostRdmaPendingReceive *receive)
 {
     if (receive == 0)
     {
         return;
     }
-    if (receive->hidden_memory_region != 0)
+    /* NET-001: drop the eviction pins taken by
+     * SparkHiddenSparkHostRdmaRegisterReceiveRegion; the MR cache owns
+     * the registrations themselves. */
+    if (state != 0)
     {
-        ibv_dereg_mr(receive->hidden_memory_region);
-    }
-    if (receive->sideband_memory_region != 0)
-    {
-        ibv_dereg_mr(receive->sideband_memory_region);
+        if (receive->hidden_region_index <
+                SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT &&
+            state->cached_regions[receive->hidden_region_index]
+                .in_flight_count != 0u)
+        {
+            state->cached_regions[receive->hidden_region_index]
+                .in_flight_count -= 1u;
+        }
+        if (receive->sideband_region_index <
+                SPARK_HIDDEN_SPARK_HOST_RDMA_MR_CACHE_COUNT &&
+            state->cached_regions[receive->sideband_region_index]
+                .in_flight_count != 0u)
+        {
+            state->cached_regions[receive->sideband_region_index]
+                .in_flight_count -= 1u;
+        }
     }
     memset(receive, 0, sizeof(*receive));
 }
@@ -2198,18 +2398,18 @@ static SparkStatus SparkHiddenSparkHostRdmaCreatePendingReceive(
         (uint64_t)state->endpoint.max_active_sequence_count;
     status = SparkHiddenSparkHostRdmaRegisterReceiveRegion(state,
         packet->hidden_bf16, hidden_capacity_bytes,
-        &receive->hidden_descriptor, &receive->hidden_memory_region);
+        &receive->hidden_descriptor, &receive->hidden_region_index);
     if (status != SPARK_STATUS_OK)
     {
-        SparkHiddenSparkHostRdmaReleasePendingReceive(receive);
+        SparkHiddenSparkHostRdmaReleasePendingReceive(state, receive);
         return status;
     }
     status = SparkHiddenSparkHostRdmaRegisterReceiveRegion(state,
         packet->sideband_payload, sideband_capacity_bytes,
-        &receive->sideband_descriptor, &receive->sideband_memory_region);
+        &receive->sideband_descriptor, &receive->sideband_region_index);
     if (status != SPARK_STATUS_OK)
     {
-        SparkHiddenSparkHostRdmaReleasePendingReceive(receive);
+        SparkHiddenSparkHostRdmaReleasePendingReceive(state, receive);
         return status;
     }
     *receive_out = receive;
@@ -2289,7 +2489,7 @@ static SparkStatus SparkHiddenSparkHostRdmaFinalizePendingReceive(
         return status;
     }
     status = receive->completion_status;
-    SparkHiddenSparkHostRdmaReleasePendingReceive(receive);
+    SparkHiddenSparkHostRdmaReleasePendingReceive(state, receive);
     return status;
 }
 
@@ -2326,39 +2526,51 @@ static SparkStatus SparkHiddenSparkHostRdmaPostDoorbellReceiveBatch(
         SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT];
     struct ibv_recv_wr *bad_work_request;
     SparkHiddenSparkHostRdmaPendingReceive *receive;
+    uint32_t lane_index;
     uint32_t packet_index;
     uint32_t write_count;
 
-    write_count = 0u;
-    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+    /* NET-003: chained recv WRs must stay on one QP, so build and post
+     * one chain per lane instead of dumping the whole batch on lane 0.
+     * A failed lane leaves its receives unposted (doorbell_posted stays
+     * 0) so a later retry reposts exactly those. */
+    for (lane_index = 0u; lane_index < state->lane_count; ++lane_index)
     {
-        receive = receives[packet_index];
-        if (receive->doorbell_posted != 0u ||
-            SparkHiddenSparkHostRdmaPacketUsesDoorbell(
-                state,&receive->packet_snapshot) == 0u)
+        write_count = 0u;
+        for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+        {
+            receive = receives[packet_index];
+            if (receive->doorbell_posted != 0u ||
+                SparkHiddenSparkHostRdmaPacketUsesDoorbell(
+                    state,&receive->packet_snapshot) == 0u ||
+                SparkHiddenSparkHostRdmaDoorbellLane(
+                    state,receive->receive_index) != lane_index)
+                continue;
+            memset(&work_requests[write_count],0,
+                sizeof(work_requests[write_count]));
+            work_requests[write_count].wr_id =
+                SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE |
+                (uint64_t)receive->receive_index;
+            if (write_count != 0u)
+                work_requests[write_count - 1u].next =
+                    &work_requests[write_count];
+            write_count += 1u;
+        }
+        if (write_count == 0u)
             continue;
-        memset(&work_requests[write_count],0,
-            sizeof(work_requests[write_count]));
-        work_requests[write_count].wr_id =
-            SPARK_HIDDEN_SPARK_HOST_RDMA_WR_ID_DOORBELL_RECEIVE |
-            (uint64_t)receive->receive_index;
-        if (write_count != 0u)
-            work_requests[write_count - 1u].next =
-                &work_requests[write_count];
-        write_count += 1u;
-    }
-    if (write_count == 0u)
-        return SPARK_STATUS_OK;
-    bad_work_request = 0;
-    if (ibv_post_recv(state->lanes[0].queue_pair,
-            &work_requests[0],&bad_work_request) != 0)
-        return SPARK_STATUS_IO_ERROR;
-    for (packet_index = 0u; packet_index < packet_count; ++packet_index)
-    {
-        receive = receives[packet_index];
-        if (SparkHiddenSparkHostRdmaPacketUsesDoorbell(
-                state,&receive->packet_snapshot) != 0u)
-            receive->doorbell_posted = 1u;
+        bad_work_request = 0;
+        if (ibv_post_recv(state->lanes[lane_index].queue_pair,
+                &work_requests[0],&bad_work_request) != 0)
+            return SPARK_STATUS_IO_ERROR;
+        for (packet_index = 0u; packet_index < packet_count; ++packet_index)
+        {
+            receive = receives[packet_index];
+            if (SparkHiddenSparkHostRdmaPacketUsesDoorbell(
+                    state,&receive->packet_snapshot) != 0u &&
+                SparkHiddenSparkHostRdmaDoorbellLane(
+                    state,receive->receive_index) == lane_index)
+                receive->doorbell_posted = 1u;
+        }
     }
     return SPARK_STATUS_OK;
 }
@@ -2506,8 +2718,11 @@ static SparkStatus SparkHiddenSparkHostRdmaBuildLaneWrite(
             local_bytes,state->lane_count,lane_index,&partition);
     else
     {
+        /* Non-striped (doorbell) writes go whole to the caller-selected
+         * lane; callers only invoke this on the packet's assigned
+         * doorbell lane (NET-003). */
         partition.offset = 0u;
-        partition.byte_count = lane_index == 0u ? local_bytes : 0u;
+        partition.byte_count = local_bytes;
         status = SPARK_STATUS_OK;
     }
     if (status != SPARK_STATUS_OK)
@@ -2551,8 +2766,11 @@ static SparkStatus SparkHiddenSparkHostRdmaCountPayloadLaneWrite(
             bytes,state->lane_count,lane_index,&partition);
     else
     {
+        /* Non-striped (doorbell) writes count whole on the
+         * caller-selected lane; callers only invoke this on the
+         * packet's assigned doorbell lane (NET-003). */
         partition.offset = 0u;
-        partition.byte_count = lane_index == 0u ? bytes : 0u;
+        partition.byte_count = bytes;
         status = SPARK_STATUS_OK;
     }
     if (status != SPARK_STATUS_OK)
@@ -2566,6 +2784,7 @@ static SparkStatus SparkHiddenSparkHostRdmaCountPacketLaneWrites(
     SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportPacket *packet,
     uint32_t doorbell,
+    uint32_t doorbell_lane,
     uint32_t lane_index,
     uint32_t *write_count)
 {
@@ -2574,7 +2793,7 @@ static SparkStatus SparkHiddenSparkHostRdmaCountPacketLaneWrites(
     if (write_count == 0)
         return SPARK_STATUS_INVALID_ARGUMENT;
     *write_count = 0u;
-    if (doorbell != 0u && lane_index != 0u)
+    if (doorbell != 0u && lane_index != doorbell_lane)
         return SPARK_STATUS_OK;
     status = SparkHiddenSparkHostRdmaCountPayloadLaneWrite(
         state,SparkHiddenSparkHostRdmaPacketHiddenBytes(packet),lane_index,
@@ -2589,18 +2808,22 @@ static SparkStatus SparkHiddenSparkHostRdmaCountPacketLaneWrites(
 static SparkStatus SparkHiddenSparkHostRdmaCheckPacketQueueCapacity(
     SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportPacket *packet,
-    uint32_t doorbell)
+    uint32_t doorbell,
+    uint32_t doorbell_lane)
 {
     SparkStatus status;
     uint32_t lane_count;
     uint32_t lane_index;
     uint32_t write_count;
 
-    lane_count = doorbell != 0u ? 1u : state->lane_count;
-    for (lane_index = 0u; lane_index < lane_count; ++lane_index)
+    /* NET-003: a doorbell packet only consumes WR budget on its
+     * assigned lane; striped packets consume on every lane. */
+    lane_index = doorbell != 0u ? doorbell_lane : 0u;
+    lane_count = doorbell != 0u ? doorbell_lane + 1u : state->lane_count;
+    for (; lane_index < lane_count; ++lane_index)
     {
         status = SparkHiddenSparkHostRdmaCountPacketLaneWrites(
-            state,packet,doorbell,lane_index,&write_count);
+            state,packet,doorbell,doorbell_lane,lane_index,&write_count);
         if (status != SPARK_STATUS_OK)
             return status;
         if (state->outstanding_send_wr_counts[lane_index] >
@@ -2692,8 +2915,14 @@ static SparkStatus SparkHiddenSparkHostRdmaPostPacketWrites(
     uint32_t send_index;
 
     send_index = (uint32_t)(send - state->inflight_sends);
-    lane_count = send->doorbell != 0u ? 1u : state->lane_count;
-    for (lane_index = 0u; lane_index < lane_count; ++lane_index)
+    /* NET-003: doorbell packets post only on their receive slot's
+     * assigned lane; striped packets still post across all lanes. */
+    lane_index = send->doorbell != 0u ?
+        SparkHiddenSparkHostRdmaDoorbellLane(
+            state,remote_receive->receive_index) : 0u;
+    lane_count = send->doorbell != 0u ? lane_index + 1u :
+        state->lane_count;
+    for (; lane_index < lane_count; ++lane_index)
     {
         status = SparkHiddenSparkHostRdmaPostLaneWrites(
             state,send,send_index,lane_index,remote_receive,
@@ -2765,6 +2994,9 @@ static SparkStatus SparkHiddenSparkHostRdmaCommitInflightSend(
     state->completed_send_count += 1u;
     SparkHiddenSparkHostRdmaReleaseRemoteReceive(
         state,send->remote_receive_index);
+    /* NET-001: all WRs for this send completed, so unpin its cached
+     * regions before the slot is wiped. */
+    SparkHiddenSparkHostRdmaReleaseSendRegions(state,send);
     memset(send,0,sizeof(*send));
     return status;
 }
@@ -2814,6 +3046,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPrepareInflightSend(
     void *sideband_local_pointer;
     SparkStatus status;
     uint32_t remote_receive_index;
+    uint32_t doorbell;
+    uint32_t doorbell_lane;
     uint64_t hidden_bytes;
     uint64_t sideband_bytes;
 
@@ -2858,8 +3092,13 @@ static SparkStatus SparkHiddenSparkHostRdmaPrepareInflightSend(
             state->send_ready_recorded[remote_receive_index] = 0u;
             return SPARK_STATUS_IO_ERROR;
     }
+    doorbell = SparkHiddenSparkHostRdmaPacketUsesDoorbell(state,packet);
+    doorbell_lane = doorbell != 0u && remote_receive->receive_index !=
+            SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX ?
+        SparkHiddenSparkHostRdmaDoorbellLane(
+            state,remote_receive->receive_index) : 0u;
     status = SparkHiddenSparkHostRdmaCheckPacketQueueCapacity(
-        state,packet,SparkHiddenSparkHostRdmaPacketUsesDoorbell(state,packet));
+        state,packet,doorbell,doorbell_lane);
     if (status != SPARK_STATUS_OK)
         return status;
     send = SparkHiddenSparkHostRdmaReserveInflightSend(state);
@@ -2878,6 +3117,8 @@ static SparkStatus SparkHiddenSparkHostRdmaPrepareInflightSend(
         &sideband_memory_region,&sideband_local_pointer);
     if (status != SPARK_STATUS_OK)
         goto fail_send;
+    SparkHiddenSparkHostRdmaAcquireSendRegions(
+        state,send,hidden_memory_region,sideband_memory_region);
     if (send->doorbell != 0u && remote_receive->receive_index ==
             SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX)
     {
@@ -2897,6 +3138,7 @@ static SparkStatus SparkHiddenSparkHostRdmaPrepareInflightSend(
     return SPARK_STATUS_BUSY;
 
 fail_send:
+    SparkHiddenSparkHostRdmaReleaseSendRegions(state,send);
     memset(send,0,sizeof(*send));
     return status;
 }
@@ -3002,9 +3244,12 @@ static SparkStatus SparkHiddenSparkHostRdmaArmBatchCudaReady(
 static SparkStatus SparkHiddenSparkHostRdmaCheckBatchQueueCapacity(
     SparkHiddenSparkHostRdmaState *state,
     const SparkHiddenTransportPacket *packets,
+    SparkHiddenSparkHostRdmaRemoteReceive **remote_receives,
     uint32_t packet_count)
 {
     SparkStatus status;
+    uint32_t doorbell;
+    uint32_t doorbell_lane;
     uint32_t lane_index;
     uint32_t packet_index;
     uint32_t packet_write_count;
@@ -3015,10 +3260,16 @@ static SparkStatus SparkHiddenSparkHostRdmaCheckBatchQueueCapacity(
         write_count = 0u;
         for (packet_index = 0u; packet_index < packet_count; ++packet_index)
         {
+            doorbell = SparkHiddenSparkHostRdmaPacketUsesDoorbell(
+                state,&packets[packet_index]);
+            doorbell_lane = doorbell != 0u &&
+                remote_receives[packet_index]->receive_index !=
+                    SPARK_HIDDEN_SPARK_HOST_RDMA_NO_INDEX ?
+                SparkHiddenSparkHostRdmaDoorbellLane(
+                    state,remote_receives[packet_index]->receive_index) :
+                0u;
             status = SparkHiddenSparkHostRdmaCountPacketLaneWrites(
-                state,&packets[packet_index],
-                SparkHiddenSparkHostRdmaPacketUsesDoorbell(
-                    state,&packets[packet_index]),
+                state,&packets[packet_index],doorbell,doorbell_lane,
                 lane_index,&packet_write_count);
             if (status != SPARK_STATUS_OK)
                 return status;
@@ -3045,6 +3296,8 @@ static void SparkHiddenSparkHostRdmaRollbackPreparedBatch(
             prepared[packet_index].remote_receive->used = 0u;
         if (prepared[packet_index].send != 0)
         {
+            SparkHiddenSparkHostRdmaReleaseSendRegions(
+                state,prepared[packet_index].send);
             memset(prepared[packet_index].send,0,
                 sizeof(*prepared[packet_index].send));
         }
@@ -3099,6 +3352,13 @@ static SparkStatus SparkHiddenSparkHostRdmaPrepareBatchResources(
             &prepared[packet_index].hidden_local_pointer,
             &prepared[packet_index].sideband_memory_region,
             &prepared[packet_index].sideband_local_pointer);
+        if (status == SPARK_STATUS_OK)
+        {
+            SparkHiddenSparkHostRdmaAcquireSendRegions(
+                state,send,
+                prepared[packet_index].hidden_memory_region,
+                prepared[packet_index].sideband_memory_region);
+        }
         if (status != SPARK_STATUS_OK ||
             (send->doorbell != 0u &&
              remote_receives[packet_index]->receive_index ==
@@ -3150,7 +3410,9 @@ static SparkStatus SparkHiddenSparkHostRdmaPostBatchLane(
     for (packet_index = 0u; packet_index < packet_count; ++packet_index)
     {
         item = &prepared[packet_index];
-        if (item->send->doorbell != 0u && lane_index != 0u)
+        if (item->send->doorbell != 0u &&
+            lane_index != SparkHiddenSparkHostRdmaDoorbellLane(
+                state,item->remote_receive->receive_index))
             continue;
         start_count = write_count;
         status = SparkHiddenSparkHostRdmaBuildLaneWrite(
@@ -3253,7 +3515,7 @@ static SparkStatus SparkHiddenSparkHostRdmaStartSendBatch(
     if (status != SPARK_STATUS_OK)
         return status;
     status = SparkHiddenSparkHostRdmaCheckBatchQueueCapacity(
-        state,packets,packet_count);
+        state,packets,remote_receives,packet_count);
     if (status != SPARK_STATUS_OK)
         return status;
     status = SparkHiddenSparkHostRdmaPrepareBatchResources(
@@ -3528,7 +3790,7 @@ static void SparkHiddenSparkHostRdmaDestroyState(SparkHiddenSparkHostRdmaState *
     if (state->debug_enabled != 0u)
     {
         fprintf(stderr,
-            "hidden_spark_rdma_stats mode=%u doorbell_sends=%llu striped_sends=%llu async_sends=%llu completed_sends=%llu control_busy=%llu mr_cache_hits=%llu pointer_attribute_queries=%llu mr_registrations=%llu mapped_host_zero_copy_transfers=%llu mapped_host_zero_copy_bytes=%llu gpudirect_transfers=%llu gpudirect_bytes=%llu\n",
+            "hidden_spark_rdma_stats mode=%u doorbell_sends=%llu striped_sends=%llu async_sends=%llu completed_sends=%llu control_busy=%llu mr_cache_hits=%llu pointer_attribute_queries=%llu mr_registrations=%llu mr_evictions=%llu mapped_host_zero_copy_transfers=%llu mapped_host_zero_copy_bytes=%llu gpudirect_transfers=%llu gpudirect_bytes=%llu\n",
             state->memory_mode,
             (unsigned long long)state->doorbell_send_count,
             (unsigned long long)state->striped_send_count,
@@ -3538,6 +3800,7 @@ static void SparkHiddenSparkHostRdmaDestroyState(SparkHiddenSparkHostRdmaState *
             (unsigned long long)state->memory_region_cache_hit_count,
             (unsigned long long)state->pointer_attribute_query_count,
             (unsigned long long)state->memory_region_register_count,
+            (unsigned long long)state->memory_region_eviction_count,
             (unsigned long long)state->mapped_host_zero_copy_transfer_count,
             (unsigned long long)state->mapped_host_zero_copy_transfer_bytes,
             (unsigned long long)state->gpudirect_transfer_count,
@@ -3547,7 +3810,8 @@ static void SparkHiddenSparkHostRdmaDestroyState(SparkHiddenSparkHostRdmaState *
          receive_index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_PENDING_RECEIVE_COUNT;
          ++receive_index)
     {
-        SparkHiddenSparkHostRdmaReleasePendingReceive(&state->pending_receives[receive_index]);
+        SparkHiddenSparkHostRdmaReleasePendingReceive(
+            state, &state->pending_receives[receive_index]);
     }
     for (receive_index = 0u;
          receive_index < SPARK_HIDDEN_SPARK_HOST_RDMA_MAX_REMOTE_RECEIVE_COUNT;

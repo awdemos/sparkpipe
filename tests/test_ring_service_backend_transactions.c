@@ -172,6 +172,8 @@ static void SparkTestBackendCopiesOnlyWorkDescriptor(void)
 
 	memset(&state,0,sizeof(state));
 	state.rank_plan.flags = SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT;
+	assert(SparkRingServiceBackendInitializeWorkPacketArena(&state) ==
+		SPARK_STATUS_OK);
 	SparkTestBackendBuildPacket(&packet,104u,1004u,204u,10u);
 	packet_bytes = (uint8_t *)&packet;
 	probe_offset = packet.descriptor_bytes + 8u;
@@ -189,6 +191,7 @@ static void SparkTestBackendCopiesOnlyWorkDescriptor(void)
 		packet.descriptor_bytes) == 0);
 	SparkRingServiceBackendPopWorkPacket(&state);
 	assert(state.work_queue_count == 0u);
+	SparkArenaDestroy(&state.work_packet_arena);
 }
 
 static void SparkTestBackendCoalescesGeneratedRelease(void)
@@ -295,6 +298,8 @@ static void SparkTestBackendHardNegativeAckFailsCohort(void)
         &state,&scheduler,request_slots,request_records,event_ring,
         301u,777ull);
     state.rank_plan.flags = SPARK_RING_RUNTIME_RANK_FLAG_HAS_NEXT;
+    assert(SparkRingServiceBackendInitializeWorkPacketArena(&state) ==
+        SPARK_STATUS_OK);
     SparkTestBackendBuildPacket(&packet,301u,3001u,401u,12u);
     assert(SparkRingServiceBackendEnqueueWorkPacket(
         &state,&packet) == SPARK_STATUS_OK);
@@ -325,6 +330,7 @@ static void SparkTestBackendHardNegativeAckFailsCohort(void)
     assert(SparkRingServiceBackendFlushWorkOutput(&state) == SPARK_STATUS_OK);
     close(sockets[0]);
     close(sockets[1]);
+    SparkArenaDestroy(&state.work_packet_arena);
 }
 
 static void SparkTestBackendReconnectFailsInflightPendings(void)
