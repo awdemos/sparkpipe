@@ -2196,6 +2196,9 @@ static bool SparkCudaProbeRunQuestion(
             std::fprintf(output, "{\"parameters\": {\"candidate\": ");
             SparkCudaProbeWriteJsonString(output, options.candidate);
             std::fprintf(output,
+                ", \"mode\": ");
+            SparkCudaProbeWriteJsonString(output, options.mode);
+            std::fprintf(output,
                 ", \"batch_size\": %u, \"kernel_count\": %u, \"iterations\": %u}, "
                 "\"metrics\": {\"latency_p50_ns\": %" PRIu64 ", "
                 "\"latency_p95_ns\": %" PRIu64 ", \"latency_p99_ns\": %" PRIu64 ", "

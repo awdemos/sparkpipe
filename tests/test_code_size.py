@@ -128,8 +128,9 @@ from pathlib import Path
 # syntax support for the NVMe probe. 136927 is the exact post-fix count.
 # The CUDA 13 hardware-probe correction replaces the removed device-property
 # memory clock field with cudaDeviceGetAttribute and fixes the NVMe candidate
-# names emitted by the qualification planner; 136944 is the exact count.
-CEILING = 136944
+# names emitted by the qualification planner; the graph receipt contract adds
+# the planned mode to the emitted parameters; 136947 is the exact count.
+CEILING = 136947
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
