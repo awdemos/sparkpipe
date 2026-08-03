@@ -125,6 +125,7 @@ typedef struct SparkNvmeProbeWorkerContext
 
 __device__ static unsigned long long SparkNvmeProbeDeviceMix64(unsigned long long value)
 {
+    value += 0x9e3779b97f4a7c15ull;
     value ^= value >> 30u;
     value *= 0xbf58476d1ce4e5b9ull;
     value ^= value >> 27u;

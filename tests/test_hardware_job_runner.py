@@ -133,7 +133,7 @@ open(a.output,'w').write(json.dumps(d))
         config["probe_timeout_seconds"] = 1
         write_json(config_path, config)
         started = time.monotonic()
-        run([sys.executable, str(runner), "--plan", str(plan_path), "--config", str(config_path)])
+        run([sys.executable, str(runner), "--plan", str(plan_path), "--config", str(config_path)], 2)
         assert time.monotonic() - started < 3.0
         failed = json.loads(receipt_path.read_text(encoding="utf-8"))
         assert failed["probe_receipt"]["answers"][0]["status"] == "failed"

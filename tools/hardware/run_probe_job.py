@@ -327,8 +327,12 @@ def failure_probe_receipt(plan: dict[str, Any], config: dict[str, Any], job: dic
 def execute_job(plan: dict[str, Any], config: dict[str, Any], config_base: pathlib.Path, job: dict[str, Any], receipt_directory: pathlib.Path, dry_run: bool, resume: bool) -> None:
     receipt_path = receipt_directory / f"{job['cell_id']}.json"
     if receipt_path.exists():
-        validate_cell_receipt_document(load_json(receipt_path), plan)
+        existing = load_json(receipt_path)
+        validate_cell_receipt_document(existing, plan)
         if resume:
+            answer = existing["probe_receipt"]["answers"][0]
+            require(answer.get("status") == "measured",
+                    f"probe receipt status is {answer.get('status')}: {answer.get('error', '')}")
             return
         raise ValueError(f"receipt already exists for {job['cell_id']}")
     lock_path = receipt_path.with_suffix(".lock")
@@ -388,6 +392,9 @@ def execute_job(plan: dict[str, Any], config: dict[str, Any], config_base: pathl
             cell_receipt["receipt_sha256"] = sha256_bytes(canonical_json_bytes(cell_receipt))
             validate_cell_receipt_document(cell_receipt, plan)
             write_json_atomic(receipt_path, cell_receipt)
+            answer = probe_receipt["answers"][0]
+            require(answer.get("status") == "measured",
+                    f"probe returned status {answer.get('status')}: {answer.get('error', '')}")
     finally:
         if server is not None:
             server.terminate()

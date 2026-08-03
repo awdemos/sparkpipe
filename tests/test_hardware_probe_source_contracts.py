@@ -48,6 +48,9 @@ def main() -> int:
         "cudaDevAttrMemoryClockRate",
         '"GB10-GRAPH-001"',
         'SparkCudaProbeWriteJsonString(output, options.mode)',
+        "SparkCudaProbeParseTelemetryValue",
+        "memory_clock_text",
+        "if (loaded && load_stream != nullptr)",
         r'\"dynamic_shared_bytes\": %u, \"iterations\": %u',
         r'\"sustained_seconds\": %u, \"iterations\": %u',
     ):
@@ -63,6 +66,7 @@ def main() -> int:
     for required in (
         "SparkNvmeProbeVerifyPattern",
         "SparkNvmeProbeCopyAndFingerprint",
+        "value += 0x9e3779b97f4a7c15ull",
         "cpu_fingerprint != device_fingerprint",
         "initialization_failed",
         "execution_failed",
