@@ -1167,14 +1167,14 @@ static bool SparkCudaProbeMeasureCompletionMechanism(
     bool ok = SparkCudaProbeCheck(
             cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking), "completion stream") &&
         SparkCudaProbeCheck(
-            cudaStreamCreateWithFlags(&load_stream, cudaStreamNonBlocking), "completion load stream") &&
-        SparkCudaProbeCheck(
             cudaEventCreateWithFlags(&event, cudaEventDisableTiming), "completion event");
     bool loaded = std::strcmp(load_mode, "memory_loaded") == 0;
     load_bytes = 0u;
     load_repetitions = 0u;
     if (ok && loaded)
     {
+        ok = SparkCudaProbeCheck(
+            cudaStreamCreateWithFlags(&load_stream, cudaStreamNonBlocking), "completion load stream");
         load_bytes = std::max<uint64_t>(working_set_bytes, 64ull * 1024ull * 1024ull);
         load_bytes = load_bytes / sizeof(uint4) * sizeof(uint4);
         load_repetitions = 64u;
@@ -1219,7 +1219,7 @@ static bool SparkCudaProbeMeasureCompletionMechanism(
             samples.push_back(SparkCudaProbeMonotonicNanoseconds() - start_ns);
         }
     }
-    if (load_stream != nullptr)
+    if (loaded && load_stream != nullptr)
     {
         if (!SparkCudaProbeCheck(cudaStreamSynchronize(load_stream),
                 "completion load synchronize") ||
@@ -1562,6 +1562,45 @@ static bool SparkCudaProbeMeasureUnifiedContention(
     return ok;
 }
 
+static bool SparkCudaProbeParseTelemetryValue(char *text, double *value_out)
+{
+    char *cursor;
+    char *end;
+    double value;
+
+    if (text == nullptr || value_out == nullptr)
+    {
+        return false;
+    }
+    cursor = text;
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n')
+    {
+        ++cursor;
+    }
+    if (std::strcmp(cursor, "N/A") == 0 || std::strcmp(cursor, "[N/A]") == 0)
+    {
+        *value_out = -1.0;
+        return true;
+    }
+    errno = 0;
+    end = nullptr;
+    value = std::strtod(cursor, &end);
+    if (errno != 0 || end == cursor)
+    {
+        return false;
+    }
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')
+    {
+        ++end;
+    }
+    if (*end != '\0')
+    {
+        return false;
+    }
+    *value_out = value;
+    return true;
+}
+
 static SparkCudaProbeTelemetry SparkCudaProbeReadTelemetry()
 {
     SparkCudaProbeTelemetry telemetry{};
@@ -1580,12 +1619,14 @@ static SparkCudaProbeTelemetry SparkCudaProbeReadTelemetry()
     char line[256u];
     if (std::fgets(line, sizeof(line), pipe) != nullptr)
     {
+        char memory_clock_text[32u];
         double temperature;
         double sm_clock;
         double memory_clock;
         double power;
-        if (std::sscanf(line, " %lf , %lf , %lf , %lf",
-                &temperature, &sm_clock, &memory_clock, &power) == 4)
+        if (std::sscanf(line, " %lf , %lf , %31[^,] , %lf",
+                &temperature, &sm_clock, memory_clock_text, &power) == 4 &&
+            SparkCudaProbeParseTelemetryValue(memory_clock_text, &memory_clock))
         {
             telemetry.temperature_c = temperature;
             telemetry.sm_clock_mhz = sm_clock;

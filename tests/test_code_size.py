@@ -132,7 +132,10 @@ from pathlib import Path
 # the planned mode to the emitted parameters; the remaining CUDA receipt
 # contracts add atomic mode and SMEM/thermal iteration fields; 136954 is the
 # exact count.
-CEILING = 136954
+# The hardware-probe failure contract adds the CUDA telemetry parser, the
+# NVMe device fingerprint correction, and fail-closed runner status handling;
+# 137003 is the exact count.
+CEILING = 137003
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
