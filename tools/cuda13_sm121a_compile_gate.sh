@@ -80,6 +80,8 @@ common_flags=(
 )
 
 translation_units=(
+    tools/hardware/spark_cuda_characterize.cu
+    tools/hardware/spark_nvme_characterize.cu
     inference/llms/deepseek_v4/unity.cu
     inference/llms/deepseek_v4_pro/unity.cu
     inference/llms/glm5_2/bind.cu

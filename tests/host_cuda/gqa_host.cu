@@ -74,6 +74,7 @@ int main(void)
 	static uint32_t context_length[SEQUENCES];
 	static uint32_t query_sequence[SEQUENCES];
 	static uint32_t window_positions[SEQUENCES * WINDOW];
+	static LmKvAccessError access_error;
 	uint32_t index, sequence, position;
 
 	page_table[0] = 0u; page_table[1] = 2u;
@@ -117,10 +118,13 @@ int main(void)
 		printf("query %.9g\n", (double)LmBf16ToFloat(query[index]));
 
 	LmKvView view;
+	LmKvAccessErrorReset(&access_error);
 	view.pool = pool;
 	view.page_table = page_table;
 	view.page_table_stride = PAGES_PER_SEQUENCE;
 	view.sequence_count = SEQUENCES;
+	view.pool_page_count = TOTAL_PAGES;
+	view.access_error = &access_error;
 
 	LM_HOST_LAUNCH(dim3(SEQUENCES * CONTEXT),
 		(LmGqaKvStoreKernel<HostGqaKv, THREADS, KV_HEADS, HEAD_DIM, VALUE_DIM>(

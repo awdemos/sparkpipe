@@ -74,6 +74,7 @@ int main(void)
 	static uint16_t output[SEQUENCES * HEADS * LATENT];
 	static uint32_t context_length[SEQUENCES];
 	static uint32_t query_sequence[SEQUENCES];
+	static LmKvAccessError access_error;
 	uint32_t index, sequence, position, head;
 
 	// INTERLEAVED PAGES. Sequence 0 gets pages 0 and 2, sequence 1 gets 1 and 3,
@@ -107,10 +108,13 @@ int main(void)
 		printf("query %.9g\n", (double)LmBf16ToFloat(query[index]));
 
 	LmKvView view;
+	LmKvAccessErrorReset(&access_error);
 	view.pool = pool;
 	view.page_table = page_table;
 	view.page_table_stride = PAGES_PER_SEQUENCE;
 	view.sequence_count = SEQUENCES;
+	view.pool_page_count = TOTAL_PAGES;
+	view.access_error = &access_error;
 
 	LM_HOST_LAUNCH(dim3(SEQUENCES * CONTEXT),
 		(LmKvStoreKernel<HostKv, THREADS>(

@@ -24,7 +24,7 @@ status=0
 for unity in inference/llms/*/unity.cu
 do
 	name=$(basename "$(dirname "$unity")")
-	if "$NVCC" -std=c++17 $ARCH -O3 --use_fast_math $INCLUDES -c "$unity" -o "/tmp/lm_$name.o" 2>"/tmp/lm_$name.log"
+	if "$NVCC" -std=c++17 $ARCH -O3 $INCLUDES -c "$unity" -o "/tmp/lm_$name.o" 2>"/tmp/lm_$name.log"
 	then
 		printf "  %-14s compiled  %s bytes\n" "$name" "$(wc -c < "/tmp/lm_$name.o")"
 	else

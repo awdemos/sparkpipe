@@ -103,6 +103,7 @@ static uint16_t v_window[SLICE_KDA * ROWS * K3_KDA_V_DIM * K3_KDA_CONV_KERNEL];
 static uint8_t kv_pool[SLICE_MLA][KV_POOL_BYTES];
 static uint32_t page_table[SLICE_MLA][ROWS];
 static LmKvView cache_views[SLICE_MLA];
+static LmKvAccessError cache_errors[SLICE_MLA];
 static uint32_t state_index[ROWS], sequence_of_row[ROWS];
 static uint32_t positions[ROWS], context_length[ROWS];
 
@@ -171,10 +172,13 @@ int main(void)
 	{
 		page_table[view][0] = 0u;
 		page_table[view][1] = 1u;
+		LmKvAccessErrorReset(&cache_errors[view]);
 		cache_views[view].pool = kv_pool[view];
 		cache_views[view].page_table = page_table[view];
 		cache_views[view].page_table_stride = 1u;
 		cache_views[view].sequence_count = ROWS;
+		cache_views[view].pool_page_count = ROWS;
+		cache_views[view].access_error = &cache_errors[view];
 	}
 	for (layer = 0u; layer < SLICE_LAYERS; ++layer)
 	{

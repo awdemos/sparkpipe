@@ -173,8 +173,18 @@ static int32_t Mimo25LayerAttention(const Mimo25LayerBuffers *b, uint32_t rows, 
 	// and 12288 outputs written into an 8192-wide pipeline.
 	LM_LAUNCH((LmGqaKvStoreKernel<Geometry,MIMO25_LAYER_THREADS,KV_HEADS,MIMO25_HEAD_DIM,MIMO25_VALUE_DIM>), rows, MIMO25_LAYER_THREADS, 0, stream,
 		b->cache,b->key_bf16,b->value_bf16,b->sequence_of_row,b->positions,rows);
-	// A sliding window is a position list, the same argument the sparse path
-	// takes. window == 0 means attend over everything.
+	// A sliding window is an explicit device-built position list. Building it
+	// from the live sequence lengths and row positions avoids stale host lists,
+	// and sentinel padding keeps short rows mathematically exact.
+	if ( window != 0u )
+	{
+		if ( b->window_positions == 0 )
+			return(LM_LAUNCH_ERR_SHAPE);
+		LM_LAUNCH((LmBuildSlidingWindowPositionsKernel<MIMO25_LAYER_THREADS>), rows,
+			MIMO25_LAYER_THREADS, 0, stream,
+			b->sequence_of_row,b->context_length,b->positions,rows,window,
+			b->window_positions);
+	}
 	LM_LAUNCH((LmGqaAttentionDecodeKernel<Geometry,MIMO25_LAYER_THREADS,KV_HEADS,MIMO25_HEAD_DIM,MIMO25_VALUE_DIM>), dim3(rows,MIMO25_ATTN_HEADS), MIMO25_LAYER_THREADS, 0, stream,
 		b->query_bf16,b->cache,b->sequence_of_row,b->context_length, window != 0u ? b->window_positions : 0,window,MIMO25_ATTN_HEADS, rsqrtf((float)MIMO25_HEAD_DIM),b->attention_out_bf16, 0);
 	LM_LAUNCH((LmQuantiseRowsKernel<Format,MIMO25_LAYER_THREADS>), dim3(rows,MIMO25_O_INPUT_DIM / Format::kScaleGroup), MIMO25_LAYER_THREADS, (Format::kScaleGroup + 8u) * sizeof(float), stream,

@@ -100,11 +100,37 @@ from pathlib import Path
 # ptxas occupancy check) and its gate wiring (Makefile +1,
 # tools/gates.sh +4) - 654 lines; the test and the estimates doc are
 # excluded by construction. Ceiling moves to the exact count.
-CEILING = 124946
+# Phase 7 adds generation-carrying arena ownership, the explicit NVMe write
+# lifecycle and cancellation/heap safety, fail-closed KV access diagnostics,
+# contract-derived performance geometry, deterministic Git-independent source
+# packaging, and conservative receipt-bound status checks. The test and
+# documentation and raw qualification-evidence lines are excluded by
+# construction; 125577 is the exact authored non-test source count in the
+# deterministic Phase 7 source package.
+# Phase 10 adds the hardware-truth system: exact question/plan/policy/closure
+# tooling, GB10 CUDA and NVMe probes, production-provider wrappers, PMTU and
+# topology probes, deterministic runner configuration, exact cell execution,
+# node preflight, and the CUDA 13 sm_121a compile gate. The implementation
+# increase is the qualification surface needed to replace hard-coded GB10 and
+# network assumptions with retained measurements. The final source-package
+# hygiene correction adds explicit qualification-evidence file classification
+# (+16 authored lines); 134623 is the exact authored non-test source count at
+# the Phase 10 handoff landing.
+# The runtime-completion overlay adds the all-participant staged transaction
+# controller, acknowledged final-event ownership, bounded selective-ACK
+# transmission window, exact model-provider operation/precision contracts,
+# deterministic overlay application, and the no-undefined GLM final-artifact
+# receipt tools. The model-specific contracts remain under their family
+# directories rather than contaminating the neutral runtime. 136812 was the
+# resulting ceiling.
+# The host-portability correction adds 115 authored lines: portable PMTU wire
+# conversion and connected-UDP probing, plus Linux-AIO guards and Darwin host
+# syntax support for the NVMe probe. 136927 is the exact post-fix count.
+CEILING = 136927
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
-EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', '__pycache__'}
+EXCLUDED_COMPONENTS = {'tests', '.git', 'docs', 'build', 'qualification', '__pycache__'}
 
 
 def main():

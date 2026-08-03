@@ -86,33 +86,275 @@ struct LmKvGeometry
 
 // A view is what a kernel receives. It carries no ownership and no allocation
 // logic; those are host concerns and live in runtime/.
+//
+// Access failures are first-class device results. A missing page is not an
+// empty position and must never be converted into a plausible attention row.
+// The first failing thread records the exact access and then traps on CUDA so
+// the stream becomes terminal. Host emulation records the same error without
+// aborting the process, allowing deterministic contract tests.
+typedef enum LmKvAccessKind
+{
+	LM_KV_ACCESS_READ = 1u,
+	LM_KV_ACCESS_WRITE = 2u
+}
+LmKvAccessKind;
+
+typedef enum LmKvAccessErrorCode
+{
+	LM_KV_ACCESS_ERROR_NONE = 0u,
+	LM_KV_ACCESS_ERROR_INVALID_VIEW = 1u,
+	LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE = 2u,
+	LM_KV_ACCESS_ERROR_PAGE_TABLE_OUT_OF_RANGE = 3u,
+	LM_KV_ACCESS_ERROR_PAGE_UNMAPPED = 4u,
+	LM_KV_ACCESS_ERROR_POOL_PAGE_OUT_OF_RANGE = 5u,
+	LM_KV_ACCESS_ERROR_INVALID_GQA_GEOMETRY = 6u
+}
+LmKvAccessErrorCode;
+
+#define LM_KV_ACCESS_ERROR_RECORDING 0xffffffffu
+
+typedef struct LmKvAccessError
+{
+	uint32_t error_code;
+	uint32_t access_kind;
+	uint32_t row;
+	uint32_t sequence;
+	uint32_t position;
+	uint32_t page;
+}
+LmKvAccessError;
+
 struct LmKvView
 {
 	uint8_t *pool;
 	const uint32_t *page_table;      // [sequence][page] -> page index
 	uint32_t page_table_stride;      // entries per sequence
 	uint32_t sequence_count;
+	uint32_t pool_page_count;        // physical pages addressable in pool
+	LmKvAccessError *access_error;   // mandatory for executing kernels
 };
 
-// Address of one slot. The only place cache addressing happens.
-//
-// Returns null for an unmapped page rather than an address into page zero. Every
-// caller checks; the alternative is reading another sequence's keys and getting
-// output that is fluent and wrong.
-template<class Geometry>
-static __device__ __forceinline__ const uint8_t *LmKvSlot(const LmKvView &view, uint32_t sequence, uint32_t position)
+static __host__ __device__ __forceinline__ void LmKvAccessErrorReset(
+	LmKvAccessError *error)
 {
-	uint32_t page = view.page_table[(sequence * view.page_table_stride) + Geometry::PageOf(position)];
-	if ( page == LM_KV_PAGE_UNMAPPED )
+	if ( error == 0 )
+		return;
+	error->error_code = LM_KV_ACCESS_ERROR_NONE;
+	error->access_kind = 0u;
+	error->row = 0xffffffffu;
+	error->sequence = 0xffffffffu;
+	error->position = 0xffffffffu;
+	error->page = 0xffffffffu;
+}
+
+static __host__ __forceinline__ int32_t LmKvViewInitialize(
+	LmKvView *view,
+	uint8_t *pool,
+	const uint32_t *page_table,
+	uint32_t page_table_stride,
+	uint32_t sequence_count,
+	uint32_t pool_page_count,
+	LmKvAccessError *access_error)
+{
+	if ( view == 0 )
+		return(-1);
+	view->pool = pool;
+	view->page_table = page_table;
+	view->page_table_stride = page_table_stride;
+	view->sequence_count = sequence_count;
+	view->pool_page_count = pool_page_count;
+	view->access_error = access_error;
+	if ( pool == 0 || page_table == 0 || page_table_stride == 0u
+		|| sequence_count == 0u || pool_page_count == 0u
+		|| access_error == 0 )
+		return(-1);
+	LmKvAccessErrorReset(access_error);
+	return(0);
+}
+
+static __device__ __forceinline__ uint32_t LmKvErrorCompareExchange(
+	uint32_t *address,
+	uint32_t expected,
+	uint32_t desired)
+{
+#if defined(__CUDA_ARCH__)
+	return(atomicCAS(address,expected,desired));
+#else
+	uint32_t previous = *address;
+	if ( previous == expected )
+		*address = desired;
+	return(previous);
+#endif
+}
+
+static __device__ __forceinline__ void LmKvErrorPublish(
+	uint32_t *address,
+	uint32_t value)
+{
+#if defined(__CUDA_ARCH__)
+	__threadfence_system();
+	atomicExch(address,value);
+#else
+	*address = value;
+#endif
+}
+
+static __device__ __forceinline__ void LmKvTrap(void)
+{
+#if defined(__CUDA_ARCH__)
+	asm volatile("trap;");
+#endif
+}
+
+static __device__ __forceinline__ void LmKvReportRequiredAccessFailure(
+	const LmKvView &view,
+	LmKvAccessErrorCode error_code,
+	LmKvAccessKind access_kind,
+	uint32_t row,
+	uint32_t sequence,
+	uint32_t position,
+	uint32_t page)
+{
+	if ( view.access_error != 0
+		&& LmKvErrorCompareExchange(
+			&view.access_error->error_code,
+			LM_KV_ACCESS_ERROR_NONE,
+			LM_KV_ACCESS_ERROR_RECORDING) == LM_KV_ACCESS_ERROR_NONE )
+	{
+		view.access_error->access_kind = (uint32_t)access_kind;
+		view.access_error->row = row;
+		view.access_error->sequence = sequence;
+		view.access_error->position = position;
+		view.access_error->page = page;
+		LmKvErrorPublish(
+			&view.access_error->error_code,
+			(uint32_t)error_code);
+	}
+	LmKvTrap();
+}
+
+static __host__ __device__ __forceinline__ int32_t LmKvViewIsConfigured(
+	const LmKvView &view)
+{
+	return(view.pool != 0
+		&& view.page_table != 0
+		&& view.page_table_stride != 0u
+		&& view.sequence_count != 0u
+		&& view.pool_page_count != 0u
+		&& view.access_error != 0);
+}
+
+// Address one required slot. Any missing or invalid mapping records the first
+// access failure and traps the CUDA stream. The row and access kind are carried
+// for request-level diagnosis rather than inferred after the fact.
+template<class Geometry>
+static __device__ __forceinline__ const uint8_t *LmKvSlotRequired(
+	const LmKvView &view,
+	uint32_t sequence,
+	uint32_t position,
+	uint32_t row,
+	LmKvAccessKind access_kind)
+{
+	uint32_t logical_page;
+	uint32_t physical_page;
+
+	if ( !LmKvViewIsConfigured(view) )
+	{
+		LmKvReportRequiredAccessFailure(
+			view,
+			LM_KV_ACCESS_ERROR_INVALID_VIEW,
+			access_kind,
+			row,
+			sequence,
+			position,
+			0xffffffffu);
 		return(0);
-	return(view.pool + ((uint64_t)page * Geometry::kPageBytes)
+	}
+	if ( sequence >= view.sequence_count )
+	{
+		LmKvReportRequiredAccessFailure(
+			view,
+			LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
+			access_kind,
+			row,
+			sequence,
+			position,
+			0xffffffffu);
+		return(0);
+	}
+	logical_page = Geometry::PageOf(position);
+	if ( logical_page >= view.page_table_stride )
+	{
+		LmKvReportRequiredAccessFailure(
+			view,
+			LM_KV_ACCESS_ERROR_PAGE_TABLE_OUT_OF_RANGE,
+			access_kind,
+			row,
+			sequence,
+			position,
+			logical_page);
+		return(0);
+	}
+	physical_page = view.page_table[
+		((uint64_t)sequence * view.page_table_stride) + logical_page];
+	if ( physical_page == LM_KV_PAGE_UNMAPPED )
+	{
+		LmKvReportRequiredAccessFailure(
+			view,
+			LM_KV_ACCESS_ERROR_PAGE_UNMAPPED,
+			access_kind,
+			row,
+			sequence,
+			position,
+			logical_page);
+		return(0);
+	}
+	if ( physical_page >= view.pool_page_count )
+	{
+		LmKvReportRequiredAccessFailure(
+			view,
+			LM_KV_ACCESS_ERROR_POOL_PAGE_OUT_OF_RANGE,
+			access_kind,
+			row,
+			sequence,
+			position,
+			physical_page);
+		return(0);
+	}
+	return(view.pool + ((uint64_t)physical_page * Geometry::kPageBytes)
 		+ ((uint64_t)Geometry::SlotInPage(position) * Geometry::kSlotBytes));
 }
 
+// Compatibility spelling is deliberately required-access semantics.
 template<class Geometry>
-static __device__ __forceinline__ uint8_t *LmKvSlotMutable(const LmKvView &view, uint32_t sequence, uint32_t position)
+static __device__ __forceinline__ const uint8_t *LmKvSlot(
+	const LmKvView &view,
+	uint32_t sequence,
+	uint32_t position)
 {
-	return((uint8_t *)LmKvSlot<Geometry>(view,sequence,position));
+	return(LmKvSlotRequired<Geometry>(
+		view,sequence,position,0xffffffffu,LM_KV_ACCESS_READ));
+}
+
+template<class Geometry>
+static __device__ __forceinline__ uint8_t *LmKvSlotMutableRequired(
+	const LmKvView &view,
+	uint32_t sequence,
+	uint32_t position,
+	uint32_t row)
+{
+	return((uint8_t *)LmKvSlotRequired<Geometry>(
+		view,sequence,position,row,LM_KV_ACCESS_WRITE));
+}
+
+template<class Geometry>
+static __device__ __forceinline__ uint8_t *LmKvSlotMutable(
+	const LmKvView &view,
+	uint32_t sequence,
+	uint32_t position)
+{
+	return(LmKvSlotMutableRequired<Geometry>(
+		view,sequence,position,0xffffffffu));
 }
 
 // Slots a sequence occupies, for a scheduler that needs to know before it reads.
@@ -174,7 +416,8 @@ void LmKvStoreKernel(LmKvView view, const uint16_t *__restrict__ rows_bf16, cons
 	uint8_t *slot;
 	if ( row >= row_count )
 		return;
-	slot = LmKvSlotMutable<Geometry>(view,sequence_of_row[row],position_of_row[row]);
+	slot = LmKvSlotMutableRequired<Geometry>(
+		view,sequence_of_row[row],position_of_row[row],row);
 	// An unmapped page here is a page the scheduler failed to allocate, which is
 	// a hard error rather than something to skip: skipping loses the token's key
 	// silently and every later step attends over a hole.

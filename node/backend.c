@@ -135,6 +135,7 @@ typedef struct SparkRingServiceBackendReleaseRecord
 
 typedef struct SparkRingServiceBackendWorkOutputSlot
 {
+    SparkArenaAllocation allocation;
     uint8_t *packet_bytes;
     uint32_t packet_bytes_count;
     uint32_t reserved0;
@@ -1982,12 +1983,14 @@ static SparkStatus SparkRingServiceBackendEnqueueWorkPacket(
 	   arena slot is not zeroed, but the memcpy below covers exactly
 	   descriptor_bytes and every reader is bounded by that count, so the
 	   zeroing calloc paid for was dead work. */
-	slot->packet_bytes = (uint8_t *)SparkArenaAcquire(
-		&state->work_packet_arena,packet->descriptor_bytes);
-	if (slot->packet_bytes == 0)
+	if (SparkArenaAcquire(
+			&state->work_packet_arena,
+			packet->descriptor_bytes,
+			&slot->allocation) != 0)
 	{
 		return SPARK_STATUS_CAPACITY_EXCEEDED;
 	}
+	slot->packet_bytes = (uint8_t *)slot->allocation.pointer;
 	memcpy(slot->packet_bytes,packet,packet->descriptor_bytes);
 	slot->packet_bytes_count = packet->descriptor_bytes;
 	slot->reserved0 = 0u;
@@ -2026,7 +2029,10 @@ static void SparkRingServiceBackendPopWorkPacket(
     /* Release back to the arena; the slot was acquired there by
        construction, so a release failure cannot occur and the status is
        discarded deliberately. */
-    (void)SparkArenaRelease(&state->work_packet_arena,slot->packet_bytes);
+    if (SparkArenaRelease(&state->work_packet_arena,&slot->allocation) != 0)
+    {
+        abort();
+    }
     memset(slot,0,sizeof(*slot));
     state->work_queue_head =
         (state->work_queue_head + 1u) %
