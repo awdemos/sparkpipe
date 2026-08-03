@@ -1837,7 +1837,8 @@ static bool SparkCudaProbeRunQuestion(
     const SparkCudaProbeOptions &options,
     const cudaDeviceProp &properties,
     int driver_version,
-    int runtime_version)
+    int runtime_version,
+    int memory_clock_rate)
 {
     FILE *output;
     bool ok;
@@ -1873,7 +1874,7 @@ static bool SparkCudaProbeRunQuestion(
             runtime_version,
             properties.totalGlobalMem,
             properties.multiProcessorCount,
-            properties.memoryClockRate,
+            memory_clock_rate,
             properties.memoryBusWidth,
             identity_pass ? "true" : "false",
             identity_pass ? "true" : "false",
@@ -2679,6 +2680,7 @@ int main(int argument_count, char **arguments)
     int device = 0;
     int driver_version = 0;
     int runtime_version = 0;
+    int memory_clock_rate = 0;
     cudaDeviceProp properties{};
     if (!SparkCudaProbeCheck(cudaGetDevice(&device), "cudaGetDevice") ||
         !SparkCudaProbeCheck(cudaGetDeviceProperties(&properties, device),
@@ -2688,5 +2690,19 @@ int main(int argument_count, char **arguments)
     {
         return 1;
     }
-    return SparkCudaProbeRunQuestion(options, properties, driver_version, runtime_version) ? 0 : 1;
+    if (!SparkCudaProbeCheck(
+            cudaDeviceGetAttribute(
+                &memory_clock_rate,
+                cudaDevAttrMemoryClockRate,
+                device),
+            "cudaDeviceGetAttribute(cudaDevAttrMemoryClockRate)"))
+    {
+        return 1;
+    }
+    return SparkCudaProbeRunQuestion(
+        options,
+        properties,
+        driver_version,
+        runtime_version,
+        memory_clock_rate) ? 0 : 1;
 }

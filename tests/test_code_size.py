@@ -126,7 +126,10 @@ from pathlib import Path
 # The host-portability correction adds 115 authored lines: portable PMTU wire
 # conversion and connected-UDP probing, plus Linux-AIO guards and Darwin host
 # syntax support for the NVMe probe. 136927 is the exact post-fix count.
-CEILING = 136927
+# The CUDA 13 hardware-probe correction replaces the removed device-property
+# memory clock field with cudaDeviceGetAttribute and fixes the NVMe candidate
+# names emitted by the qualification planner; 136944 is the exact count.
+CEILING = 136944
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
