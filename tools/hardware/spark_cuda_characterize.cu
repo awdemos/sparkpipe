@@ -2326,13 +2326,15 @@ static bool SparkCudaProbeRunQuestion(
         SparkCudaProbeWriteReceiptPrefix(output, options, "measured", "{}");
         std::fprintf(output,
             "{\"parameters\": {\"candidate\": \"dynamic_shared\", "
-            "\"dynamic_shared_bytes\": %u}, \"metrics\": {"
+            "\"dynamic_shared_bytes\": %u, \"iterations\": %u}, "
+            "\"metrics\": {"
             "\"launch_succeeded\": %s, \"active_blocks_per_sm\": %d, "
             "\"theoretical_occupancy\": %.17g, "
             "\"attribute_status\": %d, \"occupancy_status\": %d, "
             "\"launch_status\": %d, \"synchronize_status\": %d, "
             "\"integrity_pass\": true, \"numerical_pass\": true}}",
             options.dynamic_shared_bytes,
+            options.iterations,
             launch_succeeded ? "true" : "false",
             launch_succeeded ? active_blocks : 0,
             launch_succeeded ? occupancy : 0.0,
@@ -2361,6 +2363,9 @@ static bool SparkCudaProbeRunQuestion(
         {
             std::fprintf(output, "{\"parameters\": {\"candidate\": ");
             SparkCudaProbeWriteJsonString(output, options.candidate);
+            std::fprintf(output,
+                ", \"mode\": ");
+            SparkCudaProbeWriteJsonString(output, options.mode);
             std::fprintf(output,
                 ", \"operations\": %" PRIu64 ", \"iterations\": %u}, "
                 "\"metrics\": {\"operations_per_second\": %.17g, "
@@ -2409,7 +2414,8 @@ static bool SparkCudaProbeRunQuestion(
             std::fprintf(output,
                 "{\"parameters\": {\"candidate\": \"sustained_memory_copy\", "
                 "\"sample_phase\": \"all\", \"working_set_bytes\": %" PRIu64 ", "
-                "\"sustained_seconds\": %u}, \"metrics\": {"
+                "\"sustained_seconds\": %u, \"iterations\": %u}, "
+                "\"metrics\": {"
                 "\"start_copy_gb_s\": %.17g, \"steady_copy_gb_s\": %.17g, "
                 "\"end_copy_gb_s\": %.17g, \"steady_state_throughput_ratio\": %.17g, "
                 "\"end_throughput_ratio\": %.17g, "
@@ -2424,6 +2430,7 @@ static bool SparkCudaProbeRunQuestion(
                 "\"numerical_pass\": %s}}",
                 options.working_set_bytes,
                 options.sustained_seconds,
+                options.iterations,
                 bandwidth[0],
                 bandwidth[1],
                 bandwidth[2],

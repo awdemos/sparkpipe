@@ -48,8 +48,15 @@ def main() -> int:
         "cudaDevAttrMemoryClockRate",
         '"GB10-GRAPH-001"',
         'SparkCudaProbeWriteJsonString(output, options.mode)',
+        r'\"dynamic_shared_bytes\": %u, \"iterations\": %u',
+        r'\"sustained_seconds\": %u, \"iterations\": %u',
     ):
         require(required in cuda, f"CUDA hardware probe is missing {required}")
+    atomic_start = cuda.index('"GB10-ATOMIC-001"')
+    thermal_start = cuda.index('"GB10-THERMAL-001"')
+    require('SparkCudaProbeWriteJsonString(output, options.mode)' in
+            cuda[atomic_start:thermal_start],
+            "CUDA atomic receipt omits the planned mode")
     require("properties.memoryClockRate" not in cuda,
             "CUDA hardware probe uses the removed cudaDeviceProp memoryClockRate field")
 
