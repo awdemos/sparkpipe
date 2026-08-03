@@ -2688,8 +2688,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "b6c3682f08a215af7340280f5cb57f9cbede330122f830b2d9eb64ae1e24473c",
-      "size_bytes": 9978
+      "sha256": "0758bf2c74f6da2a4c38cfbed23d054f80d64cd2a0648fef4d41604781c57717",
+      "size_bytes": 10159
     },
     {
       "path": "tests/test_config_coverage.py",
@@ -2988,8 +2988,8 @@
     },
     {
       "path": "tests/test_hardware_job_runner.py",
-      "sha256": "ce0ea429a4b26c52c2ce5fe930ac3372b48d5c838c74e8fe9083a273d3761e83",
-      "size_bytes": 6325
+      "sha256": "ef90e89145672da81ec350779b8bad56d5cbd11b39720caca9213b86fe4171dd",
+      "size_bytes": 6328
     },
     {
       "path": "tests/test_hardware_policy_closure.py",
@@ -3003,8 +3003,8 @@
     },
     {
       "path": "tests/test_hardware_probe_source_contracts.py",
-      "sha256": "baf85fcf450c6062e17d23fd5acb10cb03a9965ad545f0c4e8b7b5d4f85634c2",
-      "size_bytes": 4151
+      "sha256": "deeefed2522b57e8466db513401fe1f5c69103af7a3b4d006908e07f9b84b616",
+      "size_bytes": 4316
     },
     {
       "path": "tests/test_hardware_runner_configs.py",
@@ -3603,13 +3603,13 @@
     },
     {
       "path": "tools/hardware/run_probe_job.py",
-      "sha256": "2866f98dc46c723a70c44effec3832dcaa00ac1c5d968f7aa6b58fed5d6d9811",
-      "size_bytes": 20088
+      "sha256": "ec3f0b499b296cf890ecc0fbed6a3a2017d08e8405ca7a40401ec47d09d179c3",
+      "size_bytes": 20532
     },
     {
       "path": "tools/hardware/spark_cuda_characterize.cu",
-      "sha256": "d9491fde614a18665e378515d17e68a00467de95f445d98523885d6c10a853eb",
-      "size_bytes": 98611
+      "sha256": "dc711bad99a582bf59ae9fd72c62c07b5981e07ae0c6705ba1c32ba999bc1b3d",
+      "size_bytes": 99580
     },
     {
       "path": "tools/hardware/spark_handoff_preflight.py",
@@ -3623,8 +3623,8 @@
     },
     {
       "path": "tools/hardware/spark_nvme_characterize.cu",
-      "sha256": "7f51bf1d1bb938cdc94bd6d2ba2ad661ed5cf470664d30978543bd936dbea425",
-      "size_bytes": 33160
+      "sha256": "7df1448a37db451dbe888f99fee1fa798b74dbdba77aaa7d85fceafe5e4e063d",
+      "size_bytes": 33196
     },
     {
       "path": "tools/hardware/spark_pmtu_characterize.c",
@@ -3800,5 +3800,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 8534505
+  "total_bytes": 8536303
 }
