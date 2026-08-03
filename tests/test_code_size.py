@@ -129,8 +129,10 @@ from pathlib import Path
 # The CUDA 13 hardware-probe correction replaces the removed device-property
 # memory clock field with cudaDeviceGetAttribute and fixes the NVMe candidate
 # names emitted by the qualification planner; the graph receipt contract adds
-# the planned mode to the emitted parameters; 136947 is the exact count.
-CEILING = 136947
+# the planned mode to the emitted parameters; the remaining CUDA receipt
+# contracts add atomic mode and SMEM/thermal iteration fields; 136954 is the
+# exact count.
+CEILING = 136954
 
 ROOT = Path(__file__).resolve().parent.parent
 EXTENSIONS = {'.c', '.h', '.cu', '.cuh', '.py', '.mk', '.sh'}
