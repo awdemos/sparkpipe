@@ -140,6 +140,20 @@ void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, con
 	uint32_t sequence = sequence_of_row[row];
 	uint64_t query_base = ((uint64_t)row * heads + head) * (LATENT + ROPE);
 	float running_max = -INFINITY,running_sum = 0.0f;
+	if ( !LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count )
+	{
+		LmKvReportRequiredAccessFailure(
+			cache,
+			!LmKvViewIsConfigured(cache)
+				? LM_KV_ACCESS_ERROR_INVALID_VIEW
+				: LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
+			LM_KV_ACCESS_READ,
+			row,
+			sequence,
+			0xffffffffu,
+			0xffffffffu);
+		return;
+	}
 	for (index = 0u; index < (LATENT + THREADS - 1u) / THREADS; ++index)
 		accumulator[index] = 0.0f;
 	for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
@@ -156,12 +170,11 @@ void LmAttentionDecodeKernel(const uint16_t *__restrict__ query_latent_bf16, con
 		// and costs the cache read that made it worthless.
 		if ( row_position != 0 && position > row_position[row] )
 			continue;
-		const uint8_t *slot = LmKvSlot<Geometry>(cache,sequence,position);
+		const uint8_t *slot = LmKvSlotRequired<Geometry>(
+			cache,sequence,position,row,LM_KV_ACCESS_READ);
 		float score = 0.0f,scaled,previous;
-		// An unmapped page is not page zero. Reading it as page zero returns
-		// another sequence's keys and produces output that is fluent and wrong.
 		if ( slot == 0 )
-			continue;
+			return;
 		for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
 			score += shared_query[index] * LmBf16ToFloat(((const uint16_t *)slot)[index]);
 		score = LmBlockSum<THREADS>(score,reduction) * qk_scale;
@@ -221,6 +234,21 @@ void LmLatentAttentionDecodeKernel(
     float running_max = -INFINITY;
     float running_sum = 0.0f;
 
+    if (!LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count)
+    {
+        LmKvReportRequiredAccessFailure(
+            cache,
+            !LmKvViewIsConfigured(cache)
+                ? LM_KV_ACCESS_ERROR_INVALID_VIEW
+                : LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
+            LM_KV_ACCESS_READ,
+            row,
+            sequence,
+            0xffffffffu,
+            0xffffffffu);
+        return;
+    }
+
     for (index = 0u; index < 8u; ++index)
     {
         accumulator[index] = 0.0f;
@@ -251,10 +279,11 @@ void LmLatentAttentionDecodeKernel(
         {
             continue;
         }
-        slot = LmKvSlot<Geometry>(cache, sequence, position);
+        slot = LmKvSlotRequired<Geometry>(
+            cache, sequence, position, row, LM_KV_ACCESS_READ);
         if (slot == 0)
         {
-            continue;
+            return;
         }
         for (index = threadIdx.x; index < LATENT + ROPE; index += THREADS)
         {
@@ -316,15 +345,26 @@ void LmSparseScoreKernel(const uint16_t *__restrict__ index_query_bf16, LmKvView
 	uint32_t sequence = sequence_of_row[row],head,index;
 	const uint8_t *slot;
 	float total = 0.0f;
-	if ( position >= context_length[sequence] )
-		return;
-	slot = LmKvSlot<Geometry>(cache,sequence,position);
-	if ( slot == 0 )
+	if ( !LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count )
 	{
-		if ( threadIdx.x == 0u )
-			scores[((uint64_t)row * gridDim.y) + position] = -INFINITY;
+		LmKvReportRequiredAccessFailure(
+			cache,
+			!LmKvViewIsConfigured(cache)
+				? LM_KV_ACCESS_ERROR_INVALID_VIEW
+				: LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
+			LM_KV_ACCESS_READ,
+			row,
+			sequence,
+			position,
+			0xffffffffu);
 		return;
 	}
+	if ( position >= context_length[sequence] )
+		return;
+	slot = LmKvSlotRequired<Geometry>(
+		cache,sequence,position,row,LM_KV_ACCESS_READ);
+	if ( slot == 0 )
+		return;
 	for (head = 0u; head < index_heads; ++head)
 	{
 		float partial = 0.0f;
@@ -414,7 +454,7 @@ void LmRopeYarnKernel(uint16_t *__restrict__ rows_bf16, const uint32_t *__restri
 // dirty, so a decode step rebuilds one summary rather than all of them.
 template<class Geometry, uint32_t THREADS, uint32_t INDEX_DIM>
 __global__ __launch_bounds__(THREADS, 1)
-void LmSparseSummaryBuildKernel(LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ dirty_block, uint32_t block_positions, uint16_t *__restrict__ summary_bf16, uint32_t blocks_per_sequence)
+void LmSparseSummaryBuildKernel(LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ dirty_block, uint32_t block_positions, uint16_t *__restrict__ summary_bf16, uint32_t blocks_per_sequence)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	uint32_t row = blockIdx.x,block = dirty_block != 0 ? dirty_block[row] : blockIdx.y;
@@ -424,9 +464,14 @@ void LmSparseSummaryBuildKernel(LmKvView cache, const uint32_t *__restrict__ seq
 		float best = 0.0f;
 		for (position = 0u; position < block_positions; ++position)
 		{
-			const uint8_t *slot = LmKvSlot<Geometry>(cache,sequence,(block * block_positions) + position);
-			if ( slot == 0 )
+			uint32_t absolute_position = (block * block_positions) + position;
+			const uint8_t *slot;
+			if ( absolute_position >= context_length[sequence] )
 				continue;
+			slot = LmKvSlotRequired<Geometry>(
+				cache,sequence,absolute_position,row,LM_KV_ACCESS_READ);
+			if ( slot == 0 )
+				return;
 			best = fmaxf(best,fabsf(LmBf16ToFloat(((const uint16_t *)slot)[index])));
 		}
 		summary_bf16[(((uint64_t)sequence * blocks_per_sequence) + block) * INDEX_DIM + index] =
@@ -478,16 +523,16 @@ void LmSparseSummaryScoreKernel(const uint16_t *__restrict__ index_query_bf16, c
 // long the conversation is.
 template<class Geometry, uint32_t THREADS, uint32_t INDEX_DIM>
 __global__ __launch_bounds__(THREADS, 1)
-void LmSparseRefineKernel(const uint16_t *__restrict__ index_query_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ selected_block, uint32_t block_positions, uint32_t index_heads, float *__restrict__ scores, uint32_t *__restrict__ positions_out)
+void LmSparseRefineKernel(const uint16_t *__restrict__ index_query_bf16, LmKvView cache, const uint32_t *__restrict__ sequence_of_row, const uint32_t *__restrict__ context_length, const uint32_t *__restrict__ selected_block, uint32_t block_positions, uint32_t index_heads, float *__restrict__ scores, uint32_t *__restrict__ positions_out)
 {
 	__shared__ float reduction[THREADS / LM_WARP_LANES];
 	uint32_t row = blockIdx.x,slot_index = blockIdx.y;
 	uint32_t block = selected_block[(row * gridDim.y) + (slot_index / block_positions)];
 	uint32_t position = (block * block_positions) + (slot_index % block_positions);
 	uint32_t sequence = sequence_of_row[row],head,index;
-	const uint8_t *slot = LmKvSlot<Geometry>(cache,sequence,position);
+	const uint8_t *slot;
 	float total = 0.0f;
-	if ( slot == 0 )
+	if ( position >= context_length[sequence] )
 	{
 		if ( threadIdx.x == 0u )
 		{
@@ -496,6 +541,10 @@ void LmSparseRefineKernel(const uint16_t *__restrict__ index_query_bf16, LmKvVie
 		}
 		return;
 	}
+	slot = LmKvSlotRequired<Geometry>(
+		cache,sequence,position,row,LM_KV_ACCESS_READ);
+	if ( slot == 0 )
+		return;
 	for (head = 0u; head < index_heads; ++head)
 	{
 		float partial = 0.0f;

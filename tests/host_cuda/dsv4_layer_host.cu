@@ -130,6 +130,7 @@ static uint32_t group_tiles_w2[DSV4_EXPERTS + 1u];
 static uint32_t dense_offsets[2], dense_tiles[2];
 static uint8_t kv_pool[2u * 73728u];
 static uint32_t kv_pages[2];
+static LmKvAccessError kv_access_error;
 static uint32_t sequence_of_row[ROWS], context_length[ROWS], positions[ROWS];
 
 int main(void)
@@ -138,6 +139,7 @@ int main(void)
 	uint32_t index;
 	int32_t status;
 	memset(&b, 0, sizeof(b));
+	LmKvAccessErrorReset(&kv_access_error);
 	for (index = 0u; index < DSV4_HIDDEN; ++index)
 		norm_weight[index] = LmFloatToBf16(1.0f);
 	for (index = 0u; index < DSV4_QUERY_LORA_RANK; ++index)
@@ -207,6 +209,8 @@ int main(void)
 	b.cache.page_table = kv_pages;
 	b.cache.page_table_stride = 1u;
 	b.cache.sequence_count = 2u;
+	b.cache.pool_page_count = 2u;
+	b.cache.access_error = &kv_access_error;
 	sequence_of_row[0] = 0u;
 	sequence_of_row[1] = 1u;
 	context_length[0] = CONTEXT;

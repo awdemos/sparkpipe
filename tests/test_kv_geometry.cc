@@ -35,7 +35,7 @@ static_assert(Glm52KvFp8::PagesForTokens(1048576u) == Glm52Kv::PagesForTokens(10
 // The same address helper serves a paged cache and a non-paged state pool.
 void probe(void)
 {
-	LmKvView view;
+	LmKvView view = {};
 	view.pool = 0;
 	view.page_table = 0;
 	view.page_table_stride = 0;

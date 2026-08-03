@@ -7,7 +7,7 @@ CUDA_COMPUTE_ARCH ?= $(subst sm_,compute_,$(CUDA_ARCH))
 CFLAGS ?= -std=c11 -Wall -Wextra -Werror -O3
 # -arch=$(CUDA_ARCH) silently drops the architecture-specific suffix (see
 # tools/build.sh); spell the gencode pair out so sm_121a survives.
-NVCCFLAGS ?= -std=c++17 -O3 --use_fast_math --expt-relaxed-constexpr -lineinfo -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
+NVCCFLAGS ?= -std=c++17 -O3 --expt-relaxed-constexpr -lineinfo -gencode arch=$(CUDA_COMPUTE_ARCH),code=$(CUDA_ARCH)
 MODULE_LIBRARY_ROOT ?= $(REPOSITORY_ROOT)/build/module_library
 MAX_STAGE_MICROSECONDS ?= 0
 ARTIFACT_CHECK_ARGS ?=

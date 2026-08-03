@@ -36,6 +36,45 @@
 #include <math.h>
 #include <stdint.h>
 
+#define LM_KV_POSITION_UNUSED 0xffffffffu
+
+// Build the explicit position list consumed by the sliding-window path. The
+// list is produced on the device for every launch, from the exact sequence
+// lengths and row positions, so it cannot go stale when batches interleave.
+// Rows shorter than the configured window are padded with a sentinel that the
+// attention kernel skips without touching the page table.
+template<uint32_t THREADS>
+__global__ __launch_bounds__(THREADS, 1)
+void LmBuildSlidingWindowPositionsKernel(
+	const uint32_t *__restrict__ sequence_of_row,
+	const uint32_t *__restrict__ context_length,
+	const uint32_t *__restrict__ position_of_row,
+	uint32_t row_count,
+	uint32_t window,
+	uint32_t *__restrict__ positions_out)
+{
+	uint32_t row = blockIdx.x;
+	uint32_t sequence;
+	uint32_t available;
+	uint32_t selected;
+	uint32_t start;
+	uint32_t index;
+
+	if ( row >= row_count || window == 0u )
+		return;
+	sequence = sequence_of_row[row];
+	available = context_length[sequence];
+	if ( position_of_row != 0 && position_of_row[row] != 0xffffffffu
+		&& available > position_of_row[row] + 1u )
+		available = position_of_row[row] + 1u;
+	selected = available < window ? available : window;
+	start = available - selected;
+	for ( index = threadIdx.x; index < window; index += THREADS )
+		positions_out[((uint64_t)row * window) + index] = index < selected
+			? start + index
+			: LM_KV_POSITION_UNUSED;
+}
+
 // Repeat every head GROUP times: out[head] = in[head / GROUP]. This is GQA
 // expansion materialised - the attention decode above gets the same sharing
 // for free through its head-to-KV-head mapping, but a consumer that indexes
@@ -68,7 +107,8 @@ void LmGqaKvStoreKernel(LmKvView view, const uint16_t *__restrict__ key_bf16, co
 	uint8_t *slot;
 	if ( row >= row_count )
 		return;
-	slot = LmKvSlotMutable<Geometry>(view,sequence_of_row[row],position_of_row[row]);
+	slot = LmKvSlotMutableRequired<Geometry>(
+		view,sequence_of_row[row],position_of_row[row],row);
 	// Same rule as LmKvStoreKernel: an unmapped page is a scheduler failure, and
 	// skipping loses the token's key silently. There is nothing better to do
 	// here; the decode side treats the hole as absent.
@@ -109,14 +149,41 @@ void LmGqaAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvVie
 	static_assert(Geometry::kSlotBytes == (KV_HEADS * (HEAD_DIM + VALUE_DIM) * 2u),
 		"store and decode must agree on the slot layout");
 	uint32_t sequence = sequence_of_row[row];
+	uint32_t kv_head;
+	uint64_t query_base;
+	float running_max = -INFINITY,running_sum = 0.0f;
+
+	if ( !LmKvViewIsConfigured(cache) || sequence >= cache.sequence_count )
+	{
+		LmKvReportRequiredAccessFailure(
+			cache,
+			!LmKvViewIsConfigured(cache)
+				? LM_KV_ACCESS_ERROR_INVALID_VIEW
+				: LM_KV_ACCESS_ERROR_SEQUENCE_OUT_OF_RANGE,
+			LM_KV_ACCESS_READ,
+			row,
+			sequence,
+			0xffffffffu,
+			0xffffffffu);
+		return;
+	}
+	if ( heads < KV_HEADS || ( heads % KV_HEADS ) != 0u || head >= heads )
+	{
+		LmKvReportRequiredAccessFailure(
+			cache,
+			LM_KV_ACCESS_ERROR_INVALID_GQA_GEOMETRY,
+			LM_KV_ACCESS_READ,
+			row,
+			sequence,
+			head,
+			heads);
+		return;
+	}
 	// GQA: heads / KV_HEADS query heads share each KV head. The ratio is a
 	// runtime value because the query head count is, and it divides the block
 	// index once per block - nothing on the cache-read path.
-	uint32_t kv_head = head / (heads / KV_HEADS);
-	uint64_t query_base = ((uint64_t)row * heads + head) * HEAD_DIM;
-	float running_max = -INFINITY,running_sum = 0.0f;
-	if ( kv_head >= KV_HEADS )
-		return;
+	kv_head = head / (heads / KV_HEADS);
+	query_base = ((uint64_t)row * heads + head) * HEAD_DIM;
 	for (index = 0u; index < (VALUE_DIM + THREADS - 1u) / THREADS; ++index)
 		accumulator[index] = 0.0f;
 	for (index = threadIdx.x; index < HEAD_DIM; index += THREADS)
@@ -128,17 +195,18 @@ void LmGqaAttentionDecodeKernel(const uint16_t *__restrict__ query_bf16, LmKvVie
 		uint32_t position = selected_positions != 0
 			? selected_positions[(row * selected_count) + step] : step;
 		const uint8_t *slot;
+		if ( position == LM_KV_POSITION_UNUSED )
+			continue;
 		const uint16_t *key,*value;
 		float score = 0.0f,scaled,previous;
 		// Causal: a prefill row must not see past itself. Skipping keeps the
 		// online softmax's running maximum honest, as in the latent kernel.
 		if ( row_position != 0 && position > row_position[row] )
 			continue;
-		slot = LmKvSlot<Geometry>(cache,sequence,position);
-		// An unmapped page is not page zero: reading it returns another
-		// sequence's keys and produces output that is fluent and wrong.
+		slot = LmKvSlotRequired<Geometry>(
+			cache,sequence,position,row,LM_KV_ACCESS_READ);
 		if ( slot == 0 )
-			continue;
+			return;
 		key = (const uint16_t *)slot + (kv_head * HEAD_DIM);
 		value = (const uint16_t *)slot + (KV_HEADS * HEAD_DIM) + (kv_head * VALUE_DIM);
 		for (index = threadIdx.x; index < HEAD_DIM; index += THREADS)

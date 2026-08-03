@@ -88,6 +88,7 @@ static uint32_t page_table[ROWS];
 // which the decode kernel skips. The swa table carries that second, unmapped
 // page per sequence - the full table's stride-one layout cannot express it.
 static uint32_t swa_page_table[ROWS * 2u];
+static LmKvAccessError kv_access_error;
 
 int main(void)
 {
@@ -95,6 +96,7 @@ int main(void)
 	uint32_t index;
 	float expected,maxdiff;
 	memset(&b, 0, sizeof(b));
+	LmKvAccessErrorReset(&kv_access_error);
 	for (index = 0u; index < MIMO25_HIDDEN; ++index)
 		norm_weight[index] = LmFloatToBf16(1.0f);
 	for (index = 0u; index < ROWS * MIMO25_HIDDEN; ++index)
@@ -129,6 +131,7 @@ int main(void)
 	context_length[0] = 1u; context_length[1] = 1u;
 	b.cache.pool = full_pool; b.cache.page_table = page_table;
 	b.cache.page_table_stride = 1u; b.cache.sequence_count = ROWS;
+	b.cache.pool_page_count = 2u; b.cache.access_error = &kv_access_error;
 	lm_recorded_gemms.clear();
 	if ( Mimo25LayerAttention<LmHostRecorderFormat,Mimo25FullKv,MIMO25_FULL_KV_HEADS,MIMO25_FULL_QKV_DIM>(
 		&b,ROWS,1u,0u,MIMO25_FULL_ROPE_THETA,1u,0) != LM_LAUNCH_OK )
@@ -188,6 +191,7 @@ int main(void)
 	swa_page_table[2] = 0u; swa_page_table[3] = LM_KV_PAGE_UNMAPPED;
 	b.cache.pool = swa_pool; b.cache.page_table = swa_page_table;
 	b.cache.page_table_stride = 2u; b.cache.sequence_count = ROWS;
+	b.cache.pool_page_count = 2u; b.cache.access_error = &kv_access_error;
 	lm_recorded_gemms.clear();
 	if ( Mimo25LayerAttention<LmHostRecorderFormat,Mimo25SwaKv,MIMO25_SWA_KV_HEADS,MIMO25_SWA_QKV_DIM>(
 		&b,ROWS,2u,MIMO25_SLIDING_WINDOW,MIMO25_SWA_ROPE_THETA,1u,0) != LM_LAUNCH_OK )

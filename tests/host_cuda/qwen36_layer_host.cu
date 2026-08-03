@@ -79,6 +79,7 @@ static uint16_t conv_window[ROWS * QWEN36_GDN_QKV_DIM * QWEN36_GDN_CONV_KERNEL
 	+ CANARY_BYTES / 2u];
 static uint8_t kv_pool[2u * Qwen36FullKv::kPageBytes];
 static uint32_t page_table[ROWS];
+static LmKvAccessError kv_access_error;
 
 static uint32_t CanaryIntact(const uint8_t *canary)
 {
@@ -95,6 +96,7 @@ int main(void)
 	uint32_t index,head;
 	float expected,maxdiff;
 	memset(&b, 0, sizeof(b));
+	LmKvAccessErrorReset(&kv_access_error);
 	for (index = 0u; index < QWEN36_HIDDEN; ++index)
 		norm_weight[index] = LmFloatToBf16(1.0f);
 	for (index = 0u; index < ROWS * QWEN36_HIDDEN; ++index)
@@ -139,6 +141,7 @@ int main(void)
 	b.gdn_forget_gate = forget_gate; b.gdn_write_gate = write_gate;
 	b.cache.pool = kv_pool; b.cache.page_table = page_table;
 	b.cache.page_table_stride = 1u; b.cache.sequence_count = ROWS;
+	b.cache.pool_page_count = 2u; b.cache.access_error = &kv_access_error;
 	b.sequence_of_row = sequence_of_row;
 	b.context_length = context_length; b.positions = positions;
 	b.dense_row_offset = dense_offsets; b.dense_tile_prefix = dense_tiles;

@@ -1,23 +1,36 @@
-# SparkPipe Status — Phase 6 Transactional Completion
+# SparkPipe Status — Phase 10 Hardware Handoff
 
-The authoritative deployment targets are:
+This source tree is an implementation and qualification handoff candidate for:
 
 - Kimi K3: MXFP4 routed-expert weights, BF16 expert activations, BF16 non-expert tensors, FP32 accumulation.
-- GLM 5.2: FP8 E4M3 routed-expert weights, BF16 expert activations, BF16 non-expert tensors, FP32 accumulation.
-- Qwen 3.6 27B: BF16 weights and activations, FP32 accumulation where required.
-- DeepSeek V4 Flash and Pro: checkpoint-native FP4 expert and FP8 non-expert formats, each with a separate generated geometry contract.
+- GLM 5.2: FP8 E4M3 routed-expert weights, BF16 activations and non-expert tensors, FP32 accumulation.
+- Qwen 3.6 27B: BF16 weights and activations.
+- DeepSeek V4 Flash and DeepSeek V4 Pro: separate checkpoint-derived contracts and execution packages.
 
-The complete clean host build and test inventory passes. The architecture gate reports 69 pass, 4 CUDA-only skips, and 0 failures. The skips are not passes: CUDA 13, `compute_121a` PTX, `sm_121a` assembly/device linking, Blackwell numerical execution, race checks, and performance remain unmeasured.
+Phase 10 adds a fail-closed Spark hardware truth suite. Thirty-three named questions cover GB10 memory and launch behavior, exact production kernels, NVMe, TCP/RDMA, physical ring and one-switch behavior, PP degree, transport window, and stage placement. Every production decision must trace to exact source-bound cells, retained receipts, a generated policy, and a closure report.
 
-Phase 4 repairs the shared scale ABI, TMA launch contract, sub-byte quantization write ownership, K3 exact speculative replay, GLM mixed-precision dispatch surfaces, Qwen BF16 source contract, and DSV4 Pro compile surface. It also removes generated build products from the authored-code-size metric.
+The release supports the initial direct single-rail ring and the first one-switch single-rail topology. Dual-switch/dual-rail operation remains disabled until single-rail ownership, ordering, retry, and failure behavior are measured and closed.
 
-This tree is a host-validated source candidate, not a production-qualified GPU package:
+The source tree does not certify itself. Build, test, CUDA, network, and production claims are valid only when tied to the exact released archive SHA-256 by an external verification receipt or hardware receipt.
 
 ```text
-HOST_BUILD_VALIDATED=true
-HOST_TEST_INVENTORY_VALIDATED=true
-ARCHITECTURE_GATES=69_PASS_4_CUDA_SKIP_0_FAIL
+SOURCE_PACKAGE_KIND=sparkpipe_source
+HOST_BUILD_STATUS=SEE_EXTERNAL_VERIFICATION_RECEIPT
+HOST_TEST_STATUS=SEE_EXTERNAL_VERIFICATION_RECEIPT
+ARCHITECTURE_GATE_STATUS=SEE_EXTERNAL_VERIFICATION_RECEIPT
+HARDWARE_QUESTION_COUNT=33
 CUDA13_SM121A_COMPILE_NOT_RUN=true
 BLACKWELL_EXECUTION_NOT_MEASURED=true
+PHYSICAL_NETWORK_EXECUTION_NOT_MEASURED=true
+PHYSICAL_RING_NOT_MEASURED=true
+SINGLE_SWITCH_NOT_MEASURED=true
+DUAL_RAIL_ENABLED=false
 PRODUCTION_READY=false
 ```
+
+See:
+
+- `docs/SPARK_HARDWARE_HANDOFF.md`
+- `docs/PHASE10_HARDWARE_HANDOFF_RELEASE.md`
+- `docs/PHASE10_VALIDATION_STATUS.md`
+- `docs/PHASE10_REMAINING_WORK.md`

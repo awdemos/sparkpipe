@@ -25,7 +25,9 @@ SPARKPIPE_COMPILER_SOURCES := \
 
 SPARKPIPE_RUNTIME_SOURCES := \
     src/spark_driver_loader.c \
-    src/spark_orchestrator.c
+    src/spark_orchestrator.c \
+    runtime/runtime_completion.c \
+    runtime/model_runtime.c
 
 # Transport, memory link, collectives, tokenizer, KV store, stage module ABI.
 # Formerly model-families/common/src, which is the directory the handoff records

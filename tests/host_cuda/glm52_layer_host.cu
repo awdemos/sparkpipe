@@ -91,6 +91,7 @@ static uint32_t page_table[SEQUENCES];
 static uint32_t sequence_of_row[ROWS];
 static uint32_t context_length[SEQUENCES];
 static uint32_t positions[ROWS];
+static LmKvAccessError kv_access_error;
 
 static uint16_t attn_norm_w[GLM52_HIDDEN];
 static uint16_t mlp_norm_w[GLM52_HIDDEN];
@@ -212,6 +213,7 @@ int main(void)
     uint16_t poison;
 
     memset(&buffers, 0, sizeof(buffers));
+    LmKvAccessErrorReset(&kv_access_error);
     FillRandom(hidden, ROWS * GLM52_HIDDEN);
     FillRandom(residual, ROWS * GLM52_HIDDEN);
     FillNormWeight(attn_norm_w, GLM52_HIDDEN);
@@ -287,6 +289,8 @@ int main(void)
     buffers.cache.page_table = page_table;
     buffers.cache.page_table_stride = 1u;
     buffers.cache.sequence_count = SEQUENCES;
+    buffers.cache.pool_page_count = SEQUENCES;
+    buffers.cache.access_error = &kv_access_error;
     buffers.sequence_of_row = sequence_of_row;
     buffers.context_length = context_length;
     buffers.positions = positions;
@@ -323,15 +327,19 @@ int main(void)
         static uint32_t test_sequence[1];
         static uint32_t test_context[1];
         LmKvView test_cache;
+        LmKvAccessError test_access_error;
         uint32_t head, position, element;
 
         test_pages[0] = 0u;
         test_sequence[0] = 0u;
         test_context[0] = 3u;
+        LmKvAccessErrorReset(&test_access_error);
         test_cache.pool = test_pool;
         test_cache.page_table = test_pages;
         test_cache.page_table_stride = 1u;
         test_cache.sequence_count = 1u;
+        test_cache.pool_page_count = 1u;
+        test_cache.access_error = &test_access_error;
         for (position = 0u; position < 3u; ++position)
             for (element = 0u; element < 16u; ++element)
                 ((uint16_t *)(test_pool + (position * TestKv::kSlotBytes)))

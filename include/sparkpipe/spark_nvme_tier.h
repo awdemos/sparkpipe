@@ -21,8 +21,8 @@
 // MORE CHURN for LESS LATENCY. Eviction is aggressive and costs nothing -
 // the bytes are re-fetchable from the source tier or recomputable by prefill,
 // so eviction is a generation bump, never a write-back, and it never runs on
-// the decode path at all (only Publish, the write-back admission path, evicts,
-// and Publish is never called mid-step).
+// the decode path at all. ReserveWrite is the only write-back admission path
+// that may evict, and it is never called mid-step.
 //
 // WHAT A MISS MEANS HERE. RequestDemand answering MISS means the block is not
 // on the drive at all: the upper tier must recompute it. That is the only
@@ -44,7 +44,7 @@
 extern "C" {
 #endif
 
-#define SPARK_NVME_TIER_ABI_VERSION 1u
+#define SPARK_NVME_TIER_ABI_VERSION 2u
 #define SPARK_NVME_TIER_CONFIGURATION_BYTES \
 	((uint32_t)sizeof(SparkNvmeTierConfiguration))
 #define SPARK_NVME_TIER_DEFAULT_BUDGET_BYTES (1099511627776ULL)  /* 1 TB */
@@ -113,9 +113,13 @@ SparkNvmeTierConfiguration;
 //                device owns it until poll_read says OK or cancel_read
 //                returns OK.
 //   poll_read    SPARK_STATUS_OK when the bytes have landed, BUSY in flight.
-//   cancel_read  after OK the device will never touch the buffer again. May
-//                be NULL: cancellation is an optimisation (demand preemption
-//                of an in-flight prefetch), never a correctness requirement.
+//   cancel_read  after OK the device will never touch the buffer again. BUSY
+//                or PENDING means cancellation has been requested but the
+//                destination remains device-owned; the tier keeps polling and
+//                does not reuse the staging slot until poll_read reaches a
+//                terminal result. May be NULL: cancellation is an optimisation
+//                (demand preemption of an in-flight prefetch), never a
+//                correctness requirement.
 //
 // Nothing here blocks. A synchronous read hiding behind submit would put NVMe
 // latency on the decode path in a way no counter can see, so the interface
@@ -147,6 +151,18 @@ typedef enum SparkNvmeTierDemandState
 	SPARK_NVME_TIER_DEMAND_MISS         /* not on the drive: recompute path */
 }
 SparkNvmeTierDemandState;
+
+
+typedef struct SparkNvmeTierWriteReservation
+{
+	uint64_t content_hash;
+	uint64_t device_offset;
+	uint32_t slot_index;
+	uint32_t generation;
+	uint32_t already_present;
+	uint32_t reserved0;
+}
+SparkNvmeTierWriteReservation;
 
 typedef struct SparkNvmeTierDemandResult
 {
@@ -189,7 +205,10 @@ SparkNvmeTierResidencyAssessment;
 // was too short - the signal to widen the window, not to slow the model.
 typedef struct SparkNvmeTierStatistics
 {
+	uint64_t write_reservations;
 	uint64_t publishes;
+	uint64_t write_aborts;
+	uint64_t cancel_pending_count;
 	uint64_t evictions;
 	uint64_t pinned_eviction_skips;
 	uint64_t demand_hits;          /* READY on arrival: decode never waited */
@@ -234,8 +253,11 @@ struct SparkNvmeTier
 
 // Bookkeeping bytes the caller must provide as `tables` to Initialize: slots,
 // hash buckets, the pending queue and the staging descriptors, one blob, no
-// malloc after init. Staging is separate because in production it is pinned
-// DMA memory from a different allocator than ordinary tables.
+// malloc after init. Initialize receives the exact table and staging byte
+// capacities and rejects undersized or misaligned regions. Staging is separate
+// because in production it is pinned DMA memory from a different allocator
+// than ordinary tables. The tier is single-owner-thread; callers must serialize
+// every mutable operation if they introduce another thread.
 uint64_t SparkNvmeTierTableBytes(
 	const SparkNvmeTierConfiguration *configuration);
 
@@ -244,18 +266,33 @@ SparkStatus SparkNvmeTierInitialize(
 	const SparkNvmeTierConfiguration *configuration,
 	const SparkNvmeTierDevice *device,
 	void *tables,
-	void *staging);
+	uint64_t tables_bytes,
+	void *staging,
+	uint64_t staging_bytes);
 
-// Record that a block's bytes now live on the drive; the device offset is
-// base_offset + slot * block_bytes, returned so the write-back path knows
-// where to PUT. Idempotent per hash. This is the ONLY path that evicts, and
-// it is never on the decode path.
-SparkStatus SparkNvmeTierPublish(
+// Reserve a device slot for a write-back. A reservation is not visible to
+// readers and is never returned by OffsetOf or RequestDemand. The caller owns
+// the reservation until CommitWrite or AbortWrite. If the hash is already
+// committed, already_present is set and no new slot is allocated.
+SparkStatus SparkNvmeTierReserveWrite(
 	SparkNvmeTier *tier,
 	uint64_t content_hash,
-	uint64_t *device_offset_out);
+	SparkNvmeTierWriteReservation *reservation_out);
 
-// Where a published block's bytes are, for the write-back PUT.
+// Publish the reserved record only after the asynchronous or synchronous
+// device write has completed successfully. This is the only transition that
+// inserts a new hash into the readable index.
+SparkStatus SparkNvmeTierCommitWrite(
+	SparkNvmeTier *tier,
+	const SparkNvmeTierWriteReservation *reservation);
+
+// Release a reservation whose device write failed or was cancelled. No reader
+// can have observed it because reserved records are not indexed.
+SparkStatus SparkNvmeTierAbortWrite(
+	SparkNvmeTier *tier,
+	const SparkNvmeTierWriteReservation *reservation);
+
+// Where a committed block's bytes are, for diagnostics and read planning.
 SparkStatus SparkNvmeTierOffsetOf(
 	const SparkNvmeTier *tier,
 	uint64_t content_hash,

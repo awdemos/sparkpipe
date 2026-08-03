@@ -207,7 +207,8 @@ static SparkStatus FixtureOpen(
 	if ( table_bytes == 0u || table_bytes > sizeof(fixture->tier_tables) )
 		return(SPARK_STATUS_CAPACITY_EXCEEDED);
 	status = SparkNvmeTierInitialize(&fixture->tier,&fixture->tier_config,
-		&fixture->tier_vtable,fixture->tier_tables,fixture->staging);
+		&fixture->tier_vtable,fixture->tier_tables,sizeof(fixture->tier_tables),
+		fixture->staging,sizeof(fixture->staging));
 	if ( status != SPARK_STATUS_OK )
 		return(status);
 	fixture->recipe_tp.recipe_id = RECIPE_TP_ID;
@@ -239,6 +240,21 @@ static SparkStatus FixtureOpen(
 		&fixture->swap_vtable,MockWriteBlock,&fixture->writes,fixture->sw_tables));
 }
 
+static SparkStatus FixturePublishCommitted(
+	SparkNvmeTier *tier,
+	uint64_t content_hash,
+	uint64_t *device_offset_out)
+{
+	SparkNvmeTierWriteReservation reservation;
+	SparkStatus status;
+
+	status = SparkNvmeTierReserveWrite(tier,content_hash,&reservation);
+	if ( status != SPARK_STATUS_OK )
+		return(status);
+	*device_offset_out = reservation.device_offset;
+	return(SparkNvmeTierCommitWrite(tier,&reservation));
+}
+
 // Publish a sequence's blocks the way serving write-back would: under the
 // same namespaced key the switch computes, which is the whole reason resume
 // can find them.
@@ -250,7 +266,7 @@ static void FixturePublishBlocks(
 	uint32_t index;
 	uint64_t offset;
 	for ( index = 0u; index < hash_count; ++index )
-		(void)SparkNvmeTierPublish(&fixture->tier,
+		(void)FixturePublishCommitted(&fixture->tier,
 			SparkTopologySwitchKvKey(TEST_NAMESPACE,content_hashes[index]),&offset);
 }
 
@@ -431,7 +447,7 @@ int main(void)
 		/* Mid-swap, ordinary serving write-back continues and floods the
 		   32-record tier with fresh records. */
 		for ( index = 0u; index < 64u; ++index )
-			(void)SparkNvmeTierPublish(&fixture.tier,9000u + index,&offset);
+			(void)FixturePublishCommitted(&fixture.tier,9000u + index,&offset);
 		SparkNvmeTierGetStatistics(&fixture.tier,&tier_statistics);
 		expect(tier_statistics.evictions != 0u, "the churn really evicted");
 		expect(tier_statistics.pinned_eviction_skips != 0u,
@@ -494,7 +510,7 @@ int main(void)
 		/* Long after the write-back, a busy serving mix floods the tier and
 		   the sequence's records age out - before any switch is requested. */
 		for ( index = 0u; index < 32u; ++index )
-			(void)SparkNvmeTierPublish(&fixture.tier,8000u + index,&offset);
+			(void)FixturePublishCommitted(&fixture.tier,8000u + index,&offset);
 		(void)SparkTopologySwitchBegin(&fixture.sw,&fixture.recipe_pp);
 		(void)SparkTopologySwitchSequenceAtBoundary(&fixture.sw,21u);
 		expect(FixtureAdvanceToSteady(&fixture,1u) != 0u, "the switch lands");

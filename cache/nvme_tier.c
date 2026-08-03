@@ -13,8 +13,9 @@
 //             the drive while the other's contents are consumed upstairs, so
 //             the drive never waits on consumption and consumption never waits
 //             on the drive.
-//   PENDING   the lookahead queue, kept sorted by earliest deadline so Pump's
-//             issue loop is "take from the front while staging is free".
+//   PENDING   the lookahead min-heap, ordered by earliest deadline and FIFO
+//             inside equal deadlines, so Pump always issues the most urgent
+//             valid read while making queue mutation O(log n).
 //
 // EVICTION IS A CLOCK, and that is a load-bearing choice. A full LRU scan
 // over a budget of millions of records costs microseconds-to-milliseconds on
@@ -26,13 +27,15 @@
 // discarded, never data to be believed.
 
 #define NVME_TIER_SLOT_EMPTY 0u
-#define NVME_TIER_SLOT_PRESENT 1u    /* on the drive, nothing moving */
-#define NVME_TIER_SLOT_FILLING 2u    /* a read into staging is in flight */
-#define NVME_TIER_SLOT_READY 3u      /* landed in staging, awaiting Consume */
+#define NVME_TIER_SLOT_WRITING 1u    /* reserved device offset, not readable */
+#define NVME_TIER_SLOT_PRESENT 2u    /* committed on the drive, nothing moving */
+#define NVME_TIER_SLOT_FILLING 3u    /* a read into staging is in flight */
+#define NVME_TIER_SLOT_READY 4u      /* landed in staging, awaiting Consume */
 
 #define NVME_TIER_STAGING_FREE 0u
 #define NVME_TIER_STAGING_FILLING 1u
 #define NVME_TIER_STAGING_READY 2u
+#define NVME_TIER_STAGING_CANCEL_PENDING 3u
 
 #define NVME_TIER_HOLDER_NONE 0u
 #define NVME_TIER_HOLDER_PREFETCH 1u
@@ -40,7 +43,7 @@
 
 typedef struct NvmeTierSlot
 {
-	uint64_t content_hash;         /* 0 until first publish */
+	uint64_t content_hash;         /* 0 until first write reservation */
 	uint64_t last_use;             /* monotonic tick, for observability */
 	uint32_t next_in_bucket;
 	uint32_t next_free;            /* free-list link while EMPTY */
@@ -75,7 +78,8 @@ typedef struct NvmeTierPendingEntry
 	uint32_t slot;
 	uint32_t generation;           /* of the slot at enqueue time */
 	uint32_t need_by_step;
-	uint32_t order;                /* FIFO tie-break inside one deadline */
+	uint32_t reserved0;
+	uint64_t order;                /* FIFO tie-break inside one deadline */
 }
 NvmeTierPendingEntry;
 
@@ -84,8 +88,7 @@ typedef struct NvmeTierPendingQueue
 	NvmeTierPendingEntry *entries;
 	uint32_t count;
 	uint32_t capacity;
-	uint32_t next_order;
-	uint32_t reserved0;
+	uint64_t next_order;
 }
 NvmeTierPendingQueue;
 
@@ -103,7 +106,77 @@ static uint32_t NvmeTierSlotCountForBudget(
 
 static uint64_t NvmeTierAlignU64(uint64_t value, uint64_t alignment)
 {
+	if ( alignment == 0u || ( alignment & ( alignment - 1u ) ) != 0u )
+		return(UINT64_MAX);
+	if ( value > UINT64_MAX - ( alignment - 1u ) )
+		return(UINT64_MAX);
 	return((value + alignment - 1u) & ~(alignment - 1u));
+}
+
+
+static uint64_t NvmeTierSaturatingAddU64(uint64_t left, uint64_t right)
+{
+	if ( left > UINT64_MAX - right )
+		return(UINT64_MAX);
+	return(left + right);
+}
+
+static uint64_t NvmeTierSaturatingMultiplyU64(uint64_t left, uint64_t right)
+{
+	if ( left != 0u && right > UINT64_MAX / left )
+		return(UINT64_MAX);
+	return(left * right);
+}
+
+// Exact floor(left * right / divisor) unless the mathematical result exceeds
+// uint64_t, in which case it saturates. Decomposing both operands around the
+// divisor prevents the intermediate product from wrapping before division.
+static uint64_t NvmeTierSaturatingMultiplyDivideU64(
+	uint64_t left,
+	uint64_t right,
+	uint64_t divisor)
+{
+	uint64_t left_quotient;
+	uint64_t left_remainder;
+	uint64_t right_quotient;
+	uint64_t right_remainder;
+	uint64_t result;
+	uint64_t term;
+
+	if ( divisor == 0u )
+		return(UINT64_MAX);
+	left_quotient = left / divisor;
+	left_remainder = left % divisor;
+	right_quotient = right / divisor;
+	right_remainder = right % divisor;
+
+	result = NvmeTierSaturatingMultiplyU64(left_quotient,right);
+	term = NvmeTierSaturatingMultiplyU64(left_remainder,right_quotient);
+	result = NvmeTierSaturatingAddU64(result,term);
+	term = ( left_remainder * right_remainder ) / divisor;
+	return(NvmeTierSaturatingAddU64(result,term));
+}
+
+static uint32_t NvmeTierAppendTableRegion(
+	uint64_t *offset,
+	uint64_t count,
+	uint64_t element_bytes,
+	uint64_t alignment)
+{
+	uint64_t bytes;
+	uint64_t aligned;
+	if ( offset == 0 || count == 0u || element_bytes == 0u )
+		return(0u);
+	if ( count > UINT64_MAX / element_bytes )
+		return(0u);
+	bytes = count * element_bytes;
+	if ( *offset > UINT64_MAX - bytes )
+		return(0u);
+	aligned = NvmeTierAlignU64(*offset + bytes,alignment);
+	if ( aligned == UINT64_MAX )
+		return(0u);
+	*offset = aligned;
+	return(1u);
 }
 
 uint64_t SparkNvmeTierTableBytes(
@@ -114,14 +187,20 @@ uint64_t SparkNvmeTierTableBytes(
 	if ( configuration == 0 )
 		return(0u);
 	slot_count = NvmeTierSlotCountForBudget(configuration);
-	if ( slot_count == 0u )
+	if ( slot_count == 0u || configuration->hash_bucket_count == 0u
+		|| configuration->pending_capacity == 0u
+		|| configuration->staging_buffer_count == 0u )
 		return(0u);
 	total = 0u;
-	total = NvmeTierAlignU64(total + (uint64_t)slot_count * sizeof(NvmeTierSlot),8u);
-	total = NvmeTierAlignU64(total + (uint64_t)configuration->hash_bucket_count * sizeof(uint32_t),8u);
-	total = NvmeTierAlignU64(total + sizeof(NvmeTierPendingQueue)
-		+ (uint64_t)configuration->pending_capacity * sizeof(NvmeTierPendingEntry),8u);
-	total = NvmeTierAlignU64(total + (uint64_t)configuration->staging_buffer_count * sizeof(NvmeTierStagingState),8u);
+	if ( NvmeTierAppendTableRegion(&total,slot_count,sizeof(NvmeTierSlot),8u) == 0u
+		|| NvmeTierAppendTableRegion(&total,configuration->hash_bucket_count,
+			sizeof(uint32_t),8u) == 0u
+		|| NvmeTierAppendTableRegion(&total,1u,sizeof(NvmeTierPendingQueue),8u) == 0u
+		|| NvmeTierAppendTableRegion(&total,configuration->pending_capacity,
+			sizeof(NvmeTierPendingEntry),8u) == 0u
+		|| NvmeTierAppendTableRegion(&total,configuration->staging_buffer_count,
+			sizeof(NvmeTierStagingState),8u) == 0u )
+		return(0u);
 	return(total);
 }
 
@@ -180,28 +259,33 @@ SparkStatus SparkNvmeTierInitialize(
 	const SparkNvmeTierConfiguration *configuration,
 	const SparkNvmeTierDevice *device,
 	void *tables,
-	void *staging)
+	uint64_t tables_bytes,
+	void *staging,
+	uint64_t staging_bytes)
 {
-	uint32_t slot_count,index;
-	uint8_t *cursor;
+	uint64_t bytes_per_step;
+	uint64_t offset;
+	uint64_t required_staging_bytes;
+	uint64_t required_table_bytes;
+	uint32_t slot_count;
+	uint32_t index;
+	uint8_t *table_bytes;
 	NvmeTierSlot *slots;
 	NvmeTierStagingState *staging_states;
 	NvmeTierPendingQueue *queue;
-	uint64_t bytes_per_step;
+
 	if ( tier == 0 || configuration == 0 || device == 0
 		|| tables == 0 || staging == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->abi_version != SPARK_NVME_TIER_ABI_VERSION
 		|| configuration->descriptor_bytes != SPARK_NVME_TIER_CONFIGURATION_BYTES )
 		return(SPARK_STATUS_ABI_MISMATCH);
+
 	slot_count = NvmeTierSlotCountForBudget(configuration);
 	if ( slot_count == 0u
 		|| configuration->hash_bucket_count == 0u
 		|| configuration->pending_capacity == 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	// A block payload that is not a whole number of O_DIRECT granules forces
-	// the driver into buffered I/O; rejecting the configuration beats finding
-	// the copy at bring-up.
 	if ( ( configuration->block_bytes % SPARK_NVME_TIER_IO_ALIGNMENT_BYTES ) != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( configuration->staging_buffer_count < 2u
@@ -213,23 +297,51 @@ SparkStatus SparkNvmeTierInitialize(
 		return(SPARK_STATUS_INVALID_ARGUMENT);
 	if ( device->submit_read == 0 || device->poll_read == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
-	// The driver DMAs into this memory; a misaligned staging blob is an
-	// O_DIRECT failure at runtime, so it is a failure here instead.
-	if ( ( (uintptr_t)staging % SPARK_NVME_TIER_IO_ALIGNMENT_BYTES ) != 0u )
+	if ( ( (uintptr_t)tables % 8u ) != 0u
+		|| ( (uintptr_t)staging % SPARK_NVME_TIER_IO_ALIGNMENT_BYTES ) != 0u )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+
+	required_table_bytes = SparkNvmeTierTableBytes(configuration);
+	if ( required_table_bytes == 0u || tables_bytes < required_table_bytes )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	if ( configuration->staging_buffer_count >
+		UINT64_MAX / configuration->block_bytes )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+	required_staging_bytes =
+		(uint64_t)configuration->staging_buffer_count * configuration->block_bytes;
+	if ( staging_bytes < required_staging_bytes )
+		return(SPARK_STATUS_CAPACITY_EXCEEDED);
+
 	memset(tier,0,sizeof(*tier));
+	memset(tables,0,(size_t)required_table_bytes);
 	tier->configuration = *configuration;
 	tier->device = *device;
 	tier->slot_count = slot_count;
 	tier->staging = (uint8_t *)staging;
-	cursor = (uint8_t *)tables;
-	tier->slots = cursor;
-	cursor += NvmeTierAlignU64((uint64_t)slot_count * sizeof(NvmeTierSlot),8u);
-	tier->buckets = (uint32_t *)(void *)cursor;
-	cursor += NvmeTierAlignU64((uint64_t)configuration->hash_bucket_count * sizeof(uint32_t),8u);
-	tier->pending = cursor;
-	cursor += NvmeTierAlignU64((uint64_t)configuration->pending_capacity * sizeof(NvmeTierPendingEntry),8u);
-	tier->staging_state = cursor;
+	table_bytes = (uint8_t *)tables;
+	offset = 0u;
+
+	tier->slots = table_bytes + offset;
+	offset = NvmeTierAlignU64(
+		offset + (uint64_t)slot_count * sizeof(NvmeTierSlot),8u);
+	tier->buckets = (uint32_t *)(void *)(table_bytes + offset);
+	offset = NvmeTierAlignU64(
+		offset + (uint64_t)configuration->hash_bucket_count * sizeof(uint32_t),8u);
+	tier->pending = table_bytes + offset;
+	offset = NvmeTierAlignU64(offset + sizeof(NvmeTierPendingQueue),8u);
+	queue = (NvmeTierPendingQueue *)tier->pending;
+	queue->entries = (NvmeTierPendingEntry *)(void *)(table_bytes + offset);
+	offset = NvmeTierAlignU64(
+		offset + (uint64_t)configuration->pending_capacity * sizeof(NvmeTierPendingEntry),8u);
+	tier->staging_state = table_bytes + offset;
+	offset = NvmeTierAlignU64(
+		offset + (uint64_t)configuration->staging_buffer_count * sizeof(NvmeTierStagingState),8u);
+	if ( offset != required_table_bytes )
+	{
+		memset(tier,0,sizeof(*tier));
+		return(SPARK_STATUS_INTERNAL_ERROR);
+	}
+
 	slots = (NvmeTierSlot *)tier->slots;
 	for ( index = 0u; index < slot_count; ++index )
 	{
@@ -245,6 +357,7 @@ SparkStatus SparkNvmeTierInitialize(
 	tier->free_head = 0u;
 	for ( index = 0u; index < configuration->hash_bucket_count; ++index )
 		tier->buckets[index] = SPARK_NVME_TIER_NO_SLOT;
+
 	staging_states = (NvmeTierStagingState *)tier->staging_state;
 	for ( index = 0u; index < configuration->staging_buffer_count; ++index )
 	{
@@ -252,27 +365,25 @@ SparkStatus SparkNvmeTierInitialize(
 		staging_states[index].holder = NVME_TIER_HOLDER_NONE;
 		staging_states[index].slot = SPARK_NVME_TIER_NO_SLOT;
 	}
-	queue = (NvmeTierPendingQueue *)tier->pending;
-	// The queue header lives at the head of its own region; the entries follow.
-	queue->entries = (NvmeTierPendingEntry *)(void *)( queue + 1 );
+
 	queue->count = 0u;
 	queue->capacity = configuration->pending_capacity;
 	queue->next_order = 0u;
 	tier->tick = 1u;
 	tier->clock_hand = 0u;
-	// The two conversions the planner needs every call, computed once:
-	// bandwidth and step time to bytes-per-step, and block size to the number
-	// of steps a read takes. A division per need per step is the kind of
-	// arithmetic that never shows in a profile until it does.
-	bytes_per_step = ( configuration->device_bytes_per_second
-		* configuration->step_time_microseconds ) / 1000000ULL;
+
+	bytes_per_step = NvmeTierSaturatingMultiplyDivideU64(
+		configuration->device_bytes_per_second,
+		configuration->step_time_microseconds,
+		1000000ULL);
 	if ( bytes_per_step == 0u )
 		bytes_per_step = 1u;
 	if ( bytes_per_step > 0xffffffffULL )
 		bytes_per_step = 0xffffffffULL;
 	tier->bytes_per_step = (uint32_t)bytes_per_step;
 	tier->transfer_steps = (uint32_t)(
-		( configuration->block_bytes + bytes_per_step - 1u ) / bytes_per_step );
+		( configuration->block_bytes / bytes_per_step )
+		+ ( ( configuration->block_bytes % bytes_per_step ) != 0u ? 1u : 0u ) );
 	if ( tier->transfer_steps == 0u )
 		tier->transfer_steps = 1u;
 	tier->statistics.slot_count = slot_count;
@@ -284,10 +395,15 @@ SparkStatus SparkNvmeTierInitialize(
 // outlives every staging cycle, which is what makes dropping a prefetch cheap.
 static void NvmeTierStagingRelease(SparkNvmeTier *tier, uint32_t staging_index)
 {
-	NvmeTierStagingState *staging_states = (NvmeTierStagingState *)tier->staging_state;
-	NvmeTierSlot *slots = (NvmeTierSlot *)tier->slots;
-	uint32_t slot_index = staging_states[staging_index].slot;
+	NvmeTierStagingState *staging_states;
+	NvmeTierSlot *slots;
+	uint32_t slot_index;
+
+	staging_states = (NvmeTierStagingState *)tier->staging_state;
+	slots = (NvmeTierSlot *)tier->slots;
+	slot_index = staging_states[staging_index].slot;
 	if ( slot_index != SPARK_NVME_TIER_NO_SLOT
+		&& slot_index < tier->slot_count
 		&& slots[slot_index].staging_index == staging_index
 		&& ( slots[slot_index].state == NVME_TIER_SLOT_FILLING
 			|| slots[slot_index].state == NVME_TIER_SLOT_READY ) )
@@ -295,6 +411,7 @@ static void NvmeTierStagingRelease(SparkNvmeTier *tier, uint32_t staging_index)
 		slots[slot_index].state = NVME_TIER_SLOT_PRESENT;
 		slots[slot_index].staging_index = SPARK_NVME_TIER_NO_SLOT;
 	}
+	memset(&staging_states[staging_index],0,sizeof(staging_states[staging_index]));
 	staging_states[staging_index].state = NVME_TIER_STAGING_FREE;
 	staging_states[staging_index].holder = NVME_TIER_HOLDER_NONE;
 	staging_states[staging_index].slot = SPARK_NVME_TIER_NO_SLOT;
@@ -320,27 +437,42 @@ static void NvmeTierStagingRelease(SparkNvmeTier *tier, uint32_t staging_index)
 // read.
 static uint32_t NvmeTierClockEvict(SparkNvmeTier *tier)
 {
-	NvmeTierSlot *slots = (NvmeTierSlot *)tier->slots;
-	NvmeTierStagingState *staging_states = (NvmeTierStagingState *)tier->staging_state;
+	NvmeTierSlot *slots;
+	NvmeTierStagingState *staging_states;
 	uint32_t probe;
+
+	slots = (NvmeTierSlot *)tier->slots;
+	staging_states = (NvmeTierStagingState *)tier->staging_state;
 	for ( probe = 0u; probe < 2u * tier->slot_count; ++probe )
 	{
-		uint32_t index = tier->clock_hand;
-		NvmeTierSlot *slot = &slots[index];
+		NvmeTierSlot *slot;
+		NvmeTierStagingState *held;
+		uint32_t index;
+
+		index = tier->clock_hand;
+		slot = &slots[index];
+		held = 0;
 		tier->clock_hand = ( tier->clock_hand + 1u ) % tier->slot_count;
-		if ( slot->state == NVME_TIER_SLOT_EMPTY )
+		if ( slot->state == NVME_TIER_SLOT_EMPTY
+			|| slot->state == NVME_TIER_SLOT_WRITING )
 			continue;
 		if ( slot->pin_count != 0u )
 		{
 			tier->statistics.pinned_eviction_skips++;
 			continue;
 		}
-		if ( slot->state == NVME_TIER_SLOT_FILLING || slot->state == NVME_TIER_SLOT_READY )
+		if ( slot->state == NVME_TIER_SLOT_FILLING
+			|| slot->state == NVME_TIER_SLOT_READY )
 		{
-			NvmeTierStagingState *held = &staging_states[slot->staging_index];
+			if ( slot->staging_index >=
+				tier->configuration.staging_buffer_count )
+				continue;
+			held = &staging_states[slot->staging_index];
 			if ( held->holder == NVME_TIER_HOLDER_DEMAND )
 				continue;
-			if ( slot->state == NVME_TIER_SLOT_FILLING && tier->device.cancel_read == 0 )
+			if ( slot->state == NVME_TIER_SLOT_FILLING
+				&& ( tier->device.cancel_read == 0
+					|| held->state == NVME_TIER_STAGING_CANCEL_PENDING ) )
 				continue;
 		}
 		if ( slot->referenced != 0u )
@@ -348,32 +480,50 @@ static uint32_t NvmeTierClockEvict(SparkNvmeTier *tier)
 			slot->referenced = 0u;
 			continue;
 		}
-		// Victim. Cheap by construction: no write-back, no flush - KV is
-		// recomputable and the source tier may still hold it, so the record is
-		// simply forgotten and its generation bumps, which is also what makes
-		// any read still in flight for it harmless.
+
 		if ( slot->state == NVME_TIER_SLOT_FILLING )
 		{
-			NvmeTierStagingState *held = &staging_states[slot->staging_index];
-			tier->device.cancel_read(tier->device.context,held->ticket);
-			NvmeTierStagingRelease(tier,slot->staging_index);
+			SparkStatus cancel_status;
+
+			cancel_status = tier->device.cancel_read(
+				tier->device.context,held->ticket);
+			if ( cancel_status == SPARK_STATUS_OK )
+			{
+				NvmeTierStagingRelease(tier,slot->staging_index);
+			}
+			else if ( cancel_status == SPARK_STATUS_BUSY
+				|| cancel_status == SPARK_STATUS_PENDING )
+			{
+				held->state = NVME_TIER_STAGING_CANCEL_PENDING;
+				tier->statistics.cancel_pending_count++;
+				continue;
+			}
+			else
+			{
+				tier->statistics.io_errors++;
+				NvmeTierStagingRelease(tier,slot->staging_index);
+			}
 		}
 		else if ( slot->state == NVME_TIER_SLOT_READY )
 		{
-			if ( staging_states[slot->staging_index].holder == NVME_TIER_HOLDER_PREFETCH )
+			if ( held->holder == NVME_TIER_HOLDER_PREFETCH )
 				tier->statistics.prefetch_dropped++;
 			NvmeTierStagingRelease(tier,slot->staging_index);
 		}
-		slot->queued = 0u;   /* any pending entry for it dies by generation check */
+
+		slot->queued = 0u;
 		NvmeTierBucketRemove(tier,index);
 		slot->content_hash = 0u;
 		slot->state = NVME_TIER_SLOT_EMPTY;
 		slot->generation++;
+		if ( slot->generation == 0u )
+			slot->generation = 1u;
 		slot->pin_count = 0u;
 		slot->next_free = tier->free_head;
 		tier->free_head = index;
 		tier->slots_in_use--;
 		tier->statistics.evictions++;
+		tier->statistics.slots_in_use = tier->slots_in_use;
 		return(index);
 	}
 	return(SPARK_NVME_TIER_NO_SLOT);
@@ -399,45 +549,151 @@ static uint32_t NvmeTierSlotAcquire(SparkNvmeTier *tier)
 	return(index);
 }
 
-SparkStatus SparkNvmeTierPublish(
+static void NvmeTierReleaseReservedSlot(
+	SparkNvmeTier *tier,
+	uint32_t slot_index)
+{
+	NvmeTierSlot *slots;
+	NvmeTierSlot *slot;
+
+	slots = (NvmeTierSlot *)tier->slots;
+	slot = &slots[slot_index];
+	slot->content_hash = 0u;
+	slot->state = NVME_TIER_SLOT_EMPTY;
+	slot->generation++;
+	if ( slot->generation == 0u )
+		slot->generation = 1u;
+	slot->need_by_step = 0xffffffffu;
+	slot->staging_index = SPARK_NVME_TIER_NO_SLOT;
+	slot->next_in_bucket = SPARK_NVME_TIER_NO_SLOT;
+	slot->next_free = tier->free_head;
+	tier->free_head = slot_index;
+	if ( tier->slots_in_use != 0u )
+		tier->slots_in_use--;
+	tier->statistics.slots_in_use = tier->slots_in_use;
+}
+
+SparkStatus SparkNvmeTierReserveWrite(
 	SparkNvmeTier *tier,
 	uint64_t content_hash,
-	uint64_t *device_offset_out)
+	SparkNvmeTierWriteReservation *reservation_out)
 {
 	NvmeTierSlot *slots;
 	uint32_t slot_index;
-	if ( tier == 0 || content_hash == 0u || device_offset_out == 0 )
+	uint32_t index;
+
+	if ( tier == 0 || content_hash == 0u || reservation_out == 0 )
 		return(SPARK_STATUS_INVALID_ARGUMENT);
+	memset(reservation_out,0,sizeof(*reservation_out));
 	slots = (NvmeTierSlot *)tier->slots;
+
 	slot_index = NvmeTierLookup(tier,content_hash);
 	if ( slot_index != SPARK_NVME_TIER_NO_SLOT )
 	{
-		// Idempotent: the write-back path may re-publish after a retry, and a
-		// second record for the same hash is how one block ends up at two
-		// offsets with reads split between them.
 		slots[slot_index].last_use = tier->tick++;
 		slots[slot_index].referenced = 1u;
-		*device_offset_out = tier->configuration.base_offset
+		reservation_out->content_hash = content_hash;
+		reservation_out->device_offset = tier->configuration.base_offset
 			+ (uint64_t)slot_index * tier->configuration.block_bytes;
+		reservation_out->slot_index = slot_index;
+		reservation_out->generation = slots[slot_index].generation;
+		reservation_out->already_present = 1u;
 		return(SPARK_STATUS_OK);
 	}
+
+	for ( index = 0u; index < tier->slot_count; ++index )
+	{
+		if ( slots[index].state == NVME_TIER_SLOT_WRITING
+			&& slots[index].content_hash == content_hash )
+			return(SPARK_STATUS_BUSY);
+	}
+
 	slot_index = NvmeTierSlotAcquire(tier);
 	if ( slot_index == SPARK_NVME_TIER_NO_SLOT )
 		return(SPARK_STATUS_BUSY);
+
+	slots[slot_index].generation++;
+	if ( slots[slot_index].generation == 0u )
+		slots[slot_index].generation = 1u;
 	slots[slot_index].content_hash = content_hash;
-	slots[slot_index].state = NVME_TIER_SLOT_PRESENT;
+	slots[slot_index].state = NVME_TIER_SLOT_WRITING;
 	slots[slot_index].last_use = tier->tick++;
-	slots[slot_index].referenced = 1u;   /* just written: one grace period */
+	slots[slot_index].referenced = 1u;
 	slots[slot_index].pin_count = 0u;
 	slots[slot_index].queued = 0u;
 	slots[slot_index].need_by_step = 0xffffffffu;
 	slots[slot_index].staging_index = SPARK_NVME_TIER_NO_SLOT;
-	NvmeTierBucketInsert(tier,slot_index);
+	slots[slot_index].next_in_bucket = SPARK_NVME_TIER_NO_SLOT;
 	tier->slots_in_use++;
-	tier->statistics.publishes++;
+	tier->statistics.write_reservations++;
 	tier->statistics.slots_in_use = tier->slots_in_use;
-	*device_offset_out = tier->configuration.base_offset
+
+	reservation_out->content_hash = content_hash;
+	reservation_out->device_offset = tier->configuration.base_offset
 		+ (uint64_t)slot_index * tier->configuration.block_bytes;
+	reservation_out->slot_index = slot_index;
+	reservation_out->generation = slots[slot_index].generation;
+	reservation_out->already_present = 0u;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvmeTierCommitWrite(
+	SparkNvmeTier *tier,
+	const SparkNvmeTierWriteReservation *reservation)
+{
+	NvmeTierSlot *slots;
+	NvmeTierSlot *slot;
+	uint32_t existing;
+
+	if ( tier == 0 || reservation == 0 || reservation->content_hash == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	slots = (NvmeTierSlot *)tier->slots;
+	if ( reservation->already_present != 0u )
+	{
+		existing = NvmeTierLookup(tier,reservation->content_hash);
+		if ( existing != reservation->slot_index
+			|| existing >= tier->slot_count
+			|| slots[existing].generation != reservation->generation )
+			return(SPARK_STATUS_VALIDATION_FAILED);
+		return(SPARK_STATUS_OK);
+	}
+	if ( reservation->slot_index >= tier->slot_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	slot = &slots[reservation->slot_index];
+	if ( slot->state != NVME_TIER_SLOT_WRITING
+		|| slot->content_hash != reservation->content_hash
+		|| slot->generation != reservation->generation
+		|| reservation->device_offset != tier->configuration.base_offset
+			+ (uint64_t)reservation->slot_index * tier->configuration.block_bytes )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+
+	slot->state = NVME_TIER_SLOT_PRESENT;
+	NvmeTierBucketInsert(tier,reservation->slot_index);
+	tier->statistics.publishes++;
+	return(SPARK_STATUS_OK);
+}
+
+SparkStatus SparkNvmeTierAbortWrite(
+	SparkNvmeTier *tier,
+	const SparkNvmeTierWriteReservation *reservation)
+{
+	NvmeTierSlot *slots;
+	NvmeTierSlot *slot;
+
+	if ( tier == 0 || reservation == 0 || reservation->content_hash == 0u )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	if ( reservation->already_present != 0u )
+		return(SPARK_STATUS_OK);
+	if ( reservation->slot_index >= tier->slot_count )
+		return(SPARK_STATUS_INVALID_ARGUMENT);
+	slots = (NvmeTierSlot *)tier->slots;
+	slot = &slots[reservation->slot_index];
+	if ( slot->state != NVME_TIER_SLOT_WRITING
+		|| slot->content_hash != reservation->content_hash
+		|| slot->generation != reservation->generation )
+		return(SPARK_STATUS_VALIDATION_FAILED);
+	NvmeTierReleaseReservedSlot(tier,reservation->slot_index);
+	tier->statistics.write_aborts++;
 	return(SPARK_STATUS_OK);
 }
 
@@ -459,16 +715,91 @@ SparkStatus SparkNvmeTierOffsetOf(
 
 // -- the pending queue ------------------------------------------------------------
 //
-// Sorted by (need_by_step, insertion order), earliest first, so Pump issues
-// from the head. Insertion keeps the order; capacity is small (the lookahead
-// window bounds how much can usefully be queued), so a memmove per insert is
-// the right cost and a heap would be ceremony.
+// Bounded binary min-heap ordered by (need_by_step, insertion order). The old
+// sorted array shifted every later entry on insertion, removal, and deadline
+// tightening. At the lookahead capacities used for long-context scheduling that
+// turned a burst into repeated O(n) memory traffic on the owner thread. A heap
+// retains exact FIFO tie ordering while making each mutation O(log n). The
+// occasional slot lookup remains a bounded linear search; it reads only compact
+// metadata and never moves the queue payload.
+
+static uint32_t NvmeTierPendingLess(
+	const NvmeTierPendingEntry *left,
+	const NvmeTierPendingEntry *right)
+{
+	if ( left->need_by_step != right->need_by_step )
+		return(left->need_by_step < right->need_by_step);
+	return(left->order < right->order);
+}
+
+static void NvmeTierPendingSwap(
+	NvmeTierPendingEntry *left,
+	NvmeTierPendingEntry *right)
+{
+	NvmeTierPendingEntry temporary;
+
+	temporary = *left;
+	*left = *right;
+	*right = temporary;
+}
+
+static void NvmeTierPendingSiftUp(
+	NvmeTierPendingQueue *queue,
+	uint32_t position)
+{
+	while ( position != 0u )
+	{
+		uint32_t parent;
+
+		parent = ( position - 1u ) / 2u;
+		if ( NvmeTierPendingLess(
+				&queue->entries[parent],
+				&queue->entries[position]) != 0u )
+			break;
+		NvmeTierPendingSwap(
+			&queue->entries[parent],
+			&queue->entries[position]);
+		position = parent;
+	}
+}
+
+static void NvmeTierPendingSiftDown(
+	NvmeTierPendingQueue *queue,
+	uint32_t position)
+{
+	for ( ;; )
+	{
+		uint32_t left;
+		uint32_t right;
+		uint32_t smallest;
+
+		left = ( position * 2u ) + 1u;
+		if ( left >= queue->count )
+			break;
+		right = left + 1u;
+		smallest = left;
+		if ( right < queue->count
+			&& NvmeTierPendingLess(
+				&queue->entries[right],
+				&queue->entries[left]) != 0u )
+			smallest = right;
+		if ( NvmeTierPendingLess(
+				&queue->entries[position],
+				&queue->entries[smallest]) != 0u )
+			break;
+		NvmeTierPendingSwap(
+			&queue->entries[position],
+			&queue->entries[smallest]);
+		position = smallest;
+	}
+}
 
 static int32_t NvmeTierPendingFind(
 	const NvmeTierPendingQueue *queue,
 	uint32_t slot_index)
 {
 	uint32_t index;
+
 	for ( index = 0u; index < queue->count; ++index )
 		if ( queue->entries[index].slot == slot_index )
 			return((int32_t)index);
@@ -481,67 +812,48 @@ static void NvmeTierPendingInsert(
 	uint32_t generation,
 	uint32_t need_by_step)
 {
-	uint32_t position = queue->count;
-	while ( position != 0u )
-	{
-		const NvmeTierPendingEntry *before = &queue->entries[position - 1u];
-		if ( before->need_by_step < need_by_step
-			|| ( before->need_by_step == need_by_step
-				&& before->order < queue->next_order ) )
-			break;
-		position--;
-	}
-	if ( position != queue->count )
-		memmove(&queue->entries[position + 1u],&queue->entries[position],
-			( queue->count - position ) * sizeof(NvmeTierPendingEntry));
+	uint32_t position;
+
+	position = queue->count;
 	queue->entries[position].slot = slot_index;
 	queue->entries[position].generation = generation;
 	queue->entries[position].need_by_step = need_by_step;
 	queue->entries[position].order = queue->next_order++;
 	queue->count++;
+	NvmeTierPendingSiftUp(queue,position);
 }
 
-static void NvmeTierPendingRemoveAt(NvmeTierPendingQueue *queue, uint32_t position)
+static void NvmeTierPendingRemoveAt(
+	NvmeTierPendingQueue *queue,
+	uint32_t position)
 {
-	if ( position + 1u < queue->count )
-		memmove(&queue->entries[position],&queue->entries[position + 1u],
-			( queue->count - position - 1u ) * sizeof(NvmeTierPendingEntry));
+	if ( position >= queue->count )
+		return;
 	queue->count--;
+	if ( position == queue->count )
+		return;
+	queue->entries[position] = queue->entries[queue->count];
+	if ( position != 0u
+		&& NvmeTierPendingLess(
+			&queue->entries[position],
+			&queue->entries[( position - 1u ) / 2u]) != 0u )
+		NvmeTierPendingSiftUp(queue,position);
+	else
+		NvmeTierPendingSiftDown(queue,position);
 }
 
-// An earlier deadline for a queued block pulls it forward in the queue; the
-// schedule got tighter, and the I/O order should say so.
+// An earlier deadline decreases the heap key. The original insertion order is
+// retained so equal deadlines remain FIFO after tightening.
 static void NvmeTierPendingTighten(
 	NvmeTierPendingQueue *queue,
 	uint32_t position,
 	uint32_t need_by_step)
 {
-	uint32_t slot,generation,order;
-	if ( queue->entries[position].need_by_step <= need_by_step )
+	if ( position >= queue->count
+		|| queue->entries[position].need_by_step <= need_by_step )
 		return;
-	slot = queue->entries[position].slot;
-	generation = queue->entries[position].generation;
-	order = queue->entries[position].order;
-	NvmeTierPendingRemoveAt(queue,position);
-	{
-		uint32_t insert_at = queue->count;
-		while ( insert_at != 0u )
-		{
-			const NvmeTierPendingEntry *before = &queue->entries[insert_at - 1u];
-			if ( before->need_by_step < need_by_step
-				|| ( before->need_by_step == need_by_step && before->order < order ) )
-				break;
-			insert_at--;
-		}
-		if ( insert_at != queue->count )
-			memmove(&queue->entries[insert_at + 1u],&queue->entries[insert_at],
-				( queue->count - insert_at ) * sizeof(NvmeTierPendingEntry));
-		queue->entries[insert_at].slot = slot;
-		queue->entries[insert_at].generation = generation;
-		queue->entries[insert_at].need_by_step = need_by_step;
-		queue->entries[insert_at].order = order;
-		queue->count++;
-	}
+	queue->entries[position].need_by_step = need_by_step;
+	NvmeTierPendingSiftUp(queue,position);
 }
 
 SparkStatus SparkNvmeTierPlanLookahead(
@@ -653,21 +965,30 @@ static void NvmeTierPrefetchRequeue(SparkNvmeTier *tier, uint32_t slot_index, ui
 
 static uint32_t NvmeTierStagingAcquireForDemand(SparkNvmeTier *tier)
 {
-	NvmeTierStagingState *staging_states = (NvmeTierStagingState *)tier->staging_state;
-	NvmeTierSlot *slots = (NvmeTierSlot *)tier->slots;
-	uint32_t count = tier->configuration.staging_buffer_count;
+	NvmeTierStagingState *staging_states;
+	NvmeTierSlot *slots;
+	uint32_t count;
 	uint32_t index;
-	for ( index = 0u; index < count; ++index )
-		if ( staging_states[index].state == NVME_TIER_STAGING_FREE )
-			return(index);
+	uint32_t attempt;
+
+	staging_states = (NvmeTierStagingState *)tier->staging_state;
+	slots = (NvmeTierSlot *)tier->slots;
+	count = tier->configuration.staging_buffer_count;
 	for ( index = 0u; index < count; ++index )
 	{
-		uint32_t slot_index,deadline;
+		if ( staging_states[index].state == NVME_TIER_STAGING_FREE )
+			return(index);
+	}
+	for ( index = 0u; index < count; ++index )
+	{
+		uint32_t slot_index;
+		uint32_t deadline;
+
 		if ( staging_states[index].state != NVME_TIER_STAGING_READY
 			|| staging_states[index].holder != NVME_TIER_HOLDER_PREFETCH )
 			continue;
 		slot_index = staging_states[index].slot;
-		if ( slots[slot_index].pin_count != 0u )
+		if ( slot_index >= tier->slot_count || slots[slot_index].pin_count != 0u )
 			continue;
 		deadline = staging_states[index].need_by_step;
 		tier->statistics.prefetch_preemptions++;
@@ -676,37 +997,66 @@ static uint32_t NvmeTierStagingAcquireForDemand(SparkNvmeTier *tier)
 		NvmeTierPrefetchRequeue(tier,slot_index,deadline);
 		return(index);
 	}
+
 	if ( tier->device.cancel_read != 0 )
 	{
-		uint32_t best = SPARK_NVME_TIER_NO_SLOT;
-		uint32_t best_deadline = 0u;
-		for ( index = 0u; index < count; ++index )
+		for ( attempt = 0u; attempt < count; ++attempt )
 		{
-			if ( staging_states[index].state != NVME_TIER_STAGING_FILLING
-				|| staging_states[index].holder != NVME_TIER_HOLDER_PREFETCH )
-				continue;
-			if ( slots[staging_states[index].slot].pin_count != 0u )
-				continue;
-			// Cancel the prefetch needed FURTHEST in the future: it has the
-			// most time to be re-queued and re-fetched before its deadline.
-			if ( best == SPARK_NVME_TIER_NO_SLOT
-				|| staging_states[index].need_by_step > best_deadline )
+			SparkStatus cancel_status;
+			uint32_t best;
+			uint32_t best_deadline;
+			uint32_t slot_index;
+			uint32_t deadline;
+
+			best = SPARK_NVME_TIER_NO_SLOT;
+			best_deadline = 0u;
+			for ( index = 0u; index < count; ++index )
 			{
-				best = index;
-				best_deadline = staging_states[index].need_by_step;
+				if ( staging_states[index].state != NVME_TIER_STAGING_FILLING
+					|| staging_states[index].holder != NVME_TIER_HOLDER_PREFETCH )
+					continue;
+				if ( staging_states[index].slot >= tier->slot_count
+					|| slots[staging_states[index].slot].pin_count != 0u )
+					continue;
+				if ( best == SPARK_NVME_TIER_NO_SLOT
+					|| staging_states[index].need_by_step > best_deadline )
+				{
+					best = index;
+					best_deadline = staging_states[index].need_by_step;
+				}
 			}
-		}
-		if ( best != SPARK_NVME_TIER_NO_SLOT )
-		{
-			uint32_t slot_index = staging_states[best].slot;
-			uint32_t deadline = staging_states[best].need_by_step;
-			tier->device.cancel_read(tier->device.context,staging_states[best].ticket);
+			if ( best == SPARK_NVME_TIER_NO_SLOT )
+				break;
+
+			slot_index = staging_states[best].slot;
+			deadline = staging_states[best].need_by_step;
+			cancel_status = tier->device.cancel_read(
+				tier->device.context,staging_states[best].ticket);
 			tier->statistics.prefetch_preemptions++;
+			if ( cancel_status == SPARK_STATUS_OK )
+			{
+				tier->statistics.prefetch_dropped++;
+				NvmeTierStagingRelease(tier,best);
+				NvmeTierPrefetchRequeue(tier,slot_index,deadline);
+				return(best);
+			}
+			if ( cancel_status == SPARK_STATUS_BUSY
+				|| cancel_status == SPARK_STATUS_PENDING )
+			{
+				staging_states[best].state =
+					NVME_TIER_STAGING_CANCEL_PENDING;
+				tier->statistics.cancel_pending_count++;
+				continue;
+			}
+
+			tier->statistics.io_errors++;
+			tier->statistics.prefetch_dropped++;
 			NvmeTierStagingRelease(tier,best);
 			NvmeTierPrefetchRequeue(tier,slot_index,deadline);
 			return(best);
 		}
 	}
+
 	tier->statistics.demand_stalls++;
 	return(SPARK_NVME_TIER_NO_SLOT);
 }
@@ -792,11 +1142,17 @@ SparkStatus SparkNvmeTierRequestDemand(
 	}
 	if ( slot->state == NVME_TIER_SLOT_FILLING )
 	{
-		// Join the read already moving - demand or prefetch, it does not
-		// matter: the bytes arrive either way, and a second read of the same
-		// record is the drive's worst case scheduled by hand.
-		NvmeTierStagingState *held
-			= &((NvmeTierStagingState *)tier->staging_state)[slot->staging_index];
+		NvmeTierStagingState *held;
+
+		if ( slot->staging_index >= tier->configuration.staging_buffer_count )
+			return(SPARK_STATUS_INTERNAL_ERROR);
+		held = &((NvmeTierStagingState *)tier->staging_state)[slot->staging_index];
+		if ( held->state == NVME_TIER_STAGING_CANCEL_PENDING )
+		{
+			slot->need_by_step = step_now;
+			tier->statistics.demand_stalls++;
+			return(SPARK_STATUS_BUSY);
+		}
 		held->holder = NVME_TIER_HOLDER_DEMAND;
 		tier->statistics.demand_joins++;
 		result_out->state = SPARK_NVME_TIER_DEMAND_IN_FLIGHT;
@@ -843,26 +1199,43 @@ SparkStatus SparkNvmeTierPump(SparkNvmeTier *tier, uint32_t step_now)
 	// the next read in the same pump, which is the double-buffer doing its job.
 	for ( index = 0u; index < tier->configuration.staging_buffer_count; ++index )
 	{
-		NvmeTierStagingState *held = &staging_states[index];
+		NvmeTierStagingState *held;
 		SparkStatus status;
 		uint32_t slot_index;
-		if ( held->state != NVME_TIER_STAGING_FILLING )
+
+		held = &staging_states[index];
+		if ( held->state != NVME_TIER_STAGING_FILLING
+			&& held->state != NVME_TIER_STAGING_CANCEL_PENDING )
 			continue;
 		status = tier->device.poll_read(tier->device.context,held->ticket);
-		if ( status == SPARK_STATUS_BUSY )
+		if ( status == SPARK_STATUS_BUSY || status == SPARK_STATUS_PENDING )
 			continue;
 		slot_index = held->slot;
+		if ( held->state == NVME_TIER_STAGING_CANCEL_PENDING )
+		{
+			uint32_t deadline;
+			uint32_t generation;
+
+			deadline = held->need_by_step;
+			generation = held->generation;
+			if ( status != SPARK_STATUS_OK && status != SPARK_STATUS_NOT_FOUND )
+				tier->statistics.io_errors++;
+			tier->statistics.prefetch_dropped++;
+			NvmeTierStagingRelease(tier,index);
+			if ( slot_index < tier->slot_count
+				&& slots[slot_index].state == NVME_TIER_SLOT_PRESENT
+				&& slots[slot_index].generation == generation )
+				NvmeTierPrefetchRequeue(tier,slot_index,deadline);
+			continue;
+		}
 		if ( status != SPARK_STATUS_OK )
 		{
 			tier->statistics.io_errors++;
 			NvmeTierStagingRelease(tier,index);
 			continue;
 		}
-		// The generation check is what makes cheap eviction safe: this read
-		// was issued against a slot that may have been evicted and recycled
-		// while the bytes were in flight. Landing them now would label one
-		// block's bytes with another's hash.
 		if ( slot_index == SPARK_NVME_TIER_NO_SLOT
+			|| slot_index >= tier->slot_count
 			|| slots[slot_index].state != NVME_TIER_SLOT_FILLING
 			|| slots[slot_index].staging_index != index
 			|| slots[slot_index].generation != held->generation )
@@ -994,10 +1367,19 @@ SparkStatus SparkNvmeTierWillBeResidentBy(
 		}
 		if ( slot->state == NVME_TIER_SLOT_FILLING )
 		{
-			// Worst-case ETA: the full transfer from now. Using the issued
-			// step to discount elapsed time assumes the drive kept pace, and
-			// an admission decision made on an optimistic ETA is how a warm
-			// sequence starts cold.
+			const NvmeTierStagingState *held;
+
+			if ( slot->staging_index >= tier->configuration.staging_buffer_count )
+			{
+				assessment_out->late_count++;
+				continue;
+			}
+			held = &((const NvmeTierStagingState *)tier->staging_state)[slot->staging_index];
+			if ( held->state == NVME_TIER_STAGING_CANCEL_PENDING )
+			{
+				assessment_out->late_count++;
+				continue;
+			}
 			eta_steps = tier->transfer_steps;
 			if ( (uint64_t)step_now + eta_steps <= step_deadline )
 				assessment_out->inflight_confident_count++;

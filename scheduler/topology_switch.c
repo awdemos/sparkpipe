@@ -51,8 +51,8 @@ typedef struct TopologySwitchSequence
 	uint32_t block_count;
 	uint8_t state;
 	uint8_t resume_class;        /* SparkTopologySwitchResumeClass */
-	uint8_t pins_done;           /* block pins taken; publish may still retry */
-	uint8_t checkpointed;        /* pins down, manifest published */
+	uint8_t pins_done;           /* block pins taken; write reservation may still retry */
+	uint8_t checkpointed;        /* pins down, manifest committed */
 	uint32_t reserved1;
 }
 TopologySwitchSequence;
@@ -270,7 +270,7 @@ SparkStatus SparkTopologySwitchSetSequenceKv(
 		return(SPARK_STATUS_NOT_FOUND);
 	sequence = &TopologySwitchSequences(sw)[slot];
 	// After checkpoint the block set is frozen on the tier; updating it now
-	// would publish a manifest that names the wrong keys.
+	// would commit a manifest that names the wrong keys.
 	if ( sequence->checkpointed != 0u )
 		return(SPARK_STATUS_BUSY);
 	keys = TopologySwitchBlockKeysOf(sw,(uint32_t)slot);
@@ -366,7 +366,7 @@ static uint32_t TopologySwitchQuiesceDrained(const SparkTopologySwitch *sw)
 // -- checkpoint --------------------------------------------------------------
 //
 // Per sequence: pin every block still on the tier (BEFORE any manifest
-// publish, because Publish is the tier's only eviction path and an unpinned
+// reserve, because ReserveWrite is the tier's only eviction path and an unpinned
 // block is fair game for it), count the absent ones, then write one
 // manifest. The manifest is the crash-recovery record: a restarted rank
 // finds it by key and rebuilds exactly this table.
@@ -378,13 +378,14 @@ static SparkStatus TopologySwitchCheckpointOne(
 	TopologySwitchSequence *sequence = &TopologySwitchSequences(sw)[slot];
 	const uint64_t *keys = TopologySwitchBlockKeysOf(sw,slot);
 	uint8_t *manifest = sw->manifest_buffer;
+	SparkNvmeTierWriteReservation reservation;
 	uint64_t manifest_key,device_offset = 0u;
 	uint32_t index;
 	SparkStatus status;
-	// Pins first, publishes second: Publish is the tier's only eviction
+	// Pins first, reserves second: ReserveWrite is the tier's only eviction
 	// path, so an unpinned block named by a manifest is fair game for the
 	// manifest's own slot acquisition. pins_done makes the retry exact - a
-	// failed publish retries the publish, never the pins, because a double
+	// failed reservation retries the reservation, never the pins, because a double
 	// pin leaks one count that resume's single unpin never returns.
 	if ( sequence->pins_done == 0u )
 	{
@@ -415,13 +416,26 @@ static SparkStatus TopologySwitchCheckpointOne(
 	memcpy(manifest + 24u,keys,(uint64_t)sequence->block_count * sizeof(uint64_t));
 	manifest_key = TopologySwitchManifestKey(
 		sw->configuration.kv_namespace,sequence->sequence_id);
-	status = SparkNvmeTierPublish(sw->configuration.tier,manifest_key,&device_offset);
-	if ( status != SPARK_STATUS_OK )
-		return(status);   /* BUSY: no evictable slot this pass; Advance retries */
-	status = sw->write_block(sw->write_block_context,device_offset,
-		manifest,sw->configuration.manifest_block_bytes);
+	status = SparkNvmeTierReserveWrite(
+		sw->configuration.tier,manifest_key,&reservation);
 	if ( status != SPARK_STATUS_OK )
 		return(status);
+	device_offset = reservation.device_offset;
+	if ( reservation.already_present == 0u )
+	{
+		status = sw->write_block(sw->write_block_context,device_offset,
+			manifest,sw->configuration.manifest_block_bytes);
+		if ( status != SPARK_STATUS_OK )
+		{
+			(void)SparkNvmeTierAbortWrite(
+				sw->configuration.tier,&reservation);
+			return(status);
+		}
+		status = SparkNvmeTierCommitWrite(
+			sw->configuration.tier,&reservation);
+		if ( status != SPARK_STATUS_OK )
+			return(status);
+	}
 	sequence->checkpointed = 1u;
 	sw->statistics.sequences_checkpointed++;
 	sw->statistics.manifest_writes++;
