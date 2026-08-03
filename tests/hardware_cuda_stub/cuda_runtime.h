@@ -137,6 +137,11 @@ enum cudaFuncAttribute
     cudaFuncAttributeMaxDynamicSharedMemorySize = 8
 };
 
+enum cudaDeviceAttribute
+{
+    cudaDevAttrMemoryClockRate = 36
+};
+
 struct cudaDeviceProp
 {
     char name[256];
@@ -144,7 +149,6 @@ struct cudaDeviceProp
     int major;
     int minor;
     int multiProcessorCount;
-    int memoryClockRate;
     int memoryBusWidth;
     int maxThreadsPerMultiProcessor;
 };
@@ -167,6 +171,7 @@ cudaError_t cudaSetDeviceFlags(unsigned int flags);
 cudaError_t cudaSetDevice(int device);
 cudaError_t cudaGetDevice(int *device);
 cudaError_t cudaGetDeviceProperties(cudaDeviceProp *properties, int device);
+cudaError_t cudaDeviceGetAttribute(int *value, int attribute, int device);
 cudaError_t cudaDriverGetVersion(int *version);
 cudaError_t cudaRuntimeGetVersion(int *version);
 cudaError_t cudaMalloc(void **pointer, std::size_t bytes);

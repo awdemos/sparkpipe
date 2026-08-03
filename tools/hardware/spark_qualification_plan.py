@@ -271,7 +271,7 @@ def parameters_for_question(
         return True, cells
 
     if question_id in {"NVME-RAW-001", "NVME-GPU-001"}:
-        candidate = "raw" if question_id == "NVME-RAW-001" else "gpu_pipeline"
+        candidate = "direct_io" if question_id == "NVME-RAW-001" else "nvme_to_gpu"
         for node in nodes:
             for params in cartesian({"candidate": [candidate], "block_bytes": [65536, 262144, 1048576, 4194304], "queue_depth": [1, 4, 16, 64], "worker_count": [1, 2, 4], "iterations": [128]}):
                 cells.append(({"topology": topology["name"], "node": node}, params))

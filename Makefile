@@ -545,6 +545,7 @@ hardware_cuda_tools:
 	@if ! command -v $(NVCC) >/dev/null 2>&1; then \
 		echo "hardware_cuda_tools skipped: nvcc unavailable"; \
 	else \
+		set -e; \
 		mkdir -p build; \
 		$(NVCC) -std=c++17 -O3 -arch=sm_121a -Xptxas=-v -Itools/hardware tools/hardware/spark_cuda_characterize.cu -o build/spark_cuda_characterize; \
 		$(NVCC) -std=c++17 -O3 -arch=sm_121a -Xptxas=-v -Itools/hardware -Xcompiler=-pthread tools/hardware/spark_nvme_characterize.cu -o build/spark_nvme_characterize -lpthread; \

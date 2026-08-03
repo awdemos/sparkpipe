@@ -45,8 +45,11 @@ def main() -> int:
         "cudaFuncSetAttribute",
         "SparkCudaProbeMeasureReadReuse",
         "SparkCudaProbeMeasurePointerChase",
+        "cudaDevAttrMemoryClockRate",
     ):
         require(required in cuda, f"CUDA hardware probe is missing {required}")
+    require("properties.memoryClockRate" not in cuda,
+            "CUDA hardware probe uses the removed cudaDeviceProp memoryClockRate field")
 
     for required in (
         "SparkNvmeProbeVerifyPattern",

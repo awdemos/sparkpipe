@@ -183,6 +183,8 @@ def validate_generated_plans(questions: dict[str, dict[str, object]]) -> None:
                 "GB10-SMEM-001": {"dynamic_shared"},
                 "GB10-ATOMIC-001": {"contended", "distributed"},
                 "GB10-THERMAL-001": {"sustained_memory_copy"},
+                "NVME-RAW-001": {"direct_io"},
+                "NVME-GPU-001": {"nvme_to_gpu"},
                 "NET-PMTU-001": {"udp_df_binary_search"},
             }
             for question_id, candidates in expected_candidates.items():
