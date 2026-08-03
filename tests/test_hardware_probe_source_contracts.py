@@ -46,6 +46,8 @@ def main() -> int:
         "SparkCudaProbeMeasureReadReuse",
         "SparkCudaProbeMeasurePointerChase",
         "cudaDevAttrMemoryClockRate",
+        '"GB10-GRAPH-001"',
+        'SparkCudaProbeWriteJsonString(output, options.mode)',
     ):
         require(required in cuda, f"CUDA hardware probe is missing {required}")
     require("properties.memoryClockRate" not in cuda,

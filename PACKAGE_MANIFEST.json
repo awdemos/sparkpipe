@@ -2688,8 +2688,8 @@
     },
     {
       "path": "tests/test_code_size.py",
-      "sha256": "1ed667e7e2821df30073c44d63326b165371847d4b13b8b19e08db2d100d58a5",
-      "size_bytes": 9808
+      "sha256": "8da2fe7dfe46d49bceee60b7bc7e88f93a09efb08a85efd0c8c5d5e058df3ce0",
+      "size_bytes": 9886
     },
     {
       "path": "tests/test_config_coverage.py",
@@ -3003,8 +3003,8 @@
     },
     {
       "path": "tests/test_hardware_probe_source_contracts.py",
-      "sha256": "4bc36b6c52aa33e40e8d2ae03426e2c53e3fcf020c53deb5b10806c0e706ddf8",
-      "size_bytes": 3664
+      "sha256": "a163c083b2d01f3d55aded0638f1f120470d0b1e872fd6b04a0185430b2bd7a0",
+      "size_bytes": 3755
     },
     {
       "path": "tests/test_hardware_runner_configs.py",
@@ -3608,8 +3608,8 @@
     },
     {
       "path": "tools/hardware/spark_cuda_characterize.cu",
-      "sha256": "161cafd9e8a6e62b2c874c764d99192a74fd2497f35ad5a63b0bb84591187e51",
-      "size_bytes": 98207
+      "sha256": "f4823f11223aa37ad6216bce5abf3fcb49300f197e6ce34ded867758c8bc5536",
+      "size_bytes": 98338
     },
     {
       "path": "tools/hardware/spark_handoff_preflight.py",
@@ -3800,5 +3800,5 @@
   "inventory_policy": "tools/package_inventory.py:v2",
   "manifest_schema": 2,
   "package_kind": "sparkpipe_source",
-  "total_bytes": 8533444
+  "total_bytes": 8533744
 }
